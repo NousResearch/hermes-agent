@@ -15,7 +15,8 @@ const buildCtx = (appended: Msg[]) =>
     composer: {
       dequeue: () => undefined,
       queueEditRef: ref<null | number>(null),
-      sendQueued: vi.fn()
+      sendQueued: vi.fn(),
+      setInput: vi.fn()
     },
     gateway: {
       gw: { request: vi.fn() },
@@ -29,6 +30,9 @@ const buildCtx = (appended: Msg[]) =>
       resumeById: vi.fn(),
       setCatalog: vi.fn()
     },
+    submission: {
+      submitRef: { current: vi.fn() }
+    },
     system: {
       bellOnComplete: false,
       sys: vi.fn()
@@ -38,6 +42,11 @@ const buildCtx = (appended: Msg[]) =>
       panel: (title: string, sections: any[]) =>
         appended.push({ kind: 'panel', panelData: { sections, title }, role: 'system', text: '' }),
       setHistoryItems: vi.fn()
+    },
+    voice: {
+      setProcessing: vi.fn(),
+      setRecording: vi.fn(),
+      setVoiceEnabled: vi.fn()
     }
   }) as any
 
@@ -148,36 +157,30 @@ describe('createGatewayEventHandler', () => {
     const onEvent = createGatewayEventHandler(buildCtx(appended))
     const diff = '\u001b[31m--- a/foo.ts\u001b[0m\n\u001b[32m+++ b/foo.ts\u001b[0m\n@@\n-old\n+new'
     const cleaned = '--- a/foo.ts\n+++ b/foo.ts\n@@\n-old\n+new'
+    const block = `\`\`\`diff\n${cleaned}\n\`\`\``
 
     // Narration → tool → tool-complete → more narration → message-complete.
     // The diff MUST land between the two narration segments, not tacked
     // onto the final one.
     onEvent({ payload: { text: 'Editing the file' }, type: 'message.delta' } as any)
-    onEvent({
-      payload: { context: 'foo.ts', name: 'patch', tool_id: 'tool-1' },
-      type: 'tool.start'
-    } as any)
-    onEvent({
-      payload: { inline_diff: diff, summary: 'patched', tool_id: 'tool-1' },
-      type: 'tool.complete'
-    } as any)
+    onEvent({ payload: { context: 'foo.ts', name: 'patch', tool_id: 'tool-1' }, type: 'tool.start' } as any)
+    onEvent({ payload: { inline_diff: diff, summary: 'patched', tool_id: 'tool-1' }, type: 'tool.complete' } as any)
 
-    // Diff is already committed to segmentMessages as its own segment —
-    // nothing is "pending" anymore. The pre-tool narration is also flushed.
+    // Diff is already committed to segmentMessages as its own segment.
     expect(appended).toHaveLength(0)
     expect(turnController.segmentMessages).toEqual([
       { role: 'assistant', text: 'Editing the file' },
-      { kind: 'diff', role: 'assistant', text: `\`\`\`diff\n${cleaned}\n\`\`\`` }
+      { kind: 'diff', role: 'assistant', text: block }
     ])
 
     onEvent({ payload: { text: 'patch applied' }, type: 'message.complete' } as any)
 
-    // Three messages in the transcript, in order: pre-tool narration →
-    // diff (kind='diff' so MessageLine gives it blank-line breathing room)
-    // → post-tool narration. The final message does NOT contain a diff.
+    // Three transcript messages: pre-tool narration → diff (kind='diff',
+    // so MessageLine gives it blank-line breathing room) → post-tool
+    // narration. The final message does NOT contain a diff.
     expect(appended).toHaveLength(3)
     expect(appended[0]?.text).toBe('Editing the file')
-    expect(appended[1]).toMatchObject({ kind: 'diff', text: `\`\`\`diff\n${cleaned}\n\`\`\`` })
+    expect(appended[1]).toMatchObject({ kind: 'diff', text: block })
     expect(appended[2]?.text).toBe('patch applied')
     expect(appended[2]?.text).not.toContain('```diff')
   })
@@ -188,10 +191,7 @@ describe('createGatewayEventHandler', () => {
     const cleaned = '--- a/foo.ts\n+++ b/foo.ts\n@@\n-old\n+new'
     const assistantText = `Done. Here's the inline diff:\n\n\`\`\`diff\n${cleaned}\n\`\`\``
 
-    onEvent({
-      payload: { inline_diff: cleaned, summary: 'patched', tool_id: 'tool-1' },
-      type: 'tool.complete'
-    } as any)
+    onEvent({ payload: { inline_diff: cleaned, summary: 'patched', tool_id: 'tool-1' }, type: 'tool.complete' } as any)
     onEvent({ payload: { text: assistantText }, type: 'message.complete' } as any)
 
     // Only the final message — diff-only segment dropped so we don't
@@ -206,13 +206,10 @@ describe('createGatewayEventHandler', () => {
     const onEvent = createGatewayEventHandler(buildCtx(appended))
     const raw = '  \u001b[33m┊ review diff\u001b[0m\n--- a/foo.ts\n+++ b/foo.ts\n@@\n-old\n+new'
 
-    onEvent({
-      payload: { inline_diff: raw, summary: 'patched', tool_id: 'tool-1' },
-      type: 'tool.complete'
-    } as any)
+    onEvent({ payload: { inline_diff: raw, summary: 'patched', tool_id: 'tool-1' }, type: 'tool.complete' } as any)
     onEvent({ payload: { text: 'done' }, type: 'message.complete' } as any)
 
-    // diff segment first, final narration second
+    // diff segment first (kind='diff'), final narration second
     expect(appended).toHaveLength(2)
     expect(appended[0]?.kind).toBe('diff')
     expect(appended[0]?.text).not.toContain('┊ review diff')
@@ -226,10 +223,7 @@ describe('createGatewayEventHandler', () => {
     const inlineDiff = '--- a/foo.ts\n+++ b/foo.ts\n@@\n-old\n+new'
     const assistantText = 'Done. Clean swap:\n\n```diff\n-old\n+new\n```'
 
-    onEvent({
-      payload: { inline_diff: inlineDiff, summary: 'patched', tool_id: 'tool-1' },
-      type: 'tool.complete'
-    } as any)
+    onEvent({ payload: { inline_diff: inlineDiff, summary: 'patched', tool_id: 'tool-1' }, type: 'tool.complete' } as any)
     onEvent({ payload: { text: assistantText }, type: 'message.complete' } as any)
 
     expect(appended).toHaveLength(1)
@@ -248,8 +242,9 @@ describe('createGatewayEventHandler', () => {
     } as any)
     onEvent({ payload: { text: 'done' }, type: 'message.complete' } as any)
 
-    // Two segments: diff block (kind='diff', no tool row), final narration
-    // (tool row belongs here since pendingSegmentTools carries across the flush).
+    // Two segments: the diff block (kind='diff', no tool row) and the final
+    // narration (tool row belongs here since pendingSegmentTools carries
+    // across the flushStreamingSegment call).
     expect(appended).toHaveLength(2)
     expect(appended[0]?.kind).toBe('diff')
     expect(appended[0]?.text).toContain('```diff')

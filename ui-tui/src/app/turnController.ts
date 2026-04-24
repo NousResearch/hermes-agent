@@ -282,18 +282,14 @@ class TurnController {
     // Drop diff-only segments the agent is about to narrate in the final
     // reply. Without this, a closing "here's the diff …" message would
     // render two stacked copies of the same patch. Only touches segments
-    // whose entire body is a ```diff``` fence emitted by pushInlineDiff-
-    // Segment — real assistant narration stays put.
+    // with `kind: 'diff'` emitted by pushInlineDiffSegment — real
+    // assistant narration stays put.
     const finalHasOwnDiffFence = /```(?:diff|patch)\b/i.test(finalText)
 
     const segments = this.segmentMessages.filter(msg => {
       const body = diffSegmentBody(msg)
 
-      if (body === null) {
-        return true
-      }
-
-      return !finalHasOwnDiffFence && !finalText.includes(body)
+      return body === null || (!finalHasOwnDiffFence && !finalText.includes(body))
     })
 
     const finalMessages = [...segments]

@@ -466,6 +466,18 @@ class ContextCompressor(ContextEngine):
     def name(self) -> str:
         return "compressor"
 
+    def on_session_start(self, session_id: str, **kwargs) -> None:
+        """Clear cross-session summary state when a new session begins.
+
+        Without this, _previous_summary from a prior session leaks into the
+        next session's iterative summary update when the same AIAgent instance
+        is reused (common in gateway/cron), causing old task context to bleed
+        into the new session's compression summary (#14603).
+        """
+        super().on_session_start(session_id, **kwargs)
+        self._previous_summary = None
+        self._ineffective_compression_count = 0
+
     def on_session_reset(self) -> None:
         """Reset all per-session state for /new or /reset."""
         super().on_session_reset()

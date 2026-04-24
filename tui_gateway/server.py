@@ -23,6 +23,75 @@ load_hermes_dotenv(
     hermes_home=_hermes_home, project_env=Path(__file__).parent.parent / ".env"
 )
 
+
+# ── Panic logger ─────────────────────────────────────────────────────
+# Gateway crashes in a TUI session leave no forensics: stdout is the
+# JSON-RPC pipe (TUI side parses it, doesn't log raw), the root logger
+# only catches handled warnings, and the subprocess exits before stderr
+# flushes through the stderr->gateway.stderr event pump. This hook
+# appends every unhandled exception to ~/.hermes/logs/tui_gateway_crash.log
+# AND re-emits a one-line summary to stderr so the TUI can surface it in
+# Activity — exactly what was missing when the voice-mode turns started
+# exiting the gateway mid-TTS.
+_CRASH_LOG = os.path.join(_hermes_home, "logs", "tui_gateway_crash.log")
+
+
+def _panic_hook(exc_type, exc_value, exc_tb):
+    import traceback
+
+    trace = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+    try:
+        os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
+        with open(_CRASH_LOG, "a", encoding="utf-8") as f:
+            f.write(
+                f"\n=== unhandled exception · {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n"
+            )
+            f.write(trace)
+    except Exception:
+        pass
+    # Stderr goes through to the TUI as a gateway.stderr Activity line —
+    # the first line here is what the user will see without opening any
+    # log files.  Rest of the stack is still in the log for full context.
+    first = str(exc_value).strip().splitlines()[0] if str(exc_value).strip() else exc_type.__name__
+    print(f"[gateway-crash] {exc_type.__name__}: {first}", file=sys.stderr, flush=True)
+    # Chain to the default hook so the process still terminates normally.
+    sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+
+sys.excepthook = _panic_hook
+
+
+def _thread_panic_hook(args):
+    # threading.excepthook signature: SimpleNamespace(exc_type, exc_value, exc_traceback, thread)
+    import traceback
+
+    trace = "".join(
+        traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)
+    )
+    try:
+        os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
+        with open(_CRASH_LOG, "a", encoding="utf-8") as f:
+            f.write(
+                f"\n=== thread exception · {time.strftime('%Y-%m-%d %H:%M:%S')} "
+                f"· thread={args.thread.name} ===\n"
+            )
+            f.write(trace)
+    except Exception:
+        pass
+    first_line = (
+        str(args.exc_value).strip().splitlines()[0]
+        if str(args.exc_value).strip()
+        else args.exc_type.__name__
+    )
+    print(
+        f"[gateway-crash] thread {args.thread.name} raised {args.exc_type.__name__}: {first_line}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+threading.excepthook = _thread_panic_hook
+
 try:
     from hermes_cli.banner import prefetch_update_check
 
@@ -2126,7 +2195,43 @@ def _(rid, params: dict) -> dict:
             if rendered:
                 payload["rendered"] = rendered
             _emit("message.complete", sid, payload)
+
+            # CLI parity: when voice-mode TTS is on, speak the agent reply
+            # (cli.py:_voice_speak_response).  Only the final text — tool
+            # calls / reasoning already stream separately and would be
+            # noisy to read aloud.
+            if (
+                status == "complete"
+                and isinstance(raw, str)
+                and raw.strip()
+                and _voice_tts_enabled()
+            ):
+                try:
+                    from hermes_cli.voice import speak_text
+
+                    spoken = raw
+                    threading.Thread(
+                        target=speak_text, args=(spoken,), daemon=True
+                    ).start()
+                except ImportError:
+                    logger.warning("voice TTS skipped: hermes_cli.voice unavailable")
+                except Exception as e:
+                    logger.warning("voice TTS dispatch failed: %s", e)
         except Exception as e:
+            import traceback
+
+            trace = traceback.format_exc()
+            try:
+                os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
+                with open(_CRASH_LOG, "a", encoding="utf-8") as f:
+                    f.write(
+                        f"\n=== turn-dispatcher exception · "
+                        f"{time.strftime('%Y-%m-%d %H:%M:%S')} · sid={sid} ===\n"
+                    )
+                    f.write(trace)
+            except Exception:
+                pass
+            print(f"[gateway-turn] {type(e).__name__}: {e}", file=sys.stderr, flush=True)
             _emit("error", sid, {"message": str(e)})
         finally:
             try:
@@ -3177,12 +3282,16 @@ _fuzzy_cache: dict[str, tuple[float, list[str]]] = {}
 
 
 def _list_repo_files(root: str) -> list[str]:
-    """Return repo-relative file paths rooted at ``root``.
+    """Return file paths relative to ``root``.
 
-    Uses ``git ls-files`` when available (fast, honours .gitignore) and falls
-    back to a bounded ``os.walk`` that skips common vendor/build dirs. The
-    result is cached per-root for ``_FUZZY_CACHE_TTL_S`` so rapid keystrokes
-    don't respawn git processes.
+    Uses ``git ls-files`` from the repo top (resolved via
+    ``rev-parse --show-toplevel``) so the listing covers tracked + untracked
+    files anywhere in the repo, then converts each path back to be relative
+    to ``root``. Files outside ``root`` (parent directories of cwd, sibling
+    subtrees) are excluded so the picker stays scoped to what's reachable
+    from the gateway's cwd. Falls back to a bounded ``os.walk(root)`` when
+    ``root`` isn't inside a git repo. Result cached per-root for
+    ``_FUZZY_CACHE_TTL_S`` so rapid keystrokes don't respawn git processes.
     """
     now = time.monotonic()
     with _fuzzy_cache_lock:
@@ -3192,19 +3301,32 @@ def _list_repo_files(root: str) -> list[str]:
 
     files: list[str] = []
     try:
-        result = subprocess.run(
-            ["git", "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
-            cwd=root,
+        top_result = subprocess.run(
+            ["git", "-C", root, "rev-parse", "--show-toplevel"],
             capture_output=True,
             timeout=2.0,
             check=False,
         )
-        if result.returncode == 0:
-            files = [
-                p
-                for p in result.stdout.decode("utf-8", "replace").split("\0")
-                if p
-            ][:_FUZZY_CACHE_MAX_FILES]
+        if top_result.returncode == 0:
+            top = top_result.stdout.decode("utf-8", "replace").strip()
+            list_result = subprocess.run(
+                ["git", "-C", top, "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+                capture_output=True,
+                timeout=2.0,
+                check=False,
+            )
+            if list_result.returncode == 0:
+                for p in list_result.stdout.decode("utf-8", "replace").split("\0"):
+                    if not p:
+                        continue
+                    rel = os.path.relpath(os.path.join(top, p), root).replace(os.sep, "/")
+                    # Skip parents/siblings of cwd — keep the picker scoped
+                    # to root-and-below, matching Cmd-P workspace semantics.
+                    if rel.startswith("../"):
+                        continue
+                    files.append(rel)
+                    if len(files) >= _FUZZY_CACHE_MAX_FILES:
+                        break
     except (OSError, subprocess.TimeoutExpired):
         pass
 
@@ -3351,12 +3473,11 @@ def _(rid, params: dict) -> dict:
             ranked.sort(key=lambda r: (r[0], len(r[1]), r[1]))
             tag = prefix_tag or "file"
             for _, rel, basename in ranked[:30]:
-                directory = os.path.dirname(rel)
                 items.append(
                     {
                         "text": f"@{tag}:{rel}",
                         "display": basename,
-                        "meta": directory,
+                        "meta": os.path.dirname(rel),
                     }
                 )
 
@@ -3631,43 +3752,155 @@ def _(rid, params: dict) -> dict:
 # ── Methods: voice ───────────────────────────────────────────────────
 
 
+_voice_sid_lock = threading.Lock()
+_voice_event_sid: str = ""
+
+
+def _voice_emit(event: str, payload: dict | None = None) -> None:
+    """Emit a voice event toward the session that most recently turned the
+    mode on. Voice is process-global (one microphone), so there's only ever
+    one sid to target; the TUI handler treats an empty sid as "active
+    session". Kept separate from _emit to make the lack of per-call sid
+    argument explicit."""
+    with _voice_sid_lock:
+        sid = _voice_event_sid
+    _emit(event, sid, payload)
+
+
+def _voice_mode_enabled() -> bool:
+    """Current voice-mode flag (runtime-only, CLI parity).
+
+    cli.py initialises ``_voice_mode = False`` at startup and only flips
+    it via ``/voice on``; it never reads a persisted enable bit from
+    config.yaml.  We match that: no config lookup, env var only.  This
+    avoids the TUI auto-starting in REC the next time the user opens it
+    just because they happened to enable voice in a prior session.
+    """
+    return os.environ.get("HERMES_VOICE", "").strip() == "1"
+
+
+def _voice_tts_enabled() -> bool:
+    """Whether agent replies should be spoken back via TTS (runtime only)."""
+    return os.environ.get("HERMES_VOICE_TTS", "").strip() == "1"
+
+
 @method("voice.toggle")
 def _(rid, params: dict) -> dict:
+    """CLI parity for the ``/voice`` slash command.
+
+    Subcommands:
+
+    * ``status`` — report mode + TTS flags (default when action is unknown).
+    * ``on`` / ``off`` — flip voice *mode* (the umbrella bit). Turning it
+      off also tears down any active continuous recording loop. Does NOT
+      start recording on its own; recording is driven by ``voice.record``
+      (Ctrl+B) after mode is on, matching cli.py's enable/Ctrl+B split.
+    * ``tts`` — toggle speech-output of agent replies. Requires mode on
+      (mirrors CLI's _toggle_voice_tts guard).
+    """
     action = params.get("action", "status")
+
     if action == "status":
-        env = os.environ.get("HERMES_VOICE", "").strip()
-        if env in {"0", "1"}:
-            return _ok(rid, {"enabled": env == "1"})
-        return _ok(
-            rid,
-            {
-                "enabled": bool(
-                    _load_cfg().get("display", {}).get("voice_enabled", False)
-                )
-            },
-        )
+        # Mirror CLI's _show_voice_status: include STT/TTS provider
+        # availability so the user can tell at a glance *why* voice mode
+        # isn't working ("STT provider: MISSING ..." is the common case).
+        payload: dict = {
+            "enabled": _voice_mode_enabled(),
+            "tts": _voice_tts_enabled(),
+        }
+        try:
+            from tools.voice_mode import check_voice_requirements
+
+            reqs = check_voice_requirements()
+            payload["available"] = bool(reqs.get("available"))
+            payload["audio_available"] = bool(reqs.get("audio_available"))
+            payload["stt_available"] = bool(reqs.get("stt_available"))
+            payload["details"] = reqs.get("details") or ""
+        except Exception as e:
+            # check_voice_requirements pulls optional transcription deps —
+            # swallow so /voice status always returns something useful.
+            logger.warning("voice.toggle status: requirements probe failed: %s", e)
+
+        return _ok(rid, payload)
+
     if action in ("on", "off"):
         enabled = action == "on"
+        # Runtime-only flag (CLI parity) — no _write_config_key, so the
+        # next TUI launch starts with voice OFF instead of auto-REC from a
+        # persisted stale toggle.
         os.environ["HERMES_VOICE"] = "1" if enabled else "0"
-        _write_config_key("display.voice_enabled", enabled)
-        return _ok(rid, {"enabled": action == "on"})
+
+        if not enabled:
+            # Disabling the mode must tear the continuous loop down; the
+            # loop holds the microphone and would otherwise keep running.
+            try:
+                from hermes_cli.voice import stop_continuous
+
+                stop_continuous()
+            except ImportError:
+                pass
+            except Exception as e:
+                logger.warning("voice: stop_continuous failed during toggle off: %s", e)
+
+        return _ok(rid, {"enabled": enabled, "tts": _voice_tts_enabled()})
+
+    if action == "tts":
+        if not _voice_mode_enabled():
+            return _err(rid, 4014, "enable voice mode first: /voice on")
+        new_value = not _voice_tts_enabled()
+        # Runtime-only flag (CLI parity) — see voice.toggle on/off above.
+        os.environ["HERMES_VOICE_TTS"] = "1" if new_value else "0"
+        return _ok(rid, {"enabled": True, "tts": new_value})
+
     return _err(rid, 4013, f"unknown voice action: {action}")
 
 
 @method("voice.record")
 def _(rid, params: dict) -> dict:
+    """VAD-driven continuous record loop, CLI-parity.
+
+    ``start`` turns on a VAD loop that emits ``voice.transcript`` events
+    for each detected utterance and auto-restarts for the next turn.
+    ``stop`` halts the loop (manual stop; matches cli.py's Ctrl+B-while-
+    recording branch clearing ``_voice_continuous``). Three consecutive
+    silent cycles stop the loop automatically and emit a
+    ``voice.transcript`` with ``no_speech_limit=True``.
+    """
     action = params.get("action", "start")
+
+    if action not in {"start", "stop"}:
+        return _err(rid, 4019, f"unknown voice action: {action}")
+
     try:
         if action == "start":
-            from hermes_cli.voice import start_recording
+            if not _voice_mode_enabled():
+                return _err(rid, 4015, "voice mode is off — enable with /voice on")
 
-            start_recording()
+            with _voice_sid_lock:
+                global _voice_event_sid
+                _voice_event_sid = params.get("session_id") or _voice_event_sid
+
+            from hermes_cli.voice import start_continuous
+
+            voice_cfg = _load_cfg().get("voice", {})
+            start_continuous(
+                on_transcript=lambda t: _voice_emit(
+                    "voice.transcript", {"text": t}
+                ),
+                on_status=lambda s: _voice_emit("voice.status", {"state": s}),
+                on_silent_limit=lambda: _voice_emit(
+                    "voice.transcript", {"no_speech_limit": True}
+                ),
+                silence_threshold=voice_cfg.get("silence_threshold", 200),
+                silence_duration=voice_cfg.get("silence_duration", 3.0),
+            )
             return _ok(rid, {"status": "recording"})
-        if action == "stop":
-            from hermes_cli.voice import stop_and_transcribe
 
-            return _ok(rid, {"text": stop_and_transcribe() or ""})
-        return _err(rid, 4019, f"unknown voice action: {action}")
+        # action == "stop"
+        from hermes_cli.voice import stop_continuous
+
+        stop_continuous()
+        return _ok(rid, {"status": "stopped"})
     except ImportError:
         return _err(
             rid, 5025, "voice module not available — install audio dependencies"

@@ -45,6 +45,7 @@ class FailoverReason(enum.Enum):
 
     # Model
     model_not_found = "model_not_found"  # 404 or invalid model — fallback to different model
+    provider_policy_blocked = "provider_policy_blocked"  # Aggregator (e.g. OpenRouter) blocked the only endpoint due to account data/privacy policy
 
     # Request format
     format_error = "format_error"        # 400 bad request — abort or strip + retry
@@ -194,6 +195,29 @@ _MODEL_NOT_FOUND_PATTERNS = [
     "unsupported model",
 ]
 
+# OpenRouter aggregator policy-block patterns.
+#
+# When a user's OpenRouter account privacy setting (or a per-request
+# `provider.data_collection: deny` preference) excludes the only endpoint
+# serving a model, OpenRouter returns 404 with a *specific* message that is
+# distinct from "model not found":
+#
+#   "No endpoints available matching your guardrail restrictions and
+#    data policy. Configure: https://openrouter.ai/settings/privacy"
+#
+# We classify this as `provider_policy_blocked` rather than
+# `model_not_found` because:
+#   - The model *exists* — model_not_found is misleading in logs
+#   - Provider fallback won't help: the account-level setting applies to
+#     every call on the same OpenRouter account
+#   - The error body already contains the fix URL, so the user gets
+#     actionable guidance without us rewriting the message
+_PROVIDER_POLICY_BLOCKED_PATTERNS = [
+    "no endpoints available matching your guardrail",
+    "no endpoints available matching your data policy",
+    "no endpoints found matching your data policy",
+]
+
 # Auth patterns (non-status-code signals)
 _AUTH_PATTERNS = [
     "invalid api key",
@@ -319,6 +343,11 @@ def classify_api_error(
     """
     status_code = _extract_status_code(error)
     error_type = type(error).__name__
+    # Copilot/GitHub Models RateLimitError may not set .status_code; force 429
+    # so downstream rate-limit handling (classifier reason, pool rotation,
+    # fallback gating) fires correctly instead of misclassifying as generic.
+    if status_code is None and error_type == "RateLimitError":
+        status_code = 429
     body = _extract_error_body(error)
     error_code = _extract_error_code(body)
 
@@ -523,6 +552,17 @@ def _classify_by_status(
         return _classify_402(error_msg, result_fn)
 
     if status_code == 404:
+        # OpenRouter policy-block 404 — distinct from "model not found".
+        # The model exists; the user's account privacy setting excludes the
+        # only endpoint serving it. Falling back to another provider won't
+        # help (same account setting applies).  The error body already
+        # contains the fix URL, so just surface it.
+        if any(p in error_msg for p in _PROVIDER_POLICY_BLOCKED_PATTERNS):
+            return result_fn(
+                FailoverReason.provider_policy_blocked,
+                retryable=False,
+                should_fallback=False,
+            )
         if any(p in error_msg for p in _MODEL_NOT_FOUND_PATTERNS):
             return result_fn(
                 FailoverReason.model_not_found,
@@ -640,6 +680,12 @@ def _classify_400(
         )
 
     # Some providers return model-not-found as 400 instead of 404 (e.g. OpenRouter).
+    if any(p in error_msg for p in _PROVIDER_POLICY_BLOCKED_PATTERNS):
+        return result_fn(
+            FailoverReason.provider_policy_blocked,
+            retryable=False,
+            should_fallback=False,
+        )
     if any(p in error_msg for p in _MODEL_NOT_FOUND_PATTERNS):
         return result_fn(
             FailoverReason.model_not_found,
@@ -810,6 +856,15 @@ def _classify_by_message(
             retryable=False,
             should_rotate_credential=True,
             should_fallback=True,
+        )
+
+    # Provider policy-block (aggregator-side guardrail) — check before
+    # model_not_found so we don't mis-label as a missing model.
+    if any(p in error_msg for p in _PROVIDER_POLICY_BLOCKED_PATTERNS):
+        return result_fn(
+            FailoverReason.provider_policy_blocked,
+            retryable=False,
+            should_fallback=False,
         )
 
     # Model not found patterns

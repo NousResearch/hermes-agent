@@ -89,6 +89,7 @@ const sidebars: SidebarsConfig = {
           label: 'Advanced',
           items: [
             'user-guide/features/rl-training',
+            'user-guide/features/spotify',
           ],
         },
         {

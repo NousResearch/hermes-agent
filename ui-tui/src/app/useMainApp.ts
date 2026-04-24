@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { STARTUP_RESUME_ID } from '../config/env.js'
 import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
+import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
 import { fmtCwdBranch, shortCwd } from '../domain/paths.js'
 import { type GatewayClient } from '../gatewayClient.js'
@@ -630,11 +631,15 @@ export function useMainApp(gw: GatewayClient) {
 
   const hasReasoning = Boolean(turn.reasoning.trim())
 
-  const showProgressArea =
-    ui.detailsMode === 'hidden'
-      ? turn.activity.some(item => item.tone !== 'info')
-      : Boolean(
-          ui.busy ||
+  // Per-section overrides win over the global mode — when every section is
+  // resolved to hidden, the only thing ToolTrail will surface is the
+  // floating-alert backstop (errors/warnings).  Mirror that so we don't
+  // render an empty wrapper Box above the streaming area in quiet mode.
+  const anyPanelVisible = SECTION_NAMES.some(s => sectionMode(s, ui.detailsMode, ui.sections) !== 'hidden')
+
+  const showProgressArea = anyPanelVisible
+    ? Boolean(
+        ui.busy ||
           turn.outcome ||
           turn.streamPendingTools.length ||
           turn.streamSegments.length ||
@@ -643,7 +648,8 @@ export function useMainApp(gw: GatewayClient) {
           turn.turnTrail.length ||
           hasReasoning ||
           turn.activity.length
-        )
+      )
+    : turn.activity.some(item => item.tone !== 'info')
 
   const appActions = useMemo(
     () => ({

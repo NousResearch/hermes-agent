@@ -189,11 +189,14 @@ class TestGatewayHelpLines:
         assert len(lines) > 10
 
     def test_excludes_cli_only_commands_without_config_gate(self):
+        import re
         lines = gateway_help_lines()
         joined = "\n".join(lines)
         for cmd in COMMAND_REGISTRY:
             if cmd.cli_only and not cmd.gateway_config_gate:
-                assert f"`/{cmd.name}" not in joined, \
+                # Word-boundary match so `/reload` doesn't match `/reload-mcp`
+                pattern = rf'`/{re.escape(cmd.name)}(?![-_\w])'
+                assert not re.search(pattern, joined), \
                     f"cli_only command /{cmd.name} should not be in gateway help"
 
     def test_includes_alias_note_for_bg(self):

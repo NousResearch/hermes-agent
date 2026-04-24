@@ -27,7 +27,7 @@ import sys
 import threading
 import time
 from collections import Counter
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor, TimeoutError as FuturesTimeoutError, as_completed
 from pathlib import Path
 from types import SimpleNamespace
 from typing import Any, Dict, List, Optional
@@ -1673,6 +1673,151 @@ def _build_child_agent(
 
     return child
 
+
+def _dump_subagent_timeout_diagnostic(
+    *,
+    child: Any,
+    task_index: int,
+    timeout_seconds: float,
+    duration_seconds: float,
+    worker_thread: Optional[threading.Thread],
+    goal: str,
+) -> Optional[str]:
+    """Write a structured diagnostic dump for a subagent that timed out
+    before making any API call.
+
+    See issue #14726: users hit "subagent timed out after 300s with no response"
+    with zero API calls and no way to inspect what happened. This helper
+    writes a dedicated log under ``~/.hermes/logs/subagent-<sid>-<ts>.log``
+    capturing the child's config, system-prompt / tool-schema sizes, activity
+    tracker snapshot, and the worker thread's Python stack at timeout.
+
+    Returns the absolute path to the diagnostic file, or None on failure.
+    """
+    try:
+        from hermes_constants import get_hermes_home
+        import datetime as _dt
+        import sys as _sys
+        import traceback as _traceback
+
+        hermes_home = get_hermes_home()
+        logs_dir = hermes_home / "logs"
+        try:
+            logs_dir.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            return None
+
+        subagent_id = getattr(child, "_subagent_id", None) or f"idx{task_index}"
+        ts = _dt.datetime.now().strftime("%Y%m%d_%H%M%S")
+        dump_path = logs_dir / f"subagent-timeout-{subagent_id}-{ts}.log"
+
+        lines: List[str] = []
+        def _w(line: str = "") -> None:
+            lines.append(line)
+
+        _w(f"# Subagent timeout diagnostic — issue #14726")
+        _w(f"# Generated: {_dt.datetime.now().isoformat()}")
+        _w("")
+        _w("## Timeout")
+        _w(f"  task_index:        {task_index}")
+        _w(f"  subagent_id:       {subagent_id}")
+        _w(f"  configured_timeout: {timeout_seconds}s")
+        _w(f"  actual_duration:   {duration_seconds:.2f}s")
+        _w("")
+
+        _w("## Goal")
+        _goal_preview = (goal or "").strip()
+        if len(_goal_preview) > 1000:
+            _goal_preview = _goal_preview[:1000] + " ...[truncated]"
+        _w(_goal_preview or "(empty)")
+        _w("")
+
+        _w("## Child config")
+        for attr in (
+            "model", "provider", "api_mode", "base_url", "max_iterations",
+            "quiet_mode", "skip_memory", "skip_context_files", "platform",
+            "_delegate_role", "_delegate_depth",
+        ):
+            try:
+                val = getattr(child, attr, None)
+                # Redact api_key-shaped values defensively
+                if isinstance(val, str) and attr == "base_url":
+                    pass
+                _w(f"  {attr}: {val!r}")
+            except Exception:
+                _w(f"  {attr}: <unreadable>")
+        _w("")
+
+        _w("## Toolsets")
+        enabled = getattr(child, "enabled_toolsets", None)
+        _w(f"  enabled_toolsets:  {enabled!r}")
+        tool_names = getattr(child, "valid_tool_names", None)
+        if tool_names:
+            _w(f"  loaded tool count: {len(tool_names)}")
+            try:
+                _w(f"  loaded tools:      {sorted(list(tool_names))}")
+            except Exception:
+                pass
+        _w("")
+
+        _w("## Prompt / schema sizes")
+        try:
+            sys_prompt = getattr(child, "ephemeral_system_prompt", None) \
+                or getattr(child, "system_prompt", None) \
+                or ""
+            _w(f"  system_prompt_bytes: {len(sys_prompt.encode('utf-8')) if isinstance(sys_prompt, str) else 'n/a'}")
+            _w(f"  system_prompt_chars: {len(sys_prompt) if isinstance(sys_prompt, str) else 'n/a'}")
+        except Exception as exc:
+            _w(f"  system_prompt: <error: {exc}>")
+        try:
+            tools_schema = getattr(child, "tools", None)
+            if tools_schema is not None:
+                _schema_json = json.dumps(tools_schema, default=str)
+                _w(f"  tool_schema_count: {len(tools_schema)}")
+                _w(f"  tool_schema_bytes: {len(_schema_json.encode('utf-8'))}")
+        except Exception as exc:
+            _w(f"  tool_schema: <error: {exc}>")
+        _w("")
+
+        _w("## Activity summary")
+        try:
+            summary = child.get_activity_summary()
+            for k, v in summary.items():
+                _w(f"  {k}: {v!r}")
+        except Exception as exc:
+            _w(f"  <get_activity_summary failed: {exc}>")
+        _w("")
+
+        _w("## Worker thread stack at timeout")
+        if worker_thread is not None and worker_thread.is_alive():
+            frames = _sys._current_frames()
+            worker_frame = frames.get(worker_thread.ident)
+            if worker_frame is not None:
+                stack = _traceback.format_stack(worker_frame)
+                for frame_line in stack:
+                    for sub in frame_line.rstrip().split("\n"):
+                        _w(f"  {sub}")
+            else:
+                _w("  <worker frame not available>")
+        elif worker_thread is None:
+            _w("  <no worker thread handle>")
+        else:
+            _w("  <worker thread already exited>")
+        _w("")
+
+        _w("## Notes")
+        _w("  This file is written ONLY when a subagent times out with 0 API calls.")
+        _w("  0-API-call timeouts mean the child never reached its first LLM request.")
+        _w("  Common causes: oversized prompt rejected by provider, transport hang,")
+        _w("  credential resolution stuck. See issue #14726 for context.")
+
+        dump_path.write_text("\n".join(lines), encoding="utf-8")
+        return str(dump_path)
+    except Exception as exc:
+        logger.warning("Subagent timeout diagnostic dump failed: %s", exc)
+        return None
+
+
 def _run_single_child(
     task_index: int,
     goal: str,
@@ -1752,7 +1897,136 @@ def _run_single_child(
             except Exception as e:
                 logger.debug("Progress callback start failed: %s", e)
 
-        result = child.run_conversation(user_message=goal)
+        # Run child with a hard timeout to prevent indefinite blocking
+        # when the child API call or a tool-level HTTP request hangs.
+        child_timeout = _get_child_timeout()
+        _timeout_executor = ThreadPoolExecutor(max_workers=1)
+        # Capture the worker thread so timeout diagnostics can dump its
+        # Python stack (see #14726 — 0-API-call hangs are opaque without it).
+        _worker_thread_holder: Dict[str, Optional[threading.Thread]] = {"t": None}
+
+        import uuid as _uuid
+        _subagent_id = getattr(child, "_subagent_id", None)
+        child_task_id = _subagent_id or f"subagent-{task_index}-{_uuid.uuid4().hex[:8]}"
+        try:
+            child._subagent_id = child_task_id
+        except Exception:
+            pass
+
+        def _run_with_thread_capture():
+            _worker_thread_holder["t"] = threading.current_thread()
+            try:
+                return child.run_conversation(
+                    user_message=goal,
+                    task_id=child_task_id,
+                )
+            except TypeError as exc:
+                # Older mocks/tests and some adapters do not accept task_id.
+                # Retry without it only for that compatibility case.
+                if "task_id" not in str(exc):
+                    raise
+                return child.run_conversation(user_message=goal)
+
+        _child_future = _timeout_executor.submit(_run_with_thread_capture)
+        try:
+            result = _child_future.result(timeout=child_timeout)
+        except Exception as _timeout_exc:
+            # Signal the child to stop so its thread can exit cleanly.
+            try:
+                if hasattr(child, "interrupt"):
+                    child.interrupt()
+                elif hasattr(child, "_interrupt_requested"):
+                    child._interrupt_requested = True
+            except Exception:
+                pass
+
+            is_timeout = isinstance(_timeout_exc, (FuturesTimeoutError, TimeoutError))
+            duration = round(time.monotonic() - child_start, 2)
+            logger.warning(
+                "Subagent %d %s after %.1fs",
+                task_index,
+                "timed out" if is_timeout else f"raised {type(_timeout_exc).__name__}",
+                duration,
+            )
+
+            diagnostic_path: Optional[str] = None
+            child_api_calls = 0
+            try:
+                _summary = child.get_activity_summary()
+                child_api_calls = int(_summary.get("api_call_count", 0) or 0)
+            except Exception:
+                pass
+            if is_timeout and child_api_calls == 0:
+                diagnostic_path = _dump_subagent_timeout_diagnostic(
+                    child=child,
+                    task_index=task_index,
+                    timeout_seconds=float(child_timeout),
+                    duration_seconds=float(duration),
+                    worker_thread=_worker_thread_holder.get("t"),
+                    goal=goal,
+                )
+                if diagnostic_path:
+                    logger.warning(
+                        "Subagent %d 0-API-call timeout — diagnostic written to %s",
+                        task_index,
+                        diagnostic_path,
+                    )
+
+            if child_progress_cb:
+                try:
+                    child_progress_cb(
+                        "subagent.complete",
+                        preview=(
+                            f"Timed out after {duration}s"
+                            if is_timeout
+                            else str(_timeout_exc)
+                        ),
+                        status="timeout" if is_timeout else "error",
+                        duration_seconds=duration,
+                        summary="",
+                    )
+                except Exception:
+                    pass
+
+            if is_timeout:
+                if child_api_calls == 0:
+                    _err = (
+                        f"Subagent timed out after {child_timeout}s without "
+                        f"making any API call — the child never reached its "
+                        f"first LLM request (prompt construction, credential "
+                        f"resolution, or transport may be stuck)."
+                    )
+                    if diagnostic_path:
+                        _err += f" Diagnostic: {diagnostic_path}"
+                else:
+                    _err = (
+                        f"Subagent timed out after {child_timeout}s with "
+                        f"{child_api_calls} API call(s) completed — likely "
+                        f"stuck on a slow API call or unresponsive network request."
+                    )
+            else:
+                _err = str(_timeout_exc)
+
+            return {
+                "task_index": task_index,
+                "status": "timeout" if is_timeout else "error",
+                "summary": None,
+                "error": _err,
+                "exit_reason": "timeout" if is_timeout else "error",
+                "api_calls": child_api_calls,
+                "duration_seconds": duration,
+                "_child_role": (
+                    getattr(child, "_delegate_role", None)
+                    if isinstance(getattr(child, "_delegate_role", None), str)
+                    else None
+                ),
+                "diagnostic_path": diagnostic_path,
+            }
+        finally:
+            # Shut down executor without waiting — if the child thread
+            # is stuck on blocking I/O, wait=True would hang forever.
+            _timeout_executor.shutdown(wait=False)
+
         resolution = getattr(child, "_delegate_resolution", None) or {}
         runtime_mode = resolution.get("runtime_mode") if isinstance(resolution, dict) else None
         continuation_state = apply_bounded_continuation_engine(

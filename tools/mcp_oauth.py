@@ -233,7 +233,7 @@ class HermesTokenStorage:
             return None
 
     async def set_tokens(self, tokens: "OAuthToken") -> None:
-        payload = tokens.model_dump(exclude_none=True)
+        payload = tokens.model_dump(mode="json", exclude_none=True)
         # Persist an absolute ``expires_at`` so a process restart can
         # reconstruct the correct remaining TTL. Without this the MCP SDK's
         # ``_initialize`` reloads a relative ``expires_in`` which has no
@@ -265,7 +265,7 @@ class HermesTokenStorage:
             return None
 
     async def set_client_info(self, client_info: "OAuthClientInformationFull") -> None:
-        _write_json(self._client_info_path(), client_info.model_dump(exclude_none=True))
+        _write_json(self._client_info_path(), client_info.model_dump(mode="json", exclude_none=True))
         logger.debug("OAuth client info saved for %s", self._server_name)
 
     # -- cleanup -----------------------------------------------------------
@@ -365,8 +365,15 @@ async def _wait_for_callback() -> tuple[str, str | None]:
     Raises:
         OAuthNonInteractiveError: If the callback times out (no user present
             to complete the browser auth).
+        RuntimeError: If ``_oauth_port`` has not been set, which would indicate
+            that ``build_oauth_auth`` was skipped — the asserting form below
+            was a silent bug when running Python with ``-O``/``-OO``.
     """
-    assert _oauth_port is not None, "OAuth callback port not set"
+    if _oauth_port is None:
+        raise RuntimeError(
+            "OAuth callback port not set — build_oauth_auth must be called "
+            "before _wait_for_oauth_callback"
+        )
 
     # The callback server is already running (started in build_oauth_auth).
     # We just need to poll for the result.
@@ -508,7 +515,7 @@ def _maybe_preregister_client(
         info_dict["scope"] = cfg["scope"]
 
     client_info = OAuthClientInformationFull.model_validate(info_dict)
-    _write_json(storage._client_info_path(), client_info.model_dump(exclude_none=True))
+    _write_json(storage._client_info_path(), client_info.model_dump(mode="json", exclude_none=True))
     logger.debug("Pre-registered client_id=%s for '%s'", client_id, storage._server_name)
 
 

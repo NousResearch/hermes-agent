@@ -1884,11 +1884,16 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
             from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token
             token, source = resolve_copilot_token()
             if token:
-                api_token = get_copilot_api_token(token)
+                api_token, enterprise_base_url = get_copilot_api_token(token)
                 source_name = "gh_cli" if "gh" in source.lower() else f"env:{source}"
                 if not _is_suppressed(provider, source_name):
                     active_sources.add(source_name)
                     pconfig = PROVIDER_REGISTRY.get(provider)
+                    # Use enterprise base URL from token exchange if available,
+                    # otherwise fall back to the provider's default.
+                    effective_base_url = enterprise_base_url or (
+                        pconfig.inference_base_url if pconfig else ""
+                    )
                     changed |= _upsert_entry(
                         entries,
                         provider,
@@ -1897,7 +1902,7 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                             "source": source_name,
                             "auth_type": AUTH_TYPE_API_KEY,
                             "access_token": api_token,
-                            "base_url": pconfig.inference_base_url if pconfig else "",
+                            "base_url": effective_base_url,
                             "label": source,
                         },
                     )

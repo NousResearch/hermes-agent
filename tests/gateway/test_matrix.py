@@ -2209,3 +2209,52 @@ class TestMatrixOnRoomMessageFilter:
         ev = self._mk_event(sender="@alice:example.org", body="hello bot")
         await self.adapter._on_room_message(ev)
         self.adapter._handle_text_message.assert_awaited_once()
+# ---------------------------------------------------------------------------
+# DM auto-thread
+# ---------------------------------------------------------------------------
+
+class TestMatrixDmAutoThread:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.adapter._is_dm_room = AsyncMock(return_value=True)
+        self.adapter._get_display_name = AsyncMock(return_value="Alice")
+        self.adapter._background_read_receipt = MagicMock()
+        # Disable require_mention so DMs pass gating
+        self.adapter._require_mention = False
+
+    @pytest.mark.asyncio
+    async def test_dm_auto_thread_enabled_creates_thread(self):
+        """When dm_auto_thread is True, DM messages get auto-threaded."""
+        self.adapter._dm_auto_thread = True
+
+        ctx = await self.adapter._resolve_message_context(
+            room_id="!dm:ex",
+            sender="@alice:ex",
+            event_id="$ev1",
+            body="hello",
+            source_content={"body": "hello"},
+            relates_to={},
+        )
+
+        assert ctx is not None
+        _body, _is_dm, _chat_type, thread_id, _display, _source = ctx
+        assert thread_id == "$ev1"
+
+    @pytest.mark.asyncio
+    async def test_dm_auto_thread_disabled_no_thread(self):
+        """When dm_auto_thread is False (default), DMs have no auto-thread."""
+        self.adapter._dm_auto_thread = False
+
+        ctx = await self.adapter._resolve_message_context(
+            room_id="!dm:ex",
+            sender="@alice:ex",
+            event_id="$ev2",
+            body="hello",
+            source_content={"body": "hello"},
+            relates_to={},
+        )
+
+        assert ctx is not None
+        _body, _is_dm, _chat_type, thread_id, _display, _source = ctx
+        assert thread_id is None
+

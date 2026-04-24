@@ -18,6 +18,7 @@ Environment variables:
     MATRIX_REQUIRE_MENTION      Require @mention in rooms (default: true)
     MATRIX_FREE_RESPONSE_ROOMS  Comma-separated room IDs exempt from mention requirement
     MATRIX_AUTO_THREAD          Auto-create threads for room messages (default: true)
+    MATRIX_DM_AUTO_THREAD       Auto-create threads for DM messages (default: false)
     MATRIX_RECOVERY_KEY         Recovery key for cross-signing verification after device key rotation
     MATRIX_DM_MENTION_THREADS   Create a thread when bot is @mentioned in a DM (default: false)
 """
@@ -301,6 +302,9 @@ class MatrixAdapter(BasePlatformAdapter):
             "1",
             "yes",
         )
+        self._dm_auto_thread: bool = os.getenv(
+            "MATRIX_DM_AUTO_THREAD", "false"
+        ).lower() in ("true", "1", "yes")
         self._dm_mention_threads: bool = os.getenv(
             "MATRIX_DM_MENTION_THREADS", "false"
         ).lower() in ("true", "1", "yes")
@@ -1416,7 +1420,7 @@ class MatrixAdapter(BasePlatformAdapter):
             body = self._strip_mention(body)
 
         # Auto-thread.
-        if not is_dm and not thread_id and self._auto_thread:
+        if not thread_id and ((not is_dm and self._auto_thread) or (is_dm and self._dm_auto_thread)):
             thread_id = event_id
             self._threads.mark(thread_id)
 

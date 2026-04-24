@@ -2133,66 +2133,108 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
 
     All repairs are provider-agnostic and ideally produce a schema valid on
     OpenAI, Anthropic, Gemini, and Moonshot in one pass.
+
+    Traversal is *schema-aware*: we recurse only into positions that hold JSON
+    Schema values (``items``, values of ``properties``, members of ``oneOf``,
+    etc.), never into positions that hold arbitrary user data (the
+    ``properties`` map itself, whose keys are tool-author-chosen field names).
+    A structure-blind walk would misfire whenever a parameter happens to share
+    a name with a JSON Schema keyword — e.g. a Notion tool with a parameter
+    literally named ``properties`` would trigger the "looks like an object
+    schema" heuristic on the property map itself and inject a stray
+    ``"type": "object"`` sibling into it, producing a schema that Anthropic
+    rejects as invalid against draft 2020-12.
     """
     if not schema:
         return {"type": "object", "properties": {}}
 
-    def _rewrite_local_refs(node):
-        if isinstance(node, dict):
-            normalized = {}
-            for key, value in node.items():
-                out_key = "$defs" if key == "definitions" else key
-                normalized[out_key] = _rewrite_local_refs(value)
-            ref = normalized.get("$ref")
-            if isinstance(ref, str) and ref.startswith("#/definitions/"):
-                normalized["$ref"] = "#/$defs/" + ref[len("#/definitions/"):]
-            return normalized
-        if isinstance(node, list):
-            return [_rewrite_local_refs(item) for item in node]
-        return node
+    # JSON Schema keywords that hold schema-typed values, classified by shape.
+    # Anything not listed here is a leaf (e.g. `type`, `required`, `enum`,
+    # `description`, `const`) and must not be recursed into as a schema.
+    _SINGLE_SCHEMA_KEYS = frozenset({
+        "additionalItems",         # draft-07 (deprecated in 2020-12)
+        "additionalProperties",    # schema or bool
+        "contains",
+        "contentSchema",
+        "else",
+        "if",
+        "items",                   # schema, or list (tuple-validation in draft-07)
+        "not",
+        "propertyNames",
+        "then",
+        "unevaluatedItems",
+        "unevaluatedProperties",
+    })
+    _LIST_SCHEMA_KEYS = frozenset({"allOf", "anyOf", "oneOf", "prefixItems"})
+    _MAP_SCHEMA_KEYS = frozenset({
+        "$defs",
+        "definitions",             # renamed to $defs below
+        "dependentSchemas",
+        "patternProperties",
+        "properties",
+    })
 
-    def _repair_object_shape(node):
-        """Recursively repair object-shaped nodes: fill type, prune required."""
-        if isinstance(node, list):
-            return [_repair_object_shape(item) for item in node]
+    def _walk_schema(node):
+        """Recurse into ``node`` treating it as a JSON Schema."""
+        if isinstance(node, bool):
+            # Boolean schemas (``true``/``false``) are legal under draft 2019-09+.
+            return node
         if not isinstance(node, dict):
             return node
 
-        repaired = {k: _repair_object_shape(v) for k, v in node.items()}
+        walked: dict = {}
+        for key, value in node.items():
+            out_key = "$defs" if key == "definitions" else key
+            if key in _SINGLE_SCHEMA_KEYS:
+                # ``items`` (draft-07) and a couple of other keywords permit a
+                # list of schemas for tuple-style validation.
+                if isinstance(value, list):
+                    walked[out_key] = [_walk_schema(v) for v in value]
+                else:
+                    walked[out_key] = _walk_schema(value)
+            elif key in _LIST_SCHEMA_KEYS and isinstance(value, list):
+                walked[out_key] = [_walk_schema(v) for v in value]
+            elif key in _MAP_SCHEMA_KEYS and isinstance(value, dict):
+                walked[out_key] = {k: _walk_schema(v) for k, v in value.items()}
+            else:
+                # Leaf keyword (type, required, enum, description, …) or an
+                # unrecognized keyword: copy verbatim without descending.
+                walked[out_key] = value
 
-        # Coerce missing / null type when the shape is clearly an object
-        # (has properties or required but no type).
-        if not repaired.get("type") and (
-            "properties" in repaired or "required" in repaired
+        # Rewrite local ``$ref`` pointers: #/definitions/... -> #/$defs/...
+        ref = walked.get("$ref")
+        if isinstance(ref, str) and ref.startswith("#/definitions/"):
+            walked["$ref"] = "#/$defs/" + ref[len("#/definitions/"):]
+
+        # Coerce missing / null ``type`` when the shape is clearly an object
+        # (has ``properties`` or ``required`` but no ``type``).
+        if not walked.get("type") and (
+            "properties" in walked or "required" in walked
         ):
-            repaired["type"] = "object"
+            walked["type"] = "object"
 
-        if repaired.get("type") == "object":
-            # Ensure properties exists so required can reference it safely
-            if "properties" not in repaired or not isinstance(
-                repaired.get("properties"), dict
-            ):
-                repaired["properties"] = {} if "properties" not in repaired else repaired["properties"]
-                if not isinstance(repaired.get("properties"), dict):
-                    repaired["properties"] = {}
+        if walked.get("type") == "object":
+            # Ensure ``properties`` exists so ``required`` entries can resolve.
+            if not isinstance(walked.get("properties"), dict):
+                walked["properties"] = {}
 
-            # Prune required to only include names that exist in properties
-            required = repaired.get("required")
+            # Prune ``required`` to names that exist in ``properties``;
+            # otherwise Gemini 400s with "property is not defined".
+            required = walked.get("required")
             if isinstance(required, list):
-                props = repaired.get("properties") or {}
+                props = walked.get("properties") or {}
                 valid = [r for r in required if isinstance(r, str) and r in props]
                 if len(valid) != len(required):
                     if valid:
-                        repaired["required"] = valid
+                        walked["required"] = valid
                     else:
-                        repaired.pop("required", None)
+                        walked.pop("required", None)
 
-        return repaired
+        return walked
 
-    normalized = _rewrite_local_refs(schema)
-    normalized = _repair_object_shape(normalized)
+    normalized = _walk_schema(schema)
 
-    # Ensure top-level is a well-formed object schema
+    # Ensure top-level is a well-formed object schema.
     if not isinstance(normalized, dict):
         return {"type": "object", "properties": {}}
     if normalized.get("type") == "object" and "properties" not in normalized:

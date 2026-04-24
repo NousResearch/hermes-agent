@@ -266,6 +266,89 @@ class TestSchemaConversion:
 
         assert schema["properties"]["items"]["items"]["properties"] == {}
 
+    def test_property_named_properties_is_not_treated_as_schema_node(self):
+        """A parameter literally named ``properties`` must not make the
+        normalizer treat the property-map as an object schema and inject a
+        stray ``type`` sibling. Anthropic rejects that as invalid against
+        draft 2020-12 (``'object' is not of type 'object', 'boolean'``)
+        because every value inside ``properties`` must itself be a schema.
+        """
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "parent_page_id": {"type": "string"},
+                "title": {"type": "string"},
+                "properties": {"type": "string"},
+            },
+            "required": ["parent_page_id", "title", "properties"],
+            "additionalProperties": False,
+        })
+
+        # The property-map only contains the three declared parameters —
+        # no stray ``type``, ``required``, or other schema keyword.
+        assert set(schema["properties"].keys()) == {
+            "parent_page_id",
+            "title",
+            "properties",
+        }
+        assert schema["properties"]["properties"] == {"type": "string"}
+
+    def test_property_named_required_is_not_treated_as_schema_node(self):
+        """Same trap, different keyword: a parameter named ``required`` must
+        not be pruned or otherwise rewritten as if it were a ``required`` list.
+        """
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "required": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Names of required fields",
+                },
+                "optional": {"type": "array", "items": {"type": "string"}},
+            },
+        })
+
+        assert schema["properties"]["required"] == {
+            "type": "array",
+            "items": {"type": "string"},
+            "description": "Names of required fields",
+        }
+
+    def test_property_named_definitions_is_not_renamed_to_defs(self):
+        """The ``definitions`` → ``$defs`` rewrite applies to the JSON-Schema
+        keyword, not to a user-defined property that happens to share its name.
+        """
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "definitions": {"type": "string", "description": "Glossary text"},
+            },
+        })
+
+        assert "definitions" in schema["properties"]
+        assert "$defs" not in schema["properties"]
+
+    def test_additionalproperties_false_is_preserved(self):
+        """``additionalProperties: false`` is a boolean schema and must survive
+        normalization unchanged (common in strict MCP server schemas).
+        """
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {"q": {"type": "string"}},
+            "additionalProperties": False,
+        })
+
+        assert schema["additionalProperties"] is False
+
     def test_convert_mcp_schema_survives_missing_inputschema_attribute(self):
         """A Tool object without .inputSchema must not crash registration."""
         import types

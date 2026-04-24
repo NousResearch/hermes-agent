@@ -18,6 +18,22 @@ def get_hermes_home() -> Path:
     return Path(val) if val else Path.home() / ".hermes"
 
 
+def get_profile_name() -> str:
+    """Return the active Hermes profile name.
+
+    When ``HERMES_HOME`` is ``<root>/profiles/<name>`` (standard or Docker
+    layout), returns ``<name>``.  Otherwise returns ``"main"``.
+
+    Used by consumers that need per-profile isolation at runtime — notably
+    gateway session keys, which must not collide across profiles for the
+    same platform/chat identifiers.
+    """
+    home = get_hermes_home()
+    if home.parent.name == "profiles":
+        return home.name
+    return "main"
+
+
 def get_default_hermes_root() -> Path:
     """Return the root Hermes directory for profile-level operations.
 

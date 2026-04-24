@@ -587,7 +587,17 @@ def build_session_key(
       - Without participant identifiers, or when isolation is disabled, messages fall back to one
         shared session per chat.
       - Without identifiers, messages fall back to one session per platform/chat_type.
+
+    The ``agent:<profile>`` prefix is derived from ``HERMES_HOME`` via
+    :func:`hermes_constants.get_profile_name`.  Named profiles
+    (``<root>/profiles/<name>``) emit ``agent:<name>:…``; the default
+    profile continues to emit ``agent:main:…`` so existing session keys
+    remain stable.  Without this scoping, concurrent profiles sharing the
+    same gateway would collide in the session namespace.
     """
+    from hermes_constants import get_profile_name
+
+    prefix = f"agent:{get_profile_name()}"
     platform = source.platform.value
     if source.chat_type == "dm":
         dm_chat_id = source.chat_id
@@ -596,11 +606,11 @@ def build_session_key(
 
         if dm_chat_id:
             if source.thread_id:
-                return f"agent:main:{platform}:dm:{dm_chat_id}:{source.thread_id}"
-            return f"agent:main:{platform}:dm:{dm_chat_id}"
+                return f"{prefix}:{platform}:dm:{dm_chat_id}:{source.thread_id}"
+            return f"{prefix}:{platform}:dm:{dm_chat_id}"
         if source.thread_id:
-            return f"agent:main:{platform}:dm:{source.thread_id}"
-        return f"agent:main:{platform}:dm"
+            return f"{prefix}:{platform}:dm:{source.thread_id}"
+        return f"{prefix}:{platform}:dm"
 
     participant_id = source.user_id_alt or source.user_id
     if participant_id and source.platform == Platform.WHATSAPP:
@@ -608,7 +618,7 @@ def build_session_key(
         # single group member gets two isolated per-user sessions when the
         # bridge reshuffles alias forms.
         participant_id = canonical_whatsapp_identifier(str(participant_id)) or participant_id
-    key_parts = ["agent:main", platform, source.chat_type]
+    key_parts = [prefix, platform, source.chat_type]
 
     if source.chat_id:
         key_parts.append(source.chat_id)

@@ -568,7 +568,9 @@ def _parse_session_key(session_key: str) -> "dict | None":
     """Parse a session key into its component parts.
 
     Session keys follow the format
-    ``agent:main:{platform}:{chat_type}:{chat_id}[:{extra}...]``.
+    ``agent:{profile}:{platform}:{chat_type}:{chat_id}[:{extra}...]``,
+    where ``{profile}`` is ``main`` for the default profile or a named
+    Hermes profile (see :func:`hermes_constants.get_profile_name`).
     Returns a dict with ``platform``, ``chat_type``, ``chat_id``, and
     optionally ``thread_id`` keys, or None if the key doesn't match.
 
@@ -578,7 +580,7 @@ def _parse_session_key(session_key: str) -> "dict | None":
     thread_id, so we leave ``thread_id`` out to avoid mis-routing.
     """
     parts = session_key.split(":")
-    if len(parts) >= 5 and parts[0] == "agent" and parts[1] == "main":
+    if len(parts) >= 5 and parts[0] == "agent" and parts[1]:
         result = {
             "platform": parts[2],
             "chat_type": parts[3],

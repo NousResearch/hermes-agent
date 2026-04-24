@@ -1232,3 +1232,112 @@ class TestRewriteTranscriptPreservesReasoning:
         assert after[0].get("reasoning_content") == "provider scratchpad"
         assert after[0].get("reasoning_details") == [{"type": "summary", "text": "step by step"}]
         assert after[0].get("codex_reasoning_items") == [{"id": "r1", "type": "reasoning"}]
+
+
+class TestBuildSessionKeyProfileScoping:
+    """Session keys must be scoped by the active Hermes profile.
+
+    Regression coverage for #12099: ``build_session_key()`` used to hardcode
+    ``agent:main`` as the prefix, so concurrent Hermes profiles (e.g.
+    ``<root>/profiles/wechat`` + ``<root>/profiles/feishu``) produced
+    colliding session keys for the same platform/chat identifiers.
+    """
+
+    def test_default_profile_is_backward_compatible(self, monkeypatch):
+        """Default profile (no HERMES_HOME under ``profiles/``) → ``agent:main:``."""
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="12345",
+            chat_type="dm",
+        )
+        assert build_session_key(source) == "agent:main:telegram:dm:12345"
+
+    def test_named_profile_uses_profile_in_prefix(self, tmp_path, monkeypatch):
+        """Named profile → ``agent:<name>:…`` (both DM and group shapes)."""
+        monkeypatch.setenv(
+            "HERMES_HOME", str(tmp_path / ".hermes" / "profiles" / "coder")
+        )
+        dm = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="12345",
+            chat_type="dm",
+        )
+        group = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-456",
+            chat_type="group",
+            user_id="alice",
+        )
+        assert build_session_key(dm) == "agent:coder:telegram:dm:12345"
+        assert build_session_key(group) == "agent:coder:discord:group:guild-456:alice"
+
+    def test_named_profile_dm_with_thread(self, tmp_path, monkeypatch):
+        """Threaded DM under a named profile preserves both thread_id and profile."""
+        monkeypatch.setenv(
+            "HERMES_HOME", str(tmp_path / ".hermes" / "profiles" / "feishu")
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="99",
+            chat_type="dm",
+            thread_id="t42",
+        )
+        assert build_session_key(source) == "agent:feishu:telegram:dm:99:t42"
+
+    def test_different_profiles_do_not_collide(self, tmp_path, monkeypatch):
+        """Same source under two named profiles yields distinct session keys."""
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="12345",
+            chat_type="dm",
+        )
+        monkeypatch.setenv(
+            "HERMES_HOME", str(tmp_path / ".hermes" / "profiles" / "alpha")
+        )
+        key_alpha = build_session_key(source)
+        monkeypatch.setenv(
+            "HERMES_HOME", str(tmp_path / ".hermes" / "profiles" / "beta")
+        )
+        key_beta = build_session_key(source)
+        assert key_alpha == "agent:alpha:telegram:dm:12345"
+        assert key_beta == "agent:beta:telegram:dm:12345"
+        assert key_alpha != key_beta
+
+    def test_docker_profile_path(self, monkeypatch):
+        """Docker layout ``/opt/data/profiles/worker`` → ``agent:worker:…``."""
+        monkeypatch.setenv("HERMES_HOME", "/opt/data/profiles/worker")
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="55",
+            chat_type="dm",
+        )
+        assert build_session_key(source) == "agent:worker:telegram:dm:55"
+
+    def test_build_and_parse_roundtrip_named_profile(self, tmp_path, monkeypatch):
+        """``_parse_session_key()`` must accept keys produced for named profiles.
+
+        #12103 only fixed the construction side; without this round-trip the
+        gateway parses named-profile keys to ``None`` and loses routing.
+        """
+        from gateway.run import _parse_session_key
+
+        monkeypatch.setenv(
+            "HERMES_HOME", str(tmp_path / ".hermes" / "profiles" / "coder")
+        )
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="chan1",
+            chat_type="thread",
+            thread_id="thread99",
+        )
+        key = build_session_key(source)
+        assert key == "agent:coder:discord:thread:chan1:thread99"
+
+        parsed = _parse_session_key(key)
+        assert parsed == {
+            "platform": "discord",
+            "chat_type": "thread",
+            "chat_id": "chan1",
+            "thread_id": "thread99",
+        }

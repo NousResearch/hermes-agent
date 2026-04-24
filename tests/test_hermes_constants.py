@@ -7,7 +7,7 @@ from unittest.mock import patch
 import pytest
 
 import hermes_constants
-from hermes_constants import get_default_hermes_root, is_container
+from hermes_constants import get_default_hermes_root, get_profile_name, is_container
 
 
 class TestGetDefaultHermesRoot:
@@ -111,3 +111,34 @@ class TestIsContainer:
         # Even if we make os.path.exists return False, cached value wins
         monkeypatch.setattr(os.path, "exists", lambda p: False)
         assert is_container() is True
+
+
+class TestGetProfileName:
+    """Tests for get_profile_name() — the runtime profile identity."""
+
+    def test_no_hermes_home_returns_main(self, monkeypatch):
+        """HERMES_HOME unset → default profile ``main``."""
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        assert get_profile_name() == "main"
+
+    def test_default_hermes_home_returns_main(self, tmp_path, monkeypatch):
+        """HERMES_HOME = ``<something>/.hermes`` (no profile) → ``main``."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        assert get_profile_name() == "main"
+
+    def test_named_profile_standard_layout(self, tmp_path, monkeypatch):
+        """HERMES_HOME = ``<root>/profiles/<name>`` → ``<name>``."""
+        monkeypatch.setenv(
+            "HERMES_HOME", str(tmp_path / ".hermes" / "profiles" / "coder")
+        )
+        assert get_profile_name() == "coder"
+
+    def test_named_profile_docker_layout(self, monkeypatch):
+        """Docker layout ``/opt/data/profiles/worker`` → ``worker``."""
+        monkeypatch.setenv("HERMES_HOME", "/opt/data/profiles/worker")
+        assert get_profile_name() == "worker"
+
+    def test_custom_non_profile_path_returns_main(self, tmp_path, monkeypatch):
+        """HERMES_HOME outside any ``profiles/`` parent → ``main``."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "custom-hermes"))
+        assert get_profile_name() == "main"

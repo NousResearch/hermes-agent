@@ -413,4 +413,16 @@ def test_parse_session_key_too_short():
 
 def test_parse_session_key_wrong_prefix():
     assert _parse_session_key("cron:main:telegram:dm:123") is None
-    assert _parse_session_key("agent:cron:telegram:dm:123") is None
+    # Empty profile segment (``agent::…``) is not a real session key.
+    assert _parse_session_key("agent::telegram:dm:123") is None
+
+
+def test_parse_session_key_named_profile():
+    """Named-profile keys (``agent:<profile>:…``) must parse like default keys."""
+    result = _parse_session_key("agent:coder:telegram:dm:chat1:topic42")
+    assert result == {
+        "platform": "telegram",
+        "chat_type": "dm",
+        "chat_id": "chat1",
+        "thread_id": "topic42",
+    }

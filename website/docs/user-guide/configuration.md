@@ -81,6 +81,26 @@ You can also set `providers.<id>.stale_timeout_seconds` for the non-streaming st
 
 Leaving these unset keeps the legacy defaults (`HERMES_API_TIMEOUT=1800`s, `HERMES_API_CALL_STALE_TIMEOUT=300`s, native Anthropic 900s). Not currently wired for AWS Bedrock (both `bedrock_converse` and AnthropicBedrock SDK paths use boto3 with its own timeout configuration). See the commented example in [`cli-config.yaml.example`](https://github.com/NousResearch/hermes-agent/blob/main/cli-config.yaml.example).
 
+### Session-ID Tracing Header
+
+When tracing LLM requests through observability backends like [Phoenix](https://arize.com/phoenix) or [Langfuse](https://langfuse.com), Hermes can inject a per-session `X-Agent-Session-Id` header into every provider request. Set `providers.<id>.session_id_header_name` (or a model-level override at `providers.<id>.models.<model>.session_id_header_name`) to enable it. The header value is the agent's internal session ID (e.g. `20260423_110000_aabbcc`).
+
+This only affects HTTP requests that carry OpenAI-wire clients or the Anthropic SDK client — consent models and auxiliary tools use separate HTTPX instances that do not inherit these headers. The header is **not** sent to any provider that lacks a matching `session_id_header_name` config entry, so it never leaks when you run multiple agents in parallel.
+
+```yaml
+providers:
+  openrouter:
+    session_id_header_name: "X-Agent-Session-Id"
+    models:
+      claude-sonnet-4-20250514:   # Claude-only header override
+        session_id_header_name: "X-Claude-Trace"
+
+  anthropic:
+    session_id_header_name: "X-Agent-Session-Id"
+```
+
+When configured, the header is injected during post-initialization (after `self.session_id` is set) into existing client `default_headers`, and again on every rebuild. This covers both the primary path and credential-rotation rebuilds.
+
 ## Terminal Backend Configuration
 
 Hermes supports six terminal backends. Each determines where the agent's shell commands actually execute — your local machine, a Docker container, a remote server via SSH, a Modal cloud sandbox, a Daytona workspace, or a Singularity/Apptainer container.

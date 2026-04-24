@@ -357,7 +357,7 @@ def _common_betas_for_base_url(base_url: str | None) -> list[str]:
     return _COMMON_BETAS
 
 
-def build_anthropic_client(api_key: str, base_url: str = None, timeout: float = None):
+def build_anthropic_client(api_key: str, base_url: str = None, timeout: float = None, *, session_id: str | None = None, provider: str | None = None):
     """Create an Anthropic client, auto-detecting setup-tokens vs API keys.
 
     If *timeout* is provided it overrides the default 900s read timeout.  The
@@ -365,6 +365,13 @@ def build_anthropic_client(api_key: str, base_url: str = None, timeout: float = 
     per-model ``request_timeout_seconds`` config so Anthropic-native and
     Anthropic-compatible providers respect the same knob as OpenAI-wire
     providers.
+
+    *session_id* and *provider* are optional — when both are provided the
+    function injects the configured ``session_id_header_name`` header (with
+    *session_id* as the value) into every request, enabling tracing tools
+    like Phoenix to correlate Anthropic requests to the correct Hermes agent
+    conversation.  The injection is gated by provider config; no header is
+    sent unless explicitly opted in.
 
     Returns an anthropic.Anthropic instance.
     """
@@ -430,6 +437,18 @@ def build_anthropic_client(api_key: str, base_url: str = None, timeout: float = 
         kwargs["api_key"] = api_key
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
+
+    # Inject per-provider session-ID tracing header (value is dynamic)
+    if session_id and provider:
+        try:
+            from hermes_cli.timeouts import get_provider_session_id_header_name
+        except ImportError:
+            pass
+        else:
+            _hdr = get_provider_session_id_header_name(provider, None)
+            if _hdr:
+                defaults = kwargs.setdefault("default_headers", {})
+                defaults[_hdr] = str(session_id)
 
     return _anthropic_sdk.Anthropic(**kwargs)
 

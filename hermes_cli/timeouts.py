@@ -80,3 +80,44 @@ def _get_model_config(
     if isinstance(model_config, dict):
         return model_config
     return None
+
+
+def get_provider_session_id_header_name(
+    provider_id: str | None, model: str | None = None
+) -> str | None:
+    """Return the configured session-ID header name for the given provider/model.
+
+    Reads ``providers.<provider_id>.session_id_header_name`` with optional
+    model-level override under
+    ``providers.<provider_id>.models.<model>.session_id_header_name``.
+    Returns ``None`` when not configured for this provider.
+    """
+    if not provider_id:
+        return None
+
+    try:
+        from hermes_cli.config import load_config
+    except ImportError:
+        return None
+
+    config = load_config()
+    providers = config.get("providers", {}) if isinstance(config, dict) else {}
+    provider_config = (
+        providers.get(provider_id, {}) if isinstance(providers, dict) else {}
+    )
+    if not isinstance(provider_config, dict):
+        return None
+
+    # Model-level override first (most specific wins)
+    model_config = _get_model_config(provider_config, model)
+    if model_config is not None:
+        val = model_config.get("session_id_header_name")
+        if isinstance(val, str) and val.strip():
+            return val.strip()
+
+    # Provider-level fallback
+    val = provider_config.get("session_id_header_name")
+    if isinstance(val, str) and val.strip():
+        return val.strip()
+
+    return None

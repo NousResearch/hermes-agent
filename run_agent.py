@@ -51,6 +51,7 @@ from hermes_cli.env_loader import load_hermes_dotenv
 from hermes_cli.timeouts import (
     get_provider_request_timeout,
     get_provider_stale_timeout,
+    get_provider_session_id_header_name,
 )
 
 _hermes_home = get_hermes_home()
@@ -1129,7 +1130,12 @@ class AIAgent:
                 # the third-party identity-injection bug.
                 from agent.anthropic_adapter import _is_oauth_token as _is_oat
                 self._is_anthropic_oauth = _is_oat(effective_key) if _is_native_anthropic else False
-                self._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout)
+                # NB: self.session_id is not yet set here (it's assigned later
+                # at line ~1355).  The post-init injection pass below will add
+                # the header once session_id exists.  Pass None for now to
+                # avoid AttributeError in build_anthropic_client.
+                _sid = getattr(self, "session_id", None)
+                self._anthropic_client = build_anthropic_client(effective_key, base_url, timeout=_provider_timeout, session_id=_sid, provider=self.provider)
                 # No OpenAI client needed for Anthropic mode
                 self.client = None
                 self._client_kwargs = {}
@@ -1358,7 +1364,13 @@ class AIAgent:
             timestamp_str = self.session_start.strftime("%Y%m%d_%H%M%S")
             short_uuid = uuid.uuid4().hex[:6]
             self.session_id = f"{timestamp_str}_{short_uuid}"
-        
+
+        # Inject per-provider session-ID tracing header now that session_id
+        # is set (clients created during early __init__ miss this, so we
+        # patch them here — same path used by _create_openai_client for
+        # rebuilds at line ~4519).
+        self._inject_session_id_headers()
+
         # Session logs go into ~/.hermes/sessions/ alongside gateway sessions
         hermes_home = get_hermes_home()
         self.logs_dir = hermes_home / "sessions"
@@ -1959,6 +1971,7 @@ class AIAgent:
             self._anthropic_client = build_anthropic_client(
                 effective_key, self._anthropic_base_url,
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                session_id=self.session_id, provider=self.provider,
             )
             self._is_anthropic_oauth = _is_oauth_token(effective_key) if _is_native_anthropic else False
             self.client = None
@@ -4571,6 +4584,14 @@ class AIAgent:
             keepalive_http = self._build_keepalive_http_client()
             if keepalive_http is not None:
                 client_kwargs["http_client"] = keepalive_http
+
+        # Inject per-provider session-ID tracing header (e.g. X-Agent-Session-Id)
+        # The value is dynamic — self.session_id at request-construction time.
+        _hdr = get_provider_session_id_header_name(self.provider, self.model)
+        if _hdr and hasattr(self, "session_id"):
+            defaults = client_kwargs.setdefault("default_headers", {})
+            defaults[_hdr] = str(self.session_id)
+
         client = OpenAI(**client_kwargs)
         logger.info(
             "OpenAI client created (%s, shared=%s) %s",
@@ -4662,6 +4683,38 @@ class AIAgent:
                 self._client_log_context(),
                 exc,
             )
+
+    def _inject_session_id_headers(self) -> None:
+        """Inject ``X-Agent-Session-Id`` into existing OpenAI and Anthropic clients.
+
+        Called after ``self.session_id`` is set (during post-init).  Handles both
+        the primary client and the Anthropic SDK client, patching their
+        ``default_headers`` in-place so every outgoing request carries the header.
+        Also invoked by ``_create_openai_client`` when rebuilding clients, keeping
+        the two paths consistent.
+
+        Guards against partial init (no client may exist yet).
+        """
+        from hermes_cli.timeouts import get_provider_session_id_header_name
+
+        hdr = get_provider_session_id_header_name(self.provider, self.model)
+        if not hdr:
+            return
+        sid = str(getattr(self, "session_id", ""))
+
+        # Patch OpenAI-wire client (covers OpenRouter, Azure, custom base URL, etc.)
+        primary_client = getattr(self, "client", None)
+        if primary_client is not None:
+            defaults = getattr(primary_client, "default_headers", None)
+            if isinstance(defaults, dict):
+                defaults[hdr] = sid
+
+        # Patch Anthropic SDK client (native + bedrock paths).
+        at_client = getattr(self, "_anthropic_client", None)
+        if at_client is not None:
+            defaults = getattr(at_client, "default_headers", None)
+            if isinstance(defaults, dict):
+                defaults[hdr] = sid
 
     def _replace_primary_openai_client(self, *, reason: str) -> bool:
         with self._openai_client_lock():
@@ -5076,6 +5129,7 @@ class AIAgent:
                 new_token,
                 getattr(self, "_anthropic_base_url", None),
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                session_id=self.session_id, provider=self.provider,
             )
         except Exception as exc:
             logger.warning("Failed to rebuild Anthropic client after credential refresh: %s", exc)
@@ -5130,6 +5184,7 @@ class AIAgent:
             self._anthropic_client = build_anthropic_client(
                 runtime_key, runtime_base,
                 timeout=get_provider_request_timeout(self.provider, self.model),
+                session_id=self.session_id, provider=self.provider,
             )
             self._is_anthropic_oauth = _is_oauth_token(runtime_key) if self.provider == "anthropic" else False
             self.api_key = runtime_key
@@ -5337,6 +5392,7 @@ class AIAgent:
                             self._anthropic_api_key,
                             getattr(self, "_anthropic_base_url", None),
                             timeout=get_provider_request_timeout(self.provider, self.model),
+                            session_id=self.session_id, provider=self.provider,
                         )
                     else:
                         rc = request_client_holder.get("client")
@@ -5369,6 +5425,7 @@ class AIAgent:
                             self._anthropic_api_key,
                             getattr(self, "_anthropic_base_url", None),
                             timeout=get_provider_request_timeout(self.provider, self.model),
+                            session_id=self.session_id, provider=self.provider,
                         )
                     else:
                         request_client = request_client_holder.get("client")
@@ -6217,6 +6274,7 @@ class AIAgent:
                             self._anthropic_api_key,
                             getattr(self, "_anthropic_base_url", None),
                             timeout=get_provider_request_timeout(self.provider, self.model),
+                            session_id=self.session_id, provider=self.provider,
                         )
                     else:
                         request_client = request_client_holder.get("client")
@@ -6396,7 +6454,8 @@ class AIAgent:
                 self._anthropic_api_key = effective_key
                 self._anthropic_base_url = fb_base_url
                 self._anthropic_client = build_anthropic_client(
-                    effective_key, self._anthropic_base_url, timeout=_fb_timeout,
+                    effective_key, fb_base_url, timeout=_fb_timeout,
+                    session_id=self.session_id, provider=self.provider,
                 )
                 self._is_anthropic_oauth = _is_oauth_token(effective_key) if fb_provider == "anthropic" else False
                 self.client = None
@@ -6512,6 +6571,7 @@ class AIAgent:
                 self._anthropic_client = build_anthropic_client(
                     rt["anthropic_api_key"], rt["anthropic_base_url"],
                     timeout=get_provider_request_timeout(self.provider, self.model),
+                    session_id=self.session_id, provider=self.provider,
                 )
                 self._is_anthropic_oauth = rt["is_anthropic_oauth"]
                 self.client = None
@@ -6611,6 +6671,7 @@ class AIAgent:
                 self._anthropic_client = build_anthropic_client(
                     rt["anthropic_api_key"], rt["anthropic_base_url"],
                     timeout=get_provider_request_timeout(self.provider, self.model),
+                    session_id=self.session_id, provider=self.provider,
                 )
                 self._is_anthropic_oauth = rt["is_anthropic_oauth"]
                 self.client = None

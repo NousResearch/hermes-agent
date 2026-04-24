@@ -67,7 +67,7 @@ model:
 
 # Named provider overrides (optional)
 # Use this for per-provider request timeouts, non-stream stale timeouts,
-# and per-model exceptions.
+# session ID tracing headers, and per-model exceptions.
 # Applies to the primary turn client on every api_mode (OpenAI-wire, native
 # Anthropic, and Anthropic-compatible providers), the fallback chain, and
 # client rebuilds during credential rotation.  For OpenAI-wire chat
@@ -79,6 +79,12 @@ model:
 # unset keeps the legacy defaults (HERMES_API_TIMEOUT=1800s,
 # HERMES_API_CALL_STALE_TIMEOUT=300s, native Anthropic 900s).
 #
+# ``session_id_header_name`` — if set, Hermes injects its session ID into this
+# HTTP header on every request to that provider.  The value is dynamic
+# (e.g. ``20260423_063640_3ce70038`` or ``cron_e2af5d3afe5a_...``) so tracing
+# tools like Phoenix can correlate requests to the correct agent conversation.
+# Model-level override merges on top of provider defaults.
+#
 # Not currently wired for AWS Bedrock (bedrock_converse + AnthropicBedrock
 # SDK paths) — those use boto3 with its own timeout configuration.
 #
@@ -86,11 +92,13 @@ model:
 #   ollama-local:
 #     request_timeout_seconds: 300   # Longer timeout for local cold-starts
 #     stale_timeout_seconds: 900     # Explicitly re-enable stale detection on local endpoints
+#     session_id_header_name: "X-Agent-Session-Id"
 #   anthropic:
 #     request_timeout_seconds: 30    # Fast-fail cloud requests
 #     models:
 #       claude-opus-4.6:
 #         timeout_seconds: 600       # Longer timeout for extended-thinking Opus calls
+#         session_id_header_name: "X-Claude-Session"
 #   openai-codex:
 #     models:
 #       gpt-5.4:

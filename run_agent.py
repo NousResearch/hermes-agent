@@ -5084,7 +5084,6 @@ class AIAgent:
     def _run_codex_stream(self, api_kwargs: dict, client: Any = None, on_first_delta: callable = None):
         """Execute one streaming Responses API request and return the final response."""
         import httpx as _httpx
-
         active_client = client or self._ensure_primary_openai_client(reason="codex_stream_direct")
         max_stream_retries = 1
         has_tool_calls = False
@@ -7938,10 +7937,8 @@ class AIAgent:
                     codex_kwargs["tools"] = _ct_flush.convert_tools([memory_tool_def])
                 elif not codex_kwargs.get("tools"):
                     codex_kwargs["tools"] = [memory_tool_def]
-                if _flush_temperature is not None:
-                    codex_kwargs["temperature"] = _flush_temperature
-                else:
-                    codex_kwargs.pop("temperature", None)
+                # Codex Responses endpoint does not accept temperature — strip it
+                codex_kwargs.pop("temperature", None)
                 if "max_output_tokens" in codex_kwargs:
                     codex_kwargs["max_output_tokens"] = 5120
                 response = self._run_codex_stream(codex_kwargs)

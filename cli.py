@@ -5378,79 +5378,6 @@ class HermesCLI:
         except Exception:
             return False
 
-    def _show_model_and_providers(self):
-        """Show current model + provider and list all authenticated providers.
-
-        Shows current model + provider, then lists all authenticated
-        providers with their available models.
-        """
-        from hermes_cli.models import (
-            curated_models_for_provider, list_available_providers,
-            normalize_provider, _PROVIDER_LABELS,
-            get_pricing_for_provider, format_model_pricing_table,
-        )
-        from hermes_cli.auth import resolve_provider as _resolve_provider
-
-        # Resolve current provider
-        raw_provider = normalize_provider(self.provider)
-        if raw_provider == "auto":
-            try:
-                current = _resolve_provider(
-                    self.requested_provider,
-                    explicit_api_key=self._explicit_api_key,
-                    explicit_base_url=self._explicit_base_url,
-                )
-            except Exception:
-                current = "openrouter"
-        else:
-            current = raw_provider
-        current_label = _PROVIDER_LABELS.get(current, current)
-
-        print(f"\n  Current: {self.model} via {current_label}")
-        print()
-
-        # Show all authenticated providers with their models
-        providers = list_available_providers()
-        authed = [p for p in providers if p["authenticated"]]
-        unauthed = [p for p in providers if not p["authenticated"]]
-
-        if authed:
-            print("  Authenticated providers & models:")
-            for p in authed:
-                is_active = p["id"] == current
-                marker = " ← active" if is_active else ""
-                print(f"    [{p['id']}]{marker}")
-                curated = curated_models_for_provider(p["id"])
-                # Fetch pricing for providers that support it (openrouter, nous)
-                pricing_map = get_pricing_for_provider(p["id"]) if p["id"] in ("openrouter", "nous") else {}
-                if curated and pricing_map:
-                    cur_model = self.model if is_active else ""
-                    for line in format_model_pricing_table(curated, pricing_map, current_model=cur_model):
-                        print(line)
-                elif curated:
-                    for mid, desc in curated:
-                        current_marker = " ← current" if (is_active and mid == self.model) else ""
-                        print(f"      {mid}{current_marker}")
-                elif p["id"] == "custom":
-                    from hermes_cli.models import _get_custom_base_url
-                    custom_url = _get_custom_base_url()
-                    if custom_url:
-                        print(f"      endpoint: {custom_url}")
-                    if is_active:
-                        print(f"      model: {self.model} ← current")
-                    print("      (use hermes model to change)")
-                else:
-                    print("      (use hermes model to change)")
-                print()
-
-        if unauthed:
-            names = ", ".join(p["label"] for p in unauthed)
-            print(f"  Not configured: {names}")
-            print("  Run: hermes setup")
-            print()
-
-        print("  To change model or provider, use: hermes model")
-
     def _output_console(self):
         """Use prompt_toolkit-safe Rich rendering once the TUI is live."""
         if getattr(self, "_app", None):
@@ -6026,8 +5953,6 @@ class HermesCLI:
             self._handle_resume_command(cmd_original)
         elif canonical == "model":
             self._handle_model_switch(cmd_original)
-        elif canonical == "provider":
-            self._show_model_and_providers()
         elif canonical == "gquota":
             self._handle_gquota_command(cmd_original)
 

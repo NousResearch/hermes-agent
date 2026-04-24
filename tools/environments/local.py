@@ -2,6 +2,7 @@
 
 import os
 import platform
+import re
 import shutil
 import signal
 import subprocess
@@ -199,6 +200,21 @@ def _is_wsl_bash(path: str) -> bool:
         return False
 
 
+def _rewrite_windows_paths_for_msys(command: str) -> str:
+    """Rewrite simple Windows absolute paths in shell commands for Git Bash."""
+    if not command:
+        return command
+
+    from tools.platform_compat import windows_path_to_msys
+
+    pattern = re.compile(r"(?<![\w/])([A-Za-z]:[\\/][^\s\"'`|&;<>()]*)")
+
+    def repl(match: re.Match) -> str:
+        return windows_path_to_msys(match.group(1))
+
+    return pattern.sub(repl, command)
+
+
 # Backward compat — process_registry.py imports this name
 _find_shell = _find_bash
 
@@ -353,6 +369,15 @@ class LocalEnvironment(BaseEnvironment):
 
         self.init_session()
 
+    def execute(self, command: str, cwd: str = "", **kwargs) -> dict:
+        if _IS_WINDOWS:
+            from tools.platform_compat import windows_path_to_msys
+
+            command = _rewrite_windows_paths_for_msys(command)
+            if cwd:
+                cwd = windows_path_to_msys(cwd)
+        return super().execute(command, cwd=cwd, **kwargs)
+
     def get_temp_dir(self) -> str:
         """Return a shell-safe writable temp dir for local execution.
 
@@ -401,13 +426,10 @@ class LocalEnvironment(BaseEnvironment):
         args = [bash, "-l", "-c", cmd_string] if login else [bash, "-c", cmd_string]
         run_env = _make_run_env(self.env)
 
-        # On Windows, self.cwd is stored in MSYS form (/d/...) for bash cd
-        # commands, but subprocess.Popen needs a Windows path for its cwd.
-        if _IS_WINDOWS:
-            from tools.platform_compat import msys_path_to_windows
-            popen_cwd = msys_path_to_windows(self.cwd) if self.cwd else None
-        else:
-            popen_cwd = self.cwd
+        # On Windows, self.cwd is tracked in MSYS form and can become paths
+        # like /tmp/... that are valid in Git Bash but invalid for Win32
+        # CreateProcess. Let the wrapped bash script do the cd instead.
+        popen_cwd = None if _IS_WINDOWS else self.cwd
 
         proc = subprocess.Popen(
             args,

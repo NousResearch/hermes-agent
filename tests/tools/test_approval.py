@@ -411,6 +411,38 @@ class TestFindExecFullPathRm:
         assert key is None
 
 
+class TestRootTraversalPatterns:
+    def test_find_root_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("find /")
+        assert dangerous is True
+        assert key is not None
+        assert "filesystem root" in desc.lower()
+
+    def test_find_root_with_predicate_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("find / -name '*.py'")
+        assert dangerous is True
+        assert key is not None
+        assert "filesystem root" in desc.lower()
+
+    def test_find_home_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("find /home -maxdepth 2")
+        assert dangerous is True
+        assert key is not None
+        assert "/home" in desc.lower()
+
+    def test_recursive_ls_root_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("ls -laR /")
+        assert dangerous is True
+        assert key is not None
+        assert "recursive ls" in desc.lower()
+
+    def test_find_project_path_remains_safe(self):
+        dangerous, key, desc = detect_dangerous_command("find ./src -name '*.py' -print")
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+
 class TestSensitiveRedirectPattern:
     """Detect shell redirection writes to sensitive user-managed paths."""
 

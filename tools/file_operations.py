@@ -463,8 +463,22 @@ class ShellFileOperations(FileOperations):
                     if expand_result.exit_code == 0 and expand_result.stdout.strip():
                         user_home = expand_result.stdout.strip()
                         suffix = path[1 + len(username):]  # e.g. "/rest/of/path"
-                        return user_home + suffix
-        
+                        return self._normalize_for_shell(user_home + suffix)
+
+        return self._normalize_for_shell(path)
+
+    @staticmethod
+    def _normalize_for_shell(path: str) -> str:
+        """Convert Windows absolute paths to MSYS form before shell use."""
+        if not path:
+            return path
+        try:
+            from tools.platform_compat import _IS_WINDOWS, windows_path_to_msys
+
+            if _IS_WINDOWS:
+                return windows_path_to_msys(path)
+        except Exception:
+            pass
         return path
     
     def _escape_shell_arg(self, arg: str) -> str:

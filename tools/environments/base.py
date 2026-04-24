@@ -103,6 +103,10 @@ def _pipe_stdin(proc: subprocess.Popen, data: str) -> None:
 
     def _write():
         try:
+            try:
+                proc.stdin.reconfigure(newline="\n")
+            except Exception:
+                pass
             proc.stdin.write(data)
             proc.stdin.close()
         except (BrokenPipeError, OSError):
@@ -465,6 +469,17 @@ class BaseEnvironment(ABC):
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
 
         def _drain():
+            if os.name == "nt":
+                try:
+                    while True:
+                        chunk = proc.stdout.readline()
+                        if not chunk or not isinstance(chunk, str):
+                            break
+                        output_chunks.append(chunk)
+                except (ValueError, OSError):
+                    pass
+                return
+
             fd = proc.stdout.fileno()
             idle_after_exit = 0
             try:

@@ -204,3 +204,30 @@ class TestPaginationBounds:
         rg_commands = [cmd for cmd in commands if cmd.startswith("rg --files")]
         assert rg_commands
         assert "| head -n 1" in rg_commands[0]
+
+
+class TestWindowsPathNormalization:
+    def test_normalize_for_shell_converts_windows_absolute_path(self, monkeypatch):
+        import tools.platform_compat as platform_compat
+
+        monkeypatch.setattr(platform_compat, "_IS_WINDOWS", True)
+
+        assert (
+            ShellFileOperations._normalize_for_shell(r"D:\Code\hermes-agent\README.md")
+            == "/d/Code/hermes-agent/README.md"
+        )
+
+    def test_expand_path_converts_windows_absolute_path(self, monkeypatch):
+        import tools.platform_compat as platform_compat
+
+        monkeypatch.setattr(platform_compat, "_IS_WINDOWS", True)
+        ops = ShellFileOperations.__new__(ShellFileOperations)
+
+        assert ops._expand_path(r"C:\Users\me\My Project\file.txt") == "/c/Users/me/My Project/file.txt"
+
+    def test_relative_path_unchanged_on_windows(self, monkeypatch):
+        import tools.platform_compat as platform_compat
+
+        monkeypatch.setattr(platform_compat, "_IS_WINDOWS", True)
+
+        assert ShellFileOperations._normalize_for_shell("src/app.py") == "src/app.py"

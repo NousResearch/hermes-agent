@@ -26,6 +26,14 @@ from tools.environments.local import LocalEnvironment
 from tools.file_operations import ShellFileOperations
 
 
+def _expected_shell_home() -> str:
+    if os.name == "nt":
+        from tools.platform_compat import windows_path_to_msys
+
+        return windows_path_to_msys(str(Path.home()))
+    return str(Path.home())
+
+
 # ── Shared noise detection ───────────────────────────────────────────────
 # Known shell noise patterns that should never appear in command output.
 
@@ -115,7 +123,10 @@ class TestLocalEnvironmentExecute:
         subdir.mkdir()
         result = env.execute("pwd", cwd=str(subdir))
         assert result["returncode"] == 0
-        assert result["output"].strip() == str(subdir)
+        if os.name == "nt":
+            assert result["output"].strip().endswith("/subdir_test")
+        else:
+            assert result["output"].strip() == str(subdir)
         _assert_clean(result["output"])
 
     def test_multiline_exact(self, env):
@@ -128,7 +139,7 @@ class TestLocalEnvironmentExecute:
         result = env.execute("echo $HOME")
         assert result["returncode"] == 0
         home = result["output"].strip()
-        assert home == str(Path.home())
+        assert home == _expected_shell_home()
         _assert_clean(result["output"])
 
     def test_pipe_exact(self, env):
@@ -365,7 +376,7 @@ class TestSearch:
 class TestExpandPath:
     def test_tilde_exact(self, ops):
         result = ops._expand_path("~/test.txt")
-        expected = f"{Path.home()}/test.txt"
+        expected = f"{_expected_shell_home()}/test.txt"
         assert result == expected
         _assert_clean(result)
 
@@ -377,7 +388,7 @@ class TestExpandPath:
 
     def test_bare_tilde(self, ops):
         result = ops._expand_path("~")
-        assert result == str(Path.home())
+        assert result == _expected_shell_home()
         _assert_clean(result)
 
     def test_tilde_injection_blocked(self, ops):
@@ -442,7 +453,7 @@ class TestTerminalOutputCleanliness:
 
     def test_env_var_expansion(self, env):
         result = env.execute("echo $HOME")
-        assert result["output"].strip() == str(Path.home())
+        assert result["output"].strip() == _expected_shell_home()
         _assert_clean(result["output"])
 
     def test_command_substitution(self, env):

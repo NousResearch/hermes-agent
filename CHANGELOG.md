@@ -4,6 +4,181 @@
 
 ---
 
+## 2026-04-24 - 同步上游最新变更 (v0.11.0/v2026.4.23) 🚀
+
+### 🎉 重大版本 - "The Interface release"
+- **1,556 个提交 · 761 个 PR · 290 位贡献者**
+- 这是 Hermes Agent 的一个重大里程碑版本
+
+### 🖥️ 全新的 Ink-based TUI
+- **完整的 React/Ink 重写的交互式 CLI**
+  - 通过 `hermes --tui` 或 `HERMES_TUI=1` 启动
+  - ~310 个提交到 `ui-tui/` 和 `tui_gateway/`
+- **核心特性**：
+  - 粘性编辑器（Sticky composer）
+  - 实时流式传输
+  - OSC-52 剪贴板支持（跨 SSH 会话复制）
+  - 稳定的选择器键
+  - 状态栏显示 git 分支和每轮计时器
+  - `/clear` 确认、浅色主题预设
+  - 子代理生成可观察性覆盖层
+  - 虚拟化历史渲染
+  - 斜杠命令自动补全
+  - 路径自动补全
+
+### 🏗️ 传输层架构重构
+- **可插拔的 `agent/transports/` 层**
+  - 抽象格式转换和 HTTP 传输
+  - 从 `run_agent.py` 中提取传输逻辑
+- **新传输类型**：
+  - `AnthropicTransport` - Anthropic Messages API
+  - `ChatCompletionsTransport` - OpenAI 兼容提供商默认路径
+  - `ResponsesApiTransport` - OpenAI Responses API + Codex
+  - `BedrockTransport` - AWS Bedrock Converse API
+
+### 🌐 五个新的推理路径
+- **NVIDIA NIM** - 原生提供商支持
+- **Arcee AI** - 直接提供商
+- **Step Plan** - 新推理提供商
+- **Google Gemini CLI OAuth** - 推理提供商
+- **Vercel ai-gateway** - 带定价、归因和动态发现
+- **Gemini AI Studio API** - 原生路由以获得更好性能
+
+### 🤖 GPT-5.5 支持
+- **通过 Codex OAuth 支持 OpenAI GPT-5.5 推理模型**
+- 实时模型发现集成到模型选择器中
+- 新的 OpenAI 发布无需目录更新即可显示
+
+### 📱 QQBot - 第 17 个消息平台
+- **原生 QQBot 适配器**
+  - QQ 官方 API v2
+  - QR 扫描配置向导
+  - 流式游标、表情反应
+  - DM/群组策略控制（与 WeCom/Weixin 对等）
+
+### 🔌 大幅扩展的插件系统
+插件现在可以：
+- **注册斜杠命令** (`register_command`)
+- **直接调度工具** (`dispatch_tool`)
+- **阻止工具执行** (`pre_tool_call` 可以否决)
+- **重写工具结果** (`transform_tool_result`)
+- **转换终端输出** (`transform_terminal_output`)
+- **提供 image_gen 后端**
+- **添加自定义 dashboard 标签**
+- **内置磁盘清理插件**作为参考实现（默认启用）
+
+### 🎯 新功能
+- **`/steer <prompt>`** - 运行时代程调整
+  - 在下一次工具调用后注入提示
+  - 不中断轮次或破坏提示缓存
+  - 适合飞行中纠正代理行为
+- **Shell hooks** - 生命周期钩子
+  - 无需编写 Python 插件
+  - 支持所有生命周期事件（pre_tool_call, post_tool_call 等）
+- **Webhook 直接投递模式**
+  - Webhook 订阅可以直接转发载荷到平台聊天
+  - 零 LLM 推送通知用于警报、监控和事件流
+- **更智能的委派**
+  - 子代理现在有明确的 `orchestrator` 角色
+  - 可配置的 `max_spawn_depth`（默认为平面）
+  - 并发兄弟子代理通过文件协调层共享文件系统状态
+- **辅助模型配置 UI**
+  - `hermes model` 有专门的"配置辅助模型"屏幕
+  - 支持按任务覆盖（压缩、视觉、会话搜索、标题生成）
+  - `auto` 路由现在默认所有用户使用主模型
+
+### 🎨 Dashboard 改进
+- **插件系统**
+  - 第三方插件可以添加自定义标签、小部件和视图
+  - 无需分叉即可扩展
+- **实时主题切换**
+  - 主题控制颜色、字体、布局和密度
+  - 热交换 dashboard 外观无需重新加载
+- **i18n 支持**（英文 + 中文）
+- **react-router 侧边栏布局**
+- **移动端响应式**
+- **Vercel 部署支持**
+- **每会话 API 调用跟踪**
+- **一键更新 + 网关重启按钮**
+
+### 🔧 其他重要更新
+- **Cron**：
+  - 支持每个作业的 `enabled_toolsets` 以减少令牌开销
+  - 尊重 `hermes tools` 配置
+- **Kimi K2.6**：
+  - 在 OpenRouter、Nous Portal、原生 Kimi 和 HuggingFace 上可用
+  - 替换所有列表中的 Kimi K2.5
+- **MCP**：
+  - 改进模式稳健性
+  - 强制转换字符串化数组/对象
+- **委派**：
+  - 默认 `child_timeout_seconds` 提升到 600s
+- **Xiaomi MiMo v2.5-pro + v2.5**：
+  - 在 OpenRouter、Nous Portal 和原生提供商上可用
+- **GLM-5V-Turbo**：
+  - 用于 coding plan
+- **Claude Opus 4.7**：
+  - 在 Nous Portal 目录中可用
+- **OpenRouter elephant-alpha**：
+  - 在策展列表中可用
+
+### 🐛 重要修复
+- **TUI**：
+  - 恢复 voice 和 panic 处理器
+  - inline_diff 段空白行呼吸空间
+  - @<name> 跨仓库模糊匹配文件名
+  - 语音模式每次启动时关闭（CLI 对等性）
+  - 忽略 SIGPIPE 以防止 stderr 反压杀死网关
+  - 捕获信号触发的网关退出
+  - 记录网关退出原因
+  - 转储网关崩溃跟踪到日志文件
+  - 打断 TTS→STT 反馈循环
+  - 语音 TTS 回话 + 转录键错误 + 自动提交
+  - 添加缺失的 hermes_cli.voice 网关 RPC 包装器
+  - 路由 Ctrl+B 到语音切换，不是 composer 输入
+  - 缓存文本测量跨 yoga flex 重传
+- **MCP**：
+  - 强制转换字符串化数组/对象在工具参数中
+  - 重写定义引用 $ref 到输入模式中
+- **Kimi/Moonshot**：
+  - 模式清理器 + MCP 模式稳健性
+
+### 🏗️ 架构改进
+- **Agent Loop**：
+  - 压缩器智能折叠、去重、反抖动
+  - 模板升级、硬化
+  - 压缩摘要尊重对话的语言
+  - 压缩模型在永久 503/404 时回退到主模型
+  - 网关重启后自动继续中断的代理工作
+  - 活动心跳防止虚假网关不活动超时
+  - 重置压缩后的重试计数器
+  - 打断压缩耗尽无限循环并自动重置会话
+  - 修复空响应后弱模型的过早循环退出
+  - 改进中断期间并发工具执行的响应性
+  - `/stop` 不再重置会话
+  - 荣耀中断期间 MCP 工具等待
+- **Session & Memory**：
+  - 启动时自动修剪旧会话 + VACUUM state.db
+  - Honcho 改革 - 上下文注入、5 工具表面、成本安全、会话隔离
+  - Hindsight 更丰富的会话范围保留元数据
+  - 去重记忆提供者工具以防止严格提供商上的 400
+  - 从 `$HERMES_HOME/plugins/` 发现用户安装的记忆提供者
+  - 添加 `on_memory_write` 桥接到顺序工具执行路径
+  - 保留 `session_id` 跨 `/v1/responses` 中的 `previous_response_id` 链
+
+### 🔨 CI/CD 改进
+- **Nix 支持**：
+  - 自动 lockfile 修复以保持 main 在 nix 上构建
+  - 在所有 lockfile 更改上运行 CI
+  - 添加 nix-lockfile-check 和 nix-lockfile-fix 工作流
+
+### 📚 文档更新
+- 更新所有模块文档以反映新架构
+- 更新技术栈和模块结构图
+- 添加传输层和 TUI 模块文档
+
+---
+
 ## 2026-04-21 - 同步上游最新变更 (v2026.4.21) 🚀
 
 ### 🎨 TUI 改进

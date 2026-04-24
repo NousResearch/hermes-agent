@@ -1,39 +1,43 @@
 # Hermes Agent - AI 上下文文档
 
-> 更新时间：2026-04-21 | 当前版本：v2026.4.21 | 上游版本：v2026.4.21 | 本地修改：zai-coding-cn provider
+> 更新时间：2026-04-24 | 当前版本：v2026.4.23 | 上游版本：v0.11.0 (2026.4.23) | 本地修改：zai-coding-cn provider
 
 ## 项目愿景
 
 Hermes Agent 是一个**自我改进的 AI 代理**，由 [Nous Research](https://nousresearch.com) 构建。它是唯一具有内置学习循环的代理——能够从经验中创建技能、在使用过程中改进技能、自动持久化知识、搜索过去的对话，并跨会话建立深入的用户模型。
 
 核心特性：
-- **真正的终端界面**：完整的 TUI，支持多行编辑、斜杠命令自动补全、对话历史、中断重定向和流式工具输出
-- **Web UI Dashboard**：基于浏览器的管理界面，支持配置管理、会话监控、技能管理、环境变量配置和日志查看
-- **多平台集成**：Telegram、Discord、Slack、WhatsApp、Signal、CLI —— 单一网关进程支持所有平台
+- **全新 Ink-based TUI**：完整的 React/Ink 重写的交互式 CLI（`hermes --tui`），支持粘性编辑器、OSC-52 剪贴板、稳定选择器键、状态栏计时器、子代理可观察性覆盖层
+- **Web UI Dashboard**：基于浏览器的管理界面，支持配置管理、会话监控、技能管理、环境变量配置、日志查看、插件系统和实时主题切换
+- **多平台集成**：Telegram、Discord、Slack、WhatsApp、Signal、QQBot、CLI —— 单一网关进程支持所有平台（17 个平台）
+- **传输层架构**：可插拔的传输层（`agent/transports/`），支持 Anthropic、ChatCompletions、ResponsesApi、Bedrock 等多种传输方式
+- **原生 AWS Bedrock**：通过 Converse API 原生支持 AWS Bedrock
 - **封闭学习循环**：代理策展记忆、定期推送、自主技能创建、技能自我改进、FTS5 会话搜索
 - **定时自动化**：内置 cron 调度器，支持向任何平台传递
-- **委派和并行化**：生成隔离的子代理用于并行工作流
+- **委派和并行化**：生成隔离的子代理用于并行工作流，支持 orchestrator 角色和可配置生成深度
 - **随处运行**：六种终端后端（本地、Docker、SSH、Daytona、Singularity、Modal）
 - **备份和恢复**：完整备份和快速快照功能，支持安全的 SQLite 复制
 - **OAuth 认证**：Web Dashboard 中的 OAuth 提供商管理
+- **新命令**：`/steer` 运行时代程调整、Shell hooks 生命周期钩子、Webhook 直接投递模式
 
 ## 架构总览
 
 ### 技术栈
 - **语言**：Python 3.11+、TypeScript
-- **核心框架**：OpenAI SDK、Anthropic SDK
-- **CLI 框架**：prompt_toolkit、Rich
+- **核心框架**：OpenAI SDK、Anthropic SDK、AWS Bedrock SDK
+- **CLI 框架**：prompt_toolkit、Rich、Ink (React CLI)、Python JSON-RPC
 - **Web UI**：FastAPI、React 19、Vite、Tailwind CSS v4
-- **消息平台**：python-telegram-bot、discord.py、slack-bolt、aiohttp
+- **消息平台**：python-telegram-bot、discord.py、slack-bolt、aiohttp、QQBot SDK
 - **备份系统**：zipfile、sqlite3.backup() API
 - **测试框架**：pytest、pytest-asyncio、pytest-xdist（~3000 测试用例）
 - **依赖管理**：pyproject.toml、setuptools、npm
 
 ### 架构模式
 - **同步代理循环**：核心对话循环完全同步，简化状态管理
+- **传输层架构**：可插拔的 `agent/transports/` 层，抽象格式转换和 HTTP 传输
 - **工具注册表**：中央化的工具注册系统，支持动态发现和调度
 - **配置系统**：YAML 配置文件 + 环境变量，支持多实例配置
-- **插件系统**：技能系统、MCP 集成、记忆提供者插件
+- **插件系统**：技能系统、MCP 集成、记忆提供者插件、Shell hooks、斜杠命令注册、工具结果转换
 - **备份系统**：完整备份 + 快速快照，支持 SQLite 安全复制
 - **OAuth 认证**：Web Dashboard 中的 OAuth 提供商管理
 
@@ -57,6 +61,8 @@ graph TD
     A --> I["plugins"];
     A --> J["web"];
     A --> K["tests"];
+    A --> L["ui-tui"];
+    A --> M["tui_gateway"];
 
     B --> B1["prompt_builder.py"];
     B --> B2["context_compressor.py"];
@@ -65,6 +71,7 @@ graph TD
     B --> B5["skill_commands.py"];
     B --> B6["credential_pool.py"];
     B --> B7["context_engine.py"];
+    B --> B8["transports/"];
 
     C --> C1["main.py"];
     C --> C2["config.py"];
@@ -92,6 +99,13 @@ graph TD
     J --> J1["src/pages/"];
     J --> J2["src/components/"];
     J --> J3["src/lib/api.ts"];
+
+    L --> L1["src/entry.tsx"];
+    L --> L2["src/app.tsx"];
+    L --> L3["src/components/"];
+
+    M --> M1["RPC backend"];
+    M --> M2["tui_gateway.py"];
 
     click B "./agent/CLAUDE.md" "查看 agent 模块文档"
     click C "./hermes_cli/CLAUDE.md" "查看 hermes_cli 模块文档"
@@ -290,11 +304,13 @@ sequenceDiagram
 
 | 模块名称 | 路径 | 主要职责 | 入口文件 | 测试覆盖 | 文档状态 |
 |---------|------|---------|---------|---------|---------|
-| **Agent Core** | `agent/` | 代理核心逻辑 | `__init__.py` | ✅ 高 | ✅ 已完成 |
+| **Agent Core** | `agent/` | 代理核心逻辑 + 传输层 | `__init__.py` | ✅ 高 | ✅ 已完成 |
 | **CLI Interface** | `hermes_cli/` | 命令行界面 | `main.py` | ✅ 高 | ✅ 已完成 |
 | **Tools System** | `tools/` | 工具注册与执行 | `registry.py` | ✅ 高 | ✅ 已完成 |
 | **Gateway** | `gateway/` | 消息平台网关 | `run.py` | ✅ 高 | ✅ 已完成 |
 | **Web UI** | `web/` | Web 管理界面 | `src/main.tsx` | ✅ 高 | ✅ 已完成 |
+| **TUI** | `ui-tui/` | React/Ink 终端界面 | `src/entry.tsx` | ✅ 高 | ✅ 已完成 |
+| **TUI Gateway** | `tui_gateway/` | TUI JSON-RPC 后端 | `tui_gateway.py` | ✅ 高 | ✅ 已完成 |
 | **Environments** | `environments/` | RL 训练环境 | `agent_loop.py` | ✅ 中 | ✅ 已完成 |
 | **Cron Scheduler** | `cron/` | 定时任务调度 | `scheduler.py` | ✅ 高 | ✅ 已完成 |
 | **ACP Adapter** | `acp_adapter/` | ACP 协议适配器 | `entry.py` | ✅ 高 | ✅ 已完成 |
@@ -421,6 +437,7 @@ python -m pytest tests/ -q
 
 ### 核心命令
 - `hermes` - 启动交互式 CLI
+- `hermes --tui` - 启动全新的 React/Ink TUI 界面
 - `hermes model` - 选择 LLM 提供商和模型
 - `hermes tools` - 配置启用的工具
 - `hermes config set` - 设置配置值
@@ -434,6 +451,7 @@ python -m pytest tests/ -q
 
 ### 斜杠命令
 - `/model` - 原生模型选择器模态框
+- `/steer <prompt>` - 运行时代程调整，在下一次工具调用后注入提示
 - `/snapshot` 或 `/snap` - 快速状态快照（create/list/restore/prune）
 - `/debug` - 调试命令
 - `/compress <focus>` - 引导式压缩，支持聚焦主题

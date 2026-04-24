@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
+description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory, Membase"
 ---
 
 # Memory Providers
 
-Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent ships with 9 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -22,7 +22,7 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
+  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory, membase
 ```
 
 ## How It Works
@@ -522,6 +522,61 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 
 ---
 
+### Membase
+
+Persistent long-term memory with OAuth login, hybrid vector search, knowledge graph extraction, wiki retrieval, auto-capture, and built-in `MEMORY.md` mirroring.
+
+| | |
+|---|---|
+| **Best for** | Users who want memory and wiki retrieval across Hermes and other agents with OAuth-based setup |
+| **Requires** | `hermes-membase>=0.1.5` + Membase OAuth login |
+| **Data storage** | Membase Cloud or self-hosted |
+| **Cost** | Membase pricing / self-hosted |
+
+**Tools (8):** `membase_search` (semantic memory search with date/source filters), `membase_store` (save explicit memories), `membase_forget` (delete memories with confirmation), `membase_profile` (profile + related memories), `membase_search_wiki` (search wiki docs), `membase_add_wiki` (create wiki docs), `membase_update_wiki` (update wiki docs), `membase_delete_wiki` (delete wiki docs with confirmation)
+
+**Setup:**
+```bash
+hermes memory setup    # select "membase"
+hermes membase login   # OAuth PKCE login
+```
+
+Or manually:
+
+```bash
+uv pip install --python "$(which python)" "hermes-membase>=0.1.5"
+hermes config set memory.provider membase
+hermes membase login
+```
+
+**Config:** `$HERMES_HOME/membase.json`
+
+**Credentials:** `$HERMES_HOME/credentials/membase.json`
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `apiUrl` | `https://api.membase.so` | Membase API URL. Override for self-hosted deployments. |
+| `tokenFile` | `$HERMES_HOME/credentials/membase.json` | OAuth token cache path. |
+| `autoRecall` | `false` | Inject relevant memories before each response. |
+| `autoWikiRecall` | `false` | Inject relevant wiki documents before each response. |
+| `autoCapture` | `true` | Automatically store conversations in Membase. |
+| `mirrorBuiltin` | `true` | Mirror Hermes built-in memory writes into Membase. |
+| `maxRecallChars` | `4000` | Max characters of recalled context per turn. |
+| `debug` | `false` | Enable verbose debug logging. |
+
+**Environment variables:** none required. Membase uses OAuth 2.0 with PKCE and stores rotating tokens in `$HERMES_HOME/credentials/membase.json`.
+
+**Key features:**
+- Hybrid vector search plus knowledge graph extraction
+- Memory and wiki tools in one provider
+- Background auto-capture with short-message filtering
+- Built-in `MEMORY.md` mirroring for cross-session persistence
+- OAuth setup with no API keys to copy into `.env`
+
+**Support:** [Membase docs](https://docs.membase.so/connectors/hermes) · [GitHub](https://github.com/aristoapp/hermes-membase)
+
+---
+
 ## Provider Comparison
 
 | Provider | Storage | Cost | Tools | Dependencies | Unique Feature |
@@ -534,13 +589,14 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 | **RetainDB** | Cloud | $20/mo | 5 | `requests` | Delta compression |
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** | Cloud | Paid | 4 | `supermemory` | Context fencing + session graph ingest + multi-container |
+| **Membase** | Cloud/Self-hosted | Membase pricing / self-hosted | 8 | `hermes-membase` | Memory + wiki retrieval + built-in memory mirroring |
 
 ## Profile Isolation
 
 Each provider's data is isolated per [profile](/docs/user-guide/profiles):
 
 - **Local storage providers** (Holographic, ByteRover) use `$HERMES_HOME/` paths which differ per profile
-- **Config file providers** (Honcho, Mem0, Hindsight, Supermemory) store config in `$HERMES_HOME/` so each profile has its own credentials
+- **Config file providers** (Honcho, Mem0, Hindsight, Supermemory, Membase) store config in `$HERMES_HOME/` so each profile has its own credentials
 - **Cloud providers** (RetainDB) auto-derive profile-scoped project names
 - **Env var providers** (OpenViking) are configured via each profile's `.env` file
 

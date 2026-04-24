@@ -1,0 +1,5 @@
+name: membase
+version: 1.0.0
+description: "Membase - persistent memory with OAuth, memory/wiki recall, auto-capture, and built-in memory mirroring."
+pip_dependencies:
+  - "hermes-membase>=0.1.5"

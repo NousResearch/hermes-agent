@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import getpass
 import os
+import re
 import sys
 from pathlib import Path
 
@@ -55,6 +56,23 @@ def _prompt(label: str, default: str | None = None, secret: bool = False) -> str
 # Provider discovery
 # ---------------------------------------------------------------------------
 
+_IMPORT_NAMES = {
+    "honcho-ai": "honcho",
+    "mem0ai": "mem0",
+    "hindsight-client": "hindsight_client",
+    "hindsight-all": "hindsight",
+    "hermes-membase": "membase_hermes",
+}
+
+
+def _import_name_for_dependency(dep: str) -> str:
+    """Return the import name that should satisfy a pip requirement string."""
+    requirement = str(dep).split(";", 1)[0].strip()
+    base = re.split(r"[<>=!~]", requirement, 1)[0].strip()
+    base = base.split("[", 1)[0].strip()
+    return _IMPORT_NAMES.get(base, base.replace("-", "_"))
+
+
 def _install_dependencies(provider_name: str) -> None:
     """Install pip dependencies declared in plugin.yaml."""
     import subprocess
@@ -78,18 +96,10 @@ def _install_dependencies(provider_name: str) -> None:
     if not pip_deps:
         return
 
-    # pip name → import name mapping for packages where they differ
-    _IMPORT_NAMES = {
-        "honcho-ai": "honcho",
-        "mem0ai": "mem0",
-        "hindsight-client": "hindsight_client",
-        "hindsight-all": "hindsight",
-    }
-
     # Check which packages are missing
     missing = []
     for dep in pip_deps:
-        import_name = _IMPORT_NAMES.get(dep, dep.replace("-", "_").split("[")[0])
+        import_name = _import_name_for_dependency(dep)
         try:
             __import__(import_name)
         except ImportError:
@@ -110,7 +120,7 @@ def _install_dependencies(provider_name: str) -> None:
 
     try:
         subprocess.run(
-            [uv_path, "pip", "install", "--python", sys.executable, "--quiet"] + missing,
+            [uv_path, "pip", "install", "--no-config", "--python", sys.executable, "--quiet"] + missing,
             check=True, timeout=120,
             capture_output=True,
         )

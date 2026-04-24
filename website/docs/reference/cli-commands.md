@@ -56,6 +56,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes pairing` | Approve or revoke messaging pairing codes. |
 | `hermes skills` | Browse, install, publish, audit, and configure skills. |
 | `hermes honcho` | Manage Honcho cross-session memory integration. |
+| `hermes membase` | Manage Membase memory provider OAuth, status, and mirror resync. |
 | `hermes memory` | Configure external memory provider. |
 | `hermes acp` | Run Hermes as an ACP server for editor integration. |
 | `hermes mcp` | Manage MCP server configurations and run Hermes as an MCP server. |
@@ -622,13 +623,30 @@ Subcommands:
 | `sync` | Sync Honcho config to all existing profiles (creates missing host blocks). |
 | `migrate` | Step-by-step migration guide from openclaw-honcho to Hermes Honcho. |
 
+## `hermes membase`
+
+```bash
+hermes membase <subcommand>
+```
+
+Manage the Membase memory provider. This command is provided by the Membase memory provider plugin and is only available when `memory.provider` is set to `membase` in your config.
+
+Subcommands:
+
+| Subcommand | Description |
+|------------|-------------|
+| `login [--api-url URL] [--port PORT]` | Login to Membase with OAuth PKCE. |
+| `logout` | Remove stored Membase OAuth tokens. |
+| `status` | Check Membase API connectivity and profile status. |
+| `resync [--memory-file PATH] [--mirror-index PATH] [--dry-run]` | Rebuild the local mirror index from `MEMORY.md`; `--dry-run` previews without writing. |
+
 ## `hermes memory`
 
 ```bash
 hermes memory <subcommand>
 ```
 
-Set up and manage external memory provider plugins. Available providers: honcho, openviking, mem0, hindsight, holographic, retaindb, byterover, supermemory. Only one external provider can be active at a time. Built-in memory (MEMORY.md/USER.md) is always active.
+Set up and manage external memory provider plugins. Available providers: honcho, openviking, mem0, hindsight, holographic, retaindb, byterover, supermemory, membase. Only one external provider can be active at a time. Built-in memory (MEMORY.md/USER.md) is always active.
 
 Subcommands:
 

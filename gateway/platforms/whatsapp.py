@@ -1060,6 +1060,20 @@ class WhatsAppAdapter(BasePlatformAdapter):
                         except Exception as e:
                             print(f"[{self.name}] Failed to read document text: {e}", flush=True)
 
+            # Prepend sender identity on group messages so the LLM can
+            # attribute each turn to the correct participant. Without this,
+            # every group member's writes arrive indistinguishable from the
+            # session owner's, which breaks memory-write attribution and
+            # defeats the trust-tier policy documented in AGENTS.md. DMs are
+            # untouched since there's only one possible sender. Fallback
+            # order: pushName → short JID → "unknown".
+            if is_group and body:
+                sender_name = data.get("senderName")
+                if not sender_name:
+                    sid = data.get("senderId", "") or ""
+                    sender_name = sid.split("@")[0] if sid else "unknown"
+                body = f"[{sender_name}] {body}"
+
             return MessageEvent(
                 text=body,
                 message_type=msg_type,

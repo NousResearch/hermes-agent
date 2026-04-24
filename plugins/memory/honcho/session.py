@@ -493,6 +493,10 @@ class HonchoSessionManager:
         """
         import time
 
+        # Hold the reentrant lock across get_or_create so a concurrent caller
+        # can't observe the (old-popped, new-not-yet-inserted) gap and create
+        # its own session under the raw key.  `_cache_lock` is an RLock so
+        # nested reacquisition inside get_or_create is safe.
         with self._cache_lock:
             # Remove old session from caches (but don't delete from Honcho)
             old_session = self._cache.pop(key, None)
@@ -503,11 +507,10 @@ class HonchoSessionManager:
             timestamp = int(time.time())
             new_key = f"{key}:{timestamp}"
 
-        # get_or_create will create a fresh session
-        session = self.get_or_create(new_key)
+            # get_or_create will create a fresh session
+            session = self.get_or_create(new_key)
 
-        # Cache under the original key so callers find it by the expected name
-        with self._cache_lock:
+            # Cache under the original key so callers find it by the expected name
             self._cache[key] = session
 
         logger.info("Created new session for %s (honcho: %s)", key, session.honcho_session_id)

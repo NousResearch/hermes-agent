@@ -1,0 +1,9 @@
+name: episodic
+version: 1.0.0
+description: "Sidecar episodic memory — persistent, searchable, lossless memory with LCM-style compression, entity tracking, and temporal fact history."
+hooks:
+  - on_turn_start
+  - on_session_end
+  - on_pre_compress
+  - on_memory_write
+  - on_delegation

@@ -11899,7 +11899,13 @@ class AIAgent:
         # injected skill content that bloats / breaks provider queries.
         if self._memory_manager and final_response and original_user_message:
             try:
-                self._memory_manager.sync_all(original_user_message, final_response)
+                # Extract tool_calls from the most recent tool-calling assistant message
+                _last_asst_tool_calls = None
+                for m in reversed(messages):
+                    if m.get("role") == "assistant" and m.get("tool_calls"):
+                        _last_asst_tool_calls = m["tool_calls"]
+                        break
+                self._memory_manager.sync_all(original_user_message, final_response, tool_calls=_last_asst_tool_calls)
                 self._memory_manager.queue_prefetch_all(original_user_message)
             except Exception:
                 pass

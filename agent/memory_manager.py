@@ -207,11 +207,11 @@ class MemoryManager:
 
     # -- Sync ----------------------------------------------------------------
 
-    def sync_all(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
+    def sync_all(self, user_content: str, assistant_content: str, *, session_id: str = "", tool_calls: Optional[list] = None) -> None:
         """Sync a completed turn to all providers."""
         for provider in self._providers:
             try:
-                provider.sync_turn(user_content, assistant_content, session_id=session_id)
+                provider.sync_turn(user_content, assistant_content, session_id=session_id, tool_calls=tool_calls)
             except Exception as e:
                 logger.warning(
                     "Memory provider '%s' sync_turn failed: %s",

@@ -300,6 +300,37 @@ class TestResolveProvider:
             resolve_provider("auto")
 
 
+
+class TestBedrockResolution:
+    """Regression tests for AWS Bedrock provider resolution (#issue).
+
+    Bedrock is registered in PROVIDER_REGISTRY (auth.py) but was missing from
+    HERMES_OVERLAYS and models.dev uses the id 'amazon-bedrock', so
+    resolve_provider_full('bedrock') returned None and hermes doctor
+    falsely reported "model.provider 'bedrock' is not a recognised provider".
+    """
+
+    def test_bedrock_in_provider_registry(self):
+        assert "bedrock" in PROVIDER_REGISTRY
+
+    def test_resolve_provider_full_bedrock(self):
+        from hermes_cli.providers import resolve_provider_full
+        pdef = resolve_provider_full("bedrock", None, [])
+        assert pdef is not None, "resolve_provider_full('bedrock') must not return None"
+        assert pdef.id == "bedrock"
+        assert pdef.transport == "bedrock_converse"
+        assert pdef.auth_type == "aws_sdk"
+
+    def test_bedrock_aliases_resolve(self):
+        from hermes_cli.providers import resolve_provider_full
+        for alias in ("aws", "aws-bedrock", "amazon-bedrock", "amazon"):
+            pdef = resolve_provider_full(alias, None, [])
+            assert pdef is not None, f"alias {alias!r} should resolve to bedrock"
+            assert pdef.id == "bedrock"
+
+
+
+
 # =============================================================================
 # API Key Provider Status tests
 # =============================================================================

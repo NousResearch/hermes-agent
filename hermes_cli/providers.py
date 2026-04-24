@@ -167,6 +167,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="OLLAMA_BASE_URL",
     ),
+    "bedrock": HermesOverlay(
+        transport="bedrock_converse",
+        auth_type="aws_sdk",
+        extra_env_vars=("AWS_BEARER_TOKEN_BEDROCK", "AWS_ACCESS_KEY_ID", "AWS_SECRET_ACCESS_KEY", "AWS_REGION"),
+        base_url_env_var="BEDROCK_BASE_URL",
+    ),
 }
 
 

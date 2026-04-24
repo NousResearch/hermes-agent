@@ -548,7 +548,7 @@ export default function EnvPage() {
 
       {/* ═══════════════ LLM Providers (grouped) ═══════════════ */}
       <Card>
-        <CardHeader className="sticky top-14 z-10 bg-card border-b border-border">
+        <CardHeader className="border-b border-border bg-card">
           <div className="flex items-center gap-2">
             <Zap className="h-5 w-5 text-muted-foreground" />
             <CardTitle className="text-base">{t.env.llmProviders}</CardTitle>
@@ -577,7 +577,7 @@ export default function EnvPage() {
 
         return (
           <Card key={category}>
-            <CardHeader className="sticky top-14 z-10 bg-card border-b border-border">
+            <CardHeader className="border-b border-border bg-card">
               <div className="flex items-center gap-2">
                 <Icon className="h-5 w-5 text-muted-foreground" />
                 <CardTitle className="text-base">{label}</CardTitle>

@@ -254,13 +254,13 @@ export default function SkillsPage() {
       <Toast toast={toast} />
 
       {/* ═══════════════ Filter panel + Content ═══════════════ */}
-      <div className="flex flex-col sm:flex-row gap-4">
+      <div className="flex flex-col sm:flex-row sm:items-start gap-4">
         {/* ---- Filter panel ---- */}
         <aside
           aria-label={t.skills.title}
           className="sm:w-56 sm:shrink-0"
         >
-          <div className="sm:sticky sm:top-4">
+          <div className="sm:sticky sm:top-0">
             <div
               className={`
                 flex flex-col

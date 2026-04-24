@@ -12,6 +12,7 @@ from pathlib import Path
 
 artifacts_dir = Path(sys.argv[1])
 artifacts = [
+    'latest-upstream-blocker-refresh.md',
     'latest-workflow-approval-state-change.md',
     'latest-pr-review-monitor.md',
     'latest-ci-result-interpreter.md',

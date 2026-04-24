@@ -711,3 +711,16 @@ def test_discord_admin_in_configurable_toolsets():
 
 def test_discord_admin_in_default_off():
     assert "discord_admin" in _DEFAULT_OFF_TOOLSETS
+
+
+def test_get_platform_tools_feishu_includes_doc_and_drive():
+    enabled = _get_platform_tools({}, "feishu")
+    assert "feishu_doc" in enabled
+    assert "feishu_drive" in enabled
+
+
+def test_get_platform_tools_feishu_tools_not_on_other_platforms():
+    for plat in ["cli", "telegram", "discord"]:
+        enabled = _get_platform_tools({}, plat)
+        assert "feishu_doc" not in enabled, f"feishu_doc leaked onto {plat}"
+        assert "feishu_drive" not in enabled, f"feishu_drive leaked onto {plat}"

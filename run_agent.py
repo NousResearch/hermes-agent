@@ -2231,6 +2231,34 @@ class AIAgent:
             except Exception:
                 logger.debug("status_callback error in _emit_status", exc_info=True)
 
+    def _emit_warning(self, message: str) -> None:
+        """Emit a user-visible warning through the same status plumbing.
+
+        Unlike debug logs, these warnings are meant for degraded side paths
+        such as auxiliary compression or memory flushes where the main turn can
+        continue but the user needs to know something important failed.
+        """
+        try:
+            self._vprint(f"{self.log_prefix}{message}", force=True)
+        except Exception:
+            pass
+        if self.status_callback:
+            try:
+                self.status_callback("warn", message)
+            except Exception:
+                logger.debug("status_callback error in _emit_warning", exc_info=True)
+
+    def _emit_auxiliary_failure(self, task: str, exc: BaseException) -> None:
+        """Surface a compact warning for failed auxiliary work."""
+        try:
+            detail = self._summarize_api_error(exc)
+        except Exception:
+            detail = str(exc)
+        detail = (detail or exc.__class__.__name__).strip()
+        if len(detail) > 220:
+            detail = detail[:217].rstrip() + "..."
+        self._emit_warning(f"⚠ Auxiliary {task} failed: {detail}")
+
     def _current_main_runtime(self) -> Dict[str, str]:
         """Return the live main runtime for session-scoped auxiliary routing."""
         return {
@@ -3081,7 +3109,8 @@ class AIAgent:
                             pass
 
             except Exception as e:
-                logger.debug("Background memory/skill review failed: %s", e)
+                logger.warning("Background memory/skill review failed: %s", e)
+                self._emit_auxiliary_failure("background review", e)
             finally:
                 # Close all resources (httpx client, subprocesses, etc.) so
                 # GC doesn't try to clean them up on a dead asyncio event
@@ -7653,6 +7682,7 @@ class AIAgent:
                 _flush_temperature = _fixed_temp
             else:
                 _flush_temperature = 0.3
+            aux_error = None
             try:
                 response = _call_llm(
                     task="flush_memories",
@@ -7662,14 +7692,19 @@ class AIAgent:
                     max_tokens=5120,
                     # timeout resolved from auxiliary.flush_memories.timeout config
                 )
-            except RuntimeError:
+            except Exception as e:
+                aux_error = e
                 _aux_available = False
                 response = None
 
             if not _aux_available and self.api_mode == "codex_responses":
                 # No auxiliary client -- use the Codex Responses path directly
                 codex_kwargs = self._build_api_kwargs(api_messages)
-                codex_kwargs["tools"] = self._get_transport().convert_tools([memory_tool_def])
+                _ct_flush = self._get_transport()
+                if _ct_flush is not None:
+                    codex_kwargs["tools"] = _ct_flush.convert_tools([memory_tool_def])
+                elif not codex_kwargs.get("tools"):
+                    codex_kwargs["tools"] = [memory_tool_def]
                 if _flush_temperature is not None:
                     codex_kwargs["temperature"] = _flush_temperature
                 else:
@@ -7701,11 +7736,37 @@ class AIAgent:
                     **api_kwargs, timeout=_get_task_timeout("flush_memories")
                 )
 
+            if aux_error is not None:
+                logger.warning("Auxiliary memory flush failed; used fallback path: %s", aux_error)
+                self._emit_auxiliary_failure("memory flush", aux_error)
+
+            def _openai_tool_calls(resp):
+                if resp is not None and hasattr(resp, "choices") and resp.choices:
+                    msg = getattr(resp.choices[0], "message", None)
+                    calls = getattr(msg, "tool_calls", None)
+                    if calls:
+                        return calls
+                return []
+
+            def _codex_output_tool_calls(resp):
+                calls = []
+                for item in getattr(resp, "output", []) or []:
+                    if getattr(item, "type", None) == "function_call":
+                        calls.append(SimpleNamespace(
+                            id=getattr(item, "call_id", None),
+                            type="function",
+                            function=SimpleNamespace(
+                                name=getattr(item, "name", ""),
+                                arguments=getattr(item, "arguments", "{}"),
+                            ),
+                        ))
+                return calls
+
             # Extract tool calls from the response, handling all API formats
             tool_calls = []
             if self.api_mode == "codex_responses" and not _aux_available:
                 _ct_flush = self._get_transport()
-                _cnr_flush = _ct_flush.normalize_response(response)
+                _cnr_flush = _ct_flush.normalize_response(response) if _ct_flush is not None else None
                 if _cnr_flush and _cnr_flush.tool_calls:
                     tool_calls = [
                         SimpleNamespace(
@@ -7713,6 +7774,8 @@ class AIAgent:
                             function=SimpleNamespace(name=tc.name, arguments=tc.arguments),
                         ) for tc in _cnr_flush.tool_calls
                     ]
+                else:
+                    tool_calls = _codex_output_tool_calls(response)
             elif self.api_mode == "anthropic_messages" and not _aux_available:
                 _tfn = self._get_transport()
                 _flush_result = _tfn.normalize_response(response, strip_tool_prefix=self._is_anthropic_oauth)
@@ -7725,15 +7788,16 @@ class AIAgent:
                     ]
             elif self.api_mode in ("chat_completions", "bedrock_converse"):
                 # chat_completions / bedrock — normalize through transport
-                _flush_result = self._get_transport().normalize_response(response)
-                if _flush_result.tool_calls:
+                _tfn = self._get_transport()
+                _flush_result = _tfn.normalize_response(response) if _tfn is not None else None
+                if _flush_result and _flush_result.tool_calls:
                     tool_calls = _flush_result.tool_calls
+                else:
+                    tool_calls = _openai_tool_calls(response)
             elif _aux_available and hasattr(response, "choices") and response.choices:
                 # Auxiliary client returned OpenAI-shaped response while main
                 # api_mode is codex/anthropic — extract tool_calls from .choices
-                _aux_msg = response.choices[0].message
-                if hasattr(_aux_msg, "tool_calls") and _aux_msg.tool_calls:
-                    tool_calls = _aux_msg.tool_calls
+                tool_calls = _openai_tool_calls(response)
 
             for tc in tool_calls:
                 if tc.function.name == "memory":
@@ -7751,9 +7815,11 @@ class AIAgent:
                         if not self.quiet_mode:
                             print(f"  🧠 Memory flush: saved to {args.get('target', 'memory')}")
                     except Exception as e:
-                        logger.debug("Memory flush tool call failed: %s", e)
+                        logger.warning("Memory flush tool call failed: %s", e)
+                        self._emit_auxiliary_failure("memory flush tool", e)
         except Exception as e:
-            logger.debug("Memory flush API call failed: %s", e)
+            logger.warning("Memory flush API call failed: %s", e)
+            self._emit_auxiliary_failure("memory flush", e)
         finally:
             # Strip flush artifacts: remove everything from the flush message onward.
             # Use sentinel marker instead of identity check for robustness.
@@ -7798,6 +7864,15 @@ class AIAgent:
             # Plugin context engine with strict signature that doesn't accept
             # focus_topic — fall back to calling without it.
             compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens)
+
+        summary_error = getattr(self.context_compressor, "_last_summary_error", None)
+        if summary_error:
+            if getattr(self, "_last_compression_summary_warning", None) != summary_error:
+                self._last_compression_summary_warning = summary_error
+                self._emit_warning(
+                    f"⚠ Compression summary failed: {summary_error}. "
+                    "Inserted a fallback context marker."
+                )
 
         todo_snapshot = self._todo_store.format_for_injection()
         if todo_snapshot:

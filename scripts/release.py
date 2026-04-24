@@ -449,6 +449,8 @@ AUTHOR_MAP = {
     "mrunmayeerane17@gmail.com": "mrunmayee17",
     "69489633+camaragon@users.noreply.github.com": "camaragon",
     "shamork@outlook.com": "shamork",
+    # April 2026 Discord Copilot /model salvage (#15030)
+    "cshong2017@outlook.com": "Nicecsh",
     # no-github-match — keep as display names
     "clio-agent@sisyphuslabs.ai": "Sisyphus",
     "marco@rutimka.de": "Marco Rutsch",

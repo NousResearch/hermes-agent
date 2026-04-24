@@ -10041,7 +10041,7 @@ class GatewayRunner:
         # Bridge sync status_callback → async adapter.send for context pressure
         _status_adapter = self.adapters.get(source.platform)
         _status_chat_id = source.chat_id
-        _status_thread_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        _status_thread_metadata = {"thread_id": _progress_thread_id, "mention_user_id": source.user_id} if _progress_thread_id else {"mention_user_id": source.user_id}
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():

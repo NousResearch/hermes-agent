@@ -854,6 +854,50 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["provider"], "custom")
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_runtime_provider_wins_over_base_url_for_openai_codex_without_api_key(self, mock_resolve):
+        mock_resolve.return_value = {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "codex-token",
+            "api_mode": "codex_responses",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "gpt-5.4",
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        }
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["model"], "gpt-5.4")
+        self.assertEqual(creds["provider"], "openai-codex")
+        self.assertEqual(creds["base_url"], "https://chatgpt.com/backend-api/codex")
+        self.assertEqual(creds["api_key"], "codex-token")
+        self.assertEqual(creds["api_mode"], "codex_responses")
+        mock_resolve.assert_called_once_with(requested="openai-codex")
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_runtime_provider_wins_over_base_url_for_anthropic_without_api_key(self, mock_resolve):
+        mock_resolve.return_value = {
+            "provider": "anthropic",
+            "base_url": "https://api.anthropic.com",
+            "api_key": "anthropic-token",
+            "api_mode": "anthropic_messages",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "claude-sonnet-4-6",
+            "provider": "anthropic",
+            "base_url": "https://api.anthropic.com",
+        }
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["model"], "claude-sonnet-4-6")
+        self.assertEqual(creds["provider"], "anthropic")
+        self.assertEqual(creds["base_url"], "https://api.anthropic.com")
+        self.assertEqual(creds["api_key"], "anthropic-token")
+        self.assertEqual(creds["api_mode"], "anthropic_messages")
+        mock_resolve.assert_called_once_with(requested="anthropic")
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_nous_provider_resolves_nous_credentials(self, mock_resolve):
         """Nous provider resolves Nous Portal base_url and api_key."""
         mock_resolve.return_value = {
@@ -1055,6 +1099,40 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             self.assertEqual(kwargs["base_url"], "http://localhost:1234/v1")
             self.assertEqual(kwargs["api_key"], "local-key")
             self.assertEqual(kwargs["api_mode"], "chat_completions")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_delegate_task_prefers_runtime_provider_for_oauth_base_url_without_api_key(self, mock_resolve, mock_cfg):
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "gpt-5.4",
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        }
+        mock_resolve.return_value = {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "codex-token",
+            "api_mode": "codex_responses",
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done", "completed": True, "api_calls": 1
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="OAuth runtime provider test", parent_agent=parent)
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["model"], "gpt-5.4")
+            self.assertEqual(kwargs["provider"], "openai-codex")
+            self.assertEqual(kwargs["base_url"], "https://chatgpt.com/backend-api/codex")
+            self.assertEqual(kwargs["api_key"], "codex-token")
+            self.assertEqual(kwargs["api_mode"], "codex_responses")
+            mock_resolve.assert_called_once_with(requested="openai-codex")
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")

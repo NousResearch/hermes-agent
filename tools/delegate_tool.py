@@ -2253,18 +2253,21 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Resolve credentials for subagent delegation.
 
-    If ``delegation.base_url`` is configured, subagents use that direct
-    OpenAI-compatible endpoint. ``delegation.api_key`` overrides the key; when
-    omitted, ``api_key`` is returned as ``None`` so ``_build_child_agent``
-    inherits the parent agent's key (``effective_api_key = override_api_key or
+    If ``delegation.base_url`` is configured without an OAuth/runtime-backed
+    ``delegation.provider``, subagents use that direct OpenAI-compatible
+    endpoint. ``delegation.api_key`` overrides the key; when omitted,
+    ``api_key`` is returned as ``None`` so ``_build_child_agent`` inherits the
+    parent agent's key (``effective_api_key = override_api_key or
     parent_api_key``). This lets providers that store their key outside
-    ``OPENAI_API_KEY`` (e.g. ``MINIMAX_API_KEY``, ``DASHSCOPE_API_KEY``) work
-    without a duplicate config entry.
+    ``OPENAI_API_KEY`` work without a duplicate config entry.
 
-    Otherwise, if ``delegation.provider`` is configured, the full credential
-    bundle (base_url, api_key, api_mode, provider) is resolved via the runtime
-    provider system — the same path used by CLI/gateway startup. This lets
-    subagents run on a completely different provider:model pair.
+    If ``delegation.provider`` is configured for an OAuth/runtime provider such
+    as ``openai-codex``, ``anthropic``, ``nous``, ``copilot-acp``,
+    ``google-gemini-cli``, or ``qwen-oauth`` and no explicit
+    ``delegation.api_key`` is set, runtime provider resolution wins over a
+    configured base URL. This keeps OAuth-backed delegation on fresh runtime
+    credentials instead of treating a persisted base URL as a static direct
+    endpoint.
 
     If neither base_url nor provider is configured, returns None values so the
     child inherits everything from the parent agent.
@@ -2276,7 +2279,22 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     configured_base_url = str(cfg.get("base_url") or "").strip() or None
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
 
-    if configured_base_url:
+    runtime_provider_names = {
+        "anthropic",
+        "copilot-acp",
+        "google-gemini-cli",
+        "nous",
+        "openai-codex",
+        "qwen-oauth",
+    }
+    configured_provider_key = (configured_provider or "").lower()
+    use_runtime_provider = (
+        bool(configured_provider)
+        and configured_provider_key in runtime_provider_names
+        and not configured_api_key
+    )
+
+    if configured_base_url and not use_runtime_provider:
         # When delegation.api_key is not set, return None so _build_child_agent
         # falls back to the parent agent's API key via the credential inheritance
         # path (effective_api_key = override_api_key or parent_api_key). This

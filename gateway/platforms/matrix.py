@@ -32,6 +32,8 @@ import mimetypes
 import os
 import re
 import time
+from dataclasses import dataclass
+
 from html import escape as _html_escape
 from pathlib import Path
 from typing import Any, Dict, Optional, Set
@@ -103,6 +105,18 @@ from gateway.platforms.base import (
 from gateway.platforms.helpers import ThreadParticipationTracker
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _MatrixApprovalPrompt:
+    """Tracks a pending Matrix reaction-based exec approval prompt."""
+
+    def __init__(self, session_key: str, chat_id: str, message_id: str, resolved: bool = False):
+        self.session_key = session_key
+        self.chat_id = chat_id
+        self.message_id = message_id
+        self.resolved = resolved
+        self.bot_reaction_events: dict[str, str] = {}  # emoji -> event_id
 
 # Matrix message size limit (4000 chars practical, spec has no hard limit
 # but clients render poorly above this).
@@ -366,6 +380,18 @@ class MatrixAdapter(BasePlatformAdapter):
         )
         self._pending_text_batches: Dict[str, MessageEvent] = {}
         self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
+
+        # Matrix reaction-based dangerous command approvals.
+        self._approval_reaction_map = {
+            "✅": "once",
+            "❎": "deny",
+        }
+        self._approval_prompts_by_event: Dict[str, _MatrixApprovalPrompt] = {}
+        self._approval_prompt_by_session: Dict[str, str] = {}
+        allowed_users_raw = os.getenv("MATRIX_ALLOWED_USERS", "")
+        self._allowed_user_ids: Set[str] = {
+            u.strip() for u in allowed_users_raw.split(",") if u.strip()
+        }
 
     def _is_duplicate_event(self, event_id) -> bool:
         """Return True if this event was already processed. Tracks the ID otherwise."""
@@ -853,12 +879,32 @@ class MatrixAdapter(BasePlatformAdapter):
         if not content:
             return SendResult(success=True)
 
+        mention_user_id = (metadata or {}).get("mention_user_id")
+
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, MAX_MESSAGE_LENGTH)
 
         last_event_id = None
-        for chunk in chunks:
+        for i, chunk in enumerate(chunks):
             msg_content = self._build_text_message_content(chunk)
+
+            # Append @mention pill to the last chunk for push notifications
+            # in muted rooms (mention-only mode).
+            if mention_user_id and i == len(chunks) - 1:
+                mention_html = (
+                    f'<a href="https://matrix.to/#/{mention_user_id}">'
+                    f"{mention_user_id}</a>"
+                )
+                msg_content["body"] = chunk + f" @{mention_user_id}"
+                base_html = msg_content.get("formatted_body", chunk)
+                msg_content["format"] = "org.matrix.custom.html"
+                msg_content["formatted_body"] = base_html + " " + mention_html
+                # m.mentions for MSC3952 push reliability.
+                existing_mentions = msg_content.get("m.mentions", {}).get("user_ids", [])
+                if mention_user_id not in existing_mentions:
+                    msg_content["m.mentions"] = {
+                        "user_ids": existing_mentions + [mention_user_id]
+                    }
 
             # Reply-to support.
             if reply_to:
@@ -1104,6 +1150,56 @@ class MatrixAdapter(BasePlatformAdapter):
         return await self._send_local_file(
             chat_id, video_path, "m.video", caption, reply_to, metadata=metadata
         )
+
+    async def send_exec_approval(
+        self,
+        chat_id: str,
+        command: str,
+        session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[dict] = None,
+    ) -> SendResult:
+        """Send a reaction-based exec approval prompt for Matrix."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+
+        cmd_preview = command[:2000] + "..." if len(command) > 2000 else command
+        text = (
+            "⚠️ **Dangerous command requires approval**\n"
+            f"```\n{cmd_preview}\n```\n"
+            f"Reason: {description}\n\n"
+            "Reply `/approve` to execute, `/approve session` to approve this pattern for the session, "
+            "`/approve always` to approve permanently, or `/deny` to cancel.\n\n"
+            "You can also click the reaction to approve:\n"
+            "✅ = /approve\n"
+            "❎ = /deny"
+        )
+
+        result = await self.send(chat_id, text, metadata=metadata)
+        if not result.success or not result.message_id:
+            return result
+
+        prompt = _MatrixApprovalPrompt(
+            session_key=session_key,
+            chat_id=chat_id,
+            message_id=result.message_id,
+        )
+        old_event = self._approval_prompt_by_session.get(session_key)
+        if old_event:
+            self._approval_prompts_by_event.pop(old_event, None)
+        self._approval_prompts_by_event[result.message_id] = prompt
+        self._approval_prompt_by_session[session_key] = result.message_id
+
+        for emoji in ("✅", "❎"):
+            try:
+                reaction_result = await self._send_reaction(chat_id, result.message_id, emoji)
+                # Save the bot's reaction event_id for later cleanup
+                if reaction_result:
+                    prompt.bot_reaction_events[emoji] = str(reaction_result)
+            except Exception as exc:
+                logger.debug("Matrix: failed to add approval reaction %s: %s", emoji, exc)
+
+        return result
 
     def format_message(self, content: str) -> str:
         """Pass-through — Matrix supports standard Markdown natively."""
@@ -1921,6 +2017,51 @@ class MatrixAdapter(BasePlatformAdapter):
                 reacts_to,
                 room_id,
             )
+
+            # Check if this reaction resolves a pending approval prompt.
+            prompt = self._approval_prompts_by_event.get(reacts_to)
+            if prompt and not prompt.resolved:
+                if room_id != prompt.chat_id:
+                    return
+                if self._allowed_user_ids and sender not in self._allowed_user_ids:
+                    logger.info(
+                        "Matrix: ignoring approval reaction from unauthorized user %s on %s",
+                        sender, reacts_to,
+                    )
+                    return
+                choice = self._approval_reaction_map.get(key)
+                if not choice:
+                    return
+                try:
+                    from tools.approval import resolve_gateway_approval
+
+                    count = resolve_gateway_approval(prompt.session_key, choice)
+                    if count:
+                        prompt.resolved = True
+                        self._approval_prompts_by_event.pop(reacts_to, None)
+                        self._approval_prompt_by_session.pop(prompt.session_key, None)
+                        logger.info(
+                            "Matrix reaction resolved %d approval(s) for session %s "
+                            "(choice=%s, user=%s)",
+                            count, prompt.session_key, choice, sender,
+                        )
+                        # Redact bot's seed reactions, leaving only the user's
+                        await self._redact_bot_approval_reactions(room_id, prompt)
+                except Exception as exc:
+                    logger.error("Failed to resolve gateway approval from Matrix reaction: %s", exc)
+
+    async def _redact_bot_approval_reactions(
+        self,
+        room_id: str,
+        prompt: "_MatrixApprovalPrompt",
+    ) -> None:
+        """Redact the bot's seed ✅/❎ reactions, leaving only the user's reaction."""
+        for emoji, evt_id in prompt.bot_reaction_events.items():
+            try:
+                await self.redact_message(room_id, evt_id, "approval resolved")
+                logger.debug("Matrix: redacted bot reaction %s (%s)", emoji, evt_id)
+            except Exception as exc:
+                logger.debug("Matrix: failed to redact bot reaction %s: %s", emoji, exc)
 
     # ------------------------------------------------------------------
     # Text message aggregation (handles Matrix client-side splits)

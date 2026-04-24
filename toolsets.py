@@ -50,6 +50,8 @@ _HERMES_CORE_TOOLS = [
     "todo", "memory",
     # Session history search
     "session_search",
+    # Cross-agent coding session intelligence (CASS)
+    "cass_status", "cass_search", "cass_context", "cass_timeline", "cass_export", "cass_analytics",
     # Clarifying questions
     "clarify",
     # Code execution + delegation
@@ -76,6 +78,12 @@ TOOLSETS = {
     "search": {
         "description": "Web search only (no content extraction/scraping)",
         "tools": ["web_search"],
+        "includes": []
+    },
+
+    "cass": {
+        "description": "CASS coding-agent session history search, context, export, and analytics",
+        "tools": ["cass_status", "cass_search", "cass_context", "cass_timeline", "cass_export", "cass_analytics"],
         "includes": []
     },
     

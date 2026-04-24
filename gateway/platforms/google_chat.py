@@ -151,11 +151,16 @@ class GoogleChatAdapter(BasePlatformAdapter):
         try:
             self._loop = asyncio.get_running_loop()
 
-            # Build the Chat API client for outbound messages
-            self._chat_service = self._build_chat_service()
+            # Build SA credentials once — shared by Chat API and Pub/Sub
+            creds = self._build_credentials()
 
-            # Start the Pub/Sub subscriber in a background thread
-            self._subscriber_client = pubsub_v1.SubscriberClient()
+            # Build the Chat API client for outbound messages
+            self._chat_service = self._build_chat_service(creds)
+
+            # Start the Pub/Sub subscriber using the same SA credentials
+            self._subscriber_client = pubsub_v1.SubscriberClient(
+                credentials=creds,
+            )
             subscription_path = (
                 f"projects/{self._gcp_project}"
                 f"/subscriptions/{self._subscription}"
@@ -595,31 +600,53 @@ class GoogleChatAdapter(BasePlatformAdapter):
     # Chat API client
     # ------------------------------------------------------------------
 
-    def _build_chat_service(self) -> Any:
-        """Build the Google Chat API client.
+    def _build_credentials(self) -> Any:
+        """Build Google credentials from SA key or ADC fallback.
 
-        Uses Application Default Credentials (ADC) or an explicit
-        service-account JSON key if ``GOOGLE_CHAT_CREDENTIALS`` is set.
+        Prefers the explicit service-account JSON key at
+        ``GOOGLE_CHAT_CREDENTIALS``.  Falls back to Application Default
+        Credentials only when no key path is configured.
         """
-        from google.oauth2 import service_account
-        from googleapiclient.discovery import build
-
-        scopes = ["https://www.googleapis.com/auth/chat.bot"]
+        scopes = [
+            "https://www.googleapis.com/auth/chat.bot",
+            "https://www.googleapis.com/auth/pubsub",
+        ]
 
         if self._credentials_path and os.path.isfile(
             self._credentials_path
         ):
-            credentials = (
-                service_account.Credentials.from_service_account_file(
-                    self._credentials_path, scopes=scopes
-                )
-            )
-        else:
-            # Fall back to ADC (works on GCE, Cloud Run, or with
-            # ``gcloud auth application-default login``)
-            import google.auth
+            from google.oauth2 import service_account
 
-            credentials, _ = google.auth.default(scopes=scopes)
+            logger.info(
+                "Google Chat: using service-account key %s",
+                self._credentials_path,
+            )
+            return service_account.Credentials.from_service_account_file(
+                self._credentials_path, scopes=scopes
+            )
+
+        # Fall back to ADC (works on GCE, Cloud Run, or with
+        # ``gcloud auth application-default login``)
+        import google.auth
+
+        logger.warning(
+            "Google Chat: no GOOGLE_CHAT_CREDENTIALS set — "
+            "falling back to ADC (may require periodic reauth)"
+        )
+        credentials, _ = google.auth.default(scopes=scopes)
+        return credentials
+
+    def _build_chat_service(self, credentials: Any = None) -> Any:
+        """Build the Google Chat API client.
+
+        Args:
+            credentials: Pre-built credentials.  If ``None``, calls
+                         ``_build_credentials()`` internally.
+        """
+        from googleapiclient.discovery import build
+
+        if credentials is None:
+            credentials = self._build_credentials()
 
         return build(
             "chat",

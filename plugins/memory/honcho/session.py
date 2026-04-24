@@ -277,8 +277,19 @@ class HonchoSessionManager:
             logger.debug("Local session cache hit: %s", key)
             return self._cache[key]
 
-        # Gateway sessions should use the runtime user identity when available.
-        if self._runtime_user_peer_name:
+        # Gateway sessions normally use the runtime user identity (the
+        # platform-native ID: Telegram UID, Discord snowflake, Slack user,
+        # etc.) so multi-user bots scope memory per user.  For a single-user
+        # deployment the config-supplied ``peer_name`` is an unambiguous
+        # identity and we should keep it unified across platforms — see
+        # #14984.  Opt into that with ``hosts.<host>.pinPeerName: true`` in
+        # ``honcho.json`` (or root-level ``pinPeerName: true``).
+        pin_peer_name = bool(
+            self._config
+            and self._config.peer_name
+            and getattr(self._config, "pin_peer_name", False)
+        )
+        if self._runtime_user_peer_name and not pin_peer_name:
             user_peer_id = self._sanitize_id(self._runtime_user_peer_name)
         elif self._config and self._config.peer_name:
             user_peer_id = self._sanitize_id(self._config.peer_name)

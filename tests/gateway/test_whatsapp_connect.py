@@ -21,6 +21,12 @@ import pytest
 from gateway.config import Platform
 
 
+@pytest.fixture(autouse=True)
+def _isolate_gateway_locks(tmp_path, monkeypatch):
+    """Give each test its own scoped-lock directory so xdist workers don't collide."""
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "gateway-locks"))
+
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
@@ -82,11 +88,19 @@ def _mock_aiohttp(status=200, json_data=None, json_side_effect=None):
     return MagicMock(return_value=_AsyncCM(mock_session))
 
 
+def _mock_create_task(coro):
+    """Stand in for asyncio.create_task() without leaking unscheduled coroutines."""
+    coro.close()
+    task = MagicMock()
+    task.done.return_value = True
+    return task
+
+
 def _connect_patches(mock_proc, mock_fh, mock_client_cls=None):
     """Return a dict of common patches needed to reach the health-check loop."""
     patches = {
         "gateway.platforms.whatsapp.check_whatsapp_requirements": True,
-        "gateway.platforms.whatsapp.asyncio.create_task": MagicMock(),
+        "gateway.platforms.whatsapp.asyncio.create_task": MagicMock(side_effect=_mock_create_task),
     }
     base = [
         patch("gateway.platforms.whatsapp.check_whatsapp_requirements", return_value=True),
@@ -96,7 +110,7 @@ def _connect_patches(mock_proc, mock_fh, mock_client_cls=None):
         patch("subprocess.Popen", return_value=mock_proc),
         patch("builtins.open", return_value=mock_fh),
         patch("gateway.platforms.whatsapp.asyncio.sleep", new_callable=AsyncMock),
-        patch("gateway.platforms.whatsapp.asyncio.create_task"),
+        patch("gateway.platforms.whatsapp.asyncio.create_task", side_effect=_mock_create_task),
     ]
     if mock_client_cls is not None:
         base.append(patch("aiohttp.ClientSession", mock_client_cls))
@@ -518,13 +532,8 @@ class TestHttpSessionLifecycle:
     async def test_poll_task_cancelled_on_disconnect(self):
         """disconnect() should cancel the poll task."""
         adapter = _make_adapter()
-        mock_task = MagicMock()
-        mock_task.done.return_value = False
-        mock_task.cancel = MagicMock()
-        mock_future = asyncio.Future()
-        mock_future.set_exception(asyncio.CancelledError())
-        mock_task.__await__ = mock_future.__await__
-        adapter._poll_task = mock_task
+        poll_task = asyncio.create_task(asyncio.sleep(100))
+        adapter._poll_task = poll_task
         adapter._http_session = None
         adapter._bridge_process = None
         adapter._running = True
@@ -532,7 +541,7 @@ class TestHttpSessionLifecycle:
 
         await adapter.disconnect()
 
-        mock_task.cancel.assert_called_once()
+        assert poll_task.cancelled()
         assert adapter._poll_task is None
 
     @pytest.mark.asyncio

@@ -1,5 +1,6 @@
 """Regression tests for browser session cleanup and screenshot recovery."""
 
+import signal
 from unittest.mock import patch
 
 
@@ -64,6 +65,76 @@ class TestBrowserCleanup:
         assert "task-1" not in browser_tool._session_last_activity
         mock_stop.assert_called_once_with("task-1")
         mock_run.assert_called_once_with("task-1", "close", [], timeout=10)
+
+    def test_terminate_browser_daemon_escalates_to_sigkill(self):
+        browser_tool = self.browser_tool
+        kill_calls = []
+
+        def mock_kill(pid, sig):
+            kill_calls.append((pid, sig))
+
+        time_values = iter([0.0, 0.0, 0.2, 0.2, 0.2, 0.2, 0.2])
+
+        with (
+            patch("tools.browser_tool._pid_exists", side_effect=[True, True, False]),
+            patch("tools.browser_tool.os.kill", side_effect=mock_kill),
+            patch("tools.browser_tool.time.sleep"),
+            patch("tools.browser_tool.BROWSER_DAEMON_TERM_GRACE_SECONDS", 0.1),
+            patch("tools.browser_tool.time.time", side_effect=lambda: next(time_values)),
+        ):
+            assert browser_tool._terminate_browser_daemon(12345, "sess-1") is True
+
+        assert kill_calls == [
+            (12345, signal.SIGTERM),
+            (12345, signal.SIGKILL),
+        ]
+
+    def test_cleanup_browser_leaves_socket_dir_when_daemon_survives(self, tmp_path):
+        browser_tool = self.browser_tool
+        browser_tool._active_sessions["task-1"] = {
+            "session_name": "sess-1",
+            "bb_session_id": None,
+        }
+        browser_tool._session_last_activity["task-1"] = 123.0
+
+        socket_dir = tmp_path / "agent-browser-sess-1"
+        socket_dir.mkdir()
+        (socket_dir / "sess-1.pid").write_text("12345")
+
+        with (
+            patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)),
+            patch("tools.browser_tool._maybe_stop_recording"),
+            patch("tools.browser_tool._run_browser_command", return_value={"success": True}),
+            patch("tools.browser_tool._terminate_browser_daemon", return_value=False),
+        ):
+            browser_tool.cleanup_browser("task-1")
+
+        assert "task-1" not in browser_tool._active_sessions
+        assert "task-1" not in browser_tool._session_last_activity
+        assert socket_dir.exists()
+        assert (socket_dir / "sess-1.pid").exists()
+
+    def test_cleanup_browser_removes_socket_dir_when_daemon_exits(self, tmp_path):
+        browser_tool = self.browser_tool
+        browser_tool._active_sessions["task-1"] = {
+            "session_name": "sess-1",
+            "bb_session_id": None,
+        }
+        browser_tool._session_last_activity["task-1"] = 123.0
+
+        socket_dir = tmp_path / "agent-browser-sess-1"
+        socket_dir.mkdir()
+        (socket_dir / "sess-1.pid").write_text("12345")
+
+        with (
+            patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)),
+            patch("tools.browser_tool._maybe_stop_recording"),
+            patch("tools.browser_tool._run_browser_command", return_value={"success": True}),
+            patch("tools.browser_tool._terminate_browser_daemon", return_value=True),
+        ):
+            browser_tool.cleanup_browser("task-1")
+
+        assert not socket_dir.exists()
 
     def test_cleanup_camofox_managed_persistence_skips_close(self):
         """When camofox mode + managed persistence, soft_cleanup fires instead of close."""

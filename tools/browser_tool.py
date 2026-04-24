@@ -537,6 +537,12 @@ _cleanup_done = False
 # Default: 5 minutes. Needs headroom for LLM reasoning between browser commands,
 # especially when subagents are doing multi-step browser tasks.
 BROWSER_SESSION_INACTIVITY_TIMEOUT = int(os.environ.get("BROWSER_INACTIVITY_TIMEOUT", "300"))
+BROWSER_DAEMON_TERM_GRACE_SECONDS = float(
+    os.environ.get("BROWSER_DAEMON_TERM_GRACE_SECONDS", "2.0")
+)
+BROWSER_ORPHAN_REAP_INTERVAL_SECONDS = int(
+    os.environ.get("BROWSER_ORPHAN_REAP_INTERVAL_SECONDS", "300")
+)
 
 # Track last activity time per session
 _session_last_activity: Dict[str, float] = {}
@@ -646,6 +652,81 @@ def _write_owner_pid(socket_dir: str, session_name: str) -> None:
                      session_name, exc)
 
 
+def _pid_exists(pid: int) -> bool:
+    """Return True when a PID still exists and is signalable by this user."""
+    try:
+        os.kill(pid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+
+
+def _terminate_browser_daemon(daemon_pid: int, session_name: str) -> bool:
+    """Terminate an agent-browser daemon and confirm it exited.
+
+    Returns True only when the process is confirmed gone. If it survives the
+    grace period or cannot be signalled, returns False so the caller can leave
+    the socket dir / pid file in place for later reaping.
+    """
+    if daemon_pid <= 0:
+        return False
+
+    if not _pid_exists(daemon_pid):
+        return True
+
+    try:
+        os.kill(daemon_pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return True
+    except (PermissionError, OSError) as e:
+        logger.warning(
+            "Could not SIGTERM browser daemon PID %s for %s: %s",
+            daemon_pid,
+            session_name,
+            e,
+        )
+        return False
+
+    deadline = time.time() + max(BROWSER_DAEMON_TERM_GRACE_SECONDS, 0.1)
+    while time.time() < deadline:
+        if not _pid_exists(daemon_pid):
+            return True
+        time.sleep(0.05)
+
+    try:
+        os.kill(daemon_pid, signal.SIGKILL)
+        logger.warning(
+            "Browser daemon PID %s for %s ignored SIGTERM; escalated to SIGKILL",
+            daemon_pid,
+            session_name,
+        )
+    except ProcessLookupError:
+        return True
+    except (PermissionError, OSError) as e:
+        logger.warning(
+            "Could not SIGKILL browser daemon PID %s for %s: %s",
+            daemon_pid,
+            session_name,
+            e,
+        )
+        return False
+
+    deadline = time.time() + 1.0
+    while time.time() < deadline:
+        if not _pid_exists(daemon_pid):
+            return True
+        time.sleep(0.05)
+
+    logger.warning(
+        "Browser daemon PID %s for %s survived cleanup; leaving socket dir in place",
+        daemon_pid,
+        session_name,
+    )
+    return False
+
+
 def _reap_orphaned_browser_sessions():
     """Scan for orphaned agent-browser daemon processes from previous runs.
 
@@ -740,27 +821,22 @@ def _reap_orphaned_browser_sessions():
             continue
 
         # Check if the daemon is still alive
-        try:
-            os.kill(daemon_pid, 0)  # signal 0 = existence check
-        except ProcessLookupError:
+        if not _pid_exists(daemon_pid):
             # Already dead, just clean up the dir
             shutil.rmtree(socket_dir, ignore_errors=True)
             continue
+        try:
+            os.kill(daemon_pid, 0)
         except PermissionError:
             # Alive but owned by someone else — leave it alone
             continue
 
         # Daemon is alive and its owner is dead (or legacy + untracked).  Reap.
-        try:
-            os.kill(daemon_pid, signal.SIGTERM)
+        if _terminate_browser_daemon(daemon_pid, session_name):
             logger.info("Reaped orphaned browser daemon PID %d (session %s)",
                         daemon_pid, session_name)
             reaped += 1
-        except (ProcessLookupError, PermissionError, OSError):
-            pass
-
-        # Clean up the socket directory
-        shutil.rmtree(socket_dir, ignore_errors=True)
+            shutil.rmtree(socket_dir, ignore_errors=True)
 
     if reaped:
         logger.info("Reaped %d orphaned browser session(s) from previous run(s)", reaped)
@@ -772,16 +848,15 @@ def _browser_cleanup_thread_worker():
     
     Runs every 30 seconds and checks for sessions that haven't been used
     within the BROWSER_SESSION_INACTIVITY_TIMEOUT period.
-    On first run, also reaps orphaned sessions from previous process lifetimes.
+    Periodically also reaps orphaned sessions left behind by failed cleanup.
     """
-    # One-time orphan reap on startup
-    try:
-        _reap_orphaned_browser_sessions()
-    except Exception as e:
-        logger.warning("Orphan reap error: %s", e)
+    last_orphan_reap = 0.0
 
     while _cleanup_running:
         try:
+            if time.time() - last_orphan_reap >= BROWSER_ORPHAN_REAP_INTERVAL_SECONDS:
+                _reap_orphaned_browser_sessions()
+                last_orphan_reap = time.time()
             _cleanup_inactive_browser_sessions()
         except Exception as e:
             logger.warning("Cleanup thread error: %s", e)
@@ -2420,14 +2495,23 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
             if os.path.exists(socket_dir):
                 # agent-browser writes {session}.pid in the socket dir
                 pid_file = os.path.join(socket_dir, f"{session_name}.pid")
+                remove_socket_dir = True
                 if os.path.isfile(pid_file):
                     try:
                         daemon_pid = int(Path(pid_file).read_text().strip())
-                        os.kill(daemon_pid, signal.SIGTERM)
-                        logger.debug("Killed daemon pid %s for %s", daemon_pid, session_name)
+                        remove_socket_dir = _terminate_browser_daemon(daemon_pid, session_name)
+                        if remove_socket_dir:
+                            logger.debug("Killed daemon pid %s for %s", daemon_pid, session_name)
                     except (ProcessLookupError, ValueError, PermissionError, OSError):
                         logger.debug("Could not kill daemon pid for %s (already dead or inaccessible)", session_name)
-                shutil.rmtree(socket_dir, ignore_errors=True)
+                        remove_socket_dir = False
+                if remove_socket_dir:
+                    shutil.rmtree(socket_dir, ignore_errors=True)
+                else:
+                    logger.warning(
+                        "Leaving socket dir in place for session %s so orphan reaper can retry",
+                        session_name,
+                    )
         
         logger.debug("Removed task %s from active sessions", task_id)
     else:

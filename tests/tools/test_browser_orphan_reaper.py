@@ -80,21 +80,30 @@ class TestReapOrphanedBrowserSessions:
 
         d = _make_socket_dir(fake_tmpdir, "h_orphan12345", pid=12345)
 
-        kill_calls = []
-        original_kill = os.kill
-
-        def mock_kill(pid, sig):
-            kill_calls.append((pid, sig))
-            if sig == 0:
-                return  # pretend process exists
-            # Don't actually kill anything
-
-        with patch("os.kill", side_effect=mock_kill):
+        with (
+            patch("tools.browser_tool._pid_exists", return_value=True),
+            patch("tools.browser_tool.os.kill", return_value=None),
+            patch("tools.browser_tool._terminate_browser_daemon", return_value=True) as mock_term,
+        ):
             _reap_orphaned_browser_sessions()
 
-        # Should have checked existence (sig 0) then killed (SIGTERM)
-        assert (12345, 0) in kill_calls
-        assert (12345, signal.SIGTERM) in kill_calls
+        mock_term.assert_called_once_with(12345, "h_orphan12345")
+        assert not d.exists()
+
+    def test_orphaned_alive_daemon_keeps_socket_dir_when_cleanup_fails(self, fake_tmpdir):
+        """If the daemon survives cleanup, keep metadata so the next reap can retry."""
+        from tools.browser_tool import _reap_orphaned_browser_sessions
+
+        d = _make_socket_dir(fake_tmpdir, "h_orphanretry1", pid=12345)
+
+        with (
+            patch("tools.browser_tool._pid_exists", return_value=True),
+            patch("tools.browser_tool.os.kill", return_value=None),
+            patch("tools.browser_tool._terminate_browser_daemon", return_value=False),
+        ):
+            _reap_orphaned_browser_sessions()
+
+        assert d.exists()
 
     def test_tracked_session_is_not_reaped(self, fake_tmpdir):
         """Sessions tracked in _active_sessions are left alone (legacy path)."""
@@ -221,14 +230,18 @@ class TestOwnerPidCrossProcess:
         )
 
         kill_calls = []
+        daemon_alive = [True]
 
         def mock_kill(pid, sig):
             kill_calls.append((pid, sig))
             if pid == 999999999 and sig == 0:
                 raise ProcessLookupError  # owner dead
             if pid == 12345 and sig == 0:
-                return  # daemon still alive
-            # SIGTERM to daemon — noop in test
+                if daemon_alive[0]:
+                    return
+                raise ProcessLookupError
+            if pid == 12345 and sig == signal.SIGTERM:
+                daemon_alive[0] = False  # daemon honors SIGTERM
 
         with patch("os.kill", side_effect=mock_kill):
             _reap_orphaned_browser_sessions()

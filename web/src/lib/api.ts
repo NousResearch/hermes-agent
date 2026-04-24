@@ -15,7 +15,7 @@ function readBasePath(): string {
 }
 
 export const HERMES_BASE_PATH = readBasePath();
-const BASE = HERMES_BASE_PATH;
+export const BASE = HERMES_BASE_PATH;
 
 import type { DashboardTheme } from "@/themes/types";
 

@@ -58,6 +58,8 @@ function hermesDevToken(): Plugin {
 }
 
 export default defineConfig({
+  // Emit relative asset URLs so the built dashboard works under a URL prefix.
+  base: "./",
   plugins: [react(), tailwindcss(), hermesDevToken()],
   resolve: {
     alias: {

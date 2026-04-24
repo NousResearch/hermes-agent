@@ -7429,6 +7429,10 @@ For more help on a command:
         "--script",
         help="Path to a Python script whose stdout is injected into the prompt each run",
     )
+    cron_create.add_argument(
+        "--workdir",
+        help="Absolute path for the job to run from. Injects AGENTS.md / CLAUDE.md / .cursorrules from that directory and uses it as the cwd for terminal/file/code_exec tools. Omit to preserve old behaviour (no project context files).",
+    )
 
     # cron edit
     cron_edit = cron_subparsers.add_parser(
@@ -7466,6 +7470,10 @@ For more help on a command:
     cron_edit.add_argument(
         "--script",
         help="Path to a Python script whose stdout is injected into the prompt each run. Pass empty string to clear.",
+    )
+    cron_edit.add_argument(
+        "--workdir",
+        help="Absolute path for the job to run from (injects AGENTS.md etc. and sets terminal cwd). Pass empty string to clear.",
     )
 
     # lifecycle actions

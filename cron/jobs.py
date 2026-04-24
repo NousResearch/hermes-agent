@@ -371,6 +371,39 @@ def save_jobs(jobs: List[Dict[str, Any]]):
         raise
 
 
+def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
+    """Normalize and validate a cron job workdir.
+
+    Rules:
+      - Empty / None → None (feature off, preserves old behaviour).
+      - ``~`` is expanded.  Relative paths are rejected — cron jobs run detached
+        from any shell cwd, so relative paths have no stable meaning.
+      - The path must exist and be a directory at create/update time.  We do
+        NOT re-check at run time (a user might briefly unmount the dir; the
+        scheduler will just fall back to old behaviour with a logged warning).
+
+    Returns the absolute path string, or None when disabled.
+    Raises ValueError on invalid input.
+    """
+    if workdir is None:
+        return None
+    raw = str(workdir).strip()
+    if not raw:
+        return None
+    expanded = Path(raw).expanduser()
+    if not expanded.is_absolute():
+        raise ValueError(
+            f"Cron workdir must be an absolute path (got {raw!r}). "
+            f"Cron jobs run detached from any shell cwd, so relative paths are ambiguous."
+        )
+    resolved = expanded.resolve()
+    if not resolved.exists():
+        raise ValueError(f"Cron workdir does not exist: {resolved}")
+    if not resolved.is_dir():
+        raise ValueError(f"Cron workdir is not a directory: {resolved}")
+    return str(resolved)
+
+
 def create_job(
     prompt: str,
     schedule: str,
@@ -385,6 +418,7 @@ def create_job(
     base_url: Optional[str] = None,
     script: Optional[str] = None,
     enabled_toolsets: Optional[List[str]] = None,
+    workdir: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Create a new cron job.
@@ -407,6 +441,12 @@ def create_job(
         enabled_toolsets: Optional list of toolset names to restrict the agent to.
                           When set, only tools from these toolsets are loaded, reducing
                           token overhead. When omitted, all default tools are loaded.
+        workdir: Optional absolute path.  When set, the job runs as if launched
+                from that directory: AGENTS.md / CLAUDE.md / .cursorrules from
+                that directory are injected into the system prompt, and the
+                terminal/file/code_exec tools use it as their working directory
+                (via TERMINAL_CWD).  When unset, the old behaviour is preserved
+                (no context files injected, tools use the scheduler's cwd).
 
     Returns:
         The created job dict
@@ -439,6 +479,7 @@ def create_job(
     normalized_script = normalized_script or None
     normalized_toolsets = [str(t).strip() for t in enabled_toolsets if str(t).strip()] if enabled_toolsets else None
     normalized_toolsets = normalized_toolsets or None
+    normalized_workdir = _normalize_workdir(workdir)
 
     label_source = (prompt or (normalized_skills[0] if normalized_skills else None)) or "cron job"
     job = {
@@ -471,6 +512,7 @@ def create_job(
         "deliver": deliver,
         "origin": origin,  # Tracks where job was created for "origin" delivery
         "enabled_toolsets": normalized_toolsets,
+        "workdir": normalized_workdir,
     }
 
     jobs = load_jobs()
@@ -503,6 +545,15 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
     for i, job in enumerate(jobs):
         if job["id"] != job_id:
             continue
+
+        # Validate / normalize workdir if present in updates.  Empty string or
+        # None both mean "clear the field" (restore old behaviour).
+        if "workdir" in updates:
+            _wd = updates["workdir"]
+            if _wd in (None, "", False):
+                updates["workdir"] = None
+            else:
+                updates["workdir"] = _normalize_workdir(_wd)
 
         updated = _apply_skill_fields({**job, **updates})
         schedule_changed = "schedule" in updates

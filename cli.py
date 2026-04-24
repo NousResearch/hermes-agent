@@ -3128,7 +3128,7 @@ class HermesCLI:
         resolved_provider = runtime.get("provider", "openrouter")
         resolved_api_mode = runtime.get("api_mode", self.api_mode)
         resolved_acp_command = runtime.get("command")
-        resolved_acp_args = list(runtime.get("args") or [])
+        resolved_acp_args = runtime.get("args", [])
         resolved_credential_pool = runtime.get("credential_pool")
         if not isinstance(api_key, str) or not api_key:
             # Custom / local endpoints (llama.cpp, ollama, vLLM, etc.) often
@@ -3222,7 +3222,7 @@ class HermesCLI:
             "provider": self.provider,
             "api_mode": self.api_mode,
             "command": self.acp_command,
-            "args": list(self.acp_args or []),
+            "args": list(self.acp_args),
             "credential_pool": getattr(self, "_credential_pool", None),
         }
         route = {
@@ -3334,7 +3334,7 @@ class HermesCLI:
                 "provider": self.provider,
                 "api_mode": self.api_mode,
                 "command": self.acp_command,
-                "args": list(self.acp_args or []),
+                "args": list(self.acp_args),
                 "credential_pool": getattr(self, "_credential_pool", None),
             }
             effective_model = model_override or self.model

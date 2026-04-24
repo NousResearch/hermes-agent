@@ -36,6 +36,46 @@ def _normalize_custom_provider_name(value: str) -> str:
     return value.strip().lower().replace(" ", "-")
 
 
+def _ensure_args_is_list(runtime: Dict[str, Any]) -> Dict[str, Any]:
+    """Guarantee ``runtime["args"]`` is a ``list[str]``.
+
+    Most provider paths do not include an ``args`` key at all, leaving
+    consumers to handle ``None``.  The copilot-acp path sets it from
+    :func:`resolve_external_process_provider_credentials` which already
+    returns a list, but historical bugs (GH-XXXX) show that non-list
+    types (e.g. ``types.SimpleNamespace`` from argparse) can leak in
+    through config or future code paths.
+
+    Normalising at this single boundary eliminates the need for every
+    consumer to independently handle ``None`` / non-list values.
+    """
+    raw = runtime.get("args")
+    if raw is None:
+        runtime["args"] = []
+    elif isinstance(raw, list):
+        runtime["args"] = list(raw)  # shallow copy, guarantees list
+    elif isinstance(raw, (tuple, set, frozenset)):
+        runtime["args"] = list(raw)
+    elif isinstance(raw, str):
+        # A bare string is almost certainly a mistake — splitting it
+        # silently would hide bugs, so wrap it as a single-element list
+        # and log a warning.
+        logger.warning(
+            "runtime['args'] was a string (%r); wrapping in list. "
+            "This usually indicates a config error.",
+            raw,
+        )
+        runtime["args"] = [raw]
+    else:
+        # Unknown type (SimpleNamespace, dict, int, …).  Converting
+        # silently would hide data-loss bugs, so raise a clear error.
+        raise TypeError(
+            f"runtime['args'] must be a list of strings, got "
+            f"{type(raw).__name__}: {raw!r}"
+        )
+    return runtime
+
+
 def _loopback_hostname(host: str) -> bool:
     h = (host or "").lower().rstrip(".")
     return h in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
@@ -254,7 +294,7 @@ def _resolve_runtime_from_pool_entry(
     if api_mode == "anthropic_messages" and provider in ("opencode-zen", "opencode-go"):
         base_url = re.sub(r"/v1/?$", "", base_url)
 
-    return {
+    return _ensure_args_is_list({
         "provider": provider,
         "api_mode": api_mode,
         "base_url": base_url,
@@ -262,7 +302,7 @@ def _resolve_runtime_from_pool_entry(
         "source": getattr(entry, "source", "pool"),
         "credential_pool": pool,
         "requested_provider": requested_provider,
-    }
+    })
 
 
 def resolve_requested_provider(requested: Optional[str] = None) -> str:
@@ -303,14 +343,14 @@ def _try_resolve_from_custom_pool(
         pool_api_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
         if not pool_api_key:
             return None
-        return {
+        return _ensure_args_is_list({
             "provider": provider_label,
             "api_mode": api_mode_override or _detect_api_mode_for_url(base_url) or "chat_completions",
             "base_url": base_url,
             "api_key": pool_api_key,
             "source": f"pool:{pool_key}",
             "credential_pool": pool,
-        }
+        })
     except Exception:
         return None
 
@@ -468,7 +508,7 @@ def _resolve_named_custom_runtime(
     ]
     api_key = next((candidate for candidate in api_key_candidates if has_usable_secret(candidate)), "")
 
-    result = {
+    result = _ensure_args_is_list({
         "provider": "custom",
         "api_mode": custom_provider.get("api_mode")
         or _detect_api_mode_for_url(base_url)
@@ -476,7 +516,7 @@ def _resolve_named_custom_runtime(
         "base_url": base_url,
         "api_key": api_key or "no-key-required",
         "source": f"custom_provider:{custom_provider.get('name', requested_provider)}",
-    }
+    })
     # Propagate the model name so callers can override self.model when the
     # provider name differs from the actual model string the API expects.
     if custom_provider.get("model"):
@@ -578,7 +618,7 @@ def _resolve_openrouter_runtime(
     if effective_provider == "custom" and not api_key and not _is_openrouter_url:
         api_key = "no-key-required"
 
-    return {
+    return _ensure_args_is_list({
         "provider": effective_provider,
         "api_mode": _parse_api_mode(model_cfg.get("api_mode"))
         or _detect_api_mode_for_url(base_url)
@@ -586,7 +626,7 @@ def _resolve_openrouter_runtime(
         "base_url": base_url,
         "api_key": api_key,
         "source": source,
-    }
+    })
 
 
 def _resolve_explicit_runtime(
@@ -618,14 +658,14 @@ def _resolve_explicit_runtime(
                     "No Anthropic credentials found. Set ANTHROPIC_TOKEN or ANTHROPIC_API_KEY, "
                     "run 'claude setup-token', or authenticate with 'claude /login'."
                 )
-        return {
+        return _ensure_args_is_list({
             "provider": "anthropic",
             "api_mode": "anthropic_messages",
             "base_url": base_url,
             "api_key": api_key,
             "source": "explicit",
             "requested_provider": requested_provider,
-        }
+        })
 
     if provider == "openai-codex":
         base_url = explicit_base_url or DEFAULT_CODEX_BASE_URL
@@ -637,7 +677,7 @@ def _resolve_explicit_runtime(
             last_refresh = creds.get("last_refresh")
             if not explicit_base_url:
                 base_url = creds.get("base_url", "").rstrip("/") or base_url
-        return {
+        return _ensure_args_is_list({
             "provider": "openai-codex",
             "api_mode": "codex_responses",
             "base_url": base_url,
@@ -645,7 +685,7 @@ def _resolve_explicit_runtime(
             "source": "explicit",
             "last_refresh": last_refresh,
             "requested_provider": requested_provider,
-        }
+        })
 
     if provider == "nous":
         state = auth_mod.get_provider_auth_state("nous") or {}
@@ -668,7 +708,7 @@ def _resolve_explicit_runtime(
             expires_at = creds.get("expires_at")
             if not explicit_base_url:
                 base_url = creds.get("base_url", "").rstrip("/") or base_url
-        return {
+        return _ensure_args_is_list({
             "provider": "nous",
             "api_mode": "chat_completions",
             "base_url": base_url,
@@ -676,7 +716,7 @@ def _resolve_explicit_runtime(
             "source": "explicit",
             "expires_at": expires_at,
             "requested_provider": requested_provider,
-        }
+        })
 
     pconfig = PROVIDER_REGISTRY.get(provider)
     if pconfig and pconfig.auth_type == "api_key":
@@ -715,14 +755,14 @@ def _resolve_explicit_runtime(
                 if detected:
                     api_mode = detected
 
-        return {
+        return _ensure_args_is_list({
             "provider": provider,
             "api_mode": api_mode,
             "base_url": base_url.rstrip("/"),
             "api_key": api_key,
             "source": "explicit",
             "requested_provider": requested_provider,
-        }
+        })
 
     return None
 
@@ -834,7 +874,7 @@ def resolve_runtime_provider(
                 min_key_ttl_seconds=max(60, int(os.getenv("HERMES_NOUS_MIN_KEY_TTL_SECONDS", "1800"))),
                 timeout_seconds=float(os.getenv("HERMES_NOUS_TIMEOUT_SECONDS", "15")),
             )
-            return {
+            return _ensure_args_is_list({
                 "provider": "nous",
                 "api_mode": "chat_completions",
                 "base_url": creds.get("base_url", "").rstrip("/"),
@@ -842,7 +882,7 @@ def resolve_runtime_provider(
                 "source": creds.get("source", "portal"),
                 "expires_at": creds.get("expires_at"),
                 "requested_provider": requested_provider,
-            }
+            })
         except AuthError:
             if requested_provider != "auto":
                 raise
@@ -854,7 +894,7 @@ def resolve_runtime_provider(
     if provider == "openai-codex":
         try:
             creds = resolve_codex_runtime_credentials()
-            return {
+            return _ensure_args_is_list({
                 "provider": "openai-codex",
                 "api_mode": "codex_responses",
                 "base_url": creds.get("base_url", "").rstrip("/"),
@@ -862,7 +902,7 @@ def resolve_runtime_provider(
                 "source": creds.get("source", "hermes-auth-store"),
                 "last_refresh": creds.get("last_refresh"),
                 "requested_provider": requested_provider,
-            }
+            })
         except AuthError:
             if requested_provider != "auto":
                 raise
@@ -874,7 +914,7 @@ def resolve_runtime_provider(
     if provider == "qwen-oauth":
         try:
             creds = resolve_qwen_runtime_credentials()
-            return {
+            return _ensure_args_is_list({
                 "provider": "qwen-oauth",
                 "api_mode": "chat_completions",
                 "base_url": creds.get("base_url", "").rstrip("/"),
@@ -882,7 +922,7 @@ def resolve_runtime_provider(
                 "source": creds.get("source", "qwen-cli"),
                 "expires_at_ms": creds.get("expires_at_ms"),
                 "requested_provider": requested_provider,
-            }
+            })
         except AuthError:
             if requested_provider != "auto":
                 raise
@@ -892,7 +932,7 @@ def resolve_runtime_provider(
     if provider == "google-gemini-cli":
         try:
             creds = resolve_gemini_oauth_runtime_credentials()
-            return {
+            return _ensure_args_is_list({
                 "provider": "google-gemini-cli",
                 "api_mode": "chat_completions",
                 "base_url": creds.get("base_url", ""),
@@ -902,7 +942,7 @@ def resolve_runtime_provider(
                 "email": creds.get("email", ""),
                 "project_id": creds.get("project_id", ""),
                 "requested_provider": requested_provider,
-            }
+            })
         except AuthError:
             if requested_provider != "auto":
                 raise
@@ -911,7 +951,7 @@ def resolve_runtime_provider(
 
     if provider == "copilot-acp":
         creds = resolve_external_process_provider_credentials(provider)
-        return {
+        return _ensure_args_is_list({
             "provider": "copilot-acp",
             "api_mode": "chat_completions",
             "base_url": creds.get("base_url", "").rstrip("/"),
@@ -920,7 +960,7 @@ def resolve_runtime_provider(
             "args": list(creds.get("args") or []),
             "source": creds.get("source", "process"),
             "requested_provider": requested_provider,
-        }
+        })
 
     # Anthropic (native Messages API)
     if provider == "anthropic":
@@ -939,14 +979,14 @@ def resolve_runtime_provider(
         if cfg_provider == "anthropic":
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
         base_url = cfg_base_url or "https://api.anthropic.com"
-        return {
+        return _ensure_args_is_list({
             "provider": "anthropic",
             "api_mode": "anthropic_messages",
             "base_url": base_url,
             "api_key": token,
             "source": "env",
             "requested_provider": requested_provider,
-        }
+        })
 
     # AWS Bedrock (native Converse API via boto3)
     if provider == "bedrock":
@@ -993,7 +1033,7 @@ def resolve_runtime_provider(
         _current_model = str(model_cfg.get("default") or "").strip()
         if is_anthropic_bedrock_model(_current_model):
             # Claude on Bedrock → AnthropicBedrock SDK → anthropic_messages path
-            runtime = {
+            runtime = _ensure_args_is_list({
                 "provider": "bedrock",
                 "api_mode": "anthropic_messages",
                 "base_url": f"https://bedrock-runtime.{region}.amazonaws.com",
@@ -1002,10 +1042,10 @@ def resolve_runtime_provider(
                 "region": region,
                 "bedrock_anthropic": True,  # Signal to use AnthropicBedrock client
                 "requested_provider": requested_provider,
-            }
+            })
         else:
             # Non-Claude (Nova, DeepSeek, Llama, etc.) → Converse API
-            runtime = {
+            runtime = _ensure_args_is_list({
                 "provider": "bedrock",
                 "api_mode": "bedrock_converse",
                 "base_url": f"https://bedrock-runtime.{region}.amazonaws.com",
@@ -1013,7 +1053,7 @@ def resolve_runtime_provider(
                 "source": auth_source,
                 "region": region,
                 "requested_provider": requested_provider,
-            }
+            })
         if guardrail_config:
             runtime["guardrail_config"] = guardrail_config
         return runtime
@@ -1059,14 +1099,14 @@ def resolve_runtime_provider(
         # Strip trailing /v1 for OpenCode Anthropic models (see comment above).
         if api_mode == "anthropic_messages" and provider in ("opencode-zen", "opencode-go"):
             base_url = re.sub(r"/v1/?$", "", base_url)
-        return {
+        return _ensure_args_is_list({
             "provider": provider,
             "api_mode": api_mode,
             "base_url": base_url,
             "api_key": creds.get("api_key", ""),
             "source": creds.get("source", "env"),
             "requested_provider": requested_provider,
-        }
+        })
 
     runtime = _resolve_openrouter_runtime(
         requested_provider=requested_provider,
@@ -1074,7 +1114,7 @@ def resolve_runtime_provider(
         explicit_base_url=explicit_base_url,
     )
     runtime["requested_provider"] = requested_provider
-    return runtime
+    return _ensure_args_is_list(runtime)
 
 
 def format_runtime_provider_error(error: Exception) -> str:

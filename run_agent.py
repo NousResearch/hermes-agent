@@ -893,7 +893,23 @@ class AIAgent:
         provider_name = provider.strip().lower() if isinstance(provider, str) and provider.strip() else None
         self.provider = provider_name or ""
         self.acp_command = acp_command or command
-        self.acp_args = list(acp_args or args or [])
+        # Normalize acp_args to list[str].  In normal operation
+        # runtime["args"] is already guaranteed to be a list by
+        # _ensure_args_is_list() in runtime_provider.py.  This
+        # boundary check catches any future regression or unexpected
+        # caller that passes a non-iterable type.
+        _raw_args = acp_args or args or []
+        if isinstance(_raw_args, list):
+            self.acp_args = list(_raw_args)
+        elif isinstance(_raw_args, (tuple, set, frozenset)):
+            self.acp_args = list(_raw_args)
+        elif isinstance(_raw_args, str):
+            self.acp_args = [_raw_args]
+        else:
+            raise TypeError(
+                f"AIAgent.__init__: acp_args must be list[str], got "
+                f"{type(_raw_args).__name__}: {_raw_args!r}"
+            )
         if api_mode in {"chat_completions", "codex_responses", "anthropic_messages", "bedrock_converse"}:
             self.api_mode = api_mode
         elif self.provider == "openai-codex":

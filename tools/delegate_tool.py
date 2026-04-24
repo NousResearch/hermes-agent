@@ -2187,7 +2187,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         "api_key": api_key,
         "api_mode": runtime.get("api_mode"),
         "command": runtime.get("command"),
-        "args": list(runtime.get("args") or []),
+        "args": runtime.get("args", []),
     }
 
 

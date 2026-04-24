@@ -4004,6 +4004,8 @@ def _gateway_command_inner(args):
             print()
             print("Or run the gateway directly: hermes gateway run")
             sys.exit(0)
+        elif is_windows():
+            windows_start()
         else:
             print("Not supported on this platform.")
             sys.exit(1)
@@ -4027,6 +4029,12 @@ def _gateway_command_inner(args):
                     service_available = True
                 except subprocess.CalledProcessError:
                     pass
+            elif is_windows():
+                try:
+                    windows_stop()
+                    service_available = True
+                except Exception:
+                    pass
             killed = kill_gateway_processes(all_profiles=True)
             total = killed + (1 if service_available else 0)
             if total:
@@ -4047,6 +4055,12 @@ def _gateway_command_inner(args):
                     launchd_stop()
                     service_available = True
                 except subprocess.CalledProcessError:
+                    pass
+            elif is_windows():
+                try:
+                    windows_stop()
+                    service_available = True
+                except Exception:
                     pass
 
             if not service_available:
@@ -4080,6 +4094,12 @@ def _gateway_command_inner(args):
                     service_stopped = True
                 except subprocess.CalledProcessError:
                     pass
+            elif is_windows():
+                try:
+                    windows_stop()
+                    service_stopped = True
+                except Exception:
+                    pass
             killed = kill_gateway_processes(all_profiles=True)
             total = killed + (1 if service_stopped else 0)
             if total:
@@ -4092,6 +4112,8 @@ def _gateway_command_inner(args):
                 systemd_start(system=system)
             elif is_macos() and get_launchd_plist_path().exists():
                 launchd_start()
+            elif is_windows():
+                windows_start()
             else:
                 run_gateway(verbose=0)
             return
@@ -4109,6 +4131,14 @@ def _gateway_command_inner(args):
                 launchd_restart()
                 service_available = True
             except subprocess.CalledProcessError:
+                pass
+        elif is_windows():
+            service_configured = True
+            try:
+                windows_stop()
+                windows_start()
+                service_available = True
+            except Exception:
                 pass
         
         if not service_available:
@@ -4158,6 +4188,8 @@ def _gateway_command_inner(args):
         elif is_macos() and get_launchd_plist_path().exists():
             launchd_status(deep)
             _print_gateway_process_mismatch(snapshot)
+        elif is_windows():
+            windows_status(deep, full)
         else:
             # Check for manually running processes
             pids = list(snapshot.gateway_pids)

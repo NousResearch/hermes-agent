@@ -1,0 +1,5 @@
+name: chorus
+version: 1.0.0
+description: Chorus Protocol memory provider for Hermes Agent. Provides ambient recall, turn/session sync, delegation observation, and bare Chorus memory/signal tools.
+author: Aurora Proto
+kind: exclusive

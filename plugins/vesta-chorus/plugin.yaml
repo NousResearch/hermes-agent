@@ -1,0 +1,18 @@
+name: vesta-chorus
+version: 1.0.0
+description: Vesta von der Proto always-on Chorus hooks and high-level governance tools.
+author: Aurora Proto
+kind: standalone
+provides_hooks:
+  - on_session_start
+  - on_session_end
+  - on_session_finalize
+  - pre_gateway_dispatch
+  - pre_llm_call
+  - post_tool_call
+provides_tools:
+  - vesta_wake_briefing
+  - vesta_closeout
+  - vesta_worker_audit
+  - vesta_gate_check
+  - vesta_workstream_sweep

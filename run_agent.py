@@ -7785,15 +7785,26 @@ class AIAgent:
         # Pre-compression memory flush: let the model save memories before they're lost
         self.flush_memories(messages, min_turns=0)
 
-        # Notify external memory provider before compression discards context
+        # Notify external memory providers before compression discards context.
+        # Providers may return preservation guidance; thread it into the
+        # summarizer focus so the documented memory-provider contract is real,
+        # not side-effect-only.
+        provider_preservation_context = ""
         if self._memory_manager:
             try:
-                self._memory_manager.on_pre_compress(messages)
+                provider_preservation_context = self._memory_manager.on_pre_compress(messages) or ""
             except Exception:
-                pass
+                provider_preservation_context = ""
+
+        compression_focus = focus_topic
+        if provider_preservation_context.strip():
+            if compression_focus:
+                compression_focus = f"{compression_focus}\n\nExternal memory-provider preservation context:\n{provider_preservation_context}"
+            else:
+                compression_focus = f"External memory-provider preservation context:\n{provider_preservation_context}"
 
         try:
-            compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
+            compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=compression_focus)
         except TypeError:
             # Plugin context engine with strict signature that doesn't accept
             # focus_topic — fall back to calling without it.

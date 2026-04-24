@@ -123,8 +123,9 @@ DEFAULT_CONTEXT_LENGTHS = {
     "claude": 200000,
     # OpenAI — GPT-5 family (most have 400k; specific overrides first)
     # Source: https://developers.openai.com/api/docs/models
-    # GPT-5.5 (launched Apr 23 2026). Verified via live ChatGPT codex/models
-    # endpoint: bare slug `gpt-5.5`, no -pro/-mini variants. 400k context on Codex.
+    # GPT-5.5 (launched Apr 23 2026). 400k is the fallback for providers we
+    # can't probe live. ChatGPT Codex OAuth actually caps lower (272k as of
+    # Apr 2026) and is resolved via _resolve_codex_oauth_context_length().
     "gpt-5.5": 400000,
     "gpt-5.4-nano": 400000,           # 400k (not 1.05M like full 5.4)
     "gpt-5.4-mini": 400000,           # 400k (not 1.05M like full 5.4)
@@ -1005,6 +1006,115 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> 
     return None
 
 
+# Known ChatGPT Codex OAuth context windows (observed via live
+# chatgpt.com/backend-api/codex/models probe, Apr 2026). These are the
+# `context_window` values, which are what Codex actually enforces — the
+# direct OpenAI API has larger limits for the same slugs, but Codex OAuth
+# caps lower (e.g. gpt-5.5 is 1.05M on the API, 272K on Codex).
+#
+# Used as a fallback when the live probe fails (no token, network error).
+# Longest keys first so substring match picks the most specific entry.
+_CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
+    "gpt-5.1-codex-max": 272_000,
+    "gpt-5.1-codex-mini": 272_000,
+    "gpt-5.3-codex": 272_000,
+    "gpt-5.2-codex": 272_000,
+    "gpt-5.4-mini": 272_000,
+    "gpt-5.5": 272_000,
+    "gpt-5.4": 272_000,
+    "gpt-5.2": 272_000,
+    "gpt-5": 272_000,
+}
+
+
+_codex_oauth_context_cache: Dict[str, int] = {}
+_codex_oauth_context_cache_time: float = 0.0
+_CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
+
+
+def _fetch_codex_oauth_context_lengths(access_token: str) -> Dict[str, int]:
+    """Probe the ChatGPT Codex /models endpoint for per-slug context windows.
+
+    Codex OAuth imposes its own context limits that differ from the direct
+    OpenAI API (e.g. gpt-5.5 is 1.05M on the API, 272K on Codex). The
+    `context_window` field in each model entry is the authoritative source.
+
+    Returns a ``{slug: context_window}`` dict. Empty on failure.
+    """
+    global _codex_oauth_context_cache, _codex_oauth_context_cache_time
+    now = time.time()
+    if (
+        _codex_oauth_context_cache
+        and now - _codex_oauth_context_cache_time < _CODEX_OAUTH_CONTEXT_CACHE_TTL
+    ):
+        return _codex_oauth_context_cache
+
+    try:
+        resp = requests.get(
+            "https://chatgpt.com/backend-api/codex/models?client_version=1.0.0",
+            headers={"Authorization": f"Bearer {access_token}"},
+            timeout=10,
+        )
+        if resp.status_code != 200:
+            logger.debug(
+                "Codex /models probe returned HTTP %s; falling back to hardcoded defaults",
+                resp.status_code,
+            )
+            return {}
+        data = resp.json()
+    except Exception as exc:
+        logger.debug("Codex /models probe failed: %s", exc)
+        return {}
+
+    entries = data.get("models", []) if isinstance(data, dict) else []
+    result: Dict[str, int] = {}
+    for item in entries:
+        if not isinstance(item, dict):
+            continue
+        slug = item.get("slug")
+        ctx = item.get("context_window")
+        if isinstance(slug, str) and isinstance(ctx, int) and ctx > 0:
+            result[slug.strip()] = ctx
+
+    if result:
+        _codex_oauth_context_cache = result
+        _codex_oauth_context_cache_time = now
+    return result
+
+
+def _resolve_codex_oauth_context_length(
+    model: str, access_token: str = ""
+) -> Optional[int]:
+    """Resolve a Codex OAuth model's real context window.
+
+    Prefers a live probe of chatgpt.com/backend-api/codex/models (when we
+    have a bearer token), then falls back to ``_CODEX_OAUTH_CONTEXT_FALLBACK``.
+    """
+    model_bare = _strip_provider_prefix(model).strip()
+    if not model_bare:
+        return None
+
+    if access_token:
+        live = _fetch_codex_oauth_context_lengths(access_token)
+        if model_bare in live:
+            return live[model_bare]
+        # Case-insensitive match in case casing drifts
+        model_lower = model_bare.lower()
+        for slug, ctx in live.items():
+            if slug.lower() == model_lower:
+                return ctx
+
+    # Fallback: longest-key-first substring match over hardcoded defaults.
+    model_lower = model_bare.lower()
+    for slug, ctx in sorted(
+        _CODEX_OAUTH_CONTEXT_FALLBACK.items(), key=lambda x: len(x[0]), reverse=True
+    ):
+        if slug in model_lower:
+            return ctx
+
+    return None
+
+
 def _resolve_nous_context_length(model: str) -> Optional[int]:
     """Resolve Nous Portal model context length via OpenRouter metadata.
 
@@ -1149,6 +1259,15 @@ def get_model_context_length(
         ctx = _resolve_nous_context_length(model)
         if ctx:
             return ctx
+    if effective_provider == "openai-codex":
+        # Codex OAuth enforces lower context limits than the direct OpenAI
+        # API for the same slug (e.g. gpt-5.5 is 1.05M on the API but 272K
+        # on Codex). Authoritative source is Codex's own /models endpoint.
+        codex_ctx = _resolve_codex_oauth_context_length(model, access_token=api_key or "")
+        if codex_ctx:
+            if base_url:
+                save_context_length(model, base_url, codex_ctx)
+            return codex_ctx
     if effective_provider:
         from agent.models_dev import lookup_models_dev_context
         ctx = lookup_models_dev_context(effective_provider, model)

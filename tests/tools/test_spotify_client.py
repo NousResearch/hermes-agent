@@ -148,7 +148,7 @@ def test_get_currently_playing_returns_explanatory_empty_payload(monkeypatch: py
     }
 
 
-def test_spotify_activity_now_playing_returns_explanatory_empty_result(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_spotify_playback_get_currently_playing_returns_explanatory_empty_result(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(
         spotify_tool,
         "_spotify_client",
@@ -159,11 +159,11 @@ def test_spotify_activity_now_playing_returns_explanatory_empty_result(monkeypat
         }),
     )
 
-    payload = json.loads(spotify_tool._handle_spotify_activity({"action": "now_playing"}))
+    payload = json.loads(spotify_tool._handle_spotify_playback({"action": "get_currently_playing"}))
 
     assert payload == {
         "success": True,
-        "action": "now_playing",
+        "action": "get_currently_playing",
         "is_playing": False,
         "status_code": 204,
         "message": "Spotify is not currently playing anything. Start playback in Spotify and try again.",
@@ -242,3 +242,58 @@ def test_library_remove_uses_generic_library_endpoint(
             {"uris": ",".join(expected_uris)},
         )
     ]
+
+
+
+def test_spotify_library_tracks_list_routes_to_saved_tracks(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str] = []
+
+    class _LibStub:
+        def get_saved_tracks(self, **kw):
+            seen.append("tracks")
+            return {"items": [], "total": 0}
+
+        def get_saved_albums(self, **kw):
+            seen.append("albums")
+            return {"items": [], "total": 0}
+
+    monkeypatch.setattr(spotify_tool, "_spotify_client", lambda: _LibStub())
+    json.loads(spotify_tool._handle_spotify_library({"kind": "tracks", "action": "list"}))
+    assert seen == ["tracks"]
+
+
+def test_spotify_library_albums_list_routes_to_saved_albums(monkeypatch: pytest.MonkeyPatch) -> None:
+    seen: list[str] = []
+
+    class _LibStub:
+        def get_saved_tracks(self, **kw):
+            seen.append("tracks")
+            return {"items": [], "total": 0}
+
+        def get_saved_albums(self, **kw):
+            seen.append("albums")
+            return {"items": [], "total": 0}
+
+    monkeypatch.setattr(spotify_tool, "_spotify_client", lambda: _LibStub())
+    json.loads(spotify_tool._handle_spotify_library({"kind": "albums", "action": "list"}))
+    assert seen == ["albums"]
+
+
+def test_spotify_library_rejects_missing_kind() -> None:
+    payload = json.loads(spotify_tool._handle_spotify_library({"action": "list"}))
+    assert "kind" in (payload.get("error") or "").lower()
+
+
+def test_spotify_playback_recently_played_action(monkeypatch: pytest.MonkeyPatch) -> None:
+    """recently_played is now an action on spotify_playback (folded from spotify_activity)."""
+    seen: list[dict] = []
+
+    class _RecentStub:
+        def get_recently_played(self, **kw):
+            seen.append(kw)
+            return {"items": [{"track": {"name": "x"}}]}
+
+    monkeypatch.setattr(spotify_tool, "_spotify_client", lambda: _RecentStub())
+    payload = json.loads(spotify_tool._handle_spotify_playback({"action": "recently_played", "limit": 5}))
+    assert seen and seen[0]["limit"] == 5
+    assert isinstance(payload, dict)

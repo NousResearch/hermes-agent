@@ -152,6 +152,16 @@ def _handle_spotify_playback(args: dict, **kw) -> str:
                 return tool_error("volume_percent is required for action='set_volume'")
             result = client.set_volume(volume_percent=max(0, min(100, int(args["volume_percent"]))), device_id=args.get("device_id"))
             return tool_result({"success": True, "action": action, "result": result})
+        if action == "recently_played":
+            after = args.get("after")
+            before = args.get("before")
+            if after and before:
+                return tool_error("Provide only one of 'after' or 'before'")
+            return tool_result(client.get_recently_played(
+                limit=_coerce_limit(args.get("limit"), default=20),
+                after=int(after) if after is not None else None,
+                before=int(before) if before is not None else None,
+            ))
         return tool_error(f"Unknown spotify_playback action: {action}")
     except Exception as exc:
         return _spotify_tool_error(exc)
@@ -282,78 +292,33 @@ def _handle_spotify_albums(args: dict, **kw) -> str:
         return _spotify_tool_error(exc)
 
 
-def _handle_spotify_saved_tracks(args: dict, **kw) -> str:
+def _handle_spotify_library(args: dict, **kw) -> str:
+    """Unified handler for saved tracks + saved albums (formerly two tools)."""
+    kind = str(args.get("kind") or "").strip().lower()
+    if kind not in {"tracks", "albums"}:
+        return tool_error("kind must be one of: tracks, albums")
     action = str(args.get("action") or "list").strip().lower()
+    item_type = "track" if kind == "tracks" else "album"
     client = _spotify_client()
     try:
         if action == "list":
-            return tool_result(client.get_saved_tracks(
-                limit=_coerce_limit(args.get("limit"), default=20),
-                offset=max(0, int(args.get("offset") or 0)),
-                market=args.get("market"),
-            ))
+            limit = _coerce_limit(args.get("limit"), default=20)
+            offset = max(0, int(args.get("offset") or 0))
+            market = args.get("market")
+            if kind == "tracks":
+                return tool_result(client.get_saved_tracks(limit=limit, offset=offset, market=market))
+            return tool_result(client.get_saved_albums(limit=limit, offset=offset, market=market))
         if action == "save":
-            uris = normalize_spotify_uris(_as_list(args.get("uris") or args.get("items")), "track")
+            uris = normalize_spotify_uris(_as_list(args.get("uris") or args.get("items")), item_type)
             return tool_result(client.save_library_items(uris=uris))
         if action == "remove":
-            track_ids = [normalize_spotify_id(item, "track") for item in _as_list(args.get("ids") or args.get("items"))]
-            if not track_ids:
+            ids = [normalize_spotify_id(item, item_type) for item in _as_list(args.get("ids") or args.get("items"))]
+            if not ids:
                 return tool_error("ids/items is required for action='remove'")
-            return tool_result(client.remove_saved_tracks(track_ids=track_ids))
-        return tool_error(f"Unknown spotify_saved_tracks action: {action}")
-    except Exception as exc:
-        return _spotify_tool_error(exc)
-
-
-def _handle_spotify_saved_albums(args: dict, **kw) -> str:
-    action = str(args.get("action") or "list").strip().lower()
-    client = _spotify_client()
-    try:
-        if action == "list":
-            return tool_result(client.get_saved_albums(
-                limit=_coerce_limit(args.get("limit"), default=20),
-                offset=max(0, int(args.get("offset") or 0)),
-                market=args.get("market"),
-            ))
-        if action == "save":
-            uris = normalize_spotify_uris(_as_list(args.get("uris") or args.get("items")), "album")
-            return tool_result(client.save_library_items(uris=uris))
-        if action == "remove":
-            album_ids = [normalize_spotify_id(item, "album") for item in _as_list(args.get("ids") or args.get("items"))]
-            if not album_ids:
-                return tool_error("ids/items is required for action='remove'")
-            return tool_result(client.remove_saved_albums(album_ids=album_ids))
-        return tool_error(f"Unknown spotify_saved_albums action: {action}")
-    except Exception as exc:
-        return _spotify_tool_error(exc)
-
-
-def _handle_spotify_activity(args: dict, **kw) -> str:
-    action = str(args.get("action") or "now_playing").strip().lower()
-    client = _spotify_client()
-    try:
-        if action == "now_playing":
-            payload = client.get_currently_playing(market=args.get("market"))
-            if isinstance(payload, dict) and payload.get("empty"):
-                return tool_result({
-                    "success": True,
-                    "action": action,
-                    "is_playing": False,
-                    "status_code": payload.get("status_code", 204),
-                    "message": payload.get("message") or "Spotify is not currently playing anything.",
-                })
-            return tool_result(payload)
-        if action == "recently_played":
-            after = args.get("after")
-            before = args.get("before")
-            if after and before:
-                return tool_error("Provide only one of 'after' or 'before'")
-            return tool_result(client.get_recently_played(
-                limit=_coerce_limit(args.get("limit"), default=20),
-                after=int(after) if after is not None else None,
-                before=int(before) if before is not None else None,
-            ))
-        return tool_error(f"Unknown spotify_activity action: {action}")
+            if kind == "tracks":
+                return tool_result(client.remove_saved_tracks(track_ids=ids))
+            return tool_result(client.remove_saved_albums(album_ids=ids))
+        return tool_error(f"Unknown spotify_library action: {action}")
     except Exception as exc:
         return _spotify_tool_error(exc)
 
@@ -362,11 +327,11 @@ COMMON_STRING = {"type": "string"}
 
 SPOTIFY_PLAYBACK_SCHEMA = {
     "name": "spotify_playback",
-    "description": "Control Spotify playback or inspect the active playback state.",
+    "description": "Control Spotify playback, inspect the active playback state, or fetch recently played tracks.",
     "parameters": {
         "type": "object",
         "properties": {
-            "action": {"type": "string", "enum": ["get_state", "get_currently_playing", "play", "pause", "next", "previous", "seek", "set_repeat", "set_shuffle", "set_volume"]},
+            "action": {"type": "string", "enum": ["get_state", "get_currently_playing", "play", "pause", "next", "previous", "seek", "set_repeat", "set_shuffle", "set_volume", "recently_played"]},
             "device_id": COMMON_STRING,
             "market": COMMON_STRING,
             "context_uri": COMMON_STRING,
@@ -375,6 +340,9 @@ SPOTIFY_PLAYBACK_SCHEMA = {
             "position_ms": {"type": "integer"},
             "state": {"description": "For set_repeat use track/context/off. For set_shuffle use boolean-like true/false.", "oneOf": [{"type": "string"}, {"type": "boolean"}]},
             "volume_percent": {"type": "integer"},
+            "limit": {"type": "integer", "description": "For recently_played: number of tracks (max 50)"},
+            "after": {"type": "integer", "description": "For recently_played: Unix ms cursor (after this timestamp)"},
+            "before": {"type": "integer", "description": "For recently_played: Unix ms cursor (before this timestamp)"},
         },
         "required": ["action"],
     },
@@ -466,12 +434,13 @@ SPOTIFY_ALBUMS_SCHEMA = {
     },
 }
 
-SPOTIFY_SAVED_TRACKS_SCHEMA = {
-    "name": "spotify_saved_tracks",
-    "description": "List, save, or remove the user's saved Spotify tracks.",
+SPOTIFY_LIBRARY_SCHEMA = {
+    "name": "spotify_library",
+    "description": "List, save, or remove the user's saved Spotify tracks or albums. Use `kind` to select which.",
     "parameters": {
         "type": "object",
         "properties": {
+            "kind": {"type": "string", "enum": ["tracks", "albums"], "description": "Which library to operate on"},
             "action": {"type": "string", "enum": ["list", "save", "remove"]},
             "limit": {"type": "integer"},
             "offset": {"type": "integer"},
@@ -480,41 +449,7 @@ SPOTIFY_SAVED_TRACKS_SCHEMA = {
             "ids": {"type": "array", "items": COMMON_STRING},
             "items": {"type": "array", "items": COMMON_STRING},
         },
-        "required": ["action"],
-    },
-}
-
-SPOTIFY_SAVED_ALBUMS_SCHEMA = {
-    "name": "spotify_saved_albums",
-    "description": "List, save, or remove the user's saved Spotify albums.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "action": {"type": "string", "enum": ["list", "save", "remove"]},
-            "limit": {"type": "integer"},
-            "offset": {"type": "integer"},
-            "market": COMMON_STRING,
-            "uris": {"type": "array", "items": COMMON_STRING},
-            "ids": {"type": "array", "items": COMMON_STRING},
-            "items": {"type": "array", "items": COMMON_STRING},
-        },
-        "required": ["action"],
-    },
-}
-
-SPOTIFY_ACTIVITY_SCHEMA = {
-    "name": "spotify_activity",
-    "description": "Inspect now playing or recently played Spotify activity.",
-    "parameters": {
-        "type": "object",
-        "properties": {
-            "action": {"type": "string", "enum": ["now_playing", "recently_played"]},
-            "market": COMMON_STRING,
-            "limit": {"type": "integer"},
-            "after": {"type": "integer"},
-            "before": {"type": "integer"},
-        },
-        "required": ["action"],
+        "required": ["kind", "action"],
     },
 }
 
@@ -525,6 +460,4 @@ registry.register(name="spotify_queue", toolset="spotify", schema=SPOTIFY_QUEUE_
 registry.register(name="spotify_search", toolset="spotify", schema=SPOTIFY_SEARCH_SCHEMA, handler=_handle_spotify_search, check_fn=_check_spotify_available, emoji="🔎")
 registry.register(name="spotify_playlists", toolset="spotify", schema=SPOTIFY_PLAYLISTS_SCHEMA, handler=_handle_spotify_playlists, check_fn=_check_spotify_available, emoji="📚")
 registry.register(name="spotify_albums", toolset="spotify", schema=SPOTIFY_ALBUMS_SCHEMA, handler=_handle_spotify_albums, check_fn=_check_spotify_available, emoji="💿")
-registry.register(name="spotify_saved_tracks", toolset="spotify", schema=SPOTIFY_SAVED_TRACKS_SCHEMA, handler=_handle_spotify_saved_tracks, check_fn=_check_spotify_available, emoji="❤️")
-registry.register(name="spotify_saved_albums", toolset="spotify", schema=SPOTIFY_SAVED_ALBUMS_SCHEMA, handler=_handle_spotify_saved_albums, check_fn=_check_spotify_available, emoji="💽")
-registry.register(name="spotify_activity", toolset="spotify", schema=SPOTIFY_ACTIVITY_SCHEMA, handler=_handle_spotify_activity, check_fn=_check_spotify_available, emoji="🕘")
+registry.register(name="spotify_library", toolset="spotify", schema=SPOTIFY_LIBRARY_SCHEMA, handler=_handle_spotify_library, check_fn=_check_spotify_available, emoji="❤️")

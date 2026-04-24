@@ -26,7 +26,7 @@ Optional hooks (override to opt in):
   on_turn_start(turn, message, **kwargs) — per-turn tick with runtime context
   on_session_end(messages)               — end-of-session extraction
   on_pre_compress(messages) -> str       — extract before context compression
-  on_memory_write(action, target, content) — mirror built-in memory writes
+  on_memory_write(action, target, content, metadata=None) — mirror built-in memory writes
   on_delegation(task, result, **kwargs)  — parent-side observation of subagent work
 """
 
@@ -34,7 +34,7 @@ from __future__ import annotations
 
 import logging
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -220,12 +220,21 @@ class MemoryProvider(ABC):
           should all have ``env_var`` set and this method stays no-op).
         """
 
-    def on_memory_write(self, action: str, target: str, content: str) -> None:
+    def on_memory_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Called when the built-in memory tool writes an entry.
 
         action: 'add', 'replace', or 'remove'
         target: 'memory' or 'user'
         content: the entry content
+        metadata: structured provenance for the write, when available. Common
+          keys include ``write_origin``, ``execution_context``, ``session_id``,
+          ``parent_session_id``, ``platform``, and ``tool_name``.
 
         Use to mirror built-in memory writes to your backend.
         """

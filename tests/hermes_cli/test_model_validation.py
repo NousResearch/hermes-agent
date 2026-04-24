@@ -220,13 +220,30 @@ class TestProviderModelIds:
              patch("hermes_cli.models._fetch_github_models", return_value=["gpt-5.4", "claude-sonnet-4.6"]):
             assert provider_model_ids("copilot-acp") == ["gpt-5.4", "claude-sonnet-4.6"]
 
+    def test_copilot_falls_back_to_curated_defaults_without_stale_opus(self):
+        with patch("hermes_cli.models._resolve_copilot_catalog_api_key", return_value="gh-token"), \
+             patch("hermes_cli.models._fetch_github_models", return_value=None):
+            ids = provider_model_ids("copilot")
+
+        assert "gpt-5.4" in ids
+        assert "claude-sonnet-4.6" in ids
+        assert "claude-sonnet-4" in ids
+        assert "claude-sonnet-4.5" in ids
+        assert "claude-haiku-4.5" in ids
+        assert "gemini-3.1-pro-preview" in ids
+        assert "claude-opus-4.6" not in ids
+
     def test_copilot_acp_falls_back_to_copilot_defaults(self):
-        with patch("hermes_cli.auth.resolve_api_key_provider_credentials", side_effect=Exception("no token")), \
+        with patch("hermes_cli.models._resolve_copilot_catalog_api_key", return_value="gh-token"), \
              patch("hermes_cli.models._fetch_github_models", return_value=None):
             ids = provider_model_ids("copilot-acp")
 
         assert "gpt-5.4" in ids
+        assert "claude-sonnet-4.6" in ids
+        assert "claude-sonnet-4" in ids
+        assert "gemini-3.1-pro-preview" in ids
         assert "copilot-acp" not in ids
+        assert "claude-opus-4.6" not in ids
 
 
 # -- fetch_api_models --------------------------------------------------------

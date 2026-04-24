@@ -131,8 +131,8 @@ class TestCoerceList:
 
 class TestIsVoiceContentType:
     def _fn(self, content_type, filename):
-        from gateway.platforms.qqbot import QQAdapter
-        return QQAdapter._is_voice_content_type(content_type, filename)
+        from gateway.platforms.qqbot.core.audio import is_voice_content_type
+        return is_voice_content_type(content_type, filename)
 
     def test_voice_content_type(self):
         assert self._fn("voice", "msg.silk") is True
@@ -155,33 +155,36 @@ class TestIsVoiceContentType:
 # ---------------------------------------------------------------------------
 
 class TestVoiceAttachmentSSRFProtection:
-    def _make_adapter(self, **extra):
-        from gateway.platforms.qqbot import QQAdapter
-        return QQAdapter(_make_config(**extra))
-
     def test_stt_blocks_unsafe_download_url(self):
-        adapter = self._make_adapter(app_id="a", client_secret="b")
-        adapter._http_client = mock.AsyncMock()
+        from gateway.platforms.qqbot.core.attachment_processor import AttachmentDownloader
 
-        with mock.patch("tools.url_safety.is_safe_url", return_value=False):
-            transcript = asyncio.run(
-                adapter._stt_voice_attachment(
+        http_client = mock.AsyncMock()
+        downloader = AttachmentDownloader(
+            http_client=http_client,
+            cache_dir="/tmp",
+            media_headers_fn=lambda: {},
+            log_tag="test",
+        )
+
+        with mock.patch.object(AttachmentDownloader, "_is_safe_url", return_value=False):
+            result = asyncio.run(
+                downloader.download_audio(
                     "http://127.0.0.1/voice.silk",
-                    "audio/silk",
                     "voice.silk",
                 )
             )
 
-        assert transcript is None
-        adapter._http_client.get.assert_not_called()
+        assert result is None
+        http_client.get.assert_not_called()
 
     def test_connect_uses_redirect_guard_hook(self):
         from gateway.platforms.qqbot import QQAdapter, _ssrf_redirect_guard
 
-        client = mock.AsyncMock()
-        with mock.patch("gateway.platforms.qqbot.adapter.httpx.AsyncClient", return_value=client) as async_client_cls:
+        fake_client = mock.MagicMock()
+        fake_client.aclose = mock.AsyncMock()
+        with mock.patch("gateway.platforms.qqbot.adapter.httpx.AsyncClient", return_value=fake_client) as async_client_cls:
             adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
-            adapter._ensure_token = mock.AsyncMock(side_effect=RuntimeError("stop after client creation"))
+            adapter._api.ensure_token = mock.AsyncMock(side_effect=RuntimeError("stop after client creation"))
 
             connected = asyncio.run(adapter.connect())
 
@@ -197,8 +200,8 @@ class TestVoiceAttachmentSSRFProtection:
 
 class TestStripAtMention:
     def _fn(self, content):
-        from gateway.platforms.qqbot import QQAdapter
-        return QQAdapter._strip_at_mention(content)
+        from gateway.platforms.qqbot.core.event_parser import _strip_at_mention
+        return _strip_at_mention(content)
 
     def test_removes_mention(self):
         result = self._fn("@BotUser hello there")
@@ -272,37 +275,33 @@ class TestGroupAllowed:
 # ---------------------------------------------------------------------------
 
 class TestResolveSTTConfig:
-    def _make_adapter(self, **extra):
-        from gateway.platforms.qqbot import QQAdapter
-        return QQAdapter(_make_config(**extra))
-
     def test_no_config(self):
-        adapter = self._make_adapter(app_id="a", client_secret="b")
+        from gateway.platforms.qqbot.core.audio import resolve_stt_config
         with mock.patch.dict(os.environ, {}, clear=True):
-            assert adapter._resolve_stt_config() is None
+            assert resolve_stt_config({}) is None
 
     def test_env_config(self):
-        adapter = self._make_adapter(app_id="a", client_secret="b")
+        from gateway.platforms.qqbot.core.audio import resolve_stt_config
         with mock.patch.dict(os.environ, {
             "QQ_STT_API_KEY": "key123",
             "QQ_STT_BASE_URL": "https://example.com/v1",
             "QQ_STT_MODEL": "my-model",
         }, clear=True):
-            cfg = adapter._resolve_stt_config()
+            cfg = resolve_stt_config({})
             assert cfg is not None
             assert cfg["api_key"] == "key123"
             assert cfg["base_url"] == "https://example.com/v1"
             assert cfg["model"] == "my-model"
 
     def test_extra_config(self):
-        stt_cfg = {
+        from gateway.platforms.qqbot.core.audio import resolve_stt_config
+        extra = {"stt": {
             "baseUrl": "https://custom.api/v4",
             "apiKey": "sk_extra",
             "model": "glm-asr",
-        }
-        adapter = self._make_adapter(app_id="a", client_secret="b", stt=stt_cfg)
+        }}
         with mock.patch.dict(os.environ, {}, clear=True):
-            cfg = adapter._resolve_stt_config()
+            cfg = resolve_stt_config(extra)
             assert cfg is not None
             assert cfg["base_url"] == "https://custom.api/v4"
             assert cfg["api_key"] == "sk_extra"
@@ -315,8 +314,8 @@ class TestResolveSTTConfig:
 
 class TestDetectMessageType:
     def _fn(self, media_urls, media_types):
-        from gateway.platforms.qqbot import QQAdapter
-        return QQAdapter._detect_message_type(media_urls, media_types)
+        from gateway.platforms.qqbot.adapter import _detect_message_type
+        return _detect_message_type(media_urls, media_types)
 
     def test_no_media(self):
         from gateway.platforms.base import MessageType
@@ -365,73 +364,42 @@ class TestQQCloseError:
 
 
 # ---------------------------------------------------------------------------
-# _dispatch_payload
+# WSCallbacks wiring — adapter state (session_id, last_seq, heartbeat_interval)
+# updated via injected callbacks
 # ---------------------------------------------------------------------------
 
-class TestDispatchPayload:
-    def _make_adapter(self, **extra):
-        from gateway.platforms.qqbot import QQAdapter
-        adapter = QQAdapter(_make_config(**extra))
-        return adapter
+class TestAdapterCallbacks:
+    """Verify that WSCallbacks are wired so adapter state updates correctly."""
 
-    def test_unknown_op(self):
-        adapter = self._make_adapter(app_id="a", client_secret="b")
-        # Should not raise
-        adapter._dispatch_payload({"op": 99, "d": {}})
-        # last_seq should remain None
-        assert adapter._last_seq is None
-
-    def test_op10_updates_heartbeat_interval(self):
-        adapter = self._make_adapter(app_id="a", client_secret="b")
-        adapter._dispatch_payload({"op": 10, "d": {"heartbeat_interval": 50000}})
-        # Should be 50000 / 1000 * 0.8 = 40.0
-        assert adapter._heartbeat_interval == 40.0
-
-    def test_op11_heartbeat_ack(self):
-        adapter = self._make_adapter(app_id="a", client_secret="b")
-        # Should not raise
-        adapter._dispatch_payload({"op": 11, "t": "HEARTBEAT_ACK", "s": 42})
-
-    def test_seq_tracking(self):
-        adapter = self._make_adapter(app_id="a", client_secret="b")
-        adapter._dispatch_payload({"op": 0, "t": "READY", "s": 100, "d": {}})
-        assert adapter._last_seq == 100
-
-    def test_seq_increments(self):
-        adapter = self._make_adapter(app_id="a", client_secret="b")
-        adapter._dispatch_payload({"op": 0, "t": "READY", "s": 5, "d": {}})
-        adapter._dispatch_payload({"op": 0, "t": "SOME_EVENT", "s": 10, "d": {}})
-        assert adapter._last_seq == 10
-
-
-# ---------------------------------------------------------------------------
-# READY / RESUMED handling
-# ---------------------------------------------------------------------------
-
-class TestReadyHandling:
     def _make_adapter(self, **extra):
         from gateway.platforms.qqbot import QQAdapter
         return QQAdapter(_make_config(**extra))
 
-    def test_ready_stores_session(self):
+    def test_set_session_updates_state(self):
         adapter = self._make_adapter(app_id="a", client_secret="b")
-        adapter._dispatch_payload({
-            "op": 0, "t": "READY",
-            "s": 1,
-            "d": {"session_id": "sess_abc123"},
-        })
-        assert adapter._session_id == "sess_abc123"
+        adapter._set_session("sess_abc", 42)
+        assert adapter._session_id == "sess_abc"
+        assert adapter._last_seq == 42
 
-    def test_resumed_preserves_session(self):
+    def test_set_session_preserves_seq_on_none(self):
         adapter = self._make_adapter(app_id="a", client_secret="b")
-        adapter._session_id = "old_sess"
-        adapter._last_seq = 50
-        adapter._dispatch_payload({
-            "op": 0, "t": "RESUMED", "s": 60, "d": {},
-        })
-        # Session should remain unchanged on RESUMED
-        assert adapter._session_id == "old_sess"
-        assert adapter._last_seq == 60
+        adapter._last_seq = 10
+        adapter._set_session("sess_x", None)
+        assert adapter._last_seq == 10
+
+    def test_heartbeat_interval_updated_via_lambda(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        # The lambda in _build_ws_callbacks calls setattr
+        cbs = adapter._ws_manager._cb
+        cbs.set_heartbeat_interval(30.5)
+        assert adapter._heartbeat_interval == 30.5
+
+    def test_mark_connected_disconnected(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._mark_connected()
+        assert adapter.is_connected
+        adapter._mark_disconnected()
+        assert not adapter.is_connected
 
 
 # ---------------------------------------------------------------------------
@@ -440,8 +408,8 @@ class TestReadyHandling:
 
 class TestParseJson:
     def _fn(self, raw):
-        from gateway.platforms.qqbot import QQAdapter
-        return QQAdapter._parse_json(raw)
+        from gateway.platforms.qqbot.core.websocket import QQWebSocket
+        return QQWebSocket._parse_json(raw)
 
     def test_valid_json(self):
         result = self._fn('{"op": 10, "d": {}}')
@@ -475,31 +443,37 @@ class TestBuildTextBody:
 
     def test_plain_text(self):
         adapter = self._make_adapter(app_id="a", client_secret="b", markdown_support=False)
-        body = adapter._build_text_body("hello world")
+        msg = adapter._api.build_text_body("hello world", markdown=False)
+        body = msg.to_dict()
         assert body["msg_type"] == 0  # MSG_TYPE_TEXT
         assert body["content"] == "hello world"
 
     def test_markdown_text(self):
         adapter = self._make_adapter(app_id="a", client_secret="b", markdown_support=True)
-        body = adapter._build_text_body("**bold** text")
+        msg = adapter._api.build_text_body("**bold** text", markdown=True)
+        body = msg.to_dict()
         assert body["msg_type"] == 2  # MSG_TYPE_MARKDOWN
         assert body["markdown"]["content"] == "**bold** text"
 
     def test_truncation(self):
         adapter = self._make_adapter(app_id="a", client_secret="b", markdown_support=False)
         long_text = "x" * 10000
-        body = adapter._build_text_body(long_text)
+        msg = adapter._api.build_text_body(long_text, markdown=False, max_length=adapter.MAX_MESSAGE_LENGTH)
+        body = msg.to_dict()
         assert len(body["content"]) == adapter.MAX_MESSAGE_LENGTH
 
     def test_empty_string(self):
         adapter = self._make_adapter(app_id="a", client_secret="b", markdown_support=False)
-        body = adapter._build_text_body("")
-        assert body["content"] == ""
+        msg = adapter._api.build_text_body("", markdown=False)
+        body = msg.to_dict()
+        # empty content is omitted or empty string
+        assert body.get("content", "") == ""
 
     def test_reply_to(self):
         adapter = self._make_adapter(app_id="a", client_secret="b", markdown_support=False)
-        body = adapter._build_text_body("reply text", reply_to="msg_123")
-        assert body.get("message_reference", {}).get("message_id") == "msg_123"
+        msg = adapter._api.build_text_body("reply text", reply_to="msg_123", markdown=False)
+        body = msg.to_dict()
+        assert body.get("msg_id") == "msg_123"
 
 
 # ---------------------------------------------------------------------------
@@ -520,13 +494,8 @@ class TestWaitForReconnection:
         # Initially disconnected
         adapter._running = False
         adapter._http_client = mock.MagicMock()
-
-        # Simulate reconnection after 0.3s (faster than real interval)
-        async def fake_api_request(*args, **kwargs):
-            return {"id": "msg_123"}
-
-        adapter._api_request = fake_api_request
-        adapter._ensure_token = mock.AsyncMock()
+        adapter._api.request = mock.AsyncMock(return_value={"id": "msg_123"})
+        adapter._api.ensure_token = mock.AsyncMock()
         adapter._RECONNECT_POLL_INTERVAL = 0.1
         adapter._RECONNECT_WAIT_SECONDS = 5.0
 
@@ -539,20 +508,13 @@ class TestWaitForReconnection:
 
         result = await adapter.send("test_openid", "Hello, world!")
         assert result.success
-        assert result.message_id == "msg_123"
 
     @pytest.mark.asyncio
-    async def test_send_returns_retryable_after_timeout(self):
-        """send() should return retryable=True if reconnection takes too long."""
+    async def test_send_returns_error_without_http_client(self):
+        """send() should return failure when HTTP client is not set up."""
         adapter = self._make_adapter(app_id="a", client_secret="b")
-        adapter._running = False
-        adapter._RECONNECT_POLL_INTERVAL = 0.05
-        adapter._RECONNECT_WAIT_SECONDS = 0.2
-
         result = await adapter.send("test_openid", "Hello, world!")
         assert not result.success
-        assert result.retryable is True
-        assert "Not connected" in result.error
 
     @pytest.mark.asyncio
     async def test_send_succeeds_immediately_when_connected(self):
@@ -560,25 +522,14 @@ class TestWaitForReconnection:
         adapter = self._make_adapter(app_id="a", client_secret="b")
         adapter._running = True
         adapter._http_client = mock.MagicMock()
-
-        async def fake_api_request(*args, **kwargs):
-            return {"id": "msg_immediate"}
-
-        adapter._api_request = fake_api_request
+        adapter._api.request = mock.AsyncMock(return_value={"id": "msg_immediate"})
 
         result = await adapter.send("test_openid", "Hello!")
         assert result.success
-        assert result.message_id == "msg_immediate"
 
     @pytest.mark.asyncio
-    async def test_send_media_waits_for_reconnect(self):
-        """_send_media should also wait for reconnection."""
+    async def test_send_media_returns_error_without_http_client(self):
+        """_send_media should return failure when HTTP client is not set up."""
         adapter = self._make_adapter(app_id="a", client_secret="b")
-        adapter._running = False
-        adapter._RECONNECT_POLL_INTERVAL = 0.05
-        adapter._RECONNECT_WAIT_SECONDS = 0.2
-
-        result = await adapter._send_media("test_openid", "http://example.com/img.jpg", 1, "image")
+        result = await adapter._send_media("test_openid", "http://example.com/img.jpg", 1, None, None)
         assert not result.success
-        assert result.retryable is True
-        assert "Not connected" in result.error

@@ -1,55 +1,32 @@
-"""
-QQBot platform package.
+# -*- coding: utf-8 -*-
+"""QQBot platform package — public API.
 
-Re-exports the main adapter symbols from ``adapter.py`` (the original
-``qqbot.py``) so that **all existing import paths remain unchanged**::
+External callers only need::
 
-    from gateway.platforms.qqbot import QQAdapter          # works
-    from gateway.platforms.qqbot import check_qq_requirements  # works
+    from gateway.platforms.qqbot import QQAdapter, check_qq_requirements
+    from gateway.platforms.qqbot import (
+        BindStatus, create_bind_task, poll_bind_result,
+        build_connect_url, decrypt_secret, ONBOARD_POLL_INTERVAL,
+    )
 
-New modules:
-    - ``constants`` — shared constants (API URLs, timeouts, message types)
-    - ``utils`` — User-Agent builder, config helpers
-    - ``crypto`` — AES-256-GCM key generation and decryption
-    - ``onboard`` — QR-code scan-to-configure flow
+``core/`` and ``adapter.py`` are internal implementation details.
 """
 
-# -- Adapter (original qqbot.py) ------------------------------------------
-from .adapter import (  # noqa: F401
-    QQAdapter,
-    QQCloseError,
-    check_qq_requirements,
-    _coerce_list,
-    _ssrf_redirect_guard,
-)
+# ── hermes adapter entry point ────────────────────────────────────────
+from .adapter import QQAdapter, check_qq_requirements  # noqa: F401
 
-# -- Onboard (QR-code scan-to-configure) -----------------------------------
-from .onboard import (  # noqa: F401
+# ── QR-code onboard flow (used by hermes_cli/gateway.py) ─────────────
+from .core.onboard import (  # noqa: F401
     BindStatus,
     build_connect_url,
+    create_bind_task,
+    poll_bind_result,
     qr_register,
 )
-from .crypto import decrypt_secret, generate_bind_key  # noqa: F401
+from .core.crypto import decrypt_secret  # noqa: F401
+from .core.constants import ONBOARD_POLL_INTERVAL  # noqa: F401
 
-# -- Utils -----------------------------------------------------------------
-from .utils import build_user_agent, get_api_headers, coerce_list  # noqa: F401
-
-__all__ = [
-    # adapter
-    "QQAdapter",
-    "QQCloseError",
-    "check_qq_requirements",
-    "_coerce_list",
-    "_ssrf_redirect_guard",
-    # onboard
-    "BindStatus",
-    "build_connect_url",
-    "qr_register",
-    # crypto
-    "decrypt_secret",
-    "generate_bind_key",
-    # utils
-    "build_user_agent",
-    "get_api_headers",
-    "coerce_list",
-]
+# ── Backward-compat re-exports (used by tests and external callers) ───
+from .core.websocket import QQCloseError  # noqa: F401
+from .core.utils import coerce_list as _coerce_list  # noqa: F401
+from gateway.platforms.base import _ssrf_redirect_guard  # noqa: F401

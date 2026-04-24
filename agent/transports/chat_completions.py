@@ -347,10 +347,10 @@ class ChatCompletionsTransport(ProviderTransport):
         reasoning_content = getattr(msg, "reasoning_content", None)
 
         provider_data: Dict[str, Any] = {}
-        if reasoning_content:
+        if reasoning_content is not None:
             provider_data["reasoning_content"] = reasoning_content
         rd = getattr(msg, "reasoning_details", None)
-        if rd:
+        if rd is not None:
             provider_data["reasoning_details"] = rd
 
         return NormalizedResponse(

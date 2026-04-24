@@ -2831,14 +2831,18 @@ class AIAgent:
         reasoning_parts = []
         
         # Check direct reasoning field
-        if hasattr(assistant_message, 'reasoning') and assistant_message.reasoning:
-            reasoning_parts.append(assistant_message.reasoning)
+        if hasattr(assistant_message, 'reasoning'):
+            r = getattr(assistant_message, 'reasoning')
+            if isinstance(r, str):
+                reasoning_parts.append(r)
         
         # Check reasoning_content field (alternative name used by some providers)
-        if hasattr(assistant_message, 'reasoning_content') and assistant_message.reasoning_content:
-            # Don't duplicate if same as reasoning
-            if assistant_message.reasoning_content not in reasoning_parts:
-                reasoning_parts.append(assistant_message.reasoning_content)
+        if hasattr(assistant_message, 'reasoning_content'):
+            rc = getattr(assistant_message, 'reasoning_content')
+            if isinstance(rc, str):
+                # Don't duplicate if same as reasoning
+                if rc not in reasoning_parts:
+                    reasoning_parts.append(rc)
         
         # Check reasoning_details array (OpenRouter unified format)
         # Format: [{"type": "reasoning.summary", "summary": "...", ...}, ...]
@@ -7320,6 +7324,7 @@ class AIAgent:
         model = (self.model or "").lower()
         reasoning_model_prefixes = (
             "deepseek/",
+            "deepseek-",
             "anthropic/",
             "openai/",
             "x-ai/",
@@ -7515,17 +7520,21 @@ class AIAgent:
             return
 
         normalized_reasoning = source_msg.get("reasoning")
-        if isinstance(normalized_reasoning, str) and normalized_reasoning:
+        if isinstance(normalized_reasoning, str):
             api_msg["reasoning_content"] = normalized_reasoning
             return
 
-        kimi_requires_reasoning = (
-            self.provider in {"kimi-coding", "kimi-coding-cn"}
+        # DeepSeek and Kimi (Moonshot) require reasoning_content (even if empty)
+        # on assistant tool-call messages when in thinking mode.
+        requires_reasoning = (
+            self.provider in {"kimi-coding", "kimi-coding-cn", "deepseek"}
             or base_url_host_matches(self.base_url, "api.kimi.com")
             or base_url_host_matches(self.base_url, "moonshot.ai")
             or base_url_host_matches(self.base_url, "moonshot.cn")
+            or base_url_host_matches(self.base_url, "api.deepseek.com")
+            or "deepseek" in (self.model or "").lower()
         )
-        if kimi_requires_reasoning and source_msg.get("tool_calls"):
+        if requires_reasoning and source_msg.get("tool_calls"):
             api_msg["reasoning_content"] = ""
 
     @staticmethod

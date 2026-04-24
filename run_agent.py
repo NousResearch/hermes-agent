@@ -7556,7 +7556,12 @@ class AIAgent:
             except Exception:
                 pass
 
-        compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
+        try:
+            compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
+        except TypeError:
+            # Plugin context engine with strict signature that doesn't accept
+            # focus_topic — fall back to calling without it.
+            compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens)
 
         todo_snapshot = self._todo_store.format_for_injection()
         if todo_snapshot:

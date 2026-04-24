@@ -53,6 +53,7 @@ export interface Translations {
     brand: string;
     brandShort: string;
     closeNavigation: string;
+    closeModelTools: string;
     footer: {
       org: string;
     };
@@ -76,6 +77,8 @@ export interface Translations {
       sessions: string;
       skills: string;
     };
+    modelToolsSheetSubtitle: string;
+    modelToolsSheetTitle: string;
     navigation: string;
     openDocumentation: string;
     openNavigation: string;

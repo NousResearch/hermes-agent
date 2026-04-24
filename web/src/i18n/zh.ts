@@ -52,6 +52,7 @@ export const zh: Translations = {
     brand: "Hermes Agent",
     brandShort: "HA",
     closeNavigation: "关闭导航",
+    closeModelTools: "关闭模型与工具",
     footer: {
       org: "Nous Research",
     },
@@ -75,6 +76,8 @@ export const zh: Translations = {
       sessions: "会话",
       skills: "技能",
     },
+    modelToolsSheetSubtitle: "与工具",
+    modelToolsSheetTitle: "模型",
     navigation: "导航",
     openDocumentation: "在新标签页中打开文档",
     openNavigation: "打开导航",

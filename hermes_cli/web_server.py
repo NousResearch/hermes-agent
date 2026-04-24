@@ -73,6 +73,10 @@ app = FastAPI(title="Hermes Agent", version=__version__)
 _SESSION_TOKEN = secrets.token_urlsafe(32)
 _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 
+# In-browser Chat tab (/chat, /api/pty, …).  Off unless ``hermes dashboard --tui``
+# or HERMES_DASHBOARD_TUI=1.  Set from :func:`start_server`.
+_DASHBOARD_EMBEDDED_CHAT_ENABLED = False
+
 # Simple rate limiter for the reveal endpoint
 _reveal_timestamps: List[float] = []
 _REVEAL_MAX_PER_WINDOW = 5
@@ -2370,6 +2374,10 @@ def _channel_or_close_code(ws: WebSocket) -> Optional[str]:
 
 @app.websocket("/api/pty")
 async def pty_ws(ws: WebSocket) -> None:
+    if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
+        await ws.close(code=4403)
+        return
+
     # --- auth + loopback check (before accept so we can close cleanly) ---
     token = ws.query_params.get("token", "")
     expected = _SESSION_TOKEN
@@ -2476,6 +2484,10 @@ async def pty_ws(ws: WebSocket) -> None:
 
 @app.websocket("/api/ws")
 async def gateway_ws(ws: WebSocket) -> None:
+    if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
+        await ws.close(code=4403)
+        return
+
     token = ws.query_params.get("token", "")
     if not hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
         await ws.close(code=4401)
@@ -2505,6 +2517,10 @@ async def gateway_ws(ws: WebSocket) -> None:
 
 @app.websocket("/api/pub")
 async def pub_ws(ws: WebSocket) -> None:
+    if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
+        await ws.close(code=4403)
+        return
+
     token = ws.query_params.get("token", "")
     if not hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
         await ws.close(code=4401)
@@ -2531,6 +2547,10 @@ async def pub_ws(ws: WebSocket) -> None:
 
 @app.websocket("/api/events")
 async def events_ws(ws: WebSocket) -> None:
+    if not _DASHBOARD_EMBEDDED_CHAT_ENABLED:
+        await ws.close(code=4403)
+        return
+
     token = ws.query_params.get("token", "")
     if not hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
         await ws.close(code=4401)
@@ -2591,8 +2611,10 @@ def mount_spa(application: FastAPI):
     def _serve_index():
         """Return index.html with the session token injected."""
         html = _index_path.read_text()
+        chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         token_script = (
-            f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";</script>'
+            f'<script>window.__HERMES_SESSION_TOKEN__="{_SESSION_TOKEN}";'
+            f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};</script>"
         )
         html = html.replace("</head>", f"{token_script}</head>", 1)
         return HTMLResponse(
@@ -3105,9 +3127,14 @@ def start_server(
     port: int = 9119,
     open_browser: bool = True,
     allow_public: bool = False,
+    *,
+    embedded_chat: bool = False,
 ):
     """Start the web UI server."""
     import uvicorn
+
+    global _DASHBOARD_EMBEDDED_CHAT_ENABLED
+    _DASHBOARD_EMBEDDED_CHAT_ENABLED = embedded_chat
 
     _LOCALHOST = ("127.0.0.1", "localhost", "::1")
     if host not in _LOCALHOST and not allow_public:

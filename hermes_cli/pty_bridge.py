@@ -96,10 +96,18 @@ class PtyBridge:
         ordinary exec failures (missing binary, bad cwd, etc.).
         """
         if not _PTY_AVAILABLE:
-            raise PtyUnavailableError(
-                "Pseudo-terminals are unavailable on this platform. "
-                "Hermes Agent supports Windows only via WSL."
-            )
+            if sys.platform.startswith("win"):
+                raise PtyUnavailableError(
+                    "Pseudo-terminals are unavailable on this platform. "
+                    "Hermes Agent supports Windows only via WSL."
+                )
+            if ptyprocess is None:
+                raise PtyUnavailableError(
+                    "The `ptyprocess` package is missing. "
+                    "Install with: pip install ptyprocess "
+                    "(or pip install -e '.[pty]')."
+                )
+            raise PtyUnavailableError("Pseudo-terminals are unavailable.")
         # Let caller-supplied env fully override inheritance; if they pass
         # None we inherit the server's env (same semantics as subprocess).
         spawn_env = os.environ.copy() if env is None else env

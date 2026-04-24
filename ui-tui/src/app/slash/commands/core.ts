@@ -10,7 +10,7 @@ import type {
 } from '../../../gatewayTypes.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
 import { configureDetectedTerminalKeybindings, configureTerminalKeybindings } from '../../../lib/terminalSetup.js'
-import type { DetailsMode, Msg, PanelSection, SectionName } from '../../../types.js'
+import type { Msg, PanelSection } from '../../../types.js'
 import type { StatusBarMode } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
@@ -38,7 +38,11 @@ const flagFromArg = (arg: string, current: boolean): boolean | null => {
   return null
 }
 
-const DETAIL_MODES = new Set(['collapsed', 'cycle', 'expanded', 'hidden', 'toggle'])
+const RESET_WORDS = new Set(['reset', 'clear', 'default'])
+const CYCLE_WORDS = new Set(['cycle', 'toggle'])
+const DETAILS_USAGE =
+  'usage: /details [hidden|collapsed|expanded|cycle]  or  /details <section> [hidden|collapsed|expanded|reset]'
+const DETAILS_SECTION_USAGE = 'usage: /details <section> [hidden|collapsed|expanded|reset]'
 
 export const coreCommands: SlashCommand[] = [
   {
@@ -150,9 +154,7 @@ export const coreCommands: SlashCommand[] = [
         gateway
           .rpc<ConfigGetValueResponse>('config.get', { key: 'details_mode' })
           .then(r => {
-            if (ctx.stale()) {
-              return
-            }
+            if (ctx.stale()) return
 
             const mode = parseDetailsMode(r?.value) ?? ui.detailsMode
             patchUiState({ detailsMode: mode })
@@ -164,58 +166,37 @@ export const coreCommands: SlashCommand[] = [
 
             transcript.sys(`details: ${mode}${overrides ? `  (${overrides})` : ''}`)
           })
-          .catch(() => {
-            if (!ctx.stale()) {
-              transcript.sys(`details: ${ui.detailsMode}`)
-            }
-          })
+          .catch(() => !ctx.stale() && transcript.sys(`details: ${ui.detailsMode}`))
 
         return
       }
 
-      const tokens = arg.trim().toLowerCase().split(/\s+/)
+      const [first, second] = arg.trim().toLowerCase().split(/\s+/)
 
-      // Per-section override: `/details <section> <mode>`
-      if (tokens.length >= 2 && isSectionName(tokens[0])) {
-        const section = tokens[0] as SectionName
-        const action = tokens[1] ?? ''
+      if (second && isSectionName(first)) {
+        const reset = RESET_WORDS.has(second)
+        const mode = reset ? null : parseDetailsMode(second)
 
-        if (action === 'reset' || action === 'clear' || action === 'default') {
-          const { [section]: _drop, ...rest } = ui.sections
-          patchUiState({ sections: rest })
-          gateway
-            .rpc<ConfigSetResponse>('config.set', { key: `details_mode.${section}`, value: '' })
-            .catch(() => {})
-          transcript.sys(`details ${section}: reset`)
-
-          return
+        if (!reset && !mode) {
+          return transcript.sys(DETAILS_SECTION_USAGE)
         }
 
-        const sectionMode = parseDetailsMode(action)
+        const { [first]: _drop, ...rest } = ui.sections
 
-        if (!sectionMode) {
-          return transcript.sys('usage: /details <section> [hidden|collapsed|expanded|reset]')
-        }
-
-        patchUiState({ sections: { ...ui.sections, [section]: sectionMode } })
+        patchUiState({ sections: mode ? { ...rest, [first]: mode } : rest })
         gateway
-          .rpc<ConfigSetResponse>('config.set', { key: `details_mode.${section}`, value: sectionMode })
+          .rpc<ConfigSetResponse>('config.set', { key: `details_mode.${first}`, value: mode ?? '' })
           .catch(() => {})
-        transcript.sys(`details ${section}: ${sectionMode}`)
+        transcript.sys(`details ${first}: ${mode ?? 'reset'}`)
 
         return
       }
 
-      // Global mode (existing behavior).
-      const mode = tokens[0] ?? ''
+      const next = CYCLE_WORDS.has(first ?? '') ? nextDetailsMode(ui.detailsMode) : parseDetailsMode(first)
 
-      if (!DETAIL_MODES.has(mode)) {
-        return transcript.sys(
-          'usage: /details [hidden|collapsed|expanded|cycle]  or  /details <section> [hidden|collapsed|expanded|reset]'
-        )
+      if (!next) {
+        return transcript.sys(DETAILS_USAGE)
       }
-
-      const next = mode === 'cycle' || mode === 'toggle' ? nextDetailsMode(ui.detailsMode) : (mode as DetailsMode)
 
       patchUiState({ detailsMode: next })
       gateway.rpc<ConfigSetResponse>('config.set', { key: 'details_mode', value: next }).catch(() => {})

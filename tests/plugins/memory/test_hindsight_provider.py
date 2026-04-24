@@ -270,7 +270,7 @@ class TestPostSetup:
         provider.post_setup(str(hermes_home), {"memory": {}})
 
         assert saved_configs[-1]["memory"]["provider"] == "hindsight"
-        assert (hermes_home / ".env").read_text() == "HINDSIGHT_LLM_API_KEY=sk-local-test\n"
+        assert (hermes_home / ".env").read_text() == "HINDSIGHT_LLM_API_KEY=sk-local-test\nHINDSIGHT_TIMEOUT=120\n"
 
         profile_env = user_home / ".hindsight" / "profiles" / "hermes.env"
         assert profile_env.exists()

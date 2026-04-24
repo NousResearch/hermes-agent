@@ -399,6 +399,8 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
         # Creation timestamps for orphaned-run TTL sweep
         self._run_streams_created: Dict[str, float] = {}
+        # WebUI-style dashboard chat streams: stream_id -> backend-owned run state.
+        self._chat_streams: Dict[str, Dict[str, Any]] = {}
         self._session_db: Optional[SessionDB] = None
         self._memory_store: Optional[MemoryStore] = None
 
@@ -1200,6 +1202,343 @@ class APIServerAdapter(BasePlatformAdapter):
             logger.info("Session SSE client disconnected; interrupted session %s", session_id)
 
         return response
+
+    async def _handle_session_chat_start(self, request: "web.Request") -> "web.Response":
+        """POST /api/sessions/{session_id}/chat/start — start a backend-owned WebUI-style stream."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        session_id = request.match_info["session_id"]
+        db = self._get_session_db()
+        session = self._normalize_session_record(db.get_session(session_id))
+        if session is None:
+            db.ensure_session(session_id, source="web")
+            session = self._normalize_session_record(db.get_session(session_id)) or {}
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response({"error": "Invalid JSON in request body"}, status=400)
+
+        message = body.get("message")
+        if not isinstance(message, str):
+            return web.json_response({"error": "Missing or invalid 'message' field"}, status=400)
+
+        raw_attachments = body.get("attachments")
+        user_content, persist_text = self._build_user_content(message, raw_attachments)
+        system_message = body.get("system_message")
+        history = db.get_messages_as_conversation(session_id)
+
+        import queue as _q
+        stream_id = uuid.uuid4().hex
+        run_id = f"run_{uuid.uuid4().hex}"
+        assistant_message_id = f"msg_asst_{uuid.uuid4().hex}"
+        user_message_id = f"msg_user_{uuid.uuid4().hex}"
+        stream_q: _q.Queue = _q.Queue()
+        agent_ref: List[Any] = [None]
+        loop = asyncio.get_event_loop()
+
+        def _encode_sse(event_name: str, payload: Dict[str, Any]) -> bytes:
+            return f"event: {event_name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
+
+        def _queue_event(event_name: str, payload: Dict[str, Any]) -> None:
+            stream_q.put(_encode_sse(event_name, payload))
+
+        def _tool_map(messages: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
+            mapping: Dict[str, Dict[str, Any]] = {}
+            for item in messages:
+                if item.get("role") != "assistant":
+                    continue
+                for index, tool_call in enumerate(item.get("tool_calls") or []):
+                    tool_id = tool_call.get("id")
+                    if not tool_id:
+                        continue
+                    fn = tool_call.get("function") or {}
+                    raw_args = fn.get("arguments")
+                    try:
+                        parsed_args = json.loads(raw_args) if isinstance(raw_args, str) and raw_args.strip() else {}
+                    except json.JSONDecodeError:
+                        parsed_args = raw_args
+                    mapping[tool_id] = {
+                        "tool_name": fn.get("name") or item.get("tool_name") or f"tool_{index + 1}",
+                        "args": parsed_args,
+                    }
+            return mapping
+
+        def _result_preview(content: Any, limit: int = 4000) -> str:
+            text = content if isinstance(content, str) else json.dumps(content, ensure_ascii=False)
+            return text[:limit] + ("..." if len(text) > limit else "")
+
+        def _on_delta(delta):
+            if delta:
+                _queue_event(
+                    "token",
+                    {"session_id": session_id, "stream_id": stream_id, "run_id": run_id, "message_id": assistant_message_id, "text": delta},
+                )
+
+        def _on_tool_progress(*cb_args, **cb_kwargs):
+            event_type = None
+            name = None
+            preview = None
+            args = None
+            if len(cb_args) >= 4:
+                event_type, name, preview, args = cb_args[:4]
+            elif len(cb_args) == 3:
+                name, preview, args = cb_args
+                event_type = "tool.started"
+            elif len(cb_args) == 2:
+                event_type, name = cb_args
+            elif len(cb_args) == 1:
+                name = cb_args[0]
+                event_type = "tool.started"
+            if event_type in ("reasoning.available", "_thinking"):
+                reason_text = preview if event_type == "reasoning.available" else name
+                if reason_text:
+                    _queue_event("reasoning", {"session_id": session_id, "stream_id": stream_id, "run_id": run_id, "text": str(reason_text)})
+                return
+            args_snap = {}
+            if isinstance(args, dict):
+                for key, value in list(args.items())[:4]:
+                    value_text = str(value)
+                    args_snap[key] = value_text[:120] + ("..." if len(value_text) > 120 else "")
+            if event_type in (None, "tool.started"):
+                _queue_event(
+                    "tool",
+                    {
+                        "session_id": session_id,
+                        "stream_id": stream_id,
+                        "run_id": run_id,
+                        "message_id": assistant_message_id,
+                        "event_type": event_type or "tool.started",
+                        "name": name,
+                        "preview": preview,
+                        "args": args_snap,
+                    },
+                )
+            elif event_type == "tool.completed":
+                _queue_event(
+                    "tool_complete",
+                    {
+                        "session_id": session_id,
+                        "stream_id": stream_id,
+                        "run_id": run_id,
+                        "message_id": assistant_message_id,
+                        "event_type": event_type,
+                        "name": name,
+                        "preview": preview,
+                        "args": args_snap,
+                        "duration": cb_kwargs.get("duration"),
+                        "is_error": bool(cb_kwargs.get("is_error", False)),
+                    },
+                )
+
+        def _on_approval_request(approval_data):
+            if not isinstance(approval_data, dict):
+                approval_data = {"description": str(approval_data)}
+            _queue_event(
+                "approval",
+                {
+                    "session_id": session_id,
+                    "stream_id": stream_id,
+                    "run_id": run_id,
+                    "message_id": assistant_message_id,
+                    "approval_id": str(approval_data.get("approval_id") or approval_data.get("id") or ""),
+                    "command": str(approval_data.get("command") or "")[:8000],
+                    "description": str(approval_data.get("description") or "Command approval required")[:1000],
+                    "pattern_key": str(approval_data.get("pattern_key") or ""),
+                    "pattern_keys": approval_data.get("pattern_keys") if isinstance(approval_data.get("pattern_keys"), list) else [],
+                },
+            )
+
+        stream_state: Dict[str, Any] = {
+            "session_id": session_id,
+            "stream_id": stream_id,
+            "run_id": run_id,
+            "queue": stream_q,
+            "agent_ref": agent_ref,
+            "created_at": time.time(),
+            "active": True,
+        }
+        self._chat_streams[stream_id] = stream_state
+
+        stream_q.put(_encode_sse("session.created", {"session_id": session_id, "stream_id": stream_id, "run_id": run_id, "title": session.get("title") or "New Chat"}))
+        stream_q.put(_encode_sse("run.started", {"session_id": session_id, "stream_id": stream_id, "run_id": run_id, "user_message": {"id": user_message_id, "role": "user", "content": message}}))
+        stream_q.put(_encode_sse("message.started", {"session_id": session_id, "stream_id": stream_id, "run_id": run_id, "message": {"id": assistant_message_id, "role": "assistant"}}))
+
+        async def _run_agent_task():
+            def _run():
+                approval_token = None
+                reset_current_session_key = None
+                unregister_gateway_notify = None
+                try:
+                    from tools.approval import (
+                        register_gateway_notify,
+                        reset_current_session_key as _reset_current_session_key,
+                        set_current_session_key,
+                        unregister_gateway_notify as _unregister_gateway_notify,
+                    )
+                    approval_token = set_current_session_key(session_id)
+                    reset_current_session_key = _reset_current_session_key
+                    unregister_gateway_notify = _unregister_gateway_notify
+                    register_gateway_notify(session_id, _on_approval_request)
+                except Exception as exc:
+                    logger.debug("[chat/start] Approval callbacks unavailable: %s", exc)
+
+                try:
+                    agent = self._create_agent(
+                        ephemeral_system_prompt=system_message,
+                        session_id=session_id,
+                        stream_delta_callback=_on_delta,
+                        tool_progress_callback=_on_tool_progress,
+                    )
+                    agent._session_db = db
+                    agent_ref[0] = agent
+                    return agent.run_conversation(
+                        user_content,
+                        conversation_history=history,
+                        persist_user_message=persist_text,
+                    )
+                finally:
+                    if unregister_gateway_notify is not None:
+                        try:
+                            unregister_gateway_notify(session_id)
+                        except Exception as exc:
+                            logger.debug("[chat/start] Approval callback cleanup failed: %s", exc)
+                    if approval_token is not None and reset_current_session_key is not None:
+                        try:
+                            reset_current_session_key(approval_token)
+                        except Exception as exc:
+                            logger.debug("[chat/start] Approval session cleanup failed: %s", exc)
+
+            return await loop.run_in_executor(None, _run)
+
+        async def _finish_stream():
+            try:
+                result = await _run_agent_task()
+                tools = _tool_map(result.get("messages") or [])
+                for item in result.get("messages") or []:
+                    if item.get("role") != "tool":
+                        continue
+                    tool_id = item.get("tool_call_id")
+                    tool_meta = tools.get(tool_id, {})
+                    stream_q.put(_encode_sse("tool_complete", {
+                        "session_id": session_id,
+                        "stream_id": stream_id,
+                        "run_id": run_id,
+                        "tool_call_id": tool_id,
+                        "tool_name": tool_meta.get("tool_name") or item.get("tool_name") or "unknown",
+                        "args": tool_meta.get("args"),
+                        "result_preview": _result_preview(item.get("content")),
+                    }))
+                stream_q.put(_encode_sse("assistant.completed", {
+                    "session_id": session_id,
+                    "stream_id": stream_id,
+                    "run_id": run_id,
+                    "message_id": assistant_message_id,
+                    "content": result.get("final_response") or "",
+                    "completed": result.get("completed", False),
+                    "partial": result.get("partial", False),
+                    "interrupted": result.get("interrupted", False),
+                }))
+                stream_q.put(_encode_sse("run.completed", {
+                    "session_id": session_id,
+                    "stream_id": stream_id,
+                    "run_id": run_id,
+                    "message_id": assistant_message_id,
+                    "completed": result.get("completed", False),
+                    "partial": result.get("partial", False),
+                    "interrupted": result.get("interrupted", False),
+                    "api_calls": result.get("api_calls"),
+                }))
+                stream_q.put(_encode_sse("done", {"session_id": session_id, "stream_id": stream_id, "run_id": run_id, "state": "final"}))
+            except Exception as exc:
+                logger.error("Backend-owned session stream failed for %s: %s", session_id, exc, exc_info=True)
+                stream_q.put(_encode_sse("error", {"session_id": session_id, "stream_id": stream_id, "run_id": run_id, "error": str(exc)}))
+            finally:
+                stream_state["active"] = False
+                stream_state["completed_at"] = time.time()
+                stream_q.put(None)
+
+        stream_state["task"] = asyncio.ensure_future(_finish_stream())
+
+        return web.json_response({"stream_id": stream_id, "session_id": session_id, "run_id": run_id})
+
+    async def _handle_chat_stream_status(self, request: "web.Request") -> "web.Response":
+        """GET /api/chat/stream/status — report whether a backend-owned chat stream is alive."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        stream_id = request.query.get("stream_id", "")
+        if not stream_id:
+            return web.json_response({"error": "stream_id required"}, status=400)
+        stream_state = self._chat_streams.get(stream_id)
+        if not stream_state:
+            return web.json_response({"active": False, "stream_id": stream_id})
+        return web.json_response({
+            "active": bool(stream_state.get("active")),
+            "stream_id": stream_id,
+            "session_id": stream_state.get("session_id"),
+            "run_id": stream_state.get("run_id"),
+        })
+
+    async def _handle_chat_stream_attach(self, request: "web.Request") -> "web.StreamResponse":
+        """GET /api/chat/stream — attach to a backend-owned WebUI-style chat stream."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        stream_id = request.query.get("stream_id", "")
+        if not stream_id:
+            return web.json_response({"error": "stream_id required"}, status=400)
+        stream_state = self._chat_streams.get(stream_id)
+        if not stream_state:
+            return web.json_response({"error": "stream not found"}, status=404)
+
+        headers = {
+            "Content-Type": "text/event-stream; charset=utf-8",
+            "Cache-Control": "no-cache",
+            "Connection": "keep-alive",
+            "X-Accel-Buffering": "no",
+        }
+        origin = request.headers.get("Origin", "")
+        cors = self._cors_headers_for_origin(origin) if origin else None
+        if cors:
+            headers.update(cors)
+        response = web.StreamResponse(status=200, headers=headers)
+        await response.prepare(request)
+
+        stream_q = stream_state["queue"]
+        loop = asyncio.get_event_loop()
+        try:
+            while True:
+                frame = await loop.run_in_executor(None, stream_q.get)
+                if frame is None:
+                    break
+                await response.write(frame)
+        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
+            logger.info("Chat stream client detached without cancelling stream %s", stream_id)
+        return response
+
+    async def _handle_chat_stream_cancel(self, request: "web.Request") -> "web.Response":
+        """POST /api/chat/cancel — cancel a backend-owned chat stream."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        stream_id = request.query.get("stream_id", "")
+        if not stream_id:
+            return web.json_response({"error": "stream_id required"}, status=400)
+        stream_state = self._chat_streams.get(stream_id)
+        if not stream_state:
+            return web.json_response({"ok": True, "cancelled": False, "stream_id": stream_id})
+        agent_ref = stream_state.get("agent_ref") or []
+        agent = agent_ref[0] if agent_ref else None
+        if agent is not None:
+            try:
+                agent.interrupt("stream cancelled")
+            except Exception as exc:
+                logger.debug("Failed to interrupt chat stream %s: %s", stream_id, exc)
+        stream_state["active"] = False
+        return web.json_response({"ok": True, "cancelled": True, "stream_id": stream_id})
 
     async def _handle_approval_respond(self, request: "web.Request") -> "web.Response":
         """POST /api/approval/respond — resolve one blocking approval request."""
@@ -3198,6 +3537,10 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/sessions/{session_id}/fork", self._handle_fork_session)
             self._app.router.add_post("/api/sessions/{session_id}/chat", self._handle_session_chat)
             self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)
+            self._app.router.add_post("/api/sessions/{session_id}/chat/start", self._handle_session_chat_start)
+            self._app.router.add_get("/api/chat/stream", self._handle_chat_stream_attach)
+            self._app.router.add_get("/api/chat/stream/status", self._handle_chat_stream_status)
+            self._app.router.add_post("/api/chat/cancel", self._handle_chat_stream_cancel)
             self._app.router.add_post("/api/approval/respond", self._handle_approval_respond)
             self._app.router.add_get("/api/memory", self._handle_get_memory)
             self._app.router.add_post("/api/memory", self._handle_add_memory)

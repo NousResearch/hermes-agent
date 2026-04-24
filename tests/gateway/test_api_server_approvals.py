@@ -50,6 +50,39 @@ class _FakeAgent:
         }
 
 
+class _SlowFakeAgent:
+    def __init__(self, release_event):
+        self.release_event = release_event
+        self.interrupted = False
+
+    def interrupt(self, reason):
+        self.interrupted = True
+        self.release_event.set()
+
+    def run_conversation(self, user_content, conversation_history=None, persist_user_message=True):
+        self.release_event.wait(timeout=1)
+        return {
+            "final_response": "Stream owned by backend",
+            "completed": True,
+            "messages": [],
+            "api_calls": 0,
+        }
+
+
+class _ToolProgressFakeAgent:
+    def __init__(self, tool_progress_callback):
+        self.tool_progress_callback = tool_progress_callback
+
+    def run_conversation(self, user_content, conversation_history=None, persist_user_message=True):
+        self.tool_progress_callback("tool.started", "terminal", "pwd", {"command": "pwd"})
+        return {
+            "final_response": "Tool finished",
+            "completed": True,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 def _make_adapter(api_key: str = "") -> APIServerAdapter:
     extra = {}
     if api_key:
@@ -61,6 +94,10 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app = web.Application(middlewares=[cors_middleware])
     app["api_server_adapter"] = adapter
     app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
+    app.router.add_post("/api/sessions/{session_id}/chat/start", adapter._handle_session_chat_start)
+    app.router.add_get("/api/chat/stream", adapter._handle_chat_stream_attach)
+    app.router.add_get("/api/chat/stream/status", adapter._handle_chat_stream_status)
+    app.router.add_post("/api/chat/cancel", adapter._handle_chat_stream_cancel)
     app.router.add_post("/api/approval/respond", adapter._handle_approval_respond)
     return app
 
@@ -86,6 +123,80 @@ async def test_session_chat_stream_emits_approval_event(adapter=None):
     assert "event: approval" in body
     assert '"approval_id": "approval-1"' in body
     assert "script execution via heredoc" in body
+
+
+@pytest.mark.asyncio
+async def test_session_chat_start_returns_stream_id_that_can_be_attached():
+    import threading
+
+    adapter = _make_adapter()
+    app = _create_app(adapter)
+    release_event = threading.Event()
+    fake_agent = _SlowFakeAgent(release_event)
+
+    with (
+        patch.object(adapter, "_get_session_db", return_value=_FakeSessionDb()),
+        patch.object(adapter, "_create_agent", return_value=fake_agent),
+    ):
+        async with TestClient(TestServer(app)) as cli:
+            started = await cli.post(
+                "/api/sessions/sess-webui/chat/start",
+                json={"message": "run this like WebUI"},
+            )
+
+            assert started.status == 200
+            started_payload = await started.json()
+            stream_id = started_payload["stream_id"]
+            assert stream_id
+            assert started_payload["session_id"] == "sess-webui"
+
+            status = await cli.get(f"/api/chat/stream/status?stream_id={stream_id}")
+            assert status.status == 200
+            status_payload = await status.json()
+            assert status_payload["active"] is True
+            assert status_payload["session_id"] == "sess-webui"
+
+            release_event.set()
+            attached = await cli.get(f"/api/chat/stream?stream_id={stream_id}")
+            body = await attached.text()
+
+            assert attached.status == 200
+            assert "event: message.started" in body
+            assert "event: assistant.completed" in body
+            assert "Stream owned by backend" in body
+
+            final_status = await cli.get(f"/api/chat/stream/status?stream_id={stream_id}")
+            final_payload = await final_status.json()
+            assert final_payload["active"] is False
+
+
+@pytest.mark.asyncio
+async def test_backend_owned_stream_emits_live_tool_before_final_answer():
+    adapter = _make_adapter()
+    app = _create_app(adapter)
+
+    def create_agent(**kwargs):
+        return _ToolProgressFakeAgent(kwargs["tool_progress_callback"])
+
+    with (
+        patch.object(adapter, "_get_session_db", return_value=_FakeSessionDb()),
+        patch.object(adapter, "_create_agent", side_effect=create_agent),
+    ):
+        async with TestClient(TestServer(app)) as cli:
+            started = await cli.post(
+                "/api/sessions/sess-tools/chat/start",
+                json={"message": "check pwd"},
+            )
+            stream_id = (await started.json())["stream_id"]
+            attached = await cli.get(f"/api/chat/stream?stream_id={stream_id}")
+            body = await attached.text()
+
+    assert attached.status == 200
+    tool_index = body.index("event: tool")
+    final_index = body.index("event: assistant.completed")
+    assert tool_index < final_index
+    assert '"name": "terminal"' in body
+    assert '"command": "pwd"' in body
 
 
 @pytest.mark.asyncio

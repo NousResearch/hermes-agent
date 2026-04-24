@@ -2,11 +2,13 @@ import { useEffect, useState } from "react";
 import {
   Activity,
   AlertCircle,
+  Brain,
   CheckCircle2,
   Circle,
   Clock,
   GitBranch,
   History,
+  Layers,
   LineChart,
   MessageSquare,
   Network,
@@ -142,6 +144,38 @@ interface ThrottleState {
   pairs: Record<string, { allowed: boolean; reason: string | null; stats: Record<string, unknown> }>;
 }
 
+interface MiddlewareEntry {
+  name: string;
+  order: number;
+  env_var: string | null;
+  critical: boolean;
+  enabled: boolean;
+}
+
+interface MiddlewareStatus {
+  master_enabled: boolean;
+  master_mode: string;
+  entries: MiddlewareEntry[];
+}
+
+interface AutoMemoryFact {
+  id: string;
+  content: string;
+  category: string;
+  confidence: number;
+  created_at: number;
+  source: string;
+}
+
+interface AutoMemoryData {
+  exists: boolean;
+  path: string;
+  count?: number;
+  updated_at?: number;
+  facts: AutoMemoryFact[];
+  error?: string;
+}
+
 // -------- Helpers --------
 function statusBadgeVariant(status: string): "success" | "warning" | "destructive" | "outline" {
   if (status === "done") return "success";
@@ -179,6 +213,8 @@ export default function AgentsPage() {
   const [activity, setActivity] = useState<ActivityEvent[]>([]);
   const [snapshots, setSnapshots] = useState<Snapshot[]>([]);
   const [throttle, setThrottle] = useState<ThrottleState | null>(null);
+  const [middleware, setMiddleware] = useState<MiddlewareStatus | null>(null);
+  const [autoMemory, setAutoMemory] = useState<AutoMemoryData | null>(null);
   const [showCoaching, setShowCoaching] = useState(false);
 
   function flashToast(msg: string) {
@@ -193,13 +229,15 @@ export default function AgentsPage() {
   useEffect(() => {
     const load = async () => {
       try {
-        const [s, b, h, a, sn, th] = await Promise.all([
+        const [s, b, h, a, sn, th, mw, am] = await Promise.all([
           fetch("/api/dual-agent/status").then((r) => r.json()),
           fetch("/api/dual-agent/bus").then((r) => r.json()),
           fetch("/api/dual-agent/handoffs").then((r) => r.json()),
           fetch("/api/dual-agent/activity?hours=24").then((r) => r.json()),
           fetch("/api/dual-agent/snapshots").then((r) => r.json()),
           fetch("/api/dual-agent/throttle").then((r) => r.json()),
+          fetch("/api/dual-agent/middleware").then((r) => r.json()),
+          fetch("/api/dual-agent/auto-memory").then((r) => r.json()),
         ]);
         if (s.error) setErr(s.error);
         else setStatus(s as DualAgentStatus);
@@ -208,6 +246,8 @@ export default function AgentsPage() {
         setActivity((a.events || []) as ActivityEvent[]);
         setSnapshots((sn.snapshots || []) as Snapshot[]);
         setThrottle(th as ThrottleState);
+        setMiddleware(mw as MiddlewareStatus);
+        setAutoMemory(am as AutoMemoryData);
         setLoading(false);
       } catch (e) {
         setErr(String(e));
@@ -442,6 +482,94 @@ export default function AgentsPage() {
           </CardHeader>
           <CardContent>
             <SnapshotSparkline snapshots={snapshots} />
+          </CardContent>
+        </Card>
+      )}
+
+      {/* -------- Middleware chain status -------- */}
+      {middleware && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Layers className="h-4 w-4" /> Middleware chain（S3）
+              {middleware.master_enabled ? (
+                <Badge variant="success">{middleware.master_mode}</Badge>
+              ) : (
+                <Badge variant="warning">off</Badge>
+              )}
+              <span className="text-xs text-muted-foreground ml-2">
+                {middleware.entries.filter((e) => e.enabled).length}/{middleware.entries.length} enabled
+              </span>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <div className="grid gap-2 md:grid-cols-2 lg:grid-cols-3">
+              {middleware.entries.map((e) => (
+                <div
+                  key={e.name}
+                  className="flex items-center gap-2 rounded-md border border-border/60 bg-card/50 p-2 text-sm"
+                >
+                  <span className="font-mono text-xs text-muted-foreground w-8">
+                    #{e.order}
+                  </span>
+                  {e.enabled ? (
+                    <Badge variant="success">on</Badge>
+                  ) : (
+                    <Badge variant="outline">off</Badge>
+                  )}
+                  <span className="flex-1 font-mono text-xs">{e.name}</span>
+                  {e.critical && <Badge variant="destructive">critical</Badge>}
+                </div>
+              ))}
+            </div>
+            {middleware.entries.length === 0 && (
+              <div className="text-sm text-muted-foreground">
+                尚未註冊 middleware（core.complete_task 第一次被呼叫時會自動 register_defaults）
+              </div>
+            )}
+          </CardContent>
+        </Card>
+      )}
+
+      {/* -------- Auto-memory facts (S4) -------- */}
+      {autoMemory && (
+        <Card>
+          <CardHeader>
+            <CardTitle className="flex items-center gap-2 text-base">
+              <Brain className="h-4 w-4" /> Auto-memory facts（S4）
+              {autoMemory.exists ? (
+                <Badge variant="success">{autoMemory.count || 0} facts</Badge>
+              ) : (
+                <Badge variant="outline">尚未寫入</Badge>
+              )}
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            {autoMemory.error ? (
+              <div className="text-sm text-destructive">{autoMemory.error}</div>
+            ) : autoMemory.facts.length === 0 ? (
+              <div className="text-sm text-muted-foreground">
+                還沒 auto-extracted facts — bus task close 時會觸發 MemoryExtractionMiddleware，
+                30s debounce 後從對話抽取 fact 寫入 <span className="font-mono">{autoMemory.path}</span>。
+              </div>
+            ) : (
+              <div className="space-y-1 max-h-72 overflow-y-auto">
+                {autoMemory.facts.map((f) => (
+                  <div
+                    key={f.id}
+                    className="flex items-start gap-2 rounded border border-border/60 bg-card/50 p-2 text-sm"
+                  >
+                    <Badge variant="outline" className="mt-0.5">{f.category}</Badge>
+                    <div className="min-w-0 flex-1">
+                      <div>{f.content}</div>
+                      <div className="mt-0.5 text-xs text-muted-foreground">
+                        confidence {f.confidence.toFixed(2)} · source {f.source}
+                      </div>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
           </CardContent>
         </Card>
       )}

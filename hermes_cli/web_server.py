@@ -2032,6 +2032,69 @@ async def dispatch_bus_task(req: DispatchRequest, force: bool = False):
         return {"ok": False, "error": str(exc)}
 
 
+@app.get("/api/dual-agent/middleware")
+async def get_middleware_chain_status():
+    """Return the current middleware chain registration + env-var state.
+
+    Lazy-registers defaults so the endpoint reflects what would run in a
+    real `complete_task` close path.
+    """
+    import os as _os
+    try:
+        from agent_bus import middleware as _mw_mod
+        from agent_bus.middlewares import register_defaults
+        if not _mw_mod.all_entries():
+            register_defaults()
+        entries = []
+        for e in _mw_mod.all_entries():
+            entries.append({
+                "name": e.mw.name,
+                "order": e.order,
+                "env_var": e.env_var,
+                "critical": e.critical,
+                "enabled": e.is_enabled(),
+            })
+        master = _os.environ.get("HERMES_MIDDLEWARE_CHAIN", "core").lower()
+        return {
+            "master_enabled": master != "off",
+            "master_mode": master,
+            "entries": sorted(entries, key=lambda x: x["order"]),
+        }
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+@app.get("/api/dual-agent/auto-memory")
+async def get_auto_memory():
+    """Return content of ~/.hermes/memory-auto.json (auto-extracted facts)."""
+    import json as _json
+    import os as _os
+    path = Path(_os.environ.get(
+        "HERMES_AUTO_MEMORY_PATH",
+        str(Path.home() / ".hermes" / "memory-auto.json"),
+    )).expanduser()
+    if not path.exists():
+        return {"exists": False, "path": str(path), "facts": []}
+    try:
+        data = _json.loads(path.read_text(encoding="utf-8"))
+        facts = data.get("facts", []) or []
+        # Sort by confidence * recency
+        facts_sorted = sorted(
+            facts,
+            key=lambda f: (f.get("confidence", 0.0), f.get("created_at", 0)),
+            reverse=True,
+        )
+        return {
+            "exists": True,
+            "path": str(path),
+            "count": len(facts),
+            "updated_at": data.get("updated_at"),
+            "facts": facts_sorted[:30],  # top 30
+        }
+    except Exception as exc:
+        return {"exists": True, "path": str(path), "error": str(exc), "facts": []}
+
+
 @app.get("/api/dual-agent/skills")
 async def list_dual_agent_skills(family: Optional[str] = None, origin: Optional[str] = None):
     """SKILL.md-driven unified skill catalog (Hermes + OpenClaw).

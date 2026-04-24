@@ -292,3 +292,70 @@ Do NOT construct from base URL + `/anthropic` path.
 | Unknown device | 4 | Tests graceful degradation when NetBox lookup fails |
 
 All 22 alerts compile and generate prompts (2,543–3,195 chars each). 17 were live-tested and all 17 reached Telegram successfully.
+
+## NOC Alert Context Pipeline
+
+For every alert, the enrichment pipeline also writes structured context to disk for on-demand retrieval.
+
+### Directory Structure
+
+```
+~/noc/
+  inbox/          Raw JSON — written by webhook_receiver.py immediately on alert receipt
+  context/        Enriched .md — built by noc_md_processor.py from inbox JSON
+  diagnostics_raw/ Raw SSH .json — built by noc_md_processor.py (lab devices only)
+  logs/           Per-alert processing logs
+```
+
+### Flow
+
+```
+[Alert received]
+  → webhook_receiver.py (Flask, port 5001)
+       → enrich_alert_from_dict(..., noc_notify=True)
+            → MiniMax enrichment → Telegram (immediate)
+            → IF lab device (mgmt_ip in LAB_MGMT_IPS):
+                 → run_router_diagnostics() → SSH → Telegram report (immediate)
+            → _trigger_noc_md_pipeline(alert_id, ...)  [fire-and-forget thread]
+                 → Write ~/noc/inbox/{alert_id}.json
+
+[Background thread]
+  → process_alert_from_inbox(alert_id)
+       → Read inbox JSON
+       → NetBox lookup
+       → IF lab device: run router_diagnostics → SSH → get raw command outputs
+       → MiniMax synthesis (enrichment + diagnostics merged)
+       → Write ~/noc/context/{alert_id}.md
+       → Write ~/noc/diagnostics_raw/{alert_id}.json (lab only)
+
+[/noc <alert_id>]
+  → Read ~/noc/context/{alert_id}.md
+  → MiniMax → Telegram briefing
+
+[/noc-troubleshoot <alert_id> [question]]
+  → Read ~/noc/context/{alert_id}.md + ~/noc/diagnostics_raw/{alert_id}.json
+  → MiniMax (deep analysis citing specific command outputs)
+  → Telegram
+```
+
+### Key Files
+
+| File | Role |
+|------|------|
+| `noc_md_processor.py` | Builds .md context file from inbox JSON + SSH diagnostics |
+| `router_diagnostics.py` | AI agent — SSH to lab routers, run read-only IOS commands |
+| `NOC.md` | Full NOC pipeline documentation |
+
+### LAB Safety
+
+Only devices in `LAB_MGMT_IPS` (hardcoded allow-list) get SSH diagnostics.
+No production hardware is ever touched.
+
+### Skills
+
+| Skill | Command |
+|-------|---------|
+| `noc-md-storage` | `/noc <alert_id>` |
+| `noc-troubleshoot` | `/noc-troubleshoot <alert_id> [question]` |
+| `router-diagnostic-agent` | (reference) |
+| `cisco-lab-access` | (reference) |

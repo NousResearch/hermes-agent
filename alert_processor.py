@@ -35,6 +35,29 @@ if os.path.exists(_env_path):
                 k, v = line.split("=", 1)
                 os.environ.setdefault(k, v)
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NOC PIPELINE — imports and LAB_MGMT_IPS guard
+# ─────────────────────────────────────────────────────────────────────────────
+# noc_md_processor: writes ~/noc/inbox/{alert_id}.json → ~/noc/context/{alert_id}.md
+try:
+    from noc_md_processor import process_alert_from_inbox
+    _NOC_MD_AVAILABLE = True
+except ImportError:
+    _NOC_MD_AVAILABLE = False
+    print("[AlertProcessor] noc_md_processor not available — NOC context pipeline disabled", flush=True)
+
+# LAB_MGMT_IPS: explicit allow-list of management IPs for lab routers safe to SSH.
+LAB_MGMT_IPS: set = set()
+
+# router_diagnostics: AI agent that SSHes to lab routers and runs read-only commands.
+try:
+    from router_diagnostics import run_router_diagnostics, format_diagnostic_report, send_diagnostic_telegram
+except ImportError:
+    run_router_diagnostics = None
+    format_diagnostic_report = None
+    send_diagnostic_telegram = None
+
 # ────────────────────────────────────────────────────────────────
 # CONFIG
 # ────────────────────────────────────────────────────────────────
@@ -1003,6 +1026,30 @@ def enrich_alert(alert: AlertRecord) -> dict:
     sent = send_telegram(full_text)
     print(f"[Enrich] Telegram: {'✅' if sent else '❌'}", flush=True)
 
+    # Step 5: Router diagnostics — AI agent SSHes to lab routers for critical/warning alerts
+    # Only runs if device has a management IP in LAB_MGMT_IPS (safety: only touches lab hardware)
+    diag_sent = False
+    if run_router_diagnostics and alert.severity in ("critical", "warning") and nb_device:
+        primary_ip = nb_device.get("primary_ip") or {}
+        mgmt_ip_raw = primary_ip.get("address", "") if isinstance(primary_ip, dict) else ""
+        mgmt_ip = mgmt_ip_raw.split("/")[0] if mgmt_ip_raw else ""
+        if mgmt_ip and mgmt_ip in LAB_MGMT_IPS:
+            hostname = nb_device.get("name", alert.device)
+            print(f"[Enrich] Running router diagnostics on {hostname} ({mgmt_ip})...", flush=True)
+            diag_results = run_router_diagnostics(
+                hostname=hostname,
+                mgmt_ip=mgmt_ip,
+                severity=alert.severity,
+            )
+            diag_report = format_diagnostic_report(
+                diag_results,
+                alert_message=alert.message,
+                severity=alert.severity,
+            )
+            if diag_report:
+                diag_sent = send_diagnostic_telegram(diag_report)
+                print(f"[Enrich] Router diagnostics Telegram: {'✅' if diag_sent else '❌'}", flush=True)
+
     return {
         "status": "ok" if sent else "error",
         "alert_id": alert.alert_id,
@@ -1010,6 +1057,7 @@ def enrich_alert(alert: AlertRecord) -> dict:
         "severity": alert.severity,
         "briefing": briefing,
         "sent": sent,
+        "diag_sent": diag_sent,
         "netbox": {
             "device": nb_device.get("name"),
             "connected_count": len(connected),
@@ -1019,7 +1067,7 @@ def enrich_alert(alert: AlertRecord) -> dict:
     }
 
 
-def enrich_alert_from_dict(alert_dict: dict, source: str = "mock_lab") -> dict:
+def enrich_alert_from_dict(alert_dict: dict, source: str = "mock_lab", noc_notify: bool = False) -> dict:
     """
     Parse a raw alert dict into an AlertRecord and run the enrichment pipeline.
 
@@ -1071,7 +1119,68 @@ def enrich_alert_from_dict(alert_dict: dict, source: str = "mock_lab") -> dict:
             raw_payload=alert_dict,
         )
 
-    return enrich_alert(record)
+    result = enrich_alert(record)
+
+    # ── 6. NOC MD pipeline: save enriched context for on-demand NOC skill access ──
+    # Writes ~/noc/inbox/{alert_id}.json → ~/noc/context/{alert_id}.md
+    # and saves raw SSH diagnostics to ~/noc/diagnostics_raw/{alert_id}.json
+    if noc_notify and result.get("alert_id"):
+        _trigger_noc_md_pipeline(result.get("alert_id", ""), alert_dict, source)
+
+    return result
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# NOC MD pipeline — save enriched context for on-demand NOC skill access
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _trigger_noc_md_pipeline(alert_id: str, alert_dict: dict, source: str) -> None:
+    """
+    Write alert to ~/noc/inbox/{alert_id}.json then trigger noc_md_processor
+    to produce ~/noc/context/{alert_id}.md and ~/noc/diagnostics_raw/{alert_id}.json.
+
+    This function is fire-and-forget — errors are logged but never raise,
+    to avoid disrupting the main enrichment pipeline.
+    """
+    if not _NOC_MD_AVAILABLE:
+        return
+
+    import logging
+    _noc_logger = logging.getLogger("noc_md_trigger")
+    _noc_logger.setLevel(logging.INFO)
+
+    inbox_data = {
+        "alert": {
+            "alert_id": alert_id,
+            "device": alert_dict.get("device", ""),
+            "severity": alert_dict.get("severity", "warning"),
+            "message": alert_dict.get("message", alert_dict.get("description", "")),
+            "site": alert_dict.get("site", ""),
+            "timestamp": alert_dict.get("timestamp", ""),
+        },
+        "source": source,
+    }
+
+    inbox_path = Path.home() / "noc" / "inbox" / f"{alert_id}.json"
+    try:
+        inbox_path.parent.mkdir(parents=True, exist_ok=True)
+        inbox_path.write_text(json.dumps(inbox_data, indent=2), encoding="utf-8")
+        _noc_logger.info(f"[NOC Trigger] Wrote inbox: %s", inbox_path)
+
+        # Run noc_md_processor (blocking — but webhook already returned 200 to source)
+        result = process_alert_from_inbox(inbox_path)
+        _noc_logger.info(
+            "[NOC Trigger] alert_id=%s → md=%s had_diagnostics=%s errors=%s",
+            alert_id,
+            result.get("md_path", ""),
+            result.get("had_diagnostics", False),
+            result.get("errors", []),
+        )
+    except Exception as exc:
+        _noc_logger.warning(f"[NOC Trigger] Failed for {alert_id}: {exc}")
+
+
+from pathlib import Path
 
 
 # ────────────────────────────────────────────────────────────────

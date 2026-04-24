@@ -243,7 +243,7 @@ def build_md_content(
             f"**Device:** `{netbox_info.get('name', device)}` @ `{diag_results.get('mgmt_ip', 'N/A')}`  |  "
             f"**Commands:** {len(diag_commands)} "
             f"({diag_ok_count} ✅ / {diag_fail_count} ❌)  |  "
-            f**Timestamp:** `{diag_timestamp}`",
+            f"**Timestamp:** `{diag_timestamp}`",
             "",
         ]
         if diag_errors:
@@ -334,10 +334,11 @@ def process_alert_from_inbox(inbox_path: Path) -> dict:
     diag_results: Optional[dict] = None
     if is_lab_device and device:
         diag_results = run_router_diagnostics(
-            hostname  = nb_info.get("name", device),
-            mgmt_ip   = mgmt_ip,
-            severity  = severity,
-            command_set = "full" if severity != "critical" else "quick",
+            hostname     = nb_info.get("name", device),
+            mgmt_ip      = mgmt_ip,
+            severity     = severity,
+            command_set  = "full" if severity != "critical" else "quick",
+            alert_id     = alert_id,   # passed so raw output is saved to diagnostics_raw/
         )
         logger.info(
             f"[Diag] {device} ({mgmt_ip}): "

@@ -12,14 +12,51 @@ No buffering. No cron. No separate processor process.
 import os
 import sys
 import json
+import threading
 import werkzeug.exceptions
 from pathlib import Path
 from flask import Flask, request, jsonify
 
 # Import the enrichment pipeline
-from alert_processor import enrich_alert_from_dict, AlertRecord
+from alert_processor import enrich_alert_from_dict, AlertRecord, LAB_MGMT_IPS
 
 app = Flask(__name__)
+
+# Processing lock to prevent concurrent access to shared resources
+_processing_lock = threading.Lock()
+
+# ── Populate LAB_MGMT_IPS from NetBox on startup ──
+def _populate_lab_mgmt_ips():
+    """Fetch all lab router management IPs from NetBox and populate LAB_MGMT_IPS."""
+    try:
+        import urllib.request, json as _json
+        # Use mcporter to call NetBox API via localhost MCP proxy
+        req = urllib.request.Request(
+            "http://localhost:8082 rpc call",
+            data=json.dumps({
+                "method": "devices/list",
+                "params": {"query": {"role": "router"}, "limit": 100},
+            }).encode(),
+            headers={"Content-Type": "application/json"}
+        )
+        # mcporter WS is at localhost:8082 — use mcporter CLI directly
+        import subprocess
+        result = subprocess.run(
+            ["mcporter", "netbox", "devices", "--query", "role:router", "--limit", "100"],
+            capture_output=True, text=True, timeout=30
+        )
+        if result.returncode == 0:
+            import re
+            ips = re.findall(r"192\.168\.\d+\.\d+", result.stdout)
+            LAB_MGMT_IPS.update(ips)
+            print(f"[Webhook] LAB_MGMT_IPS populated: {sorted(LAB_MGMT_IPS)}", flush=True)
+        else:
+            print(f"[Webhook] Could not fetch lab IPs from NetBox: {result.stderr[:200]}", flush=True)
+    except Exception as exc:
+        print(f"[Webhook] LAB_MGMT_IPS population failed: {exc}", flush=True)
+
+# Run once at startup (blocking, ~2s)
+_populate_lab_mgmt_ips()
 
 
 def _checkmk_state_to_severity(state: str) -> str:
@@ -190,9 +227,12 @@ def receive_alert():
     inbox_path.write_text(json.dumps({"alert": alert_dict, "source": source, "received_at": _dt.datetime.utcnow(_dt.timezone.utc).isoformat()}, default=str), encoding="utf-8")
     print(f"[Webhook] Inbox write: {inbox_path}  (source={source})", flush=True)
 
-    # Process the alert synchronously
+    # Process the alert synchronously with a lock to prevent concurrent processing
+    # noc_notify=True → writes ~/noc/inbox/{alert_id}.json → ~/noc/context/{alert_id}.md
+    #                   + ~/noc/diagnostics_raw/{alert_id}.json (raw SSH outputs)
     try:
-        result = enrich_alert_from_dict(alert_dict, source=source)
+        with _processing_lock:
+            result = enrich_alert_from_dict(alert_dict, source=source, noc_notify=True)
     except Exception as e:
         print(f"[Webhook] Processing error: {e}", flush=True)
         import traceback

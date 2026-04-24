@@ -49,13 +49,26 @@ export const resolveSections = (raw: unknown): SectionVisibility => {
   return out
 }
 
+// Built-in per-section defaults applied when the user has no explicit
+// override.  The activity panel (gateway hints, terminal-parity nudges,
+// background-process notifications) is hidden out of the box — it's noise
+// for the typical day-to-day user, who only cares about thinking + tools +
+// streamed content.  Tool failures still surface inline on the failing tool
+// row; this default only suppresses the ambient meta feed.
+//
+// Opt back in with `display.sections.activity: collapsed` (under chevron)
+// or `expanded` (always open) in `~/.hermes/config.yaml`, or live with
+// `/details activity collapsed`.
+const SECTION_DEFAULTS: SectionVisibility = { activity: 'hidden' }
+
 // Resolve the effective mode for one section: explicit override wins,
-// otherwise the global details_mode.  Single source of truth — every render
-// site that needs to know "is this section open by default" calls this.
+// then the SECTION_DEFAULTS fallback, then the global details_mode.
+// Single source of truth — every render site that needs to know "is this
+// section open by default" calls this.
 export const sectionMode = (
   name: SectionName,
   global: DetailsMode,
   sections?: SectionVisibility
-): DetailsMode => sections?.[name] ?? global
+): DetailsMode => sections?.[name] ?? SECTION_DEFAULTS[name] ?? global
 
 export const nextDetailsMode = (m: DetailsMode): DetailsMode => MODES[(MODES.indexOf(m) + 1) % MODES.length]!

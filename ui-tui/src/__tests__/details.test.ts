@@ -72,13 +72,22 @@ describe('resolveSections', () => {
 })
 
 describe('sectionMode', () => {
-  it('falls back to the global mode when no override is set', () => {
+  it('falls back to the global mode for sections without a built-in default', () => {
     expect(sectionMode('tools', 'collapsed', {})).toBe('collapsed')
     expect(sectionMode('tools', 'expanded', undefined)).toBe('expanded')
+    expect(sectionMode('thinking', 'collapsed', {})).toBe('collapsed')
+    expect(sectionMode('subagents', 'expanded', {})).toBe('expanded')
   })
 
-  it('honours per-section overrides over the global mode', () => {
-    expect(sectionMode('activity', 'expanded', { activity: 'hidden' })).toBe('hidden')
+  it('hides the activity panel by default regardless of global mode', () => {
+    expect(sectionMode('activity', 'collapsed', {})).toBe('hidden')
+    expect(sectionMode('activity', 'expanded', undefined)).toBe('hidden')
+    expect(sectionMode('activity', 'hidden', {})).toBe('hidden')
+  })
+
+  it('honours per-section overrides over both the section default and global mode', () => {
+    expect(sectionMode('activity', 'collapsed', { activity: 'expanded' })).toBe('expanded')
+    expect(sectionMode('activity', 'expanded', { activity: 'collapsed' })).toBe('collapsed')
     expect(sectionMode('tools', 'collapsed', { tools: 'expanded' })).toBe('expanded')
   })
 })

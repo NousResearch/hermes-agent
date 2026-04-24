@@ -209,22 +209,31 @@ async function startSocket() {
 
       // Handle fromMe messages based on mode
       if (msg.key.fromMe) {
-        if (isGroup || chatId.includes('status')) continue;
+        if (chatId.includes('status')) continue;  // never process status broadcasts
 
         if (WHATSAPP_MODE === 'bot') {
           // Bot mode: separate number. ALL fromMe are echo-backs of our own replies — skip.
           continue;
         }
 
-        // Self-chat mode: only allow messages in the user's own self-chat
-        // WhatsApp now uses LID (Linked Identity Device) format: 67427329167522@lid
-        // AND classic format: 34652029134@s.whatsapp.net
-        // sock.user has both: { id: "number:10@s.whatsapp.net", lid: "lid_number:10@lid" }
-        const myNumber = (sock.user?.id || '').replace(/:.*@/, '@').replace(/@.*/, '');
-        const myLid = (sock.user?.lid || '').replace(/:.*@/, '@').replace(/@.*/, '');
-        const chatNumber = chatId.replace(/@.*/, '');
-        const isSelfChat = (myNumber && chatNumber === myNumber) || (myLid && chatNumber === myLid);
-        if (!isSelfChat) continue;
+        // Self-chat mode. Groups and your own self-chat are both
+        // valid contexts for YOU to address the bot from your own
+        // paired account. The real echo-loop guard is at the
+        // REPLY_PREFIX + recentlySentIds check ~60 lines below —
+        // that catches messages the bridge itself sent. Bailing on
+        // `isGroup` here would mean you can never @mention the bot
+        // in a group you're in.
+        //
+        // For 1:1 chats: still require it be your self-chat (not a
+        // DM to some other contact) so the bot doesn't try to
+        // answer on your behalf in random conversations.
+        if (!isGroup) {
+          const myNumber = (sock.user?.id || '').replace(/:.*@/, '@').replace(/@.*/, '');
+          const myLid = (sock.user?.lid || '').replace(/:.*@/, '@').replace(/@.*/, '');
+          const chatNumber = chatId.replace(/@.*/, '');
+          const isSelfChat = (myNumber && chatNumber === myNumber) || (myLid && chatNumber === myLid);
+          if (!isSelfChat) continue;
+        }
       }
 
       // Check allowlist for messages from others (resolve LID ↔ phone aliases)

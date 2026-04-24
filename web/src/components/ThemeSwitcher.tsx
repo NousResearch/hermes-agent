@@ -11,8 +11,12 @@ import { cn } from "@/lib/utils";
  * glow) so users can preview the palette before committing. User-defined
  * themes from `~/.hermes/dashboard-themes/*.yaml` that aren't in
  * `BUILTIN_THEMES` render without swatches and apply the default palette.
+ *
+ * When placed at the bottom of a container (e.g. the sidebar rail), pass
+ * `dropUp` so the menu opens above the trigger instead of clipping below
+ * the viewport.
  */
-export function ThemeSwitcher() {
+export function ThemeSwitcher({ dropUp = false }: ThemeSwitcherProps) {
   const { themeName, availableThemes, setTheme } = useTheme();
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
@@ -73,7 +77,8 @@ export function ThemeSwitcher() {
           role="listbox"
           aria-label={t.theme?.title ?? "Theme"}
           className={cn(
-            "absolute right-0 top-full mt-1 z-50 min-w-[240px]",
+            "absolute z-50 min-w-[240px]",
+            dropUp ? "left-0 bottom-full mb-1" : "right-0 top-full mt-1",
             "border border-current/20 bg-background-base/95 backdrop-blur-sm",
             "shadow-[0_12px_32px_-8px_rgba(0,0,0,0.6)]",
           )}
@@ -165,4 +170,8 @@ function PlaceholderSwatch() {
       className="h-4 w-9 shrink-0 border border-dashed border-current/20"
     />
   );
+}
+
+interface ThemeSwitcherProps {
+  dropUp?: boolean;
 }

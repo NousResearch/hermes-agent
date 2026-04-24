@@ -55,10 +55,17 @@ html {
   font-size: var(--theme-base-size);
   line-height: var(--theme-line-height);
   letter-spacing: var(--theme-letter-spacing);
+  height: 100dvh;
+  max-height: 100dvh;
+  overflow: hidden;
 }
 
 body {
   font-family: var(--theme-font-sans);
+  min-height: 0;
+  height: 100%;
+  margin: 0;
+  overflow: hidden;
 }
 
 code, kbd, pre, samp, .font-mono, .font-mono-ui {
@@ -71,6 +78,13 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
    all proportionally in Tailwind v4. */
 @theme inline {
   --spacing: calc(0.25rem * var(--theme-spacing-mul, 1));
+}
+
+#root {
+  min-height: 0;
+  height: 100%;
+  max-height: 100%;
+  overflow: hidden;
 }
 
 /* Nousnet's hermes-agent layout bumps `small` and `code` to readable
@@ -123,6 +137,16 @@ code { font-size: 0.875rem; }
 @keyframes toast-out {
   from { opacity: 1; transform: translateX(0); }
   to   { opacity: 0; transform: translateX(16px); }
+}
+
+/* Generic fade + dialog entrance used by popovers and confirm dialogs. */
+@keyframes fade-in {
+  from { opacity: 0; }
+  to   { opacity: 1; }
+}
+@keyframes dialog-in {
+  from { opacity: 0; transform: translateY(4px) scale(0.98); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
 }
 
 /* Hide scrollbar utility — used by the header's overflow-x nav row. */

@@ -319,6 +319,98 @@ class TestCodexOAuthContextLength:
             "leaked outside openai-codex provider"
         )
 
+    def test_stale_codex_cache_over_400k_is_invalidated(self, tmp_path, monkeypatch):
+        """Pre-PR #14935 builds cached gpt-5.5 at 1.05M (from models.dev)
+        before the Codex-aware branch existed. Upgrading users keep that
+        stale entry on disk and the cache-first lookup returns it forever.
+        Codex OAuth caps at 272k for every slug, so any cached Codex
+        entry >= 400k must be dropped and re-resolved via the live probe.
+        """
+        from agent import model_metadata as mm
+
+        # Isolate the cache file to tmp_path
+        cache_file = tmp_path / "context_length_cache.yaml"
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+
+        base_url = "https://chatgpt.com/backend-api/codex/"
+        stale_key = f"gpt-5.5@{base_url}"
+        other_key = "other-model@https://api.openai.com/v1/"
+        import yaml as _yaml
+        cache_file.write_text(_yaml.dump({"context_lengths": {
+            stale_key: 1_050_000,   # stale pre-fix value
+            other_key: 128_000,     # unrelated, must survive
+        }}))
+
+        fake_response = MagicMock()
+        fake_response.status_code = 200
+        fake_response.json.return_value = {
+            "models": [{"slug": "gpt-5.5", "context_window": 272_000}]
+        }
+
+        with patch("agent.model_metadata.requests.get", return_value=fake_response), \
+             patch("agent.model_metadata.save_context_length") as mock_save:
+            ctx = mm.get_model_context_length(
+                model="gpt-5.5",
+                base_url=base_url,
+                api_key="fake-token",
+                provider="openai-codex",
+            )
+
+        assert ctx == 272_000, f"Stale entry should have been re-resolved to 272k, got {ctx}"
+        # Live save was called with the fresh value
+        mock_save.assert_called_with("gpt-5.5", base_url, 272_000)
+        # The stale entry was removed from disk; unrelated entries survived
+        remaining = _yaml.safe_load(cache_file.read_text()).get("context_lengths", {})
+        assert stale_key not in remaining, "Stale entry was not invalidated from the cache file"
+        assert remaining.get(other_key) == 128_000, "Unrelated cache entries must not be touched"
+
+    def test_fresh_codex_cache_under_400k_is_respected(self, tmp_path, monkeypatch):
+        """Codex entries at the correct 272k must NOT be invalidated —
+        only stale pre-fix values (>= 400k) get dropped."""
+        from agent import model_metadata as mm
+
+        cache_file = tmp_path / "context_length_cache.yaml"
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+
+        base_url = "https://chatgpt.com/backend-api/codex/"
+        import yaml as _yaml
+        cache_file.write_text(_yaml.dump({"context_lengths": {
+            f"gpt-5.5@{base_url}": 272_000,
+        }}))
+
+        # If the invalidation incorrectly fired, this would be called; assert it isn't.
+        with patch("agent.model_metadata.requests.get") as mock_get:
+            ctx = mm.get_model_context_length(
+                model="gpt-5.5",
+                base_url=base_url,
+                api_key="fake-token",
+                provider="openai-codex",
+            )
+        assert ctx == 272_000
+        mock_get.assert_not_called()
+
+    def test_stale_invalidation_scoped_to_codex_provider(self, tmp_path, monkeypatch):
+        """A cached 1M entry for a non-Codex provider (e.g. Anthropic opus on
+        OpenRouter, legitimately 1M) must NOT be invalidated by this guard."""
+        from agent import model_metadata as mm
+
+        cache_file = tmp_path / "context_length_cache.yaml"
+        monkeypatch.setattr(mm, "_get_context_cache_path", lambda: cache_file)
+
+        base_url = "https://openrouter.ai/api/v1"
+        import yaml as _yaml
+        cache_file.write_text(_yaml.dump({"context_lengths": {
+            f"anthropic/claude-opus-4.6@{base_url}": 1_000_000,
+        }}))
+
+        ctx = mm.get_model_context_length(
+            model="anthropic/claude-opus-4.6",
+            base_url=base_url,
+            api_key="fake",
+            provider="openrouter",
+        )
+        assert ctx == 1_000_000, "Non-codex 1M cache entries must be respected"
+
 
 # =========================================================================
 # get_model_context_length — resolution order

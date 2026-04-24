@@ -19,17 +19,16 @@ const INTERRUPT_COOLDOWN_MS = 1500
 const ACTIVITY_LIMIT = 8
 const TRAIL_LIMIT = 8
 
-// Matches segments produced by pushInlineDiffSegment — a bare ```diff fence
-// wrapping the raw patch, no surrounding prose. Used at message.complete to
-// dedupe against final assistant text that narrates the same patch.
-const DIFF_SEGMENT_RE = /^```diff\n([\s\S]*?)\n```$/
-
+// Extracts the raw patch from a diff-only segment produced by
+// pushInlineDiffSegment. Used at message.complete to dedupe against final
+// assistant text that narrates the same patch. Returns null for anything
+// else so real assistant narration never gets touched.
 const diffSegmentBody = (msg: Msg): null | string => {
-  if (msg.role !== 'assistant' || msg.tools?.length) {
+  if (msg.kind !== 'diff') {
     return null
   }
 
-  const m = msg.text.match(DIFF_SEGMENT_RE)
+  const m = msg.text.match(/^```diff\n([\s\S]*?)\n```$/)
 
   return m ? m[1]! : null
 }
@@ -226,7 +225,7 @@ class TurnController {
       return
     }
 
-    this.segmentMessages = [...this.segmentMessages, { role: 'assistant', text: block }]
+    this.segmentMessages = [...this.segmentMessages, { kind: 'diff', role: 'assistant', text: block }]
     patchTurnState({ streamSegments: this.segmentMessages })
   }
 

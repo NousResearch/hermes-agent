@@ -165,19 +165,19 @@ describe('createGatewayEventHandler', () => {
     // Diff is already committed to segmentMessages as its own segment —
     // nothing is "pending" anymore. The pre-tool narration is also flushed.
     expect(appended).toHaveLength(0)
-    expect(turnController.segmentMessages.map(m => m.text)).toEqual([
-      'Editing the file',
-      `\`\`\`diff\n${cleaned}\n\`\`\``
+    expect(turnController.segmentMessages).toEqual([
+      { role: 'assistant', text: 'Editing the file' },
+      { kind: 'diff', role: 'assistant', text: `\`\`\`diff\n${cleaned}\n\`\`\`` }
     ])
 
     onEvent({ payload: { text: 'patch applied' }, type: 'message.complete' } as any)
 
     // Three messages in the transcript, in order: pre-tool narration →
-    // diff → post-tool narration. The final message does NOT contain
-    // `diff` content.
+    // diff (kind='diff' so MessageLine gives it blank-line breathing room)
+    // → post-tool narration. The final message does NOT contain a diff.
     expect(appended).toHaveLength(3)
     expect(appended[0]?.text).toBe('Editing the file')
-    expect(appended[1]?.text).toBe(`\`\`\`diff\n${cleaned}\n\`\`\``)
+    expect(appended[1]).toMatchObject({ kind: 'diff', text: `\`\`\`diff\n${cleaned}\n\`\`\`` })
     expect(appended[2]?.text).toBe('patch applied')
     expect(appended[2]?.text).not.toContain('```diff')
   })
@@ -214,6 +214,7 @@ describe('createGatewayEventHandler', () => {
 
     // diff segment first, final narration second
     expect(appended).toHaveLength(2)
+    expect(appended[0]?.kind).toBe('diff')
     expect(appended[0]?.text).not.toContain('┊ review diff')
     expect(appended[0]?.text).toContain('--- a/foo.ts')
     expect(appended[1]?.text).toBe('done')
@@ -247,9 +248,10 @@ describe('createGatewayEventHandler', () => {
     } as any)
     onEvent({ payload: { text: 'done' }, type: 'message.complete' } as any)
 
-    // Two segments: diff block (no tool row), final narration (tool row
-    // belongs here since pendingSegmentTools carries across the flush).
+    // Two segments: diff block (kind='diff', no tool row), final narration
+    // (tool row belongs here since pendingSegmentTools carries across the flush).
     expect(appended).toHaveLength(2)
+    expect(appended[0]?.kind).toBe('diff')
     expect(appended[0]?.text).toContain('```diff')
     expect(appended[0]?.tools ?? []).toEqual([])
     expect(appended[1]?.text).toBe('done')

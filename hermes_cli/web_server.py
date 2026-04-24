@@ -2032,6 +2032,19 @@ async def dispatch_bus_task(req: DispatchRequest, force: bool = False):
         return {"ok": False, "error": str(exc)}
 
 
+@app.get("/api/dual-agent/subagents")
+async def get_subagents_summary():
+    """S8 ephemeral subagent stats + running list."""
+    try:
+        from agent_bus.subagents import list_running, summary_stats
+        return {
+            "running": list_running(),
+            "summary": summary_stats(last_n=100),
+        }
+    except Exception as exc:
+        return {"error": str(exc), "running": [], "summary": {"total": 0}}
+
+
 @app.get("/api/dual-agent/codex-stats")
 async def get_codex_stats(hours: int = 24):
     """Codex CLI invocation stats (count / latency / errors) in last N hours."""

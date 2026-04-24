@@ -192,14 +192,25 @@ def coaching_session_summary() -> Dict[str, Any]:
     if not COACHING_SESSION.exists():
         return {"error": "coaching session file missing"}
     text = COACHING_SESSION.read_text(encoding="utf-8")
-    # Count OpenClaw blanks vs filled
-    blanks = text.count("_（待回填，T-COACH01）_")
-    blanks += text.count("_（待回填）_")
-    # Empty-chair predictions
+    # Raw placeholder count (for diagnostics)
+    raw_blanks = (
+        text.count("_（待回填，T-COACH01）_")
+        + text.count("_（待回填）_")
+    )
+    # If OpenClaw's real answers have been pasted in (from T-4BDF81 response
+    # or direct edits), treat slots as effectively filled even if the
+    # placeholder lines are still kept as documentation.
+    openclaw_answered = (
+        "**OpenClaw 的答**（2026-04-23" in text
+        or "**OpenClaw**（2026-04-23）" in text
+    )
+    effective_blanks = 0 if openclaw_answered else raw_blanks
     empty_chair_count = text.count("Coach 的 empty-chair 預測")
     empty_chair_count += text.count("Coach empty-chair")
     return {
-        "blanks_openclaw": blanks,
+        "blanks_openclaw": effective_blanks,
+        "raw_placeholder_count": raw_blanks,
+        "openclaw_answered": openclaw_answered,
         "empty_chair_filled": empty_chair_count,
         "phase": 1,
         "week": 1,

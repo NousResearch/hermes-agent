@@ -16,7 +16,10 @@ from agent_bus.middleware import (
 
 
 @pytest.fixture(autouse=True)
-def reset_registry():
+def reset_registry(monkeypatch, tmp_path):
+    # Disable auto-memory inject so before_model no-op tests stay valid
+    monkeypatch.setenv("HERMES_AUTO_MEMORY_PATH", str(tmp_path / "empty-auto.json"))
+    monkeypatch.setenv("HERMES_AUTO_MEMORY_INJECT", "off")
     clear_registry()
     yield
     clear_registry()

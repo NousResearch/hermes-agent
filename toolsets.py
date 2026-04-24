@@ -60,6 +60,9 @@ _HERMES_CORE_TOOLS = [
     "send_message",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+    # GBrain knowledge brain (gated on gbrain CLI check_fn)
+    "brain_search", "brain_query", "brain_get", "brain_put",
+    "brain_backlinks", "brain_timeline", "brain_stats", "brain_list",
 ]
 
 
@@ -108,7 +111,16 @@ TOOLSETS = {
         "tools": ["skills_list", "skill_view", "skill_manage"],
         "includes": []
     },
-    
+
+    "brain": {
+        "description": "GBrain knowledge brain — brain-first lookup, read/write, ambient signal capture. GBrain must be checked BEFORE any external API call.",
+        "tools": [
+            "brain_search", "brain_query", "brain_get", "brain_put",
+            "brain_backlinks", "brain_timeline", "brain_stats", "brain_list"
+        ],
+        "includes": []
+    },
+
     "browser": {
         "description": "Browser automation for web interaction (navigate, click, type, scroll, iframes, hold-click) with web search for finding URLs",
         "tools": [

@@ -1,6 +1,7 @@
 import { Ansi, Box, NoSelect, Text } from '@hermes/ink'
 import { memo } from 'react'
 
+import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { LONG_MSG } from '../config/limits.js'
 import { userDisplay } from '../domain/messages.js'
 import { ROLE } from '../domain/roles.js'
@@ -21,11 +22,16 @@ export const MessageLine = memo(function MessageLine({
   t
 }: MessageLineProps) {
   if (msg.kind === 'trail' && msg.tools?.length) {
-    return detailsMode === 'hidden' ? null : (
+    // Per-section overrides win over the global mode, so don't pre-empt on
+    // `detailsMode === 'hidden'` — only skip when EVERY section is hidden,
+    // matching ToolTrail's own internal short-circuit.
+    const anyVisible = SECTION_NAMES.some(s => sectionMode(s, detailsMode, sections) !== 'hidden')
+
+    return anyVisible ? (
       <Box flexDirection="column" marginTop={1}>
         <ToolTrail detailsMode={detailsMode} sections={sections} t={t} trail={msg.tools} />
       </Box>
-    )
+    ) : null
   }
 
   if (msg.role === 'tool') {

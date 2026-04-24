@@ -273,7 +273,7 @@ The web server restricts CORS to localhost origins only:
 
 - `http://localhost:9119` / `http://127.0.0.1:9119` (production)
 - `http://localhost:3000` / `http://127.0.0.1:3000`
-- `http://localhost:5173` / `http://127.0.0.1:5173` (Vite dev server)
+- `http://localhost:5188` / `http://127.0.0.1:5188` (Vite dev server)
 
 If you run the server on a custom port, that origin is added automatically.
 

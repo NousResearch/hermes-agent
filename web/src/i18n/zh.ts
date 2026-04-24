@@ -55,6 +55,7 @@ export const zh: Translations = {
     nav: {
       status: "状态",
       sessions: "会话",
+      chat: "聊天",
       analytics: "分析",
       logs: "日志",
       cron: "定时任务",

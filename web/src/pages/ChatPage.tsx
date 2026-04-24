@@ -1,0 +1,474 @@
+import { useEffect, useRef, useState, useCallback } from "react";
+import { useNavigate, useSearchParams } from "react-router-dom";
+import { Send, Square, Plus, MessageSquare } from "lucide-react";
+import { H2 } from "@nous-research/ui";
+import { GatewayClient } from "@/lib/gatewayClient";
+import type { GatewayEvent } from "@/lib/gatewayClient";
+import { ToolCall } from "@/components/ToolCall";
+import type { ToolCallState } from "@/components/ToolCall";
+import { Markdown } from "@/components/Markdown";
+import { Button } from "@/components/ui/button";
+import { fetchJSON } from "@/lib/api";
+import type { SessionMessagesResponse } from "@/lib/api";
+
+// ── Types ──────────────────────────────────────────────────────────────────
+
+type MessageRole = "user" | "assistant";
+
+interface ChatMessage {
+  id: string;
+  role: MessageRole;
+  text: string;
+  tools: ToolCallState[];
+  streaming?: boolean;
+}
+
+interface SlashCommand {
+  name: string;
+  description: string;
+}
+
+// ── Helper ─────────────────────────────────────────────────────────────────
+
+let _msgCounter = 0;
+function nextId() {
+  return `m-${Date.now()}-${++_msgCounter}`;
+}
+
+// ── Slash command picker ────────────────────────────────────────────────────
+
+function CommandPicker({
+  query,
+  commands,
+  onSelect,
+}: {
+  query: string;
+  commands: SlashCommand[];
+  onSelect: (name: string) => void;
+}) {
+  const lower = query.toLowerCase();
+  const filtered = commands.filter(
+    (c) =>
+      c.name.toLowerCase().includes(lower) ||
+      c.description.toLowerCase().includes(lower),
+  );
+
+  if (filtered.length === 0) return null;
+
+  return (
+    <div className="absolute bottom-full left-0 right-0 mb-1 z-50 border border-border bg-card shadow-lg max-h-60 overflow-y-auto">
+      {filtered.map((cmd) => (
+        <button
+          key={cmd.name}
+          type="button"
+          className="flex w-full items-start gap-3 px-3 py-2 text-left hover:bg-secondary/50 transition-colors"
+          onMouseDown={(e) => {
+            // mousedown fires before input blur — prevent blur from closing picker
+            e.preventDefault();
+            onSelect(cmd.name);
+          }}
+        >
+          <span className="font-mono-ui text-xs text-primary shrink-0 mt-0.5">
+            {cmd.name}
+          </span>
+          <span className="text-xs text-muted-foreground leading-relaxed">
+            {cmd.description}
+          </span>
+        </button>
+      ))}
+    </div>
+  );
+}
+
+// ── Component ──────────────────────────────────────────────────────────────
+
+export default function ChatPage() {
+  const [searchParams] = useSearchParams();
+  const navigate = useNavigate();
+
+  const resumeId = searchParams.get("resume");
+
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [input, setInput] = useState("");
+  const [sessionId, setSessionId] = useState<string | null>(null);
+  const [running, setRunning] = useState(false);
+  const [status, setStatus] = useState<"connecting" | "ready" | "error">("connecting");
+  const [errorMsg, setErrorMsg] = useState<string | null>(null);
+  const [forceNew, setForceNew] = useState(false);
+
+  // Slash command state
+  const [allCommands, setAllCommands] = useState<SlashCommand[]>([]);
+  const [showPicker, setShowPicker] = useState(false);
+  const [pickerQuery, setPickerQuery] = useState("");
+
+  const clientRef = useRef<GatewayClient | null>(null);
+  const bottomRef = useRef<HTMLDivElement>(null);
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  // Scroll to bottom on new messages
+  useEffect(() => {
+    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [messages]);
+
+  // Fetch command list once on mount
+  useEffect(() => {
+    fetchJSON<{ commands: SlashCommand[] }>("/api/chat/commands")
+      .then((r) => setAllCommands(r.commands))
+      .catch(() => {});
+  }, []);
+
+  // ── Connect & init session ───────────────────────────────────────────────
+
+  const initSession = useCallback(
+    async (client: GatewayClient, resume: string | null, fresh: boolean) => {
+      try {
+        if (resume && !fresh) {
+          try {
+            const resp = await fetchJSON<SessionMessagesResponse>(
+              `/api/sessions/${encodeURIComponent(resume)}/messages`,
+            );
+            const historical: ChatMessage[] = resp.messages
+              .filter((m) => m.role === "user" || m.role === "assistant")
+              .map((m) => ({
+                id: nextId(),
+                role: m.role as MessageRole,
+                text: m.content ?? "",
+                tools: (m.tool_calls ?? []).map((tc) => ({
+                  id: tc.id,
+                  name: tc.function.name,
+                  preview: tc.function.arguments,
+                  status: "done" as const,
+                })),
+              }));
+            if (historical.length > 0) setMessages(historical);
+          } catch {
+            // 拉取失败不影响继续对话
+          }
+          await client.resumeSession(resume);
+        } else {
+          await client.createSession();
+        }
+        setStatus("ready");
+      } catch (err) {
+        setStatus("error");
+        setErrorMsg(String(err));
+      }
+    },
+    [],
+  );
+
+  useEffect(() => {
+    const client = new GatewayClient();
+    clientRef.current = client;
+
+    const unsub = client.subscribe((ev: GatewayEvent) => {
+      switch (ev.method) {
+        case "session.created":
+          setSessionId(ev.params.session_id);
+          break;
+
+        case "assistant.delta":
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            if (last?.role === "assistant" && last.streaming) {
+              return [
+                ...prev.slice(0, -1),
+                { ...last, text: last.text + ev.params.text },
+              ];
+            }
+            return [
+              ...prev,
+              {
+                id: nextId(),
+                role: "assistant",
+                text: ev.params.text,
+                tools: [],
+                streaming: true,
+              },
+            ];
+          });
+          break;
+
+        case "assistant.done":
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            if (last?.role === "assistant" && last.streaming) {
+              return [
+                ...prev.slice(0, -1),
+                { ...last, text: ev.params.text || last.text, streaming: false },
+              ];
+            }
+            if (ev.params.text) {
+              return [
+                ...prev,
+                {
+                  id: nextId(),
+                  role: "assistant",
+                  text: ev.params.text,
+                  tools: [],
+                  streaming: false,
+                },
+              ];
+            }
+            return prev;
+          });
+          setRunning(false);
+          break;
+
+        case "tool.started":
+          setMessages((prev) => {
+            const last = prev[prev.length - 1];
+            const tool: ToolCallState = {
+              id: nextId(),
+              name: ev.params.name,
+              preview: ev.params.preview,
+              status: "running",
+            };
+            if (last?.role === "assistant" && last.streaming) {
+              return [
+                ...prev.slice(0, -1),
+                { ...last, tools: [...last.tools, tool] },
+              ];
+            }
+            return [
+              ...prev,
+              { id: nextId(), role: "assistant", text: "", tools: [tool], streaming: true },
+            ];
+          });
+          break;
+
+        case "tool.completed":
+          setMessages((prev) =>
+            prev.map((msg) => {
+              if (msg.role !== "assistant") return msg;
+              const tools = msg.tools.map((t) =>
+                t.name === ev.params.name && t.status === "running"
+                  ? { ...t, status: "done" as const }
+                  : t,
+              );
+              return { ...msg, tools };
+            }),
+          );
+          break;
+
+        case "error":
+          setErrorMsg(ev.params.message);
+          setRunning(false);
+          break;
+      }
+    });
+
+    client
+      .connect()
+      .then(() => initSession(client, resumeId, forceNew))
+      .catch((err) => {
+        setStatus("error");
+        setErrorMsg(String(err));
+      });
+
+    return () => {
+      unsub();
+      client.disconnect();
+    };
+  }, [resumeId, forceNew, initSession]);
+
+  // ── Input handling ────────────────────────────────────────────────────────
+
+  const handleInputChange = useCallback((value: string) => {
+    setInput(value);
+    if (value.startsWith("/")) {
+      setPickerQuery(value.slice(1)); // 去掉前缀 / 作为过滤词
+      setShowPicker(true);
+    } else {
+      setShowPicker(false);
+    }
+  }, []);
+
+  const handleCommandSelect = useCallback((name: string) => {
+    setInput(name + " ");
+    setShowPicker(false);
+    inputRef.current?.focus();
+  }, []);
+
+  // ── Send ─────────────────────────────────────────────────────────────────
+
+  const send = useCallback(() => {
+    const text = input.trim();
+    if (!text || running || status !== "ready") return;
+
+    setInput("");
+    setShowPicker(false);
+    setRunning(true);
+    setErrorMsg(null);
+
+    setMessages((prev) => [
+      ...prev,
+      { id: nextId(), role: "user", text, tools: [] },
+    ]);
+
+    try {
+      clientRef.current!.sendMessage(text);
+    } catch (err) {
+      setErrorMsg(String(err));
+      setRunning(false);
+    }
+  }, [input, running, status]);
+
+  const interrupt = useCallback(async () => {
+    try {
+      await clientRef.current!.interrupt();
+    } catch {
+      // ignore
+    }
+  }, []);
+
+  const startNewSession = useCallback(() => {
+    setForceNew(true);
+    setMessages([]);
+    setSessionId(null);
+    setStatus("connecting");
+    setErrorMsg(null);
+    navigate("/chat", { replace: true });
+  }, [navigate]);
+
+  // ── Render ────────────────────────────────────────────────────────────────
+
+  return (
+    <div className="flex flex-col h-chat-page">
+      {/* Header */}
+      <div className="flex items-center gap-3 mb-4">
+        <MessageSquare className="h-5 w-5 text-muted-foreground shrink-0" />
+        <H2 variant="sm">Chat</H2>
+        {sessionId && (
+          <span className="text-[10px] text-muted-foreground font-mono-ui truncate max-w-[180px] opacity-60">
+            {sessionId}
+          </span>
+        )}
+        <Button
+          variant="outline"
+          size="sm"
+          className="ml-auto h-7 gap-1.5 text-xs"
+          onClick={startNewSession}
+          disabled={running}
+        >
+          <Plus className="h-3.5 w-3.5" />
+          New session
+        </Button>
+      </div>
+
+      {/* Status banners */}
+      {status === "connecting" && (
+        <div className="flex items-center gap-2 py-2 text-xs text-muted-foreground">
+          <div className="h-3 w-3 animate-spin rounded-full border-[1.5px] border-primary border-t-transparent" />
+          Connecting…
+        </div>
+      )}
+      {status === "error" && errorMsg && (
+        <div className="mb-3 border border-destructive/30 bg-destructive/5 px-3 py-2 text-xs text-destructive">
+          {errorMsg}
+        </div>
+      )}
+
+      {/* Message list */}
+      <div className="chat-history flex-1 overflow-y-auto flex flex-col gap-3 pr-1">
+        {messages.length === 0 && status === "ready" && (
+          <div className="flex flex-col items-center justify-center flex-1 py-16 text-muted-foreground">
+            <MessageSquare className="h-8 w-8 mb-3 opacity-30" />
+            <p className="text-sm">
+              {resumeId && !forceNew
+                ? "Resuming session — send a message to continue"
+                : "Send a message to start"}
+            </p>
+          </div>
+        )}
+
+        {messages.map((msg) => (
+          <div
+            key={msg.id}
+            className={msg.role === "user" ? "chat-bubble-user" : "chat-bubble-assistant"}
+          >
+            {msg.role === "user" ? (
+              <div className="bg-primary/10 px-3 py-2 text-sm text-primary whitespace-pre-wrap">
+                {msg.text}
+              </div>
+            ) : (
+              <div className="bg-success/5 border border-success/10 px-3 py-2">
+                {msg.text && <Markdown content={msg.text} />}
+                {msg.tools.map((t) => (
+                  <ToolCall key={t.id} tool={t} />
+                ))}
+                {msg.streaming && !msg.text && msg.tools.length === 0 && (
+                  <span className="inline-block h-3 w-3 animate-spin rounded-full border-[1.5px] border-success border-t-transparent" />
+                )}
+              </div>
+            )}
+          </div>
+        ))}
+
+        <div ref={bottomRef} />
+      </div>
+
+      {/* Input row */}
+      <div className="relative mt-3 chat-input-safe">
+        {/* Slash command picker — appears above the input */}
+        {showPicker && (
+          <CommandPicker
+            query={pickerQuery}
+            commands={allCommands}
+            onSelect={handleCommandSelect}
+          />
+        )}
+
+        <div className="flex gap-2 items-center">
+          <input
+            ref={inputRef}
+            className="flex-1 bg-input/20 border border-border px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-50"
+            placeholder={status === "ready" ? "Message… (/ for commands)" : "Connecting…"}
+            value={input}
+            disabled={status !== "ready"}
+            onChange={(e) => handleInputChange(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Escape") {
+                setShowPicker(false);
+                return;
+              }
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
+                send();
+              }
+            }}
+            onBlur={() => {
+              // Delay so onMouseDown in picker fires first
+              setTimeout(() => setShowPicker(false), 150);
+            }}
+            onFocus={() => {
+              if (input.startsWith("/")) setShowPicker(true);
+            }}
+            autoComplete="off"
+          />
+          {running ? (
+            <Button
+              variant="outline"
+              size="icon"
+              className="h-9 w-9 shrink-0 text-destructive border-destructive/30 hover:bg-destructive/10"
+              onClick={interrupt}
+              aria-label="Interrupt"
+            >
+              <Square className="h-4 w-4" />
+            </Button>
+          ) : (
+            <Button
+              size="icon"
+              className="h-9 w-9 shrink-0"
+              disabled={!input.trim() || status !== "ready"}
+              onClick={send}
+              aria-label="Send"
+            >
+              <Send className="h-4 w-4" />
+            </Button>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}

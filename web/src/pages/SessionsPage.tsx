@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback, useRef } from "react";
+import { useNavigate } from "react-router-dom";
 import {
   ChevronDown,
   ChevronLeft,
@@ -12,6 +13,7 @@ import {
   MessageCircle,
   Hash,
   X,
+  ExternalLink,
 } from "lucide-react";
 import { H2 } from "@nous-research/ui";
 import { api } from "@/lib/api";
@@ -246,6 +248,7 @@ function SessionRow({
   onToggle: () => void;
   onDelete: () => void;
 }) {
+  const navigate = useNavigate();
   const [messages, setMessages] = useState<SessionMessage[] | null>(null);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -329,6 +332,18 @@ function SessionRow({
           <Badge variant="outline" className="text-[10px]">
             {session.source ?? "local"}
           </Badge>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="h-7 w-7 text-muted-foreground hover:text-primary"
+            aria-label="Open in Chat"
+            onClick={(e) => {
+              e.stopPropagation();
+              navigate(`/chat?resume=${encodeURIComponent(session.id)}`);
+            }}
+          >
+            <ExternalLink className="h-3.5 w-3.5" />
+          </Button>
           <Button
             variant="ghost"
             size="icon"

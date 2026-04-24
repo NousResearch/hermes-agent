@@ -57,6 +57,7 @@ export interface Translations {
     nav: {
       status: string;
       sessions: string;
+      chat: string;
       analytics: string;
       logs: string;
       cron: string;

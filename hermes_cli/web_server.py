@@ -49,7 +49,7 @@ from hermes_cli.config import (
 from gateway.status import get_running_pid, read_runtime_status
 
 try:
-    from fastapi import FastAPI, HTTPException, Request
+    from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
     from fastapi.middleware.cors import CORSMiddleware
     from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
     from fastapi.staticfiles import StaticFiles
@@ -102,6 +102,7 @@ _PUBLIC_API_PATHS: frozenset = frozenset({
     "/api/dashboard/themes",
     "/api/dashboard/plugins",
     "/api/dashboard/plugins/rescan",
+    "/api/chat/commands",
 })
 
 
@@ -1904,6 +1905,26 @@ async def cancel_oauth_session(session_id: str, request: Request):
 
 
 # ---------------------------------------------------------------------------
+# Chat slash-command list
+# ---------------------------------------------------------------------------
+
+
+@app.get("/api/chat/commands")
+async def get_chat_commands():
+    """Return the list of slash commands available in the chat UI."""
+    try:
+        from hermes_cli.commands import COMMANDS
+        return {
+            "commands": [
+                {"name": name, "description": desc}
+                for name, desc in sorted(COMMANDS.items())
+            ]
+        }
+    except Exception:
+        return {"commands": []}
+
+
+# ---------------------------------------------------------------------------
 # Session detail endpoints
 # ---------------------------------------------------------------------------
 
@@ -2789,6 +2810,190 @@ def _mount_plugin_api_routes():
 
 # Mount plugin API routes before the SPA catch-all.
 _mount_plugin_api_routes()
+
+# ---------------------------------------------------------------------------
+# tui_gateway WebSocket transport
+# ---------------------------------------------------------------------------
+# JSON-RPC 2.0 over WebSocket.  The browser client sends RPC requests and
+# the server pushes back RPC notifications (no id) for streaming events.
+#
+# Client → Server methods:
+#   session.create  params: {prompt?}         → result: {session_id}
+#   session.resume  params: {session_id}       → result: {ok, session_id}
+#   chat.send       params: {message}          → streams events, result: {ok}
+#   chat.interrupt  (no params)               → result: {ok}
+#
+# Server → Client notifications (no id):
+#   session.created     params: {session_id}
+#   assistant.delta     params: {text}
+#   assistant.done      params: {text}
+#   tool.started        params: {name, preview}
+#   tool.completed      params: {name, result?}
+#   error               params: {message}
+
+def _ws_send_sync(loop, ws, msg: dict) -> None:
+    """Thread-safe: schedule a WebSocket send from a worker thread."""
+    import asyncio
+    asyncio.run_coroutine_threadsafe(ws.send_json(msg), loop)
+
+
+@app.websocket("/ws/tui-gateway")
+async def tui_gateway_ws(websocket: WebSocket):
+    """WebSocket endpoint for the built-in dashboard chat."""
+    # Authenticate: accept the session token either as a query param or
+    # in the first message.  The SPA injects it via ?token=… on the URL.
+    token_param = websocket.query_params.get("token", "")
+    if not hmac.compare_digest(
+        f"Bearer {token_param}".encode(),
+        f"Bearer {_SESSION_TOKEN}".encode(),
+    ):
+        await websocket.close(code=4001)
+        return
+
+    await websocket.accept()
+
+    loop = asyncio.get_running_loop()
+    session_id: Optional[str] = None
+    agent_ref: List[Any] = [None]   # mutable container so interrupt() can reach the agent
+
+    def _notify(method: str, params: dict) -> None:
+        _ws_send_sync(loop, websocket, {"jsonrpc": "2.0", "method": method, "params": params})
+
+    def _reply(rpc_id, result=None, error=None) -> None:
+        msg: dict = {"jsonrpc": "2.0", "id": rpc_id}
+        if error:
+            msg["error"] = error
+        else:
+            msg["result"] = result or {}
+        _ws_send_sync(loop, websocket, msg)
+
+    try:
+        while True:
+            raw = await websocket.receive_json()
+            rpc_id = raw.get("id")
+            method = raw.get("method", "")
+            params = raw.get("params") or {}
+
+            if method == "session.create":
+                import uuid
+                session_id = str(uuid.uuid4())
+                _reply(rpc_id, {"session_id": session_id})
+                _notify("session.created", {"session_id": session_id})
+
+            elif method == "session.resume":
+                sid = params.get("session_id", "").strip()
+                if not sid:
+                    _reply(rpc_id, error={"code": -32602, "message": "session_id required"})
+                    continue
+                session_id = sid
+                _reply(rpc_id, {"ok": True, "session_id": session_id})
+                _notify("session.created", {"session_id": session_id})
+
+            elif method == "chat.send":
+                message = params.get("message", "").strip()
+                if not message:
+                    _reply(rpc_id, error={"code": -32602, "message": "message required"})
+                    continue
+                if not session_id:
+                    import uuid
+                    session_id = str(uuid.uuid4())
+                    _notify("session.created", {"session_id": session_id})
+
+                def _on_delta(delta):
+                    if delta is None:
+                        return
+                    _notify("assistant.delta", {"text": delta})
+
+                def _on_tool_event(event_type: str, tool_name: str = None,
+                                   preview: str = None, **kwargs):
+                    if event_type == "tool.started":
+                        _notify("tool.started", {"name": tool_name or "", "preview": preview or ""})
+                    elif event_type == "tool.completed":
+                        _notify("tool.completed", {"name": tool_name or ""})
+
+                sid_for_run = session_id
+
+                def _run_agent_thread():
+                    try:
+                        from run_agent import AIAgent
+                        from gateway.run import (
+                            _resolve_runtime_agent_kwargs,
+                            _resolve_gateway_model,
+                            _load_gateway_config,
+                        )
+                        from hermes_cli.tools_config import _get_platform_tools
+
+                        runtime_kwargs = _resolve_runtime_agent_kwargs()
+                        model = _resolve_gateway_model()
+                        user_config = _load_gateway_config()
+                        enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
+
+                        from gateway.run import GatewayRunner
+                        fallback_model = GatewayRunner._load_fallback_model()
+
+                        from hermes_state import SessionDB
+                        db = SessionDB()
+
+                        try:
+                            history = db.get_messages_as_conversation(sid_for_run)
+                        except Exception:
+                            history = []
+
+                        agent = AIAgent(
+                            model=model,
+                            **runtime_kwargs,
+                            max_iterations=int(os.getenv("HERMES_MAX_ITERATIONS", "90")),
+                            quiet_mode=True,
+                            verbose_logging=False,
+                            enabled_toolsets=enabled_toolsets,
+                            session_id=sid_for_run,
+                            platform="api_server",
+                            stream_delta_callback=_on_delta,
+                            tool_progress_callback=_on_tool_event,
+                            tool_start_callback=lambda *a, **kw: _on_tool_event("tool.started", *a, **kw),
+                            tool_complete_callback=lambda *a, **kw: _on_tool_event("tool.completed", *a, **kw),
+                            session_db=db,
+                            fallback_model=fallback_model,
+                        )
+                        agent_ref[0] = agent
+
+                        result = agent.run_conversation(
+                            user_message=message,
+                            conversation_history=history,
+                            task_id="default",
+                        )
+                        final = result.get("final_response", "") or ""
+                        _notify("assistant.done", {"text": final})
+                        _reply(rpc_id, {"ok": True})
+                    except Exception as exc:
+                        _log.exception("tui_gateway agent error: %s", exc)
+                        _notify("error", {"message": str(exc)})
+                        _reply(rpc_id, error={"code": -32603, "message": str(exc)})
+                    finally:
+                        agent_ref[0] = None
+
+                await loop.run_in_executor(None, _run_agent_thread)
+
+            elif method == "chat.interrupt":
+                ag = agent_ref[0]
+                if ag is not None:
+                    ag.interrupt()
+                _reply(rpc_id, {"ok": True})
+
+            else:
+                if rpc_id is not None:
+                    _reply(rpc_id, error={"code": -32601, "message": f"Unknown method: {method}"})
+
+    except WebSocketDisconnect:
+        ag = agent_ref[0]
+        if ag is not None:
+            try:
+                ag.interrupt()
+            except Exception:
+                pass
+    except Exception as exc:
+        _log.warning("tui_gateway WS error: %s", exc)
+
 
 mount_spa(app)
 

@@ -148,6 +148,31 @@ code { font-size: 0.875rem; }
   font-family: var(--theme-font-mono);
 }
 
+/* ── Chat page layout ──────────────────────────────────────────────────── */
+
+/* Full-height chat that doesn't overflow the viewport.  The parent <main>
+   has pt-16/pt-20 (header) and pb-4/pb-8 (footer) applied as Tailwind
+   classes; h-chat-page calculates the remaining space so the history area
+   scrolls inside the page rather than growing the document. */
+.h-chat-page {
+  height: calc(100vh - 10rem); /* approx header + footer clearance */
+  max-height: calc(100dvh - 10rem); /* dvh = dynamic viewport on mobile */
+}
+
+/* Independent scroll region for the message list. */
+.chat-history {
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  /* Extra bottom gap so the last message isn't hidden by the input row. */
+  padding-bottom: 0.5rem;
+}
+
+/* Reserve space for the iOS/Android home-bar on mobile so the input isn't
+   obscured by the system UI. */
+.chat-input-safe {
+  padding-bottom: env(safe-area-inset-bottom, 0);
+}
+
 /* Subtle grain overlay for badges. */
 .grain {
   position: relative;

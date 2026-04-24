@@ -33,6 +33,7 @@ import LogsPage from "@/pages/LogsPage";
 import AnalyticsPage from "@/pages/AnalyticsPage";
 import CronPage from "@/pages/CronPage";
 import SkillsPage from "@/pages/SkillsPage";
+import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { ThemeSwitcher } from "@/components/ThemeSwitcher";
 import { useI18n } from "@/i18n";
@@ -52,6 +53,7 @@ const BUILTIN_ROUTES: Record<string, React.ComponentType> = {
   "/skills": SkillsPage,
   "/config": ConfigPage,
   "/env": EnvPage,
+  "/chat": ChatPage,
 };
 
 const BUILTIN_NAV: NavItem[] = [
@@ -61,6 +63,12 @@ const BUILTIN_NAV: NavItem[] = [
     labelKey: "sessions",
     label: "Sessions",
     icon: MessageSquare,
+  },
+  {
+    path: "/chat",
+    labelKey: "chat",
+    label: "Chat",
+    icon: Terminal,
   },
   {
     path: "/analytics",

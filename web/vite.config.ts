@@ -63,8 +63,13 @@ export default defineConfig({
     emptyOutDir: true,
   },
   server: {
+    port: 5188,
     proxy: {
       "/api": BACKEND,
+      "/ws": {
+        target: BACKEND.replace(/^http/, "ws"),
+        ws: true,
+      },
     },
   },
 });

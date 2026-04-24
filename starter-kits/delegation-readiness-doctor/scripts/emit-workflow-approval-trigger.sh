@@ -9,8 +9,10 @@ mkdir -p "$ARTIFACT_DIR"
 TIMESTAMP="$(date +%Y-%m-%dT%H-%M-%S%z)"
 REPORT_PATH="$ARTIFACT_DIR/workflow-approval-trigger-$TIMESTAMP.md"
 LATEST_PATH="$ARTIFACT_DIR/latest-workflow-approval-trigger.md"
+TOKEN_PATH="$(mktemp)"
+trap 'rm -f "$TOKEN_PATH"' EXIT
 
-python - "$REPORT_PATH" "$LATEST_PATH" <<'PY'
+python - "$REPORT_PATH" "$LATEST_PATH" "$TOKEN_PATH" <<'PY'
 import json
 import os
 import re
@@ -23,6 +25,7 @@ from pathlib import Path
 
 report_path = Path(sys.argv[1])
 latest_path = Path(sys.argv[2])
+token_path = Path(sys.argv[3])
 base = 'https://api.github.com/repos/NousResearch/hermes-agent'
 headers = {
     'Accept': 'application/vnd.github+json',
@@ -147,12 +150,28 @@ GitHub has already created Actions suites for the fork PR head commit, but every
 ## Proof note
 This trigger artifact exists so the recurring blocker can be attacked with one exact nudge packet and one exact verification step instead of another status-only monitor refresh, even when unauthenticated public API rate limits would otherwise stall the packet refresh.
 """
+
+def stable_for_comparison(text: str) -> str:
+    return re.sub(r'^Generated: .*$','Generated: <content-stable>', text, flags=re.MULTILINE)
+
+if latest_path.exists() and stable_for_comparison(latest_path.read_text(encoding='utf-8')) == stable_for_comparison(report):
+    token_path.write_text('WORKFLOW_APPROVAL_TRIGGER_CONTENT_STABLE\n', encoding='utf-8')
+    print(latest_path)
+    print('WORKFLOW_APPROVAL_TRIGGER_CONTENT_STABLE')
+    sys.exit(0)
+
 report_path.write_text(report, encoding='utf-8')
 shutil.copyfile(report_path, latest_path)
+token_path.write_text(trigger_stdout_token + '\n', encoding='utf-8')
 print(report_path)
 print(trigger_stdout_token)
 PY
 
 chmod +x "$SCRIPT_DIR/emit-workflow-approval-trigger.sh"
-printf 'Wrote report: %s\n' "$REPORT_PATH"
-printf 'Latest report: %s\n' "$LATEST_PATH"
+trigger_token="$(cat "$TOKEN_PATH" 2>/dev/null || true)"
+if [[ "$trigger_token" == "WORKFLOW_APPROVAL_TRIGGER_CONTENT_STABLE" ]]; then
+  printf 'Skipped unchanged trigger write; latest report remains: %s\n' "$LATEST_PATH"
+else
+  printf 'Wrote report: %s\n' "$REPORT_PATH"
+  printf 'Latest report: %s\n' "$LATEST_PATH"
+fi

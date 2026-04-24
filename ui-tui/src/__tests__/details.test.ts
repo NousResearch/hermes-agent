@@ -90,4 +90,13 @@ describe('sectionMode', () => {
     expect(sectionMode('activity', 'expanded', { activity: 'collapsed' })).toBe('collapsed')
     expect(sectionMode('tools', 'collapsed', { tools: 'expanded' })).toBe('expanded')
   })
+
+  it('lets per-section overrides escape the global hidden mode', () => {
+    // Regression for the case where global details_mode: hidden used to
+    // short-circuit the entire accordion and prevent overrides from
+    // surfacing — `sections.tools: expanded` must still resolve to expanded.
+    expect(sectionMode('tools', 'hidden', { tools: 'expanded' })).toBe('expanded')
+    expect(sectionMode('thinking', 'hidden', { thinking: 'collapsed' })).toBe('collapsed')
+    expect(sectionMode('activity', 'hidden', { activity: 'expanded' })).toBe('expanded')
+  })
 })

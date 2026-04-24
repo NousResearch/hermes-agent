@@ -1,7 +1,7 @@
 import { NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { HOTKEYS } from '../../../content/hotkeys.js'
-import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from '../../../domain/details.js'
+import { SECTION_NAMES, isSectionName, nextDetailsMode, parseDetailsMode } from '../../../domain/details.js'
 import type {
   ConfigGetValueResponse,
   ConfigSetResponse,
@@ -62,7 +62,10 @@ export const coreCommands: SlashCommand[] = [
         {
           rows: [
             ['/details [hidden|collapsed|expanded|cycle]', 'set global agent detail visibility mode'],
-            ['/details <section> [hidden|collapsed|expanded|reset]', 'override one section (thinking/tools/subagents/activity)'],
+            [
+              '/details <section> [hidden|collapsed|expanded|reset]',
+              'override one section (thinking/tools/subagents/activity)'
+            ],
             ['/fortune [random|daily]', 'show a random or daily local fortune']
           ],
           title: 'TUI'
@@ -159,8 +162,7 @@ export const coreCommands: SlashCommand[] = [
             const mode = parseDetailsMode(r?.value) ?? ui.detailsMode
             patchUiState({ detailsMode: mode })
 
-            const overrides = SECTION_NAMES
-              .filter(s => ui.sections[s])
+            const overrides = SECTION_NAMES.filter(s => ui.sections[s])
               .map(s => `${s}=${ui.sections[s]}`)
               .join(' ')
 

@@ -50,6 +50,7 @@ AUTHOR_MAP = {
     "maks.mir@yahoo.com": "say8hi",
     "web3blind@users.noreply.github.com": "web3blind",
     "julia@alexland.us": "alexg0bot",
+    "1060770+benjaminsehl@users.noreply.github.com": "benjaminsehl",
     # contributors (from noreply pattern)
     "david.vv@icloud.com": "davidvv",
     "wangqiang@wangqiangdeMac-mini.local": "xiaoqiang243",

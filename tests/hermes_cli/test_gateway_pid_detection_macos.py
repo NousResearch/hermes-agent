@@ -33,7 +33,6 @@ These tests pin the fixes at the production-code entry points:
   invocation ever regresses to ``eww``.
 """
 from types import SimpleNamespace
-from unittest.mock import patch
 
 import pytest
 

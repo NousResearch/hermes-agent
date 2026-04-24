@@ -69,7 +69,7 @@ class GatewayRuntimeSnapshot:
 _LAUNCHD_PLIST_PID_RE = re.compile(r'"PID"\s*=\s*(\d+)\s*;')
 
 
-def _parse_launchd_list_output(stdout: str, label: str) -> set:
+def _parse_launchd_list_output(stdout: str, label: str) -> set[int]:
     """Extract PIDs for ``label`` from ``launchctl list`` output.
 
     macOS ``launchctl list`` has two distinct output formats and which one
@@ -90,7 +90,7 @@ def _parse_launchd_list_output(stdout: str, label: str) -> set:
     because the plist-dict dump is already scoped to the label the
     caller requested.
     """
-    pids: set = set()
+    pids: set[int] = set()
     if not stdout:
         return pids
 
@@ -122,7 +122,7 @@ def _parse_launchd_list_output(stdout: str, label: str) -> set:
     return pids
 
 
-def _get_service_pids() -> set:
+def _get_service_pids() -> set[int]:
     """Return PIDs currently managed by systemd or launchd gateway services.
 
     Used to avoid killing freshly-restarted service processes when sweeping
@@ -130,7 +130,7 @@ def _get_service_pids() -> set:
     service manager having committed the new PID before the restart command
     returns (true for both systemd and launchd in practice).
     """
-    pids: set = set()
+    pids: set[int] = set()
 
     # --- systemd (Linux): user and system scopes ---
     if supports_systemd_services():

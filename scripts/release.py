@@ -44,6 +44,7 @@ AUTHOR_MAP = {
     "teknium@nousresearch.com": "teknium1",
     "127238744+teknium1@users.noreply.github.com": "teknium1",
     "343873859@qq.com": "DrStrangerUJN",
+    "uzmpsk.dilekakbas@gmail.com": "dlkakbs",
     "jefferson@heimdallstrategy.com": "Mind-Dragon",
     "130918800+devorun@users.noreply.github.com": "devorun",
     "maks.mir@yahoo.com": "say8hi",

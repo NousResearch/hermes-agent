@@ -60,6 +60,22 @@ class TestWrapCommand:
         assert "cd ~" in wrapped
         assert "cd '~'" not in wrapped
 
+    def test_tilde_subpath_with_spaces_uses_home_and_quotes_suffix(self):
+        env = _TestableEnv()
+        env._snapshot_ready = True
+        wrapped = env._wrap_command("ls", "~/my repo")
+
+        assert "cd $HOME/'my repo'" in wrapped
+        assert "cd ~/my repo" not in wrapped
+
+    def test_tilde_slash_maps_to_home(self):
+        env = _TestableEnv()
+        env._snapshot_ready = True
+        wrapped = env._wrap_command("ls", "~/")
+
+        assert "cd $HOME" in wrapped
+        assert "cd ~/" not in wrapped
+
     def test_cd_failure_exit_126(self):
         env = _TestableEnv()
         env._snapshot_ready = True

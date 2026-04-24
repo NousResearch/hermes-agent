@@ -33,6 +33,12 @@ const diffSegmentBody = (msg: Msg): null | string => {
   return m ? m[1]! : null
 }
 
+const insertBeforeFirstDiff = (segments: Msg[], msg: Msg): Msg[] => {
+  const index = segments.findIndex(segment => segment.kind === 'diff')
+
+  return index < 0 ? [...segments, msg] : [...segments.slice(0, index), msg, ...segments.slice(index)]
+}
+
 export interface InterruptDeps {
   appendMessage: (msg: Msg) => void
   gw: { request: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T> }
@@ -292,16 +298,30 @@ class TurnController {
       return body === null || (!finalHasOwnDiffFence && !finalText.includes(body))
     })
 
-    const finalMessages = [...segments]
+    const hasDiffSegment = segments.some(msg => msg.kind === 'diff')
+    const detailsBelongBeforeDiff = hasDiffSegment && (tools.length > 0 || Boolean(savedReasoning))
+    const finalMessages = detailsBelongBeforeDiff
+      ? insertBeforeFirstDiff(segments, {
+          kind: 'trail',
+          role: 'system',
+          text: '',
+          thinking: savedReasoning || undefined,
+          thinkingTokens: savedReasoning ? savedReasoningTokens : undefined,
+          toolTokens: savedToolTokens || undefined,
+          ...(tools.length && { tools })
+        })
+      : [...segments]
 
     if (finalText) {
       finalMessages.push({
         role: 'assistant',
         text: finalText,
-        thinking: savedReasoning || undefined,
-        thinkingTokens: savedReasoning ? savedReasoningTokens : undefined,
-        toolTokens: savedToolTokens || undefined,
-        ...(tools.length && { tools })
+        ...(!detailsBelongBeforeDiff && {
+          thinking: savedReasoning || undefined,
+          thinkingTokens: savedReasoning ? savedReasoningTokens : undefined,
+          toolTokens: savedToolTokens || undefined,
+          ...(tools.length && { tools })
+        })
       })
     }
 

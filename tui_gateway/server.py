@@ -3256,6 +3256,162 @@ def _(rid, params: dict) -> dict:
 
 # ── Methods: complete ─────────────────────────────────────────────────
 
+_FUZZY_CACHE_TTL_S = 5.0
+_FUZZY_CACHE_MAX_FILES = 20000
+_FUZZY_FALLBACK_EXCLUDES = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        ".next",
+        ".cache",
+        ".venv",
+        "venv",
+        "node_modules",
+        "__pycache__",
+        "dist",
+        "build",
+        "target",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+    }
+)
+_fuzzy_cache_lock = threading.Lock()
+_fuzzy_cache: dict[str, tuple[float, list[str]]] = {}
+
+
+def _list_repo_files(root: str) -> list[str]:
+    """Return file paths relative to ``root``.
+
+    Uses ``git ls-files`` from the repo top (resolved via
+    ``rev-parse --show-toplevel``) so the listing covers tracked + untracked
+    files anywhere in the repo, then converts each path back to be relative
+    to ``root``. Files outside ``root`` (parent directories of cwd, sibling
+    subtrees) are excluded so the picker stays scoped to what's reachable
+    from the gateway's cwd. Falls back to a bounded ``os.walk(root)`` when
+    ``root`` isn't inside a git repo. Result cached per-root for
+    ``_FUZZY_CACHE_TTL_S`` so rapid keystrokes don't respawn git processes.
+    """
+    now = time.monotonic()
+    with _fuzzy_cache_lock:
+        cached = _fuzzy_cache.get(root)
+        if cached and now - cached[0] < _FUZZY_CACHE_TTL_S:
+            return cached[1]
+
+    files: list[str] = []
+    try:
+        top_result = subprocess.run(
+            ["git", "-C", root, "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            timeout=2.0,
+            check=False,
+        )
+        if top_result.returncode == 0:
+            top = top_result.stdout.decode("utf-8", "replace").strip()
+            list_result = subprocess.run(
+                ["git", "-C", top, "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+                capture_output=True,
+                timeout=2.0,
+                check=False,
+            )
+            if list_result.returncode == 0:
+                for p in list_result.stdout.decode("utf-8", "replace").split("\0"):
+                    if not p:
+                        continue
+                    rel = os.path.relpath(os.path.join(top, p), root).replace(os.sep, "/")
+                    # Skip parents/siblings of cwd — keep the picker scoped
+                    # to root-and-below, matching Cmd-P workspace semantics.
+                    if rel.startswith("../"):
+                        continue
+                    files.append(rel)
+                    if len(files) >= _FUZZY_CACHE_MAX_FILES:
+                        break
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+    if not files:
+        # Fallback walk: skip vendor/build dirs + dot-dirs so the walk stays
+        # tractable. Dotfiles themselves survive — the ranker decides based
+        # on whether the query starts with `.`.
+        try:
+            for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+                dirnames[:] = [
+                    d
+                    for d in dirnames
+                    if d not in _FUZZY_FALLBACK_EXCLUDES and not d.startswith(".")
+                ]
+                rel_dir = os.path.relpath(dirpath, root)
+                for f in filenames:
+                    rel = f if rel_dir == "." else f"{rel_dir}/{f}"
+                    files.append(rel.replace(os.sep, "/"))
+                    if len(files) >= _FUZZY_CACHE_MAX_FILES:
+                        break
+                if len(files) >= _FUZZY_CACHE_MAX_FILES:
+                    break
+        except OSError:
+            pass
+
+    with _fuzzy_cache_lock:
+        _fuzzy_cache[root] = (now, files)
+
+    return files
+
+
+def _fuzzy_basename_rank(name: str, query: str) -> tuple[int, int] | None:
+    """Rank ``name`` against ``query``; lower is better. Returns None to reject.
+
+    Tiers (kind):
+      0 — exact basename
+      1 — basename prefix (e.g. `app` → `appChrome.tsx`)
+      2 — word-boundary / camelCase hit (e.g. `chrome` → `appChrome.tsx`)
+      3 — substring anywhere in basename
+      4 — subsequence match (every query char appears in order)
+
+    Secondary key is `len(name)` so shorter names win ties.
+    """
+    if not query:
+        return (3, len(name))
+
+    nl = name.lower()
+    ql = query.lower()
+
+    if nl == ql:
+        return (0, len(name))
+
+    if nl.startswith(ql):
+        return (1, len(name))
+
+    # Word-boundary split: `foo-bar_baz.qux` → ["foo","bar","baz","qux"].
+    # camelCase split: `appChrome` → ["app","Chrome"]. Cheap approximation;
+    # falls through to substring/subsequence if it misses.
+    parts: list[str] = []
+    buf = ""
+    for ch in name:
+        if ch in "-_." or (ch.isupper() and buf and not buf[-1].isupper()):
+            if buf:
+                parts.append(buf)
+            buf = ch if ch not in "-_." else ""
+        else:
+            buf += ch
+    if buf:
+        parts.append(buf)
+    for p in parts:
+        if p.lower().startswith(ql):
+            return (2, len(name))
+
+    if ql in nl:
+        return (3, len(name))
+
+    i = 0
+    for ch in nl:
+        if ch == ql[i]:
+            i += 1
+            if i == len(ql):
+                return (4, len(name))
+
+    return None
+
 
 @method("complete.path")
 def _(rid, params: dict) -> dict:
@@ -3290,6 +3446,42 @@ def _(rid, params: dict) -> dict:
         else:
             prefix_tag = ""
             path_part = query if is_context else query
+
+        # Fuzzy basename search across the repo when the user types a bare
+        # name with no path separator — `@appChrome` surfaces every file
+        # whose basename matches, regardless of directory depth. Matches what
+        # editors like Cursor / VS Code do for Cmd-P. Path-ish queries (with
+        # `/`, `./`, `~/`, `/abs`) fall through to the directory-listing
+        # path so explicit navigation intent is preserved.
+        if (
+            is_context
+            and path_part
+            and "/" not in path_part
+            and prefix_tag != "folder"
+        ):
+            root = os.getcwd()
+            ranked: list[tuple[tuple[int, int], str, str]] = []
+            for rel in _list_repo_files(root):
+                basename = os.path.basename(rel)
+                if basename.startswith(".") and not path_part.startswith("."):
+                    continue
+                rank = _fuzzy_basename_rank(basename, path_part)
+                if rank is None:
+                    continue
+                ranked.append((rank, rel, basename))
+
+            ranked.sort(key=lambda r: (r[0], len(r[1]), r[1]))
+            tag = prefix_tag or "file"
+            for _, rel, basename in ranked[:30]:
+                items.append(
+                    {
+                        "text": f"@{tag}:{rel}",
+                        "display": basename,
+                        "meta": os.path.dirname(rel),
+                    }
+                )
+
+            return _ok(rid, {"items": items})
 
         expanded = _normalize_completion_path(path_part) if path_part else "."
         if expanded == "." or not expanded:

@@ -125,6 +125,40 @@ class TestWebServerEndpoints:
         assert "hermes_home" in data
         assert "active_sessions" in data
 
+    def test_get_model_info_honors_custom_provider_context_length(self):
+        from hermes_cli.config import save_config
+
+        save_config({
+            "model": {
+                "default": "gpt-5.4",
+                "provider": "roy",
+                "base_url": "http://127.0.0.1:8317/v1",
+            },
+            "providers": {
+                "roy": {
+                    "type": "custom-openai",
+                    "base_url": "http://127.0.0.1:8317/v1",
+                    "api_key_env": "ROY_API_KEY",
+                    "models": {
+                        "gpt-5.4": {
+                            "context_length": 400000,
+                        }
+                    },
+                }
+            },
+        })
+
+        with patch("agent.model_metadata.get_model_context_length", return_value=128000):
+            resp = self.client.get("/api/model/info")
+
+        assert resp.status_code == 200
+        data = resp.json()
+        assert data["model"] == "gpt-5.4"
+        assert data["provider"] == "roy"
+        assert data["auto_context_length"] == 128000
+        assert data["config_context_length"] == 400000
+        assert data["effective_context_length"] == 400000
+
     def test_get_status_filters_unconfigured_gateway_platforms(self, monkeypatch):
         import gateway.config as gateway_config
         import hermes_cli.web_server as web_server

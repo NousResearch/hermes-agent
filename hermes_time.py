@@ -67,10 +67,16 @@ def _get_zoneinfo(name: str) -> Optional[ZoneInfo]:
         return None
     try:
         return ZoneInfo(name)
-    except (KeyError, Exception) as exc:
+    except KeyError:
         logger.warning(
-            "Invalid timezone '%s': %s. Falling back to server local time.",
-            name, exc,
+            "Invalid timezone '%s'. Falling back to server local time.",
+            name,
+        )
+        return None
+    except Exception as e:
+        logger.warning(
+            "Timezone '%s' error: %s. Falling back to server local time.",
+            name, str(e),
         )
         return None
 

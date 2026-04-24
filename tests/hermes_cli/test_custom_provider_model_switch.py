@@ -136,11 +136,16 @@ class TestCustomProviderModelSwitch:
             "api_mode": "anthropic_messages",
         }
 
-        with patch("hermes_cli.models.fetch_api_models", return_value=["claude-3"]), \
+        with patch("hermes_cli.models.fetch_api_models", return_value=["claude-3"]) as mock_fetch, \
              patch.dict("sys.modules", {"simple_term_menu": None}), \
              patch("builtins.input", return_value="1"), \
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)
+
+        assert mock_fetch.call_count == 1
+        args, kwargs = mock_fetch.call_args
+        assert args[1] == "https://proxy.example.com/anthropic"
+        assert kwargs == {"timeout": 8.0, "api_mode": "anthropic_messages"}
 
         config = yaml.safe_load((config_home / "config.yaml").read_text()) or {}
         model = config.get("model")

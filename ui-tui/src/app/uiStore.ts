@@ -11,9 +11,14 @@ const buildUiState = (): UiState => ({
   compact: false,
   detailsMode: 'collapsed',
   info: null,
+  inlineDiffs: true,
+  sections: {},
+  showCost: false,
+  showReasoning: false,
   sid: null,
   status: 'summoning hermes…',
-  statusBar: true,
+  statusBar: 'top',
+  streaming: true,
   theme: DEFAULT_THEME,
   usage: ZERO
 })

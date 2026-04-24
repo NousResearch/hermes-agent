@@ -9,8 +9,11 @@ import { $uiState } from '../app/uiStore.js'
 import { FloatBox } from './appChrome.js'
 import { MaskedPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
-import { ApprovalPrompt, ClarifyPrompt } from './prompts.js'
+import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
 import { SessionPicker } from './sessionPicker.js'
+import { SkillsHub } from './skillsHub.js'
+
+const COMPLETION_WINDOW = 16
 
 export function PromptZone({
   cols,
@@ -26,6 +29,23 @@ export function PromptZone({
     return (
       <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
         <ApprovalPrompt onChoice={onApprovalChoice} req={overlay.approval} t={ui.theme} />
+      </Box>
+    )
+  }
+
+  if (overlay.confirm) {
+    const req = overlay.confirm
+
+    const onConfirm = () => {
+      patchOverlayState({ confirm: null })
+      req.onConfirm()
+    }
+
+    const onCancel = () => patchOverlayState({ confirm: null })
+
+    return (
+      <Box flexDirection="column" flexShrink={0} paddingX={1} paddingY={1}>
+        <ConfirmPrompt onCancel={onCancel} onConfirm={onConfirm} req={req} t={ui.theme} />
       </Box>
     )
   }
@@ -82,13 +102,18 @@ export function FloatingOverlays({
   const overlay = useStore($overlayState)
   const ui = useStore($uiState)
 
-  const hasAny = overlay.modelPicker || overlay.pager || overlay.picker || completions.length
+  const hasAny = overlay.modelPicker || overlay.pager || overlay.picker || overlay.skillsHub || completions.length
 
   if (!hasAny) {
     return null
   }
 
-  const start = Math.max(0, compIdx - 8)
+  // Fixed viewport centered on compIdx — previously the slice end was
+  // compIdx + 8 so the dropdown grew from 8 rows to 16 as the user scrolled
+  // down, bouncing the height on every keystroke.
+  const viewportSize = Math.min(COMPLETION_WINDOW, completions.length)
+
+  const start = Math.max(0, Math.min(compIdx - Math.floor(COMPLETION_WINDOW / 2), completions.length - viewportSize))
 
   return (
     <Box alignItems="flex-start" bottom="100%" flexDirection="column" left={0} position="absolute" right={0}>
@@ -115,6 +140,12 @@ export function FloatingOverlays({
         </FloatBox>
       )}
 
+      {overlay.skillsHub && (
+        <FloatBox color={ui.theme.color.bronze}>
+          <SkillsHub gw={gw} onClose={() => patchOverlayState({ skillsHub: false })} t={ui.theme} />
+        </FloatBox>
+      )}
+
       {overlay.pager && (
         <FloatBox color={ui.theme.color.bronze}>
           <Box flexDirection="column" paddingX={1} paddingY={1}>
@@ -133,8 +164,8 @@ export function FloatingOverlays({
             <Box marginTop={1}>
               <Text color={ui.theme.color.dim}>
                 {overlay.pager.offset + pagerPageSize < overlay.pager.lines.length
-                  ? `Enter/Space for more · q to close (${Math.min(overlay.pager.offset + pagerPageSize, overlay.pager.lines.length)}/${overlay.pager.lines.length})`
-                  : `end · q to close (${overlay.pager.lines.length} lines)`}
+                  ? `↑↓/jk line · Enter/Space/PgDn page · b/PgUp back · g/G top/bottom · q close (${Math.min(overlay.pager.offset + pagerPageSize, overlay.pager.lines.length)}/${overlay.pager.lines.length})`
+                  : `end · ↑↓/jk · b/PgUp back · g top · q close (${overlay.pager.lines.length} lines)`}
               </Text>
             </Box>
           </Box>
@@ -144,7 +175,7 @@ export function FloatingOverlays({
       {!!completions.length && (
         <FloatBox color={ui.theme.color.gold}>
           <Box flexDirection="column" width={Math.max(28, cols - 6)}>
-            {completions.slice(start, compIdx + 8).map((item, i) => {
+            {completions.slice(start, start + viewportSize).map((item, i) => {
               const active = start + i === compIdx
 
               return (

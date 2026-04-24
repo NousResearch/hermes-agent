@@ -245,6 +245,7 @@ export default class Ink {
   // microtask. Dims are captured sync in handleResize; only the
   // expensive tree rebuild defers.
   private pendingResizeRender = false
+  private resizeSettleTimer: ReturnType<typeof setTimeout> | null = null
 
   // Fold synchronous re-entry (selection fanout, onFrame callback)
   // into one follow-up microtask instead of stacking renders.
@@ -439,6 +440,11 @@ export default class Ink {
       this.drainTimer = null
     }
 
+    if (this.resizeSettleTimer !== null) {
+      clearTimeout(this.resizeSettleTimer)
+      this.resizeSettleTimer = null
+    }
+
     // Alt screen: reset frame buffers so the next render repaints from
     // scratch (prevFrameContaminated → every cell written, wrapped in
     // BSU/ESU — old content stays visible until the new frame swaps
@@ -456,6 +462,20 @@ export default class Ink {
 
       this.resetFramesForAltScreen()
       this.needsEraseBeforePaint = true
+
+      // One last repaint after the resize burst settles closes any host-side
+      // reflow drift the normal diff path can't see.
+      this.resizeSettleTimer = setTimeout(() => {
+        this.resizeSettleTimer = null
+
+        if (!this.canAltScreenRepaint()) {
+          return
+        }
+
+        this.resetFramesForAltScreen()
+        this.needsEraseBeforePaint = true
+        this.render(this.currentNode!)
+      }, 160)
     }
 
     // Already queued: later events in this burst updated dims/alt-screen
@@ -477,6 +497,17 @@ export default class Ink {
       this.render(this.currentNode)
     })
   }
+
+  private canAltScreenRepaint(): boolean {
+    return (
+      !this.isUnmounted &&
+      !this.isPaused &&
+      this.altScreenActive &&
+      !!this.options.stdout.isTTY &&
+      this.currentNode !== null
+    )
+  }
+
   resolveExitPromise: () => void = () => {}
   rejectExitPromise: (reason?: Error) => void = () => {}
   unsubscribeExit: () => void = () => {}
@@ -1933,6 +1964,11 @@ export default class Ink {
     if (this.drainTimer !== null) {
       clearTimeout(this.drainTimer)
       this.drainTimer = null
+    }
+
+    if (this.resizeSettleTimer !== null) {
+      clearTimeout(this.resizeSettleTimer)
+      this.resizeSettleTimer = null
     }
 
     reconciler.updateContainerSync(null, this.container, null, noop)

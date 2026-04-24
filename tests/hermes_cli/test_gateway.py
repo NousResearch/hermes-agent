@@ -121,6 +121,12 @@ def test_systemd_status_warns_when_linger_disabled(monkeypatch, tmp_path, capsys
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd[:3] == ["systemctl", "--user", "is-active"]:
             return SimpleNamespace(returncode=0, stdout="active\n", stderr="")
+        if cmd[:3] == ["systemctl", "--user", "show"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="ActiveState=active\nSubState=running\nResult=success\nExecMainStatus=0\n",
+                stderr="",
+            )
         raise AssertionError(f"Unexpected command: {cmd}")
 
     monkeypatch.setattr(gateway.subprocess, "run", fake_run)
@@ -352,3 +358,24 @@ class TestWaitForGatewayExit:
 
         assert killed == 2
         assert calls == [(11, True), (22, True)]
+
+
+class TestStopProfileGateway:
+    def test_stop_profile_gateway_keeps_pid_file_when_process_still_running(self, monkeypatch):
+        calls = {"kill": 0, "remove": 0}
+
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 12345)
+        monkeypatch.setattr(
+            gateway.os,
+            "kill",
+            lambda pid, sig: calls.__setitem__("kill", calls["kill"] + 1),
+        )
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        monkeypatch.setattr(
+            "gateway.status.remove_pid_file",
+            lambda: calls.__setitem__("remove", calls["remove"] + 1),
+        )
+
+        assert gateway.stop_profile_gateway() is True
+        assert calls["kill"] == 21
+        assert calls["remove"] == 0

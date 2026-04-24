@@ -291,11 +291,16 @@ class TestCheckFnExceptionHandling:
 class TestBuiltinDiscovery:
     def test_matches_previous_manual_builtin_tool_set(self):
         expected = {
+            "tools.browser_cdp_tool",
+            "tools.browser_dialog_tool",
             "tools.browser_tool",
             "tools.clarify_tool",
             "tools.code_execution_tool",
             "tools.cronjob_tools",
             "tools.delegate_tool",
+            "tools.discord_tool",
+            "tools.feishu_doc_tool",
+            "tools.feishu_drive_tool",
             "tools.file_tools",
             "tools.homeassistant_tool",
             "tools.image_generation_tool",
@@ -307,6 +312,7 @@ class TestBuiltinDiscovery:
             "tools.session_search_tool",
             "tools.skill_manager_tool",
             "tools.skills_tool",
+            "tools.spotify_tool",
             "tools.terminal_tool",
             "tools.todo_tool",
             "tools.tts_tool",

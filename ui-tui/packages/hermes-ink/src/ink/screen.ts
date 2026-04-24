@@ -121,6 +121,8 @@ const YELLOW_FG_CODE: AnsiCode = {
   endCode: '\x1b[39m'
 }
 
+const MAX_TRANSITION_CACHE = 32768
+
 export class StylePool {
   private ids = new Map<string, number>()
   private styles: AnsiCode[][] = []
@@ -160,7 +162,9 @@ export class StylePool {
   /**
    * Returns the pre-serialized ANSI string to transition from one style to
    * another. Cached by (fromId, toId) — zero allocations after first call
-   * for a given pair.
+   * for a given pair. Full-clear at MAX_TRANSITION_CACHE guards against
+   * unbounded growth from ever-expanding id spaces; cache repopulates from
+   * the next frame's actual transitions.
    */
   transition(fromId: number, toId: number): string {
     if (fromId === toId) {
@@ -171,6 +175,10 @@ export class StylePool {
     let str = this.transitionCache.get(key)
 
     if (str === undefined) {
+      if (this.transitionCache.size >= MAX_TRANSITION_CACHE) {
+        this.transitionCache.clear()
+      }
+
       str = ansiCodesToString(diffAnsiCodes(this.get(fromId), this.get(toId)))
       this.transitionCache.set(key, str)
     }

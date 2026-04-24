@@ -63,7 +63,38 @@ model:
   #   Leave unset to use the model's native output ceiling (recommended).
   #   Set only if you want to deliberately limit individual response length.
   #
-  # max_tokens: 8192
+# max_tokens: 8192
+
+# Named provider overrides (optional)
+# Use this for per-provider request timeouts, non-stream stale timeouts,
+# and per-model exceptions.
+# Applies to the primary turn client on every api_mode (OpenAI-wire, native
+# Anthropic, and Anthropic-compatible providers), the fallback chain, and
+# client rebuilds during credential rotation.  For OpenAI-wire chat
+# completions (streaming and non-streaming) the configured value is also
+# used as the per-request ``timeout=`` kwarg so it wins over the legacy
+# HERMES_API_TIMEOUT env var (which still applies when no config is set).
+# ``stale_timeout_seconds`` controls the non-streaming stale-call detector and
+# wins over the legacy HERMES_API_CALL_STALE_TIMEOUT env var. Leaving these
+# unset keeps the legacy defaults (HERMES_API_TIMEOUT=1800s,
+# HERMES_API_CALL_STALE_TIMEOUT=300s, native Anthropic 900s).
+#
+# Not currently wired for AWS Bedrock (bedrock_converse + AnthropicBedrock
+# SDK paths) — those use boto3 with its own timeout configuration.
+#
+# providers:
+#   ollama-local:
+#     request_timeout_seconds: 300   # Longer timeout for local cold-starts
+#     stale_timeout_seconds: 900     # Explicitly re-enable stale detection on local endpoints
+#   anthropic:
+#     request_timeout_seconds: 30    # Fast-fail cloud requests
+#     models:
+#       claude-opus-4.6:
+#         timeout_seconds: 600       # Longer timeout for extended-thinking Opus calls
+#   openai-codex:
+#     models:
+#       gpt-5.4:
+#         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
 
 # =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)
@@ -90,20 +121,6 @@ model:
 #
 #   # Data policy: "allow" (default) or "deny" to exclude providers that may store data
 #   # data_collection: "deny"
-
-# =============================================================================
-# Smart Model Routing (optional)
-# =============================================================================
-# Use a cheaper model for short/simple turns while keeping your main model for
-# more complex requests. Disabled by default.
-#
-# smart_model_routing:
-#   enabled: true
-#   max_simple_chars: 160
-#   max_simple_words: 28
-#   cheap_model:
-#     provider: openrouter
-#     model: google/gemini-2.5-flash
 
 # =============================================================================
 # Git Worktree Isolation
@@ -310,6 +327,16 @@ compression:
   # auxiliary section below (auxiliary.compression.provider / model).
 
 # =============================================================================
+# Anthropic prompt caching TTL
+# =============================================================================
+# When prompt caching is active (Claude via OpenRouter or native Anthropic),
+# Anthropic supports two TTL tiers for cached prefixes: "5m" (default) and
+# "1h". Other values are ignored and "5m" is used.
+#
+prompt_caching:
+  cache_ttl: "5m" # use "1h" for long sessions with pauses between turns
+
+# =============================================================================
 # Auxiliary Models (Advanced — Experimental)
 # =============================================================================
 # Hermes uses lightweight "auxiliary" models for side tasks: image analysis,
@@ -357,6 +384,18 @@ compression:
 #   web_extract:
 #     provider: "auto"
 #     model: ""
+#
+#   # Session search — summarizes matching past sessions
+#   session_search:
+#     provider: "auto"
+#     model: ""
+#     timeout: 30
+#     max_concurrency: 3    # Limit parallel summaries to reduce request-burst 429s
+#     extra_body: {}        # Provider-specific OpenAI-compatible request fields
+#                           # Example for providers that support request-body
+#                           # reasoning controls:
+#                           # extra_body:
+#                           #   enable_thinking: false
 
 # =============================================================================
 # Persistent Memory
@@ -478,6 +517,13 @@ agent:
   # finish, then interrupts anything still running after this timeout.
   # 0 = no drain, interrupt immediately.
   # restart_drain_timeout: 60
+
+  # Max app-level retry attempts for API errors (connection drops, provider
+  # timeouts, 5xx, etc.) before the agent surfaces the failure. Lower this
+  # to 1 if you use fallback providers and want fast failover on flaky
+  # primaries (default 3). The OpenAI SDK does its own low-level retries
+  # underneath this wrapper — this is the Hermes-level loop.
+  # api_max_retries: 3
   
   # Enable verbose logging
   verbose: false
@@ -741,10 +787,13 @@ code_execution:
 # Subagent Delegation
 # =============================================================================
 # The delegate_task tool spawns child agents with isolated context.
-# Supports single tasks and batch mode (up to 3 parallel).
+# Supports single tasks and batch mode (default 3 parallel, configurable).
 delegation:
   max_iterations: 50                          # Max tool-calling turns per child (default: 50)
-  default_toolsets: ["terminal", "file", "web"]  # Default toolsets for subagents
+  # max_concurrent_children: 3                # Max parallel child agents (default: 3)
+  # max_spawn_depth: 1                        # Tree depth cap (1-3, default: 1 = flat). Raise to 2 or 3 to allow orchestrator children to spawn their own workers.
+  # orchestrator_enabled: true                # Kill switch for role="orchestrator" children (default: true).
+  # inherit_mcp_toolsets: true                # When explicit child toolsets are narrowed, also keep the parent's MCP toolsets (default: true). Set false for strict intersection.
   # model: "google/gemini-3-flash-preview"    # Override model for subagents (empty = inherit parent)
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.
@@ -888,3 +937,39 @@ display:
 #   # Names and usernames are NOT affected (user-chosen, publicly visible).
 #   # Routing/delivery still uses the original values internally.
 #   redact_pii: false
+
+# =============================================================================
+# Shell-script hooks
+# =============================================================================
+# Register shell scripts as plugin-hook callbacks.  Each entry is executed as
+# a subprocess (shell=False, shlex.split) with a JSON payload on stdin.  On
+# stdout the script may return JSON that either blocks the tool call or
+# injects context into the next LLM call.
+#
+# Valid events (mirror hermes_cli.plugins.VALID_HOOKS):
+#   pre_tool_call, post_tool_call, pre_llm_call, post_llm_call,
+#   pre_api_request, post_api_request, on_session_start, on_session_end,
+#   on_session_finalize, on_session_reset, subagent_stop
+#
+# First-use consent: each (event, command) pair prompts once on a TTY, then
+# is persisted to ~/.hermes/shell-hooks-allowlist.json.  Non-interactive
+# runs (gateway, cron) need --accept-hooks, HERMES_ACCEPT_HOOKS=1, or the
+# hooks_auto_accept key below.
+#
+# See website/docs/user-guide/features/hooks.md for the full JSON wire
+# protocol and worked examples.
+#
+# hooks:
+#   pre_tool_call:
+#     - matcher: "terminal"
+#       command: "~/.hermes/agent-hooks/block-rm-rf.sh"
+#       timeout: 10
+#   post_tool_call:
+#     - matcher: "write_file|patch"
+#       command: "~/.hermes/agent-hooks/auto-format.sh"
+#   pre_llm_call:
+#     - command: "~/.hermes/agent-hooks/inject-cwd-context.sh"
+#   subagent_stop:
+#     - command: "~/.hermes/agent-hooks/log-orchestration.sh"
+#
+# hooks_auto_accept: false

@@ -1,6 +1,6 @@
 import { useEffect, useRef } from 'react'
 
-import { resolveDetailsMode } from '../domain/details.js'
+import { resolveDetailsMode, resolveSections } from '../domain/details.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type {
   ConfigFullResponse,
@@ -10,8 +10,19 @@ import type {
 } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
 
+import type { StatusBarMode } from './interfaces.js'
 import { turnController } from './turnController.js'
 import { patchUiState } from './uiStore.js'
+
+const STATUSBAR_ALIAS: Record<string, StatusBarMode> = {
+  bottom: 'bottom',
+  off: 'off',
+  on: 'top',
+  top: 'top'
+}
+
+export const normalizeStatusBar = (raw: unknown): StatusBarMode =>
+  raw === false ? 'off' : typeof raw === 'string' ? (STATUSBAR_ALIAS[raw.trim().toLowerCase()] ?? 'top') : 'top'
 
 const MTIME_POLL_MS = 5000
 
@@ -27,14 +38,19 @@ const quietRpc = async <T extends Record<string, any> = Record<string, any>>(
   }
 }
 
-const applyDisplay = (cfg: ConfigFullResponse | null, setBell: (v: boolean) => void) => {
+export const applyDisplay = (cfg: ConfigFullResponse | null, setBell: (v: boolean) => void) => {
   const d = cfg?.config?.display ?? {}
 
   setBell(!!d.bell_on_complete)
   patchUiState({
     compact: !!d.tui_compact,
     detailsMode: resolveDetailsMode(d),
-    statusBar: d.tui_statusbar !== false
+    inlineDiffs: d.inline_diffs !== false,
+    sections: resolveSections(d.sections),
+    showCost: !!d.show_cost,
+    showReasoning: !!d.show_reasoning,
+    statusBar: normalizeStatusBar(d.tui_statusbar),
+    streaming: d.streaming !== false
   })
 }
 

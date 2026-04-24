@@ -120,6 +120,177 @@ class TestSchemaConversion:
 
         assert schema["parameters"] == {"type": "object", "properties": {}}
 
+    def test_definitions_refs_are_rewritten_to_defs(self):
+        from tools.mcp_tool import _convert_mcp_schema
+
+        mcp_tool = _make_mcp_tool(
+            name="submit",
+            description="Submit a payload",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "input": {"$ref": "#/definitions/Payload"},
+                },
+                "required": ["input"],
+                "definitions": {
+                    "Payload": {
+                        "type": "object",
+                        "properties": {
+                            "query": {"type": "string"},
+                        },
+                        "required": ["query"],
+                    }
+                },
+            },
+        )
+
+        schema = _convert_mcp_schema("forms", mcp_tool)
+
+        assert schema["parameters"]["properties"]["input"]["$ref"] == "#/$defs/Payload"
+        assert "$defs" in schema["parameters"]
+        assert "definitions" not in schema["parameters"]
+
+    def test_nested_definition_refs_are_rewritten_recursively(self):
+        from tools.mcp_tool import _convert_mcp_schema
+
+        mcp_tool = _make_mcp_tool(
+            name="nested",
+            description="Nested schema",
+            input_schema={
+                "type": "object",
+                "properties": {
+                    "items": {
+                        "type": "array",
+                        "items": {"$ref": "#/definitions/Entry"},
+                    },
+                },
+                "definitions": {
+                    "Entry": {
+                        "type": "object",
+                        "properties": {
+                            "child": {"$ref": "#/definitions/Child"},
+                        },
+                    },
+                    "Child": {
+                        "type": "object",
+                        "properties": {
+                            "value": {"type": "string"},
+                        },
+                    },
+                },
+            },
+        )
+
+        schema = _convert_mcp_schema("forms", mcp_tool)
+
+        assert schema["parameters"]["properties"]["items"]["items"]["$ref"] == "#/$defs/Entry"
+        assert schema["parameters"]["$defs"]["Entry"]["properties"]["child"]["$ref"] == "#/$defs/Child"
+
+    def test_missing_type_on_object_is_coerced(self):
+        """Schemas that describe an object but omit ``type`` get type='object'."""
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "properties": {"q": {"type": "string"}},
+            "required": ["q"],
+        })
+
+        assert schema["type"] == "object"
+        assert schema["properties"]["q"]["type"] == "string"
+        assert schema["required"] == ["q"]
+
+    def test_null_type_on_object_is_coerced(self):
+        """type: None should be treated like missing type (common MCP server bug)."""
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": None,
+            "properties": {"x": {"type": "integer"}},
+        })
+
+        assert schema["type"] == "object"
+
+    def test_required_pruned_when_property_missing(self):
+        """Gemini 400s on required names that don't exist in properties."""
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {"a": {"type": "string"}},
+            "required": ["a", "ghost", "phantom"],
+        })
+
+        assert schema["required"] == ["a"]
+
+    def test_required_removed_when_all_names_dangle(self):
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {},
+            "required": ["ghost"],
+        })
+
+        assert "required" not in schema
+
+    def test_required_pruning_applies_recursively_inside_nested_objects(self):
+        """Nested object schemas also get required pruning."""
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "filter": {
+                    "type": "object",
+                    "properties": {"field": {"type": "string"}},
+                    "required": ["field", "missing"],
+                },
+            },
+        })
+
+        assert schema["properties"]["filter"]["required"] == ["field"]
+
+    def test_object_in_array_items_gets_properties_filled(self):
+        """Array-item object schemas without properties get an empty dict."""
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "items": {
+                    "type": "array",
+                    "items": {"type": "object"},
+                },
+            },
+        })
+
+        assert schema["properties"]["items"]["items"]["properties"] == {}
+
+    def test_convert_mcp_schema_survives_missing_inputschema_attribute(self):
+        """A Tool object without .inputSchema must not crash registration."""
+        import types
+
+        from tools.mcp_tool import _convert_mcp_schema
+
+        bare_tool = types.SimpleNamespace(name="probe", description="Probe")
+        schema = _convert_mcp_schema("srv", bare_tool)
+
+        assert schema["name"] == "mcp_srv_probe"
+        assert schema["parameters"] == {"type": "object", "properties": {}}
+
+    def test_convert_mcp_schema_with_none_inputschema(self):
+        """Tool with inputSchema=None produces a valid empty object schema."""
+        import types
+
+        from tools.mcp_tool import _convert_mcp_schema
+
+        # Note: _make_mcp_tool(input_schema=None) falls back to a default —
+        # build the namespace directly so .inputSchema really is None.
+        mcp_tool = types.SimpleNamespace(name="probe", description="Probe", inputSchema=None)
+        schema = _convert_mcp_schema("srv", mcp_tool)
+
+        assert schema["parameters"] == {"type": "object", "properties": {}}
+
     def test_tool_name_prefix_format(self):
         from tools.mcp_tool import _convert_mcp_schema
 
@@ -1028,6 +1199,92 @@ class TestHTTPConfig:
                     await server._run_http(config)
 
         asyncio.run(_test())
+
+    def test_http_seeds_initial_protocol_header(self):
+        from tools.mcp_tool import LATEST_PROTOCOL_VERSION, MCPServerTask
+
+        server = MCPServerTask("remote")
+        captured = {}
+
+        class DummyAsyncClient:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class DummyTransportCtx:
+            async def __aenter__(self):
+                return MagicMock(), MagicMock(), (lambda: None)
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class DummySession:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            async def __aenter__(self):
+                return self
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+            async def initialize(self):
+                return None
+
+        class DummyLegacyTransportCtx:
+            def __init__(self, **kwargs):
+                captured["legacy_headers"] = kwargs.get("headers")
+
+            async def __aenter__(self):
+                return MagicMock(), MagicMock(), (lambda: None)
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        async def _discover_tools(self):
+            self._shutdown_event.set()
+
+        async def _run(config, *, new_http):
+            captured.clear()
+            with patch("tools.mcp_tool._MCP_HTTP_AVAILABLE", True), \
+                 patch("tools.mcp_tool._MCP_NEW_HTTP", new_http), \
+                 patch("httpx.AsyncClient", DummyAsyncClient), \
+                 patch("tools.mcp_tool.streamable_http_client", return_value=DummyTransportCtx()), \
+                 patch("tools.mcp_tool.streamablehttp_client", side_effect=lambda url, **kwargs: DummyLegacyTransportCtx(**kwargs)), \
+                 patch("tools.mcp_tool.ClientSession", DummySession), \
+                 patch.object(MCPServerTask, "_discover_tools", _discover_tools):
+                await server._run_http(config)
+
+        asyncio.run(_run({"url": "https://example.com/mcp"}, new_http=True))
+        assert captured["headers"]["mcp-protocol-version"] == LATEST_PROTOCOL_VERSION
+
+        asyncio.run(_run({
+            "url": "https://example.com/mcp",
+            "headers": {"mcp-protocol-version": "custom-version"},
+        }, new_http=True))
+        assert captured["headers"]["mcp-protocol-version"] == "custom-version"
+
+        asyncio.run(_run({
+            "url": "https://example.com/mcp",
+            "headers": {"MCP-Protocol-Version": "custom-version"},
+        }, new_http=True))
+        assert captured["headers"]["MCP-Protocol-Version"] == "custom-version"
+        assert "mcp-protocol-version" not in captured["headers"]
+
+        asyncio.run(_run({"url": "https://example.com/mcp"}, new_http=False))
+        assert captured["legacy_headers"]["mcp-protocol-version"] == LATEST_PROTOCOL_VERSION
+
+        asyncio.run(_run({
+            "url": "https://example.com/mcp",
+            "headers": {"MCP-Protocol-Version": "custom-version"},
+        }, new_http=False))
+        assert captured["legacy_headers"]["MCP-Protocol-Version"] == "custom-version"
+        assert "mcp-protocol-version" not in captured["legacy_headers"]
 
 
 # ---------------------------------------------------------------------------

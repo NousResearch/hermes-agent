@@ -90,6 +90,8 @@ Try different prompts until you get output you love. Add instructions like "use 
 
 Now let's schedule this to run automatically every morning. You can do this in two ways.
 
+Before creating cron jobs, ensure Hermes has a default model and provider configured globally. If you want a specific job to use different values, set explicit per-job model/provider overrides when creating it.
+
 ### Option A: Natural Language (in chat)
 
 Just tell Hermes what you want:

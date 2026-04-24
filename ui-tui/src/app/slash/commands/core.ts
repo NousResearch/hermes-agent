@@ -1,9 +1,17 @@
+import { NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { HOTKEYS } from '../../../content/hotkeys.js'
-import { nextDetailsMode, parseDetailsMode } from '../../../domain/details.js'
-import type { ConfigGetValueResponse, ConfigSetResponse, SessionUndoResponse } from '../../../gatewayTypes.js'
+import { SECTION_NAMES, isSectionName, nextDetailsMode, parseDetailsMode } from '../../../domain/details.js'
+import type {
+  ConfigGetValueResponse,
+  ConfigSetResponse,
+  SessionSteerResponse,
+  SessionUndoResponse
+} from '../../../gatewayTypes.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
-import type { DetailsMode, Msg, PanelSection } from '../../../types.js'
+import { configureDetectedTerminalKeybindings, configureTerminalKeybindings } from '../../../lib/terminalSetup.js'
+import type { Msg, PanelSection } from '../../../types.js'
+import type { StatusBarMode } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
@@ -30,7 +38,11 @@ const flagFromArg = (arg: string, current: boolean): boolean | null => {
   return null
 }
 
-const DETAIL_MODES = new Set(['collapsed', 'cycle', 'expanded', 'hidden', 'toggle'])
+const RESET_WORDS = new Set(['reset', 'clear', 'default'])
+const CYCLE_WORDS = new Set(['cycle', 'toggle'])
+const DETAILS_USAGE =
+  'usage: /details [hidden|collapsed|expanded|cycle]  or  /details <section> [hidden|collapsed|expanded|reset]'
+const DETAILS_SECTION_USAGE = 'usage: /details <section> [hidden|collapsed|expanded|reset]'
 
 export const coreCommands: SlashCommand[] = [
   {
@@ -49,7 +61,11 @@ export const coreCommands: SlashCommand[] = [
       sections.push(
         {
           rows: [
-            ['/details [hidden|collapsed|expanded|cycle]', 'set agent detail visibility mode'],
+            ['/details [hidden|collapsed|expanded|cycle]', 'set global agent detail visibility mode'],
+            [
+              '/details <section> [hidden|collapsed|expanded|reset]',
+              'override one section (thinking/tools/subagents/activity)'
+            ],
             ['/fortune [random|daily]', 'show a random or daily local fortune']
           ],
           title: 'TUI'
@@ -77,8 +93,27 @@ export const coreCommands: SlashCommand[] = [
         return
       }
 
-      patchUiState({ status: 'forging session…' })
-      ctx.session.newSession(cmd.startsWith('/new') ? 'new session started' : undefined)
+      const isNew = cmd.startsWith('/new')
+
+      const commit = () => {
+        patchUiState({ status: 'forging session…' })
+        ctx.session.newSession(isNew ? 'new session started' : undefined)
+      }
+
+      if (NO_CONFIRM_DESTRUCTIVE) {
+        return commit()
+      }
+
+      patchOverlayState({
+        confirm: {
+          cancelLabel: 'No, keep going',
+          confirmLabel: isNew ? 'Yes, start a new session' : 'Yes, clear the session',
+          danger: true,
+          detail: 'This ends the current conversation and clears the transcript.',
+          onConfirm: commit,
+          title: isNew ? 'Start a new session?' : 'Clear the current session?'
+        }
+      })
     }
   },
 
@@ -113,7 +148,7 @@ export const coreCommands: SlashCommand[] = [
 
   {
     aliases: ['detail'],
-    help: 'control agent detail visibility',
+    help: 'control agent detail visibility (global or per-section)',
     name: 'details',
     run: (arg, ctx) => {
       const { gateway, transcript, ui } = ctx
@@ -122,31 +157,48 @@ export const coreCommands: SlashCommand[] = [
         gateway
           .rpc<ConfigGetValueResponse>('config.get', { key: 'details_mode' })
           .then(r => {
-            if (ctx.stale()) {
-              return
-            }
+            if (ctx.stale()) return
 
             const mode = parseDetailsMode(r?.value) ?? ui.detailsMode
-
             patchUiState({ detailsMode: mode })
-            transcript.sys(`details: ${mode}`)
+
+            const overrides = SECTION_NAMES.filter(s => ui.sections[s])
+              .map(s => `${s}=${ui.sections[s]}`)
+              .join(' ')
+
+            transcript.sys(`details: ${mode}${overrides ? `  (${overrides})` : ''}`)
           })
-          .catch(() => {
-            if (!ctx.stale()) {
-              transcript.sys(`details: ${ui.detailsMode}`)
-            }
-          })
+          .catch(() => !ctx.stale() && transcript.sys(`details: ${ui.detailsMode}`))
 
         return
       }
 
-      const mode = arg.trim().toLowerCase()
+      const [first, second] = arg.trim().toLowerCase().split(/\s+/)
 
-      if (!DETAIL_MODES.has(mode)) {
-        return transcript.sys('usage: /details [hidden|collapsed|expanded|cycle]')
+      if (second && isSectionName(first)) {
+        const reset = RESET_WORDS.has(second)
+        const mode = reset ? null : parseDetailsMode(second)
+
+        if (!reset && !mode) {
+          return transcript.sys(DETAILS_SECTION_USAGE)
+        }
+
+        const { [first]: _drop, ...rest } = ui.sections
+
+        patchUiState({ sections: mode ? { ...rest, [first]: mode } : rest })
+        gateway
+          .rpc<ConfigSetResponse>('config.set', { key: `details_mode.${first}`, value: mode ?? '' })
+          .catch(() => {})
+        transcript.sys(`details ${first}: ${mode ?? 'reset'}`)
+
+        return
       }
 
-      const next = mode === 'cycle' || mode === 'toggle' ? nextDetailsMode(ui.detailsMode) : (mode as DetailsMode)
+      const next = CYCLE_WORDS.has(first ?? '') ? nextDetailsMode(ui.detailsMode) : parseDetailsMode(first)
+
+      if (!next) {
+        return transcript.sys(DETAILS_USAGE)
+      }
 
       patchUiState({ detailsMode: next })
       gateway.rpc<ConfigSetResponse>('config.set', { key: 'details_mode', value: next }).catch(() => {})
@@ -199,9 +251,44 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
-    help: 'paste clipboard image',
+    help: 'attach clipboard image',
     name: 'paste',
     run: (arg, ctx) => (arg ? ctx.transcript.sys('usage: /paste') : ctx.composer.paste())
+  },
+
+  {
+    help: 'configure IDE terminal keybindings for multiline + undo/redo',
+    name: 'terminal-setup',
+    run: (arg, ctx) => {
+      const target = arg.trim().toLowerCase()
+
+      if (target && !['auto', 'cursor', 'vscode', 'windsurf'].includes(target)) {
+        return ctx.transcript.sys('usage: /terminal-setup [auto|vscode|cursor|windsurf]')
+      }
+
+      const runner =
+        !target || target === 'auto'
+          ? configureDetectedTerminalKeybindings()
+          : configureTerminalKeybindings(target as 'cursor' | 'vscode' | 'windsurf')
+
+      void runner
+        .then(result => {
+          if (ctx.stale()) {
+            return
+          }
+
+          ctx.transcript.sys(result.message)
+
+          if (result.success && result.requiresRestart) {
+            ctx.transcript.sys('restart the IDE terminal for the new keybindings to take effect')
+          }
+        })
+        .catch(error => {
+          if (!ctx.stale()) {
+            ctx.transcript.sys(`terminal setup failed: ${String(error)}`)
+          }
+        })
+    }
   },
 
   {
@@ -215,20 +302,58 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    help: 'view current transcript (user + assistant messages)',
+    name: 'history',
+    run: (arg, ctx) => {
+      // The CLI-side `/history` runs in a detached slash-worker subprocess
+      // that never sees the TUI's turns — it only surfaces whatever was
+      // persisted before this process started.  Render the TUI's own
+      // transcript so `/history` actually reflects what the user just did.
+      const items = ctx.local.getHistoryItems().filter(m => m.role === 'user' || m.role === 'assistant')
+
+      if (!items.length) {
+        return ctx.transcript.sys('no conversation yet')
+      }
+
+      const preview = Math.max(80, parseInt(arg, 10) || 400)
+
+      const lines = items.map((m, i) => {
+        const tag = m.role === 'user' ? `You #${i + 1}` : `Hermes #${i + 1}`
+        const body = m.text.trim() || (m.tools?.length ? `(${m.tools.length} tool calls)` : '(empty)')
+        const clipped = body.length > preview ? `${body.slice(0, preview).trimEnd()}…` : body
+
+        return `[${tag}]\n${clipped}`
+      })
+
+      ctx.transcript.page(lines.join('\n\n'), 'History')
+    }
+  },
+
+  {
     aliases: ['sb'],
-    help: 'toggle status bar',
+    help: 'status bar position (on|off|top|bottom)',
     name: 'statusbar',
     run: (arg, ctx) => {
-      const next = flagFromArg(arg, ctx.ui.statusBar)
+      const mode = arg.trim().toLowerCase()
+      const toggle: StatusBarMode = ctx.ui.statusBar === 'off' ? 'top' : 'off'
 
-      if (next === null) {
-        return ctx.transcript.sys('usage: /statusbar [on|off|toggle]')
+      const next: null | StatusBarMode =
+        !mode || mode === 'toggle'
+          ? toggle
+          : mode === 'on' || mode === 'top'
+            ? 'top'
+            : mode === 'off' || mode === 'bottom'
+              ? mode
+              : null
+
+      if (!next) {
+        return ctx.transcript.sys('usage: /statusbar [on|off|top|bottom|toggle]')
       }
 
       patchUiState({ statusBar: next })
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'statusbar', value: next ? 'on' : 'off' }).catch(() => {})
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'statusbar', value: next }).catch(() => {})
 
-      queueMicrotask(() => ctx.transcript.sys(`status bar ${next ? 'on' : 'off'}`))
+      queueMicrotask(() => ctx.transcript.sys(`status bar ${next}`))
     }
   },
 
@@ -242,6 +367,44 @@ export const coreCommands: SlashCommand[] = [
 
       ctx.composer.enqueue(arg)
       ctx.transcript.sys(`queued: "${arg.slice(0, 50)}${arg.length > 50 ? '…' : ''}"`)
+    }
+  },
+
+  {
+    help: 'inject a message after the next tool call (no interrupt)',
+    name: 'steer',
+    run: (arg, ctx) => {
+      const payload = arg?.trim() ?? ''
+
+      if (!payload) {
+        return ctx.transcript.sys('usage: /steer <prompt>')
+      }
+
+      // If the agent isn't running, fall back to the queue so the user's
+      // message isn't lost — identical semantics to the gateway handler.
+      if (!ctx.ui.busy || !ctx.sid) {
+        ctx.composer.enqueue(payload)
+        ctx.transcript.sys(
+          `no active turn — queued for next: "${payload.slice(0, 50)}${payload.length > 50 ? '…' : ''}"`
+        )
+
+        return
+      }
+
+      ctx.gateway
+        .rpc<SessionSteerResponse>('session.steer', { session_id: ctx.sid, text: payload })
+        .then(
+          ctx.guarded<SessionSteerResponse>(r => {
+            if (r?.status === 'queued') {
+              ctx.transcript.sys(
+                `⏩ steer queued — arrives after next tool call: "${payload.slice(0, 50)}${payload.length > 50 ? '…' : ''}"`
+              )
+            } else {
+              ctx.transcript.sys('steer rejected')
+            }
+          })
+        )
+        .catch(ctx.guardedErr)
     }
   },
 

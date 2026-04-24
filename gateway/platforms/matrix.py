@@ -25,10 +25,13 @@ Environment variables:
 from __future__ import annotations
 
 import asyncio
+import base64
+import hashlib
 import logging
 import mimetypes
 import os
 import re
+import secrets
 import time
 from html import escape as _html_escape
 from pathlib import Path
@@ -128,6 +131,48 @@ def _check_e2ee_deps() -> bool:
         return True
     except (ImportError, AttributeError):
         return False
+
+
+def _unpadded_b64(data: bytes, *, urlsafe: bool = False) -> str:
+    encoder = base64.urlsafe_b64encode if urlsafe else base64.b64encode
+    return encoder(data).decode("ascii").rstrip("=")
+
+
+def _encrypt_attachment_without_olm(data: bytes):
+    """Encrypt Matrix media without importing mautrix.crypto's Olm-dependent package."""
+    from Crypto.Cipher import AES
+    from Crypto.Util import Counter
+    from mautrix.types import EncryptedFile, JSONWebKey
+
+    key = secrets.token_bytes(32)
+    iv = secrets.token_bytes(8)
+    counter = Counter.new(64, prefix=iv, initial_value=0)
+    encrypted = AES.new(key, AES.MODE_CTR, counter=counter).encrypt(data)
+    digest = hashlib.sha256(encrypted).digest()
+
+    return encrypted, EncryptedFile(
+        version="v2",
+        iv=_unpadded_b64(iv + b"\x00" * 8),
+        hashes={"sha256": _unpadded_b64(digest)},
+        key=JSONWebKey(
+            key_type="oct",
+            algorithm="A256CTR",
+            extractable=True,
+            key_ops=["encrypt", "decrypt"],
+            key=_unpadded_b64(key, urlsafe=True),
+        ),
+    )
+
+
+def _encrypt_matrix_attachment(data: bytes):
+    try:
+        from mautrix.crypto.attachments import encrypt_attachment
+
+        return encrypt_attachment(data)
+    except ModuleNotFoundError as exc:
+        if exc.name != "olm":
+            raise
+        return _encrypt_attachment_without_olm(data)
 
 
 def check_matrix_requirements() -> bool:
@@ -825,7 +870,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
 
     async def edit_message(
-        self, chat_id: str, message_id: str, content: str
+        self, chat_id: str, message_id: str, content: str, *, finalize: bool = False
     ) -> SendResult:
         """Edit an existing message (via m.replace)."""
 
@@ -1005,8 +1050,7 @@ class MatrixAdapter(BasePlatformAdapter):
                     room_encrypted = False
                 if room_encrypted:
                     try:
-                        from mautrix.crypto.attachments import encrypt_attachment
-                        upload_data, encrypted_file = encrypt_attachment(data)
+                        upload_data, encrypted_file = _encrypt_matrix_attachment(data)
                     except Exception as exc:
                         logger.error("Matrix: attachment encryption failed: %s", exc)
                         return SendResult(success=False, error=str(exc))

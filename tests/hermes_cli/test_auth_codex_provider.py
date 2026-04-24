@@ -4,6 +4,7 @@ import json
 import time
 import base64
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 import yaml
@@ -14,10 +15,11 @@ from hermes_cli.auth import (
     PROVIDER_REGISTRY,
     _read_codex_tokens,
     _save_codex_tokens,
-    _write_codex_cli_tokens,
     _import_codex_cli_tokens,
+    _login_openai_codex,
     get_codex_auth_status,
     get_provider_auth_state,
+    refresh_codex_oauth_pure,
     resolve_codex_runtime_credentials,
     resolve_provider,
 )
@@ -182,98 +184,6 @@ def test_codex_tokens_not_written_to_shared_file(tmp_path, monkeypatch):
     assert data["tokens"]["access_token"] == "hermes-at"
 
 
-def test_write_codex_cli_tokens_creates_file(tmp_path, monkeypatch):
-    """_write_codex_cli_tokens creates ~/.codex/auth.json with refreshed tokens."""
-    codex_home = tmp_path / "codex-cli"
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
-
-    _write_codex_cli_tokens("new-access", "new-refresh", last_refresh="2026-04-12T00:00:00Z")
-
-    auth_path = codex_home / "auth.json"
-    assert auth_path.exists()
-    data = json.loads(auth_path.read_text())
-    assert data["tokens"]["access_token"] == "new-access"
-    assert data["tokens"]["refresh_token"] == "new-refresh"
-    assert data["last_refresh"] == "2026-04-12T00:00:00Z"
-    # Verify file permissions are restricted
-    assert (auth_path.stat().st_mode & 0o777) == 0o600
-
-
-def test_write_codex_cli_tokens_preserves_existing(tmp_path, monkeypatch):
-    """_write_codex_cli_tokens preserves extra fields in existing auth.json."""
-    codex_home = tmp_path / "codex-cli"
-    codex_home.mkdir(parents=True, exist_ok=True)
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
-
-    existing = {
-        "tokens": {
-            "access_token": "old-access",
-            "refresh_token": "old-refresh",
-            "extra_field": "preserved",
-        },
-        "last_refresh": "2026-01-01T00:00:00Z",
-        "custom_key": "keep_me",
-    }
-    (codex_home / "auth.json").write_text(json.dumps(existing))
-
-    _write_codex_cli_tokens("updated-access", "updated-refresh")
-
-    data = json.loads((codex_home / "auth.json").read_text())
-    assert data["tokens"]["access_token"] == "updated-access"
-    assert data["tokens"]["refresh_token"] == "updated-refresh"
-    assert data["tokens"]["extra_field"] == "preserved"
-    assert data["custom_key"] == "keep_me"
-    # last_refresh not updated since we didn't pass it
-    assert data["last_refresh"] == "2026-01-01T00:00:00Z"
-
-
-def test_write_codex_cli_tokens_handles_missing_dir(tmp_path, monkeypatch):
-    """_write_codex_cli_tokens creates parent directories if missing."""
-    codex_home = tmp_path / "does" / "not" / "exist"
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
-
-    _write_codex_cli_tokens("at", "rt")
-
-    assert (codex_home / "auth.json").exists()
-    data = json.loads((codex_home / "auth.json").read_text())
-    assert data["tokens"]["access_token"] == "at"
-
-
-def test_refresh_codex_auth_tokens_writes_back_to_cli(tmp_path, monkeypatch):
-    """After refreshing, _refresh_codex_auth_tokens writes back to ~/.codex/auth.json."""
-    from hermes_cli.auth import _refresh_codex_auth_tokens
-
-    hermes_home = tmp_path / "hermes"
-    codex_home = tmp_path / "codex-cli"
-    hermes_home.mkdir(parents=True, exist_ok=True)
-    codex_home.mkdir(parents=True, exist_ok=True)
-    (hermes_home / "auth.json").write_text(json.dumps({"version": 1, "providers": {}}))
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-    monkeypatch.setenv("CODEX_HOME", str(codex_home))
-
-    # Write initial CLI tokens
-    (codex_home / "auth.json").write_text(json.dumps({
-        "tokens": {"access_token": "old-at", "refresh_token": "old-rt"},
-    }))
-
-    # Mock the pure refresh to return new tokens
-    monkeypatch.setattr("hermes_cli.auth.refresh_codex_oauth_pure", lambda *a, **kw: {
-        "access_token": "refreshed-at",
-        "refresh_token": "refreshed-rt",
-        "last_refresh": "2026-04-12T01:00:00Z",
-    })
-
-    _refresh_codex_auth_tokens(
-        {"access_token": "old-at", "refresh_token": "old-rt"},
-        timeout_seconds=10,
-    )
-
-    # Verify CLI file was updated
-    cli_data = json.loads((codex_home / "auth.json").read_text())
-    assert cli_data["tokens"]["access_token"] == "refreshed-at"
-    assert cli_data["tokens"]["refresh_token"] == "refreshed-rt"
-
-
 def test_resolve_returns_hermes_auth_store_source(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     _setup_hermes_auth(hermes_home)
@@ -283,3 +193,161 @@ def test_resolve_returns_hermes_auth_store_source(tmp_path, monkeypatch):
     assert creds["source"] == "hermes-auth-store"
     assert creds["provider"] == "openai-codex"
     assert creds["base_url"] == DEFAULT_CODEX_BASE_URL
+
+
+class _StubHTTPResponse:
+    def __init__(self, status_code: int, payload):
+        self.status_code = status_code
+        self._payload = payload
+        self.text = json.dumps(payload) if isinstance(payload, (dict, list)) else str(payload)
+
+    def json(self):
+        if isinstance(self._payload, Exception):
+            raise self._payload
+        return self._payload
+
+
+class _StubHTTPClient:
+    def __init__(self, response):
+        self._response = response
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *args):
+        return False
+
+    def post(self, *args, **kwargs):
+        return self._response
+
+
+def _patch_httpx(monkeypatch, response):
+    def _factory(*args, **kwargs):
+        return _StubHTTPClient(response)
+
+    monkeypatch.setattr("hermes_cli.auth.httpx.Client", _factory)
+
+
+def test_refresh_parses_openai_nested_error_shape_refresh_token_reused(monkeypatch):
+    """OpenAI returns {"error": {"code": "refresh_token_reused", "message": "..."}}
+    — parser must surface relogin_required and the dedicated message.
+    """
+    response = _StubHTTPResponse(
+        401,
+        {
+            "error": {
+                "message": "Your refresh token has already been used to generate a new access token. Please try signing in again.",
+                "type": "invalid_request_error",
+                "param": None,
+                "code": "refresh_token_reused",
+            }
+        },
+    )
+    _patch_httpx(monkeypatch, response)
+
+    with pytest.raises(AuthError) as exc_info:
+        refresh_codex_oauth_pure("a-tok", "r-tok")
+
+    err = exc_info.value
+    assert err.code == "refresh_token_reused"
+    assert err.relogin_required is True
+    # The existing dedicated branch should override the message with actionable guidance.
+    assert "already consumed by another client" in str(err)
+
+
+def test_refresh_parses_openai_nested_error_shape_generic_code(monkeypatch):
+    """Nested error with arbitrary code still surfaces code + message."""
+    response = _StubHTTPResponse(
+        400,
+        {
+            "error": {
+                "message": "Invalid client credentials.",
+                "type": "invalid_request_error",
+                "code": "invalid_client",
+            }
+        },
+    )
+    _patch_httpx(monkeypatch, response)
+
+    with pytest.raises(AuthError) as exc_info:
+        refresh_codex_oauth_pure("a-tok", "r-tok")
+
+    err = exc_info.value
+    assert err.code == "invalid_client"
+    assert "Invalid client credentials." in str(err)
+
+
+def test_refresh_parses_oauth_spec_flat_error_shape_invalid_grant(monkeypatch):
+    """Fallback path: OAuth spec-shape {"error": "invalid_grant", "error_description": "..."}
+    must still map to relogin_required=True via the existing code set.
+    """
+    response = _StubHTTPResponse(
+        400,
+        {
+            "error": "invalid_grant",
+            "error_description": "Refresh token is expired or revoked.",
+        },
+    )
+    _patch_httpx(monkeypatch, response)
+
+    with pytest.raises(AuthError) as exc_info:
+        refresh_codex_oauth_pure("a-tok", "r-tok")
+
+    err = exc_info.value
+    assert err.code == "invalid_grant"
+    assert err.relogin_required is True
+    assert "Refresh token is expired or revoked." in str(err)
+
+
+def test_refresh_falls_back_to_generic_message_on_unparseable_body(monkeypatch):
+    """No JSON body → generic 'with status 401' message; 401 always forces relogin."""
+    response = _StubHTTPResponse(401, ValueError("not json"))
+    _patch_httpx(monkeypatch, response)
+
+    with pytest.raises(AuthError) as exc_info:
+        refresh_codex_oauth_pure("a-tok", "r-tok")
+
+    err = exc_info.value
+    assert err.code == "codex_refresh_failed"
+    # 401/403 from the token endpoint always means the refresh token is
+    # invalid/expired — force relogin even without a parseable error body.
+    assert err.relogin_required is True
+    assert "status 401" in str(err)
+
+
+def test_login_openai_codex_force_new_login_skips_existing_reuse_prompt(monkeypatch):
+    called = {"device_login": 0}
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_codex_runtime_credentials",
+        lambda: {"base_url": DEFAULT_CODEX_BASE_URL},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth._import_codex_cli_tokens",
+        lambda: {"access_token": "cli-at", "refresh_token": "cli-rt"},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.auth._codex_device_code_login",
+        lambda: {
+            "tokens": {"access_token": "fresh-at", "refresh_token": "fresh-rt"},
+            "last_refresh": "2026-04-01T00:00:00Z",
+            "base_url": DEFAULT_CODEX_BASE_URL,
+        },
+    )
+
+    def _fake_save(tokens, last_refresh=None):
+        called["device_login"] += 1
+        called["tokens"] = dict(tokens)
+        called["last_refresh"] = last_refresh
+
+    monkeypatch.setattr("hermes_cli.auth._save_codex_tokens", _fake_save)
+    monkeypatch.setattr("hermes_cli.auth._update_config_for_provider", lambda *args, **kwargs: "/tmp/config.yaml")
+    monkeypatch.setattr(
+        "builtins.input",
+        lambda prompt="": (_ for _ in ()).throw(AssertionError("force_new_login should not prompt for reuse/import")),
+    )
+
+    _login_openai_codex(SimpleNamespace(), PROVIDER_REGISTRY["openai-codex"], force_new_login=True)
+
+    assert called["device_login"] == 1
+    assert called["tokens"]["access_token"] == "fresh-at"

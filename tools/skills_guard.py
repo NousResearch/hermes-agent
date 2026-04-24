@@ -43,6 +43,10 @@ INSTALL_POLICY = {
     "builtin":       ("allow",  "allow",   "allow"),
     "trusted":       ("allow",  "allow",   "block"),
     "community":     ("allow",  "block",   "block"),
+    # Agent-created: "ask" on dangerous surfaces as an error to the agent,
+    # which can retry without the flagged content. This gate only runs when
+    # skills.guard_agent_created is enabled (off by default) — see
+    # tools/skill_manager_tool.py::_guard_agent_created_enabled.
     "agent-created": ("allow",  "allow",   "ask"),
 }
 

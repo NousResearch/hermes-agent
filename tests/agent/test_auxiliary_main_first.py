@@ -167,7 +167,7 @@ class TestResolveAutoMainFirst:
 
 
 class TestResolveVisionMainFirst:
-    """Vision auto-detection prefers main provider + main model first."""
+    """Vision auto-detection prefers the main provider first."""
 
     def test_openrouter_main_vision_uses_main_model(self, monkeypatch):
         """OpenRouter main with vision-capable model → aux vision uses main model."""
@@ -200,31 +200,52 @@ class TestResolveVisionMainFirst:
         assert mock_resolve.call_args.args[0] == "openrouter"
         assert mock_resolve.call_args.args[1] == "anthropic/claude-sonnet-4.6"
 
-    def test_nous_main_vision_uses_main_model(self):
-        """Nous Portal main → aux vision uses main model, not free-tier MiMo-V2-Omni."""
+    def test_nous_main_vision_uses_paid_nous_vision_backend(self):
+        """Paid Nous main → aux vision uses the dedicated Nous vision backend."""
         with patch(
             "agent.auxiliary_client._read_main_provider", return_value="nous",
         ), patch(
             "agent.auxiliary_client._read_main_model",
             return_value="openai/gpt-5",
         ), patch(
-            "agent.auxiliary_client.resolve_provider_client"
-        ) as mock_resolve, patch(
             "agent.auxiliary_client._resolve_task_provider_model",
             return_value=("auto", None, None, None, None),
+        ), patch(
+            "agent.auxiliary_client._resolve_strict_vision_backend",
+            return_value=(MagicMock(), "google/gemini-3-flash-preview"),
         ):
-            mock_client = MagicMock()
-            mock_resolve.return_value = (mock_client, "openai/gpt-5")
-
             from agent.auxiliary_client import resolve_vision_provider_client
 
             provider, client, model = resolve_vision_provider_client()
 
         assert provider == "nous"
-        assert model == "openai/gpt-5"
+        assert client is not None
+        assert model == "google/gemini-3-flash-preview"
+
+    def test_nous_main_vision_uses_free_tier_nous_vision_backend(self):
+        """Free-tier Nous main → aux vision uses MiMo omni, not the text main model."""
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="nous",
+        ), patch(
+            "agent.auxiliary_client._read_main_model",
+            return_value="xiaomi/mimo-v2-pro",
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", None, None, None, None),
+        ), patch(
+            "agent.auxiliary_client._resolve_strict_vision_backend",
+            return_value=(MagicMock(), "xiaomi/mimo-v2-omni"),
+        ):
+            from agent.auxiliary_client import resolve_vision_provider_client
+
+            provider, client, model = resolve_vision_provider_client()
+
+        assert provider == "nous"
+        assert client is not None
+        assert model == "xiaomi/mimo-v2-omni"
 
     def test_exotic_provider_with_vision_override_preserved(self):
-        """xiaomi → mimo-v2-omni override still wins over main_model."""
+        """xiaomi → mimo-v2.5 override still wins over main_model."""
         with patch(
             "agent.auxiliary_client._read_main_provider", return_value="xiaomi",
         ), patch(
@@ -236,15 +257,15 @@ class TestResolveVisionMainFirst:
             "agent.auxiliary_client._resolve_task_provider_model",
             return_value=("auto", None, None, None, None),
         ):
-            mock_resolve.return_value = (MagicMock(), "mimo-v2-omni")
+            mock_resolve.return_value = (MagicMock(), "mimo-v2.5")
 
             from agent.auxiliary_client import resolve_vision_provider_client
 
             provider, client, model = resolve_vision_provider_client()
 
         assert provider == "xiaomi"
-        # Should use mimo-v2-omni (vision override), not mimo-v2-pro (text main)
-        assert mock_resolve.call_args.args[1] == "mimo-v2-omni"
+        # Should use mimo-v2.5 (vision override), not mimo-v2-pro (text main)
+        assert mock_resolve.call_args.args[1] == "mimo-v2.5"
 
     def test_main_unavailable_vision_falls_through_to_aggregators(self):
         """Main provider fails → fall back to OpenRouter/Nous strict backends."""

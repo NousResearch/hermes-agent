@@ -29,23 +29,60 @@ from hermes_cli.auth import (
 )
 from hermes_cli.config import get_compatible_custom_providers, load_config
 from hermes_constants import OPENROUTER_BASE_URL
+from utils import base_url_host_matches, base_url_hostname
 
 
 def _normalize_custom_provider_name(value: str) -> str:
     return value.strip().lower().replace(" ", "-")
 
 
+def _loopback_hostname(host: str) -> bool:
+    h = (host or "").lower().rstrip(".")
+    return h in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+
+def _config_base_url_trustworthy_for_bare_custom(cfg_base_url: str, cfg_provider: str) -> bool:
+    """Decide whether ``model.base_url`` may back bare ``custom`` runtime resolution.
+
+    GitHub #14676: the model picker can select Custom while ``model.provider`` still reflects a
+    previous provider. Reject non-loopback URLs unless the YAML provider is already ``custom``,
+    so a stale OpenRouter/Z.ai base_url cannot hijack local ``custom`` sessions.
+    """
+    cfg_provider_norm = (cfg_provider or "").strip().lower()
+    bu = (cfg_base_url or "").strip()
+    if not bu:
+        return False
+    if cfg_provider_norm == "custom":
+        return True
+    if base_url_host_matches(bu, "openrouter.ai"):
+        return False
+    return _loopback_hostname(base_url_hostname(bu))
+
+
 def _detect_api_mode_for_url(base_url: str) -> Optional[str]:
     """Auto-detect api_mode from the resolved base URL.
 
-    Direct api.openai.com endpoints need the Responses API for GPT-5.x
-    tool calls with reasoning (chat/completions returns 400).
+    - Direct api.openai.com endpoints need the Responses API for GPT-5.x
+      tool calls with reasoning (chat/completions returns 400).
+    - Third-party Anthropic-compatible gateways (MiniMax, Zhipu GLM,
+      LiteLLM proxies, etc.) conventionally expose the native Anthropic
+      protocol under a ``/anthropic`` suffix — treat those as
+      ``anthropic_messages`` transport instead of the default
+      ``chat_completions``.
+    - Kimi Code's ``api.kimi.com/coding`` endpoint also speaks the
+      Anthropic Messages protocol (the /coding route accepts Claude
+      Code's native request shape).
     """
     normalized = (base_url or "").strip().lower().rstrip("/")
-    if "api.x.ai" in normalized:
+    hostname = base_url_hostname(base_url)
+    if hostname == "api.x.ai":
         return "codex_responses"
-    if "api.openai.com" in normalized and "openrouter" not in normalized:
+    if hostname == "api.openai.com":
         return "codex_responses"
+    if normalized.endswith("/anthropic"):
+        return "anthropic_messages"
+    if hostname == "api.kimi.com" and "/coding" in normalized:
+        return "anthropic_messages"
     return None
 
 
@@ -146,8 +183,16 @@ def _resolve_runtime_from_pool_entry(
     requested_provider: str,
     model_cfg: Optional[Dict[str, Any]] = None,
     pool: Optional[CredentialPool] = None,
+    target_model: Optional[str] = None,
 ) -> Dict[str, Any]:
     model_cfg = model_cfg or _get_model_config()
+    # When the caller is resolving for a specific target model (e.g. a /model
+    # mid-session switch), prefer that over the persisted model.default. This
+    # prevents api_mode being computed from a stale config default that no
+    # longer matches the model actually being used — the bug that caused
+    # opencode-zen /v1 to be stripped for chat_completions requests when
+    # config.default was still a Claude model.
+    effective_model = (target_model or model_cfg.get("default") or "")
     base_url = (getattr(entry, "runtime_base_url", None) or getattr(entry, "base_url", None) or "").rstrip("/")
     api_key = getattr(entry, "runtime_api_key", None) or getattr(entry, "access_token", "")
     api_mode = "chat_completions"
@@ -193,9 +238,14 @@ def _resolve_runtime_from_pool_entry(
             api_mode = configured_mode
         elif provider in ("opencode-zen", "opencode-go"):
             from hermes_cli.models import opencode_model_api_mode
-            api_mode = opencode_model_api_mode(provider, model_cfg.get("default", ""))
-        elif base_url.rstrip("/").endswith("/anthropic"):
-            api_mode = "anthropic_messages"
+            api_mode = opencode_model_api_mode(provider, effective_model)
+        else:
+            # Auto-detect Anthropic-compatible endpoints (/anthropic suffix,
+            # Kimi /coding, api.openai.com → codex_responses, api.x.ai →
+            # codex_responses).
+            detected = _detect_api_mode_for_url(base_url)
+            if detected:
+                api_mode = detected
 
     # OpenCode base URLs end with /v1 for OpenAI-compatible models, but the
     # Anthropic SDK prepends its own /v1/messages to the base_url.  Strip the
@@ -304,12 +354,16 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                 # Found match by provider key
                 base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
                 if base_url:
-                    return {
+                    result = {
                         "name": entry.get("name", ep_name),
                         "base_url": base_url.strip(),
                         "api_key": resolved_api_key,
                         "model": entry.get("default_model", ""),
                     }
+                    api_mode = _parse_api_mode(entry.get("api_mode"))
+                    if api_mode:
+                        result["api_mode"] = api_mode
+                    return result
             # Also check the 'name' field if present
             display_name = entry.get("name", "")
             if display_name:
@@ -318,12 +372,16 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                     # Found match by display name
                     base_url = entry.get("api") or entry.get("url") or entry.get("base_url") or ""
                     if base_url:
-                        return {
+                        result = {
                             "name": display_name,
                             "base_url": base_url.strip(),
                             "api_key": resolved_api_key,
                             "model": entry.get("default_model", ""),
                         }
+                        api_mode = _parse_api_mode(entry.get("api_mode"))
+                        if api_mode:
+                            result["api_mode"] = api_mode
+                        return result
 
     # Fall back to custom_providers: list (legacy format)
     custom_providers = config.get("custom_providers")
@@ -445,6 +503,7 @@ def _resolve_openrouter_runtime(
     cfg_provider = cfg_provider.strip().lower()
 
     env_openrouter_base_url = os.getenv("OPENROUTER_BASE_URL", "").strip()
+    env_custom_base_url = os.getenv("CUSTOM_BASE_URL", "").strip()
 
     # Use config base_url when available and the provider context matches.
     # OPENAI_BASE_URL env var is no longer consulted — config.yaml is
@@ -454,11 +513,14 @@ def _resolve_openrouter_runtime(
         if requested_norm == "auto":
             if not cfg_provider or cfg_provider == "auto":
                 use_config_base_url = True
-        elif requested_norm == "custom" and cfg_provider == "custom":
+        elif requested_norm == "custom" and _config_base_url_trustworthy_for_bare_custom(
+            cfg_base_url, cfg_provider
+        ):
             use_config_base_url = True
 
     base_url = (
         (explicit_base_url or "").strip()
+        or env_custom_base_url
         or (cfg_base_url.strip() if use_config_base_url else "")
         or env_openrouter_base_url
         or OPENROUTER_BASE_URL
@@ -469,7 +531,7 @@ def _resolve_openrouter_runtime(
     # When hitting a custom endpoint (e.g. Z.ai, local LLM), prefer
     # OPENAI_API_KEY so the OpenRouter key doesn't leak to an unrelated
     # provider (issues #420, #560).
-    _is_openrouter_url = "openrouter.ai" in base_url
+    _is_openrouter_url = base_url_host_matches(base_url, "openrouter.ai")
     if _is_openrouter_url:
         api_key_candidates = [
             explicit_api_key,
@@ -479,8 +541,12 @@ def _resolve_openrouter_runtime(
     else:
         # Custom endpoint: use api_key from config when using config base_url (#1760).
         # When the endpoint is Ollama Cloud, check OLLAMA_API_KEY — it's
-        # the canonical env var for ollama.com authentication.
-        _is_ollama_url = "ollama.com" in base_url.lower()
+        # the canonical env var for ollama.com authentication. Match on
+        # HOST, not substring — a custom base_url whose path contains
+        # "ollama.com" (e.g. http://127.0.0.1/ollama.com/v1) or whose
+        # hostname is a look-alike (ollama.com.attacker.test) must not
+        # receive the Ollama credential. See GHSA-76xc-57q6-vm5m.
+        _is_ollama_url = base_url_host_matches(base_url, "ollama.com")
         api_key_candidates = [
             explicit_api_key,
             (cfg_api_key if use_config_base_url else ""),
@@ -642,8 +708,12 @@ def _resolve_explicit_runtime(
             configured_mode = _parse_api_mode(model_cfg.get("api_mode"))
             if configured_mode:
                 api_mode = configured_mode
-            elif base_url.rstrip("/").endswith("/anthropic"):
-                api_mode = "anthropic_messages"
+            else:
+                # Auto-detect from URL (Anthropic /anthropic suffix,
+                # api.openai.com → Responses, Kimi /coding, etc.).
+                detected = _detect_api_mode_for_url(base_url)
+                if detected:
+                    api_mode = detected
 
         return {
             "provider": provider,
@@ -662,8 +732,18 @@ def resolve_runtime_provider(
     requested: Optional[str] = None,
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    target_model: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """Resolve runtime provider credentials for agent execution."""
+    """Resolve runtime provider credentials for agent execution.
+
+    target_model: Optional override for model_cfg.get("default") when
+    computing provider-specific api_mode (e.g. OpenCode Zen/Go where different
+    models route through different API surfaces). Callers performing an
+    explicit mid-session model switch should pass the new model here so
+    api_mode is derived from the model they are switching TO, not the stale
+    persisted default. Other callers can leave it None to preserve existing
+    behavior (api_mode derived from config).
+    """
     requested_provider = resolve_requested_provider(requested)
 
     custom_runtime = _resolve_named_custom_runtime(
@@ -745,6 +825,7 @@ def resolve_runtime_provider(
                 requested_provider=requested_provider,
                 model_cfg=model_cfg,
                 pool=pool,
+                target_model=target_model,
             )
 
     if provider == "nous":
@@ -890,8 +971,7 @@ def resolve_runtime_provider(
                 code="no_aws_credentials",
             )
         # Read bedrock-specific config from config.yaml
-        from hermes_cli.config import load_config as _load_bedrock_config
-        _bedrock_cfg = _load_bedrock_config().get("bedrock", {})
+        _bedrock_cfg = load_config().get("bedrock", {})
         # Region priority: config.yaml bedrock.region → env var → us-east-1
         region = (_bedrock_cfg.get("region") or "").strip() or resolve_bedrock_region()
         auth_source = resolve_aws_auth_env_var() or "aws-sdk-default-chain"
@@ -964,11 +1044,18 @@ def resolve_runtime_provider(
                 api_mode = configured_mode
             elif provider in ("opencode-zen", "opencode-go"):
                 from hermes_cli.models import opencode_model_api_mode
-                api_mode = opencode_model_api_mode(provider, model_cfg.get("default", ""))
-            # Auto-detect Anthropic-compatible endpoints by URL convention
-            # (e.g. https://api.minimax.io/anthropic, https://dashscope.../anthropic)
-            elif base_url.rstrip("/").endswith("/anthropic"):
-                api_mode = "anthropic_messages"
+                # Prefer the target_model from the caller (explicit mid-session
+                # switch) over the stale model.default; see _resolve_runtime_from_pool_entry
+                # for the same rationale.
+                _effective = target_model or model_cfg.get("default", "")
+                api_mode = opencode_model_api_mode(provider, _effective)
+            else:
+                # Auto-detect Anthropic-compatible endpoints by URL convention
+                # (e.g. https://api.minimax.io/anthropic, https://dashscope.../anthropic)
+                # plus api.openai.com → codex_responses and api.x.ai → codex_responses.
+                detected = _detect_api_mode_for_url(base_url)
+                if detected:
+                    api_mode = detected
         # Strip trailing /v1 for OpenCode Anthropic models (see comment above).
         if api_mode == "anthropic_messages" and provider in ("opencode-zen", "opencode-go"):
             base_url = re.sub(r"/v1/?$", "", base_url)

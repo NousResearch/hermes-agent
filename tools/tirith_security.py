@@ -186,9 +186,10 @@ def _detect_target() -> str | None:
     system = platform.system()
     machine = platform.machine().lower()
 
+    # Android (Termux) is ABI-compatible with Linux — reuse Linux binaries.
     if system == "Darwin":
         plat = "apple-darwin"
-    elif system == "Linux":
+    elif system in ("Linux", "Android"):
         plat = "unknown-linux-gnu"
     else:
         return None
@@ -629,6 +630,12 @@ def check_command_security(command: str) -> dict:
     tirith_path = _resolve_tirith_path(cfg["tirith_path"])
     timeout = cfg["tirith_timeout"]
     fail_open = cfg["tirith_fail_open"]
+
+    if tirith_path is None:
+        logger.warning("tirith path resolved to None; scanning disabled")
+        if fail_open:
+            return {"action": "allow", "findings": [], "summary": "tirith path unavailable"}
+        return {"action": "block", "findings": [], "summary": "tirith path unavailable (fail-closed)"}
 
     try:
         result = subprocess.run(

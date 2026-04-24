@@ -343,7 +343,7 @@ function wrapWithSoftWrap(
   maxWidth: number,
   textWrap: Parameters<typeof wrapText>[2]
 ): { wrapped: string; softWrap: boolean[] | undefined } {
-  if (textWrap !== 'wrap' && textWrap !== 'wrap-trim') {
+  if (textWrap !== 'wrap' && textWrap !== 'wrap-char' && textWrap !== 'wrap-trim') {
     return {
       wrapped: wrapText(plainText, maxWidth, textWrap),
       softWrap: undefined
@@ -761,6 +761,7 @@ function renderNodeToOutput(
         // active text selection by the same delta (native terminal behavior:
         // view keeps scrolling, highlight walks up with the text).
         const scrollTopBeforeFollow = node.scrollTop ?? 0
+        const stickyBeforeFollow = node.stickyScroll
 
         const sticky = node.stickyScroll ?? Boolean(node.attributes['stickyScroll'])
 
@@ -861,6 +862,10 @@ function renderNodeToOutput(
 
         if (node.pendingScrollDelta !== undefined) {
           scrollDrainNode = node
+        }
+
+        if ((node.scrollTop ?? 0) !== scrollTopBeforeFollow || node.stickyScroll !== stickyBeforeFollow) {
+          node.notifyScrollChange?.()
         }
 
         scrollTop = clamped

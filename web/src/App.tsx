@@ -6,7 +6,14 @@ import {
   type ComponentType,
   type ReactNode,
 } from "react";
-import { Routes, Route, NavLink, Navigate, useNavigate } from "react-router-dom";
+import {
+  Routes,
+  Route,
+  NavLink,
+  Navigate,
+  useLocation,
+  useNavigate,
+} from "react-router-dom";
 import {
   Activity,
   BarChart3,
@@ -44,6 +51,7 @@ import { PageHeaderProvider } from "@/contexts/PageHeaderProvider";
 import { useSystemActions } from "@/contexts/useSystemActions";
 import type { SystemAction } from "@/contexts/system-actions-context";
 import ConfigPage from "@/pages/ConfigPage";
+import DocsPage from "@/pages/DocsPage";
 import EnvPage from "@/pages/EnvPage";
 import SessionsPage from "@/pages/SessionsPage";
 import LogsPage from "@/pages/LogsPage";
@@ -56,9 +64,6 @@ import { useI18n } from "@/i18n";
 import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
-
-/** Canonical public docs (Docusaurus). */
-const HERMES_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/";
 
 function RootRedirect() {
   return <Navigate to="/sessions" replace />;
@@ -74,6 +79,7 @@ const BUILTIN_ROUTES: Record<string, ComponentType> = {
   "/skills": SkillsPage,
   "/config": ConfigPage,
   "/env": EnvPage,
+  "/docs": DocsPage,
 };
 
 const BUILTIN_NAV: NavItem[] = [
@@ -95,11 +101,10 @@ const BUILTIN_NAV: NavItem[] = [
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
   {
-    path: "nav:docs",
+    path: "/docs",
     labelKey: "documentation",
     label: "Documentation",
     icon: BookOpen,
-    href: HERMES_DOCS_URL,
   },
 ];
 
@@ -222,10 +227,12 @@ function buildRoutes(manifests: PluginManifest[]): Array<{
 
 export default function App() {
   const { t } = useI18n();
+  const { pathname } = useLocation();
   const { manifests } = usePlugins();
   const { theme } = useTheme();
   const [mobileOpen, setMobileOpen] = useState(false);
   const closeMobile = useCallback(() => setMobileOpen(false), []);
+  const isDocsRoute = pathname === "/docs" || pathname === "/docs/";
 
   const navItems = useMemo(
     () => buildNavItems(BUILTIN_NAV, manifests),
@@ -384,34 +391,34 @@ export default function App() {
               aria-label={t.app.navigation}
             >
               <ul className="flex flex-col">
-                {navItems.map(
-                  ({ path, label, labelKey, href, icon: Icon }) => {
-                    const navLabel = labelKey
-                      ? ((t.app.nav as Record<string, string>)[labelKey] ??
-                        label)
-                      : label;
-                    return (
-                      <li key={path}>
-                        {href ? (
-                          <a
-                            href={href}
-                            target="_blank"
-                            rel="noopener noreferrer"
-                            onClick={closeMobile}
-                            aria-label={t.app.openDocumentation}
-                            title={t.app.openDocumentation}
-                            className={cn(
-                              "group relative flex items-center gap-3",
-                              "px-5 py-2.5",
-                              "font-mondwest text-[0.8rem] tracking-[0.12em]",
-                              "whitespace-nowrap transition-colors cursor-pointer",
-                              "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
-                              "opacity-60 hover:opacity-100",
-                            )}
-                            style={{
-                              clipPath: "var(--component-tab-clip-path)",
-                            }}
-                          >
+                {navItems.map(({ path, label, labelKey, icon: Icon }) => {
+                  const navLabel = labelKey
+                    ? ((t.app.nav as Record<string, string>)[labelKey] ?? label)
+                    : label;
+                  return (
+                    <li key={path}>
+                      <NavLink
+                        to={path}
+                        end={path === "/sessions"}
+                        onClick={closeMobile}
+                        className={({ isActive }) =>
+                          cn(
+                            "group relative flex items-center gap-3",
+                            "px-5 py-2.5",
+                            "font-mondwest text-[0.8rem] tracking-[0.12em]",
+                            "whitespace-nowrap transition-colors cursor-pointer",
+                            "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
+                            isActive
+                              ? "text-midground"
+                              : "opacity-60 hover:opacity-100",
+                          )
+                        }
+                        style={{
+                          clipPath: "var(--component-tab-clip-path)",
+                        }}
+                      >
+                        {({ isActive }) => (
+                          <>
                             <Icon className="h-3.5 w-3.5 shrink-0" />
                             <span className="truncate">{navLabel}</span>
 
@@ -419,53 +426,20 @@ export default function App() {
                               aria-hidden
                               className="absolute inset-y-0.5 left-1.5 right-1.5 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover:opacity-5"
                             />
-                          </a>
-                        ) : (
-                          <NavLink
-                            to={path}
-                            end={path === "/sessions"}
-                            onClick={closeMobile}
-                            className={({ isActive }) =>
-                              cn(
-                                "group relative flex items-center gap-3",
-                                "px-5 py-2.5",
-                                "font-mondwest text-[0.8rem] tracking-[0.12em]",
-                                "whitespace-nowrap transition-colors cursor-pointer",
-                                "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
-                                isActive
-                                  ? "text-midground"
-                                  : "opacity-60 hover:opacity-100",
-                              )
-                            }
-                            style={{
-                              clipPath: "var(--component-tab-clip-path)",
-                            }}
-                          >
-                            {({ isActive }) => (
-                              <>
-                                <Icon className="h-3.5 w-3.5 shrink-0" />
-                                <span className="truncate">{navLabel}</span>
 
-                                <span
-                                  aria-hidden
-                                  className="absolute inset-y-0.5 left-1.5 right-1.5 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover:opacity-5"
-                                />
-
-                                {isActive && (
-                                  <span
-                                    aria-hidden
-                                    className="absolute left-0 top-0 bottom-0 w-px bg-midground"
-                                    style={{ mixBlendMode: "plus-lighter" }}
-                                  />
-                                )}
-                              </>
+                            {isActive && (
+                              <span
+                                aria-hidden
+                                className="absolute left-0 top-0 bottom-0 w-px bg-midground"
+                                style={{ mixBlendMode: "plus-lighter" }}
+                              />
                             )}
-                          </NavLink>
+                          </>
                         )}
-                      </li>
-                    );
-                  },
-                )}
+                      </NavLink>
+                    </li>
+                  );
+                })}
               </ul>
             </nav>
 
@@ -491,14 +465,20 @@ export default function App() {
           <PageHeaderProvider pluginTabs={pluginTabMeta}>
             <main
               className={cn(
-                "relative z-2 min-w-0 min-h-0 flex-1",
+                "relative z-2 flex min-w-0 min-h-0 flex-1 flex-col",
                 "overflow-y-auto",
                 "px-3 pb-4 sm:px-6 sm:pb-8",
                 "pt-2 sm:pt-4 lg:pt-6",
               )}
             >
               <PluginSlot name="pre-main" />
-              <div className={cn("mx-auto w-full", mainMaxWidth)}>
+              <div
+                className={cn(
+                  "mx-auto w-full",
+                  mainMaxWidth,
+                  isDocsRoute && "min-h-0 flex-1 flex flex-col",
+                )}
+              >
                 <Routes>
                   {routes.map(({ key, path, element }) => (
                     <Route key={key} path={path} element={element} />
@@ -633,7 +613,6 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
 }
 
 interface NavItem {
-  href?: string;
   icon: ComponentType<{ className?: string }>;
   label: string;
   labelKey?: string;

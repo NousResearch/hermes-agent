@@ -53,6 +53,7 @@ export const en: Translations = {
     brand: "Hermes Agent",
     brandShort: "HA",
     closeNavigation: "Close navigation",
+    closeModelTools: "Close model and tools",
     footer: {
       org: "Nous Research",
     },
@@ -76,6 +77,8 @@ export const en: Translations = {
       sessions: "Sessions",
       skills: "Skills",
     },
+    modelToolsSheetSubtitle: "& tools",
+    modelToolsSheetTitle: "Model",
     navigation: "Navigation",
     openDocumentation: "Open documentation in a new tab",
     openNavigation: "Open navigation",

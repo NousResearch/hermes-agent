@@ -35,7 +35,7 @@ export default function DocsPage() {
     <div
       className={cn(
         "flex min-h-0 w-full min-w-0 flex-1 flex-col",
-        "-mx-3 sm:-mx-6",
+        "pt-1 sm:pt-2",
       )}
     >
       <iframe

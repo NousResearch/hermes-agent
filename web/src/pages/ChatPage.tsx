@@ -22,11 +22,16 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { Copy } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Typography } from "@nous-research/ui";
+import { cn } from "@/lib/utils";
+import { Copy, PanelRight, X } from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 
 import { ChatSidebar } from "@/components/ChatSidebar";
+import { usePageHeader } from "@/contexts/usePageHeader";
+import { useI18n } from "@/i18n";
 
 function buildWsUrl(
   token: string,
@@ -62,6 +67,39 @@ const TERMINAL_THEME = {
   selectionBackground: "#f0e6d244",
 };
 
+/**
+ * CSS width for xterm font tiers.
+ *
+ * Prefer the terminal host's `clientWidth` — Chrome DevTools device mode often
+ * keeps `window.innerWidth` at the full desktop value while the *drawn* layout
+ * is phone-sized, which made us pick desktop font sizes (~14px) and look huge.
+ */
+function terminalTierWidthPx(host: HTMLElement | null): number {
+  if (typeof window === "undefined") return 1280;
+  const fromHost = host?.clientWidth ?? 0;
+  if (fromHost > 2) return Math.round(fromHost);
+  const doc = document.documentElement?.clientWidth ?? 0;
+  const vv = window.visualViewport;
+  const inner = window.innerWidth;
+  const vvw = vv?.width ?? inner;
+  const layout = Math.min(inner, vvw, doc > 0 ? doc : inner);
+  return Math.max(1, Math.round(layout));
+}
+
+function terminalFontSizeForWidth(layoutWidthPx: number): number {
+  if (layoutWidthPx < 300) return 7;
+  if (layoutWidthPx < 360) return 8;
+  if (layoutWidthPx < 420) return 9;
+  if (layoutWidthPx < 520) return 10;
+  if (layoutWidthPx < 720) return 11;
+  if (layoutWidthPx < 1024) return 12;
+  return 14;
+}
+
+function terminalLineHeightForWidth(layoutWidthPx: number): number {
+  return layoutWidthPx < 1024 ? 1.02 : 1.15;
+}
+
 export default function ChatPage() {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const termRef = useRef<Terminal | null>(null);
@@ -77,9 +115,82 @@ export default function ChatPage() {
   );
   const [copyState, setCopyState] = useState<"idle" | "copied">("idle");
   const copyResetRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const [mobilePanelOpen, setMobilePanelOpen] = useState(false);
+  const { setEnd } = usePageHeader();
+  const { t } = useI18n();
+  const closeMobilePanel = useCallback(() => setMobilePanelOpen(false), []);
+  const modelToolsLabel = useMemo(
+    () => `${t.app.modelToolsSheetTitle} ${t.app.modelToolsSheetSubtitle}`,
+    [t.app.modelToolsSheetSubtitle, t.app.modelToolsSheetTitle],
+  );
+  const [portalRoot] = useState<HTMLElement | null>(() =>
+    typeof document !== "undefined" ? document.body : null,
+  );
+  const [narrow, setNarrow] = useState(() =>
+    typeof window !== "undefined"
+      ? window.matchMedia("(max-width: 1023px)").matches
+      : false,
+  );
 
   const resumeRef = useRef<string | null>(searchParams.get("resume"));
   const channel = useMemo(() => generateChannelId(), []);
+
+  useEffect(() => {
+    const mql = window.matchMedia("(max-width: 1023px)");
+    const sync = () => setNarrow(mql.matches);
+    sync();
+    mql.addEventListener("change", sync);
+    return () => mql.removeEventListener("change", sync);
+  }, []);
+
+  useEffect(() => {
+    if (!mobilePanelOpen) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") closeMobilePanel();
+    };
+    document.addEventListener("keydown", onKey);
+    const prevOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prevOverflow;
+    };
+  }, [mobilePanelOpen, closeMobilePanel]);
+
+  useEffect(() => {
+    const mql = window.matchMedia("(min-width: 1024px)");
+    const onChange = (e: MediaQueryListEvent) => {
+      if (e.matches) setMobilePanelOpen(false);
+    };
+    mql.addEventListener("change", onChange);
+    return () => mql.removeEventListener("change", onChange);
+  }, []);
+
+  useEffect(() => {
+    if (!narrow) {
+      setEnd(null);
+      return;
+    }
+    setEnd(
+      <button
+        type="button"
+        onClick={() => setMobilePanelOpen(true)}
+        className={cn(
+          "inline-flex items-center gap-1.5 rounded border border-current/20",
+          "px-2 py-1 text-[0.65rem] font-medium tracking-wide normal-case",
+          "text-midground/80 hover:text-midground hover:bg-midground/5",
+          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
+          "shrink-0 cursor-pointer",
+        )}
+        aria-expanded={mobilePanelOpen}
+        aria-controls="chat-side-panel"
+      >
+        <PanelRight className="h-3 w-3 shrink-0" />
+        {modelToolsLabel}
+      </button>,
+    );
+    return () => setEnd(null);
+  }, [narrow, mobilePanelOpen, modelToolsLabel, setEnd]);
 
   const handleCopyLast = () => {
     const ws = wsRef.current;
@@ -110,13 +221,17 @@ export default function ChatPage() {
       return;
     }
 
+    const tierW0 = terminalTierWidthPx(host);
     const term = new Terminal({
       allowProposedApi: true,
       cursorBlink: true,
       fontFamily:
         "'JetBrains Mono', 'Cascadia Mono', 'Fira Code', 'MesloLGS NF', 'Source Code Pro', Menlo, Consolas, 'DejaVu Sans Mono', monospace",
-      fontSize: 14,
-      lineHeight: 1.2,
+      fontSize: terminalFontSizeForWidth(tierW0),
+      lineHeight: terminalLineHeightForWidth(tierW0),
+      letterSpacing: 0,
+      fontWeight: "400",
+      fontWeightBold: "700",
       macOptionIsMeta: true,
       scrollback: 0,
       theme: TERMINAL_THEME,
@@ -212,19 +327,23 @@ export default function ChatPage() {
 
     term.open(host);
 
-    // WebGL renderer: rasterizes glyphs to a GPU texture atlas, paints
-    // each cell at an integer-pixel position.  Box-drawing glyphs connect
-    // cleanly between rows (no DOM baseline / line-height math).  Falls
-    // back to the default DOM renderer if WebGL is unavailable.
-    try {
-      const webgl = new WebglAddon();
-      webgl.onContextLoss(() => webgl.dispose());
-      term.loadAddon(webgl);
-    } catch (err) {
-      console.warn(
-        "[hermes-chat] WebGL renderer unavailable; falling back to default",
-        err,
-      );
+    // WebGL draws from a texture atlas sized with device pixels. On phones and
+    // in DevTools device mode that often produces *visually* much larger cells
+    // than `fontSize` suggests — users see "huge" text even at 7–9px settings.
+    // The canvas/DOM renderer tracks `fontSize` faithfully; use it for narrow
+    // hosts.  Wide layouts still get WebGL for crisp box-drawing.
+    const useWebgl = terminalTierWidthPx(host) >= 768;
+    if (useWebgl) {
+      try {
+        const webgl = new WebglAddon();
+        webgl.onContextLoss(() => webgl.dispose());
+        term.loadAddon(webgl);
+      } catch (err) {
+        console.warn(
+          "[hermes-chat] WebGL renderer unavailable; falling back to default",
+          err,
+        );
+      }
     }
 
     // Initial fit + resize observer.  fit.fit() reads the container's
@@ -244,21 +363,64 @@ export default function ChatPage() {
     // frames.  rAF→rAF guarantees one layout commit between the two
     // callbacks, giving CSS transitions and font metrics time to finalize
     // before we take the authoritative measurement.
-    let rafId = 0;
-    const scheduleFit = () => {
-      if (rafId) return;
-      rafId = requestAnimationFrame(() => {
-        rafId = 0;
-        try {
-          fit.fit();
-        } catch {
-          // Element was removed mid-resize; cleanup will handle it.
-        }
+    let hostSyncRaf = 0;
+    const scheduleHostSync = () => {
+      if (hostSyncRaf) return;
+      hostSyncRaf = requestAnimationFrame(() => {
+        hostSyncRaf = 0;
+        syncTerminalMetrics();
       });
     };
-    fit.fit();
-    const ro = new ResizeObserver(scheduleFit);
+
+    let metricsDebounce: ReturnType<typeof setTimeout> | null = null;
+    const syncTerminalMetrics = () => {
+      const w = terminalTierWidthPx(host);
+      const nextSize = terminalFontSizeForWidth(w);
+      const nextLh = terminalLineHeightForWidth(w);
+      const fontChanged =
+        term.options.fontSize !== nextSize ||
+        term.options.lineHeight !== nextLh;
+      if (fontChanged) {
+        term.options.fontSize = nextSize;
+        term.options.lineHeight = nextLh;
+      }
+      try {
+        fit.fit();
+      } catch {
+        return;
+      }
+      if (fontChanged && term.rows > 0) {
+        try {
+          term.refresh(0, term.rows - 1);
+        } catch {
+          /* ignore */
+        }
+      }
+      if (
+        fontChanged &&
+        wsRef.current &&
+        wsRef.current.readyState === WebSocket.OPEN
+      ) {
+        wsRef.current.send(`\x1b[RESIZE:${term.cols};${term.rows}]`);
+      }
+    };
+
+    const scheduleSyncTerminalMetrics = () => {
+      if (metricsDebounce) clearTimeout(metricsDebounce);
+      metricsDebounce = setTimeout(() => {
+        metricsDebounce = null;
+        syncTerminalMetrics();
+      }, 60);
+    };
+
+    const ro = new ResizeObserver(() => scheduleHostSync());
     ro.observe(host);
+
+    window.addEventListener("resize", scheduleSyncTerminalMetrics);
+    window.visualViewport?.addEventListener("resize", scheduleSyncTerminalMetrics);
+    window.visualViewport?.addEventListener("scroll", scheduleSyncTerminalMetrics);
+    scheduleHostSync();
+    requestAnimationFrame(() => scheduleHostSync());
 
     // Double-rAF authoritative fit.  On the second frame the layout has
     // committed at least once since mount; fit.fit() then reads the
@@ -272,15 +434,7 @@ export default function ChatPage() {
       settleRaf1 = 0;
       settleRaf2 = requestAnimationFrame(() => {
         settleRaf2 = 0;
-        try {
-          fit.fit();
-        } catch {
-          return;
-        }
-        const sock = wsRef.current;
-        if (sock && sock.readyState === WebSocket.OPEN) {
-          sock.send(`\x1b[RESIZE:${term.cols};${term.rows}]`);
-        }
+        syncTerminalMetrics();
       });
     });
 
@@ -387,8 +541,18 @@ export default function ChatPage() {
     return () => {
       onDataDisposable.dispose();
       onResizeDisposable.dispose();
+      if (metricsDebounce) clearTimeout(metricsDebounce);
+      window.removeEventListener("resize", scheduleSyncTerminalMetrics);
+      window.visualViewport?.removeEventListener(
+        "resize",
+        scheduleSyncTerminalMetrics,
+      );
+      window.visualViewport?.removeEventListener(
+        "scroll",
+        scheduleSyncTerminalMetrics,
+      );
       ro.disconnect();
-      if (rafId) cancelAnimationFrame(rafId);
+      if (hostSyncRaf) cancelAnimationFrame(hostSyncRaf);
       if (settleRaf1) cancelAnimationFrame(settleRaf1);
       if (settleRaf2) cancelAnimationFrame(settleRaf2);
       ws.close();
@@ -416,52 +580,149 @@ export default function ChatPage() {
   //
   // `normal-case` opts out of the dashboard's global `uppercase` rule on
   // the root `<div>` in App.tsx — terminal output must preserve case.
+  //
+  // Mobile model/tools sheet is portaled to `document.body` so it stacks
+  // above the app sidebar (`z-50`) and mobile chrome (`z-40`).  The main
+  // dashboard column uses `relative z-2`, which traps `position:fixed`
+  // descendants below those layers (see Toast.tsx).
+  const mobileModelToolsPortal =
+    narrow &&
+    portalRoot &&
+    createPortal(
+      <>
+        {mobilePanelOpen && (
+          <button
+            type="button"
+            aria-label={t.app.closeModelTools}
+            onClick={closeMobilePanel}
+            className={cn(
+              "fixed inset-0 z-[55]",
+              "bg-black/60 backdrop-blur-sm cursor-pointer",
+            )}
+          />
+        )}
+
+        <div
+          id="chat-side-panel"
+          role="complementary"
+          aria-label={modelToolsLabel}
+          className={cn(
+            "font-mondwest fixed top-0 right-0 z-[60] flex h-dvh max-h-dvh w-64 min-w-0 flex-col antialiased",
+            "border-l border-current/20 text-midground",
+            "bg-background-base/95 backdrop-blur-sm",
+            "transition-transform duration-200 ease-out",
+            "[background:var(--component-sidebar-background)]",
+            "[clip-path:var(--component-sidebar-clip-path)]",
+            "[border-image:var(--component-sidebar-border-image)]",
+            mobilePanelOpen
+              ? "translate-x-0"
+              : "pointer-events-none translate-x-full",
+          )}
+        >
+          <div
+            className={cn(
+              "flex h-14 shrink-0 items-center justify-between gap-2 border-b border-current/20 px-5",
+            )}
+          >
+            <Typography
+              className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
+              style={{ mixBlendMode: "plus-lighter" }}
+            >
+              {t.app.modelToolsSheetTitle}
+              <br />
+              {t.app.modelToolsSheetSubtitle}
+            </Typography>
+
+            <button
+              type="button"
+              onClick={closeMobilePanel}
+              aria-label={t.app.closeModelTools}
+              className={cn(
+                "inline-flex h-7 w-7 items-center justify-center",
+                "text-midground/70 hover:text-midground transition-colors cursor-pointer",
+                "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
+              )}
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+
+          <div
+            className={cn(
+              "min-h-0 flex-1 overflow-y-auto overflow-x-hidden",
+              "border-t border-current/10",
+            )}
+          >
+            <ChatSidebar channel={channel} />
+          </div>
+        </div>
+      </>,
+      portalRoot,
+    );
+
   return (
-    <div className="flex h-[calc(100vh-10rem)] flex-col gap-2 normal-case">
+    <div className="flex min-h-0 flex-1 flex-col gap-2 normal-case">
+      {mobileModelToolsPortal}
+
       {banner && (
         <div className="border border-warning/50 bg-warning/10 text-warning px-3 py-2 text-xs tracking-wide">
           {banner}
         </div>
       )}
-      <div className="flex min-h-0 flex-1 gap-3">
+
+      <div className="flex min-h-0 flex-1 flex-col gap-2 lg:flex-row lg:gap-3">
         <div
-          className="relative min-w-0 flex-1 overflow-hidden rounded-lg"
+          className={cn(
+            "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg",
+            "p-2 sm:p-3",
+          )}
           style={{
             backgroundColor: TERMINAL_THEME.background,
-            padding: "12px",
             boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
           }}
         >
-          <div ref={hostRef} className="h-full w-full" />
+          <div
+            ref={hostRef}
+            className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
+          />
 
           <button
             type="button"
             onClick={handleCopyLast}
             title="Copy last assistant response as raw markdown"
             aria-label="Copy last assistant response"
-            className={[
-              "absolute bottom-4 right-4 z-10",
-              "flex items-center gap-1.5",
+            className={cn(
+              "absolute z-10 flex items-center gap-1.5",
               "rounded border border-current/30",
               "bg-black/20 backdrop-blur-sm",
-              "px-2.5 py-1.5 text-xs",
               "opacity-60 hover:opacity-100 hover:border-current/60",
               "transition-opacity duration-150",
               "focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-current",
               "cursor-pointer",
-            ].join(" ")}
+              "bottom-2 right-2 px-2 py-1 text-[0.65rem] sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5 sm:text-xs",
+              "lg:bottom-4 lg:right-4",
+            )}
             style={{ color: TERMINAL_THEME.foreground }}
           >
-            <Copy className="h-3 w-3" />
-            <span className="tracking-wide">
+            <Copy className="h-3 w-3 shrink-0" />
+            <span className="hidden min-[400px]:inline tracking-wide">
               {copyState === "copied" ? "copied" : "copy last response"}
             </span>
           </button>
         </div>
 
-        <div className="hidden min-h-0 lg:block">
-          <ChatSidebar channel={channel} />
-        </div>
+        {!narrow && (
+          <div
+            id="chat-side-panel"
+            role="complementary"
+            aria-label={modelToolsLabel}
+            className="flex min-h-0 shrink-0 flex-col lg:h-full lg:w-80"
+          >
+            <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+              <ChatSidebar channel={channel} />
+            </div>
+          </div>
+        )}
       </div>
     </div>
   );

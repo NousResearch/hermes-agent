@@ -34,6 +34,8 @@ export function PageHeaderProvider({
   );
   const displayTitle = titleOverride ?? defaultTitle;
 
+  const isChatRoute = pathname === "/chat" || pathname === "/chat/";
+
   const value = useMemo(
     () => ({
       setAfterTitle,
@@ -59,8 +61,10 @@ export function PageHeaderProvider({
         >
           <div
             className={cn(
-              "flex h-full w-full min-w-0 flex-1 flex-col justify-center gap-2",
-              "px-3 py-2 sm:flex-row sm:items-center sm:gap-3 sm:px-6 sm:py-0",
+              "flex h-full w-full min-w-0 flex-1 gap-2 px-3 py-2 sm:gap-3 sm:px-6 sm:py-0",
+              isChatRoute
+                ? "flex-row items-center"
+                : "flex-col justify-center sm:flex-row sm:items-center",
             )}
           >
             <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
@@ -74,7 +78,12 @@ export function PageHeaderProvider({
             </div>
 
             {end ? (
-              <div className="flex w-full min-w-0 justify-end sm:max-w-md sm:flex-1">
+              <div
+                className={cn(
+                  "flex min-w-0 justify-end sm:max-w-md sm:flex-1",
+                  isChatRoute ? "w-auto shrink-0" : "w-full",
+                )}
+              >
                 {end}
               </div>
             ) : null}
@@ -84,7 +93,9 @@ export function PageHeaderProvider({
         <main
           className={cn(
             "min-h-0 w-full min-w-0 flex-1 flex flex-col",
-            "overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable]",
+            isChatRoute
+              ? "overflow-hidden"
+              : "overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable]",
           )}
         >
           {children}

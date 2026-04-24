@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 # Make sibling packages importable when invoked as a script
@@ -119,6 +120,81 @@ def _cmd_check_timeouts(args) -> None:
     ))
 
 
+def _cmd_check_exit(args) -> None:
+    """Slice 5 — show open tasks for `agent`. Exit 1 if any, so shell wrappers
+    can gate: `hermes-bus check-exit --as openclaw || handle_open_tasks`.
+    """
+    import sys as _sys
+    from agent_bus import finalizer
+    agent = args.get("as") or _default_agent()
+    open_tasks = finalizer.check_session_before_exit(agent)
+    if args.get("json"):
+        print(json.dumps({"agent": agent, "open_tasks": open_tasks},
+                         ensure_ascii=False, indent=2, default=str))
+    else:
+        if not open_tasks:
+            print(f"✅ {agent}: no open tasks — safe to exit")
+        else:
+            print(f"⚠️  {agent}: {len(open_tasks)} open task(s) — decide done/fail/keep-alive:")
+            for t in open_tasks:
+                age_min = int(t["age_sec"] / 60)
+                print(f"  {t['task_id']}  [{t['status']}] {age_min}m old — {t['goal'][:70]}")
+    _sys.exit(1 if open_tasks else 0)
+
+
+def _cmd_check_artifacts(args) -> None:
+    """Slice 6 — watchdog: scan open tasks for wiki artifact matches.
+
+    `--nudge` actually posts Slack nudges + increments watchdog_nudged_count.
+    Without `--nudge`, advisory-only dry-run.
+    """
+    from agent_bus import core as _core
+    from agent_bus import storage as _storage
+
+    # Query open tasks
+    open_rows = _storage.query_tasks(
+        status_in=["pending", "ack", "progress", "keep-alive"], limit=100,
+    )
+    results = []
+    for t in open_rows:
+        age_sec = time.time() - (t.get("created_at") or time.time())
+        if age_sec < 1800:  # <30 min, too early
+            continue
+        goal = t.get("goal") or ""
+        if not goal.strip():
+            continue
+        hits = _core.wiki_query(goal[:80], limit=3)
+        # Filter out bus-learning self-references
+        relevant = [
+            h for h in hits
+            if not h.get("path", "").startswith("memory/") or "_agent-bus_" not in h.get("path", "")
+        ]
+        if not relevant:
+            continue
+        results.append({
+            "task_id": t["task_id"],
+            "status": t["status"],
+            "age_min": int(age_sec / 60),
+            "goal": goal[:80],
+            "matched": relevant[0].get("path"),
+        })
+
+    if args.get("json"):
+        print(json.dumps({"suspect_tasks": results},
+                         ensure_ascii=False, indent=2, default=str))
+    else:
+        if not results:
+            print("✓ No artifact-exists-but-bus-open suspects")
+        else:
+            print(f"⚠️  {len(results)} task(s) look like they have output but bus is open:")
+            for r in results:
+                print(f"  {r['task_id']}  [{r['status']}] {r['age_min']}m  → {r['matched']}")
+                print(f"                 goal: {r['goal']}")
+            if args.get("nudge"):
+                print("(nudge mode — posting Slack reminders is NOT YET IMPLEMENTED "
+                      "in this CLI path; use dashboard UI for one-click follow-up.)")
+
+
 def _add_json_flag(parser):
     """Add --json to both top-level and each subparser so users can put it
     either before or after the subcommand (`hermes-bus --json show T-XXX`
@@ -193,6 +269,25 @@ def build_parser() -> argparse.ArgumentParser:
     ct = sub.add_parser("check-timeouts", help="Mark past-deadline tasks as timed out")
     _add_json_flag(ct)
     ct.set_defaults(func=lambda ns: _cmd_check_timeouts({"json": ns.json}))
+
+    # Slice 5: check-exit
+    ce = sub.add_parser("check-exit", help="Show open tasks for `agent` (Slice 5)")
+    _add_json_flag(ce)
+    ce.add_argument("--as", dest="as_agent", default=_default_agent(),
+                    help="Agent whose open tasks to check")
+    ce.set_defaults(func=lambda ns: _cmd_check_exit({"as": ns.as_agent, "json": ns.json}))
+
+    # Slice 6: check-artifacts
+    ca = sub.add_parser(
+        "check-artifacts",
+        help="Scan open tasks for wiki artifact matches (Slice 6 watchdog)",
+    )
+    _add_json_flag(ca)
+    ca.add_argument("--nudge", action="store_true",
+                    help="Actually post nudges (default: advisory dry-run)")
+    ca.set_defaults(func=lambda ns: _cmd_check_artifacts({
+        "json": ns.json, "nudge": ns.nudge,
+    }))
 
     return p
 

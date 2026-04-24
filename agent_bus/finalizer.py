@@ -196,4 +196,38 @@ __all__ = [
     "get_mode", "is_enforcing", "keepalive_timeout_sec",
     "validate_close_payload", "validate_transition",
     "is_soft_ok", "enforce_close",
+    "check_session_before_exit",
 ]
+
+
+# -------- Slice 5: Session exit gate --------
+def check_session_before_exit(agent: str) -> list[dict]:
+    """Return list of non-terminal bus tasks where `agent` is the recipient.
+
+    Called by runtime tail handlers before an agent session concludes so the
+    agent can see what's still open and issue done/fail/keep-alive.
+
+    Returns list of dicts: {task_id, status, goal, age_sec, from_agent}
+    Empty list = safe to exit.
+    """
+    import time as _time
+    from agent_bus import storage
+
+    open_tasks = storage.query_tasks(
+        to_agent=agent,
+        status_in=[
+            STATUS_PENDING, STATUS_ACK, STATUS_PROGRESS, STATUS_KEEP_ALIVE,
+        ],
+        limit=200,
+    )
+    now = _time.time()
+    return [
+        {
+            "task_id": t["task_id"],
+            "status": t["status"],
+            "goal": (t.get("goal") or "")[:200],
+            "age_sec": round(now - (t.get("created_at") or now), 1),
+            "from_agent": t.get("from_agent"),
+        }
+        for t in open_tasks
+    ]

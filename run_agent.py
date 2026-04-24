@@ -1661,6 +1661,17 @@ class AIAgent:
                 _aux_context_config = None
         self._aux_compression_context_length_config = _aux_context_config
 
+        # Also store custom_providers so _check_compression_model_feasibility
+        # can look up per-model context_length for the compression model,
+        # mirroring the main model logic below.
+        try:
+            from hermes_cli.config import get_compatible_custom_providers
+            self._aux_compression_custom_providers = get_compatible_custom_providers(_agent_cfg)
+        except Exception:
+            self._aux_compression_custom_providers = _agent_cfg.get("custom_providers", [])
+            if not isinstance(self._aux_compression_custom_providers, list):
+                self._aux_compression_custom_providers = []
+
         # Read explicit context_length override from model config
         _model_cfg = _agent_cfg.get("model", {})
         if isinstance(_model_cfg, dict):
@@ -2314,6 +2325,28 @@ class AIAgent:
 
             aux_base_url = str(getattr(client, "base_url", ""))
             aux_api_key = str(getattr(client, "api_key", ""))
+
+            # Fall back to custom_providers per-model context_length if
+            # no explicit config was set
+            if getattr(self, "_aux_compression_context_length_config", None) is None:
+                _cp_list = getattr(self, "_aux_compression_custom_providers", [])
+                _aux_base_url_norm = aux_base_url.rstrip("/")
+                for _cp_entry in _cp_list:
+                    if not isinstance(_cp_entry, dict):
+                        continue
+                    _cp_url = (_cp_entry.get("base_url") or "").rstrip("/")
+                    if _cp_url and _cp_url == _aux_base_url_norm:
+                        _cp_models = _cp_entry.get("models", {})
+                        if isinstance(_cp_models, dict):
+                            _cp_model_cfg = _cp_models.get(aux_model, {})
+                            if isinstance(_cp_model_cfg, dict):
+                                _cp_ctx = _cp_model_cfg.get("context_length")
+                                if _cp_ctx is not None:
+                                    try:
+                                        self._aux_compression_context_length_config = int(_cp_ctx)
+                                    except (TypeError, ValueError):
+                                        pass
+                        break
 
             aux_context = get_model_context_length(
                 aux_model,

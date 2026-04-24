@@ -252,11 +252,98 @@ class MemoryExtractionMiddleware(BaseMiddleware):
         logger.info("memory-extract: thread=%s added=%d total=%d", thread_id, added, len(existing))
 
     def _llm_extract(self, thread_id: str, messages: list[dict[str, Any]]) -> list[Fact]:
-        """Placeholder for LLM call — MVP returns []; to be filled with a
-        real ChatCompletion call using the configured hermes LLM.
+        """Extract facts via Anthropic SDK if available, else return [].
+
+        Uses minimal prompt that asks Claude to emit a JSON array of facts.
+        Degrades silently (log-only) on any error — caller falls back to
+        heuristic extractor.
         """
-        logger.debug("llm_extract placeholder invoked for %s (%d msgs)", thread_id, len(messages))
-        return []
+        try:
+            import anthropic  # type: ignore
+        except ImportError:
+            logger.debug("anthropic SDK not installed — LLM extract skipped")
+            return []
+
+        api_key = os.environ.get("ANTHROPIC_API_KEY")
+        if not api_key:
+            logger.debug("ANTHROPIC_API_KEY missing — LLM extract skipped")
+            return []
+
+        # Build a compact conversation text
+        lines: list[str] = []
+        for m in messages[-30:]:  # last 30 only, avoid blowing context
+            role = m.get("role", "?")
+            content = m.get("content") or ""
+            if isinstance(content, str) and content.strip():
+                lines.append(f"{role}: {content.strip()[:500]}")
+        if not lines:
+            return []
+
+        model = os.environ.get("HERMES_AUTO_MEMORY_MODEL", "claude-3-5-haiku-latest")
+        prompt = (
+            "You are extracting durable facts about the user from this "
+            "conversation. Return ONLY a JSON array (no prose) of at most 5 "
+            "objects, each with keys:\n"
+            '  content (string, <160 chars, third-person statement of fact)\n'
+            '  category (one of: preference, knowledge, context, behavior, goal)\n'
+            '  confidence (float 0..1)\n'
+            "Skip anything speculative. Prefer stable traits over momentary "
+            "mentions.\n\n"
+            "Conversation:\n---\n" + "\n".join(lines) + "\n---"
+        )
+
+        try:
+            client = anthropic.Anthropic(api_key=api_key)
+            resp = client.messages.create(
+                model=model,
+                max_tokens=1024,
+                messages=[{"role": "user", "content": prompt}],
+            )
+            raw = resp.content[0].text if resp.content else ""
+        except Exception as exc:
+            logger.warning("LLM extract call failed: %s", exc)
+            return []
+
+        import json as _json
+        import re as _re
+
+        # Extract JSON array from response (model may wrap in fences)
+        m = _re.search(r"\[.*\]", raw, _re.DOTALL)
+        if not m:
+            logger.debug("LLM extract: no JSON array in response")
+            return []
+        try:
+            raw_facts = _json.loads(m.group(0))
+        except _json.JSONDecodeError as exc:
+            logger.warning("LLM extract: JSON parse failed: %s", exc)
+            return []
+
+        now = time.time()
+        out: list[Fact] = []
+        for i, f in enumerate(raw_facts or []):
+            if not isinstance(f, dict):
+                continue
+            content = (f.get("content") or "").strip()
+            if not content or len(content) > 200:
+                continue
+            category = f.get("category", "context")
+            if category not in ("preference", "knowledge", "context", "behavior", "goal"):
+                category = "context"
+            try:
+                confidence = float(f.get("confidence", 0.7))
+            except (TypeError, ValueError):
+                confidence = 0.7
+            confidence = max(0.0, min(1.0, confidence))
+            out.append(Fact(
+                id=f"llm-{int(now)}-{i}",
+                content=content,
+                category=category,
+                confidence=confidence,
+                created_at=now,
+                source=f"llm:{model}",
+            ))
+        logger.info("LLM extract: %d facts from %s", len(out), thread_id)
+        return out
 
     # For tests
     def _flush_all(self) -> None:

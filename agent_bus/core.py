@@ -46,6 +46,46 @@ def _ensure_middlewares_registered() -> None:
         logger.warning("middleware registration skipped: %s", exc)
 
 
+def _run_dispatch_guardrail(*, from_agent: str, to_agent: str, goal: str) -> None:
+    """Run S9 GuardrailMiddleware as a pre-dispatch check.
+
+    Treats goal as a synthetic tool_call: `{id, name: first_word, args: goal}`.
+    Denial raises ValueError — `assign_task` aborts before creating a task.
+    Skipped when HERMES_MIDDLEWARE_CHAIN=off or HERMES_MW_GUARDRAIL=off.
+    """
+    if os.environ.get("HERMES_MIDDLEWARE_CHAIN", "core").lower() == "off":
+        return
+    if os.environ.get("HERMES_MW_GUARDRAIL", "core").lower() == "off":
+        return
+    try:
+        _ensure_middlewares_registered()
+        from agent_bus.middleware import MiddlewareChain, MiddlewareContext
+        first_word = goal.strip().split()[0] if goal.strip() else "assign_task"
+        # Strip trailing punctuation so "STOP:" matches denylist entry "STOP"
+        first_word = first_word.strip(":,.!?；，。：；)（)]」】'\"")[:60] or "assign_task"
+        tool_call = {
+            "id": f"dispatch-{uuid.uuid4().hex[:6]}",
+            "name": first_word,
+            "args": {"goal": goal, "to_agent": to_agent},
+        }
+        ctx = MiddlewareContext(
+            agent=from_agent,
+            thread_id=f"dispatch-check-{from_agent}-{to_agent}",
+            pending_tool_call=tool_call,
+            messages=[],
+        )
+        chain = MiddlewareChain.build()
+        chain.run("before_tool", ctx)
+        denials = ctx.metadata.get("guardrail_denials") or []
+        if denials:
+            reason = denials[0].get("reason") or "blocked by guardrail"
+            raise ValueError(f"GUARDRAIL_DENY: {reason}")
+    except ValueError:
+        raise
+    except Exception as exc:  # pragma: no cover
+        logger.warning("dispatch guardrail skipped (non-ValueError): %s", exc)
+
+
 def _run_close_middlewares(task: Dict[str, Any], outcome: str, summary: str) -> None:
     """Invoke `on_session_end` hook on close. Non-blocking — errors logged.
 
@@ -233,6 +273,10 @@ def assign_task(
         raise ValueError(f"priority must be one of {sorted(VALID_PRIORITIES)}")
     if not goal or not goal.strip():
         raise ValueError("goal is required")
+
+    # S9 guardrail: pre-dispatch check. Treats first keyword of `goal`
+    # as the "tool name" and the whole goal as args. Deny → raise.
+    _run_dispatch_guardrail(from_agent=from_agent, to_agent=to_agent, goal=goal)
 
     task_id = _gen_task_id()
     now = _now()

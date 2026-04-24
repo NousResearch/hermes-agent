@@ -2032,6 +2032,41 @@ async def dispatch_bus_task(req: DispatchRequest, force: bool = False):
         return {"ok": False, "error": str(exc)}
 
 
+@app.get("/api/dual-agent/sandboxes")
+async def list_dual_agent_sandboxes():
+    """List per-thread sandbox directories and their contents summary (S7)."""
+    import os as _os
+    root = Path(_os.environ.get(
+        "HERMES_THREADS_ROOT",
+        str(Path.home() / ".hermes" / "threads"),
+    )).expanduser()
+    if not root.exists():
+        return {"root": str(root), "threads": []}
+    threads = []
+    for thread_dir in sorted(root.iterdir(), key=lambda p: p.stat().st_mtime, reverse=True):
+        if not thread_dir.is_dir():
+            continue
+        user_data = thread_dir / "user-data"
+        if not user_data.exists():
+            continue
+        entry = {
+            "thread_id": thread_dir.name,
+            "mtime": thread_dir.stat().st_mtime,
+            "workspace_count": _safe_count(user_data / "workspace"),
+            "uploads_count": _safe_count(user_data / "uploads"),
+            "outputs_count": _safe_count(user_data / "outputs"),
+        }
+        threads.append(entry)
+    return {"root": str(root), "threads": threads[:50]}
+
+
+def _safe_count(d: Path) -> int:
+    try:
+        return sum(1 for _ in d.iterdir()) if d.exists() else 0
+    except Exception:
+        return 0
+
+
 @app.get("/api/dual-agent/middleware")
 async def get_middleware_chain_status():
     """Return the current middleware chain registration + env-var state.

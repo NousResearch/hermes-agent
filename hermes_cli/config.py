@@ -547,15 +547,6 @@ DEFAULT_CONFIG = {
         },
     },
 
-    "smart_model_routing": {
-        "enabled": False,
-        "max_simple_chars": 160,
-        "max_simple_words": 28,
-        "complex_keywords": [],
-        "cheap_model": {},
-        "complex_model": {},
-    },
-
     # Auxiliary model config — provider:model for each side task.
     # Format: provider is the provider name, model is the model slug.
     # "auto" for provider = auto-detect best available provider.
@@ -3193,23 +3184,6 @@ _FALLBACK_COMMENT = """
 #   provider: openrouter
 #   model: anthropic/claude-sonnet-4
 #
-# ── Smart Model Routing ────────────────────────────────────────────────
-# Optional routing for simple turns and selected strong review/research turns.
-# Keeps the primary model for most work, routes short/simple messages to a
-# cheaper model, and can escalate only specific research/review prompts to a
-# stronger model.
-#
-# smart_model_routing:
-#   enabled: true
-#   max_simple_chars: 160
-#   max_simple_words: 28
-#   complex_keywords: [research, review, audit, 研究, 審查, 審閱]
-#   cheap_model:
-#     provider: openai-codex
-#     model: gpt-5.4-mini
-#   complex_model:
-#     provider: openai-codex
-#     model: gpt-5.4
 """
 
 
@@ -3242,23 +3216,6 @@ _COMMENTED_SECTIONS = """
 #   provider: openrouter
 #   model: anthropic/claude-sonnet-4
 #
-# ── Smart Model Routing ────────────────────────────────────────────────
-# Optional routing for simple turns and selected strong review/research turns.
-# Keeps the primary model for most work, routes short/simple messages to a
-# cheaper model, and can escalate only specific research/review prompts to a
-# stronger model.
-#
-# smart_model_routing:
-#   enabled: true
-#   max_simple_chars: 160
-#   max_simple_words: 28
-#   complex_keywords: [research, review, audit, 研究, 審查, 審閱]
-#   cheap_model:
-#     provider: openai-codex
-#     model: gpt-5.4-mini
-#   complex_model:
-#     provider: openai-codex
-#     model: gpt-5.4
 """
 
 

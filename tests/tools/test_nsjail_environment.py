@@ -16,8 +16,9 @@ from tools.environments import nsjail as nsjail_mod
 
 
 @pytest.fixture(autouse=True)
-def _reset_cache():
+def _reset_cache(monkeypatch):
     nsjail_mod._nsjail_executable = None
+    monkeypatch.delenv("HERMES_NSJAIL_BINARY", raising=False)
     yield
     nsjail_mod._nsjail_executable = None
 

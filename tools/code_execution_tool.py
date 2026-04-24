@@ -458,27 +458,58 @@ def _rpc_server_loop(
 # Remote execution support (file-based RPC via terminal backend)
 # ---------------------------------------------------------------------------
 
-def _get_or_create_env(task_id: str):
-    """Get or create the terminal environment for *task_id*.
+def _resolve_code_execution_env_type() -> str:
+    """Resolve the effective backend for ``execute_code``.
 
-    Reuses the same environment (container/sandbox/SSH session) that the
-    terminal and file tools use, creating one if it doesn't exist yet.
+    Precedence:
+    1. ``CODE_EXECUTION_ENV`` (synced from ``code_execution.backend`` in
+       ``config.yaml``). When set, lets ``execute_code`` use a stricter
+       sandbox independently of the terminal backend — e.g. keep
+       ``terminal.backend=local`` so the agent can edit host files
+       directly, while routing LLM-authored scripts through ``nsjail``.
+    2. ``TERMINAL_ENV`` / ``terminal.backend`` fallback — preserves the
+       historical behavior where both tools shared a single backend.
+    """
+    from tools.terminal_tool import _get_env_config
+    override = os.getenv("CODE_EXECUTION_ENV", "").strip()
+    if override:
+        return override
+    return _get_env_config().get("env_type") or "local"
+
+
+def _get_or_create_env(task_id: str):
+    """Get or create the ``execute_code`` environment for *task_id*.
+
+    When ``code_execution.backend`` matches ``terminal.backend``, shares the
+    same live environment the terminal and file tools use (backward-compat
+    default). When it differs, uses a namespaced cache key so the two tools
+    keep separate sandboxes — so e.g. terminal-on-local never accidentally
+    reuses a previously-created nsjail environment owned by execute_code.
     Returns ``(env, env_type)`` tuple.
     """
     from tools.terminal_tool import (
         _active_environments, _env_lock, _create_environment,
         _get_env_config, _last_activity, _start_cleanup_thread,
         _creation_locks, _creation_locks_lock, _task_env_overrides,
-        _resolve_container_task_id,
     )
 
-    effective_task_id = _resolve_container_task_id(task_id)
+    # Resolve the effective backend once per call. Everything below threads
+    # this through so we never mix up terminal's env_type with our own.
+    base_config = _get_env_config()
+    terminal_env_type = base_config["env_type"]
+    env_type = _resolve_code_execution_env_type()
+
+    raw_task_id = task_id or "default"
+    if env_type != terminal_env_type:
+        effective_task_id = f"_code_exec/{env_type}/{raw_task_id}"
+    else:
+        effective_task_id = raw_task_id
 
     # Fast path: environment already exists
     with _env_lock:
         if effective_task_id in _active_environments:
             _last_activity[effective_task_id] = time.time()
-            return _active_environments[effective_task_id], _get_env_config()["env_type"]
+            return _active_environments[effective_task_id], env_type
 
     # Slow path: create environment (same pattern as file_tools._get_file_ops)
     with _creation_locks_lock:
@@ -490,10 +521,9 @@ def _get_or_create_env(task_id: str):
         with _env_lock:
             if effective_task_id in _active_environments:
                 _last_activity[effective_task_id] = time.time()
-                return _active_environments[effective_task_id], _get_env_config()["env_type"]
+                return _active_environments[effective_task_id], env_type
 
-        config = _get_env_config()
-        env_type = config["env_type"]
+        config = base_config
         overrides = _task_env_overrides.get(effective_task_id, {})
 
         if env_type == "docker":
@@ -963,9 +993,10 @@ def execute_code(
     if not code or not code.strip():
         return tool_error("No code provided.")
 
-    # Dispatch: remote backends use file-based RPC, local uses UDS
-    from tools.terminal_tool import _get_env_config
-    env_type = _get_env_config()["env_type"]
+    # Dispatch: remote backends use file-based RPC, local uses UDS.
+    # Resolve the code_execution backend independently of terminal.backend
+    # so users can keep terminal on local while sandboxing execute_code.
+    env_type = _resolve_code_execution_env_type()
     if env_type != "local":
         return _execute_remote(code, task_id, enabled_tools)
 

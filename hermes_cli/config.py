@@ -1305,6 +1305,14 @@ DEFAULT_CONFIG = {
         # Env scrubbing (strips *_API_KEY, *_TOKEN, *_SECRET, ...) and the
         # tool whitelist apply identically in both modes.
         "mode": "project",
+        # Backend override for execute_code. Defaults to empty, which means
+        # ``execute_code`` shares ``terminal.backend`` (historical behavior).
+        # Set to one of local / nsjail / docker / singularity / modal /
+        # daytona / ssh to isolate LLM-authored scripts even when the
+        # terminal tool runs on the host directly — useful when you want the
+        # agent to edit your files freely (terminal=local) but confine
+        # throwaway code it generates (code_execution=nsjail).
+        "backend": "",
     },
 
     # Logging — controls file logging to ~/.hermes/logs/.
@@ -4823,6 +4831,7 @@ def set_config_value(key: str, value: str):
         "terminal.container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
         "terminal.nsjail_config": "TERMINAL_NSJAIL_CONFIG",
         "terminal.nsjail_allow_net": "TERMINAL_NSJAIL_ALLOW_NET",
+        "code_execution.backend": "CODE_EXECUTION_ENV",
     }
     if key in _config_to_env_sync:
         save_env_value(_config_to_env_sync[key], str(value))

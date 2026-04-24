@@ -134,7 +134,7 @@ class NsjailEnvironment(BaseEnvironment):
         self,
         cwd: str = "",
         timeout: int = 60,
-        env: dict = None,
+        env: dict | None = None,
         *,
         cpu: int = 1,
         memory: int = 5120,

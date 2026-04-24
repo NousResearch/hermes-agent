@@ -197,6 +197,24 @@ terminal:
 
 **Fork bombs:** The default profile does not set `rlimit_nproc` because that flag is enforced host-wide per real uid, which would interfere with the user's other processes outside the jail. Wall-clock `--time_limit` is the containment. If you need a per-jail process cap, supply an `nsjail.cfg` that uses cgroup v2 `pids.max` instead.
 
+#### Isolating execute_code only
+
+Setting `terminal.backend` affects **every** file- and shell-touching tool (`terminal`, `read_file`, `write_file`, `patch`, `search_files`, `process`). That's usually too restrictive for a coding agent — you want it to freely edit your repo, run `pip install`, commit to git, etc. — and only sandbox the *experimental* scripts the LLM writes on the fly.
+
+For that, set a separate `code_execution.backend` and leave `terminal.backend` on `local`:
+
+```yaml
+terminal:
+  backend: local           # normal agent work — file edits, git, installs
+
+code_execution:
+  backend: nsjail          # LLM-authored scripts run isolated
+```
+
+When `code_execution.backend` is empty (the default), `execute_code` inherits `terminal.backend` — so existing single-backend configs keep working unchanged. When it's set, only the `execute_code` tool uses that backend; everything else runs via `terminal.backend`.
+
+The nsjail-specific settings (`nsjail_config`, `nsjail_allow_net`, `nsjail_forward_env`) live under `terminal:` and apply to whichever tool routes through the nsjail backend.
+
 ### SSH Backend
 
 Runs commands on a remote server over SSH. Uses ControlMaster for connection reuse (5-minute idle keepalive). Persistent shell is enabled by default — state (cwd, env vars) survives across commands.

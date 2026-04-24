@@ -9,9 +9,11 @@ from tools.environments import nsjail as nsjail_mod
 
 
 @pytest.fixture(autouse=True)
-def _reset_cache():
-    """Clear the module-level nsjail executable cache between tests."""
+def _reset_cache(monkeypatch):
+    """Clear the module-level cache and any inherited HERMES_NSJAIL_BINARY
+    env var so tests see only what they explicitly set."""
     nsjail_mod._nsjail_executable = None
+    monkeypatch.delenv("HERMES_NSJAIL_BINARY", raising=False)
     yield
     nsjail_mod._nsjail_executable = None
 

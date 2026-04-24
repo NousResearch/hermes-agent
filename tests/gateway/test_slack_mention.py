@@ -215,6 +215,23 @@ def test_free_response_channels_env_var_fallback(monkeypatch):
     assert OTHER_CHANNEL_ID in result
 
 
+def test_free_response_channels_bare_int():
+    # YAML `free_response_channels: 1491973769726791812` (single bare integer)
+    # is loaded as an int and would previously fall through the isinstance(str)
+    # branch to return an empty set.  Coerce scalar → str so single-channel
+    # config without quoting works as users expect.
+    adapter = _make_adapter(free_response_channels=1491973769726791812)
+    result = adapter._slack_free_response_channels()
+    assert result == {"1491973769726791812"}
+
+
+def test_free_response_channels_int_list():
+    # YAML list form with bare numeric entries — each element should be coerced.
+    adapter = _make_adapter(free_response_channels=[1491973769726791812, 99999])
+    result = adapter._slack_free_response_channels()
+    assert result == {"1491973769726791812", "99999"}
+
+
 # ---------------------------------------------------------------------------
 # Tests: mention gating integration (simulating _handle_slack_message logic)
 # ---------------------------------------------------------------------------

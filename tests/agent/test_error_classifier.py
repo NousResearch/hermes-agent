@@ -250,6 +250,85 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.rate_limit
         assert result.should_fallback is True
 
+    # ── 429 overload disambiguation (#15297) ──
+    #
+    # Some providers (notably Z.AI / Zhipu) reuse 429 for server-side
+    # overload rather than per-credential rate limiting.  Recovery for
+    # these is "rotate immediately, the whole endpoint is down" — not
+    # the rate-limit "back off, retry same key once, then rotate" path.
+    # The classifier disambiguates on the message body so the retry loop
+    # picks the right ``FailoverReason`` handler.
+
+    def test_429_zai_temporarily_overloaded(self):
+        """The exact message from #15297's Z.AI / Zhipu reproduction."""
+        msg = (
+            "HTTP 429: The service may be temporarily overloaded, "
+            "please try again later"
+        )
+        e = MockAPIError(msg, status_code=429)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.overloaded, (
+            f"Z.AI overload message must classify as overloaded, got "
+            f"{result.reason!r} — recovery would burn a same-credential "
+            f"retry instead of rotating immediately"
+        )
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+        assert result.retryable is True
+
+    @pytest.mark.parametrize("phrase", [
+        "Service is overloaded, please try again later",
+        "server is overloaded",
+        "server overloaded — retry",
+        "Service overloaded",
+        "Upstream overloaded",
+        "API is currently overloaded",
+        "is overloaded, please try again",
+        "The endpoint is at capacity",
+        "Provider over capacity",
+    ])
+    def test_429_overload_phrases_route_to_overloaded(self, phrase):
+        """Phrase matrix: any provider-language overload phrase on a 429
+        must route to ``overloaded`` not ``rate_limit``.  Parametrised
+        so a future provider quirk that reads "overloaded" but is really
+        rate limiting can be surfaced and reclassified narrowly."""
+        e = MockAPIError(phrase, status_code=429)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.overloaded, (
+            f"phrase {phrase!r} should map to overloaded; got {result.reason!r}"
+        )
+
+    def test_429_plain_rate_limit_remains_rate_limit(self):
+        """Regression guard: a plain 429 with rate-limit-flavoured text
+        (no overload phrase) must STILL classify as rate_limit so the
+        backoff-then-rotate path keeps working for normal per-key
+        throttling.  Without this guard, the disambiguation could
+        silently broaden and break every 429 recovery."""
+        e = MockAPIError(
+            "Rate limit reached for requests per minute", status_code=429,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit, (
+            "vanilla rate-limit message must NOT route to overloaded — "
+            "the recovery strategies are different (retry-then-rotate vs "
+            "rotate-immediately)"
+        )
+
+    def test_429_too_many_requests_remains_rate_limit(self):
+        """The literal HTTP 429 reason phrase ('Too Many Requests') must
+        route to rate_limit too — it carries no overload language."""
+        e = MockAPIError("Too Many Requests", status_code=429)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.rate_limit
+
+    def test_503_overloaded_path_unchanged(self):
+        """Sanity check: HTTP 503 already mapped to ``overloaded`` and
+        must keep doing so.  Adding the 429 overload branch must not
+        accidentally regress the 503 path."""
+        e = MockAPIError("Service Unavailable", status_code=503)
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.overloaded
+
     def test_alibaba_rate_increased_too_quickly(self):
         """Alibaba/DashScope returns a unique throttling message.
 

@@ -6147,6 +6147,24 @@ class AIAgent:
                 return True, False
             return False, True
 
+        if effective_reason == FailoverReason.overloaded:
+            # Provider-side overload (e.g. Z.AI 429 "service is temporarily
+            # overloaded"): the whole endpoint is struggling, not just this
+            # API key — retrying the same credential burns a slot and
+            # delays recovery.  Rotate immediately, same shape as
+            # ``billing`` does, no retry-on-same-credential first (#15297).
+            rotate_status = status_code if status_code is not None else 429
+            next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
+            if next_entry is not None:
+                logger.info(
+                    "Credential %s (provider overloaded) — rotated to pool entry %s",
+                    rotate_status,
+                    getattr(next_entry, "id", "?"),
+                )
+                self._swap_credential(next_entry)
+                return True, False
+            return False, has_retried_429
+
         if effective_reason == FailoverReason.auth:
             refreshed = pool.try_refresh_current()
             if refreshed is not None:

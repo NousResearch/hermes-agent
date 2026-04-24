@@ -163,6 +163,29 @@ _IMAGE_TOO_LARGE_PATTERNS = [
     # the likely culprit; we still try the shrink path before giving up.
 ]
 
+# Patterns that indicate provider-side overload, NOT per-credential rate
+# limiting.  Some providers (e.g. Z.AI / Zhipu) return HTTP 429 for
+# server-wide overload — same status code as a true rate limit but the
+# correct recovery is "rotate immediately, the whole endpoint is down"
+# rather than "back off and retry the same key".  Match against the
+# message body alongside the 429 status code in the classifier.  Keep
+# phrases narrow and provider-language-flavoured so a normal rate-limit
+# message ("you have been rate-limited") doesn't accidentally hit this
+# bucket — only true overload language does (#15297).
+_OVERLOADED_PATTERNS = [
+    "temporarily overloaded",
+    "server is overloaded",
+    "server overloaded",
+    "service overloaded",
+    "service is overloaded",
+    "service may be temporarily overloaded",
+    "upstream overloaded",
+    "is overloaded, please try again",
+    "at capacity",
+    "over capacity",
+    "currently overloaded",
+]
+
 # Context overflow patterns
 _CONTEXT_OVERFLOW_PATTERNS = [
     "context length",
@@ -605,7 +628,20 @@ def _classify_by_status(
         )
 
     if status_code == 429:
-        # Already checked long_context_tier above; this is a normal rate limit
+        # Already checked long_context_tier above.  Some providers (notably
+        # Z.AI / Zhipu) reuse 429 for server-wide overload — correct recovery
+        # is "skip retry, rotate immediately" rather than "back off, then
+        # rotate" (which is the right answer for a per-credential rate
+        # limit).  Disambiguate on the error body so the retry loop picks
+        # the matching strategy via the corresponding ``FailoverReason``
+        # handler (#15297).
+        if any(p in error_msg for p in _OVERLOADED_PATTERNS):
+            return result_fn(
+                FailoverReason.overloaded,
+                retryable=True,
+                should_rotate_credential=True,
+                should_fallback=True,
+            )
         return result_fn(
             FailoverReason.rate_limit,
             retryable=True,

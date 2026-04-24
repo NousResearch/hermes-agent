@@ -231,3 +231,49 @@ def test_fuzzy_caps_results(tmp_path, monkeypatch):
     items = _items("@mod")
 
     assert len(items) == 30
+
+
+def test_fuzzy_paths_relative_to_cwd_inside_subdir(tmp_path, monkeypatch):
+    """When the gateway runs from a subdirectory of a git repo, fuzzy
+    completion paths must resolve under that cwd — not under the repo root.
+
+    Without this, `@appChrome` from inside `apps/web/` would suggest
+    `@file:apps/web/src/foo.tsx` but the agent (resolving from cwd) would
+    look for `apps/web/apps/web/src/foo.tsx` and fail. We translate every
+    `git ls-files` result back to a `relpath(root)` and drop anything
+    outside `root` so the completion contract stays "paths are cwd-relative".
+    """
+    import subprocess
+
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "test"], cwd=tmp_path, check=True)
+
+    (tmp_path / "apps" / "web" / "src").mkdir(parents=True)
+    (tmp_path / "apps" / "web" / "src" / "appChrome.tsx").write_text("x")
+    (tmp_path / "apps" / "api" / "src").mkdir(parents=True)
+    (tmp_path / "apps" / "api" / "src" / "server.ts").write_text("x")
+    (tmp_path / "README.md").write_text("x")
+
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-q", "-m", "init"], cwd=tmp_path, check=True)
+
+    # Run from `apps/web/` — completions should be relative to here, and
+    # files outside this subtree (apps/api, README.md at root) shouldn't
+    # appear at all.
+    monkeypatch.chdir(tmp_path / "apps" / "web")
+
+    texts = [t for t, _, _ in _items("@appChrome")]
+
+    assert "@file:src/appChrome.tsx" in texts, texts
+    assert not any("apps/web/" in t for t in texts), texts
+
+    server._fuzzy_cache.clear()
+    other_texts = [t for t, _, _ in _items("@server")]
+
+    assert not any("server.ts" in t for t in other_texts), other_texts
+
+    server._fuzzy_cache.clear()
+    readme_texts = [t for t, _, _ in _items("@README")]
+
+    assert not any("README.md" in t for t in readme_texts), readme_texts

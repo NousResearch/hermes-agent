@@ -202,6 +202,33 @@ async def test_allowed_channel_hash_prefixed_name_matches(adapter, monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_allowed_channel_wildcard_matches_any_channel(adapter, monkeypatch):
+    """allowed_channels='*' should allow any channel while preserving name matching."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "*")
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    message = make_message(channel=FakeTextChannel(channel_id=777, name="random-room"), content="hello")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_ignored_channel_wildcard_blocks_any_channel(adapter, monkeypatch):
+    """ignored_channels='*' should block any channel while preserving name matching."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
+    monkeypatch.setenv("DISCORD_IGNORED_CHANNELS", "*")
+    monkeypatch.delenv("DISCORD_FREE_RESPONSE_CHANNELS", raising=False)
+
+    message = make_message(channel=FakeTextChannel(channel_id=778, name="random-room"), content="hello")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_ignored_thread_parent_name_blocks_message(adapter, monkeypatch):
     """Ignored channel names should also apply to threads under that parent channel."""
     monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "false")
@@ -376,6 +403,21 @@ async def test_free_response_channels_support_channel_names(adapter, monkeypatch
     monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
 
     message = make_message(channel=FakeTextChannel(channel_id=901, name="01-전략"), content="hello")
+    await adapter._handle_message(message)
+
+    adapter.handle_message.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_free_response_channels_wildcard_matches_any_channel(adapter, monkeypatch):
+    """free_response_channels='*' should bypass mention requirements in any channel."""
+    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
+    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "*")
+    monkeypatch.delenv("DISCORD_ALLOWED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_NO_THREAD_CHANNELS", raising=False)
+
+    message = make_message(channel=FakeTextChannel(channel_id=903, name="wildcard-room"), content="hello")
     await adapter._handle_message(message)
 
     adapter.handle_message.assert_awaited_once()

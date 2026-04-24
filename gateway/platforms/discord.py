@@ -2719,15 +2719,11 @@ class DiscordAdapter(BasePlatformAdapter):
         return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no", "off")
 
     def _discord_free_response_channels(self) -> set:
-        """Return Discord channel IDs where no bot mention is required."""
+        """Return Discord channel references where no bot mention is required."""
         raw = self.config.extra.get("free_response_channels")
         if raw is None:
             raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
-        if isinstance(raw, list):
-            return {str(part).strip() for part in raw if str(part).strip()}
-        if isinstance(raw, str) and raw.strip():
-            return {part.strip() for part in raw.split(",") if part.strip()}
-        return set()
+        return self._channel_reference_set(raw)
 
     def _thread_parent_channel(self, channel: Any) -> Any:
         """Return the parent text channel when invoked from a thread."""
@@ -3271,13 +3267,15 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Check allowed channels - if set, only respond in these channels
             allowed_channels_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
-            if allowed_channels_raw and not self._matches_channel_reference(channel_keys, allowed_channels_raw):
+            allowed_channel_refs = self._channel_reference_set(allowed_channels_raw)
+            if allowed_channel_refs and "*" not in allowed_channel_refs and not self._matches_channel_reference(channel_keys, allowed_channel_refs):
                 logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_ids)
                 return
 
             # Check ignored channels - never respond even when mentioned
             ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
-            if ignored_channels_raw and self._matches_channel_reference(channel_keys, ignored_channels_raw):
+            ignored_channel_refs = self._channel_reference_set(ignored_channels_raw)
+            if "*" in ignored_channel_refs or self._matches_channel_reference(channel_keys, ignored_channel_refs):
                 logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_ids)
                 return
 
@@ -3291,9 +3289,12 @@ class DiscordAdapter(BasePlatformAdapter):
             voice_linked_ids = {str(ch_id) for ch_id in self._voice_text_channels.values()}
             current_channel_id = str(message.channel.id)
             is_voice_linked_channel = current_channel_id in voice_linked_ids
-            is_free_channel = bool(channel_ids & free_channels) or self._matches_channel_reference(channel_keys, free_channels)
-            if is_voice_linked_channel:
-                is_free_channel = True
+            is_free_channel = (
+                "*" in free_channels
+                or bool(channel_ids & free_channels)
+                or self._matches_channel_reference(channel_keys, free_channels)
+                or is_voice_linked_channel
+            )
 
             # Skip the mention check if the message is in a thread where
             # the bot has previously participated (auto-created or replied in).

@@ -166,6 +166,27 @@ from hermes_cli.env_loader import load_hermes_dotenv
 
 load_hermes_dotenv(project_env=PROJECT_ROOT / ".env")
 
+# Bridge security.redact_secrets from config.yaml → HERMES_REDACT_SECRETS env
+# var BEFORE hermes_logging imports agent.redact (which snapshots the flag at
+# module-import time). Without this, config.yaml's toggle is ignored because
+# the setup_logging() call below imports agent.redact, which reads the env var
+# exactly once. Env var in .env still wins — this is config.yaml fallback only.
+try:
+    if "HERMES_REDACT_SECRETS" not in os.environ:
+        import yaml as _yaml_early
+        _cfg_path = get_hermes_home() / "config.yaml"
+        if _cfg_path.exists():
+            with open(_cfg_path, encoding="utf-8") as _f:
+                _early_sec_cfg = (_yaml_early.safe_load(_f) or {}).get("security", {})
+            if isinstance(_early_sec_cfg, dict):
+                _early_redact = _early_sec_cfg.get("redact_secrets")
+                if _early_redact is not None:
+                    os.environ["HERMES_REDACT_SECRETS"] = str(_early_redact).lower()
+            del _early_sec_cfg
+        del _cfg_path
+except Exception:
+    pass  # best-effort — redaction stays at default (enabled) on config errors
+
 # Initialize centralized file logging early — all `hermes` subcommands
 # (chat, setup, gateway, config, etc.) write to agent.log + errors.log.
 try:

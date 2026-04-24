@@ -277,14 +277,23 @@ def _resolve_api_key(cfg: dict) -> str:
 
     For self-hosted instances configured with ``baseUrl`` instead of an API
     key, returns ``"local"`` so that credential guards throughout the CLI
-    don't reject a valid configuration.
+    don't reject a valid configuration.  The ``baseUrl`` is scheme-validated
+    (http/https only) so that a typo like ``baseUrl: true`` can't silently
+    pass the guard.
     """
     host_key = ((cfg.get("hosts") or {}).get(_host_key()) or {}).get("apiKey")
     key = host_key or cfg.get("apiKey", "") or os.environ.get("HONCHO_API_KEY", "")
     if not key:
         base_url = cfg.get("baseUrl") or cfg.get("base_url") or os.environ.get("HONCHO_BASE_URL", "")
-        if base_url.strip():
-            return "local"
+        base_url = (base_url or "").strip()
+        if base_url:
+            from urllib.parse import urlparse
+            try:
+                parsed = urlparse(base_url)
+            except (TypeError, ValueError):
+                parsed = None
+            if parsed and parsed.scheme in ("http", "https") and parsed.netloc:
+                return "local"
     return key
 
 

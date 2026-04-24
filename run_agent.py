@@ -502,6 +502,48 @@ def _sanitize_messages_surrogates(messages: list) -> bool:
     return found
 
 
+def _escape_invalid_chars_in_json_strings(raw: str) -> str:
+    """Escape unescaped control chars inside JSON string values.
+
+    Walks the raw JSON character-by-character, tracking whether we are
+    inside a double-quoted string. Inside strings, replaces literal
+    control characters (0x00-0x1F) that aren't already part of an escape
+    sequence with their ``\\uXXXX`` equivalents. Pass-through for everything
+    else.
+
+    Ported from #12093 — complements the other repair passes in
+    ``_repair_tool_call_arguments`` when ``json.loads(strict=False)`` is
+    not enough (e.g. llama.cpp backends that emit literal apostrophes or
+    tabs alongside other malformations).
+    """
+    out: list[str] = []
+    in_string = False
+    i = 0
+    n = len(raw)
+    while i < n:
+        ch = raw[i]
+        if in_string:
+            if ch == "\\" and i + 1 < n:
+                # Already-escaped char — pass through as-is
+                out.append(ch)
+                out.append(raw[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+                out.append(ch)
+            elif ord(ch) < 0x20:
+                out.append(f"\\u{ord(ch):04x}")
+            else:
+                out.append(ch)
+        else:
+            if ch == '"':
+                in_string = True
+            out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     """Attempt to repair malformed tool_call argument JSON.
 
@@ -522,6 +564,23 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     if raw_stripped == "None":
         logger.warning("Sanitized Python-None tool_call arguments for %s", tool_name)
         return "{}"
+
+    # Repair pass 0: llama.cpp backends sometimes emit literal control
+    # characters (tabs, newlines) inside JSON string values. json.loads
+    # with strict=False accepts these and lets us re-serialise the
+    # result into wire-valid JSON without any string surgery. This is
+    # the most common local-model repair case (#12068).
+    try:
+        parsed = json.loads(raw_stripped, strict=False)
+        reserialised = json.dumps(parsed, separators=(",", ":"))
+        if reserialised != raw_stripped:
+            logger.warning(
+                "Repaired unescaped control chars in tool_call arguments for %s",
+                tool_name,
+            )
+        return reserialised
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
 
     # Attempt common JSON repairs
     fixed = raw_stripped
@@ -555,6 +614,21 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
         )
         return fixed
     except json.JSONDecodeError:
+        pass
+
+    # Repair pass 4: escape unescaped control chars inside JSON strings,
+    # then retry. Catches cases where strict=False alone fails because
+    # other malformations are present too.
+    try:
+        escaped = _escape_invalid_chars_in_json_strings(fixed)
+        if escaped != fixed:
+            json.loads(escaped)
+            logger.warning(
+                "Repaired control-char-laced tool_call arguments for %s: %s → %s",
+                tool_name, raw_stripped[:80], escaped[:80],
+            )
+            return escaped
+    except (json.JSONDecodeError, TypeError, ValueError):
         pass
 
     # Last resort: replace with empty object so the API request doesn't

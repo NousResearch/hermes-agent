@@ -210,10 +210,14 @@ export default function SkillsPage() {
           <Package className="h-5 w-5 text-muted-foreground" />
           <h1 className="text-base font-semibold">Skills</h1>
           <span className="text-xs text-muted-foreground">
-            {enabledCount}/{skills.length} enabled
+            {enabledCount}/{skills.length} enabled (hermes gateway)
           </span>
         </div>
       </div>
+
+      {/* ═══════════════ Unified SKILL.md catalog (disk scan) ═══════════════ */}
+      <UnifiedCatalogSummary />
+
 
       {/* ═══════════════ Search + Category Filter ═══════════════ */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-center">
@@ -435,5 +439,97 @@ export default function SkillsPage() {
         )}
       </section>
     </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  UnifiedCatalogSummary — disk-scan of SKILL.md (hermes + openclaw)  */
+/*  Complements the gateway-backed toggle view above.                  */
+/* ------------------------------------------------------------------ */
+
+interface UnifiedSummary {
+  total: number;
+  by_origin: Record<string, number>;
+  by_family: Record<string, number>;
+  with_tags: number;
+  with_version: number;
+  with_allowed_tools: number;
+}
+
+function UnifiedCatalogSummary() {
+  const [summary, setSummary] = useState<UnifiedSummary | null>(null);
+  const [open, setOpen] = useState(false);
+
+  useEffect(() => {
+    fetch("/api/dual-agent/skills")
+      .then((r) => r.json())
+      .then((j) => {
+        if (j && j.summary) setSummary(j.summary);
+      })
+      .catch(() => {});
+  }, []);
+
+  if (!summary) return null;
+
+  const topFamilies = Object.entries(summary.by_family)
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 6);
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="flex items-center justify-between text-sm">
+          <span>SKILL.md unified catalog（disk scan · se-023）</span>
+          <button
+            onClick={() => setOpen(!open)}
+            className="text-xs text-muted-foreground hover:text-foreground"
+          >
+            {open ? "收起" : "展開家族分布"}
+          </button>
+        </CardTitle>
+      </CardHeader>
+      <CardContent>
+        <div className="flex flex-wrap gap-4 text-sm">
+          <div>
+            <div className="text-muted-foreground text-xs">Total on disk</div>
+            <div className="text-2xl font-bold">{summary.total}</div>
+          </div>
+          {Object.entries(summary.by_origin).map(([k, v]) => (
+            <div key={k}>
+              <div className="text-muted-foreground text-xs">{k}</div>
+              <div className="text-2xl font-bold">{v}</div>
+            </div>
+          ))}
+          <div>
+            <div className="text-muted-foreground text-xs">with tags</div>
+            <div className="text-2xl font-bold">{summary.with_tags}</div>
+          </div>
+          <div>
+            <div className="text-muted-foreground text-xs">with version</div>
+            <div className="text-2xl font-bold">{summary.with_version}</div>
+          </div>
+          <div>
+            <div className="text-muted-foreground text-xs">with allowed-tools</div>
+            <div className="text-2xl font-bold">{summary.with_allowed_tools}</div>
+          </div>
+        </div>
+        {open && (
+          <div className="mt-4 grid grid-cols-2 gap-2 text-xs text-muted-foreground md:grid-cols-3">
+            {topFamilies.map(([k, v]) => (
+              <div
+                key={k}
+                className="flex items-center justify-between rounded border border-border/60 px-2 py-1"
+              >
+                <span className="font-mono">{k}</span>
+                <span className="font-semibold">{v}</span>
+              </div>
+            ))}
+            <div className="col-span-full text-right text-xs italic">
+              下方是 hermes gateway 上的 enable/disable 設定，跟這裡的 disk scan 是兩種視角
+            </div>
+          </div>
+        )}
+      </CardContent>
+    </Card>
   );
 }

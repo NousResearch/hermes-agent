@@ -23,6 +23,58 @@ VALID_PRIORITIES = {"P0", "P1", "P2", "P3"}
 VALID_TERMINAL_STATUSES = {"done", "fail", "timeout"}
 
 
+# --- Middleware chain (S3) — invoked on close path --------------------
+# Registered on first use; safe to call `_ensure_middlewares_registered()`
+# repeatedly. Each middleware is env-var gated so individual stages can be
+# turned off without touching code.
+_middlewares_registered = False
+
+
+def _ensure_middlewares_registered() -> None:
+    global _middlewares_registered
+    if _middlewares_registered:
+        return
+    try:
+        from agent_bus import middleware as _mw_mod
+        from agent_bus.middlewares import register_defaults
+        # Only register if the registry is empty (avoid double registration
+        # if callers already set up their own chain).
+        if not _mw_mod.all_entries():
+            register_defaults()
+        _middlewares_registered = True
+    except Exception as exc:  # pragma: no cover
+        logger.warning("middleware registration skipped: %s", exc)
+
+
+def _run_close_middlewares(task: Dict[str, Any], outcome: str, summary: str) -> None:
+    """Invoke `on_session_end` hook on close. Non-blocking — errors logged.
+
+    This gives built-in middlewares (memory extraction flush, todo list
+    incomplete report, etc.) a chance to finalize per-task context.
+    """
+    if os.environ.get("HERMES_MIDDLEWARE_CHAIN", "core").lower() == "off":
+        return
+    try:
+        _ensure_middlewares_registered()
+        from agent_bus.middleware import MiddlewareChain, MiddlewareContext
+        chain = MiddlewareChain.build()
+        ctx = MiddlewareContext(
+            thread_id=task.get("task_id"),
+            agent=task.get("to_agent"),
+            messages=[
+                {"role": "user", "content": task.get("goal") or ""},
+                {"role": "assistant", "content": summary or task.get("result") or ""},
+            ],
+            metadata={"outcome": outcome},
+        )
+        chain.run("on_session_end", ctx)
+        for d in ctx.decisions:
+            if d["action"] not in ("enqueued", "flushed"):
+                logger.debug("middleware[%s].%s %s: %s", d["middleware"], d["hook"], d["action"], d["reason"])
+    except Exception as exc:  # pragma: no cover
+        logger.warning("close-path middleware run skipped: %s", exc)
+
+
 def _run_close_gate(
     *,
     task_id: str,
@@ -325,6 +377,8 @@ def complete_task(
     # Proactively tell the human boss when Hermes was the dispatcher.
     if _notify_user_of_outcome(updated):
         storage.update_task(task_id, user_notified=1)
+    # Middleware chain close hook (memory extract flush, todo recap, etc.)
+    _run_close_middlewares(updated, "done", result)
     return updated
 
 
@@ -375,6 +429,8 @@ def fail_task(
         )
     if _notify_user_of_outcome(updated):
         storage.update_task(task_id, user_notified=1)
+    # Middleware chain close hook
+    _run_close_middlewares(updated, "fail", reason)
     return updated
 
 

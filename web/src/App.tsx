@@ -1,5 +1,5 @@
 import { useState, useEffect, useRef } from "react";
-import { Activity, BarChart3, BookOpen, Clock, FileText, KeyRound, MessageSquare, Package, Settings, Users } from "lucide-react";
+import { Activity, BarChart3, Clock, FileText, KeyRound, MessageSquare, Package, Settings, Users } from "lucide-react";
 import StatusPage from "@/pages/StatusPage";
 import AgentsPage from "@/pages/AgentsPage";
 import ConfigPage from "@/pages/ConfigPage";
@@ -9,11 +9,9 @@ import LogsPage from "@/pages/LogsPage";
 import AnalyticsPage from "@/pages/AnalyticsPage";
 import CronPage from "@/pages/CronPage";
 import SkillsPage from "@/pages/SkillsPage";
-import SkillsCatalogPage from "@/pages/SkillsCatalogPage";
 
 const NAV_ITEMS = [
   { id: "agents", label: "雙 Agent", icon: Users },
-  { id: "skills-catalog", label: "技能庫", icon: BookOpen },
   { id: "status", label: "狀態", icon: Activity },
   { id: "sessions", label: "會話", icon: MessageSquare },
   { id: "analytics", label: "分析", icon: BarChart3 },
@@ -28,7 +26,6 @@ type PageId = (typeof NAV_ITEMS)[number]["id"];
 
 const PAGE_COMPONENTS: Record<PageId, React.FC> = {
   agents: AgentsPage,
-  "skills-catalog": SkillsCatalogPage,
   status: StatusPage,
   sessions: SessionsPage,
   analytics: AnalyticsPage,

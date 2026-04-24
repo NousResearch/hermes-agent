@@ -1,6 +1,7 @@
 """Tests for setup.py configuration flows."""
 import sys
 import types
+from pathlib import Path
 
 
 from hermes_cli.config import load_config, save_config
@@ -540,3 +541,25 @@ def test_prompt_yes_no_keyboard_interrupt_still_exits(monkeypatch):
     with pytest.raises(SystemExit):
         setup_mod.prompt_yes_no("Install it now?", True)
 
+
+def test_print_setup_summary_uses_profile_command_for_profile_with_alias(
+    tmp_path, monkeypatch, capsys
+):
+    """Setup summary prints commands using a profile's wrapper alias when available."""
+    profile_dir = tmp_path / ".hermes" / "profiles" / "johndoe"
+    profile_dir.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+
+    wrapper_dir = tmp_path / ".local" / "bin"
+    wrapper_dir.mkdir(parents=True, exist_ok=True)
+    (wrapper_dir / "johndoe").write_text("#!/bin/sh\nexec hermes -p johndoe \"$@\"\n")
+
+    from hermes_cli.setup import _print_setup_summary
+
+    _print_setup_summary(load_config(), profile_dir)
+
+    out = capsys.readouterr().out
+    assert "johndoe setup gateway" in out
+    assert "johndoe gateway" in out
+    assert "johndoe doctor" in out

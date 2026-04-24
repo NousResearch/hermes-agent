@@ -21,6 +21,7 @@ import yaml
 from hermes_cli import profiles
 from hermes_cli.profiles import (
     normalize_profile_name,
+    get_profile_command,
     validate_profile_name,
     get_profile_dir,
     create_profile,
@@ -769,6 +770,33 @@ class TestGetActiveProfileName:
         # not "custom".  The user is on the default profile of their
         # custom deployment.
         assert get_active_profile_name() == "default"
+
+
+class TestProfileCommandFormatter:
+    """Tests for profile-aware command formatting."""
+
+    def test_default_profile_command_is_hermes(self, profile_env):
+        assert get_profile_command() == "hermes"
+
+    def test_named_profile_with_alias_uses_wrapper_name(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        profile_dir = tmp_path / ".hermes" / "profiles" / "johndoe"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+
+        wrapper_dir = tmp_path / ".local" / "bin"
+        wrapper_dir.mkdir(parents=True, exist_ok=True)
+        (wrapper_dir / "johndoe").write_text("#!/bin/sh\nexec hermes -p johndoe \"$@\"\n")
+
+        assert get_profile_command() == "johndoe"
+
+    def test_named_profile_without_alias_uses_flag_command(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        profile_dir = tmp_path / ".hermes" / "profiles" / "johndoe"
+        profile_dir.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+
+        assert get_profile_command() == "hermes -p johndoe"
 
 
 # ===================================================================

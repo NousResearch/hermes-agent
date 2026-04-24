@@ -158,6 +158,20 @@ def print_header(title: str):
     print(color(f"◆ {title}", Colors.CYAN, Colors.BOLD))
 
 
+def _profile_command(command: str | None = None) -> str:
+    """Return the current profile-aware command prefix.
+
+    Examples:
+      - default profile:     ``hermes setup``
+      - named profile + alias: ``janedoe setup``
+      - named profile no alias: ``hermes -p janedoe setup``
+    """
+    from hermes_cli.profiles import get_profile_command
+
+    base = get_profile_command()
+    return base if not command else f"{base} {command}"
+
+
 from hermes_cli.cli_output import (  # noqa: E402
     print_error,
     print_info,
@@ -193,7 +207,7 @@ def print_noninteractive_setup_guidance(reason: str | None = None) -> None:
     print_info("  hermes config set model.default your-model-name")
     print()
     print_info("Or set OPENROUTER_API_KEY / OPENAI_API_KEY in your environment.")
-    print_info("Run 'hermes setup' in an interactive terminal to use the full wizard.")
+    print_info(f"Run '{_profile_command('setup')}' in an interactive terminal to use the full wizard.")
     print()
 
 
@@ -388,7 +402,7 @@ def _prompt_api_key(var: dict):
         save_env_value(var["name"], value)
         print_success("  ✓ Saved")
     else:
-        print_warning("  Skipped (configure later with 'hermes setup')")
+        print_warning(f"  Skipped (configure later with '{_profile_command('setup')}')")
 
 
 def _print_setup_summary(config: dict, hermes_home):
@@ -644,17 +658,17 @@ def _print_setup_summary(config: dict, hermes_home):
     print()
     print(color("📝 To edit your configuration:", Colors.CYAN, Colors.BOLD))
     print()
-    print(f"   {color('hermes setup', Colors.GREEN)}          Re-run the full wizard")
-    print(f"   {color('hermes setup model', Colors.GREEN)}    Change model/provider")
-    print(f"   {color('hermes setup terminal', Colors.GREEN)} Change terminal backend")
-    print(f"   {color('hermes setup gateway', Colors.GREEN)}  Configure messaging")
-    print(f"   {color('hermes setup tools', Colors.GREEN)}    Configure tool providers")
+    print(f"   {color(_profile_command('setup'), Colors.GREEN)}          Re-run the full wizard")
+    print(f"   {color(_profile_command('setup model'), Colors.GREEN)}    Change model/provider")
+    print(f"   {color(_profile_command('setup terminal'), Colors.GREEN)} Change terminal backend")
+    print(f"   {color(_profile_command('setup gateway'), Colors.GREEN)}  Configure messaging")
+    print(f"   {color(_profile_command('setup tools'), Colors.GREEN)}    Configure tool providers")
     print()
-    print(f"   {color('hermes config', Colors.GREEN)}         View current settings")
+    print(f"   {color(_profile_command('config'), Colors.GREEN)}         View current settings")
     print(
-        f"   {color('hermes config edit', Colors.GREEN)}    Open config in your editor"
+        f"   {color(_profile_command('config edit'), Colors.GREEN)}    Open config in your editor"
     )
-    print(f"   {color('hermes config set <key> <value>', Colors.GREEN)}")
+    print(f"   {color(_profile_command('config set <key> <value>'), Colors.GREEN)}")
     print("                          Set a specific value")
     print()
     print("   Or edit the files directly:")
@@ -666,9 +680,9 @@ def _print_setup_summary(config: dict, hermes_home):
     print()
     print(color("🚀 Ready to go!", Colors.CYAN, Colors.BOLD))
     print()
-    print(f"   {color('hermes', Colors.GREEN)}              Start chatting")
-    print(f"   {color('hermes gateway', Colors.GREEN)}      Start messaging gateway")
-    print(f"   {color('hermes doctor', Colors.GREEN)}       Check for issues")
+    print(f"   {color(_profile_command(), Colors.GREEN)}              Start chatting")
+    print(f"   {color(_profile_command('gateway'), Colors.GREEN)}      Start messaging gateway")
+    print(f"   {color(_profile_command('doctor'), Colors.GREEN)}       Check for issues")
     print()
 
 
@@ -1966,7 +1980,9 @@ def setup_gateway(config: dict):
     selected = prompt_checklist("Select platforms to configure:", items, pre_selected)
 
     if not selected:
-        print_info("No platforms selected. Run 'hermes setup gateway' later to configure.")
+        print_info(
+            f"No platforms selected. Run '{_profile_command('setup gateway')}' later to configure."
+        )
         return
 
     for idx in selected:
@@ -2156,24 +2172,24 @@ def setup_gateway(config: dict):
                             print_error(f"  Start failed: {e}")
                 except Exception as e:
                     print_error(f"  Install failed: {e}")
-                    print_info("  You can try manually: hermes gateway install")
+                    print_info(f"  You can try manually: {_profile_command('gateway install')}")
             else:
-                print_info("  You can install later: hermes gateway install")
+                print_info(f"  You can install later: {_profile_command('gateway install')}")
                 if supports_systemd and os.geteuid() == 0:  # windows-footgun: ok — guarded by supports_systemd (Linux only)
                     print_info("  Or as a boot-time service: hermes gateway install --system")
-                print_info("  Or run in foreground:  hermes gateway")
+                print_info(f"  Or run in foreground:  {_profile_command('gateway')}")
         else:
             from hermes_constants import is_container
             if is_container():
                 print_info("Start the gateway to bring your bots online:")
-                print_info("   hermes gateway run          # Run as container main process")
+                print_info(f"   {_profile_command('gateway run')}          # Run as container main process")
                 print_info("")
                 print_info("For automatic restarts, use a Docker restart policy:")
                 print_info("   docker run --restart unless-stopped ...")
                 print_info("   docker restart <container>  # Manual restart")
             else:
                 print_info("Start the gateway to bring your bots online:")
-                print_info("   hermes gateway              # Run in foreground")
+                print_info(f"   {_profile_command('gateway')}              # Run in foreground")
 
         print_info("━" * 50)
 
@@ -2982,7 +2998,7 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
         "Connect a messaging platform? (Telegram, Discord, etc.)",
         [
             "Set up messaging now (recommended)",
-            "Skip — set up later with 'hermes setup gateway'",
+            f"Skip — set up later with '{_profile_command('setup gateway')}'",
         ],
         0,
     )
@@ -2994,9 +3010,9 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
     print()
     print_success("Setup complete! You're ready to go.")
     print()
-    print_info("  Configure all settings:    hermes setup")
+    print_info(f"  Configure all settings:    {_profile_command('setup')}")
     if gateway_choice != 0:
-        print_info("  Connect Telegram/Discord:  hermes setup gateway")
+        print_info(f"  Connect Telegram/Discord:  {_profile_command('setup gateway')}")
     print()
 
     _print_setup_summary(config, hermes_home)
@@ -3333,7 +3349,7 @@ def _run_quick_setup(config: dict, hermes_home):
         print()
         print_header("Messaging Platforms")
         print_info("Connect Hermes to messaging apps to chat from anywhere.")
-        print_info("You can configure these later with 'hermes setup gateway'.")
+        print_info(f"You can configure these later with '{_profile_command('setup gateway')}'.")
 
         # Group by platform (preserving order)
         platform_order = []

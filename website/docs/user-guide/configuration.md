@@ -735,7 +735,11 @@ Every model slot in Hermes — auxiliary tasks, compression, fallback — uses t
 
 When `base_url` is set, Hermes ignores the provider and calls that endpoint directly (using `api_key` or `OPENAI_API_KEY` for auth). When only `provider` is set, Hermes uses that provider's built-in auth and base URL.
 
-Available providers for auxiliary tasks: `auto`, `main`, plus any provider in the [provider registry](/docs/reference/environment-variables) — `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `deepseek`, `nvidia`, `xai`, `ollama-cloud`, `alibaba`, `bedrock`, `huggingface`, `arcee`, `xiaomi`, `kilocode`, `opencode-zen`, `opencode-go`, `ai-gateway`, `azure-foundry` — or any named custom provider from your `custom_providers` list (e.g. `provider: "beans"`).
+Available providers for auxiliary tasks: `auto`, `main`, plus any provider in the [provider registry](/docs/reference/environment-variables) — `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `minimax-oauth`, `deepseek`, `nvidia`, `xai`, `ollama-cloud`, `alibaba`, `bedrock`, `huggingface`, `arcee`, `xiaomi`, `kilocode`, `opencode-zen`, `opencode-go`, `ai-gateway`, `azure-foundry` — or any named custom provider from your `custom_providers` list (e.g. `provider: "beans"`).
+
+:::tip MiniMax OAuth
+`minimax-oauth` logs in via browser OAuth (no API key needed). Run `hermes model` and select **MiniMax (OAuth)** to authenticate. Auxiliary tasks use `MiniMax-M2.7-highspeed` automatically. See the [MiniMax OAuth guide](../guides/minimax-oauth.md).
+:::
 
 :::warning `"main"` is for auxiliary tasks only
 The `"main"` provider option means "use whatever provider my main agent uses" — it's only valid inside `auxiliary:`, `compression:`, and `fallback_model:` configs. It is **not** a valid value for your top-level `model.provider` setting. If you use a custom OpenAI-compatible endpoint, set `provider: custom` in your `model:` section. See [AI Providers](/docs/integrations/providers) for all main model provider options.
@@ -863,6 +867,7 @@ These options apply to **auxiliary task configs** (`auxiliary:`, `compression:`,
 | `"openrouter"` | Force OpenRouter — routes to any model (Gemini, GPT-4o, Claude, etc.) | `OPENROUTER_API_KEY` |
 | `"nous"` | Force Nous Portal | `hermes auth` |
 | `"codex"` | Force Codex OAuth (ChatGPT account). Supports vision (gpt-5.3-codex). | `hermes model` → Codex |
+| `"minimax-oauth"` | Force MiniMax OAuth (browser login, no API key). Uses MiniMax-M2.7-highspeed for auxiliary tasks. | `hermes model` → MiniMax (OAuth) |
 | `"main"` | Use your active custom/main endpoint. This can come from `OPENAI_BASE_URL` + `OPENAI_API_KEY` or from a custom endpoint saved via `hermes model` / `config.yaml`. Works with OpenAI, local models, or any OpenAI-compatible API. **Auxiliary tasks only — not valid for `model.provider`.** | Custom endpoint credentials + base URL |
 
 Direct API-key providers from the main provider catalog also work here when you want side tasks to bypass your default router. `gmi` is valid once `GMI_API_KEY` is configured:
@@ -916,6 +921,15 @@ auxiliary:
     provider: "codex"     # uses your ChatGPT OAuth token
     # model defaults to gpt-5.3-codex (supports vision)
 ```
+
+**Using MiniMax OAuth** (browser login, no API key needed):
+```yaml
+model:
+  default: MiniMax-M2.7
+  provider: minimax-oauth
+  base_url: https://api.minimax.io/anthropic
+```
+Run `hermes model` and select **MiniMax (OAuth)** to log in and set this automatically. For the China region, the base URL will be `https://api.minimaxi.com/anthropic`. See the [MiniMax OAuth guide](../guides/minimax-oauth.md) for the full walkthrough.
 
 **Using a local/self-hosted model:**
 ```yaml

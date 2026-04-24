@@ -94,8 +94,19 @@ Add the following to your `~/.hermes/.env` file:
 # Required
 WHATSAPP_ENABLED=true
 WHATSAPP_MODE=bot                          # "bot" or "self-chat"
+
+# Access control — pick ONE of these options:
 WHATSAPP_ALLOWED_USERS=15551234567         # Comma-separated phone numbers (with country code, no +)
+# WHATSAPP_ALLOWED_USERS=*                 # OR use * to allow everyone
+# WHATSAPP_ALLOW_ALL_USERS=true            # OR set this flag instead (same effect as *)
 ```
+
+:::tip Allow-all shorthand
+Setting `WHATSAPP_ALLOWED_USERS=*` allows **all** senders (equivalent to `WHATSAPP_ALLOW_ALL_USERS=true`).
+This is consistent with [Signal group allowlists](/docs/reference/environment-variables).
+To use the pairing flow instead, remove both variables and rely on the
+[DM pairing system](/docs/user-guide/security#dm-pairing-system).
+:::
 
 Optional behavior settings in `~/.hermes/config.yaml`:
 
@@ -123,7 +134,7 @@ The gateway starts the WhatsApp bridge automatically using the saved session.
 
 ## Session Persistence
 
-The Baileys bridge saves its session under `~/.hermes/whatsapp/session`. This means:
+The Baileys bridge saves its session under `~/.hermes/platforms/whatsapp/session`. This means:
 
 - **Sessions survive restarts** — you don't need to re-scan the QR code every time
 - The session data includes encryption keys and device credentials
@@ -163,18 +174,45 @@ whatsapp:
 
 ---
 
+## Message Formatting & Delivery
+
+WhatsApp supports **streaming (progressive) responses** — the bot edits its message in real-time as the AI generates text, just like Discord and Telegram. Internally, WhatsApp is classified as a TIER_MEDIUM platform for delivery capabilities.
+
+### Chunking
+
+Long responses are automatically split into multiple messages at **4,096 characters** per chunk (WhatsApp's practical display limit). You don't need to configure anything — the gateway handles splitting and sends chunks sequentially.
+
+### WhatsApp-Compatible Markdown
+
+Standard Markdown in AI responses is automatically converted to WhatsApp's native formatting:
+
+| Markdown | WhatsApp | Renders as |
+|----------|----------|------------|
+| `**bold**` | `*bold*` | **bold** |
+| `~~strikethrough~~` | `~strikethrough~` | ~~strikethrough~~ |
+| `# Heading` | `*Heading*` | Bold text (no native headings) |
+| `[link text](url)` | `link text (url)` | Inline URL |
+
+Code blocks and inline code are preserved as-is since WhatsApp supports triple-backtick formatting natively.
+
+### Tool Progress
+
+When the agent calls tools (web search, file operations, etc.), WhatsApp displays real-time progress indicators showing which tool is running. This is enabled by default — no configuration needed.
+
+---
+
 ## Troubleshooting
 
 | Problem | Solution |
 |---------|----------|
 | **QR code not scanning** | Ensure terminal is wide enough (60+ columns). Try a different terminal. Make sure you're scanning from the correct WhatsApp account (bot number, not personal). |
 | **QR code expires** | QR codes refresh every ~20 seconds. If it times out, restart `hermes whatsapp`. |
-| **Session not persisting** | Check that `~/.hermes/whatsapp/session` exists and is writable. If containerized, mount it as a persistent volume. |
+| **Session not persisting** | Check that `~/.hermes/platforms/whatsapp/session` exists and is writable. If containerized, mount it as a persistent volume. |
 | **Logged out unexpectedly** | WhatsApp unlinks devices after long inactivity. Keep the phone on and connected to the network, then re-pair with `hermes whatsapp` if needed. |
 | **Bridge crashes or reconnect loops** | Restart the gateway, update Hermes, and re-pair if the session was invalidated by a WhatsApp protocol change. |
 | **Bot stops working after WhatsApp update** | Update Hermes to get the latest bridge version, then re-pair. |
 | **macOS: "Node.js not installed" but node works in terminal** | launchd services don't inherit your shell PATH. Run `hermes gateway install` to re-snapshot your current PATH into the plist, then `hermes gateway start`. See the [Gateway Service docs](./index.md#macos-launchd) for details. |
-| **Messages not being received** | Verify `WHATSAPP_ALLOWED_USERS` includes the sender's number (with country code, no `+` or spaces). |
+| **Messages not being received** | Verify `WHATSAPP_ALLOWED_USERS` includes the sender's number (with country code, no `+` or spaces), or set it to `*` to allow everyone. Set `WHATSAPP_DEBUG=true` in `.env` and restart the gateway to see raw message events in `bridge.log`. |
 | **Bot replies to strangers with a pairing code** | Set `whatsapp.unauthorized_dm_behavior: ignore` in `~/.hermes/config.yaml` if you want unauthorized DMs to be silently ignored instead. |
 
 ---
@@ -182,9 +220,10 @@ whatsapp:
 ## Security
 
 :::warning
-**Always set `WHATSAPP_ALLOWED_USERS`** with phone numbers (including country code, without the `+`)
-of authorized users. Without this setting, the gateway will **deny all incoming messages** as a
-safety measure.
+**Configure access control** before going live. Set `WHATSAPP_ALLOWED_USERS` with specific
+phone numbers (including country code, without the `+`), use `*` to allow everyone, or set
+`WHATSAPP_ALLOW_ALL_USERS=true`. Without any of these, the gateway **denies all incoming
+messages** as a safety measure.
 :::
 
 By default, unauthorized DMs still receive a pairing code reply. If you want a private WhatsApp number to stay completely silent to strangers, set:
@@ -194,8 +233,8 @@ whatsapp:
   unauthorized_dm_behavior: ignore
 ```
 
-- The `~/.hermes/whatsapp/session` directory contains full session credentials — protect it like a password
-- Set file permissions: `chmod 700 ~/.hermes/whatsapp/session`
+- The `~/.hermes/platforms/whatsapp/session` directory contains full session credentials — protect it like a password
+- Set file permissions: `chmod 700 ~/.hermes/platforms/whatsapp/session`
 - Use a **dedicated phone number** for the bot to isolate risk from your personal account
 - If you suspect compromise, unlink the device from WhatsApp → Settings → Linked Devices
 - Phone numbers in logs are partially redacted, but review your log retention policy

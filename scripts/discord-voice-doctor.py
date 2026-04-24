@@ -249,8 +249,12 @@ def check_config(groq_key, eleven_key):
 
             if stt_provider == "groq" and not groq_key:
                 warn("STT config says groq but GROQ_API_KEY is missing")
+            if stt_provider == "mistral" and not os.getenv("MISTRAL_API_KEY"):
+                warn("STT config says mistral but MISTRAL_API_KEY is missing")
             if tts_provider == "elevenlabs" and not eleven_key:
                 warn("TTS config says elevenlabs but ELEVENLABS_API_KEY is missing")
+            if tts_provider == "mistral" and not os.getenv("MISTRAL_API_KEY"):
+                warn("TTS config says mistral but MISTRAL_API_KEY is missing")
         except Exception as e:
             warn("config.yaml", f"parse error: {e}")
     else:
@@ -261,7 +265,7 @@ def check_config(groq_key, eleven_key):
     if voice_mode_path.exists():
         try:
             import json
-            modes = json.loads(voice_mode_path.read_text())
+            modes = json.loads(voice_mode_path.read_text(encoding="utf-8"))
             off_count = sum(1 for v in modes.values() if v == "off")
             all_count = sum(1 for v in modes.values() if v == "all")
             check("Voice mode state", True, f"{all_count} on, {off_count} off, {len(modes)} total")

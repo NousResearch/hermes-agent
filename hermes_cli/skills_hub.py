@@ -151,7 +151,8 @@ def do_search(query: str, source: str = "all", limit: int = 10,
 
     auth = GitHubAuth()
     sources = create_source_router(auth)
-    results = unified_search(query, sources, source_filter=source, limit=limit)
+    with c.status("[bold]Searching registries..."):
+        results = unified_search(query, sources, source_filter=source, limit=limit)
 
     if not results:
         c.print("[dim]No skills found matching your query.[/]\n")
@@ -187,7 +188,7 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     Official skills are always shown first, regardless of source filter.
     """
     from tools.skills_hub import (
-        GitHubAuth, create_source_router,
+        GitHubAuth, create_source_router, parallel_search_sources,
     )
 
     # Clamp page_size to safe range
@@ -198,27 +199,23 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
     auth = GitHubAuth()
     sources = create_source_router(auth)
 
-    # Collect results from all (or filtered) sources
-    # Use empty query to get everything; per-source limits prevent overload
+    # Collect results from all (or filtered) sources in parallel.
+    # Per-source limits are generous — parallelism + 30s timeout cap prevents hangs.
     _TRUST_RANK = {"builtin": 3, "trusted": 2, "community": 1}
-    _PER_SOURCE_LIMIT = {"official": 100, "skills-sh": 100, "well-known": 25, "github": 100, "clawhub": 50,
-                         "claude-marketplace": 50, "lobehub": 50}
+    _PER_SOURCE_LIMIT = {
+        "official": 200, "skills-sh": 200, "well-known": 50,
+        "github": 200, "clawhub": 500, "claude-marketplace": 100,
+        "lobehub": 500,
+    }
 
-    all_results: list = []
-    source_counts: dict = {}
-
-    for src in sources:
-        sid = src.source_id()
-        if source != "all" and sid != source and sid != "official":
-            # Always include official source for the "first" placement
-            continue
-        try:
-            limit = _PER_SOURCE_LIMIT.get(sid, 50)
-            results = src.search("", limit=limit)
-            source_counts[sid] = len(results)
-            all_results.extend(results)
-        except Exception:
-            continue
+    with c.status("[bold]Fetching skills from registries..."):
+        all_results, source_counts, timed_out = parallel_search_sources(
+            sources,
+            query="",
+            per_source_limits=_PER_SOURCE_LIMIT,
+            source_filter=source,
+            overall_timeout=30,
+        )
 
     if not all_results:
         c.print("[dim]No skills found in the Skills Hub.[/]\n")
@@ -252,8 +249,11 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
 
     # Build header
     source_label = f"— {source}" if source != "all" else "— all sources"
+    loaded_label = f"{total} skills loaded"
+    if timed_out:
+        loaded_label += f", {len(timed_out)} source(s) still loading"
     c.print(f"\n[bold]Skills Hub — Browse {source_label}[/]"
-            f"  [dim]({total} skills, page {page}/{total_pages})[/]")
+            f"  [dim]({loaded_label}, page {page}/{total_pages})[/]")
     if official_count > 0 and page == 1:
         c.print(f"[bright_cyan]★ {official_count} official optional skill(s) from Nous Research[/]")
     c.print()
@@ -300,8 +300,11 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
         parts = [f"{sid}: {ct}" for sid, ct in sorted(source_counts.items())]
         c.print(f"  [dim]Sources: {', '.join(parts)}[/]")
 
-    c.print("[dim]Use: hermes skills inspect <identifier> to preview, "
-            "hermes skills install <identifier> to install[/]\n")
+    if timed_out:
+        c.print(f"  [yellow]⚡ Slow sources skipped: {', '.join(timed_out)} "
+                f"— run again for cached results[/]")
+
+    c.print("[dim]Tip: 'hermes skills search <query>' searches deeper across all registries[/]\n")
 
 
 def do_install(identifier: str, category: str = "", force: bool = False,
@@ -332,7 +335,23 @@ def do_install(identifier: str, category: str = "", force: bool = False,
     meta, bundle, _matched_source = _resolve_source_meta_and_bundle(identifier, sources)
 
     if not bundle:
-        c.print(f"[bold red]Error:[/] Could not fetch '{identifier}' from any source.\n")
+        # Check if any source hit GitHub API rate limit
+        rate_limited = any(
+            getattr(src, "is_rate_limited", False)
+            or getattr(getattr(src, "github", None), "is_rate_limited", False)
+            for src in sources
+        )
+        c.print(f"[bold red]Error:[/] Could not fetch '{identifier}' from any source.")
+        if rate_limited:
+            c.print(
+                "[yellow]Hint:[/] GitHub API rate limit exhausted "
+                "(unauthenticated: 60 requests/hour).\n"
+                "Set [bold]GITHUB_TOKEN[/] in your .env or install the "
+                "[bold]gh[/] CLI and run [bold]gh auth login[/] "
+                "to raise the limit to 5,000/hr.\n"
+            )
+        else:
+            c.print()
         return
 
     # Auto-detect category for official skills (e.g. "official/autonomous-ai-agents/blackbox")
@@ -494,6 +513,90 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
         c.print(Panel(preview, title="SKILL.md Preview", subtitle="hermes skills install <id> to install"))
 
     c.print()
+
+
+def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> dict:
+    """Paginated hub browse for programmatic callers (e.g. TUI gateway).
+
+    Returns ``{"items": [...], "page": int, "total_pages": int, "total": int}``.
+    """
+    from tools.skills_hub import GitHubAuth, create_source_router
+
+    page_size = max(1, min(page_size, 100))
+    _TRUST_RANK = {"builtin": 3, "trusted": 2, "community": 1}
+    _PER_SOURCE_LIMIT = {"official": 100, "skills-sh": 100, "well-known": 25, "github": 100, "clawhub": 50,
+                         "claude-marketplace": 50, "lobehub": 50}
+    auth = GitHubAuth()
+    sources = create_source_router(auth)
+    all_results: list = []
+    for src in sources:
+        sid = src.source_id()
+        if source != "all" and sid != source and sid != "official":
+            continue
+        try:
+            limit = _PER_SOURCE_LIMIT.get(sid, 50)
+            all_results.extend(src.search("", limit=limit))
+        except Exception:
+            continue
+    if not all_results:
+        return {"items": [], "page": 1, "total_pages": 1, "total": 0}
+    seen: dict = {}
+    for r in all_results:
+        rank = _TRUST_RANK.get(r.trust_level, 0)
+        if r.name not in seen or rank > _TRUST_RANK.get(seen[r.name].trust_level, 0):
+            seen[r.name] = r
+    deduped = list(seen.values())
+    deduped.sort(key=lambda r: (-_TRUST_RANK.get(r.trust_level, 0), r.source != "official", r.name.lower()))
+    total = len(deduped)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * page_size
+    page_items = deduped[start : min(start + page_size, total)]
+    return {
+        "items": [{"name": r.name, "description": r.description, "source": r.source,
+                    "trust": r.trust_level} for r in page_items],
+        "page": page,
+        "total_pages": total_pages,
+        "total": total,
+    }
+
+
+def inspect_skill(identifier: str) -> Optional[dict]:
+    """Skill metadata (+ SKILL.md preview) for programmatic callers."""
+    from tools.skills_hub import GitHubAuth, create_source_router
+
+    class _Q:
+        def print(self, *a, **k):
+            pass
+
+    c = _Q()
+    auth = GitHubAuth()
+    sources = create_source_router(auth)
+    ident = identifier
+    if "/" not in ident:
+        ident = _resolve_short_name(ident, sources, c)
+        if not ident:
+            return None
+    meta, bundle, _ = _resolve_source_meta_and_bundle(ident, sources)
+    if not meta:
+        return None
+    out: dict = {
+        "name": meta.name,
+        "description": meta.description,
+        "source": meta.source,
+        "identifier": meta.identifier,
+        "tags": list(meta.tags) if meta.tags else [],
+    }
+    if bundle and "SKILL.md" in bundle.files:
+        content = bundle.files["SKILL.md"]
+        if isinstance(content, bytes):
+            content = content.decode("utf-8", errors="replace")
+        lines = content.split("\n")
+        preview = "\n".join(lines[:50])
+        if len(lines) > 50:
+            preview += f"\n\n... ({len(lines) - 50} more lines)"
+        out["skill_md_preview"] = preview
+    return out
 
 
 def do_list(source_filter: str = "all", console: Optional[Console] = None) -> None:
@@ -663,6 +766,51 @@ def do_uninstall(name: str, console: Optional[Console] = None,
             c.print("[dim]Use /reset to start a new session now, or --now to apply immediately (invalidates prompt cache).[/]\n")
     else:
         c.print(f"[bold red]Error:[/] {msg}\n")
+
+
+def do_reset(name: str, restore: bool = False,
+             console: Optional[Console] = None,
+             skip_confirm: bool = False,
+             invalidate_cache: bool = True) -> None:
+    """Reset a bundled skill's manifest tracking (+ optionally restore from bundled)."""
+    from tools.skills_sync import reset_bundled_skill
+
+    c = console or _console
+
+    if not skip_confirm and restore:
+        c.print(f"\n[bold]Restore '{name}' from bundled source?[/]")
+        c.print("[dim]This will DELETE your current copy and re-copy the bundled version.[/]")
+        try:
+            answer = input("Confirm [y/N]: ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            answer = "n"
+        if answer not in ("y", "yes"):
+            c.print("[dim]Cancelled.[/]\n")
+            return
+
+    result = reset_bundled_skill(name, restore=restore)
+
+    if not result["ok"]:
+        c.print(f"[bold red]Error:[/] {result['message']}\n")
+        return
+
+    c.print(f"[bold green]{result['message']}[/]")
+    synced = result.get("synced") or {}
+    if synced.get("copied"):
+        c.print(f"[dim]Copied: {', '.join(synced['copied'])}[/]")
+    if synced.get("updated"):
+        c.print(f"[dim]Updated: {', '.join(synced['updated'])}[/]")
+    c.print()
+
+    if invalidate_cache:
+        try:
+            from agent.prompt_builder import clear_skills_system_prompt_cache
+            clear_skills_system_prompt_cache(clear_snapshot=True)
+        except Exception:
+            pass
+    else:
+        c.print("[dim]Change will take effect in your next session.[/]")
+        c.print("[dim]Use /reset to start a new session now, or --now to apply immediately (invalidates prompt cache).[/]\n")
 
 
 def do_tap(action: str, repo: str = "", console: Optional[Console] = None) -> None:
@@ -988,6 +1136,9 @@ def skills_command(args) -> None:
         do_audit(name=getattr(args, "name", None))
     elif action == "uninstall":
         do_uninstall(args.name)
+    elif action == "reset":
+        do_reset(args.name, restore=getattr(args, "restore", False),
+                 skip_confirm=getattr(args, "yes", False))
     elif action == "publish":
         do_publish(
             args.skill_path,
@@ -1010,7 +1161,7 @@ def skills_command(args) -> None:
             return
         do_tap(tap_action, repo=repo)
     else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|reset|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
 
 
@@ -1156,6 +1307,19 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         do_uninstall(args[0], console=c, skip_confirm=skip_confirm,
                      invalidate_cache=invalidate_cache)
 
+    elif action == "reset":
+        if not args:
+            c.print("[bold red]Usage:[/] /skills reset <name> [--restore] [--now]\n")
+            c.print("[dim]Clears the bundled-skills manifest entry so future updates stop marking it as user-modified.[/]")
+            c.print("[dim]Pass --restore to also replace the current copy with the bundled version.[/]\n")
+            return
+        name = args[0]
+        restore = "--restore" in args
+        invalidate_cache = "--now" in args
+        # Slash commands can't prompt — --restore in slash mode is implicit consent.
+        do_reset(name, restore=restore, console=c, skip_confirm=True,
+                 invalidate_cache=invalidate_cache)
+
     elif action == "publish":
         if not args:
             c.print("[bold red]Usage:[/] /skills publish <skill-path> [--to github] [--repo owner/repo]\n")
@@ -1212,6 +1376,7 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]update[/] [name]               Update hub skills with upstream changes\n"
         "  [cyan]audit[/] [name]                Re-scan hub skills for security\n"
         "  [cyan]uninstall[/] <name>            Remove a hub-installed skill\n"
+        "  [cyan]reset[/] <name> [--restore]    Reset bundled-skill tracking (fix 'user-modified' flag)\n"
         "  [cyan]publish[/] <path> --repo <r>   Publish a skill to GitHub via PR\n"
         "  [cyan]snapshot[/] export|import      Export/import skill configurations\n"
         "  [cyan]tap[/] list|add|remove         Manage skill sources\n",

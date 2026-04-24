@@ -185,6 +185,38 @@ def test_migrator_optionally_imports_supported_secrets_and_messaging_settings(tm
     assert "TELEGRAM_BOT_TOKEN=123:abc" in env_text
 
 
+def test_messaging_cwd_skipped_when_inside_source(tmp_path: Path):
+    """MESSAGING_CWD pointing inside the OpenClaw source dir should be skipped."""
+    mod = load_module()
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    target.mkdir()
+
+    # Workspace path is inside the source directory
+    ws_path = str(source / "workspace")
+    (source / "credentials").mkdir(parents=True)
+    (source / "openclaw.json").write_text(
+        json.dumps({"agents": {"defaults": {"workspace": ws_path}}}),
+        encoding="utf-8",
+    )
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=True,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=True,
+        output_dir=target / "migration-report",
+        selected_options={"messaging-settings"},
+    )
+    migrator.migrate()
+
+    env_path = target / ".env"
+    if env_path.exists():
+        assert "MESSAGING_CWD" not in env_path.read_text(encoding="utf-8")
+
+
 def test_migrator_can_execute_only_selected_categories(tmp_path: Path):
     mod = load_module()
     source = tmp_path / ".openclaw"
@@ -658,6 +690,47 @@ def test_workspace_agents_records_skip_when_missing(tmp_path: Path):
     assert wa_items[0]["status"] == "skipped"
 
 
+def test_cron_store_is_archived_without_config_cron_section(tmp_path: Path):
+    """Bug fix: archive cron store even when openclaw.json has no top-level cron config."""
+    mod = load_module()
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    output_dir = target / "migration-report"
+    source.mkdir()
+    target.mkdir()
+
+    (source / "openclaw.json").write_text(json.dumps({"channels": {}}), encoding="utf-8")
+    (source / "cron").mkdir(parents=True)
+    (source / "cron" / "jobs.json").write_text(
+        json.dumps({"version": 1, "jobs": [{"id": "job-1", "name": "demo"}]}),
+        encoding="utf-8",
+    )
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=True,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=output_dir,
+        selected_options={"cron-jobs"},
+    )
+    report = migrator.migrate()
+
+    cron_items = [item for item in report["items"] if item["kind"] == "cron-jobs"]
+    archived_store = next(
+        (item for item in cron_items if item["destination"] and item["destination"].endswith("archive/cron-store")),
+        None,
+    )
+    assert archived_store is not None
+    assert Path(archived_store["destination"]).joinpath("jobs.json").exists()
+
+    notes_text = (output_dir / "MIGRATION_NOTES.md").read_text(encoding="utf-8")
+    assert "Run `hermes cron` to recreate scheduled tasks" in notes_text
+    assert "archive/cron-config.json" not in notes_text
+
+
 def test_skill_installs_cleanly_under_skills_guard():
     skills_guard = load_skills_guard()
     result = skills_guard.scan_skill(
@@ -681,3 +754,98 @@ def test_skill_installs_cleanly_under_skills_guard():
     KNOWN_FALSE_POSITIVES = {"agent_config_mod", "python_os_environ", "hermes_config_mod"}
     for f in result.findings:
         assert f.pattern_id in KNOWN_FALSE_POSITIVES, f"Unexpected finding: {f}"
+
+
+# ── rebrand_text tests ────────────────────────────────────────
+
+
+def test_rebrand_text_replaces_openclaw_variants():
+    mod = load_module()
+    assert mod.rebrand_text("OpenClaw prefers Python 3.11") == "Hermes prefers Python 3.11"
+    assert mod.rebrand_text("I told Open Claw to use dark mode") == "I told Hermes to use dark mode"
+    assert mod.rebrand_text("Open-Claw config is great") == "Hermes config is great"
+    assert mod.rebrand_text("openclaw should always respond concisely") == "Hermes should always respond concisely"
+    assert mod.rebrand_text("OPENCLAW uses tools well") == "Hermes uses tools well"
+
+
+def test_rebrand_text_replaces_legacy_bot_names():
+    mod = load_module()
+    assert mod.rebrand_text("ClawdBot remembers my timezone") == "Hermes remembers my timezone"
+    assert mod.rebrand_text("clawdbot prefers tabs") == "Hermes prefers tabs"
+    assert mod.rebrand_text("MoltBot was configured for Spanish") == "Hermes was configured for Spanish"
+    assert mod.rebrand_text("moltbot uses Python") == "Hermes uses Python"
+
+
+def test_rebrand_text_preserves_unrelated_content():
+    mod = load_module()
+    text = "User prefers dark mode and lives in Las Vegas"
+    assert mod.rebrand_text(text) == text
+
+
+def test_rebrand_text_handles_multiple_replacements():
+    mod = load_module()
+    text = "OpenClaw said to ask ClawdBot about MoltBot settings"
+    assert mod.rebrand_text(text) == "Hermes said to ask Hermes about Hermes settings"
+
+
+def test_migrate_memory_rebrands_entries(tmp_path):
+    mod = load_module()
+    source_root = tmp_path / "openclaw"
+    source_root.mkdir()
+    workspace = source_root / "workspace"
+    workspace.mkdir()
+    memory_md = workspace / "MEMORY.md"
+    memory_md.write_text(
+        "# Memory\n\n- OpenClaw should use Python 3.11\n- ClawdBot prefers dark mode\n",
+        encoding="utf-8",
+    )
+
+    target_root = tmp_path / "hermes"
+    target_root.mkdir()
+    (target_root / "memories").mkdir()
+
+    migrator = mod.Migrator(
+        source_root=source_root,
+        target_root=target_root,
+        execute=True,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=tmp_path / "report",
+        selected_options={"memory"},
+    )
+    migrator.migrate()
+
+    result = (target_root / "memories" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "OpenClaw" not in result
+    assert "ClawdBot" not in result
+    assert "Hermes" in result
+
+
+def test_migrate_soul_rebrands_content(tmp_path):
+    mod = load_module()
+    source_root = tmp_path / "openclaw"
+    source_root.mkdir()
+    workspace = source_root / "workspace"
+    workspace.mkdir()
+    soul_md = workspace / "SOUL.md"
+    soul_md.write_text("You are OpenClaw, an AI assistant made by SparkLab.", encoding="utf-8")
+
+    target_root = tmp_path / "hermes"
+    target_root.mkdir()
+
+    migrator = mod.Migrator(
+        source_root=source_root,
+        target_root=target_root,
+        execute=True,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=tmp_path / "report",
+        selected_options={"soul"},
+    )
+    migrator.migrate()
+
+    result = (target_root / "SOUL.md").read_text(encoding="utf-8")
+    assert "OpenClaw" not in result
+    assert "You are Hermes" in result

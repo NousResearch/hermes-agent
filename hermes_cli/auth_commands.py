@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from getpass import getpass
 import math
+import sys
 import time
 from types import SimpleNamespace
 import uuid
@@ -18,14 +19,13 @@ from agent.credential_pool import (
     STRATEGY_ROUND_ROBIN,
     STRATEGY_RANDOM,
     STRATEGY_LEAST_USED,
-    SUPPORTED_POOL_STRATEGIES,
     PooledCredential,
+    _exhausted_until,
     _normalize_custom_pool_name,
     get_pool_strategy,
     label_from_token,
     list_custom_pool_providers,
     load_pool,
-    _exhausted_ttl,
 )
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import PROVIDER_REGISTRY
@@ -33,29 +33,27 @@ from hermes_constants import OPENROUTER_BASE_URL
 
 
 # Providers that support OAuth login in addition to API keys.
-_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex"}
+_OAUTH_CAPABLE_PROVIDERS = {"anthropic", "nous", "openai-codex", "qwen-oauth", "google-gemini-cli"}
 
 
 def _get_custom_provider_names() -> list:
-    """Return list of (display_name, pool_key) tuples for custom_providers in config."""
+    """Return list of (display_name, pool_key, provider_key) tuples."""
     try:
-        from hermes_cli.config import load_config
+        from hermes_cli.config import get_compatible_custom_providers, load_config
 
         config = load_config()
     except Exception:
         return []
-    custom_providers = config.get("custom_providers")
-    if not isinstance(custom_providers, list):
-        return []
     result = []
-    for entry in custom_providers:
+    for entry in get_compatible_custom_providers(config):
         if not isinstance(entry, dict):
             continue
         name = entry.get("name")
         if not isinstance(name, str) or not name.strip():
             continue
         pool_key = f"{CUSTOM_POOL_PREFIX}{_normalize_custom_pool_name(name)}"
-        result.append((name.strip(), pool_key))
+        provider_key = str(entry.get("provider_key", "") or "").strip()
+        result.append((name.strip(), pool_key, provider_key))
     return result
 
 
@@ -67,8 +65,10 @@ def _resolve_custom_provider_input(raw: str) -> str | None:
     # Direct match on 'custom:name' format
     if normalized.startswith(CUSTOM_POOL_PREFIX):
         return normalized
-    for display_name, pool_key in _get_custom_provider_names():
+    for display_name, pool_key, provider_key in _get_custom_provider_names():
         if _normalize_custom_pool_name(display_name) == normalized:
+            return pool_key
+        if provider_key and provider_key.strip().lower() == normalized:
             return pool_key
     return None
 
@@ -113,21 +113,27 @@ def _display_source(source: str) -> str:
 def _format_exhausted_status(entry) -> str:
     if entry.last_status != STATUS_EXHAUSTED:
         return ""
+    reason = getattr(entry, "last_error_reason", None)
+    reason_text = f" {reason}" if isinstance(reason, str) and reason.strip() else ""
     code = f" ({entry.last_error_code})" if entry.last_error_code else ""
-    if not entry.last_status_at:
-        return f" exhausted{code}"
-    remaining = max(0, int(math.ceil((entry.last_status_at + _exhausted_ttl(entry.last_error_code)) - time.time())))
+    exhausted_until = _exhausted_until(entry)
+    if exhausted_until is None:
+        return f" exhausted{reason_text}{code}"
+    remaining = max(0, int(math.ceil(exhausted_until - time.time())))
     if remaining <= 0:
-        return f" exhausted{code} (ready to retry)"
+        return f" exhausted{reason_text}{code} (ready to retry)"
     minutes, seconds = divmod(remaining, 60)
     hours, minutes = divmod(minutes, 60)
-    if hours:
+    days, hours = divmod(hours, 24)
+    if days:
+        wait = f"{days}d {hours}h"
+    elif hours:
         wait = f"{hours}h {minutes}m"
     elif minutes:
         wait = f"{minutes}m {seconds}s"
     else:
         wait = f"{seconds}s"
-    return f" exhausted{code} ({wait} left)"
+    return f" exhausted{reason_text}{code} ({wait} left)"
 
 
 def auth_add_command(args) -> None:
@@ -142,9 +148,26 @@ def auth_add_command(args) -> None:
         if provider.startswith(CUSTOM_POOL_PREFIX):
             requested_type = AUTH_TYPE_API_KEY
         else:
-            requested_type = AUTH_TYPE_OAUTH if provider in {"anthropic", "nous", "openai-codex"} else AUTH_TYPE_API_KEY
+            requested_type = AUTH_TYPE_OAUTH if provider in {"anthropic", "nous", "openai-codex", "qwen-oauth", "google-gemini-cli"} else AUTH_TYPE_API_KEY
 
     pool = load_pool(provider)
+
+    # Clear ALL suppressions for this provider — re-adding a credential is
+    # a strong signal the user wants auth re-enabled.  This covers env:*
+    # (shell-exported vars), gh_cli (copilot), claude_code, qwen-cli,
+    # device_code (codex), etc.  One consistent re-engagement pattern.
+    # Matches the Codex device_code re-link pattern that predates this.
+    if not provider.startswith(CUSTOM_POOL_PREFIX):
+        try:
+            from hermes_cli.auth import (
+                _load_auth_store,
+                unsuppress_credential_source,
+            )
+            suppressed = _load_auth_store().get("suppressed_sources", {})
+            for src in list(suppressed.get(provider, []) or []):
+                unsuppress_credential_source(provider, src)
+        except Exception:
+            pass
 
     if requested_type == AUTH_TYPE_API_KEY:
         token = (getattr(args, "api_key", None) or "").strip()
@@ -155,7 +178,10 @@ def auth_add_command(args) -> None:
         default_label = _api_key_default_label(len(pool.entries()) + 1)
         label = (getattr(args, "label", None) or "").strip()
         if not label:
-            label = input(f"Label (optional, default: {default_label}): ").strip() or default_label
+            if sys.stdin.isatty():
+                label = input(f"Label (optional, default: {default_label}): ").strip() or default_label
+            else:
+                label = default_label
         entry = PooledCredential(
             provider=provider,
             id=uuid.uuid4().hex[:6],
@@ -208,22 +234,21 @@ def auth_add_command(args) -> None:
             ca_bundle=getattr(args, "ca_bundle", None),
             min_key_ttl_seconds=max(60, int(getattr(args, "min_key_ttl_seconds", 5 * 60))),
         )
-        label = (getattr(args, "label", None) or "").strip() or label_from_token(
-            creds.get("access_token", ""),
-            _oauth_default_label(provider, len(pool.entries()) + 1),
+        # Honor `--label <name>` so nous matches other providers' UX.  The
+        # helper embeds this into providers.nous so that label_from_token
+        # doesn't overwrite it on every subsequent load_pool("nous").
+        custom_label = (getattr(args, "label", None) or "").strip() or None
+        entry = auth_mod.persist_nous_credentials(creds, label=custom_label)
+        shown_label = entry.label if entry is not None else label_from_token(
+            creds.get("access_token", ""), _oauth_default_label(provider, 1),
         )
-        entry = PooledCredential.from_dict(provider, {
-            **creds,
-            "label": label,
-            "auth_type": AUTH_TYPE_OAUTH,
-            "source": f"{SOURCE_MANUAL}:device_code",
-            "base_url": creds.get("inference_base_url"),
-        })
-        pool.add_entry(entry)
-        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        print(f'Saved {provider} OAuth device-code credentials: "{shown_label}"')
         return
 
     if provider == "openai-codex":
+        # Clear any existing suppression marker so a re-link after `hermes auth
+        # remove openai-codex` works without the new tokens being skipped.
+        auth_mod.unsuppress_credential_source(provider, "device_code")
         creds = auth_mod._codex_device_code_login()
         label = (getattr(args, "label", None) or "").strip() or label_from_token(
             creds["tokens"]["access_token"],
@@ -240,6 +265,47 @@ def auth_add_command(args) -> None:
             refresh_token=creds["tokens"].get("refresh_token"),
             base_url=creds.get("base_url"),
             last_refresh=creds.get("last_refresh"),
+        )
+        pool.add_entry(entry)
+        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        return
+
+    if provider == "google-gemini-cli":
+        from agent.google_oauth import run_gemini_oauth_login_pure
+
+        creds = run_gemini_oauth_login_pure()
+        label = (getattr(args, "label", None) or "").strip() or (
+            creds.get("email") or _oauth_default_label(provider, len(pool.entries()) + 1)
+        )
+        entry = PooledCredential(
+            provider=provider,
+            id=uuid.uuid4().hex[:6],
+            label=label,
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source=f"{SOURCE_MANUAL}:google_pkce",
+            access_token=creds["access_token"],
+            refresh_token=creds.get("refresh_token"),
+        )
+        pool.add_entry(entry)
+        print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
+        return
+
+    if provider == "qwen-oauth":
+        creds = auth_mod.resolve_qwen_runtime_credentials(refresh_if_expiring=False)
+        label = (getattr(args, "label", None) or "").strip() or label_from_token(
+            creds["api_key"],
+            _oauth_default_label(provider, len(pool.entries()) + 1),
+        )
+        entry = PooledCredential(
+            provider=provider,
+            id=uuid.uuid4().hex[:6],
+            label=label,
+            auth_type=AUTH_TYPE_OAUTH,
+            priority=0,
+            source=f"{SOURCE_MANUAL}:qwen_cli",
+            access_token=creds["api_key"],
+            base_url=creds.get("base_url"),
         )
         pool.add_entry(entry)
         print(f'Added {provider} OAuth credential #{len(pool.entries())}: "{entry.label}"')
@@ -277,12 +343,40 @@ def auth_list_command(args) -> None:
 
 def auth_remove_command(args) -> None:
     provider = _normalize_provider(getattr(args, "provider", ""))
-    index = int(getattr(args, "index"))
+    target = getattr(args, "target", None)
+    if target is None:
+        target = getattr(args, "index", None)
     pool = load_pool(provider)
+    index, matched, error = pool.resolve_target(target)
+    if matched is None or index is None:
+        raise SystemExit(f"{error} Provider: {provider}.")
     removed = pool.remove_index(index)
     if removed is None:
-        raise SystemExit(f"No credential #{index} for provider {provider}.")
+        raise SystemExit(f'No credential matching "{target}" for provider {provider}.')
     print(f"Removed {provider} credential #{index} ({removed.label})")
+
+    # Unified removal dispatch.  Every credential source Hermes reads from
+    # (env vars, external OAuth files, auth.json blocks, custom config)
+    # has a RemovalStep registered in agent.credential_sources.  The step
+    # handles its source-specific cleanup and we centralise suppression +
+    # user-facing output here so every source behaves identically from
+    # the user's perspective.
+    from agent.credential_sources import find_removal_step
+    from hermes_cli.auth import suppress_credential_source
+
+    step = find_removal_step(provider, removed.source)
+    if step is None:
+        # Unregistered source — e.g. "manual", which has nothing external
+        # to clean up.  The pool entry is already gone; we're done.
+        return
+
+    result = step.remove_fn(provider, removed)
+    for line in result.cleaned:
+        print(line)
+    if result.suppress:
+        suppress_credential_source(provider, removed.source)
+    for line in result.hints:
+        print(line)
 
 
 def auth_reset_command(args) -> None:
@@ -299,6 +393,27 @@ def _interactive_auth() -> None:
     print("=" * 50)
 
     auth_list_command(SimpleNamespace(provider=None))
+
+    # Show AWS Bedrock credential status (not in the pool — uses boto3 chain)
+    try:
+        from agent.bedrock_adapter import has_aws_credentials, resolve_aws_auth_env_var, resolve_bedrock_region
+        if has_aws_credentials():
+            auth_source = resolve_aws_auth_env_var() or "unknown"
+            region = resolve_bedrock_region()
+            print(f"bedrock (AWS SDK credential chain):")
+            print(f"  Auth: {auth_source}")
+            print(f"  Region: {region}")
+            try:
+                import boto3
+                sts = boto3.client("sts", region_name=region)
+                identity = sts.get_caller_identity()
+                arn = identity.get("Arn", "unknown")
+                print(f"  Identity: {arn}")
+            except Exception:
+                print(f"  Identity: (could not resolve — boto3 STS call failed)")
+            print()
+    except ImportError:
+        pass  # boto3 or bedrock_adapter not available
     print()
 
     # Main menu
@@ -336,7 +451,7 @@ def _pick_provider(prompt: str = "Provider") -> str:
     known = sorted(set(list(PROVIDER_REGISTRY.keys()) + ["openrouter"]))
     custom_names = _get_custom_provider_names()
     if custom_names:
-        custom_display = [name for name, _key in custom_names]
+        custom_display = [name for name, _key, _provider_key in custom_names]
         print(f"\nKnown providers: {', '.join(known)}")
         print(f"Custom endpoints: {', '.join(custom_display)}")
     else:
@@ -369,8 +484,16 @@ def _interactive_add() -> None:
     else:
         auth_type = "api_key"
 
+    label = None
+    try:
+        typed_label = input("Label / account name (optional): ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return
+    if typed_label:
+        label = typed_label
+
     auth_add_command(SimpleNamespace(
-        provider=provider, auth_type=auth_type, label=None, api_key=None,
+        provider=provider, auth_type=auth_type, label=label, api_key=None,
         portal_url=None, inference_url=None, client_id=None, scope=None,
         no_browser=False, timeout=None, insecure=False, ca_bundle=None,
     ))
@@ -386,22 +509,16 @@ def _interactive_remove() -> None:
     # Show entries with indices
     for i, e in enumerate(pool.entries(), 1):
         exhausted = _format_exhausted_status(e)
-        print(f"  #{i}  {e.label:25s} {e.auth_type:10s} {e.source}{exhausted}")
+        print(f"  #{i}  {e.label:25s} {e.auth_type:10s} {e.source}{exhausted} [id:{e.id}]")
 
     try:
-        raw = input("Remove # (or blank to cancel): ").strip()
+        raw = input("Remove #, id, or label (blank to cancel): ").strip()
     except (EOFError, KeyboardInterrupt):
         return
     if not raw:
         return
 
-    try:
-        index = int(raw)
-    except ValueError:
-        print("Invalid number.")
-        return
-
-    auth_remove_command(SimpleNamespace(provider=provider, index=index))
+    auth_remove_command(SimpleNamespace(provider=provider, target=raw))
 
 
 def _interactive_reset() -> None:

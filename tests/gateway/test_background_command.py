@@ -220,6 +220,8 @@ class TestRunBackgroundTask:
         with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
              patch("run_agent.AIAgent") as MockAgent:
             mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
             mock_agent_instance.run_conversation.return_value = mock_result
             MockAgent.return_value = mock_agent_instance
 
@@ -231,6 +233,37 @@ class TestRunBackgroundTask:
         content = call_args[1].get("content", call_args[0][1] if len(call_args[0]) > 1 else "")
         assert "Background task complete" in content
         assert "Hello from background!" in content
+        mock_agent_instance.shutdown_memory_provider.assert_called_once()
+        mock_agent_instance.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_agent_cleanup_runs_when_background_agent_raises(self):
+        """Temporary background agents must be cleaned up on error paths too."""
+        runner = _make_runner()
+        mock_adapter = AsyncMock()
+        mock_adapter.send = AsyncMock()
+        runner.adapters[Platform.TELEGRAM] = mock_adapter
+
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            user_id="12345",
+            chat_id="67890",
+            user_name="testuser",
+        )
+
+        with patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "test-key"}), \
+             patch("run_agent.AIAgent") as MockAgent:
+            mock_agent_instance = MagicMock()
+            mock_agent_instance.shutdown_memory_provider = MagicMock()
+            mock_agent_instance.close = MagicMock()
+            mock_agent_instance.run_conversation.side_effect = RuntimeError("boom")
+            MockAgent.return_value = mock_agent_instance
+
+            await runner._run_background_task("say hello", source, "bg_test")
+
+        mock_adapter.send.assert_called_once()
+        mock_agent_instance.shutdown_memory_provider.assert_called_once()
+        mock_agent_instance.close.assert_called_once()
 
     @pytest.mark.asyncio
     async def test_exception_sends_error_message(self):
@@ -308,6 +341,7 @@ class TestBackgroundInCLICommands:
 
     def test_background_autocompletes(self):
         """The /background command appears in autocomplete results."""
+        pytest.importorskip("prompt_toolkit")
         from hermes_cli.commands import SlashCommandCompleter
         from prompt_toolkit.document import Document
 

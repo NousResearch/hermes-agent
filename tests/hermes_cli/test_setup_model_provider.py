@@ -8,7 +8,8 @@ that the setup wizard correctly syncs config from disk after the call.
 from __future__ import annotations
 
 from hermes_cli.config import load_config, save_config, save_env_value
-from hermes_cli.setup import setup_model_provider
+from hermes_cli.nous_subscription import NousFeatureState, NousSubscriptionFeatures
+from hermes_cli.setup import _print_setup_summary, setup_model_provider
 
 
 def _maybe_keep_current_tts(question, choices):
@@ -229,6 +230,39 @@ def test_setup_same_provider_fallback_can_add_another_credential(tmp_path, monke
     assert config.get("credential_pool_strategies", {}).get("openrouter") == "fill_first"
 
 
+def test_setup_same_provider_single_credential_keeps_existing_rotation_strategy(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    save_env_value("OPENROUTER_API_KEY", "or-key")
+
+    _write_model_config("openrouter", "", "anthropic/claude-opus-4.6")
+
+    config = load_config()
+    config["credential_pool_strategies"] = {"openrouter": "round_robin"}
+    save_config(config)
+
+    class _Entry:
+        def __init__(self, label):
+            self.label = label
+
+    class _Pool:
+        def entries(self):
+            return [_Entry("primary")]
+
+    def fake_select():
+        pass
+
+    monkeypatch.setattr("hermes_cli.main.select_provider_and_model", fake_select)
+    _stub_tts(monkeypatch)
+    monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
+    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: _Pool())
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+
+    setup_model_provider(config)
+
+    assert config.get("credential_pool_strategies", {}).get("openrouter") == "round_robin"
+
+
 def test_setup_pool_step_shows_manual_vs_auto_detected_counts(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     _clear_provider_env(monkeypatch)
@@ -304,7 +338,6 @@ def test_setup_copilot_acp_skips_same_provider_pool_step(tmp_path, monkeypatch):
     monkeypatch.setattr("hermes_cli.setup.prompt_yes_no", fake_prompt_yes_no)
     monkeypatch.setattr("hermes_cli.setup.prompt", lambda *args, **kwargs: "")
     monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
-    monkeypatch.setattr("hermes_cli.auth.detect_external_credentials", lambda: [])
     monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
 
     setup_model_provider(config)
@@ -405,3 +438,72 @@ def test_setup_switch_preserves_non_model_config(tmp_path, monkeypatch):
     reloaded = load_config()
     assert reloaded["terminal"]["timeout"] == 999
     assert reloaded["model"]["provider"] == "openrouter"
+
+
+def test_setup_summary_marks_anthropic_auth_as_vision_available(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "sk-ant-api03-key")
+    monkeypatch.setattr("shutil.which", lambda _name: None)
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: ["anthropic"])
+
+    _print_setup_summary(load_config(), tmp_path)
+    output = capsys.readouterr().out
+
+    assert "Vision (image analysis)" in output
+    assert "missing run 'hermes setup' to configure" not in output
+
+
+def test_setup_summary_shows_camofox_when_browser_feature_is_camofox(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setattr(
+        "hermes_cli.setup.get_nous_subscription_features",
+        lambda config: NousSubscriptionFeatures(
+            subscribed=False,
+            nous_auth_present=False,
+            provider_is_nous=False,
+            features={
+                "web": NousFeatureState("web", "Web tools", True, False, False, False, False, True, ""),
+                "image_gen": NousFeatureState("image_gen", "Image generation", True, False, False, False, False, True, ""),
+                "tts": NousFeatureState("tts", "OpenAI TTS", True, False, False, False, False, True, ""),
+                "browser": NousFeatureState("browser", "Browser automation", True, True, True, False, True, True, "Camofox"),
+                "modal": NousFeatureState("modal", "Modal execution", False, False, False, False, False, True, "local"),
+            },
+        ),
+    )
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+
+    _print_setup_summary(load_config(), tmp_path)
+    output = capsys.readouterr().out
+
+    assert "Browser Automation (Camofox)" in output
+
+
+def test_setup_summary_does_not_mark_incomplete_browserbase_as_available(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+    monkeypatch.setenv("BROWSERBASE_API_KEY", "bb-key")
+    monkeypatch.setattr(
+        "hermes_cli.setup.get_nous_subscription_features",
+        lambda config: NousSubscriptionFeatures(
+            subscribed=False,
+            nous_auth_present=False,
+            provider_is_nous=False,
+            features={
+                "web": NousFeatureState("web", "Web tools", True, False, False, False, False, True, ""),
+                "image_gen": NousFeatureState("image_gen", "Image generation", True, False, False, False, False, True, ""),
+                "tts": NousFeatureState("tts", "OpenAI TTS", True, False, False, False, False, True, ""),
+                "browser": NousFeatureState("browser", "Browser automation", True, False, False, False, False, True, "Browserbase"),
+                "modal": NousFeatureState("modal", "Modal execution", False, False, False, False, False, True, "local"),
+            },
+        ),
+    )
+    monkeypatch.setattr("agent.auxiliary_client.get_available_vision_backends", lambda: [])
+
+    _print_setup_summary(load_config(), tmp_path)
+    output = capsys.readouterr().out
+
+    assert "Browser Automation (Browserbase)" not in output
+    assert "Browser Automation" in output
+    assert "BROWSERBASE_API_KEY/BROWSERBASE_PROJECT_ID" in output

@@ -6,6 +6,7 @@ and shell completion generation.
 """
 
 import json
+import io
 import os
 import tarfile
 from pathlib import Path
@@ -176,7 +177,8 @@ class TestCreateProfile:
         # No error; optional files just not copied
         assert not (profile_dir / "config.yaml").exists()
         assert not (profile_dir / ".env").exists()
-        assert not (profile_dir / "SOUL.md").exists()
+        # SOUL.md is always seeded with the default even when clone source lacks it
+        assert (profile_dir / "SOUL.md").exists()
 
 
 # ===================================================================
@@ -292,12 +294,16 @@ class TestGetActiveProfileName:
         monkeypatch.setenv("HERMES_HOME", str(profile_dir))
         assert get_active_profile_name() == "coder"
 
-    def test_custom_path_returns_custom(self, profile_env, monkeypatch):
+    def test_custom_path_returns_default(self, profile_env, monkeypatch):
+        """A custom HERMES_HOME (Docker, etc.) IS the default root."""
         tmp_path = profile_env
         custom = tmp_path / "some" / "other" / "path"
         custom.mkdir(parents=True)
         monkeypatch.setenv("HERMES_HOME", str(custom))
-        assert get_active_profile_name() == "custom"
+        # With Docker-aware roots, a custom HERMES_HOME is the default —
+        # not "custom".  The user is on the default profile of their
+        # custom deployment.
+        assert get_active_profile_name() == "default"
 
 
 # ===================================================================
@@ -449,9 +455,227 @@ class TestExportImport:
         with pytest.raises(FileExistsError):
             import_profile(str(archive_path), name="coder")
 
+    def test_import_with_explicit_name_does_not_mutate_existing_archive_root_profile(
+        self, profile_env, tmp_path
+    ):
+        create_profile("victim", no_alias=True)
+        victim_dir = get_profile_dir("victim")
+        (victim_dir / "marker.txt").write_text("original")
+
+        archive_path = tmp_path / "export" / "victim.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        with tarfile.open(archive_path, "w:gz") as tf:
+            data = b"imported"
+            info = tarfile.TarInfo("victim/marker.txt")
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+        imported = import_profile(str(archive_path), name="renamed")
+
+        assert imported == get_profile_dir("renamed")
+        assert (imported / "marker.txt").read_text() == "imported"
+        assert (victim_dir / "marker.txt").read_text() == "original"
+
+    def test_import_rejects_archive_with_multiple_top_level_directories(
+        self, profile_env, tmp_path
+    ):
+        archive_path = tmp_path / "export" / "multi-root.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with tarfile.open(archive_path, "w:gz") as tf:
+            for member_name, data in (
+                ("alpha/marker.txt", b"a"),
+                ("beta/marker.txt", b"b"),
+            ):
+                info = tarfile.TarInfo(member_name)
+                info.size = len(data)
+                tf.addfile(info, io.BytesIO(data))
+
+        with pytest.raises(ValueError, match="exactly one top-level directory"):
+            import_profile(str(archive_path), name="coder")
+
+        assert not get_profile_dir("coder").exists()
+
+    def test_import_rejects_traversal_archive_member(self, profile_env, tmp_path):
+        archive_path = tmp_path / "export" / "evil.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        escape_path = tmp_path / "escape.txt"
+
+        with tarfile.open(archive_path, "w:gz") as tf:
+            info = tarfile.TarInfo("../../escape.txt")
+            data = b"pwned"
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+        with pytest.raises(ValueError, match="Unsafe archive member path"):
+            import_profile(str(archive_path), name="coder")
+
+        assert not escape_path.exists()
+        assert not get_profile_dir("coder").exists()
+
+    def test_import_rejects_absolute_archive_member(self, profile_env, tmp_path):
+        archive_path = tmp_path / "export" / "evil-abs.tar.gz"
+        archive_path.parent.mkdir(parents=True, exist_ok=True)
+        absolute_target = tmp_path / "abs-escape.txt"
+
+        with tarfile.open(archive_path, "w:gz") as tf:
+            info = tarfile.TarInfo(str(absolute_target))
+            data = b"pwned"
+            info.size = len(data)
+            tf.addfile(info, io.BytesIO(data))
+
+        with pytest.raises(ValueError, match="Unsafe archive member path"):
+            import_profile(str(archive_path), name="coder")
+
+        assert not absolute_target.exists()
+        assert not get_profile_dir("coder").exists()
+
     def test_export_nonexistent_raises(self, profile_env, tmp_path):
         with pytest.raises(FileNotFoundError):
             export_profile("nonexistent", str(tmp_path / "out.tar.gz"))
+
+    # ---------------------------------------------------------------
+    # Default profile export / import
+    # ---------------------------------------------------------------
+
+    def test_export_default_creates_valid_archive(self, profile_env, tmp_path):
+        """Exporting the default profile produces a valid tar.gz."""
+        default_dir = get_profile_dir("default")
+        (default_dir / "config.yaml").write_text("model: test")
+
+        output = tmp_path / "export" / "default.tar.gz"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        result = export_profile("default", str(output))
+
+        assert Path(result).exists()
+        assert tarfile.is_tarfile(str(result))
+
+    def test_export_default_includes_profile_data(self, profile_env, tmp_path):
+        """Profile data files end up in the archive (credentials excluded)."""
+        default_dir = get_profile_dir("default")
+        (default_dir / "config.yaml").write_text("model: test")
+        (default_dir / ".env").write_text("KEY=val")
+        (default_dir / "SOUL.md").write_text("Be nice.")
+        mem_dir = default_dir / "memories"
+        mem_dir.mkdir(exist_ok=True)
+        (mem_dir / "MEMORY.md").write_text("remember this")
+
+        output = tmp_path / "export" / "default.tar.gz"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        export_profile("default", str(output))
+
+        with tarfile.open(str(output), "r:gz") as tf:
+            names = tf.getnames()
+
+        assert "default/config.yaml" in names
+        assert "default/.env" not in names  # credentials excluded
+        assert "default/SOUL.md" in names
+        assert "default/memories/MEMORY.md" in names
+
+    def test_export_default_excludes_infrastructure(self, profile_env, tmp_path):
+        """Repo checkout, worktrees, profiles, databases are excluded."""
+        default_dir = get_profile_dir("default")
+        (default_dir / "config.yaml").write_text("ok")
+
+        # Create dirs/files that should be excluded
+        for d in ("hermes-agent", ".worktrees", "profiles", "bin",
+                  "image_cache", "logs", "sandboxes", "checkpoints"):
+            sub = default_dir / d
+            sub.mkdir(exist_ok=True)
+            (sub / "marker.txt").write_text("excluded")
+
+        for f in ("state.db", "gateway.pid", "gateway_state.json",
+                  "processes.json", "errors.log", ".hermes_history",
+                  "active_profile", ".update_check", "auth.lock"):
+            (default_dir / f).write_text("excluded")
+
+        output = tmp_path / "export" / "default.tar.gz"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        export_profile("default", str(output))
+
+        with tarfile.open(str(output), "r:gz") as tf:
+            names = tf.getnames()
+
+        # Config is present
+        assert "default/config.yaml" in names
+
+        # Infrastructure excluded
+        excluded_prefixes = [
+            "default/hermes-agent", "default/.worktrees", "default/profiles",
+            "default/bin", "default/image_cache", "default/logs",
+            "default/sandboxes", "default/checkpoints",
+        ]
+        for prefix in excluded_prefixes:
+            assert not any(n.startswith(prefix) for n in names), \
+                f"Expected {prefix} to be excluded but found it in archive"
+
+        excluded_files = [
+            "default/state.db", "default/gateway.pid",
+            "default/gateway_state.json", "default/processes.json",
+            "default/errors.log", "default/.hermes_history",
+            "default/active_profile", "default/.update_check",
+            "default/auth.lock",
+        ]
+        for f in excluded_files:
+            assert f not in names, f"Expected {f} to be excluded"
+
+    def test_export_default_excludes_pycache_at_any_depth(self, profile_env, tmp_path):
+        """__pycache__ dirs are excluded even inside nested directories."""
+        default_dir = get_profile_dir("default")
+        (default_dir / "config.yaml").write_text("ok")
+        nested = default_dir / "skills" / "my-skill" / "__pycache__"
+        nested.mkdir(parents=True)
+        (nested / "cached.pyc").write_text("bytecode")
+
+        output = tmp_path / "export" / "default.tar.gz"
+        output.parent.mkdir(parents=True, exist_ok=True)
+        export_profile("default", str(output))
+
+        with tarfile.open(str(output), "r:gz") as tf:
+            names = tf.getnames()
+
+        assert not any("__pycache__" in n for n in names)
+
+    def test_import_default_without_name_raises(self, profile_env, tmp_path):
+        """Importing a default export without --name gives clear guidance."""
+        default_dir = get_profile_dir("default")
+        (default_dir / "config.yaml").write_text("ok")
+
+        archive = tmp_path / "export" / "default.tar.gz"
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        export_profile("default", str(archive))
+
+        with pytest.raises(ValueError, match="Cannot import as 'default'"):
+            import_profile(str(archive))
+
+    def test_import_default_with_explicit_default_name_raises(self, profile_env, tmp_path):
+        """Explicitly importing as 'default' is also rejected."""
+        default_dir = get_profile_dir("default")
+        (default_dir / "config.yaml").write_text("ok")
+
+        archive = tmp_path / "export" / "default.tar.gz"
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        export_profile("default", str(archive))
+
+        with pytest.raises(ValueError, match="Cannot import as 'default'"):
+            import_profile(str(archive), name="default")
+
+    def test_import_default_export_with_new_name_roundtrip(self, profile_env, tmp_path):
+        """Export default → import under a different name → data preserved."""
+        default_dir = get_profile_dir("default")
+        (default_dir / "config.yaml").write_text("model: opus")
+        mem_dir = default_dir / "memories"
+        mem_dir.mkdir(exist_ok=True)
+        (mem_dir / "MEMORY.md").write_text("important fact")
+
+        archive = tmp_path / "export" / "default.tar.gz"
+        archive.parent.mkdir(parents=True, exist_ok=True)
+        export_profile("default", str(archive))
+
+        imported = import_profile(str(archive), name="backup")
+        assert imported.is_dir()
+        assert (imported / "config.yaml").read_text() == "model: opus"
+        assert (imported / "memories" / "MEMORY.md").read_text() == "important fact"
 
 
 # ===================================================================
@@ -528,6 +752,72 @@ class TestInternalHelpers:
         home = _get_default_hermes_home()
         assert home == tmp_path / ".hermes"
 
+    def test_profiles_root_docker_deployment(self, tmp_path, monkeypatch):
+        """In Docker (HERMES_HOME outside ~/.hermes), profiles go under HERMES_HOME."""
+        docker_home = tmp_path / "opt" / "data"
+        docker_home.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(docker_home))
+        root = _get_profiles_root()
+        assert root == docker_home / "profiles"
+
+    def test_default_hermes_home_docker(self, tmp_path, monkeypatch):
+        """In Docker, _get_default_hermes_home() returns HERMES_HOME itself."""
+        docker_home = tmp_path / "opt" / "data"
+        docker_home.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(docker_home))
+        home = _get_default_hermes_home()
+        assert home == docker_home
+
+    def test_profiles_root_profile_mode(self, tmp_path, monkeypatch):
+        """In profile mode (HERMES_HOME under ~/.hermes), profiles root is still ~/.hermes/profiles."""
+        native = tmp_path / ".hermes"
+        profile_dir = native / "profiles" / "coder"
+        profile_dir.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        root = _get_profiles_root()
+        assert root == native / "profiles"
+
+    def test_active_profile_path_docker(self, tmp_path, monkeypatch):
+        """In Docker, active_profile file lives under HERMES_HOME."""
+        from hermes_cli.profiles import _get_active_profile_path
+        docker_home = tmp_path / "opt" / "data"
+        docker_home.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(docker_home))
+        path = _get_active_profile_path()
+        assert path == docker_home / "active_profile"
+
+    def test_create_profile_docker(self, tmp_path, monkeypatch):
+        """Profile created in Docker lands under HERMES_HOME/profiles/."""
+        docker_home = tmp_path / "opt" / "data"
+        docker_home.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(docker_home))
+        result = create_profile("orchestrator", no_alias=True)
+        expected = docker_home / "profiles" / "orchestrator"
+        assert result == expected
+        assert expected.is_dir()
+
+    def test_active_profile_name_docker_default(self, tmp_path, monkeypatch):
+        """In Docker (no profile active), get_active_profile_name() returns 'default'."""
+        docker_home = tmp_path / "opt" / "data"
+        docker_home.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(docker_home))
+        assert get_active_profile_name() == "default"
+
+    def test_active_profile_name_docker_profile(self, tmp_path, monkeypatch):
+        """In Docker with a profile active, get_active_profile_name() returns the profile name."""
+        docker_home = tmp_path / "opt" / "data"
+        profile = docker_home / "profiles" / "orchestrator"
+        profile.mkdir(parents=True)
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        monkeypatch.setenv("HERMES_HOME", str(profile))
+        assert get_active_profile_name() == "orchestrator"
+
 
 # ===================================================================
 # Edge cases and additional coverage
@@ -550,35 +840,30 @@ class TestEdgeCases:
         assert default.skill_count == 0
 
     def test_gateway_running_check_with_pid_file(self, profile_env):
-        """Verify _check_gateway_running reads pid file and probes os.kill."""
+        """Verify _check_gateway_running uses the shared gateway PID validator."""
         from hermes_cli.profiles import _check_gateway_running
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"
 
-        # No pid file -> not running
-        assert _check_gateway_running(default_home) is False
-
-        # Write a PID file with a JSON payload
-        pid_file = default_home / "gateway.pid"
-        pid_file.write_text(json.dumps({"pid": 99999}))
-
-        # os.kill(99999, 0) should raise ProcessLookupError -> not running
-        assert _check_gateway_running(default_home) is False
-
-        # Mock os.kill to simulate a running process
-        with patch("os.kill", return_value=None):
+        with patch("gateway.status.get_running_pid", return_value=99999) as mock_get_running_pid:
             assert _check_gateway_running(default_home) is True
+        mock_get_running_pid.assert_called_once_with(
+            default_home / "gateway.pid",
+            cleanup_stale=False,
+        )
 
     def test_gateway_running_check_plain_pid(self, profile_env):
-        """Pid file containing just a number (legacy format)."""
+        """Shared PID validator returning None means the profile is not running."""
         from hermes_cli.profiles import _check_gateway_running
         tmp_path = profile_env
         default_home = tmp_path / ".hermes"
-        pid_file = default_home / "gateway.pid"
-        pid_file.write_text("99999")
 
-        with patch("os.kill", return_value=None):
-            assert _check_gateway_running(default_home) is True
+        with patch("gateway.status.get_running_pid", return_value=None) as mock_get_running_pid:
+            assert _check_gateway_running(default_home) is False
+        mock_get_running_pid.assert_called_once_with(
+            default_home / "gateway.pid",
+            cleanup_stale=False,
+        )
 
     def test_profile_name_boundary_single_char(self):
         """Single alphanumeric character is valid."""

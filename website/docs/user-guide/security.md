@@ -10,13 +10,15 @@ Hermes Agent is designed with a defense-in-depth security model. This page cover
 
 ## Overview
 
-The security model has five layers:
+The security model has seven layers:
 
 1. **User authorization** — who can talk to the agent (allowlists, DM pairing)
 2. **Dangerous command approval** — human-in-the-loop for destructive operations
 3. **Container isolation** — Docker/Singularity/Modal sandboxing with hardened settings
 4. **MCP credential filtering** — environment variable isolation for MCP subprocesses
 5. **Context file scanning** — prompt injection detection in project files
+6. **Cross-session isolation** — sessions cannot access each other's data or state; cron job storage paths are hardened against path traversal attacks
+7. **Input sanitization** — working directory parameters in terminal tool backends are validated against an allowlist to prevent shell injection
 
 ## Dangerous Command Approval
 
@@ -277,6 +279,9 @@ Every container runs with these flags (defined in `tools/environments/docker.py`
 ```python
 _SECURITY_ARGS = [
     "--cap-drop", "ALL",                          # Drop ALL Linux capabilities
+    "--cap-add", "DAC_OVERRIDE",                  # Root can write to bind-mounted dirs
+    "--cap-add", "CHOWN",                         # Package managers need file ownership
+    "--cap-add", "FOWNER",                        # Package managers need file ownership
     "--security-opt", "no-new-privileges",         # Block privilege escalation
     "--pids-limit", "256",                         # Limit process count
     "--tmpfs", "/tmp:rw,nosuid,size=512m",         # Size-limited /tmp
@@ -363,7 +368,7 @@ terminal:
 
 ### Credential File Passthrough (OAuth tokens, etc.) {#credential-file-passthrough}
 
-Some skills need **files** (not just env vars) in the sandbox — for example, Google Workspace stores OAuth tokens as `google_token.json` in `~/.hermes/`. Skills declare these in frontmatter:
+Some skills need **files** (not just env vars) in the sandbox — for example, Google Workspace stores OAuth tokens as `google_token.json` under the active profile's `HERMES_HOME`. Skills declare these in frontmatter:
 
 ```yaml
 required_credential_files:
@@ -373,7 +378,7 @@ required_credential_files:
     description: Google OAuth2 client credentials
 ```
 
-When loaded, Hermes checks if these files exist in `~/.hermes/` and registers them for mounting:
+When loaded, Hermes checks if these files exist in the active profile's `HERMES_HOME` and registers them for mounting:
 
 - **Docker**: Read-only bind mounts (`-v host:container:ro`)
 - **Modal**: Mounted at sandbox creation + synced before each command (handles mid-session OAuth setup)

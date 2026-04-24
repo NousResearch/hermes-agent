@@ -854,16 +854,6 @@ class TestHubLockFile:
         names = {e["name"] for e in installed}
         assert names == {"s1", "s2"}
 
-    def test_is_hub_installed(self, tmp_path):
-        lock = HubLockFile(path=tmp_path / "lock.json")
-        lock.record_install(
-            name="my-skill", source="github", identifier="x",
-            trust_level="trusted", scan_verdict="pass",
-            skill_hash="h", install_path="my-skill", files=["SKILL.md"],
-        )
-        assert lock.is_hub_installed("my-skill") is True
-        assert lock.is_hub_installed("other") is False
-
 
 # ---------------------------------------------------------------------------
 # TapsManager

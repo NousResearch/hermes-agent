@@ -8,14 +8,124 @@ can invoke skills via /skill-name commands and prompt-only built-ins like
 import json
 import logging
 import re
+import subprocess
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
+
+from hermes_constants import display_hermes_home
 
 logger = logging.getLogger(__name__)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
 _PLAN_SLUG_RE = re.compile(r"[^a-z0-9]+")
+# Patterns for sanitizing skill names into clean hyphen-separated slugs.
+_SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
+_SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
+
+# Matches ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} tokens in SKILL.md.
+# Tokens that don't resolve (e.g. ${HERMES_SESSION_ID} with no session) are
+# left as-is so the user can debug them.
+_SKILL_TEMPLATE_RE = re.compile(r"\$\{(HERMES_SKILL_DIR|HERMES_SESSION_ID)\}")
+
+# Matches inline shell snippets like:  !`date +%Y-%m-%d`
+# Non-greedy, single-line only — no newlines inside the backticks.
+_INLINE_SHELL_RE = re.compile(r"!`([^`\n]+)`")
+
+# Cap inline-shell output so a runaway command can't blow out the context.
+_INLINE_SHELL_MAX_OUTPUT = 4000
+
+
+def _load_skills_config() -> dict:
+    """Load the ``skills`` section of config.yaml (best-effort)."""
+    try:
+        from hermes_cli.config import load_config
+
+        cfg = load_config() or {}
+        skills_cfg = cfg.get("skills")
+        if isinstance(skills_cfg, dict):
+            return skills_cfg
+    except Exception:
+        logger.debug("Could not read skills config", exc_info=True)
+    return {}
+
+
+def _substitute_template_vars(
+    content: str,
+    skill_dir: Path | None,
+    session_id: str | None,
+) -> str:
+    """Replace ${HERMES_SKILL_DIR} / ${HERMES_SESSION_ID} in skill content.
+
+    Only substitutes tokens for which a concrete value is available —
+    unresolved tokens are left in place so the author can spot them.
+    """
+    if not content:
+        return content
+
+    skill_dir_str = str(skill_dir) if skill_dir else None
+
+    def _replace(match: re.Match) -> str:
+        token = match.group(1)
+        if token == "HERMES_SKILL_DIR" and skill_dir_str:
+            return skill_dir_str
+        if token == "HERMES_SESSION_ID" and session_id:
+            return str(session_id)
+        return match.group(0)
+
+    return _SKILL_TEMPLATE_RE.sub(_replace, content)
+
+
+def _run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
+    """Execute a single inline-shell snippet and return its stdout (trimmed).
+
+    Failures return a short ``[inline-shell error: ...]`` marker instead of
+    raising, so one bad snippet can't wreck the whole skill message.
+    """
+    try:
+        completed = subprocess.run(
+            ["bash", "-c", command],
+            cwd=str(cwd) if cwd else None,
+            capture_output=True,
+            text=True,
+            timeout=max(1, int(timeout)),
+            check=False,
+        )
+    except subprocess.TimeoutExpired:
+        return f"[inline-shell timeout after {timeout}s: {command}]"
+    except FileNotFoundError:
+        return f"[inline-shell error: bash not found]"
+    except Exception as exc:
+        return f"[inline-shell error: {exc}]"
+
+    output = (completed.stdout or "").rstrip("\n")
+    if not output and completed.stderr:
+        output = completed.stderr.rstrip("\n")
+    if len(output) > _INLINE_SHELL_MAX_OUTPUT:
+        output = output[:_INLINE_SHELL_MAX_OUTPUT] + "…[truncated]"
+    return output
+
+
+def _expand_inline_shell(
+    content: str,
+    skill_dir: Path | None,
+    timeout: int,
+) -> str:
+    """Replace every !`cmd` snippet in ``content`` with its stdout.
+
+    Runs each snippet with the skill directory as CWD so relative paths in
+    the snippet work the way the author expects.
+    """
+    if "!`" not in content:
+        return content
+
+    def _replace(match: re.Match) -> str:
+        cmd = match.group(1).strip()
+        if not cmd:
+            return ""
+        return _run_inline_shell(cmd, skill_dir, timeout)
+
+    return _INLINE_SHELL_RE.sub(_replace, content)
 
 
 def build_plan_path(
@@ -67,7 +177,14 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
     skill_name = str(loaded_skill.get("name") or normalized)
     skill_path = str(loaded_skill.get("path") or "")
     skill_dir = None
-    if skill_path:
+    # Prefer the absolute skill_dir returned by skill_view() — this is
+    # correct for both local and external skills.  Fall back to the old
+    # SKILLS_DIR-relative reconstruction only when skill_dir is absent
+    # (e.g. legacy skill_view responses).
+    abs_skill_dir = loaded_skill.get("skill_dir")
+    if abs_skill_dir:
+        skill_dir = Path(abs_skill_dir)
+    elif skill_path:
         try:
             skill_dir = SKILLS_DIR / Path(skill_path).parent
         except Exception:
@@ -76,19 +193,83 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
     return loaded_skill, skill_dir, skill_name
 
 
+def _inject_skill_config(loaded_skill: dict[str, Any], parts: list[str]) -> None:
+    """Resolve and inject skill-declared config values into the message parts.
+
+    If the loaded skill's frontmatter declares ``metadata.hermes.config``
+    entries, their current values (from config.yaml or defaults) are appended
+    as a ``[Skill config: ...]`` block so the agent knows the configured values
+    without needing to read config.yaml itself.
+    """
+    try:
+        from agent.skill_utils import (
+            extract_skill_config_vars,
+            parse_frontmatter,
+            resolve_skill_config_values,
+        )
+
+        # The loaded_skill dict contains the raw content which includes frontmatter
+        raw_content = str(loaded_skill.get("raw_content") or loaded_skill.get("content") or "")
+        if not raw_content:
+            return
+
+        frontmatter, _ = parse_frontmatter(raw_content)
+        config_vars = extract_skill_config_vars(frontmatter)
+        if not config_vars:
+            return
+
+        resolved = resolve_skill_config_values(config_vars)
+        if not resolved:
+            return
+
+        lines = ["", f"[Skill config (from {display_hermes_home()}/config.yaml):"]
+        for key, value in resolved.items():
+            display_val = str(value) if value else "(not set)"
+            lines.append(f"  {key} = {display_val}")
+        lines.append("]")
+        parts.extend(lines)
+    except Exception:
+        pass  # Non-critical — skill still loads without config injection
+
+
 def _build_skill_message(
     loaded_skill: dict[str, Any],
     skill_dir: Path | None,
     activation_note: str,
     user_instruction: str = "",
     runtime_note: str = "",
+    session_id: str | None = None,
 ) -> str:
     """Format a loaded skill into a user/system message payload."""
     from tools.skills_tool import SKILLS_DIR
 
     content = str(loaded_skill.get("content") or "")
 
+    # ── Template substitution and inline-shell expansion ──
+    # Done before anything else so downstream blocks (setup notes,
+    # supporting-file hints) see the expanded content.
+    skills_cfg = _load_skills_config()
+    if skills_cfg.get("template_vars", True):
+        content = _substitute_template_vars(content, skill_dir, session_id)
+    if skills_cfg.get("inline_shell", False):
+        timeout = int(skills_cfg.get("inline_shell_timeout", 10) or 10)
+        content = _expand_inline_shell(content, skill_dir, timeout)
+
     parts = [activation_note, "", content.strip()]
+
+    # ── Inject the absolute skill directory so the agent can reference
+    #    bundled scripts without an extra skill_view() round-trip. ──
+    if skill_dir:
+        parts.append("")
+        parts.append(f"[Skill directory: {skill_dir}]")
+        parts.append(
+            "Resolve any relative paths in this skill (e.g. `scripts/foo.js`, "
+            "`templates/config.yaml`) against that directory, then run them "
+            "with the terminal tool using the absolute path."
+        )
+
+    # ── Inject resolved skill config values ──
+    _inject_skill_config(loaded_skill, parts)
 
     if loaded_skill.get("setup_skipped"):
         parts.extend(
@@ -123,7 +304,7 @@ def _build_skill_message(
             subdir_path = skill_dir / subdir
             if subdir_path.exists():
                 for f in sorted(subdir_path.rglob("*")):
-                    if f.is_file():
+                    if f.is_file() and not f.is_symlink():
                         rel = str(f.relative_to(skill_dir))
                         supporting.append(rel)
 
@@ -134,11 +315,13 @@ def _build_skill_message(
             # Skill is from an external dir — use the skill name instead
             skill_view_target = skill_dir.name
         parts.append("")
-        parts.append("[This skill has supporting files you can load with the skill_view tool:]")
+        parts.append("[This skill has supporting files:]")
         for sf in supporting:
-            parts.append(f"- {sf}")
+            parts.append(f"- {sf}  ->  {skill_dir / sf}")
         parts.append(
-            f'\nTo view any of these, use: skill_view(name="{skill_view_target}", file_path="<path>")'
+            f'\nLoad any of these with skill_view(name="{skill_view_target}", '
+            f'file_path="<path>"), or run scripts directly by absolute path '
+            f"(e.g. `node {skill_dir}/scripts/foo.js`)."
         )
 
     if user_instruction:
@@ -162,7 +345,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     _skill_commands = {}
     try:
         from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, _get_disabled_skill_names
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
 
@@ -173,7 +356,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         dirs_to_scan.extend(get_external_skills_dirs())
 
         for scan_dir in dirs_to_scan:
-            for skill_md in scan_dir.rglob("SKILL.md"):
+            for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
                 if any(part in ('.git', '.github', '.hub') for part in skill_md.parts):
                     continue
                 try:
@@ -196,7 +379,14 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                                 description = line[:80]
                                 break
                     seen_names.add(name)
+                    # Normalize to hyphen-separated slug, stripping
+                    # non-alnum chars (e.g. +, /) to avoid invalid
+                    # Telegram command names downstream.
                     cmd_name = name.lower().replace(' ', '-').replace('_', '-')
+                    cmd_name = _SKILL_INVALID_CHARS.sub('', cmd_name)
+                    cmd_name = _SKILL_MULTI_HYPHEN.sub('-', cmd_name).strip('-')
+                    if not cmd_name:
+                        continue
                     _skill_commands[f"/{cmd_name}"] = {
                         "name": name,
                         "description": description or f"Invoke the {name} skill",
@@ -215,6 +405,25 @@ def get_skill_commands() -> Dict[str, Dict[str, Any]]:
     if not _skill_commands:
         scan_skill_commands()
     return _skill_commands
+
+
+def resolve_skill_command_key(command: str) -> Optional[str]:
+    """Resolve a user-typed /command to its canonical skill_cmds key.
+
+    Skills are always stored with hyphens — ``scan_skill_commands`` normalizes
+    spaces and underscores to hyphens when building the key. Hyphens and
+    underscores are treated interchangeably in user input: this matches
+    ``_check_unavailable_skill`` and accommodates Telegram bot-command names
+    (which disallow hyphens, so ``/claude-code`` is registered as
+    ``/claude_code`` and comes back in the underscored form).
+
+    Returns the matching ``/slug`` key from ``get_skill_commands()`` or
+    ``None`` if no match.
+    """
+    if not command:
+        return None
+    cmd_key = f"/{command.replace('_', '-')}"
+    return cmd_key if cmd_key in get_skill_commands() else None
 
 
 def build_skill_invocation_message(
@@ -252,6 +461,7 @@ def build_skill_invocation_message(
         activation_note,
         user_instruction=user_instruction,
         runtime_note=runtime_note,
+        session_id=task_id,
     )
 
 
@@ -290,6 +500,7 @@ def build_preloaded_skills_prompt(
                 loaded_skill,
                 skill_dir,
                 activation_note,
+                session_id=task_id,
             )
         )
         loaded_names.append(skill_name)

@@ -45,17 +45,42 @@ Already up to date.  (or: Updating abc1234..def5678)
 ✅ Hermes Agent updated successfully!
 ```
 
+### Recommended Post-Update Validation
+
+`hermes update` handles the main update path, but a quick validation confirms everything landed cleanly:
+
+1. `git status --short` — if the tree is unexpectedly dirty, inspect before continuing
+2. `hermes doctor` — checks config, dependencies, and service health
+3. `hermes --version` — confirm the version bumped as expected
+4. If you use the gateway: `hermes gateway status`
+5. If `doctor` reports npm audit issues: run `npm audit fix` in the flagged directory
+
+:::warning Dirty working tree after update
+If `git status --short` shows unexpected changes after `hermes update`, stop and inspect them before continuing. This usually means local modifications were reapplied on top of the updated code, or a dependency step refreshed lockfiles.
+:::
+
+### If your terminal disconnects mid-update
+
+`hermes update` protects itself against accidental terminal loss:
+
+- The update ignores `SIGHUP`, so closing your SSH session or terminal window no longer kills it mid-install. `pip` and `git` child processes inherit this protection, so the Python environment cannot be left half-installed by a dropped connection.
+- All output is mirrored to `~/.hermes/logs/update.log` while the update runs. If your terminal disappears, reconnect and inspect the log to see whether the update finished and whether the gateway restart succeeded:
+
+```bash
+tail -f ~/.hermes/logs/update.log
+```
+
+- `Ctrl-C` (SIGINT) and system shutdown (SIGTERM) are still honored — those are deliberate cancellations, not accidents.
+
+You no longer need to wrap `hermes update` in `screen` or `tmux` to survive a terminal drop.
+
 ### Checking your current version
 
 ```bash
 hermes version
 ```
 
-Compare against the latest release at the [GitHub releases page](https://github.com/NousResearch/hermes-agent/releases) or check for available updates:
-
-```bash
-hermes update --check
-```
+Compare against the latest release at the [GitHub releases page](https://github.com/NousResearch/hermes-agent/releases).
 
 ### Updating from Messaging Platforms
 

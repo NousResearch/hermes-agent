@@ -5,7 +5,6 @@ Pure display functions with no HermesCLI state dependency.
 
 import json
 import logging
-import os
 import shutil
 import subprocess
 import threading
@@ -90,12 +89,6 @@ HERMES_CADUCEUS = """[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀�
 [#B8860B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠳⠈⣡⠞⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
 [#B8860B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]"""
 
-COMPACT_BANNER = """
-[bold #FFD700]╔══════════════════════════════════════════════════════════════╗[/]
-[bold #FFD700]║[/]  [#FFBF00]⚕ NOUS HERMES[/] [dim #B8860B]- AI Agent Framework[/]              [bold #FFD700]║[/]
-[bold #FFD700]║[/]  [#CD7F32]Messenger of the Digital Gods[/]    [dim #B8860B]Nous Research[/]   [bold #FFD700]║[/]
-[bold #FFD700]╚══════════════════════════════════════════════════════════════╝[/]
-"""
 
 
 # =========================================================================
@@ -190,6 +183,125 @@ def check_for_updates() -> Optional[int]:
     return behind
 
 
+def _resolve_repo_dir() -> Optional[Path]:
+    """Return the active Hermes git checkout, or None if this isn't a git install."""
+    hermes_home = get_hermes_home()
+    repo_dir = hermes_home / "hermes-agent"
+    if not (repo_dir / ".git").exists():
+        repo_dir = Path(__file__).parent.parent.resolve()
+    return repo_dir if (repo_dir / ".git").exists() else None
+
+
+def _git_short_hash(repo_dir: Path, rev: str) -> Optional[str]:
+    """Resolve a git revision to an 8-character short hash."""
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--short=8", rev],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(repo_dir),
+        )
+    except Exception:
+        return None
+    if result.returncode != 0:
+        return None
+    value = (result.stdout or "").strip()
+    return value or None
+
+
+def get_git_banner_state(repo_dir: Optional[Path] = None) -> Optional[dict]:
+    """Return upstream/local git hashes for the startup banner."""
+    repo_dir = repo_dir or _resolve_repo_dir()
+    if repo_dir is None:
+        return None
+
+    upstream = _git_short_hash(repo_dir, "origin/main")
+    local = _git_short_hash(repo_dir, "HEAD")
+    if not upstream or not local:
+        return None
+
+    ahead = 0
+    try:
+        result = subprocess.run(
+            ["git", "rev-list", "--count", "origin/main..HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+            cwd=str(repo_dir),
+        )
+        if result.returncode == 0:
+            ahead = int((result.stdout or "0").strip() or "0")
+    except Exception:
+        ahead = 0
+
+    return {"upstream": upstream, "local": local, "ahead": max(ahead, 0)}
+
+
+_RELEASE_URL_BASE = "https://github.com/NousResearch/hermes-agent/releases/tag"
+_latest_release_cache: Optional[tuple] = None  # (tag, url) once resolved
+
+
+def get_latest_release_tag(repo_dir: Optional[Path] = None) -> Optional[tuple]:
+    """Return ``(tag, release_url)`` for the latest git tag, or None.
+
+    Local-only — runs ``git describe --tags --abbrev=0`` against the
+    Hermes checkout. Cached per-process. Release URL always points at the
+    canonical NousResearch/hermes-agent repo (forks don't get a link).
+    """
+    global _latest_release_cache
+    if _latest_release_cache is not None:
+        return _latest_release_cache or None
+
+    repo_dir = repo_dir or _resolve_repo_dir()
+    if repo_dir is None:
+        _latest_release_cache = ()  # falsy sentinel — skip future lookups
+        return None
+
+    try:
+        result = subprocess.run(
+            ["git", "describe", "--tags", "--abbrev=0"],
+            capture_output=True,
+            text=True,
+            timeout=3,
+            cwd=str(repo_dir),
+        )
+    except Exception:
+        _latest_release_cache = ()
+        return None
+
+    if result.returncode != 0:
+        _latest_release_cache = ()
+        return None
+
+    tag = (result.stdout or "").strip()
+    if not tag:
+        _latest_release_cache = ()
+        return None
+
+    url = f"{_RELEASE_URL_BASE}/{tag}"
+    _latest_release_cache = (tag, url)
+    return _latest_release_cache
+
+
+def format_banner_version_label() -> str:
+    """Return the version label shown in the startup banner title."""
+    base = f"Hermes Agent v{VERSION} ({RELEASE_DATE})"
+    state = get_git_banner_state()
+    if not state:
+        return base
+
+    upstream = state["upstream"]
+    local = state["local"]
+    ahead = int(state.get("ahead") or 0)
+
+    if ahead <= 0 or upstream == local:
+        return f"{base} · upstream {upstream}"
+
+    carried_word = "commit" if ahead == 1 else "commits"
+    return f"{base} · upstream {upstream} · local {local} (+{ahead} carried {carried_word})"
+
+
 # =========================================================================
 # Non-blocking update check
 # =========================================================================
@@ -222,10 +334,16 @@ def _format_context_length(tokens: int) -> str:
     """Format a token count for display (e.g. 128000 → '128K', 1048576 → '1M')."""
     if tokens >= 1_000_000:
         val = tokens / 1_000_000
-        return f"{val:g}M"
+        rounded = round(val)
+        if abs(val - rounded) < 0.05:
+            return f"{rounded}M"
+        return f"{val:.1f}M"
     elif tokens >= 1_000:
         val = tokens / 1_000
-        return f"{val:g}K"
+        rounded = round(val)
+        if abs(val - rounded) < 0.05:
+            return f"{rounded}K"
+        return f"{val:.1f}K"
     return str(tokens)
 
 
@@ -447,9 +565,16 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     agent_name = _skin_branding("agent_name", "Hermes Agent")
     title_color = _skin_color("banner_title", "#FFD700")
     border_color = _skin_color("banner_border", "#CD7F32")
+    version_label = format_banner_version_label()
+    release_info = get_latest_release_tag()
+    if release_info:
+        _tag, _url = release_info
+        title_markup = f"[bold {title_color}][link={_url}]{version_label}[/link][/]"
+    else:
+        title_markup = f"[bold {title_color}]{version_label}[/]"
     outer_panel = Panel(
         layout_table,
-        title=f"[bold {title_color}]{agent_name} v{VERSION} ({RELEASE_DATE})[/]",
+        title=title_markup,
         border_style=border_color,
         padding=(0, 2),
     )

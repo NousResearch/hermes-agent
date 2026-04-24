@@ -339,6 +339,36 @@ class TestMarkJobRun:
         assert updated["last_status"] == "error"
         assert updated["last_error"] == "timeout"
 
+    def test_delivery_error_tracked_separately(self, tmp_cron_dir):
+        """Agent succeeds but delivery fails — both tracked independently."""
+        job = create_job(prompt="Report", schedule="every 1h")
+        mark_job_run(job["id"], success=True, delivery_error="platform 'telegram' not configured")
+        updated = get_job(job["id"])
+        assert updated["last_status"] == "ok"
+        assert updated["last_error"] is None
+        assert updated["last_delivery_error"] == "platform 'telegram' not configured"
+
+    def test_delivery_error_cleared_on_success(self, tmp_cron_dir):
+        """Successful delivery clears the previous delivery error."""
+        job = create_job(prompt="Report", schedule="every 1h")
+        mark_job_run(job["id"], success=True, delivery_error="network timeout")
+        updated = get_job(job["id"])
+        assert updated["last_delivery_error"] == "network timeout"
+        # Next run delivers successfully
+        mark_job_run(job["id"], success=True, delivery_error=None)
+        updated = get_job(job["id"])
+        assert updated["last_delivery_error"] is None
+
+    def test_both_agent_and_delivery_error(self, tmp_cron_dir):
+        """Agent fails AND delivery fails — both errors recorded."""
+        job = create_job(prompt="Report", schedule="every 1h")
+        mark_job_run(job["id"], success=False, error="model timeout",
+                     delivery_error="platform 'discord' not enabled")
+        updated = get_job(job["id"])
+        assert updated["last_status"] == "error"
+        assert updated["last_error"] == "model timeout"
+        assert updated["last_delivery_error"] == "platform 'discord' not enabled"
+
 
 class TestAdvanceNextRun:
     """Tests for advance_next_run() — crash-safety for recurring jobs."""
@@ -534,6 +564,35 @@ class TestGetDueJobs:
 
         assert get_due_jobs() == []
         assert get_job("oneshot-stale")["next_run_at"] is None
+
+
+class TestEnabledToolsets:
+    def test_enabled_toolsets_stored(self, tmp_cron_dir):
+        job = create_job(prompt="monitor", schedule="every 1h", enabled_toolsets=["web", "terminal"])
+        assert job["enabled_toolsets"] == ["web", "terminal"]
+
+    def test_enabled_toolsets_persisted(self, tmp_cron_dir):
+        job = create_job(prompt="monitor", schedule="every 1h", enabled_toolsets=["web", "file"])
+        fetched = get_job(job["id"])
+        assert fetched["enabled_toolsets"] == ["web", "file"]
+
+    def test_enabled_toolsets_none_when_omitted(self, tmp_cron_dir):
+        job = create_job(prompt="monitor", schedule="every 1h")
+        assert job["enabled_toolsets"] is None
+
+    def test_enabled_toolsets_empty_list_normalizes_to_none(self, tmp_cron_dir):
+        job = create_job(prompt="monitor", schedule="every 1h", enabled_toolsets=[])
+        assert job["enabled_toolsets"] is None
+
+    def test_enabled_toolsets_whitespace_entries_stripped(self, tmp_cron_dir):
+        job = create_job(prompt="monitor", schedule="every 1h", enabled_toolsets=["web", " ", "file"])
+        assert job["enabled_toolsets"] == ["web", "file"]
+
+    def test_enabled_toolsets_updated_via_update_job(self, tmp_cron_dir):
+        job = create_job(prompt="monitor", schedule="every 1h")
+        update_job(job["id"], {"enabled_toolsets": ["web", "delegation"]})
+        fetched = get_job(job["id"])
+        assert fetched["enabled_toolsets"] == ["web", "delegation"]
 
 
 class TestSaveJobOutput:

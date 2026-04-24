@@ -90,7 +90,10 @@ class TestSessionSourceRoundtrip:
 
 class TestSessionSourceDescription:
     def test_local_cli(self):
-        source = SessionSource.local_cli()
+        source = SessionSource(
+            platform=Platform.LOCAL, chat_id="cli",
+            chat_name="CLI terminal", chat_type="dm",
+        )
         assert source.description == "CLI terminal"
 
     def test_dm_with_username(self):
@@ -143,7 +146,10 @@ class TestSessionSourceDescription:
 
 class TestLocalCliFactory:
     def test_local_cli_defaults(self):
-        source = SessionSource.local_cli()
+        source = SessionSource(
+            platform=Platform.LOCAL, chat_id="cli",
+            chat_name="CLI terminal", chat_type="dm",
+        )
         assert source.platform == Platform.LOCAL
         assert source.chat_id == "cli"
         assert source.chat_type == "dm"
@@ -267,12 +273,28 @@ class TestBuildSessionContextPrompt:
 
     def test_local_prompt_mentions_machine(self):
         config = GatewayConfig()
-        source = SessionSource.local_cli()
+        source = SessionSource(
+            platform=Platform.LOCAL, chat_id="cli",
+            chat_name="CLI terminal", chat_type="dm",
+        )
         ctx = build_session_context(source, config)
         prompt = build_session_context_prompt(ctx)
 
         assert "Local" in prompt
         assert "machine running this agent" in prompt
+
+    def test_local_delivery_path_uses_display_hermes_home(self):
+        config = GatewayConfig()
+        source = SessionSource(
+            platform=Platform.LOCAL, chat_id="cli",
+            chat_name="CLI terminal", chat_type="dm",
+        )
+        ctx = build_session_context(source, config)
+
+        with patch("hermes_constants.display_hermes_home", return_value="~/.hermes/profiles/coder"):
+            prompt = build_session_context_prompt(ctx)
+
+        assert "~/.hermes/profiles/coder/cron/output/" in prompt
 
     def test_whatsapp_prompt(self):
         config = GatewayConfig(
@@ -290,6 +312,91 @@ class TestBuildSessionContextPrompt:
         prompt = build_session_context_prompt(ctx)
 
         assert "WhatsApp" in prompt or "whatsapp" in prompt.lower()
+
+    def test_multi_user_thread_prompt(self):
+        """Shared thread sessions show multi-user note instead of single user."""
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_name="Test Group",
+            chat_type="group",
+            thread_id="17585",
+            user_name="Alice",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "Multi-user thread" in prompt
+        assert "[sender name]" in prompt
+        # Should NOT show a specific **User:** line (would bust cache)
+        assert "**User:** Alice" not in prompt
+
+    def test_non_thread_group_shows_user(self):
+        """Regular group messages (no thread) still show the user name."""
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_name="Test Group",
+            chat_type="group",
+            user_name="Alice",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "**User:** Alice" in prompt
+        assert "Multi-user thread" not in prompt
+
+    def test_shared_non_thread_group_prompt_hides_single_user(self):
+        """Shared non-thread group sessions should avoid pinning one user."""
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake"),
+            },
+            group_sessions_per_user=False,
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_name="Test Group",
+            chat_type="group",
+            user_name="Alice",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "Multi-user session" in prompt
+        assert "[sender name]" in prompt
+        assert "**User:** Alice" not in prompt
+
+    def test_dm_thread_shows_user_not_multi(self):
+        """DM threads are single-user and should show User, not multi-user note."""
+        config = GatewayConfig(
+            platforms={
+                Platform.TELEGRAM: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="99",
+            chat_type="dm",
+            thread_id="topic-1",
+            user_name="Alice",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "**User:** Alice" in prompt
+        assert "Multi-user thread" not in prompt
 
 
 class TestSessionStoreRewriteTranscript:
@@ -480,6 +587,45 @@ class TestLoadTranscriptPreferLongerSource:
         assert result[0]["content"] == "db-q"
 
 
+class TestSessionStoreSwitchSession:
+    """Regression coverage for gateway /resume session switching semantics."""
+
+    def test_switch_session_reopens_target_session_in_db(self, tmp_path):
+        from hermes_state import SessionDB
+
+        config = GatewayConfig()
+        with patch("gateway.session.SessionStore._ensure_loaded"):
+            store = SessionStore(sessions_dir=tmp_path / "sessions", config=config)
+        db = SessionDB(db_path=tmp_path / "state.db")
+        store._db = db
+        store._loaded = True
+
+        source = SessionSource(
+            platform=Platform.FEISHU,
+            chat_id="chat-1",
+            chat_type="dm",
+            user_id="user-1",
+            user_name="tester",
+        )
+        current_entry = store.get_or_create_session(source)
+        current_session_id = current_entry.session_id
+
+        target_session_id = "old_session_abc"
+        db.create_session(target_session_id, source="feishu", user_id="user-1")
+        db.end_session(target_session_id, end_reason="user_exit")
+        assert db.get_session(target_session_id)["ended_at"] is not None
+
+        switched = store.switch_session(current_entry.session_key, target_session_id)
+
+        assert switched is not None
+        assert switched.session_id == target_session_id
+        assert db.get_session(current_session_id)["end_reason"] == "session_switch"
+        resumed = db.get_session(target_session_id)
+        assert resumed["ended_at"] is None
+        assert resumed["end_reason"] is None
+        db.close()
+
+
 class TestWhatsAppDMSessionKeyConsistency:
     """Regression: all session-key construction must go through build_session_key
     so DMs are isolated by chat_id across platforms."""
@@ -636,7 +782,28 @@ class TestWhatsAppDMSessionKeyConsistency:
         key = build_session_key(source)
         assert key == "agent:main:telegram:group:-1002285219667:17585"
 
-    def test_group_thread_sessions_are_isolated_per_user(self):
+    def test_group_thread_sessions_are_shared_by_default(self):
+        """Threads default to shared sessions — user_id is NOT appended."""
+        alice = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_type="group",
+            thread_id="17585",
+            user_id="alice",
+        )
+        bob = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_type="group",
+            thread_id="17585",
+            user_id="bob",
+        )
+        assert build_session_key(alice) == "agent:main:telegram:group:-1002285219667:17585"
+        assert build_session_key(bob) == "agent:main:telegram:group:-1002285219667:17585"
+        assert build_session_key(alice) == build_session_key(bob)
+
+    def test_group_thread_sessions_can_be_isolated_per_user(self):
+        """thread_sessions_per_user=True restores per-user isolation in threads."""
         source = SessionSource(
             platform=Platform.TELEGRAM,
             chat_id="-1002285219667",
@@ -644,8 +811,59 @@ class TestWhatsAppDMSessionKeyConsistency:
             thread_id="17585",
             user_id="42",
         )
-        key = build_session_key(source)
+        key = build_session_key(source, thread_sessions_per_user=True)
         assert key == "agent:main:telegram:group:-1002285219667:17585:42"
+
+    def test_non_thread_group_sessions_still_isolated_per_user(self):
+        """Regular group messages (no thread_id) remain per-user by default."""
+        alice = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_type="group",
+            user_id="alice",
+        )
+        bob = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-1002285219667",
+            chat_type="group",
+            user_id="bob",
+        )
+        assert build_session_key(alice) == "agent:main:telegram:group:-1002285219667:alice"
+        assert build_session_key(bob) == "agent:main:telegram:group:-1002285219667:bob"
+        assert build_session_key(alice) != build_session_key(bob)
+
+    def test_discord_thread_sessions_shared_by_default(self):
+        """Discord threads are shared across participants by default."""
+        alice = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="thread",
+            thread_id="thread-456",
+            user_id="alice",
+        )
+        bob = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-123",
+            chat_type="thread",
+            thread_id="thread-456",
+            user_id="bob",
+        )
+        assert build_session_key(alice) == build_session_key(bob)
+        assert "alice" not in build_session_key(alice)
+        assert "bob" not in build_session_key(bob)
+
+    def test_dm_thread_sessions_not_affected(self):
+        """DM threads use their own keying logic and are not affected."""
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="99",
+            chat_type="dm",
+            thread_id="topic-1",
+            user_id="42",
+        )
+        key = build_session_key(source)
+        # DM logic: chat_id + thread_id, user_id never included
+        assert key == "agent:main:telegram:dm:99:topic-1"
 
 
 class TestSessionStoreEntriesAttribute:
@@ -825,43 +1043,6 @@ class TestLastPromptTokens:
         store.update_session("k1", last_prompt_tokens=0)
         assert entry.last_prompt_tokens == 0
 
-    def test_update_session_passes_model_to_db(self, tmp_path):
-        """Gateway session updates should forward the resolved model to SQLite."""
-        config = GatewayConfig()
-        with patch("gateway.session.SessionStore._ensure_loaded"):
-            store = SessionStore(sessions_dir=tmp_path, config=config)
-        store._loaded = True
-        store._save = MagicMock()
-        store._db = MagicMock()
-
-        from gateway.session import SessionEntry
-        from datetime import datetime
-        entry = SessionEntry(
-            session_key="k1",
-            session_id="s1",
-            created_at=datetime.now(),
-            updated_at=datetime.now(),
-        )
-        store._entries = {"k1": entry}
-
-        store.update_session("k1", model="openai/gpt-5.4")
-
-        store._db.set_token_counts.assert_called_once_with(
-            "s1",
-            input_tokens=0,
-            output_tokens=0,
-            cache_read_tokens=0,
-            cache_write_tokens=0,
-            estimated_cost_usd=None,
-            cost_status=None,
-            cost_source=None,
-            billing_provider=None,
-            billing_base_url=None,
-            model="openai/gpt-5.4",
-            absolute=True,
-        )
-
-
 class TestRewriteTranscriptPreservesReasoning:
     """rewrite_transcript must not drop reasoning fields from SQLite."""
 
@@ -878,6 +1059,7 @@ class TestRewriteTranscriptPreservesReasoning:
             role="assistant",
             content="The answer is 42.",
             reasoning="I need to think step by step.",
+            reasoning_content="provider scratchpad",
             reasoning_details=[{"type": "summary", "text": "step by step"}],
             codex_reasoning_items=[{"id": "r1", "type": "reasoning"}],
         )
@@ -885,6 +1067,7 @@ class TestRewriteTranscriptPreservesReasoning:
         # Verify all three were stored
         before = db.get_messages_as_conversation(session_id)
         assert before[0].get("reasoning") == "I need to think step by step."
+        assert before[0].get("reasoning_content") == "provider scratchpad"
         assert before[0].get("reasoning_details") == [{"type": "summary", "text": "step by step"}]
         assert before[0].get("codex_reasoning_items") == [{"id": "r1", "type": "reasoning"}]
 
@@ -901,5 +1084,6 @@ class TestRewriteTranscriptPreservesReasoning:
         # Load again — all three reasoning fields must survive
         after = db.get_messages_as_conversation(session_id)
         assert after[0].get("reasoning") == "I need to think step by step."
+        assert after[0].get("reasoning_content") == "provider scratchpad"
         assert after[0].get("reasoning_details") == [{"type": "summary", "text": "step by step"}]
         assert after[0].get("codex_reasoning_items") == [{"id": "r1", "type": "reasoning"}]

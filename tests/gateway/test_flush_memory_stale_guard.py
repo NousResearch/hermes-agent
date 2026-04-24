@@ -54,9 +54,10 @@ class TestCronSessionBypass:
         # session_store.load_transcript should never be called
         runner.session_store.load_transcript.assert_not_called()
 
-    def test_cron_session_with_honcho_key_skipped(self):
+    def test_cron_session_with_prefix_skipped(self):
+        """Cron sessions with different prefixes are still skipped."""
         runner = _make_runner()
-        runner._flush_memories_for_session("cron_daily_20260323", "some-honcho-key")
+        runner._flush_memories_for_session("cron_daily_20260323")
         runner.session_store.load_transcript.assert_not_called()
 
     def test_non_cron_session_proceeds(self):
@@ -94,7 +95,7 @@ class TestMemoryInjection:
         with (
             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}),
             patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-            patch.dict("sys.modules", {"tools.memory_tool": MagicMock(MEMORY_DIR=memory_dir)}),
+            patch.dict("sys.modules", {"tools.memory_tool": MagicMock(get_memory_dir=lambda: memory_dir)}),
         ):
             runner._flush_memories_for_session("session_123")
 
@@ -118,7 +119,7 @@ class TestMemoryInjection:
         with (
             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}),
             patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-            patch.dict("sys.modules", {"tools.memory_tool": MagicMock(MEMORY_DIR=empty_dir)}),
+            patch.dict("sys.modules", {"tools.memory_tool": MagicMock(get_memory_dir=lambda: empty_dir)}),
         ):
             runner._flush_memories_for_session("session_456")
 
@@ -139,7 +140,7 @@ class TestMemoryInjection:
         with (
             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}),
             patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-            patch.dict("sys.modules", {"tools.memory_tool": MagicMock(MEMORY_DIR=memory_dir)}),
+            patch.dict("sys.modules", {"tools.memory_tool": MagicMock(get_memory_dir=lambda: memory_dir)}),
         ):
             runner._flush_memories_for_session("session_789")
 
@@ -170,7 +171,7 @@ class TestFlushAgentSilenced:
         with (
             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}),
             patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-            patch.dict("sys.modules", {"tools.memory_tool": MagicMock(MEMORY_DIR=tmp_path)}),
+            patch.dict("sys.modules", {"tools.memory_tool": MagicMock(get_memory_dir=lambda: tmp_path)}),
         ):
             runner._flush_memories_for_session("session_silent")
 
@@ -201,6 +202,22 @@ class TestFlushAgentSilenced:
             sys.stdout = old_stdout
         assert buf.getvalue() == "", "no-op print_fn spinner must not write to stdout"
 
+    def test_flush_agent_closes_resources_after_run(self, monkeypatch):
+        """Memory flush should close temporary agent resources after the turn."""
+        runner, tmp_agent, _ = _make_flush_context(monkeypatch)
+        tmp_agent.shutdown_memory_provider = MagicMock()
+        tmp_agent.close = MagicMock()
+
+        with (
+            patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}),
+            patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+            patch.dict("sys.modules", {"tools.memory_tool": MagicMock(get_memory_dir=lambda: Path("/nonexistent"))}),
+        ):
+            runner._flush_memories_for_session("session_cleanup")
+
+        tmp_agent.shutdown_memory_provider.assert_called_once()
+        tmp_agent.close.assert_called_once()
+
 
 class TestFlushPromptStructure:
     """Verify the flush prompt retains its core instructions."""
@@ -212,7 +229,7 @@ class TestFlushPromptStructure:
         with (
             patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "k"}),
             patch("gateway.run._resolve_gateway_model", return_value="test-model"),
-            patch.dict("sys.modules", {"tools.memory_tool": MagicMock(MEMORY_DIR=Path("/nonexistent"))}),
+            patch.dict("sys.modules", {"tools.memory_tool": MagicMock(get_memory_dir=lambda: Path("/nonexistent"))}),
         ):
             runner._flush_memories_for_session("session_struct")
 

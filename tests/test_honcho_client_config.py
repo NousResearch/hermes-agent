@@ -7,7 +7,7 @@ from pathlib import Path
 
 import pytest
 
-from honcho_integration.client import HonchoClientConfig
+from plugins.memory.honcho.client import HonchoClientConfig
 
 
 class TestHonchoClientConfigAutoEnable:

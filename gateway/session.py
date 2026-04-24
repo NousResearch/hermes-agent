@@ -12,7 +12,6 @@ import hashlib
 import logging
 import os
 import json
-import re
 import threading
 import uuid
 from pathlib import Path
@@ -31,9 +30,6 @@ def _now() -> datetime:
 # ---------------------------------------------------------------------------
 # PII redaction helpers
 # ---------------------------------------------------------------------------
-
-_PHONE_RE = re.compile(r"^\+?\d[\d\-\s]{6,}$")
-
 
 def _hash_id(value: str) -> str:
     """Deterministic 12-char hex hash of an identifier."""
@@ -57,10 +53,6 @@ def _hash_chat_id(value: str) -> str:
         return f"{prefix}:{_hash_id(value[colon + 1:])}"
     return _hash_id(value)
 
-
-def _looks_like_phone(value: str) -> bool:
-    """Return True if *value* looks like a phone number (E.164 or similar)."""
-    return bool(_PHONE_RE.match(value.strip()))
 
 from .config import (
     Platform,
@@ -88,8 +80,9 @@ class SessionSource:
     user_name: Optional[str] = None
     thread_id: Optional[str] = None  # For forum topics, Discord threads, etc.
     chat_topic: Optional[str] = None  # Channel topic/description (Discord, Slack)
-    user_id_alt: Optional[str] = None  # Signal UUID (alternative to phone number)
+    user_id_alt: Optional[str] = None  # Platform-specific stable alt ID (Signal UUID, Feishu union_id)
     chat_id_alt: Optional[str] = None  # Signal group internal ID
+    is_bot: bool = False  # True when the message author is a bot/webhook (Discord)
     
     @property
     def description(self) -> str:
@@ -144,15 +137,6 @@ class SessionSource:
             chat_id_alt=data.get("chat_id_alt"),
         )
     
-    @classmethod
-    def local_cli(cls) -> "SessionSource":
-        """Create a source representing the local CLI."""
-        return cls(
-            platform=Platform.LOCAL,
-            chat_id="cli",
-            chat_name="CLI terminal",
-            chat_type="dm",
-        )
 
 
 @dataclass
@@ -168,6 +152,7 @@ class SessionContext:
     source: SessionSource
     connected_platforms: List[Platform]
     home_channels: Dict[Platform, HomeChannel]
+    shared_multi_user_session: bool = False
     
     # Session metadata
     session_key: str = ""
@@ -182,6 +167,7 @@ class SessionContext:
             "home_channels": {
                 p.value: hc.to_dict() for p, hc in self.home_channels.items()
             },
+            "shared_multi_user_session": self.shared_multi_user_session,
             "session_key": self.session_key,
             "session_id": self.session_id,
             "created_at": self.created_at.isoformat() if self.created_at else None,
@@ -193,6 +179,7 @@ _PII_SAFE_PLATFORMS = frozenset({
     Platform.WHATSAPP,
     Platform.SIGNAL,
     Platform.TELEGRAM,
+    Platform.BLUEBUBBLES,
 })
 """Platforms where user IDs can be safely redacted (no in-message mention system
 that requires raw IDs).  Discord is excluded because mentions use ``<@user_id>``
@@ -254,8 +241,20 @@ def build_session_context_prompt(
     if context.source.chat_topic:
         lines.append(f"**Channel Topic:** {context.source.chat_topic}")
 
-    # User identity (especially useful for WhatsApp where multiple people DM)
-    if context.source.user_name:
+    # User identity.
+    # In shared multi-user sessions (shared threads OR shared non-thread groups
+    # when group_sessions_per_user=False), multiple users contribute to the same
+    # conversation.  Don't pin a single user name in the system prompt — it
+    # changes per-turn and would bust the prompt cache.  Instead, note that
+    # this is a multi-user session; individual sender names are prefixed on
+    # each user message by the gateway.
+    if context.shared_multi_user_session:
+        session_label = "Multi-user thread" if context.source.thread_id else "Multi-user session"
+        lines.append(
+            f"**Session type:** {session_label} — messages are prefixed "
+            "with [sender name]. Multiple users may participate."
+        )
+    elif context.source.user_name:
         lines.append(f"**User:** {context.source.user_name}")
     elif context.source.user_id:
         uid = context.source.user_id
@@ -303,6 +302,8 @@ def build_session_context_prompt(
     lines.append("")
     lines.append("**Delivery options for scheduled tasks:**")
     
+    from hermes_constants import display_hermes_home
+
     # Origin delivery
     if context.source.platform == Platform.LOCAL:
         lines.append("- `\"origin\"` → Local output (saved to files)")
@@ -311,9 +312,11 @@ def build_session_context_prompt(
             _hash_chat_id(context.source.chat_id) if redact_pii else context.source.chat_id
         )
         lines.append(f"- `\"origin\"` → Back to this chat ({_origin_label})")
-    
+
     # Local always available
-    lines.append("- `\"local\"` → Save to local files only (~/.hermes/cron/output/)")
+    lines.append(
+        f"- `\"local\"` → Save to local files only ({display_hermes_home()}/cron/output/)"
+    )
     
     # Platform home channels
     for platform, home in context.home_channels.items():
@@ -364,6 +367,29 @@ class SessionEntry:
     auto_reset_reason: Optional[str] = None  # "idle" or "daily"
     reset_had_activity: bool = False  # whether the expired session had any messages
     
+    # Set by the background expiry watcher after it successfully flushes
+    # memories for this session.  Persisted to sessions.json so the flag
+    # survives gateway restarts (the old in-memory _pre_flushed_sessions
+    # set was lost on restart, causing redundant re-flushes).
+    memory_flushed: bool = False
+
+    # When True the next call to get_or_create_session() will auto-reset
+    # this session (create a new session_id) so the user starts fresh.
+    # Set by /stop to break stuck-resume loops (#7536).
+    suspended: bool = False
+
+    # When True the session was interrupted by a gateway restart/shutdown
+    # drain timeout, but recovery is still expected.  Unlike ``suspended``,
+    # ``resume_pending`` preserves the existing session_id on next access —
+    # the user stays on the same transcript and the agent auto-continues
+    # from where it left off.  Cleared after the next successful turn.
+    # Escalation to ``suspended`` is handled by the existing
+    # ``.restart_failure_counts`` stuck-loop counter (#7536), not by a
+    # parallel counter on this entry.
+    resume_pending: bool = False
+    resume_reason: Optional[str] = None  # e.g. "restart_timeout"
+    last_resume_marked_at: Optional[datetime] = None
+
     def to_dict(self) -> Dict[str, Any]:
         result = {
             "session_key": self.session_key,
@@ -381,6 +407,15 @@ class SessionEntry:
             "last_prompt_tokens": self.last_prompt_tokens,
             "estimated_cost_usd": self.estimated_cost_usd,
             "cost_status": self.cost_status,
+            "memory_flushed": self.memory_flushed,
+            "suspended": self.suspended,
+            "resume_pending": self.resume_pending,
+            "resume_reason": self.resume_reason,
+            "last_resume_marked_at": (
+                self.last_resume_marked_at.isoformat()
+                if self.last_resume_marked_at
+                else None
+            ),
         }
         if self.origin:
             result["origin"] = self.origin.to_dict()
@@ -398,7 +433,15 @@ class SessionEntry:
                 platform = Platform(data["platform"])
             except ValueError as e:
                 logger.debug("Unknown platform value %r: %s", data["platform"], e)
-        
+
+        last_resume_marked_at = None
+        _lrma = data.get("last_resume_marked_at")
+        if _lrma:
+            try:
+                last_resume_marked_at = datetime.fromisoformat(_lrma)
+            except (TypeError, ValueError):
+                last_resume_marked_at = None
+
         return cls(
             session_key=data["session_key"],
             session_id=data["session_id"],
@@ -416,10 +459,40 @@ class SessionEntry:
             last_prompt_tokens=data.get("last_prompt_tokens", 0),
             estimated_cost_usd=data.get("estimated_cost_usd", 0.0),
             cost_status=data.get("cost_status", "unknown"),
+            memory_flushed=data.get("memory_flushed", False),
+            suspended=data.get("suspended", False),
+            resume_pending=data.get("resume_pending", False),
+            resume_reason=data.get("resume_reason"),
+            last_resume_marked_at=last_resume_marked_at,
         )
 
 
-def build_session_key(source: SessionSource, group_sessions_per_user: bool = True) -> str:
+def is_shared_multi_user_session(
+    source: SessionSource,
+    *,
+    group_sessions_per_user: bool = True,
+    thread_sessions_per_user: bool = False,
+) -> bool:
+    """Return True when a non-DM session is shared across participants.
+
+    Mirrors the isolation rules in :func:`build_session_key`:
+      - DMs are never shared.
+      - Threads are shared unless ``thread_sessions_per_user`` is True.
+      - Non-thread group/channel sessions are shared unless
+        ``group_sessions_per_user`` is True (default: True = isolated).
+    """
+    if source.chat_type == "dm":
+        return False
+    if source.thread_id:
+        return not thread_sessions_per_user
+    return not group_sessions_per_user
+
+
+def build_session_key(
+    source: SessionSource,
+    group_sessions_per_user: bool = True,
+    thread_sessions_per_user: bool = False,
+) -> str:
     """Build a deterministic session key from a message source.
 
     This is the single source of truth for session key construction.
@@ -434,7 +507,11 @@ def build_session_key(source: SessionSource, group_sessions_per_user: bool = Tru
       - chat_id identifies the parent group/channel.
       - user_id/user_id_alt isolates participants within that parent chat when available when
         ``group_sessions_per_user`` is enabled.
-      - thread_id differentiates threads within that parent chat.
+      - thread_id differentiates threads within that parent chat.  When
+        ``thread_sessions_per_user`` is False (default), threads are *shared* across all
+        participants — user_id is NOT appended, so every user in the thread
+        shares a single session.  This is the expected UX for threaded
+        conversations (Telegram forum topics, Discord threads, Slack threads).
       - Without participant identifiers, or when isolation is disabled, messages fall back to one
         shared session per chat.
       - Without identifiers, messages fall back to one session per platform/chat_type.
@@ -456,7 +533,15 @@ def build_session_key(source: SessionSource, group_sessions_per_user: bool = Tru
         key_parts.append(source.chat_id)
     if source.thread_id:
         key_parts.append(source.thread_id)
-    if group_sessions_per_user and participant_id:
+
+    # In threads, default to shared sessions (all participants see the same
+    # conversation).  Per-user isolation only applies when explicitly enabled
+    # via thread_sessions_per_user, or when there is no thread (regular group).
+    isolate_user = group_sessions_per_user
+    if source.thread_id and not thread_sessions_per_user:
+        isolate_user = False
+
+    if isolate_user and participant_id:
         key_parts.append(str(participant_id))
 
     return ":".join(key_parts)
@@ -471,17 +556,13 @@ class SessionStore:
     """
     
     def __init__(self, sessions_dir: Path, config: GatewayConfig,
-                 has_active_processes_fn=None,
-                 on_auto_reset=None):
+                 has_active_processes_fn=None):
         self.sessions_dir = sessions_dir
         self.config = config
         self._entries: Dict[str, SessionEntry] = {}
         self._loaded = False
         self._lock = threading.Lock()
         self._has_active_processes_fn = has_active_processes_fn
-        # on_auto_reset is deprecated — memory flush now runs proactively
-        # via the background session expiry watcher in GatewayRunner.
-        self._pre_flushed_sessions: set = set()  # session_ids already flushed by watcher
         
         # Initialize SQLite session database
         self._db = None
@@ -547,6 +628,7 @@ class SessionStore:
         return build_session_key(
             source,
             group_sessions_per_user=getattr(self.config, "group_sessions_per_user", True),
+            thread_sessions_per_user=getattr(self.config, "thread_sessions_per_user", False),
         )
     
     def _is_session_expired(self, entry: SessionEntry) -> bool:
@@ -678,21 +760,37 @@ class SessionStore:
             if session_key in self._entries and not force_new:
                 entry = self._entries[session_key]
 
-                reset_reason = self._should_reset(entry, source)
+                # Auto-reset sessions marked as suspended (e.g. after /stop
+                # broke a stuck loop — #7536).  ``suspended`` is the hard
+                # forced-wipe signal and always wins over ``resume_pending``,
+                # so repeated interrupted restarts that escalate via the
+                # existing ``.restart_failure_counts`` stuck-loop counter
+                # still converge to a clean slate.
+                if entry.suspended:
+                    reset_reason = "suspended"
+                elif entry.resume_pending:
+                    # Restart-interrupted session: preserve the session_id
+                    # and return the existing entry so the transcript
+                    # reloads intact.  ``resume_pending`` is cleared after
+                    # the NEXT successful turn completes (not here), which
+                    # means a re-interrupted retry keeps trying — the
+                    # stuck-loop counter handles terminal escalation.
+                    entry.updated_at = now
+                    self._save()
+                    return entry
+                else:
+                    reset_reason = self._should_reset(entry, source)
                 if not reset_reason:
                     entry.updated_at = now
                     self._save()
                     return entry
                 else:
-                    # Session is being auto-reset.  The background expiry watcher
-                    # should have already flushed memories proactively; discard
-                    # the marker so it doesn't accumulate.
+                    # Session is being auto-reset.
                     was_auto_reset = True
                     auto_reset_reason = reset_reason
                     # Track whether the expired session had any real conversation
                     reset_had_activity = entry.total_tokens > 0
                     db_end_session_id = entry.session_id
-                    self._pre_flushed_sessions.discard(entry.session_id)
             else:
                 was_auto_reset = False
                 auto_reset_reason = None
@@ -741,66 +839,170 @@ class SessionStore:
     def update_session(
         self,
         session_key: str,
-        input_tokens: int = 0,
-        output_tokens: int = 0,
-        cache_read_tokens: int = 0,
-        cache_write_tokens: int = 0,
         last_prompt_tokens: int = None,
-        model: str = None,
-        estimated_cost_usd: Optional[float] = None,
-        cost_status: Optional[str] = None,
-        cost_source: Optional[str] = None,
-        provider: Optional[str] = None,
-        base_url: Optional[str] = None,
     ) -> None:
-        """Update a session's metadata after an interaction."""
-        db_session_id = None
-
+        """Update lightweight session metadata after an interaction."""
         with self._lock:
             self._ensure_loaded_locked()
 
             if session_key in self._entries:
                 entry = self._entries[session_key]
                 entry.updated_at = _now()
-                # Direct assignment — the gateway receives cumulative totals
-                # from the cached agent, not per-call deltas.
-                entry.input_tokens = input_tokens
-                entry.output_tokens = output_tokens
-                entry.cache_read_tokens = cache_read_tokens
-                entry.cache_write_tokens = cache_write_tokens
                 if last_prompt_tokens is not None:
                     entry.last_prompt_tokens = last_prompt_tokens
-                if estimated_cost_usd is not None:
-                    entry.estimated_cost_usd = estimated_cost_usd
-                if cost_status:
-                    entry.cost_status = cost_status
-                entry.total_tokens = (
-                    entry.input_tokens
-                    + entry.output_tokens
-                    + entry.cache_read_tokens
-                    + entry.cache_write_tokens
-                )
                 self._save()
-                db_session_id = entry.session_id
 
-        if self._db and db_session_id:
-            try:
-                self._db.set_token_counts(
-                    db_session_id,
-                    input_tokens=input_tokens,
-                    output_tokens=output_tokens,
-                    cache_read_tokens=cache_read_tokens,
-                    cache_write_tokens=cache_write_tokens,
-                    estimated_cost_usd=estimated_cost_usd,
-                    cost_status=cost_status,
-                    cost_source=cost_source,
-                    billing_provider=provider,
-                    billing_base_url=base_url,
-                    model=model,
-                    absolute=True,
-                )
-            except Exception as e:
-                logger.debug("Session DB operation failed: %s", e)
+    def suspend_session(self, session_key: str) -> bool:
+        """Mark a session as suspended so it auto-resets on next access.
+
+        Used by ``/stop`` to prevent stuck sessions from being resumed
+        after a gateway restart (#7536).  Returns True if the session
+        existed and was marked.
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            if session_key in self._entries:
+                self._entries[session_key].suspended = True
+                self._save()
+                return True
+        return False
+
+    def mark_resume_pending(
+        self,
+        session_key: str,
+        reason: str = "restart_timeout",
+    ) -> bool:
+        """Mark a session as resumable after a restart interruption.
+
+        Unlike ``suspend_session()``, this preserves the existing
+        ``session_id`` and the transcript.  The next call to
+        ``get_or_create_session()`` for this key returns the same entry
+        so the user auto-resumes on the same conversation lane.
+
+        Returns True if the session existed and was marked.
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            if session_key in self._entries:
+                entry = self._entries[session_key]
+                # Never override an explicit ``suspended`` — that is a hard
+                # forced-wipe signal (from /stop or stuck-loop escalation).
+                if entry.suspended:
+                    return False
+                entry.resume_pending = True
+                entry.resume_reason = reason
+                entry.last_resume_marked_at = _now()
+                self._save()
+                return True
+        return False
+
+    def clear_resume_pending(self, session_key: str) -> bool:
+        """Clear the resume-pending flag after a successful resumed turn.
+
+        Called from the gateway after ``run_conversation()`` returns a
+        final response for a session that had ``resume_pending=True``,
+        signalling that recovery succeeded.
+
+        Returns True if a flag was cleared.
+        """
+        with self._lock:
+            self._ensure_loaded_locked()
+            entry = self._entries.get(session_key)
+            if entry is None or not entry.resume_pending:
+                return False
+            entry.resume_pending = False
+            entry.resume_reason = None
+            entry.last_resume_marked_at = None
+            self._save()
+            return True
+
+    def prune_old_entries(self, max_age_days: int) -> int:
+        """Drop SessionEntry records older than max_age_days.
+
+        Pruning is based on ``updated_at`` (last activity), not ``created_at``.
+        A session that's been active within the window is kept regardless of
+        how old it is.  Entries marked ``suspended`` are kept — the user
+        explicitly paused them for later resume.  Entries held by an active
+        process (via has_active_processes_fn) are also kept so long-running
+        background work isn't orphaned.
+
+        Pruning is functionally identical to a natural reset-policy expiry:
+        the transcript in SQLite stays, but the session_key → session_id
+        mapping is dropped and the user starts a fresh session on return.
+
+        ``max_age_days <= 0`` disables pruning; returns 0 immediately.
+        Returns the number of entries removed.
+        """
+        if max_age_days is None or max_age_days <= 0:
+            return 0
+        from datetime import timedelta
+
+        cutoff = _now() - timedelta(days=max_age_days)
+        removed_keys: list[str] = []
+
+        with self._lock:
+            self._ensure_loaded_locked()
+            for key, entry in list(self._entries.items()):
+                if entry.suspended:
+                    continue
+                # Never prune sessions with an active background process
+                # attached — the user may still be waiting on output.
+                # The callback is keyed by session_key (see process_registry.
+                # has_active_for_session); passing session_id here used to
+                # never match, so active sessions got pruned anyway.
+                if self._has_active_processes_fn is not None:
+                    try:
+                        if self._has_active_processes_fn(entry.session_key):
+                            continue
+                    except Exception as exc:
+                        logger.debug(
+                            "has_active_processes_fn raised during prune for %s: %s",
+                            entry.session_key, exc,
+                        )
+                if entry.updated_at < cutoff:
+                    removed_keys.append(key)
+            for key in removed_keys:
+                self._entries.pop(key, None)
+            if removed_keys:
+                self._save()
+
+        if removed_keys:
+            logger.info(
+                "SessionStore pruned %d entries older than %d days",
+                len(removed_keys), max_age_days,
+            )
+        return len(removed_keys)
+
+    def suspend_recently_active(self, max_age_seconds: int = 120) -> int:
+        """Mark recently-active sessions as suspended.
+
+        Called on gateway startup to prevent sessions that were likely
+        in-flight when the gateway last exited from being blindly resumed
+        (#7536).  Only suspends sessions updated within *max_age_seconds*
+        to avoid resetting long-idle sessions that are harmless to resume.
+        Returns the number of sessions that were suspended.
+
+        Entries flagged ``resume_pending=True`` are skipped — those were
+        marked intentionally by the drain-timeout path as recoverable.
+        Terminal escalation for genuinely stuck ``resume_pending`` sessions
+        is handled by the existing ``.restart_failure_counts`` stuck-loop
+        counter, which runs after this method on startup.
+        """
+        from datetime import timedelta
+
+        cutoff = _now() - timedelta(seconds=max_age_seconds)
+        count = 0
+        with self._lock:
+            self._ensure_loaded_locked()
+            for entry in self._entries.values():
+                if entry.resume_pending:
+                    continue
+                if not entry.suspended and entry.updated_at >= cutoff:
+                    entry.suspended = True
+                    count += 1
+            if count:
+                self._save()
+        return count
 
     def reset_session(self, session_key: str) -> Optional[SessionEntry]:
         """Force reset a session, creating a new session ID."""
@@ -859,7 +1061,8 @@ class SessionStore:
         Used by ``/resume`` to restore a previously-named session.
         Ends the current session in SQLite (like reset), but instead of
         generating a fresh session ID, re-uses ``target_session_id`` so the
-        old transcript is loaded on the next message.
+        old transcript is loaded on the next message. If the target session was
+        previously ended, re-open it so gateway resume semantics match the CLI.
         """
         db_end_session_id = None
         new_entry = None
@@ -898,6 +1101,12 @@ class SessionStore:
                 self._db.end_session(db_end_session_id, "session_switch")
             except Exception as e:
                 logger.debug("Session DB end_session failed: %s", e)
+
+        if self._db:
+            try:
+                self._db.reopen_session(target_session_id)
+            except Exception as e:
+                logger.debug("Session DB reopen_session failed: %s", e)
 
         return new_entry
 
@@ -938,6 +1147,10 @@ class SessionStore:
                     tool_name=message.get("tool_name"),
                     tool_calls=message.get("tool_calls"),
                     tool_call_id=message.get("tool_call_id"),
+                    reasoning=message.get("reasoning") if message.get("role") == "assistant" else None,
+                    reasoning_content=message.get("reasoning_content") if message.get("role") == "assistant" else None,
+                    reasoning_details=message.get("reasoning_details") if message.get("role") == "assistant" else None,
+                    codex_reasoning_items=message.get("codex_reasoning_items") if message.get("role") == "assistant" else None,
                 )
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
@@ -967,6 +1180,7 @@ class SessionStore:
                         tool_calls=msg.get("tool_calls"),
                         tool_call_id=msg.get("tool_call_id"),
                         reasoning=msg.get("reasoning") if role == "assistant" else None,
+                        reasoning_content=msg.get("reasoning_content") if role == "assistant" else None,
                         reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                         codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     )
@@ -1050,6 +1264,11 @@ def build_session_context(
         source=source,
         connected_platforms=connected,
         home_channels=home_channels,
+        shared_multi_user_session=is_shared_multi_user_session(
+            source,
+            group_sessions_per_user=getattr(config, "group_sessions_per_user", True),
+            thread_sessions_per_user=getattr(config, "thread_sessions_per_user", False),
+        ),
     )
     
     if session_entry:

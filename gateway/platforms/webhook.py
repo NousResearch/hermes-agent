@@ -13,6 +13,10 @@ Each route defines:
   - skills: optional list of skills to load for the agent
   - deliver: where to send the response (github_comment, telegram, etc.)
   - deliver_extra: additional delivery config (repo, pr_number, chat_id)
+  - deliver_only: if true, skip the agent — the rendered prompt IS the
+    message that gets delivered.  Use for external push notifications
+    (Supabase, monitoring alerts, inter-agent pings) where zero LLM cost
+    and sub-second delivery matter more than agent reasoning.
 
 Security:
   - HMAC secret is required per route (validated at startup)
@@ -27,7 +31,6 @@ import hashlib
 import hmac
 import json
 import logging
-import os
 import re
 import subprocess
 import time
@@ -76,8 +79,17 @@ class WebhookAdapter(BasePlatformAdapter):
         self._routes: Dict[str, dict] = dict(self._static_routes)
         self._runner = None
 
-        # Delivery info keyed by session chat_id — consumed by send()
+        # Delivery info keyed by session chat_id.
+        #
+        # Read by every send() invocation for the chat_id (status messages
+        # AND the final response).  Cleaned up via TTL on each POST so the
+        # dict stays bounded — see _prune_delivery_info().  Do NOT pop on
+        # send(), or interim status messages (e.g. fallback notifications,
+        # context-pressure warnings) will consume the entry before the
+        # final response arrives, causing the response to silently fall
+        # back to the "log" deliver type.
         self._delivery_info: Dict[str, dict] = {}
+        self._delivery_info_created: Dict[str, float] = {}
 
         # Reference to gateway runner for cross-platform delivery (set externally)
         self.gateway_runner = None
@@ -113,6 +125,19 @@ class WebhookAdapter(BasePlatformAdapter):
                     f"Set 'secret' on the route or globally. "
                     f"For testing without auth, set secret to '{_INSECURE_NO_AUTH}'."
                 )
+
+            # deliver_only routes bypass the agent — the POST body becomes a
+            # direct push notification via the configured delivery target.
+            # Validate up-front so misconfiguration surfaces at startup rather
+            # than on the first webhook POST.
+            if route.get("deliver_only"):
+                deliver = route.get("deliver", "log")
+                if not deliver or deliver == "log":
+                    raise ValueError(
+                        f"[webhook] Route '{name}' has deliver_only=true but "
+                        f"deliver is '{deliver}'. Direct delivery requires a "
+                        f"real target (telegram, discord, slack, github_comment, etc.)."
+                    )
 
         app = web.Application()
         app.router.add_get("/health", self._handle_health)
@@ -160,10 +185,14 @@ class WebhookAdapter(BasePlatformAdapter):
     ) -> SendResult:
         """Deliver the agent's response to the configured destination.
 
-        chat_id is ``webhook:{route}:{delivery_id}`` — we pop the delivery
-        info stored during webhook receipt so it doesn't leak memory.
+        chat_id is ``webhook:{route}:{delivery_id}``.  The delivery info
+        stored during webhook receipt is read with ``.get()`` (not popped)
+        so that interim status messages emitted before the final response
+        — fallback-model notifications, context-pressure warnings, etc. —
+        do not consume the entry and silently downgrade the final response
+        to the ``log`` deliver type.  TTL cleanup happens on POST.
         """
-        delivery = self._delivery_info.pop(chat_id, {})
+        delivery = self._delivery_info.get(chat_id, {})
         deliver_type = delivery.get("deliver", "log")
 
         if deliver_type == "log":
@@ -173,13 +202,25 @@ class WebhookAdapter(BasePlatformAdapter):
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
 
-        # Cross-platform delivery (telegram, discord, etc.)
+        # Cross-platform delivery — any platform with a gateway adapter
         if self.gateway_runner and deliver_type in (
             "telegram",
             "discord",
             "slack",
             "signal",
             "sms",
+            "whatsapp",
+            "matrix",
+            "mattermost",
+            "homeassistant",
+            "email",
+            "dingtalk",
+            "feishu",
+            "wecom",
+            "wecom_callback",
+            "weixin",
+            "bluebubbles",
+            "qqbot",
         ):
             return await self._deliver_cross_platform(
                 deliver_type, content, delivery
@@ -189,6 +230,23 @@ class WebhookAdapter(BasePlatformAdapter):
         return SendResult(
             success=False, error=f"Unknown deliver type: {deliver_type}"
         )
+
+    def _prune_delivery_info(self, now: float) -> None:
+        """Drop delivery_info entries older than the idempotency TTL.
+
+        Mirrors the cleanup pattern used for ``_seen_deliveries``.  Called
+        on each POST so the dict size is bounded by ``rate_limit * TTL``
+        even if many webhooks fire and never receive a final response.
+        """
+        cutoff = now - self._idempotency_ttl
+        stale = [
+            k
+            for k, t in self._delivery_info_created.items()
+            if t < cutoff
+        ]
+        for k in stale:
+            self._delivery_info.pop(k, None)
+            self._delivery_info_created.pop(k, None)
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "webhook"}
@@ -203,10 +261,8 @@ class WebhookAdapter(BasePlatformAdapter):
 
     def _reload_dynamic_routes(self) -> None:
         """Reload agent-created subscriptions from disk if the file changed."""
-        from pathlib import Path as _Path
-        hermes_home = _Path(
-            os.getenv("HERMES_HOME", str(_Path.home() / ".hermes"))
-        ).expanduser()
+        from hermes_constants import get_hermes_home
+        hermes_home = get_hermes_home()
         subs_path = hermes_home / _DYNAMIC_ROUTES_FILENAME
         if not subs_path.exists():
             if self._dynamic_routes:
@@ -234,7 +290,7 @@ class WebhookAdapter(BasePlatformAdapter):
                 ", ".join(self._dynamic_routes.keys()) or "(none)",
             )
         except Exception as e:
-            logger.warning("[webhook] Failed to reload dynamic routes: %s", e)
+            logger.error("[webhook] Failed to reload dynamic routes: %s", e)
 
     async def _handle_webhook(self, request: "web.Request") -> "web.Response":
         """POST /webhooks/{route_name} — receive and process a webhook event."""
@@ -257,24 +313,14 @@ class WebhookAdapter(BasePlatformAdapter):
                 {"error": "Payload too large"}, status=413
             )
 
-        # ── Rate limiting ────────────────────────────────────────
-        now = time.time()
-        window = self._rate_counts.setdefault(route_name, [])
-        window[:] = [t for t in window if now - t < 60]
-        if len(window) >= self._rate_limit:
-            return web.json_response(
-                {"error": "Rate limit exceeded"}, status=429
-            )
-        window.append(now)
-
-        # Read body
+        # Read body (must be done before any validation)
         try:
             raw_body = await request.read()
         except Exception as e:
             logger.error("[webhook] Failed to read body: %s", e)
             return web.json_response({"error": "Bad request"}, status=400)
 
-        # Validate HMAC signature (skip for INSECURE_NO_AUTH testing mode)
+        # Validate HMAC signature FIRST (skip for INSECURE_NO_AUTH testing mode)
         secret = route_config.get("secret", self._global_secret)
         if secret and secret != _INSECURE_NO_AUTH:
             if not self._validate_signature(request, raw_body, secret):
@@ -284,6 +330,16 @@ class WebhookAdapter(BasePlatformAdapter):
                 return web.json_response(
                     {"error": "Invalid signature"}, status=401
                 )
+
+        # ── Rate limiting (after auth) ───────────────────────────
+        now = time.time()
+        window = self._rate_counts.setdefault(route_name, [])
+        window[:] = [t for t in window if now - t < 60]
+        if len(window) >= self._rate_limit:
+            return web.json_response(
+                {"error": "Rate limit exceeded"}, status=429
+            )
+        window.append(now)
 
         # Parse payload
         try:
@@ -380,11 +436,71 @@ class WebhookAdapter(BasePlatformAdapter):
             )
         self._seen_deliveries[delivery_id] = now
 
+        # ── Direct delivery mode (deliver_only) ─────────────────
+        # Skip the agent entirely — the rendered prompt IS the message we
+        # deliver.  Use case: external services (Supabase, monitoring,
+        # cron jobs, other agents) that need to push a plain notification
+        # to a user's chat with zero LLM cost.  Reuses the same HMAC auth,
+        # rate limiting, idempotency, and template rendering as agent mode.
+        if route_config.get("deliver_only"):
+            delivery = {
+                "deliver": route_config.get("deliver", "log"),
+                "deliver_extra": self._render_delivery_extra(
+                    route_config.get("deliver_extra", {}), payload
+                ),
+                "payload": payload,
+            }
+            logger.info(
+                "[webhook] direct-deliver event=%s route=%s target=%s msg_len=%d delivery=%s",
+                event_type,
+                route_name,
+                delivery["deliver"],
+                len(prompt),
+                delivery_id,
+            )
+            try:
+                result = await self._direct_deliver(prompt, delivery)
+            except Exception:
+                logger.exception(
+                    "[webhook] direct-deliver failed route=%s delivery=%s",
+                    route_name,
+                    delivery_id,
+                )
+                return web.json_response(
+                    {"status": "error", "error": "Delivery failed", "delivery_id": delivery_id},
+                    status=502,
+                )
+
+            if result.success:
+                return web.json_response(
+                    {
+                        "status": "delivered",
+                        "route": route_name,
+                        "target": delivery["deliver"],
+                        "delivery_id": delivery_id,
+                    },
+                    status=200,
+                )
+            # Delivery attempted but target rejected it — surface as 502
+            # with a generic error (don't leak adapter-level detail).
+            logger.warning(
+                "[webhook] direct-deliver target rejected route=%s target=%s error=%s",
+                route_name,
+                delivery["deliver"],
+                result.error,
+            )
+            return web.json_response(
+                {"status": "error", "error": "Delivery failed", "delivery_id": delivery_id},
+                status=502,
+            )
+
         # Use delivery_id in session key so concurrent webhooks on the
         # same route get independent agent runs (not queued/interrupted).
         session_chat_id = f"webhook:{route_name}:{delivery_id}"
 
-        # Store delivery info for send() — consumed (popped) on delivery
+        # Store delivery info for send().  Read by every send() invocation
+        # for this chat_id (interim status messages and the final response),
+        # so we do NOT pop on send.  TTL-based cleanup keeps the dict bounded.
         deliver_config = {
             "deliver": route_config.get("deliver", "log"),
             "deliver_extra": self._render_delivery_extra(
@@ -393,6 +509,8 @@ class WebhookAdapter(BasePlatformAdapter):
             "payload": payload,
         }
         self._delivery_info[session_chat_id] = deliver_config
+        self._delivery_info_created[session_chat_id] = now
+        self._prune_delivery_info(now)
 
         # Build source and event
         source = self.build_source(
@@ -484,6 +602,10 @@ class WebhookAdapter(BasePlatformAdapter):
 
         Supports dot-notation access into nested dicts:
         ``{pull_request.title}`` → ``payload["pull_request"]["title"]``
+
+        Special token ``{__raw__}`` dumps the entire payload as indented
+        JSON (truncated to 4000 chars).  Useful for monitoring alerts or
+        any webhook where the agent needs to see the full payload.
         """
         if not template:
             truncated = json.dumps(payload, indent=2)[:4000]
@@ -494,6 +616,9 @@ class WebhookAdapter(BasePlatformAdapter):
 
         def _resolve(match: re.Match) -> str:
             key = match.group(1)
+            # Special token: dump the entire payload as JSON
+            if key == "__raw__":
+                return json.dumps(payload, indent=2)[:4000]
             value: Any = payload
             for part in key.split("."):
                 if isinstance(value, dict):
@@ -521,6 +646,34 @@ class WebhookAdapter(BasePlatformAdapter):
     # ------------------------------------------------------------------
     # Response delivery
     # ------------------------------------------------------------------
+
+    async def _direct_deliver(
+        self, content: str, delivery: dict
+    ) -> SendResult:
+        """Deliver *content* directly without invoking the agent.
+
+        Used by ``deliver_only`` routes: the rendered template becomes the
+        literal message body, and we dispatch to the same delivery helpers
+        that the agent-mode ``send()`` flow uses.  All target types that
+        work in agent mode work here — Telegram, Discord, Slack, GitHub
+        PR comments, etc.
+        """
+        deliver_type = delivery.get("deliver", "log")
+
+        if deliver_type == "log":
+            # Shouldn't reach here — startup validation rejects deliver_only
+            # with deliver=log — but guard defensively.
+            logger.info("[webhook] direct-deliver log-only: %s", content[:200])
+            return SendResult(success=True)
+
+        if deliver_type == "github_comment":
+            return await self._deliver_github_comment(content, delivery)
+
+        # Fall through to the cross-platform dispatcher, which validates the
+        # target name and routes via the gateway runner.
+        return await self._deliver_cross_platform(
+            deliver_type, content, delivery
+        )
 
     async def _deliver_github_comment(
         self, content: str, delivery: dict
@@ -613,4 +766,10 @@ class WebhookAdapter(BasePlatformAdapter):
                     error=f"No chat_id or home channel for {platform_name}",
                 )
 
-        return await adapter.send(chat_id, content)
+        # Pass thread_id from deliver_extra so Telegram forum topics work
+        metadata = None
+        thread_id = extra.get("message_thread_id") or extra.get("thread_id")
+        if thread_id:
+            metadata = {"thread_id": thread_id}
+
+        return await adapter.send(chat_id, content, metadata=metadata)

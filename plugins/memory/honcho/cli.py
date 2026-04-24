@@ -273,9 +273,19 @@ def _write_config(cfg: dict, path: Path | None = None) -> None:
 
 
 def _resolve_api_key(cfg: dict) -> str:
-    """Resolve API key with host -> root -> env fallback."""
+    """Resolve API key with host -> root -> env fallback.
+
+    For self-hosted instances configured with ``baseUrl`` instead of an API
+    key, returns ``"local"`` so that credential guards throughout the CLI
+    don't reject a valid configuration.
+    """
     host_key = ((cfg.get("hosts") or {}).get(_host_key()) or {}).get("apiKey")
-    return host_key or cfg.get("apiKey", "") or os.environ.get("HONCHO_API_KEY", "")
+    key = host_key or cfg.get("apiKey", "") or os.environ.get("HONCHO_API_KEY", "")
+    if not key:
+        base_url = cfg.get("baseUrl") or cfg.get("base_url") or os.environ.get("HONCHO_BASE_URL", "")
+        if base_url.strip():
+            return "local"
+    return key
 
 
 def _prompt(label: str, default: str | None = None, secret: bool = False) -> str:

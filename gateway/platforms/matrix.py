@@ -698,6 +698,44 @@ class MatrixAdapter(BasePlatformAdapter):
                         logger.warning(
                             "Matrix: recovery key verification failed: %s", exc
                         )
+                else:
+                    # No recovery key — bootstrap cross-signing if the bot
+                    # has none yet. Without this, Element shows "Encrypted
+                    # by a device not verified by its owner" on every
+                    # message from this bot, indefinitely. mautrix's
+                    # generate_recovery_key does the full flow: generates
+                    # MSK/SSK/USK, uploads private keys to SSSS, publishes
+                    # public keys to the homeserver, and signs the current
+                    # device with the new SSK. Some homeservers require UIA
+                    # for /keys/device_signing/upload — those will need an
+                    # alternate path; Continuwuity and Synapse-with-shared-
+                    # secret accept the unauthenticated upload.
+                    try:
+                        own_xsign = await olm.get_own_cross_signing_public_keys()
+                    except Exception as exc:
+                        own_xsign = None
+                        logger.warning(
+                            "Matrix: cross-signing key lookup failed: %s", exc
+                        )
+                    if own_xsign is None:
+                        try:
+                            new_recovery_key = await olm.generate_recovery_key()
+                            logger.warning(
+                                "Matrix: bootstrapped cross-signing for %s. "
+                                "SAVE THIS RECOVERY KEY — set "
+                                "MATRIX_RECOVERY_KEY for future restarts so "
+                                "the bot can re-sign its device after key "
+                                "rotation: %s",
+                                client.mxid,
+                                new_recovery_key,
+                            )
+                        except Exception as exc:
+                            logger.warning(
+                                "Matrix: cross-signing bootstrap failed "
+                                "(non-fatal — Element will show 'not "
+                                "verified by its owner'): %s",
+                                exc,
+                            )
 
                 client.crypto = olm
                 logger.info(

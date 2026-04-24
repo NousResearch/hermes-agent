@@ -54,6 +54,43 @@ def get_current_session_key(default: str = "default") -> str:
     from gateway.session_context import get_session_env
     return get_session_env("HERMES_SESSION_KEY", default)
 
+
+# Interactive CLI flag: concurrent ACP runs set this via contextvars so
+# ThreadPoolExecutor workers do not race on os.environ["HERMES_INTERACTIVE"]
+# (GHSA-96vc-wcxf-jjff).
+_hermes_interactive_ctx: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "hermes_interactive",
+    default=None,
+)
+
+
+def set_hermes_interactive_context(interactive: bool) -> contextvars.Token[str | None]:
+    """Bind interactive mode for the current context (thread or asyncio task).
+
+    When unset (default), :func:`effective_hermes_interactive` falls back to
+    ``HERMES_INTERACTIVE`` for legacy single-threaded callers.
+    """
+    return _hermes_interactive_ctx.set("1" if interactive else "")
+
+
+def reset_hermes_interactive_context(token: contextvars.Token[str | None]) -> None:
+    """Restore the prior value from :func:`set_hermes_interactive_context`."""
+    _hermes_interactive_ctx.reset(token)
+
+
+def effective_hermes_interactive() -> str | None:
+    """Return a truthy string when Hermes should use interactive CLI approval paths.
+
+    Context-local state overrides the process environment so executor threads
+    do not leak or steal ``HERMES_INTERACTIVE`` across concurrent sessions.
+    """
+    local = _hermes_interactive_ctx.get()
+    if local is not None:
+        return local if local else None
+    v = os.getenv("HERMES_INTERACTIVE")
+    return v if v else None
+
+
 # Sensitive write targets that should trigger approval even when referenced
 # via shell expansions like $HOME or $HERMES_HOME.
 _SSH_SENSITIVE_PATH = r'(?:~|\$home|\$\{home\})/\.ssh(?:/|$)'
@@ -623,7 +660,7 @@ def check_dangerous_command(command: str, env_type: str,
     if is_approved(session_key, pattern_key):
         return {"approved": True, "message": None}
 
-    is_cli = os.getenv("HERMES_INTERACTIVE")
+    is_cli = effective_hermes_interactive()
     is_gateway = os.getenv("HERMES_GATEWAY_SESSION")
 
     if not is_cli and not is_gateway:
@@ -731,7 +768,7 @@ def check_all_command_guards(command: str, env_type: str,
     if os.getenv("HERMES_YOLO_MODE") or is_current_session_yolo_enabled() or approval_mode == "off":
         return {"approved": True, "message": None}
 
-    is_cli = os.getenv("HERMES_INTERACTIVE")
+    is_cli = effective_hermes_interactive()
     is_gateway = os.getenv("HERMES_GATEWAY_SESSION")
     is_ask = os.getenv("HERMES_EXEC_ASK")
 

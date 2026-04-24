@@ -197,6 +197,7 @@ def set_approval_callback(cb):
 # Dangerous command detection + approval now consolidated in tools/approval.py
 from tools.approval import (
     check_all_command_guards as _check_all_guards_impl,
+    effective_hermes_interactive,
 )
 
 
@@ -711,7 +712,7 @@ def _transform_sudo_command(command: str | None) -> tuple[str | None, str | None
     has_configured_password = "SUDO_PASSWORD" in os.environ
     sudo_password = os.environ.get("SUDO_PASSWORD", "") if has_configured_password else _cached_sudo_password
 
-    if not has_configured_password and not sudo_password and os.getenv("HERMES_INTERACTIVE"):
+    if not has_configured_password and not sudo_password and effective_hermes_interactive():
         sudo_password = _prompt_for_sudo_password(timeout_seconds=45)
         if sudo_password:
             _cached_sudo_password = sudo_password

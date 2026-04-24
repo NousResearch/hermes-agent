@@ -15,6 +15,8 @@ from typing import Any, Dict, List, Optional
 
 from hermes_constants import display_hermes_home
 
+from tools.approval import effective_hermes_interactive
+
 logger = logging.getLogger(__name__)
 
 # Import from cron module (will be available when properly installed)
@@ -474,7 +476,7 @@ def check_cronjob_requirements() -> bool:
     so no external crontab executable is required.
     """
     return bool(
-        os.getenv("HERMES_INTERACTIVE")
+        effective_hermes_interactive()
         or os.getenv("HERMES_GATEWAY_SESSION")
         or os.getenv("HERMES_EXEC_ASK")
     )

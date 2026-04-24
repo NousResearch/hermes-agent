@@ -510,7 +510,7 @@ def _get_or_create_env(task_id: str):
         cwd = overrides.get("cwd") or config["cwd"]
 
         container_config = None
-        if env_type in ("docker", "singularity", "modal", "daytona", "vercel_sandbox"):
+        if env_type in ("docker", "singularity", "modal", "daytona", "vercel_sandbox", "nsjail"):
             container_config = {
                 "container_cpu": config.get("container_cpu", 1),
                 "container_memory": config.get("container_memory", 5120),
@@ -519,6 +519,9 @@ def _get_or_create_env(task_id: str):
                 "vercel_runtime": config.get("vercel_runtime", ""),
                 "docker_volumes": config.get("docker_volumes", []),
                 "docker_run_as_host_user": config.get("docker_run_as_host_user", False),
+                "nsjail_config": config.get("nsjail_config", ""),
+                "nsjail_allow_net": config.get("nsjail_allow_net", False),
+                "nsjail_forward_env": config.get("nsjail_forward_env", []),
             }
 
         ssh_config = None

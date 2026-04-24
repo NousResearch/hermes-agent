@@ -1012,10 +1012,11 @@ def _get_env_config() -> Dict[str, Any]:
     
     mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in ("true", "1", "yes")
 
-    # Default cwd: local uses the host's current directory, ssh uses the
-    # remote home, Vercel uses its documented workspace root, and everything
-    # else starts in the backend's default root-like cwd.
-    if env_type == "local":
+    # Default cwd: local + nsjail both run as the host user against the host
+    # filesystem (nsjail just bindmounts it into the jail), so host paths
+    # work. ssh uses the remote home, Vercel uses its documented workspace
+    # root, and everything else starts in the backend's default root-like cwd.
+    if env_type in ("local", "nsjail"):
         default_cwd = os.getcwd()
     elif env_type == "ssh":
         default_cwd = "~"
@@ -2140,6 +2141,21 @@ def check_terminal_requirements() -> bool:
         if env_type == "local":
             return True
 
+        elif env_type == "nsjail":
+            from tools.environments.nsjail import find_nsjail
+            nsjail_bin = find_nsjail()
+            if not nsjail_bin:
+                logger.error(
+                    "nsjail binary not found in PATH and HERMES_NSJAIL_BINARY is unset. "
+                    "Install nsjail (https://github.com/google/nsjail) or switch "
+                    "TERMINAL_ENV to 'local' / 'docker'."
+                )
+                return False
+            result = subprocess.run([nsjail_bin, "--help"], capture_output=True, timeout=5)
+            # nsjail prints help then exits non-zero; as long as the binary is
+            # executable and responds, it's usable.
+            return b"Usage:" in (result.stdout + result.stderr)
+
         elif env_type == "docker":
             from tools.environments.docker import find_docker
             docker = find_docker()
@@ -2229,8 +2245,8 @@ def check_terminal_requirements() -> bool:
 
         else:
             logger.error(
-                "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
-                "modal, daytona, vercel_sandbox, ssh.",
+                "Unknown TERMINAL_ENV '%s'. Use one of: local, nsjail, docker, "
+                "singularity, modal, daytona, vercel_sandbox, ssh.",
                 env_type,
             )
             return False

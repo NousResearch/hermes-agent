@@ -86,6 +86,8 @@ QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 DEFAULT_SPOTIFY_ACCOUNTS_BASE_URL = "https://accounts.spotify.com"
 DEFAULT_SPOTIFY_API_BASE_URL = "https://api.spotify.com/v1"
 DEFAULT_SPOTIFY_REDIRECT_URI = "http://127.0.0.1:43827/spotify/callback"
+SPOTIFY_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/user-guide/features/spotify"
+SPOTIFY_DASHBOARD_URL = "https://developer.spotify.com/dashboard"
 SPOTIFY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 DEFAULT_SPOTIFY_SCOPE = " ".join((
     "user-modify-playback-state",
@@ -1917,9 +1919,83 @@ def get_spotify_auth_status() -> Dict[str, Any]:
     }
 
 
+def _spotify_interactive_setup(redirect_uri_hint: str) -> str:
+    """Walk the user through creating a Spotify developer app, persist the
+    resulting client_id to ~/.hermes/.env, and return it.
+
+    Raises SystemExit if the user aborts or submits an empty value.
+    """
+    from hermes_cli.config import save_env_value
+
+    print()
+    print("=" * 70)
+    print("Spotify first-time setup")
+    print("=" * 70)
+    print()
+    print("Spotify requires every user to register their own lightweight")
+    print("developer app. This takes about two minutes and only has to be")
+    print("done once per machine.")
+    print()
+    print(f"Full guide: {SPOTIFY_DOCS_URL}")
+    print()
+    print("Steps:")
+    print(f"  1. Opening {SPOTIFY_DASHBOARD_URL} in your browser...")
+    print("  2. Click 'Create app' and fill in:")
+    print("       App name:     anything (e.g. hermes-agent)")
+    print("       Description:  anything")
+    print(f"       Redirect URI: {redirect_uri_hint}")
+    print("       API/SDK:      Web API")
+    print("  3. Agree to the terms, click Save.")
+    print("  4. Open the app's Settings page and copy the Client ID.")
+    print("  5. Paste it below.")
+    print()
+
+    if not _is_remote_session():
+        try:
+            webbrowser.open(SPOTIFY_DASHBOARD_URL)
+        except Exception:
+            pass
+
+    try:
+        raw = input("Spotify Client ID: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        raise SystemExit("Spotify setup cancelled.")
+
+    if not raw:
+        print()
+        print(f"No Client ID entered. See {SPOTIFY_DOCS_URL} for the full guide.")
+        raise SystemExit("Spotify setup cancelled: empty Client ID.")
+
+    # Persist so subsequent `hermes auth spotify` runs skip the wizard.
+    save_env_value("HERMES_SPOTIFY_CLIENT_ID", raw)
+    # Only persist the redirect URI if it's non-default, to avoid pinning
+    # users to a value the default might later change to.
+    if redirect_uri_hint and redirect_uri_hint != DEFAULT_SPOTIFY_REDIRECT_URI:
+        save_env_value("HERMES_SPOTIFY_REDIRECT_URI", redirect_uri_hint)
+
+    print()
+    print("Saved HERMES_SPOTIFY_CLIENT_ID to ~/.hermes/.env")
+    print()
+    return raw
+
+
 def login_spotify_command(args) -> None:
     existing_state = get_provider_auth_state("spotify") or {}
-    client_id = _spotify_client_id(getattr(args, "client_id", None), existing_state)
+
+    # Interactive wizard: if no client_id is configured anywhere, walk the
+    # user through creating the Spotify developer app instead of crashing
+    # with "HERMES_SPOTIFY_CLIENT_ID is required".
+    explicit_client_id = getattr(args, "client_id", None)
+    try:
+        client_id = _spotify_client_id(explicit_client_id, existing_state)
+    except AuthError as exc:
+        if getattr(exc, "code", "") != "spotify_client_id_missing":
+            raise
+        client_id = _spotify_interactive_setup(
+            redirect_uri_hint=getattr(args, "redirect_uri", None) or DEFAULT_SPOTIFY_REDIRECT_URI,
+        )
+
     redirect_uri = _spotify_redirect_uri(getattr(args, "redirect_uri", None), existing_state)
     scope = _spotify_scope_string(getattr(args, "scope", None) or existing_state.get("scope"))
     accounts_base_url = _spotify_accounts_base_url(existing_state)
@@ -1945,6 +2021,8 @@ def login_spotify_command(args) -> None:
     print()
     print("Open this URL to authorize Hermes:")
     print(authorize_url)
+    print()
+    print(f"Full setup guide: {SPOTIFY_DOCS_URL}")
     print()
 
     if open_browser and not _is_remote_session():
@@ -1992,6 +2070,7 @@ def login_spotify_command(args) -> None:
     print("Spotify login successful!")
     print(f"  Auth state: {saved_to}")
     print("  Provider state saved under providers.spotify")
+    print(f"  Docs: {SPOTIFY_DOCS_URL}")
 
 # =============================================================================
 # SSH / remote session detection

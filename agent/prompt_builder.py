@@ -281,6 +281,15 @@ GOOGLE_MODEL_OPERATIONAL_GUIDANCE = (
     "Don't stop with a plan — execute it.\n"
 )
 
+VISIBLE_OUTPUT_LANGUAGE_GUIDANCE = (
+    "# Visible user-facing language\n"
+    "Match the user's current language for all visible user-facing text, including "
+    "final answers, interim assistant commentary, progress narration, status "
+    "updates, and error explanations. If the latest user message is in Chinese, "
+    "write visible commentary in Chinese. Do not expose raw internal planning "
+    "notes; if a brief progress note is useful, make it concise and user-facing."
+)
+
 # Model name substrings that should use the 'developer' role instead of
 # 'system' for the system prompt.  OpenAI's newer models (GPT-5, Codex)
 # give stronger instruction-following weight to the 'developer' role.

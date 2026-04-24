@@ -806,6 +806,15 @@ class TestBuildSystemPrompt:
         prompt = agent._build_system_prompt(system_message="Custom instruction")
         assert "Custom instruction" in prompt
 
+    def test_includes_visible_output_language_guidance(self, agent):
+        from agent.prompt_builder import VISIBLE_OUTPUT_LANGUAGE_GUIDANCE
+
+        prompt = agent._build_system_prompt()
+
+        assert VISIBLE_OUTPUT_LANGUAGE_GUIDANCE in prompt
+        assert "interim assistant commentary" in prompt
+        assert "Chinese" in prompt
+
     def test_memory_guidance_when_memory_tool_loaded(self, agent_with_memory_tool):
         from agent.prompt_builder import MEMORY_GUIDANCE
 

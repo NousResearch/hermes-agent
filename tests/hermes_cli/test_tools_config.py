@@ -655,3 +655,45 @@ def test_save_platform_tools_preserves_mcp_server_names():
     saved = config["platform_toolsets"]["cli"]
     assert "custom-mcp" in saved
     assert "another-mcp" in saved
+
+
+def test_get_platform_tools_recovers_non_configurable_toolsets_from_composite():
+    """Non-configurable toolsets whose tools are in the composite but not in
+    CONFIGURABLE_TOOLSETS should still appear in the result.
+    """
+    from toolsets import TOOLSETS
+    from hermes_cli.tools_config import PLATFORMS
+    from unittest.mock import patch as mock_patch
+
+    fake_toolsets = dict(TOOLSETS)
+    fake_toolsets["_test_platform_tool"] = {
+        "description": "test",
+        "tools": ["_test_special_tool"],
+        "includes": [],
+    }
+    fake_toolsets["hermes-_test_platform"] = {
+        "description": "test composite",
+        "tools": ["web_search", "web_extract", "terminal", "process", "_test_special_tool"],
+        "includes": [],
+    }
+
+    test_platforms = {
+        "_test_platform": {"label": "Test", "default_toolset": "hermes-_test_platform"},
+    }
+
+    with mock_patch("hermes_cli.tools_config.PLATFORMS", {**PLATFORMS, **test_platforms}):
+        with mock_patch("toolsets.TOOLSETS", fake_toolsets):
+            enabled = _get_platform_tools({}, "_test_platform")
+
+    assert "_test_platform_tool" in enabled
+    assert "web" in enabled
+    assert "terminal" in enabled
+
+
+def test_get_platform_tools_second_pass_skips_fully_claimed_toolsets():
+    """Toolsets whose tools are fully covered by configurable keys should NOT
+    be added by the second pass (prevents 'search', 'hermes-acp' noise).
+    """
+    enabled = _get_platform_tools({}, "cli")
+
+    assert "search" not in enabled

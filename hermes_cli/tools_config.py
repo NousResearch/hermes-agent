@@ -591,7 +591,7 @@ def _get_platform_tools(
     include_default_mcp_servers: bool = True,
 ) -> Set[str]:
     """Resolve which individual toolset names are enabled for a platform."""
-    from toolsets import resolve_toolset
+    from toolsets import resolve_toolset, TOOLSETS
 
     platform_toolsets = config.get("platform_toolsets") or {}
     toolset_names = platform_toolsets.get(platform)
@@ -605,6 +605,8 @@ def _get_platform_tools(
     toolset_names = [str(ts) for ts in toolset_names]
 
     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+    plugin_ts_keys = _get_plugin_toolset_keys()
+    platform_default_keys = {p["default_toolset"] for p in PLATFORMS.values()}
 
     # If the saved list contains any configurable keys directly, the user
     # has explicitly configured this platform — use direct membership.
@@ -627,10 +629,41 @@ def _get_platform_tools(
             ts_tools = set(resolve_toolset(ts_key))
             if ts_tools and ts_tools.issubset(all_tool_names):
                 enabled_toolsets.add(ts_key)
+
         default_off = set(_DEFAULT_OFF_TOOLSETS)
         if platform in default_off:
             default_off.remove(platform)
         enabled_toolsets -= default_off
+
+    # Recover non-configurable platform toolsets (e.g. discord, feishu_doc,
+    # feishu_drive).  These are part of the platform's default composite but
+    # absent from CONFIGURABLE_TOOLSETS, so they can't appear in the TUI
+    # checklist or in a user-saved config.  Must run in BOTH branches —
+    # otherwise saving via `hermes tools` (which flips has_explicit_config
+    # to True) silently drops them.
+    platform_tool_universe = set(resolve_toolset(PLATFORMS[platform]["default_toolset"]))
+    configurable_tool_universe = set()
+    for ck in configurable_keys:
+        configurable_tool_universe.update(resolve_toolset(ck))
+    claimed = set()
+    for ts_key in enabled_toolsets:
+        claimed.update(resolve_toolset(ts_key))
+    skip = configurable_keys | plugin_ts_keys | platform_default_keys
+    skip |= {k for k in TOOLSETS if k.startswith("hermes-")}
+    skip |= set(_DEFAULT_OFF_TOOLSETS) - {platform}
+    for ts_key, ts_def in TOOLSETS.items():
+        if ts_key in skip:
+            continue
+        if ts_def.get("includes"):
+            continue
+        ts_tools = set(resolve_toolset(ts_key))
+        if not ts_tools or not ts_tools.issubset(platform_tool_universe):
+            continue
+        if ts_tools.issubset(configurable_tool_universe):
+            continue
+        if not ts_tools.issubset(claimed):
+            enabled_toolsets.add(ts_key)
+            claimed.update(ts_tools)
 
     # Plugin toolsets: enabled by default unless explicitly disabled, or
     # unless the toolset is in _DEFAULT_OFF_TOOLSETS (e.g. spotify —
@@ -639,7 +672,6 @@ def _get_platform_tools(
     # A plugin toolset is "known" for a platform once `hermes tools`
     # has been saved for that platform (tracked via known_plugin_toolsets).
     # Unknown plugins default to enabled; known-but-absent = disabled.
-    plugin_ts_keys = _get_plugin_toolset_keys()
     if plugin_ts_keys:
         known_map = config.get("known_plugin_toolsets", {})
         known_for_platform = set(known_map.get(platform, []))
@@ -657,7 +689,6 @@ def _get_platform_tools(
 
     # Preserve any explicit non-configurable toolset entries (for example,
     # custom toolsets or MCP server names saved in platform_toolsets).
-    platform_default_keys = {p["default_toolset"] for p in PLATFORMS.values()}
     explicit_passthrough = {
         ts
         for ts in toolset_names

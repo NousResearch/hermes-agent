@@ -4381,6 +4381,59 @@ class AIAgent:
 
         return None
 
+    def _repair_skill_name_tool_call(self, tool_call: Any) -> bool:
+        """Rewrite unknown skill-like tool names into skill_view(name=...).
+
+        Some models occasionally emit a skill slug (for example ``github-auth``)
+        as a tool name instead of calling ``skill_view``. When skills tools are
+        enabled, convert this into a valid ``skill_view`` call.
+        """
+        if "skill_view" not in self.valid_tool_names:
+            return False
+
+        raw_name = str(getattr(getattr(tool_call, "function", None), "name", "") or "").strip()
+        if not raw_name:
+            return False
+
+        normalized = raw_name.lower().replace("_", "-")
+
+        try:
+            from tools.skills_tool import skills_list
+
+            payload = json.loads(skills_list())
+            available_skills = payload.get("skills", []) if isinstance(payload, dict) else []
+        except Exception:
+            return False
+
+        matched_name = None
+        for skill in available_skills:
+            name = str(skill.get("name", "")).strip()
+            if not name:
+                continue
+            if raw_name == name or normalized == name.lower().replace("_", "-"):
+                matched_name = name
+                break
+
+        if not matched_name:
+            return False
+
+        args: dict[str, Any] = {}
+        raw_args = getattr(tool_call.function, "arguments", None)
+        if isinstance(raw_args, str) and raw_args.strip():
+            try:
+                parsed = json.loads(raw_args)
+                if isinstance(parsed, dict):
+                    args = parsed
+            except Exception:
+                args = {}
+        elif isinstance(raw_args, dict):
+            args = raw_args
+
+        args.setdefault("name", matched_name)
+        tool_call.function.name = "skill_view"
+        tool_call.function.arguments = json.dumps(args)
+        return True
+
     def _invalidate_system_prompt(self):
         """
         Invalidate the cached system prompt, forcing a rebuild on the next turn.
@@ -11103,6 +11156,9 @@ class AIAgent:
                     # Repair mismatched tool names before validating
                     for tc in assistant_message.tool_calls:
                         if tc.function.name not in self.valid_tool_names:
+                            if self._repair_skill_name_tool_call(tc):
+                                print(f"{self.log_prefix}🔧 Auto-repaired skill-like tool call: '{tc.function.name}'")
+                                continue
                             repaired = self._repair_tool_call(tc.function.name)
                             if repaired:
                                 print(f"{self.log_prefix}🔧 Auto-repaired tool name: '{tc.function.name}' -> '{repaired}'")

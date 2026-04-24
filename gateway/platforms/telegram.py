@@ -1331,14 +1331,18 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             # Build provider buttons — 2 per row
             buttons: list = []
-            for p in providers:
+            for idx, p in enumerate(providers):
                 count = p.get("total_models", len(p.get("models", [])))
                 label = f"{p['name']} ({count})"
                 if p.get("is_current"):
                     label = f"✓ {label}"
-                # Compact callback data: mp:<slug>  (max 64 bytes)
+                # Compact callback data: mp:<index>  (max 64 bytes).
+                # The picker can include multiple UX groups with the same real
+                # provider slug (for example OpenRouter and OpenRouter free
+                # models). Use the row index for Telegram navigation, while
+                # still passing the real provider slug to switch_model later.
                 buttons.append(
-                    InlineKeyboardButton(label, callback_data=f"mp:{p['slug']}")
+                    InlineKeyboardButton(label, callback_data=f"mp:{idx}")
                 )
 
             rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]
@@ -1438,17 +1442,31 @@ class TelegramAdapter(BasePlatformAdapter):
 
         if data.startswith("mp:"):
             # --- Provider selected: show model buttons (page 0) ---
-            provider_slug = data[3:]
-            provider = next(
-                (p for p in state["providers"] if p["slug"] == provider_slug),
-                None,
-            )
+            provider_ref = data[3:]
+            provider = None
+            try:
+                provider_idx = int(provider_ref)
+            except ValueError:
+                provider_idx = -1
+            if 0 <= provider_idx < len(state["providers"]):
+                provider = state["providers"][provider_idx]
+            else:
+                # Backward compatibility with any older in-flight pickers that
+                # used mp:<slug> callback data.
+                provider = next(
+                    (p for p in state["providers"] if p["slug"] == provider_ref),
+                    None,
+                )
             if not provider:
                 await query.answer(text="Provider not found.")
                 return
 
+            provider_slug = provider.get("slug", provider_ref)
             models = provider.get("models", [])
             state["selected_provider"] = provider_slug
+            state["selected_provider_index"] = (
+                provider_idx if 0 <= provider_idx < len(state["providers"]) else None
+            )
             state["selected_provider_name"] = provider.get("name", provider_slug)
             state["model_list"] = models
             state["model_page"] = 0
@@ -1486,10 +1504,15 @@ class TelegramAdapter(BasePlatformAdapter):
 
             pname = state.get("selected_provider_name", "")
             provider_slug = state.get("selected_provider", "")
-            provider = next(
-                (p for p in state["providers"] if p["slug"] == provider_slug),
-                None,
-            )
+            provider_idx = state.get("selected_provider_index")
+            provider = None
+            if isinstance(provider_idx, int) and 0 <= provider_idx < len(state["providers"]):
+                provider = state["providers"][provider_idx]
+            if provider is None:
+                provider = next(
+                    (p for p in state["providers"] if p["slug"] == provider_slug),
+                    None,
+                )
             total = provider.get("total_models", len(models)) if provider else len(models)
             shown = len(models)
             extra = f"\n_{total - shown} more available — type `/model <name>` directly_" if total > shown else ""
@@ -1557,13 +1580,13 @@ class TelegramAdapter(BasePlatformAdapter):
         elif data == "mb":
             # --- Back to provider list ---
             buttons = []
-            for p in state["providers"]:
+            for idx, p in enumerate(state["providers"]):
                 count = p.get("total_models", len(p.get("models", [])))
                 label = f"{p['name']} ({count})"
                 if p.get("is_current"):
                     label = f"✓ {label}"
                 buttons.append(
-                    InlineKeyboardButton(label, callback_data=f"mp:{p['slug']}")
+                    InlineKeyboardButton(label, callback_data=f"mp:{idx}")
                 )
 
             rows = [buttons[i : i + 2] for i in range(0, len(buttons), 2)]

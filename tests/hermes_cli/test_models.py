@@ -6,6 +6,7 @@ from hermes_cli.models import (
     OPENROUTER_MODELS, fetch_openrouter_models, model_ids, detect_provider_for_model,
     is_nous_free_tier, partition_nous_models_by_tier,
     check_nous_free_tier, _FREE_TIER_CACHE_TTL,
+    fetch_openrouter_free_models,
 )
 import hermes_cli.models as _models_mod
 
@@ -86,6 +87,102 @@ class TestFetchOpenRouterModels:
             models = fetch_openrouter_models(force_refresh=True)
 
         assert models == OPENROUTER_MODELS
+
+    def test_missing_pricing_is_not_marked_free(self, monkeypatch):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return (
+                    b'{"data":['
+                    b'{"id":"anthropic/claude-opus-4.6","pricing":{"prompt":"0","completion":"0"}},'
+                    b'{"id":"qwen/qwen3.6-plus","pricing":{"prompt":"0"}},'
+                    b'{"id":"minimax/minimax-m2.5:free","pricing":null}'
+                    b']}'
+                )
+
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
+            models = dict(fetch_openrouter_models(force_refresh=True))
+
+        assert models["anthropic/claude-opus-4.6"] == "recommended"
+        assert models["qwen/qwen3.6-plus"] == ""
+        assert models["minimax/minimax-m2.5:free"] == ""
+
+
+class TestFetchOpenRouterFreeModels:
+    def test_detects_zero_priced_free_models_and_excludes_paid_unknown_and_nvidia(self, monkeypatch):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return (
+                    b'{"data":['
+                    b'{"id":"anthropic/claude-paid","name":"Claude Paid",'
+                    b'"pricing":{"prompt":"0.000015","completion":"0.000075"},'
+                    b'"supported_parameters":["tools"]},'
+                    b'{"id":"meta-llama/llama-3:free","name":"Llama Free",'
+                    b'"pricing":{"prompt":"0","completion":"0.000000"},'
+                    b'"supported_parameters":["tools","temperature"]},'
+                    b'{"id":"qwen/qwen-zero","name":"Qwen Zero",'
+                    b'"pricing":{"prompt":0,"completion":0},'
+                    b'"supported_parameters":["tools"]},'
+                    b'{"id":"missing/pricing","name":"Missing Pricing",'
+                    b'"pricing":{"prompt":"0"},'
+                    b'"supported_parameters":["tools"]},'
+                    b'{"id":"image/free","name":"Image Free",'
+                    b'"pricing":{"prompt":"0","completion":"0"},'
+                    b'"supported_parameters":["response_format"]},'
+                    b'{"id":"nvidia/nemotron-test:free","name":"Nemotron Free",'
+                    b'"pricing":{"prompt":"0","completion":"0"},'
+                    b'"supported_parameters":["tools"]}'
+                    b']}'
+                )
+
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
+            assert fetch_openrouter_free_models(force_refresh=True) == [
+                "meta-llama/llama-3:free",
+                "qwen/qwen-zero",
+            ]
+
+    def test_orders_openrouter_free_then_tagged_then_other_zero_priced(self, monkeypatch):
+        class _Resp:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return (
+                    b'{"data":['
+                    b'{"id":"zeta/zero","pricing":{"prompt":"0","completion":"0"},"supported_parameters":["tools"]},'
+                    b'{"id":"openrouter/free","pricing":{"prompt":"0","completion":"0"},"supported_parameters":["tools"]},'
+                    b'{"id":"alpha/model:free","pricing":{"prompt":"0","completion":"0"},"supported_parameters":["tools"]}'
+                    b']}'
+                )
+
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        with patch("hermes_cli.models.urllib.request.urlopen", return_value=_Resp()):
+            assert fetch_openrouter_free_models(force_refresh=True) == [
+                "openrouter/free",
+                "alpha/model:free",
+                "zeta/zero",
+            ]
+
+    def test_failure_returns_empty_list(self, monkeypatch):
+        monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
+        with patch("hermes_cli.models.urllib.request.urlopen", side_effect=OSError("boom")):
+            assert fetch_openrouter_free_models(force_refresh=True) == []
 
     def test_filters_out_models_without_tool_support(self, monkeypatch):
         """Models whose supported_parameters omits 'tools' must not appear in the picker.

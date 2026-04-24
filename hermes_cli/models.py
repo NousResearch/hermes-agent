@@ -70,6 +70,7 @@ OPENROUTER_MODELS: list[tuple[str, str]] = [
 ]
 
 _openrouter_catalog_cache: list[tuple[str, str]] | None = None
+_openrouter_live_catalog_cache: list[dict[str, Any]] | None = None
 
 
 # Fallback Vercel AI Gateway snapshot used when the live catalog is unavailable.
@@ -827,11 +828,13 @@ def get_default_model_for_provider(provider: str) -> str:
 
 
 def _openrouter_model_is_free(pricing: Any) -> bool:
-    """Return True when both prompt and completion pricing are zero."""
+    """Return True when both prompt and completion pricing are explicitly zero."""
     if not isinstance(pricing, dict):
         return False
+    if pricing.get("prompt") is None or pricing.get("completion") is None:
+        return False
     try:
-        return float(pricing.get("prompt", "0")) == 0 and float(pricing.get("completion", "0")) == 0
+        return float(pricing["prompt"]) == 0 and float(pricing["completion"]) == 0
     except (TypeError, ValueError):
         return False
 
@@ -861,6 +864,44 @@ def _openrouter_model_supports_tools(item: Any) -> bool:
     return "tools" in params
 
 
+def _fetch_openrouter_catalog_items(
+    timeout: float = 8.0,
+    *,
+    force_refresh: bool = False,
+) -> Optional[list[dict[str, Any]]]:
+    """Fetch and cache raw OpenRouter catalog items for picker helpers."""
+    global _openrouter_live_catalog_cache
+
+    if _openrouter_live_catalog_cache is not None and not force_refresh:
+        return list(_openrouter_live_catalog_cache)
+
+    try:
+        req = urllib.request.Request(
+            "https://openrouter.ai/api/v1/models",
+            headers={"Accept": "application/json"},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode())
+    except Exception:
+        return None
+
+    live_items = payload.get("data", []) if isinstance(payload, dict) else []
+    if not isinstance(live_items, list):
+        return None
+
+    parsed: list[dict[str, Any]] = []
+    for item in live_items:
+        if not isinstance(item, dict):
+            continue
+        mid = str(item.get("id") or "").strip()
+        if not mid:
+            continue
+        parsed.append(item)
+
+    _openrouter_live_catalog_cache = parsed
+    return list(parsed)
+
+
 def fetch_openrouter_models(
     timeout: float = 8.0,
     *,
@@ -875,28 +916,15 @@ def fetch_openrouter_models(
     fallback = list(OPENROUTER_MODELS)
     preferred_ids = [mid for mid, _ in fallback]
 
-    try:
-        req = urllib.request.Request(
-            "https://openrouter.ai/api/v1/models",
-            headers={"Accept": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode())
-    except Exception:
+    live_items = _fetch_openrouter_catalog_items(timeout=timeout, force_refresh=force_refresh)
+    if live_items is None:
         return list(_openrouter_catalog_cache or fallback)
 
-    live_items = payload.get("data", [])
-    if not isinstance(live_items, list):
-        return list(_openrouter_catalog_cache or fallback)
-
-    live_by_id: dict[str, dict[str, Any]] = {}
-    for item in live_items:
-        if not isinstance(item, dict):
-            continue
-        mid = str(item.get("id") or "").strip()
-        if not mid:
-            continue
-        live_by_id[mid] = item
+    live_by_id = {
+        str(item.get("id") or "").strip(): item
+        for item in live_items
+        if str(item.get("id") or "").strip()
+    }
 
     curated: list[tuple[str, str]] = []
     for preferred_id in preferred_ids:
@@ -918,6 +946,47 @@ def fetch_openrouter_models(
     curated[0] = (first_id, "recommended")
     _openrouter_catalog_cache = curated
     return list(curated)
+
+
+def _openrouter_free_model_sort_key(model_id: str) -> tuple[int, str]:
+    lowered = model_id.lower()
+    if lowered == "openrouter/free":
+        return (0, lowered)
+    if lowered.endswith(":free"):
+        return (1, lowered)
+    return (2, lowered)
+
+
+def fetch_openrouter_free_models(
+    timeout: float = 8.0,
+    *,
+    force_refresh: bool = False,
+) -> list[str]:
+    """Return zero-priced, tool-capable OpenRouter model IDs for the free picker group."""
+    live_items = _fetch_openrouter_catalog_items(timeout=timeout, force_refresh=force_refresh)
+    if live_items is None:
+        return []
+
+    free_ids: list[str] = []
+    seen: set[str] = set()
+    for item in live_items:
+        mid = str(item.get("id") or "").strip()
+        if not mid:
+            continue
+        # First pass intentionally avoids adding NVIDIA-specific free models.
+        if mid.lower().startswith("nvidia/"):
+            continue
+        if not _openrouter_model_supports_tools(item):
+            continue
+        if not _openrouter_model_is_free(item.get("pricing")):
+            continue
+        key = mid.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        free_ids.append(mid)
+
+    return sorted(free_ids, key=_openrouter_free_model_sort_key)
 
 
 def model_ids(*, force_refresh: bool = False) -> list[str]:

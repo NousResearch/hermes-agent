@@ -53,8 +53,8 @@ def _add_forward_compat_models(model_ids: List[str]) -> List[str]:
     return ordered
 
 
-def _fetch_models_from_api(access_token: str) -> List[str]:
-    """Fetch available models from the Codex API. Returns visible models sorted by priority."""
+def _fetch_live_models_from_api(access_token: str) -> List[str]:
+    """Fetch model slugs that the live Codex API says this account supports."""
     try:
         import httpx
         resp = httpx.get(
@@ -88,7 +88,12 @@ def _fetch_models_from_api(access_token: str) -> List[str]:
         sortable.append((rank, slug))
 
     sortable.sort(key=lambda x: (x[0], x[1]))
-    return _add_forward_compat_models([slug for _, slug in sortable])
+    return [slug for _, slug in sortable]
+
+
+def _fetch_models_from_api(access_token: str) -> List[str]:
+    """Fetch available models from the Codex API, including synthetic picker IDs."""
+    return _add_forward_compat_models(_fetch_live_models_from_api(access_token))
 
 
 def _read_default_model(codex_home: Path) -> Optional[str]:
@@ -143,6 +148,18 @@ def _read_cache_models(codex_home: Path) -> List[str]:
         if slug not in deduped:
             deduped.append(slug)
     return deduped
+
+
+def get_live_codex_model_ids(access_token: Optional[str]) -> List[str]:
+    """Return live Codex model IDs supported by the current account.
+
+    Unlike ``get_codex_model_ids()``, this never falls back to local cache or
+    hardcoded defaults. Use it for runtime fallback decisions where guessing a
+    stale model would cause a provider-side 400.
+    """
+    if not access_token:
+        return []
+    return _fetch_live_models_from_api(access_token)
 
 
 def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:

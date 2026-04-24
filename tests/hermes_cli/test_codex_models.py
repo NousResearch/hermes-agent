@@ -5,7 +5,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
-from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, get_codex_model_ids
+from hermes_cli.codex_models import DEFAULT_CODEX_MODELS, get_codex_model_ids, get_live_codex_model_ids
 
 
 def test_get_codex_model_ids_prioritizes_default_and_cache(tmp_path, monkeypatch):
@@ -105,6 +105,35 @@ def test_model_command_uses_runtime_access_token_for_codex_list(monkeypatch):
     assert captured["access_token"] == "codex-access-token"
     assert captured["model_ids"] == ["gpt-5.2-codex", "gpt-5.2"]
     assert captured["current_model"] == "openai/gpt-5.4"
+
+
+def test_get_live_codex_model_ids_never_uses_local_fallbacks(tmp_path, monkeypatch):
+    codex_home = tmp_path / "codex-home"
+    codex_home.mkdir(parents=True, exist_ok=True)
+    (codex_home / "config.toml").write_text('model = "gpt-5.2-codex"\n')
+    (codex_home / "models_cache.json").write_text(
+        json.dumps({"models": [{"slug": "gpt-5.4", "supported_in_api": True}]})
+    )
+    monkeypatch.setenv("CODEX_HOME", str(codex_home))
+    monkeypatch.setattr(
+        "hermes_cli.codex_models._fetch_live_models_from_api",
+        lambda access_token: [],
+    )
+
+    models = get_live_codex_model_ids("codex-access-token")
+
+    assert models == []
+
+
+def test_get_live_codex_model_ids_does_not_add_forward_compat_models(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.codex_models._fetch_live_models_from_api",
+        lambda access_token: ["gpt-5.2-codex"],
+    )
+
+    models = get_live_codex_model_ids("codex-access-token")
+
+    assert models == ["gpt-5.2-codex"]
 
 
 # ── Tests for _normalize_model_for_provider ──────────────────────────

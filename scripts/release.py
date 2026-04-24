@@ -171,6 +171,8 @@ AUTHOR_MAP = {
     "satelerd@gmail.com": "satelerd",
     "dan@danlynn.com": "danklynn",
     "mattmaximo@hotmail.com": "MattMaximo",
+    "149063006+j3ffffff@users.noreply.github.com": "j3ffffff",
+    "A-FdL-Prog@users.noreply.github.com": "A-FdL-Prog",
     "numman.ali@gmail.com": "nummanali",
     "rohithsaimidigudla@gmail.com": "whitehatjr1001",
     "0xNyk@users.noreply.github.com": "0xNyk",

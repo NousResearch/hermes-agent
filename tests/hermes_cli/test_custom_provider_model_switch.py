@@ -51,8 +51,14 @@ class TestCustomProviderModelSwitch:
              patch("builtins.print"):
             _model_flow_named_custom({}, provider_info)
 
-        # fetch_api_models MUST be called even though model was saved
-        mock_fetch.assert_called_once_with("sk-test", "https://vllm.example.com/v1", timeout=8.0)
+        # fetch_api_models MUST be called even though model was saved.
+        # ``api_mode`` was added to the production signature by 647900e8
+        # ("fix(cli): support model validation for anthropic_messages and
+        # cloudflare-protected endpoints") — the test fixture has no
+        # ``api_mode`` entry so ``api_mode or None`` resolves to ``None``.
+        mock_fetch.assert_called_once_with(
+            "sk-test", "https://vllm.example.com/v1", timeout=8.0, api_mode=None,
+        )
 
     def test_can_switch_to_different_model(self, config_home):
         """User selects a different model than the saved one."""

@@ -87,7 +87,7 @@ export const toolTrailLabel = (name: string) =>
 
 export const formatToolCall = (name: string, context = '') => {
   const label = toolTrailLabel(name)
-  const preview = compactPreview(context, 64)
+  const preview = compactPreview(context, 128)
 
   return preview ? `${label}("${preview}")` : label
 }

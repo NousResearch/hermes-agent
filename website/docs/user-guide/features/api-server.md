@@ -79,7 +79,15 @@ Standard OpenAI Chat Completions format. Stateless — the full conversation is 
     "message": {"role": "assistant", "content": "Here's a fibonacci function..."},
     "finish_reason": "stop"
   }],
-  "usage": {"prompt_tokens": 50, "completion_tokens": 200, "total_tokens": 250}
+  "usage": {
+    "prompt_tokens": 24721,
+    "completion_tokens": 200,
+    "total_tokens": 24921,
+    "prompt_tokens_details": {"cached_tokens": 22000},
+    "cache_read_tokens": 22000,
+    "cache_write_tokens": 2500,
+    "model": "claude-opus-4-7"
+  }
 }
 ```
 
@@ -134,7 +142,15 @@ OpenAI Responses API format. Supports server-side conversation state via `previo
     {"type": "function_call_output", "call_id": "call_1", "output": "README.md src/ tests/"},
     {"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": "Your project has..."}]}
   ],
-  "usage": {"input_tokens": 50, "output_tokens": 200, "total_tokens": 250}
+  "usage": {
+    "input_tokens": 24721,
+    "output_tokens": 200,
+    "total_tokens": 24921,
+    "input_tokens_details": {"cached_tokens": 22000},
+    "cache_read_tokens": 22000,
+    "cache_write_tokens": 2500,
+    "model": "claude-opus-4-7"
+  }
 }
 ```
 
@@ -156,6 +172,56 @@ OpenAI Responses API format. Supports server-side conversation state via `previo
 ```
 
 Uploaded files (`input_file` / `file_id`) and non-image `data:` URLs return `400 unsupported_content_type`.
+
+#### Usage block — prompt-cache breakdown
+
+Every response's `usage` block includes prompt-cache breakdown and the actual
+model used. This applies to `/v1/chat/completions`, `/v1/responses`, and the
+streaming variants of both (the final SSE chunk carries the full `usage`).
+
+On Anthropic, a cache-read token costs 10% of the base input rate and a 1-hour
+cache-write costs 200%. Clients that only see the flat `prompt_tokens` field
+can miscalculate cost by up to 20x once the cache warms up, so Hermes surfaces
+the breakdown in two places:
+
+1. **OpenAI-compatible field** — `prompt_tokens_details.cached_tokens`
+   (chat completions) or `input_tokens_details.cached_tokens` (responses).
+   Matches the shape the OpenAI Python SDK already parses, so existing
+   cost-tracking code against other OpenAI-compat backends reads it correctly
+   without any changes.
+
+2. **Flat additions on the `usage` object** — three extra fields for clients
+   that want the full picture:
+
+   | Field | Meaning |
+   | --- | --- |
+   | `cache_read_tokens` | Subset of `prompt_tokens` served from the cache — billed at 10% of the base input rate |
+   | `cache_write_tokens` | Subset of `prompt_tokens` written to the cache this turn — billed at 1.25x (5m TTL) or 2x (1h TTL) the base input rate |
+   | `model` | The model actually used — may differ from the requested model if the fallback provider chain rewrote it mid-turn |
+
+The cache fields are **sub-totals of `prompt_tokens`, not additions** —
+`total_tokens` still equals `prompt_tokens + completion_tokens` as required
+by OpenAI's usage contract. They're informational, so a client that ignores
+them gets the same behavior as before this feature shipped.
+
+**Computing cost from the usage block** (pseudo-code for Claude Sonnet 4,
+\$3/M input, \$15/M output, 1.25x write, 0.1x read):
+
+```python
+base_input_rate = 3.0 / 1_000_000
+base_output_rate = 15.0 / 1_000_000
+
+cached = usage["cache_read_tokens"]
+written = usage["cache_write_tokens"]
+uncached = usage["prompt_tokens"] - cached - written
+
+cost = (
+    uncached * base_input_rate
+    + written * base_input_rate * 1.25   # or 2.0 if HERMES_CACHE_TTL=1h
+    + cached * base_input_rate * 0.10
+    + usage["completion_tokens"] * base_output_rate
+)
+```
 
 #### Multi-turn with previous_response_id
 

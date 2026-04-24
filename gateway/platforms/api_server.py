@@ -1030,6 +1030,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 "prompt_tokens": usage.get("input_tokens", 0),
                 "completion_tokens": usage.get("output_tokens", 0),
                 "total_tokens": usage.get("total_tokens", 0),
+                "prompt_tokens_details": {
+                    "cached_tokens": usage.get("cache_read_tokens", 0),
+                },
+                "cache_read_tokens": usage.get("cache_read_tokens", 0),
+                "cache_write_tokens": usage.get("cache_write_tokens", 0),
+                "model": usage.get("model", ""),
             },
         }
 
@@ -1127,7 +1133,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 last_activity = await _emit(delta)
 
             # Get usage from completed agent
-            usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+            usage = {
+                "input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+                "cache_read_tokens": 0, "cache_write_tokens": 0, "model": "",
+            }
             try:
                 result, agent_usage = await agent_task
                 usage = agent_usage or usage
@@ -1143,6 +1152,12 @@ class APIServerAdapter(BasePlatformAdapter):
                     "prompt_tokens": usage.get("input_tokens", 0),
                     "completion_tokens": usage.get("output_tokens", 0),
                     "total_tokens": usage.get("total_tokens", 0),
+                    "prompt_tokens_details": {
+                        "cached_tokens": usage.get("cache_read_tokens", 0),
+                    },
+                    "cache_read_tokens": usage.get("cache_read_tokens", 0),
+                    "cache_write_tokens": usage.get("cache_write_tokens", 0),
+                    "model": usage.get("model", ""),
                 },
             }
             await response.write(f"data: {json.dumps(finish_chunk)}\n\n".encode())
@@ -1268,7 +1283,10 @@ class APIServerAdapter(BasePlatformAdapter):
 
         final_response_text = ""
         agent_error: Optional[str] = None
-        usage: Dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        usage: Dict[str, int] = {
+            "input_tokens": 0, "output_tokens": 0, "total_tokens": 0,
+            "cache_read_tokens": 0, "cache_write_tokens": 0, "model": "",
+        }
 
         try:
             # response.created — initial envelope, status=in_progress
@@ -1533,6 +1551,12 @@ class APIServerAdapter(BasePlatformAdapter):
                     "input_tokens": usage.get("input_tokens", 0),
                     "output_tokens": usage.get("output_tokens", 0),
                     "total_tokens": usage.get("total_tokens", 0),
+                    "input_tokens_details": {
+                        "cached_tokens": usage.get("cache_read_tokens", 0),
+                    },
+                    "cache_read_tokens": usage.get("cache_read_tokens", 0),
+                    "cache_write_tokens": usage.get("cache_write_tokens", 0),
+                    "model": usage.get("model", ""),
                 }
                 await _write_event("response.failed", {
                     "type": "response.failed",
@@ -1545,6 +1569,12 @@ class APIServerAdapter(BasePlatformAdapter):
                     "input_tokens": usage.get("input_tokens", 0),
                     "output_tokens": usage.get("output_tokens", 0),
                     "total_tokens": usage.get("total_tokens", 0),
+                    "input_tokens_details": {
+                        "cached_tokens": usage.get("cache_read_tokens", 0),
+                    },
+                    "cache_read_tokens": usage.get("cache_read_tokens", 0),
+                    "cache_write_tokens": usage.get("cache_write_tokens", 0),
+                    "model": usage.get("model", ""),
                 }
                 await _write_event("response.completed", {
                     "type": "response.completed",
@@ -1831,6 +1861,12 @@ class APIServerAdapter(BasePlatformAdapter):
                 "input_tokens": usage.get("input_tokens", 0),
                 "output_tokens": usage.get("output_tokens", 0),
                 "total_tokens": usage.get("total_tokens", 0),
+                "input_tokens_details": {
+                    "cached_tokens": usage.get("cache_read_tokens", 0),
+                },
+                "cache_read_tokens": usage.get("cache_read_tokens", 0),
+                "cache_write_tokens": usage.get("cache_write_tokens", 0),
+                "model": usage.get("model", ""),
             },
         }
 
@@ -2203,6 +2239,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                 "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
                 "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                "cache_read_tokens": getattr(agent, "session_cache_read_tokens", 0) or 0,
+                "cache_write_tokens": getattr(agent, "session_cache_write_tokens", 0) or 0,
+                "model": getattr(agent, "model", "") or "",
             }
             return result, usage
 
@@ -2372,6 +2411,9 @@ class APIServerAdapter(BasePlatformAdapter):
                         "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                         "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
                         "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
+                        "cache_read_tokens": getattr(agent, "session_cache_read_tokens", 0) or 0,
+                        "cache_write_tokens": getattr(agent, "session_cache_write_tokens", 0) or 0,
+                        "model": getattr(agent, "model", "") or "",
                     }
                     return r, u
 

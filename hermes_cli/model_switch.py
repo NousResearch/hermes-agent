@@ -936,7 +936,7 @@ def list_authenticated_providers(
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.models import (
         OPENROUTER_MODELS, _PROVIDER_MODELS,
-        _MODELS_DEV_PREFERRED, _merge_with_models_dev,
+        _MODELS_DEV_PREFERRED, _merge_with_models_dev, provider_model_ids,
     )
 
     results: List[dict] = []
@@ -1095,11 +1095,14 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        # Use curated list — look up by Hermes slug, fall back to overlay key
-        model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
-        # Merge with models.dev for preferred providers (same rationale as above).
-        if hermes_slug in _MODELS_DEV_PREFERRED:
-            model_ids = _merge_with_models_dev(hermes_slug, model_ids)
+        if hermes_slug in {"copilot", "copilot-acp"}:
+            model_ids = provider_model_ids(hermes_slug)
+        else:
+            # Use curated list — look up by Hermes slug, fall back to overlay key
+            model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
+            # Merge with models.dev for preferred providers (same rationale as above).
+            if hermes_slug in _MODELS_DEV_PREFERRED:
+                model_ids = _merge_with_models_dev(hermes_slug, model_ids)
         total = len(model_ids)
         top = model_ids[:max_models]
 

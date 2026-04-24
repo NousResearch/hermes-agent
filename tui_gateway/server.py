@@ -61,7 +61,11 @@ def _panic_hook(exc_type, exc_value, exc_tb):
     # Stderr goes through to the TUI as a gateway.stderr Activity line —
     # the first line here is what the user will see without opening any
     # log files.  Rest of the stack is still in the log for full context.
-    first = str(exc_value).strip().splitlines()[0] if str(exc_value).strip() else exc_type.__name__
+    first = (
+        str(exc_value).strip().splitlines()[0]
+        if str(exc_value).strip()
+        else exc_type.__name__
+    )
     print(f"[gateway-crash] {exc_type.__name__}: {first}", file=sys.stderr, flush=True)
     # Chain to the default hook so the process still terminates normally.
     sys.__excepthook__(exc_type, exc_value, exc_tb)
@@ -593,13 +597,17 @@ def _coerce_statusbar(raw) -> str:
 def _load_reasoning_config() -> dict | None:
     from hermes_constants import parse_reasoning_effort
 
-    effort = str((_load_cfg().get("agent") or {}).get("reasoning_effort", "") or "").strip()
+    effort = str(
+        (_load_cfg().get("agent") or {}).get("reasoning_effort", "") or ""
+    ).strip()
     return parse_reasoning_effort(effort)
 
 
 def _load_service_tier() -> str | None:
     raw = (
-        str((_load_cfg().get("agent") or {}).get("service_tier", "") or "").strip().lower()
+        str((_load_cfg().get("agent") or {}).get("service_tier", "") or "")
+        .strip()
+        .lower()
     )
     if not raw or raw in {"normal", "default", "standard", "off", "none"}:
         return None
@@ -814,6 +822,22 @@ def _probe_credentials(agent) -> str:
     except Exception:
         pass
     return ""
+
+
+def _probe_config_health(cfg: dict) -> str:
+    """Flag bare YAML keys (`agent:` with no value → None) that silently
+    drop nested settings. Returns warning or ''."""
+    if not isinstance(cfg, dict):
+        return ""
+    null_keys = sorted(k for k, v in cfg.items() if v is None)
+    if not null_keys:
+        return ""
+    keys = ", ".join(f"`{k}`" for k in null_keys)
+    return (
+        f"config.yaml has empty section(s): {keys}. "
+        f"Remove the line(s) or set them to `{{}}` — "
+        f"empty sections silently drop nested settings."
+    )
 
 
 def _session_info(agent) -> dict:
@@ -1115,7 +1139,9 @@ def _resolve_personality_prompt(cfg: dict) -> str:
         try:
             from hermes_cli.config import load_config as _load_full_cfg
 
-            personalities = (_load_full_cfg().get("agent") or {}).get("personalities", {})
+            personalities = (_load_full_cfg().get("agent") or {}).get(
+                "personalities", {}
+            )
         except Exception:
             personalities = (cfg.get("agent") or {}).get("personalities", {})
     pval = personalities.get(name)
@@ -1503,6 +1529,10 @@ def _(rid, params: dict) -> dict:
             warn = _probe_credentials(agent)
             if warn:
                 info["credential_warning"] = warn
+            cfg_warn = _probe_config_health(_load_cfg())
+            if cfg_warn:
+                info["config_warning"] = cfg_warn
+                logger.warning(cfg_warn)
             _emit("session.info", sid, info)
         except Exception as e:
             session["agent_error"] = str(e)
@@ -1649,9 +1679,7 @@ def _(rid, params: dict) -> dict:
         return _db_unavailable_error(rid, code=5007)
     title, key = params.get("title", ""), session["session_key"]
     if not title:
-        return _ok(
-            rid, {"title": db.get_session_title(key) or "", "session_key": key}
-        )
+        return _ok(rid, {"title": db.get_session_title(key) or "", "session_key": key})
     try:
         db.set_session_title(key, title)
         return _ok(rid, {"title": title})
@@ -2278,7 +2306,9 @@ def _(rid, params: dict) -> dict:
                     f.write(trace)
             except Exception:
                 pass
-            print(f"[gateway-turn] {type(e).__name__}: {e}", file=sys.stderr, flush=True)
+            print(
+                f"[gateway-turn] {type(e).__name__}: {e}", file=sys.stderr, flush=True
+            )
             _emit("error", sid, {"message": str(e)})
         finally:
             try:
@@ -2701,9 +2731,7 @@ def _(rid, params: dict) -> dict:
         cfg = _load_cfg()
         display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
         sections_cfg = (
-            display.get("sections")
-            if isinstance(display.get("sections"), dict)
-            else {}
+            display.get("sections") if isinstance(display.get("sections"), dict) else {}
         )
 
         nv = str(value or "").strip().lower()
@@ -2842,11 +2870,14 @@ def _(rid, params: dict) -> dict:
         )
     if key == "personality":
         return _ok(
-            rid, {"value": (_load_cfg().get("display") or {}).get("personality", "default")}
+            rid,
+            {"value": (_load_cfg().get("display") or {}).get("personality", "default")},
         )
     if key == "reasoning":
         cfg = _load_cfg()
-        effort = str((cfg.get("agent") or {}).get("reasoning_effort", "medium") or "medium")
+        effort = str(
+            (cfg.get("agent") or {}).get("reasoning_effort", "medium") or "medium"
+        )
         display = (
             "show"
             if bool((cfg.get("display") or {}).get("show_reasoning", False))
@@ -2868,7 +2899,11 @@ def _(rid, params: dict) -> dict:
     if key == "thinking_mode":
         allowed_tm = frozenset({"collapsed", "truncated", "full"})
         cfg = _load_cfg()
-        raw = str((cfg.get("display") or {}).get("thinking_mode", "") or "").strip().lower()
+        raw = (
+            str((cfg.get("display") or {}).get("thinking_mode", "") or "")
+            .strip()
+            .lower()
+        )
         if raw in allowed_tm:
             nv = raw
         else:
@@ -3369,7 +3404,16 @@ def _list_repo_files(root: str) -> list[str]:
         if top_result.returncode == 0:
             top = top_result.stdout.decode("utf-8", "replace").strip()
             list_result = subprocess.run(
-                ["git", "-C", top, "ls-files", "-z", "--cached", "--others", "--exclude-standard"],
+                [
+                    "git",
+                    "-C",
+                    top,
+                    "ls-files",
+                    "-z",
+                    "--cached",
+                    "--others",
+                    "--exclude-standard",
+                ],
                 capture_output=True,
                 timeout=2.0,
                 check=False,
@@ -3378,7 +3422,9 @@ def _list_repo_files(root: str) -> list[str]:
                 for p in list_result.stdout.decode("utf-8", "replace").split("\0"):
                     if not p:
                         continue
-                    rel = os.path.relpath(os.path.join(top, p), root).replace(os.sep, "/")
+                    rel = os.path.relpath(os.path.join(top, p), root).replace(
+                        os.sep, "/"
+                    )
                     # Skip parents/siblings of cwd — keep the picker scoped
                     # to root-and-below, matching Cmd-P workspace semantics.
                     if rel.startswith("../"):
@@ -3512,12 +3558,7 @@ def _(rid, params: dict) -> dict:
         # editors like Cursor / VS Code do for Cmd-P. Path-ish queries (with
         # `/`, `./`, `~/`, `/abs`) fall through to the directory-listing
         # path so explicit navigation intent is preserved.
-        if (
-            is_context
-            and path_part
-            and "/" not in path_part
-            and prefix_tag != "folder"
-        ):
+        if is_context and path_part and "/" not in path_part and prefix_tag != "folder":
             root = os.getcwd()
             ranked: list[tuple[tuple[int, int], str, str]] = []
             for rel in _list_repo_files(root):
@@ -3943,9 +3984,7 @@ def _(rid, params: dict) -> dict:
 
             voice_cfg = _load_cfg().get("voice", {})
             start_continuous(
-                on_transcript=lambda t: _voice_emit(
-                    "voice.transcript", {"text": t}
-                ),
+                on_transcript=lambda t: _voice_emit("voice.transcript", {"text": t}),
                 on_status=lambda s: _voice_emit("voice.status", {"state": s}),
                 on_silent_limit=lambda: _voice_emit(
                     "voice.transcript", {"no_speech_limit": True}

@@ -1070,6 +1070,20 @@ def resolve_runtime_provider(
             logger.info("Qwen OAuth credentials failed; "
                         "falling through to next provider.")
 
+    if provider == "minimax-oauth":
+        pconfig = PROVIDER_REGISTRY.get(provider)
+        if pconfig and pconfig.auth_type == "oauth_minimax":
+            from hermes_cli.auth import resolve_minimax_oauth_runtime_credentials
+            creds = resolve_minimax_oauth_runtime_credentials()
+            return {
+                "provider": provider,
+                "api_mode": "anthropic_messages",
+                "base_url": creds["base_url"],
+                "api_key": creds["api_key"],
+                "source": creds.get("source", "oauth"),
+                "requested_provider": requested_provider,
+            }
+
     if provider == "google-gemini-cli":
         try:
             creds = resolve_gemini_oauth_runtime_credentials()

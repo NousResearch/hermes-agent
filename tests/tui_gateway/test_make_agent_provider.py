@@ -27,16 +27,22 @@ def test_make_agent_passes_resolved_provider():
         "agent": {"system_prompt": "test"},
     }
 
-    with patch("tui_gateway.server._load_cfg", return_value=fake_cfg), \
-         patch("tui_gateway.server._get_db", return_value=MagicMock()), \
-         patch("tui_gateway.server._load_tool_progress_mode", return_value="compact"), \
-         patch("tui_gateway.server._load_reasoning_config", return_value=None), \
-         patch("tui_gateway.server._load_service_tier", return_value=None), \
-         patch("tui_gateway.server._load_enabled_toolsets", return_value=None), \
-         patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=fake_runtime) as mock_resolve, \
-         patch("run_agent.AIAgent") as mock_agent:
+    with (
+        patch("tui_gateway.server._load_cfg", return_value=fake_cfg),
+        patch("tui_gateway.server._get_db", return_value=MagicMock()),
+        patch("tui_gateway.server._load_tool_progress_mode", return_value="compact"),
+        patch("tui_gateway.server._load_reasoning_config", return_value=None),
+        patch("tui_gateway.server._load_service_tier", return_value=None),
+        patch("tui_gateway.server._load_enabled_toolsets", return_value=None),
+        patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=fake_runtime,
+        ) as mock_resolve,
+        patch("run_agent.AIAgent") as mock_agent,
+    ):
 
         from tui_gateway.server import _make_agent
+
         _make_agent("sid-1", "key-1")
 
         mock_resolve.assert_called_once_with(requested=None)
@@ -46,6 +52,19 @@ def test_make_agent_passes_resolved_provider():
         assert call_kwargs.kwargs["base_url"] == "https://api.anthropic.com"
         assert call_kwargs.kwargs["api_key"] == "sk-test-key"
         assert call_kwargs.kwargs["api_mode"] == "anthropic_messages"
+
+
+def test_probe_config_health_flags_null_sections():
+    """Bare YAML keys (`agent:` with no value) parse as None and silently
+    drop nested settings; probe must surface them so users can fix."""
+    from tui_gateway.server import _probe_config_health
+
+    assert _probe_config_health({"agent": {"x": 1}}) == ""
+    assert _probe_config_health({}) == ""
+
+    msg = _probe_config_health({"agent": None, "display": None, "model": {}})
+    assert "agent" in msg and "display" in msg
+    assert "model" not in msg
 
 
 def test_make_agent_tolerates_null_config_sections():
@@ -65,12 +84,18 @@ def test_make_agent_tolerates_null_config_sections():
     }
     null_cfg = {"agent": None, "display": None, "model": {"default": "glm-5"}}
 
-    with patch("tui_gateway.server._load_cfg", return_value=null_cfg), \
-         patch("tui_gateway.server._get_db", return_value=MagicMock()), \
-         patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=fake_runtime), \
-         patch("run_agent.AIAgent") as mock_agent:
+    with (
+        patch("tui_gateway.server._load_cfg", return_value=null_cfg),
+        patch("tui_gateway.server._get_db", return_value=MagicMock()),
+        patch(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            return_value=fake_runtime,
+        ),
+        patch("run_agent.AIAgent") as mock_agent,
+    ):
 
         from tui_gateway.server import _make_agent
+
         _make_agent("sid-null", "key-null")
 
         assert mock_agent.called

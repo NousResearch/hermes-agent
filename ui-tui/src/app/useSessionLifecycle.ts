@@ -142,6 +142,10 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         sys(`warning: ${info.credential_warning}`)
       }
 
+      if (info?.config_warning) {
+        sys(`warning: ${info.config_warning}`)
+      }
+
       if (msg) {
         sys(msg)
       }

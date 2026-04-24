@@ -542,9 +542,9 @@ class MatrixAdapter(BasePlatformAdapter):
                 # no megolm sessions ever land. Setting _device_id here
                 # (in-memory; the on-disk row may not exist yet) makes
                 # the first put_account write the correct value.
+                # DeviceID is a NewType(str) so plain str works at runtime.
                 if client.device_id:
-                    from mautrix.types import DeviceID as _DeviceID
-                    await crypto_store.put_device_id(_DeviceID(client.device_id))
+                    await crypto_store.put_device_id(client.device_id)
 
                 crypto_state = _CryptoStateStore(state_store, self._joined_rooms)
                 olm = OlmMachine(client, crypto_store, crypto_state)

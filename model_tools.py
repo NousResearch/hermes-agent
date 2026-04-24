@@ -494,6 +494,9 @@ def handle_function_call(
     user_task: Optional[str] = None,
     enabled_tools: Optional[List[str]] = None,
     skip_pre_tool_call_hook: bool = False,
+    read_only_agent: bool = False,
+    can_mutate_tasks: bool = False,
+    permission_granted: bool = False,
 ) -> str:
     """
     Main function call dispatcher that routes calls to the tool registry.
@@ -576,6 +579,9 @@ def handle_function_call(
                 function_name, function_args,
                 task_id=task_id,
                 user_task=user_task,
+                read_only_agent=read_only_agent,
+                can_mutate_tasks=can_mutate_tasks,
+                permission_granted=permission_granted,
             )
 
         try:

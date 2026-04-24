@@ -81,6 +81,27 @@ class TestReadFileHandler:
         assert "#deadbeef|" not in result["content"]
 
     @patch("tools.file_tools._get_file_ops")
+    def test_chunking_metadata_is_preserved_in_tool_output(self, mock_get):
+        mock_ops = MagicMock()
+        result_obj = MagicMock()
+        result_obj.content = "line1"
+        result_obj.to_dict.return_value = {
+            "content": "line1",
+            "total_lines": 10,
+            "chunking_strategy": "line",
+            "chunking_language": "javascript",
+            "chunking_fallback_reason": "tree_sitter_unavailable",
+        }
+        mock_ops.read_file.return_value = result_obj
+        mock_get.return_value = mock_ops
+
+        from tools.file_tools import read_file_tool
+        result = json.loads(read_file_tool("/tmp/test.txt"))
+        assert result["chunking_strategy"] == "line"
+        assert result["chunking_language"] == "javascript"
+        assert result["chunking_fallback_reason"] == "tree_sitter_unavailable"
+
+    @patch("tools.file_tools._get_file_ops")
     def test_exception_returns_error_json(self, mock_get):
         mock_get.side_effect = RuntimeError("terminal not available")
 

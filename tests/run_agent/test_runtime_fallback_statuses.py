@@ -151,3 +151,24 @@ def test_503_overload_retries_before_switching_to_fallback():
     assert primary_client.chat.completions.create.call_count == 3
     assert fallback_client.chat.completions.create.call_count == 1
     assert agent.provider == "openrouter"
+
+
+def test_529_overload_retries_before_switching_to_fallback():
+    agent = _make_agent(
+        fallback_model={"provider": "openrouter", "model": "fallback/model"},
+    )
+    error = _make_error(529, "anthropic overloaded")
+    classified = ClassifiedError(
+        reason=FailoverReason.overloaded,
+        status_code=529,
+        retryable=True,
+        should_fallback=True,
+    )
+
+    result, primary_client, fallback_client = _run(agent, classified, [error, error, error])
+
+    assert result["completed"] is True
+    assert result["final_response"] == "fallback success"
+    assert primary_client.chat.completions.create.call_count == 3
+    assert fallback_client.chat.completions.create.call_count == 1
+    assert agent.provider == "openrouter"

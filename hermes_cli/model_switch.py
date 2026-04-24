@@ -42,6 +42,7 @@ from agent.models_dev import (
     get_model_info,
     list_provider_models,
 )
+from agent.model_policy import resolve_model_policy
 
 logger = logging.getLogger(__name__)
 
@@ -241,6 +242,7 @@ class ModelSwitchResult:
     capabilities: Optional[ModelCapabilities] = None
     model_info: Optional[ModelInfo] = None
     is_global: bool = False
+    model_policy_trace: list[dict] | None = None
 
 
 @dataclass
@@ -880,6 +882,19 @@ def switch_model(
     # --- Get full model info from models.dev ---
     model_info = get_model_info(target_provider, new_model)
 
+    # --- Central policy trace ---
+    # /model keeps its existing resolution/credential pipeline, but records the
+    # final provider/model through the Wave 3 resolver so implicit provider
+    # reroutes (alias fallback, catalog detection) are explainable and sanitized.
+    model_policy = resolve_model_policy(
+        provider=target_provider,
+        model=new_model,
+        defaults={
+            "provider": current_provider,
+            "model": current_model,
+        },
+    )
+
     # --- Collect warnings ---
     warnings: list[str] = []
     if validation.get("message"):
@@ -903,6 +918,7 @@ def switch_model(
         capabilities=capabilities,
         model_info=model_info,
         is_global=is_global,
+        model_policy_trace=model_policy.trace,
     )
 
 

@@ -32,6 +32,72 @@ def _sample_task_contract() -> dict:
 
 
 class TestRuntimeActivationPreclassifier:
+    def test_prometheus_named_agent_builds_plan_first_planner_artifact_and_gating_hints(self):
+        agent = _make_agent()
+
+        state = agent._resolve_runtime_activation_state(
+            {
+                "message": "Plan the rollout before changing code.",
+                "named_agent": "prometheus",
+            }
+        )
+
+        assert state["named_agent"] == "prometheus"
+        assert state["named_workflow"] is not None
+        assert state["named_workflow"]["workflow_name"] == "planner"
+        assert state["named_workflow"]["mode"] == "plan"
+        assert state["task_contract"] == state["named_workflow"]["execution_task_contract"]
+        assert "named_agent=prometheus" in state["activation_reason"]
+        assert '"workflow_name": "planner"' in state["activation_note"]
+        assert "## Orchestration Hints" in state["wave1_overlay_prompt"]
+        assert '"approval_required": true' in state["wave1_overlay_prompt"]
+        assert '"execution_blocked": true' in state["wave1_overlay_prompt"]
+        assert '"handoff_target": "deep_worker"' in state["wave1_overlay_prompt"]
+
+    def test_prometheus_plan_first_runtime_boundary_blocks_mutating_tools(self):
+        agent = _make_agent("read_file", "search_files", "patch", "write_file", "terminal")
+        state = agent._resolve_runtime_activation_state(
+            {
+                "message": "Plan the rollout before changing code.",
+                "named_agent": "prometheus",
+            }
+        )
+        agent._runtime_activation_state = state
+        agent.runtime_activation_state = state
+
+        policy = agent._get_named_role_policy()
+
+        assert policy["plan_first"] is True
+        assert policy["runtime_boundary_active"] is True
+        assert "patch" not in policy["allowed_tool_names"]
+        assert "write_file" not in policy["allowed_tool_names"]
+        assert agent._maybe_block_named_role_tool_call("patch", {}) is not None
+        assert agent._maybe_block_named_role_tool_call("write_file", {}) is not None
+        assert agent._maybe_block_named_role_tool_call("terminal", {"command": "touch x"}) is not None
+        assert agent._maybe_block_named_role_tool_call("read_file", {"path": "README.md"}) is None
+
+    def test_prometheus_plan_first_runtime_boundary_lifts_after_explicit_approval(self):
+        agent = _make_agent("read_file", "patch")
+        state = agent._resolve_runtime_activation_state(
+            {
+                "message": "Plan the rollout before changing code.",
+                "named_agent": "prometheus",
+            }
+        )
+        state["orchestration_hints"] = {
+            "behavior_boundary": "plan_first_approved_handoff",
+            "approval_received": True,
+            "execution_blocked": False,
+        }
+        agent._runtime_activation_state = state
+        agent.runtime_activation_state = state
+
+        policy = agent._get_named_role_policy()
+
+        assert policy["plan_first"] is True
+        assert policy["plan_first_approved"] is True
+        assert agent._maybe_block_named_role_tool_call("patch", {}) is None
+
     def test_ultrawork_and_ulw_alias_to_same_runtime_target(self):
         ultrawork = preclassify_intent("Use ultrawork mode to implement the patch and run tests.")
         ulw = preclassify_intent("Use ulw mode to implement the patch and run tests.")

@@ -36,6 +36,7 @@ from typing import Optional, List, Dict, Any
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from tools.binary_extensions import BINARY_EXTENSIONS
+from tools.tree_sitter_chunking import maybe_expand_syntax_read_window
 
 from agent.file_safety import (
     build_write_denied_paths,
@@ -86,6 +87,9 @@ class ReadResult:
     hint: Optional[str] = None
     returned_start_line: Optional[int] = None
     returned_end_line: Optional[int] = None
+    chunking_strategy: Optional[str] = None
+    chunking_language: Optional[str] = None
+    chunking_fallback_reason: Optional[str] = None
     is_binary: bool = False
     is_image: bool = False
     base64_content: Optional[str] = None
@@ -695,6 +699,59 @@ class ShellFileOperations(FileOperations):
             "start_line": expanded_start,
             "end_line": expanded_end,
             "total_lines": total_lines,
+            "strategy": "python_ast",
+            "language": "python",
+            "fallback_reason": None,
+        }
+
+    def _maybe_expand_non_python_read_window(
+        self,
+        path: str,
+        offset: int,
+        end_line: int,
+        limit: int,
+    ) -> Optional[dict[str, Any]]:
+        if os.path.splitext(path)[1].lower() == ".py":
+            return None
+
+        raw_result = self.read_file_raw(path)
+        if raw_result.error or raw_result.is_binary or raw_result.is_image:
+            return None
+
+        source = raw_result.content
+        chunk_result = maybe_expand_syntax_read_window(
+            path=path,
+            source=source,
+            requested_start_line=offset,
+            requested_end_line=end_line,
+            limit=limit,
+        )
+        if chunk_result is None:
+            return None
+        if isinstance(chunk_result, dict):
+            return chunk_result
+
+        total_lines = len(source.splitlines())
+        if chunk_result.strategy == "tree_sitter":
+            raw_lines = source.splitlines()[chunk_result.start_line - 1:chunk_result.end_line]
+            return {
+                "content": "\n".join(raw_lines),
+                "start_line": chunk_result.start_line,
+                "end_line": chunk_result.end_line,
+                "total_lines": total_lines,
+                "strategy": chunk_result.strategy,
+                "language": chunk_result.language,
+                "fallback_reason": chunk_result.fallback_reason,
+            }
+
+        return {
+            "content": None,
+            "start_line": offset,
+            "end_line": end_line,
+            "total_lines": total_lines,
+            "strategy": chunk_result.strategy,
+            "language": chunk_result.language,
+            "fallback_reason": chunk_result.fallback_reason,
         }
     
     # =========================================================================
@@ -769,11 +826,32 @@ class ShellFileOperations(FileOperations):
             total_lines = 0
 
         expanded_window = self._maybe_expand_python_read_window(path, offset, end_line, limit)
+        if expanded_window is None:
+            expanded_window = self._maybe_expand_non_python_read_window(path, offset, end_line, limit)
+
+        chunking_strategy = None
+        chunking_language = None
+        chunking_fallback_reason = None
         if expanded_window is not None:
-            raw_content = expanded_window["content"]
-            actual_start = expanded_window["start_line"]
-            actual_end = expanded_window["end_line"]
-            total_lines = expanded_window["total_lines"]
+            chunking_strategy = expanded_window.get("strategy")
+            chunking_language = expanded_window.get("language")
+            chunking_fallback_reason = expanded_window.get("fallback_reason")
+            if expanded_window.get("content") is not None:
+                raw_content = expanded_window["content"]
+                actual_start = expanded_window["start_line"]
+                actual_end = expanded_window["end_line"]
+                total_lines = expanded_window["total_lines"]
+            else:
+                read_cmd = f"sed -n '{offset},{end_line}p' {self._escape_shell_arg(path)}"
+                read_result = self._exec(read_cmd)
+
+                if read_result.exit_code != 0:
+                    return ReadResult(error=f"Failed to read file: {read_result.stdout}")
+
+                raw_content = read_result.stdout.rstrip("\n")
+                actual_start = offset if raw_content else offset
+                actual_end = offset + len(raw_content.splitlines()) - 1 if raw_content else offset - 1
+                total_lines = expanded_window.get("total_lines", total_lines)
         else:
             read_cmd = f"sed -n '{offset},{end_line}p' {self._escape_shell_arg(path)}"
             read_result = self._exec(read_cmd)
@@ -801,6 +879,9 @@ class ShellFileOperations(FileOperations):
             hint=hint,
             returned_start_line=actual_start,
             returned_end_line=actual_end,
+            chunking_strategy=chunking_strategy,
+            chunking_language=chunking_language,
+            chunking_fallback_reason=chunking_fallback_reason,
         )
     
     def _suggest_similar_files(self, path: str) -> ReadResult:

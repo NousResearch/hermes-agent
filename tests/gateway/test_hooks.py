@@ -28,6 +28,48 @@ class TestHookRegistryInit:
         assert reg.loaded_hooks == []
         assert reg._handlers == {}
 
+    def test_list_hooks_reports_source_event_order_and_errors(self):
+        reg = HookRegistry()
+        reg._handlers["command:status"] = [lambda _e, _c: None]
+        reg._loaded_hooks.append({
+            "name": "policy",
+            "description": "Policy hook",
+            "events": ["command:status"],
+            "path": "/tmp/policy",
+            "errors": ["prior load warning"],
+        })
+
+        hooks = reg.list_hooks()
+
+        assert hooks == [
+            {
+                "name": "policy",
+                "description": "Policy hook",
+                "source": "gateway",
+                "event": "command:status",
+                "enabled": True,
+                "order": 0,
+                "path": "/tmp/policy",
+                "allowlist": None,
+                "consent": None,
+                "errors": ["prior load warning"],
+                "precedence": "exact before wildcard; registration order within each event",
+            }
+        ]
+
+
+def test_unified_hook_status_includes_shell_and_gateway_hooks(tmp_path):
+    from agent.shell_hooks import list_configured_hook_metadata
+
+    shell_status = list_configured_hook_metadata(
+        {"hooks": {"pre_tool_call": [{"command": "echo ok", "matcher": "terminal"}]}},
+        include_allowlist=False,
+    )
+    assert shell_status[0]["source"] == "shell"
+    assert shell_status[0]["event"] == "pre_tool_call"
+    assert shell_status[0]["enabled"] is False
+    assert shell_status[0]["consent"] == "not_allowlisted"
+
 
 def _patch_no_builtins(reg):
     """Suppress built-in hook registration so tests only exercise user-hook discovery."""

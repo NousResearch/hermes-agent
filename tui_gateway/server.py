@@ -815,11 +815,26 @@ def _session_info(agent) -> dict:
     except Exception:
         pass
     try:
-        from tools.mcp_tool import get_mcp_status
+        from tools.mcp_tool import get_mcp_control_plane_status
 
-        info["mcp_servers"] = get_mcp_status()
+        mcp_status = get_mcp_control_plane_status()
+        info["mcp_control_plane"] = mcp_status
+        info["mcp_servers"] = [
+            {
+                "name": entry.get("name"),
+                "transport": entry.get("transport"),
+                "tools": entry.get("tools", 0),
+                "connected": entry.get("connected", False),
+            }
+            for entry in mcp_status.get("servers", [])
+        ]
     except Exception:
-        info["mcp_servers"] = []
+        try:
+            from tools.mcp_tool import get_mcp_status
+
+            info["mcp_servers"] = get_mcp_status()
+        except Exception:
+            info["mcp_servers"] = []
     try:
         from hermes_cli.banner import get_update_result
         from hermes_cli.config import recommended_update_command
@@ -2938,9 +2953,9 @@ def _(rid, params: dict) -> dict:
     """Registry-backed slash metadata for the TUI — categorized, no aliases."""
     try:
         from hermes_cli.commands import (
-            COMMAND_REGISTRY,
             SUBCOMMANDS,
             _build_description,
+            command_metadata_dicts,
         )
 
         all_pairs: list[list[str]] = []
@@ -2948,20 +2963,29 @@ def _(rid, params: dict) -> dict:
         categories: list[dict] = []
         cat_map: dict[str, list[list[str]]] = {}
         cat_order: list[str] = []
+        command_records: list[dict] = []
 
-        for cmd in COMMAND_REGISTRY:
-            c = f"/{cmd.name}"
+        for meta in command_metadata_dicts(include_plugins=True, include_skills=False):
+            if meta.get("source") != "builtin":
+                continue
+            name = str(meta["name"])
+            c = f"/{name}"
             canon[c.lower()] = c
-            for a in cmd.aliases:
+            for a in meta.get("aliases") or []:
                 canon[f"/{a}".lower()] = c
 
-            if cmd.name in _TUI_HIDDEN:
+            if name in _TUI_HIDDEN:
                 continue
 
-            desc = _build_description(cmd)
+            # Keep legacy pair descriptions byte-compatible with previous TUI
+            # callers while exposing the richer metadata under result.commands.
+            from hermes_cli.commands import resolve_command
+            resolved = resolve_command(name)
+            desc = _build_description(resolved) if resolved else str(meta.get("help") or "")
             all_pairs.append([c, desc])
+            command_records.append(dict(meta))
 
-            cat = cmd.category
+            cat = str(meta.get("category") or "Other")
             if cat not in cat_map:
                 cat_map[cat] = []
                 cat_order.append(cat)
@@ -3025,6 +3049,7 @@ def _(rid, params: dict) -> dict:
                 "canon": canon,
                 "categories": categories,
                 "skill_count": skill_count,
+                "commands": command_records,
                 "warning": warning,
             },
         )

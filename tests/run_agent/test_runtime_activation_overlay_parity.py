@@ -209,6 +209,110 @@ def test_delegated_child_preserves_named_agent_identity_in_runtime_state_and_sna
     assert snapshot["activation_identity"] == "oracle"
 
 
+def test_parent_leading_named_agent_invocation_carries_canonical_runtime_surface(monkeypatch):
+    agent = _make_bare_agent(delegate_depth=0)
+
+    monkeypatch.setattr(agent, "_has_multimodal_capability_tools", lambda: True)
+    state = agent._resolve_runtime_activation_state("@multimodal-looker inspect the screenshot")
+    snapshot = agent._build_runtime_activation_snapshot_entry(state)
+
+    assert state["named_agent"] == "multimodal-looker"
+    assert state["named_agent_mode"] == "subagent-only"
+    assert state["specialist"] == "multimodal_specialist"
+    assert state["archetype"] == "generalist"
+    assert state["route_category"] == "visual"
+    assert "vision_analyze" in state["allowed_tools"]
+    assert "terminal" not in state["allowed_tools"]
+    assert state["blocked_tools"] == []
+    assert snapshot["named_agent"] == "multimodal-looker"
+    assert snapshot["named_agent_mode"] == "subagent-only"
+    assert "vision_analyze" in snapshot["allowed_tools"]
+    assert "api_key" not in snapshot
+
+
+def test_disabled_named_agent_leading_invocation_is_not_activated(monkeypatch):
+    monkeypatch.setattr(
+        "hermes_cli.config.describe_named_agent",
+        lambda _name: {
+            "name": "oracle",
+            "is_disabled": True,
+            "parent_invocation": "blocked",
+        },
+    )
+
+    assert run_agent._extract_leading_named_agent_invocation_payload("@oracle inspect this") is None
+
+
+def test_named_agent_runtime_activation_snapshot_captures_runtime_surface_without_secret_leakage():
+    agent = _make_bare_agent(delegate_depth=0)
+
+    state = agent._resolve_runtime_activation_state(
+        {
+            "message": "Explain the anomaly",
+            "named_agent": "oracle",
+            "specialist": "consultant",
+            "archetype": "researcher",
+            "route_category": "deep",
+            "runtime_mode": "default",
+            "delegation_profile": "research",
+            "activation_reason": "named-agent invocation: oracle",
+            "named_agent_mode": "subagent",
+            "provider": "openrouter",
+            "model": "openrouter/oracle-main",
+            "fallback_models": ["openrouter/oracle-fallback", {"model": "openrouter/oracle-fallback-2"}],
+            "allowed_tools": ["read_file", "search_files", "web_search"],
+            "blocked_tools": ["patch", "write_file", "terminal"],
+            "permission_gates": {
+                "edit": False,
+                "bash": False,
+                "webfetch": True,
+                "doom_loop": False,
+                "external_directory": False,
+            },
+            "api_key": "super-secret-key",
+        }
+    )
+    snapshot = agent._build_runtime_activation_snapshot_entry(state)
+
+    assert state["named_agent"] == "oracle"
+    assert state["named_agent_mode"] == "subagent"
+    assert state["provider"] == "openrouter"
+    assert state["model"] == "openrouter/oracle-main"
+    assert state["fallback_models"] == [
+        "openrouter/oracle-fallback",
+        {"model": "openrouter/oracle-fallback-2"},
+    ]
+    assert state["allowed_tools"] == ["read_file", "search_files", "web_search"]
+    assert state["blocked_tools"] == ["patch", "write_file", "terminal"]
+    assert state["permission_gates"] == {
+        "edit": False,
+        "bash": False,
+        "webfetch": True,
+        "doom_loop": False,
+        "external_directory": False,
+    }
+    assert "super-secret-key" not in str(state)
+    assert snapshot["named_agent"] == "oracle"
+    assert snapshot["named_agent_mode"] == "subagent"
+    assert snapshot["provider"] == "openrouter"
+    assert snapshot["model"] == "openrouter/oracle-main"
+    assert snapshot["fallback_models"] == [
+        "openrouter/oracle-fallback",
+        {"model": "openrouter/oracle-fallback-2"},
+    ]
+    assert snapshot["permission_gates"] == {
+        "edit": False,
+        "bash": False,
+        "webfetch": True,
+        "doom_loop": False,
+        "external_directory": False,
+    }
+    assert snapshot["allowed_tools"] == ["read_file", "search_files", "web_search"]
+    assert snapshot["blocked_tools"] == ["patch", "write_file", "terminal"]
+    assert "api_key" not in snapshot
+    assert "super-secret-key" not in str(snapshot)
+
+
 def test_parent_runtime_activation_proves_qa_guard_quick_overlay_end_to_end():
     agent = _make_bare_agent(delegate_depth=0)
     state = agent._resolve_runtime_activation_state("qa regression validate the fix")
@@ -390,6 +494,26 @@ def test_named_workflow_alone_triggers_runtime_activation_injection():
     assert "<named-workflow>" in activation_note
     assert '"workflow_name": "planner"' in activation_note
     assert activation_note.endswith("</wave2-runtime-activation>")
+
+
+def test_parent_runtime_activation_prometheus_named_agent_generates_plan_first_overlay_and_contract():
+    agent = _make_bare_agent(delegate_depth=0)
+
+    state = agent._resolve_runtime_activation_state(
+        {
+            "message": "Plan the rollout before implementation.",
+            "named_agent": "prometheus",
+        }
+    )
+
+    assert state["named_agent"] == "prometheus"
+    assert state["named_workflow"]["workflow_name"] == "planner"
+    assert state["named_workflow"]["mode"] == "plan"
+    assert state["task_contract"] == state["named_workflow"]["execution_task_contract"]
+    assert '"approval_required": true' in state["wave1_overlay_prompt"]
+    assert '"execution_blocked": true' in state["wave1_overlay_prompt"]
+    assert '"handoff_target": "deep_worker"' in state["wave1_overlay_prompt"]
+    assert '"workflow_name": "planner"' in state["activation_note"]
 
 
 def test_delegated_child_ignores_invalid_named_workflow_passthrough():

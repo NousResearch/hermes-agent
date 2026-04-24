@@ -101,6 +101,13 @@ def _extract_text(
 class HermesACPAgent(acp.Agent):
     """ACP Agent implementation wrapping Hermes AIAgent."""
 
+    _ACP_COMMAND_ALIASES = {
+        "reset": "new",
+        "compact": "compress",
+        "context": "status",
+        "version": "debug",
+    }
+
     _SLASH_COMMANDS = {
         "help": "Show available commands",
         "model": "Show or change current model",
@@ -257,7 +264,7 @@ class HermesACPAgent(acp.Agent):
             return
 
         try:
-            from tools.mcp_tool import register_mcp_servers
+            from tools.mcp_tool import get_mcp_control_plane_status, register_mcp_servers
 
             config_map: dict[str, dict] = {}
             for server in mcp_servers:
@@ -276,6 +283,12 @@ class HermesACPAgent(acp.Agent):
                 config_map[name] = config
 
             await asyncio.to_thread(register_mcp_servers, config_map)
+            mcp_status = await asyncio.to_thread(get_mcp_control_plane_status)
+            logger.info(
+                "Session %s: ACP MCP control plane after registration: %s",
+                state.session_id,
+                mcp_status.get("summary", {}),
+            )
         except Exception:
             logger.warning(
                 "Session %s: failed to register ACP MCP servers",
@@ -654,13 +667,26 @@ class HermesACPAgent(acp.Agent):
 
     @classmethod
     def _available_commands(cls) -> list[AvailableCommand]:
+        try:
+            from hermes_cli.commands import command_metadata_dicts
+            metadata = {
+                entry["name"]: entry
+                for entry in command_metadata_dicts(include_plugins=False, include_skills=False)
+                if "acp" in (entry.get("platforms") or [])
+            }
+        except Exception:
+            metadata = {}
+
         commands: list[AvailableCommand] = []
         for spec in cls._ADVERTISED_COMMANDS:
-            input_hint = spec.get("input_hint")
+            command_name = spec["name"]
+            canonical_name = cls._ACP_COMMAND_ALIASES.get(command_name, command_name)
+            meta = metadata.get(canonical_name, {})
+            input_hint = spec.get("input_hint") or meta.get("args_hint")
             commands.append(
                 AvailableCommand(
-                    name=spec["name"],
-                    description=spec["description"],
+                    name=command_name,
+                    description=str(spec.get("description") or meta.get("help") or meta.get("description") or command_name),
                     input=UnstructuredCommandInput(hint=input_hint)
                     if input_hint
                     else None,

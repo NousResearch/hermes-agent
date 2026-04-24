@@ -227,6 +227,39 @@ def iter_configured_hooks(cfg: Optional[Dict[str, Any]]) -> List[ShellHookSpec]:
     return _parse_hooks_block(cfg.get("hooks"))
 
 
+def list_configured_hook_metadata(
+    cfg: Optional[Dict[str, Any]],
+    *,
+    include_allowlist: bool = True,
+) -> List[Dict[str, Any]]:
+    """Return unified metadata for configured shell hooks without registering.
+
+    Configured shell hooks are disabled until consent/allowlist is satisfied.
+    This function is intentionally read-only so status surfaces can report hook
+    state without prompting or mutating the allowlist.
+    """
+    specs = iter_configured_hooks(cfg)
+    result: List[Dict[str, Any]] = []
+    for order, spec in enumerate(specs):
+        allowlisted = _is_allowlisted(spec.event, spec.command) if include_allowlist else False
+        result.append({
+            "name": spec.command,
+            "description": f"shell hook for {spec.event}",
+            "source": "shell",
+            "event": spec.event,
+            "enabled": allowlisted,
+            "order": order,
+            "path": _command_script_path(spec.command),
+            "matcher": spec.matcher,
+            "timeout": spec.timeout,
+            "allowlist": allowlist_entry_for(spec.event, spec.command) if include_allowlist and allowlisted else None,
+            "consent": "allowlisted" if allowlisted else "not_allowlisted",
+            "errors": [],
+            "precedence": "plugin hooks first by manager registration; shell hooks preserve config order per event",
+        })
+    return result
+
+
 def reset_for_tests() -> None:
     """Clear the idempotence set.  Test-only helper."""
     with _registered_lock:

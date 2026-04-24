@@ -44,12 +44,37 @@ class CommandDef:
     name: str                          # canonical name without slash: "background"
     description: str                   # human-readable description
     category: str                      # "Session", "Configuration", etc.
-    aliases: tuple[str, ...] = ()      # alternative names: ("bg",)
+    aliases: tuple[str, ...] = ()      # alternative names: ("short",)
     args_hint: str = ""                # argument placeholder: "<prompt>", "[name]"
     subcommands: tuple[str, ...] = ()  # tab-completable subcommands
     cli_only: bool = False             # only available in CLI
     gateway_only: bool = False         # only available in gateway/messaging
     gateway_config_gate: str | None = None  # config dotpath; when truthy, overrides cli_only for gateway
+    schema: Mapping[str, Any] | None = None
+    permissions: tuple[str, ...] = ()
+    platforms: tuple[str, ...] = ()
+    hidden: bool = False
+    deprecated: bool = False
+
+    def metadata(self, *, source: str = "builtin") -> dict[str, Any]:
+        """Return the Wave 7 unified command metadata envelope."""
+        platforms = list(self.platforms) or _platforms_for_command(self)
+        return {
+            "name": self.name,
+            "aliases": list(self.aliases),
+            "source": source,
+            "category": self.category,
+            "schema": dict(self.schema or {}),
+            "permissions": list(self.permissions),
+            "platforms": platforms,
+            "hidden": bool(self.hidden),
+            "deprecated": bool(self.deprecated),
+            "help": self.description,
+            "description": self.description,
+            "args_hint": self.args_hint,
+            "subcommands": list(self.subcommands),
+            "gateway_config_gate": self.gateway_config_gate,
+        }
 
 
 # ---------------------------------------------------------------------------
@@ -87,6 +112,13 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("bg",), args_hint="<prompt>"),
     CommandDef("btw", "Ephemeral side question using session context (no tools, not persisted)", "Session",
                args_hint="<question>"),
+    CommandDef(
+        "refactor",
+        "Run a dedicated refactor workflow with explicit scope and strategy",
+        "Session",
+        args_hint="[--scope file|module|repo] [--strategy rename-then-adapt|inline-then-extract|extract-then-adapt|safe-mechanical] [--approve-repo-wide] <request>",
+        subcommands=("--scope", "--strategy", "--approve-repo-wide"),
+    ),
     CommandDef("agents", "Show active agents and running tasks", "Session",
                aliases=("tasks",)),
     CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",
@@ -243,6 +275,128 @@ for _cmd in COMMAND_REGISTRY:
     m = _PIPE_SUBS_RE.search(_cmd.args_hint)
     if m:
         SUBCOMMANDS[key] = m.group(0).split("|")
+
+
+# ---------------------------------------------------------------------------
+# Unified Wave 7 command metadata API
+# ---------------------------------------------------------------------------
+
+def _platforms_for_command(cmd: CommandDef) -> list[str]:
+    platforms: list[str] = []
+    if not cmd.gateway_only:
+        platforms.append("cli")
+    if not cmd.cli_only or cmd.gateway_config_gate:
+        platforms.append("gateway")
+        platforms.append("tui")
+    # ACP has a small explicit command adapter, not the full slash dispatcher.
+    if cmd.name in {"help", "model", "status", "new", "compress", "debug"}:
+        platforms.append("acp")
+    return platforms
+
+
+def _coerce_str_list(value: Any) -> list[str]:
+    if value is None:
+        return []
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, (list, tuple, set)):
+        return [str(v) for v in value if str(v)]
+    return []
+
+
+def _plugin_metadata_entries() -> list[dict[str, Any]]:
+    try:
+        from hermes_cli.plugins import get_plugin_commands
+        plugin_cmds = get_plugin_commands() or {}
+    except Exception:
+        return []
+    entries: list[dict[str, Any]] = []
+    for name, meta in sorted(plugin_cmds.items()):
+        if not isinstance(name, str) or not isinstance(meta, Mapping):
+            continue
+        description = str(meta.get("description") or f"Run /{name}")
+        entries.append({
+            "name": name,
+            "aliases": _coerce_str_list(meta.get("aliases")),
+            "source": "plugin",
+            "category": str(meta.get("category") or "Plugins"),
+            "schema": dict(meta.get("schema") or {}),
+            "permissions": _coerce_str_list(meta.get("permissions")),
+            "platforms": _coerce_str_list(meta.get("platforms")) or ["cli", "gateway", "tui"],
+            "hidden": bool(meta.get("hidden", False)),
+            "deprecated": bool(meta.get("deprecated", False)),
+            "help": description,
+            "description": description,
+            "args_hint": str(meta.get("args_hint") or "").strip(),
+            "subcommands": _coerce_str_list(meta.get("subcommands")),
+        })
+    return entries
+
+
+def _skill_metadata_entries() -> list[dict[str, Any]]:
+    try:
+        from agent.skill_commands import scan_skill_commands
+        # Re-scan here instead of using the process-global cache. Command metadata
+        # is used by control-plane surfaces and tests that temporarily change
+        # skill roots; a stale cache would hide newly visible project skills.
+        skill_cmds = scan_skill_commands() or {}
+    except Exception:
+        return []
+    entries: list[dict[str, Any]] = []
+    for cmd_key, info in sorted(skill_cmds.items()):
+        if not isinstance(info, Mapping):
+            continue
+        raw_name = str(cmd_key).lstrip("/")
+        description = str(info.get("description") or f"Invoke the {raw_name} skill")
+        entries.append({
+            "name": raw_name,
+            "aliases": [],
+            "source": "skill",
+            "category": str(info.get("category") or "Skills"),
+            "schema": {"type": "string", "description": "Optional user instruction for the skill"},
+            "permissions": _coerce_str_list(info.get("permissions")),
+            "platforms": _coerce_str_list(info.get("platforms")) or ["cli", "gateway", "tui"],
+            "hidden": bool(info.get("hidden", False)),
+            "deprecated": bool(info.get("deprecated", False)),
+            "help": description,
+            "description": description,
+            "args_hint": "[instruction]",
+            "subcommands": [],
+            "skill_md_path": info.get("skill_md_path"),
+            "skill_dir": info.get("skill_dir"),
+        })
+    return entries
+
+
+def iter_command_metadata(
+    *,
+    include_plugins: bool = True,
+    include_skills: bool = True,
+) -> list[dict[str, Any]]:
+    """Return unified metadata for built-in, plugin, and skill slash commands.
+
+    Execution remains owned by the existing dispatchers.  This API is a shared
+    metadata envelope for CLI help, gateway/TUI cataloging, ACP command
+    advertisement, and tests.
+    """
+    entries = [cmd.metadata() for cmd in COMMAND_REGISTRY]
+    if include_plugins:
+        entries.extend(_plugin_metadata_entries())
+    if include_skills:
+        entries.extend(_skill_metadata_entries())
+    return entries
+
+
+def command_metadata_dicts(
+    *,
+    include_plugins: bool = True,
+    include_skills: bool = True,
+) -> list[dict[str, Any]]:
+    """Backward-compatible plain-dict wrapper around :func:`iter_command_metadata`."""
+    return [dict(entry) for entry in iter_command_metadata(
+        include_plugins=include_plugins,
+        include_skills=include_skills,
+    )]
 
 
 # ---------------------------------------------------------------------------

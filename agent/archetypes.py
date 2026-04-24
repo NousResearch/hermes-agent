@@ -54,7 +54,50 @@ class NamedWorkflow:
     kind: str = "named_workflow"
 
 
+@dataclass(frozen=True)
+class NamedAgentContract:
+    """Canonical normalized runtime contract for a named agent."""
+
+    name: str
+    role: str
+    archetype: str
+    specialist: str | None
+    mode: str
+    color: str | None
+    category: str
+    route_category: str
+    provider: str | None
+    model: str | None
+    fallback_models: tuple[Mapping[str, Any], ...]
+    providerOptions: Mapping[str, Any] | None
+    ultrawork: Mapping[str, str] | None
+    allowed_tools: tuple[str, ...]
+    blocked_tools: tuple[str, ...]
+    permissions: Mapping[str, Any]
+    description: str
+    safe_claim_text: str
+    aliases: tuple[str, ...] = ()
+    kind: str = "named_agent"
+
+
 DEFAULT_ARCHETYPE_NAME: Final[str] = "generalist"
+NAMED_AGENT_PERMISSION_KEYS: Final[tuple[str, ...]] = (
+    "edit",
+    "bash",
+    "webfetch",
+    "doom_loop",
+    "external_directory",
+)
+NAMED_AGENT_PERMISSION_VALUES: Final[frozenset[str]] = frozenset({"allow", "ask", "deny"})
+NAMED_AGENT_MODES: Final[Mapping[str, str]] = MappingProxyType(
+    {
+        "primary": "primary",
+        "subagent": "subagent-only",
+        "subagent_only": "subagent-only",
+        "subagent-only": "subagent-only",
+        "disabled": "disabled",
+    }
+)
 _SPECIALIST_ALIASES: Final[Mapping[str, str]] = MappingProxyType(
     {
         "reviewer": "code_reviewer",
@@ -79,6 +122,16 @@ def _normalize_names(values: tuple[str, ...]) -> tuple[str, ...]:
 
 def _normalize_optional_names(values: tuple[str, ...]) -> tuple[str, ...]:
     return tuple(dict.fromkeys(value.strip() for value in values if value and value.strip()))
+
+
+def _normalize_named_string_list(values: Any) -> tuple[str, ...]:
+    if values is None:
+        return ()
+    if isinstance(values, str):
+        return _normalize_optional_names((values,))
+    if not isinstance(values, (list, tuple, set, frozenset)):
+        return ()
+    return _normalize_optional_names(tuple(str(value or "") for value in values))
 
 
 def _required_archetype_fields() -> tuple[str, ...]:
@@ -123,6 +176,118 @@ def _require_non_empty_normalized_string(value: str, field_name: str) -> str:
     if normalized_value != value:
         raise ValueError(f"{field_name} must use canonical normalized form")
     return normalized_value
+
+
+def _normalize_named_agent_name(value: str, field_name: str = "name") -> str:
+    if not isinstance(value, str):
+        raise ValueError(f"{field_name} must be a string")
+    normalized_value = value.strip().lower()
+    if not normalized_value:
+        raise ValueError(f"{field_name} must be non-empty")
+    return normalized_value
+
+
+def _normalize_named_agent_mode(value: Any, *, agent_name: str) -> str:
+    normalized_value = _normalize_name(str(value or ""))
+    mode = NAMED_AGENT_MODES.get(normalized_value)
+    if mode is None:
+        raise ValueError(
+            f"Named agent '{agent_name}' has invalid mode '{value}'. Expected one of: primary | subagent-only | disabled"
+        )
+    return mode
+
+
+def _normalize_named_agent_fallback_models(value: Any, *, agent_name: str) -> tuple[Mapping[str, Any], ...]:
+    if value is None:
+        return ()
+    entries = value if isinstance(value, list) else [value]
+    normalized: list[Mapping[str, Any]] = []
+    for entry in entries:
+        if isinstance(entry, str):
+            model = entry.strip()
+            if model:
+                normalized.append(MappingProxyType({"model": model}))
+            continue
+        if not isinstance(entry, dict):
+            raise ValueError(f"Named agent '{agent_name}' fallback_models entries must be strings or mappings")
+        model = str(entry.get("model") or "").strip()
+        if not model:
+            raise ValueError(f"Named agent '{agent_name}' fallback_models entries must include model")
+        normalized_entry: dict[str, Any] = {"model": model}
+        for key in ("provider", "variant", "reasoningEffort", "temperature", "top_p", "maxTokens", "thinking"):
+            if key not in entry or entry.get(key) in (None, ""):
+                continue
+            normalized_entry[key] = entry.get(key)
+        normalized.append(MappingProxyType(normalized_entry))
+    return tuple(normalized)
+
+
+def _normalize_named_agent_permissions(value: Any, *, agent_name: str) -> Mapping[str, Any]:
+    if value is None:
+        return MappingProxyType({})
+    if not isinstance(value, dict):
+        raise ValueError(f"Named agent '{agent_name}' permission surface must be a mapping")
+
+    normalized: dict[str, Any] = {}
+    for key, raw in value.items():
+        if key not in NAMED_AGENT_PERMISSION_KEYS:
+            raise ValueError(
+                f"Named agent '{agent_name}' permission.{key} is not supported; expected keys: {', '.join(NAMED_AGENT_PERMISSION_KEYS)}"
+            )
+        if key == "bash" and isinstance(raw, Mapping):
+            per_command: dict[str, str] = {}
+            for raw_command, raw_permission in raw.items():
+                command = str(raw_command or "").strip()
+                permission_value = str(raw_permission or "").strip().lower()
+                if permission_value not in NAMED_AGENT_PERMISSION_VALUES:
+                    raise ValueError(
+                        f"Named agent '{agent_name}' permission.bash[{command}] must be one of allow, ask, deny"
+                    )
+                if command:
+                    per_command[command] = permission_value
+            normalized[key] = MappingProxyType(per_command)
+            continue
+        permission_value = str(raw or "").strip().lower()
+        if permission_value not in NAMED_AGENT_PERMISSION_VALUES:
+            raise ValueError(
+                f"Named agent '{agent_name}' permission.{key} must be one of allow, ask, deny"
+            )
+        normalized[key] = permission_value
+    return MappingProxyType(normalized)
+
+
+def _normalize_provider_options(value: Any, *, agent_name: str) -> Mapping[str, Any] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"Named agent '{agent_name}' providerOptions must be a mapping")
+    return MappingProxyType(dict(value))
+
+
+def _normalize_ultrawork(value: Any, *, agent_name: str) -> Mapping[str, str] | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict):
+        raise ValueError(f"Named agent '{agent_name}' ultrawork override must be a mapping")
+    normalized = {
+        key: str(value.get(key) or "").strip()
+        for key in ("model", "variant")
+        if str(value.get(key) or "").strip()
+    }
+    if not normalized:
+        return None
+    return MappingProxyType(normalized)
+
+
+def _build_named_agent_description(name: str, archetype: str, specialist: str | None, mode: str) -> str:
+    if specialist:
+        return f"Named agent '{name}' runs as specialist '{specialist}' on archetype '{archetype}' in mode '{mode}'."
+    return f"Named agent '{name}' runs on archetype '{archetype}' in mode '{mode}'."
+
+
+def _build_named_agent_safe_claim_text(name: str, archetype: str, specialist: str | None, mode: str) -> str:
+    identity = f"specialist '{specialist}' on archetype '{archetype}'" if specialist else f"archetype '{archetype}'"
+    return f"Configured named agent '{name}' is limited to its declared {identity} contract and mode '{mode}'."
 
 
 def _make_archetype(
@@ -514,6 +679,142 @@ def get_tool_restrictions(
     return frozenset(blocked_tools), frozenset(allowed_tools)
 
 
+def normalize_named_agent_contract(name: str, entry: Mapping[str, Any] | str | None) -> NamedAgentContract:
+    """Normalize one named-agent config entry into the canonical contract."""
+
+    agent_name = _normalize_named_agent_name(name)
+    if entry is None:
+        entry_mapping: dict[str, Any] = {}
+    elif isinstance(entry, str):
+        entry_mapping = {"model": entry}
+    elif isinstance(entry, Mapping):
+        entry_mapping = dict(entry)
+    else:
+        raise ValueError(f"Named agent '{agent_name}' must be configured with a mapping or model string")
+
+    raw_specialist = str(entry_mapping.get("specialist") or "").strip() or None
+    specialist_mapping = resolve_specialist_mapping(raw_specialist)
+    if raw_specialist and specialist_mapping is None:
+        raise ValueError(f"Named agent '{agent_name}' has unknown specialist '{raw_specialist}'")
+
+    raw_archetype = str(entry_mapping.get("archetype") or entry_mapping.get("role") or "").strip() or None
+    archetype_name = raw_archetype or (specialist_mapping.archetype_name if specialist_mapping is not None else DEFAULT_ARCHETYPE_NAME)
+    archetype = resolve_archetype(archetype_name)
+    if raw_archetype and archetype.name != _normalize_name(raw_archetype):
+        raise ValueError(f"Named agent '{agent_name}' has unknown archetype '{raw_archetype}'")
+
+    mode = _normalize_named_agent_mode(entry_mapping.get("mode", "primary"), agent_name=agent_name)
+    route_category = (
+        str(entry_mapping.get("route_category") or entry_mapping.get("category") or "").strip()
+        or (specialist_mapping.default_route_category if specialist_mapping is not None else "")
+        or archetype.default_route_category
+    )
+    if route_category not in BUILTIN_ROUTE_CATEGORIES:
+        raise ValueError(f"Named agent '{agent_name}' has unknown route_category '{route_category}'")
+    category = str(entry_mapping.get("category") or "").strip() or route_category
+
+    blocked_tools, allowed_tools = get_tool_restrictions(archetype.name, raw_specialist)
+    named_blocked = set(_normalize_named_string_list(entry_mapping.get("blocked_tools")))
+    named_allowed = set(_normalize_named_string_list(entry_mapping.get("allowed_tools")))
+    effective_blocked = set(blocked_tools) | named_blocked
+    effective_allowed = set(allowed_tools)
+    if named_allowed:
+        effective_allowed = effective_allowed.intersection(named_allowed) if effective_allowed else set(named_allowed)
+    effective_allowed.difference_update(effective_blocked)
+
+    provider_options = _normalize_provider_options(
+        entry_mapping.get("providerOptions", entry_mapping.get("provider_options")),
+        agent_name=agent_name,
+    )
+    permissions = _normalize_named_agent_permissions(entry_mapping.get("permission"), agent_name=agent_name)
+    ultrawork = _normalize_ultrawork(entry_mapping.get("ultrawork"), agent_name=agent_name)
+    fallback_models = _normalize_named_agent_fallback_models(entry_mapping.get("fallback_models"), agent_name=agent_name)
+
+    color = str(entry_mapping.get("color") or "").strip() or None
+    provider = str(entry_mapping.get("provider") or "").strip() or None
+    model = str(entry_mapping.get("model") or "").strip() or None
+    description = str(entry_mapping.get("description") or "").strip() or _build_named_agent_description(
+        agent_name,
+        archetype.name,
+        specialist_mapping.name if specialist_mapping is not None else raw_specialist,
+        mode,
+    )
+    safe_claim_text = str(entry_mapping.get("safe_claim_text") or "").strip() or _build_named_agent_safe_claim_text(
+        agent_name,
+        archetype.name,
+        specialist_mapping.name if specialist_mapping is not None else raw_specialist,
+        mode,
+    )
+
+    return NamedAgentContract(
+        name=agent_name,
+        role=archetype.name,
+        archetype=archetype.name,
+        specialist=specialist_mapping.name if specialist_mapping is not None else raw_specialist,
+        mode=mode,
+        color=color,
+        category=category,
+        route_category=route_category,
+        provider=provider,
+        model=model,
+        fallback_models=fallback_models,
+        providerOptions=provider_options,
+        ultrawork=ultrawork,
+        allowed_tools=tuple(sorted(effective_allowed)),
+        blocked_tools=tuple(sorted(effective_blocked)),
+        permissions=permissions,
+        description=description,
+        safe_claim_text=safe_claim_text,
+        aliases=_normalize_named_string_list(entry_mapping.get("aliases")),
+    )
+
+
+def validate_named_agent_contract(contract: NamedAgentContract) -> NamedAgentContract:
+    """Validate an already-normalized named-agent contract instance."""
+
+    if not isinstance(contract, NamedAgentContract):
+        raise ValueError("named agent contract must be a NamedAgentContract instance")
+    normalize_named_agent_contract(
+        contract.name,
+        {
+            "role": contract.role,
+            "archetype": contract.archetype,
+            "specialist": contract.specialist,
+            "mode": contract.mode,
+            "color": contract.color,
+            "category": contract.category,
+            "route_category": contract.route_category,
+            "provider": contract.provider,
+            "model": contract.model,
+            "fallback_models": list(contract.fallback_models),
+            "providerOptions": dict(contract.providerOptions) if contract.providerOptions is not None else None,
+            "ultrawork": dict(contract.ultrawork) if contract.ultrawork is not None else None,
+            "allowed_tools": list(contract.allowed_tools),
+            "blocked_tools": list(contract.blocked_tools),
+            "permission": dict(contract.permissions),
+            "description": contract.description,
+            "safe_claim_text": contract.safe_claim_text,
+            "aliases": list(contract.aliases),
+        },
+    )
+    return contract
+
+
+def normalize_named_agent_registry(bucket: Mapping[str, Any] | None) -> dict[str, NamedAgentContract]:
+    """Normalize a registry of named agents into canonical contracts keyed by name."""
+
+    if bucket is None:
+        return {}
+    if not isinstance(bucket, Mapping):
+        raise ValueError("named agent registry must be a mapping")
+    normalized: dict[str, NamedAgentContract] = {}
+    for raw_name, raw_entry in bucket.items():
+        contract = normalize_named_agent_contract(str(raw_name), raw_entry)
+        validate_named_agent_contract(contract)
+        normalized[contract.name] = contract
+    return normalized
+
+
 def resolve_named_workflow(name: str | None) -> NamedWorkflow | None:
     """Resolve a canonical named-workflow taxonomy entry."""
 
@@ -529,7 +830,10 @@ __all__ = [
     "BUILTIN_ARCHETYPES",
     "BUILTIN_NAMED_WORKFLOWS",
     "DEFAULT_ARCHETYPE_NAME",
+    "NAMED_AGENT_MODES",
+    "NAMED_AGENT_PERMISSION_KEYS",
     "NAMED_WORKFLOWS_BY_NAME",
+    "NamedAgentContract",
     "NamedWorkflow",
     "REQUIRED_ARCHETYPE_FIELDS",
     "SPECIALIST_MAPPINGS_BY_NAME",
@@ -538,11 +842,14 @@ __all__ = [
     "get_default_archetype",
     "get_tool_restrictions",
     "list_archetypes",
+    "normalize_named_agent_contract",
+    "normalize_named_agent_registry",
     "resolve_archetype",
     "resolve_archetype_defaults",
     "resolve_named_workflow",
     "resolve_specialist_defaults",
     "resolve_specialist_mapping",
+    "validate_named_agent_contract",
     "validate_specialist_mapping",
     "validate_specialist_mappings",
 ]

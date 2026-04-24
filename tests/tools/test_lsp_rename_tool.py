@@ -28,7 +28,7 @@ class TestLspRenameRegistration:
 
         params = entry.schema["parameters"]
         assert set(params["required"]) == {"path", "line", "column", "new_name"}
-        assert params["properties"]["apply"]["default"] is True
+        assert params["properties"]["apply"]["default"] is False
         assert params["properties"]["max_files"]["default"] == 1
 
 
@@ -71,7 +71,7 @@ class TestLspRenameValidation:
         assert result["code"] == "unsupported_language"
         assert result["supported_languages"] == ["python"]
 
-    def test_max_files_gt_one_is_rejected_as_workspace_rename_unsupported(self, tmp_path):
+    def test_max_files_gt_one_still_allows_bounded_single_file_rename(self, tmp_path):
         from tools.lsp_rename_tool import lsp_rename_tool
 
         path = _write_python_file(
@@ -86,13 +86,13 @@ class TestLspRenameValidation:
                 column=4,
                 new_name="count",
                 max_files=2,
+                apply=False,
             )
         )
 
-        assert result["error"] == "Workspace rename is not supported by bounded lsp_rename."
-        assert result["code"] == "workspace_rename_not_supported"
+        assert result["success"] is True
+        assert result["changed_files"] == 1
         assert result["max_files"] == 2
-        assert result["supported_max_files"] == 1
 
 
 class TestLspRenamePythonFallback:
@@ -128,6 +128,277 @@ class TestLspRenamePythonFallback:
         assert "-    value = 1" in result["diff"]
         assert "+    count = 1" in result["diff"]
         assert path.read_text(encoding="utf-8") == original
+
+    def test_project_wide_preview_renames_exported_symbols_and_updates_importers(self, tmp_path):
+        from tools.lsp_rename_tool import lsp_rename_tool
+
+        project_root = tmp_path / "project"
+        pkg = project_root / "pkg"
+        pkg.mkdir(parents=True)
+        (pkg / "__init__.py").write_text("", encoding="utf-8")
+
+        cases = [
+            (
+                "def greet():\n    return 'hi'\n",
+                "from pkg.a import greet\n\nRESULT = greet()\n",
+                1,
+                4,
+                "welcome",
+                [
+                    "-def greet():",
+                    "+def welcome():",
+                    "-from pkg.a import greet",
+                    "+from pkg.a import welcome",
+                    "-RESULT = greet()",
+                    "+RESULT = welcome()",
+                ],
+            ),
+            (
+                "class Greeter:\n    pass\n",
+                "from pkg.a import Greeter\n\nRESULT = Greeter()\n",
+                1,
+                6,
+                "Messenger",
+                [
+                    "-class Greeter:",
+                    "+class Messenger:",
+                    "-from pkg.a import Greeter",
+                    "+from pkg.a import Messenger",
+                    "-RESULT = Greeter()",
+                    "+RESULT = Messenger()",
+                ],
+            ),
+        ]
+
+        for source_a, source_b, line, column, new_name, diff_expectations in cases:
+            (pkg / "a.py").write_text(source_a, encoding="utf-8")
+            (pkg / "b.py").write_text(source_b, encoding="utf-8")
+
+            result = json.loads(
+                lsp_rename_tool(
+                    path=str(pkg / "a.py"),
+                    line=line,
+                    column=column,
+                    new_name=new_name,
+                    project_root=str(project_root),
+                    max_files=2,
+                    apply=False,
+                )
+            )
+
+            assert result["success"] is True
+            assert result["applied"] is False
+            assert result["engine"] == "python_ast_project_wide"
+            assert result["changed_files"] == 2
+            assert result["files"] == [str(pkg / "a.py"), str(pkg / "b.py")]
+            for expected in diff_expectations:
+                assert expected in result["diff"]
+
+
+    def test_registry_dispatch_defaults_to_preview_without_mutation(self, tmp_path):
+        import tools.lsp_rename_tool  # noqa: F401 - ensure self-registering tool is imported
+
+        original = "def demo():\n    value = 1\n    return value\n"
+        path = _write_python_file(tmp_path, original)
+
+        result = json.loads(
+            registry.dispatch(
+                "lsp_rename",
+                {"path": str(path), "line": 2, "column": 4, "new_name": "count"},
+                task_id="rename-preview-default",
+            )
+        )
+
+        assert result["success"] is True
+        assert result["applied"] is False
+        assert "count = 1" in result["diff"]
+        assert path.read_text(encoding="utf-8") == original
+
+    def test_project_wide_rename_refuses_import_aliases(self, tmp_path):
+        from tools.lsp_rename_tool import lsp_rename_tool
+
+        project_root = tmp_path / "project"
+        pkg = project_root / "pkg"
+        pkg.mkdir(parents=True)
+        (pkg / "__init__.py").write_text("", encoding="utf-8")
+        (pkg / "a.py").write_text("def greet():\n    return 'hi'\n", encoding="utf-8")
+        (pkg / "b.py").write_text("from pkg.a import greet as run_greet\n\nRESULT = run_greet()\n", encoding="utf-8")
+
+        result = json.loads(
+            lsp_rename_tool(
+                path=str(pkg / "a.py"),
+                line=1,
+                column=4,
+                new_name="welcome",
+                project_root=str(project_root),
+                max_files=2,
+                apply=False,
+            )
+        )
+
+        assert result["error"] == "Refusing ambiguous project-wide rename."
+        assert result["code"] == "ambiguous_workspace_rename"
+        assert result["reason"] == "import_alias_not_supported"
+        assert result["path"] == str(pkg / "b.py")
+
+
+    def test_project_wide_rename_refuses_target_module_new_name_collision(self, tmp_path):
+        from tools.lsp_rename_tool import lsp_rename_tool
+
+        project_root = tmp_path / "project"
+        pkg = project_root / "pkg"
+        pkg.mkdir(parents=True)
+        (pkg / "__init__.py").write_text("", encoding="utf-8")
+        target = pkg / "a.py"
+        target.write_text(
+            "def greet():\n    return 'hi'\n\ndef welcome():\n    return 'existing'\n",
+            encoding="utf-8",
+        )
+        (pkg / "b.py").write_text("from pkg.a import greet\n\nRESULT = greet()\n", encoding="utf-8")
+
+        result = json.loads(
+            lsp_rename_tool(
+                path=str(target),
+                line=1,
+                column=4,
+                new_name="welcome",
+                project_root=str(project_root),
+                max_files=2,
+                apply=False,
+            )
+        )
+
+        assert result["error"] == "Refusing ambiguous project-wide rename."
+        assert result["code"] == "ambiguous_workspace_rename"
+        assert result["reason"] == "binding_collision"
+        assert result["path"] == str(target)
+
+    def test_project_wide_rename_refuses_importer_new_name_collision(self, tmp_path):
+        from tools.lsp_rename_tool import lsp_rename_tool
+
+        project_root = tmp_path / "project"
+        pkg = project_root / "pkg"
+        pkg.mkdir(parents=True)
+        (pkg / "__init__.py").write_text("", encoding="utf-8")
+        target = pkg / "a.py"
+        target.write_text("def greet():\n    return 1\n", encoding="utf-8")
+        (pkg / "b.py").write_text(
+            "from pkg.a import greet\n\ndef local():\n    welcome = 3\n    return greet() + welcome\n",
+            encoding="utf-8",
+        )
+
+        result = json.loads(
+            lsp_rename_tool(
+                path=str(target),
+                line=1,
+                column=4,
+                new_name="welcome",
+                project_root=str(project_root),
+                max_files=2,
+                apply=False,
+            )
+        )
+
+        assert result["error"] == "Refusing ambiguous project-wide rename."
+        assert result["code"] == "ambiguous_workspace_rename"
+        assert result["reason"] == "binding_collision"
+        assert result["path"] == str(pkg / "b.py")
+
+
+    def test_project_wide_rename_refuses_unproven_qualified_import_consumer(self, tmp_path):
+        from tools.lsp_rename_tool import lsp_rename_tool
+
+        project_root = tmp_path / "project"
+        pkg = project_root / "pkg"
+        pkg.mkdir(parents=True)
+        (pkg / "__init__.py").write_text("", encoding="utf-8")
+        target = pkg / "a.py"
+        target.write_text("def greet():\n    return 'hi'\n", encoding="utf-8")
+        (pkg / "b.py").write_text("import pkg.a\n\nRESULT = pkg.a.greet()\n", encoding="utf-8")
+
+        result = json.loads(
+            lsp_rename_tool(
+                path=str(target),
+                line=1,
+                column=4,
+                new_name="welcome",
+                project_root=str(project_root),
+                max_files=2,
+                apply=True,
+            )
+        )
+
+        assert result["error"] == "Refusing ambiguous project-wide rename."
+        assert result["code"] == "ambiguous_workspace_rename"
+        assert result["reason"] == "unsupported_reference_pattern"
+        assert result["path"] == str(pkg / "b.py")
+        assert target.read_text(encoding="utf-8") == "def greet():\n    return 'hi'\n"
+
+    def test_project_wide_rename_refuses_unproven_reexport_consumer(self, tmp_path):
+        from tools.lsp_rename_tool import lsp_rename_tool
+
+        project_root = tmp_path / "project"
+        pkg = project_root / "pkg"
+        pkg.mkdir(parents=True)
+        (pkg / "a.py").write_text("def greet():\n    return 'hi'\n", encoding="utf-8")
+        (pkg / "__init__.py").write_text("from pkg.a import greet\n", encoding="utf-8")
+        (pkg / "b.py").write_text("from pkg import greet\n\nRESULT = greet()\n", encoding="utf-8")
+
+        result = json.loads(
+            lsp_rename_tool(
+                path=str(pkg / "a.py"),
+                line=1,
+                column=4,
+                new_name="welcome",
+                project_root=str(project_root),
+                max_files=3,
+                apply=False,
+            )
+        )
+
+        assert result["error"] == "Refusing ambiguous project-wide rename."
+        assert result["code"] == "ambiguous_workspace_rename"
+        assert result["reason"] == "unsupported_reference_pattern"
+        assert result["path"] == str(pkg / "b.py")
+
+    def test_project_wide_apply_aborts_when_any_target_file_is_stale(self, tmp_path):
+        from tools.lsp_rename_tool import lsp_rename_tool
+
+        project_root = tmp_path / "project"
+        pkg = project_root / "pkg"
+        pkg.mkdir(parents=True)
+        (pkg / "__init__.py").write_text("", encoding="utf-8")
+        target = pkg / "a.py"
+        consumer = pkg / "b.py"
+        target.write_text("def greet():\n    return 'hi'\n", encoding="utf-8")
+        consumer.write_text("from pkg.a import greet\n\nRESULT = greet()\n", encoding="utf-8")
+
+        task_id = "rename-project-strict"
+        json.loads(read_file_tool(str(target), task_id=task_id))
+        json.loads(read_file_tool(str(consumer), task_id=task_id))
+        time.sleep(0.05)
+        consumer.write_text("from pkg.a import greet\n\nRESULT = greet()\nMARKER = 'stale'\n", encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_STALE_EDIT_MODE": "strict"}, clear=False):
+            result = json.loads(
+                lsp_rename_tool(
+                    path=str(target),
+                    line=1,
+                    column=4,
+                    new_name="welcome",
+                    project_root=str(project_root),
+                    max_files=2,
+                    apply=True,
+                    task_id=task_id,
+                )
+            )
+
+        assert result["error"]
+        assert result["code"] == "stale_edit_blocked"
+        assert result["path"] == str(consumer)
+        assert "modified since you last read" in result["error"]
+        assert target.read_text(encoding="utf-8") == "def greet():\n    return 'hi'\n"
+        assert "MARKER = 'stale'" in consumer.read_text(encoding="utf-8")
 
     def test_python_local_variable_apply_mutates_file(self, tmp_path):
         from tools.lsp_rename_tool import lsp_rename_tool

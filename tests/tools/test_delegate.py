@@ -23,7 +23,11 @@ from tools.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
     DELEGATE_TASK_SCHEMA,
     _apply_named_role_completion_gate,
+    _apply_plan_first_completion_gate,
+    _apply_plan_first_tool_policy,
     _get_max_concurrent_children,
+    _is_plan_first_resolution,
+    _plan_first_has_approval_signal,
     _is_reviewer_like_resolution,
     _resolve_named_agent_config,
     MAX_DEPTH,
@@ -285,6 +289,216 @@ class TestRouteCategoryFallbackResolution(unittest.TestCase):
         self.assertEqual(fallback_models, [{"model": "quick-model"}])
 
 
+class TestPlanFirstNamedRoles(unittest.TestCase):
+    def test_prometheus_alias_is_detected_as_plan_first_resolution(self):
+        self.assertTrue(_is_plan_first_resolution({"named_agent": "prometheus"}))
+        self.assertTrue(_is_plan_first_resolution({"agent": "Prometheus"}))
+        self.assertTrue(_is_plan_first_resolution({"specialist": "planner"}))
+        self.assertTrue(_is_plan_first_resolution({"runtime_mode": "interview_planning"}))
+        self.assertTrue(
+            _is_plan_first_resolution(
+                {"named_workflow": {"workflow_name": "planner", "mode": "plan"}}
+            )
+        )
+
+    def test_plan_first_policy_blocks_mutating_tools_until_approval(self):
+        parent = _make_mock_parent()
+        parent.valid_tool_names = {
+            "read_file",
+            "search_files",
+            "patch",
+            "write_file",
+            "terminal",
+            "web_search",
+        }
+        resolved_inputs = {
+            "named_agent": "prometheus",
+            "specialist": "planner",
+            "named_workflow": {
+                "schema": "hermes/named-workflow",
+                "schema_version": "1.0",
+                "workflow_name": "planner",
+                "mode": "plan",
+                "objective": "Plan the implementation before execution.",
+                "plan": ["inspect", "plan", "handoff"],
+                "acceptance": ["machine-readable artifact present"],
+                "taxonomy": {
+                    "named_workflow": "planner",
+                    "workflow": "planner",
+                    "specialist": "planner",
+                    "archetype": "generalist",
+                    "route_category": "deep",
+                    "runtime_mode": "interview_planning",
+                    "delegation_profile": "general",
+                },
+                "execution_task_contract": {
+                    "task": "Implement after approval",
+                    "expected_outcome": "Approved implementation handoff",
+                    "required_skills": ["python"],
+                    "required_tools": ["read_file", "search_files"],
+                    "must_do": ["create execution-ready plan"],
+                    "must_not_do": ["mutate code before approval"],
+                    "context": {"ticket": "W4-T1"},
+                },
+                "consumption": {"downstream_role": "deep_worker"},
+            },
+            "task_contract": {
+                "task": "Implement after approval",
+                "expected_outcome": "Approved implementation handoff",
+                "required_skills": ["python"],
+                "required_tools": ["patch", "read_file"],
+                "must_do": ["create execution-ready plan"],
+                "must_not_do": ["mutate code before approval"],
+                "context": {"ticket": "W4-T1"},
+            },
+        }
+
+        with self.assertRaisesRegex(ValueError, "read-only"):
+            _apply_plan_first_tool_policy(
+                task={"goal": "Plan the rollout before editing code."},
+                resolved_inputs=resolved_inputs,
+                toolsets=["file", "terminal", "web"],
+                enabled_tools=["read_file", "search_files", "patch", "write_file", "terminal", "web_search"],
+                parent_agent=parent,
+            )
+
+    def test_plan_first_policy_converts_approved_plans_into_deep_worker_handoff(self):
+        parent = _make_mock_parent()
+        parent.valid_tool_names = {"read_file", "search_files", "patch", "write_file", "terminal"}
+        resolved_inputs = {
+            "named_agent": "prometheus",
+            "specialist": "planner",
+            "runtime_mode": "interview_planning",
+            "named_workflow": {
+                "schema": "hermes/named-workflow",
+                "schema_version": "1.0",
+                "workflow_name": "planner",
+                "mode": "plan",
+                "objective": "Plan the implementation before execution.",
+                "plan": ["inspect", "plan", "handoff"],
+                "acceptance": ["machine-readable artifact present"],
+                "taxonomy": {
+                    "named_workflow": "planner",
+                    "workflow": "planner",
+                    "specialist": "planner",
+                    "archetype": "generalist",
+                    "route_category": "deep",
+                    "runtime_mode": "interview_planning",
+                    "delegation_profile": "general",
+                },
+                "execution_task_contract": {
+                    "task": "Implement after approval",
+                    "expected_outcome": "Approved implementation handoff",
+                    "required_skills": ["python"],
+                    "required_tools": ["patch", "read_file", "terminal"],
+                    "must_do": ["apply the approved plan"],
+                    "must_not_do": ["discard plan constraints"],
+                    "context": {"ticket": "W4-T1"},
+                },
+                "consumption": {"downstream_role": "deep_worker"},
+            },
+            "task_contract": {
+                "task": "Implement after approval",
+                "expected_outcome": "Approved implementation handoff",
+                "required_skills": ["python"],
+                "required_tools": ["patch", "read_file", "terminal"],
+                "must_do": ["apply the approved plan"],
+                "must_not_do": ["discard plan constraints"],
+                "context": {"ticket": "W4-T1"},
+            },
+        }
+
+        toolsets, enabled_tools = _apply_plan_first_tool_policy(
+            task={
+                "goal": "Approved. Continue with implementation.",
+                "context": "User approved the plan and asked to proceed.",
+            },
+            resolved_inputs=resolved_inputs,
+            toolsets=["file", "terminal"],
+            enabled_tools=["read_file", "search_files", "patch", "write_file", "terminal"],
+            parent_agent=parent,
+        )
+
+        self.assertEqual(toolsets, ["file", "terminal"])
+        self.assertEqual(enabled_tools, ["read_file", "search_files", "patch", "write_file", "terminal"])
+        self.assertEqual(resolved_inputs["named_workflow"]["workflow_name"], "deep_worker")
+        self.assertEqual(resolved_inputs["named_workflow"]["mode"], "execute")
+        self.assertEqual(
+            resolved_inputs["named_workflow"]["execution_task_contract"],
+            resolved_inputs["task_contract"],
+        )
+        self.assertEqual(resolved_inputs["runtime_mode"], "default")
+        self.assertTrue(resolved_inputs["orchestration_hints"]["approval_received"])
+        self.assertFalse(resolved_inputs["orchestration_hints"]["execution_blocked"])
+        self.assertEqual(resolved_inputs["orchestration_hints"]["handoff_target"], "deep_worker")
+
+    def test_plan_first_approval_signal_rejects_negated_continue_language(self):
+        self.assertFalse(
+            _plan_first_has_approval_signal(
+                {"goal": "Do not continue with implementation until I review the plan."}
+            )
+        )
+        self.assertFalse(
+            _plan_first_has_approval_signal(
+                {"context": "This is not approved yet; continue with implementation later."}
+            )
+        )
+        self.assertTrue(
+            _plan_first_has_approval_signal(
+                {"goal": "Approved. Continue with implementation now."}
+            )
+        )
+
+    def test_plan_first_policy_keeps_explicit_read_only_tools_when_parent_has_no_tool_inventory(self):
+        parent = _make_mock_parent()
+        parent.valid_tool_names = set()
+        resolved_inputs = {
+            "named_agent": "prometheus",
+            "specialist": "planner",
+            "runtime_mode": "interview_planning",
+            "task_contract": {
+                "task": "Plan the rollout",
+                "required_tools": ["read_file", "search_files"],
+            },
+        }
+
+        toolsets, enabled_tools = _apply_plan_first_tool_policy(
+            task={"goal": "Plan the rollout before editing code."},
+            resolved_inputs=resolved_inputs,
+            toolsets=["file", "terminal"],
+            enabled_tools=None,
+            parent_agent=parent,
+        )
+
+        self.assertEqual(toolsets, ["file"])
+        self.assertEqual(enabled_tools, ["read_file", "search_files", "session_search", "skills_list", "skill_view"])
+        self.assertNotIn("patch", enabled_tools)
+        self.assertNotIn("write_file", enabled_tools)
+        self.assertEqual(resolved_inputs["orchestration_hints"]["read_only_tools"], enabled_tools)
+
+    def test_plan_first_completion_gate_requires_plan_artifact_before_success(self):
+        entry = _apply_plan_first_completion_gate(
+            {"status": "completed", "summary": "I thought about the work."},
+            resolved_inputs={
+                "named_agent": "prometheus",
+                "specialist": "planner",
+                "orchestration_hints": {"approval_received": False},
+            },
+        )
+        self.assertEqual(entry["status"], "failed")
+        self.assertEqual(entry["exit_reason"], "plan_artifact_missing")
+
+        accepted = _apply_plan_first_completion_gate(
+            {"status": "completed", "summary": "TASK_CONTRACT_JSON:\n{}"},
+            resolved_inputs={
+                "named_agent": "prometheus",
+                "specialist": "planner",
+                "orchestration_hints": {"approval_received": False},
+            },
+        )
+        self.assertEqual(accepted["status"], "completed")
+
+
 class TestReviewerLikeNamedRoles(unittest.TestCase):
     def test_verifier_archetype_counts_as_reviewer_like(self):
         self.assertTrue(_is_reviewer_like_resolution({"archetype": "verifier"}))
@@ -471,6 +685,168 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(reviewer_call["delegate_resolution"]["archetype"], "verifier")
         self.assertEqual(reviewer_call["delegate_resolution"]["route_category"], "quick")
         self.assertEqual(reviewer_call["delegate_resolution"]["agent"], "reviewer")
+
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_full_config")
+    def test_oracle_named_agent_propagates_runtime_surface_and_restrictions_with_explicit_overrides(
+        self,
+        mock_load_full_config,
+        mock_resolve_creds,
+        mock_build_child,
+        mock_run_child,
+    ):
+        mock_load_full_config.return_value = {
+            "delegation": {
+                "max_iterations": 50,
+                "model": "root-model",
+                "route_categories": {
+                    "quick": {"model": "quick-model"},
+                },
+            },
+            "agents": {
+                "oracle": {
+                    "archetype": "researcher",
+                    "route_category": "deep",
+                    "runtime_mode": "default",
+                    "mode": "subagent",
+                    "allowed_tools": ["read_file", "search_files", "web_search", "terminal"],
+                    "blocked_tools": ["write_file", "patch", "terminal"],
+                    "provider": "openrouter",
+                    "model": "openrouter/oracle-main",
+                    "fallback_models": ["openrouter/oracle-fallback"],
+                    "permission": {
+                        "edit": False,
+                        "bash": False,
+                        "webfetch": True,
+                        "doom_loop": False,
+                        "external_directory": False,
+                    },
+                },
+            },
+        }
+
+        def _creds_for(cfg, _parent_agent):
+            provider = cfg.get("provider")
+            return {
+                "model": cfg.get("model"),
+                "provider": provider,
+                "base_url": f"https://{provider}.example/v1" if provider else None,
+                "api_key": f"key-for-{provider}" if provider else None,
+                "api_mode": "chat_completions" if provider else None,
+            }
+
+        mock_resolve_creds.side_effect = _creds_for
+        mock_build_child.return_value = MagicMock()
+        mock_run_child.side_effect = lambda *args, **kwargs: {
+            "task_index": kwargs.get("task_index", args[0] if args else 0),
+            "status": "completed",
+            "summary": f"Done {kwargs.get('goal', args[1] if len(args) > 1 else '')}",
+            "api_calls": 1,
+            "duration_seconds": 0.1,
+        }
+        parent = _make_mock_parent()
+        parent.valid_tool_names = {"read_file", "search_files", "web_search", "terminal", "patch", "write_file"}
+        parent.get_runtime_activation_state.return_value = {
+            "named_agent": "oracle",
+            "specialist": None,
+            "archetype": "researcher",
+            "route_category": "deep",
+            "delegation_profile": "research",
+            "runtime_mode": "default",
+            "task_contract": None,
+            "named_workflow": None,
+            "activation_applied": True,
+        }
+
+        result = json.loads(delegate_task(
+            tasks=[
+                {
+                    "goal": "Explain the anomaly",
+                    "agent": "oracle",
+                    "route_category": "quick",
+                    "runtime_mode": "execution_supervisor",
+                }
+            ],
+            parent_agent=parent,
+        ))
+
+        self.assertIn("results", result)
+        oracle_call = mock_build_child.call_args.kwargs
+        self.assertEqual(oracle_call["enabled_tools"], ["read_file", "search_files", "web_search"])
+        self.assertEqual(oracle_call["model"], "openrouter/oracle-main")
+        self.assertEqual(oracle_call["override_provider"], "openrouter")
+        self.assertEqual(
+            [entry["model"] for entry in oracle_call["fallback_model"]],
+            ["openrouter/oracle-fallback", "root-model"],
+        )
+        self.assertTrue(all(entry["provider"] == "openrouter" for entry in oracle_call["fallback_model"]))
+        self.assertEqual(oracle_call["delegate_resolution"]["named_agent"], "oracle")
+        self.assertEqual(oracle_call["delegate_resolution"]["agent"], "oracle")
+        self.assertEqual(oracle_call["delegate_resolution"]["archetype"], "researcher")
+        self.assertEqual(oracle_call["delegate_resolution"]["route_category"], "quick")
+        self.assertEqual(oracle_call["delegate_resolution"]["delegation_profile"], "research")
+        self.assertEqual(oracle_call["delegate_resolution"]["runtime_mode"], "execution_supervisor")
+        self.assertEqual(oracle_call["delegate_resolution"]["named_agent_mode"], "subagent-only")
+        self.assertEqual(oracle_call["delegate_resolution"]["provider"], "openrouter")
+        self.assertEqual(oracle_call["delegate_resolution"]["model"], "openrouter/oracle-main")
+        self.assertEqual(oracle_call["delegate_resolution"]["fallback_models"], ["openrouter/oracle-fallback"])
+        self.assertEqual(
+            oracle_call["delegate_resolution"]["permission_gates"],
+            {
+                "edit": False,
+                "bash": False,
+                "webfetch": True,
+                "doom_loop": False,
+                "external_directory": False,
+            },
+        )
+        self.assertEqual(
+            oracle_call["delegate_resolution"]["allowed_tools"],
+            ["read_file", "search_files", "web_search", "terminal"],
+        )
+        self.assertEqual(
+            oracle_call["delegate_resolution"]["blocked_tools"],
+            ["write_file", "patch", "terminal"],
+        )
+
+    @patch("tools.delegate_tool._run_single_child")
+    @patch("tools.delegate_tool._build_child_agent")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    @patch("tools.delegate_tool._load_full_config")
+    def test_disabled_agents_config_blocks_named_agent_delegation(
+        self,
+        mock_load_full_config,
+        mock_resolve_creds,
+        mock_build_child,
+        mock_run_child,
+    ):
+        mock_load_full_config.return_value = {
+            "disabled_agents": ["oracle"],
+            "delegation": {"max_iterations": 50, "model": "root-model"},
+            "agents": {
+                "oracle": {
+                    "archetype": "researcher",
+                    "mode": "subagent-only",
+                    "aliases": ["seer"],
+                },
+            },
+        }
+        mock_resolve_creds.return_value = {
+            "model": "root-model",
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+        }
+
+        result = json.loads(delegate_task(goal="Explain", agent="seer", parent_agent=_make_mock_parent()))
+
+        self.assertIn("error", result)
+        self.assertIn("Named agent 'oracle' is disabled", result["error"])
+        mock_build_child.assert_not_called()
+        mock_run_child.assert_not_called()
 
     @patch("tools.delegate_tool._run_single_child")
     @patch("tools.delegate_tool._build_child_agent")

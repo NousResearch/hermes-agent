@@ -34,6 +34,7 @@ from typing import Any, Dict, List, Optional
 
 from agent.archetypes import get_tool_restrictions, resolve_archetype, resolve_archetype_defaults, resolve_specialist_mapping
 from agent.continuation_engine import apply_bounded_continuation_engine, build_continuation_snapshot
+from agent.model_policy import ResolvedModelPolicy, resolve_model_policy
 from agent.prompt_builder import build_wave1_overlay_prompt_from_normalized, normalize_wave1_overlay_inputs
 from agent.route_categories import (
     BUILTIN_ROUTE_CATEGORIES,
@@ -173,6 +174,53 @@ _REVIEWER_MUTATING_REQUIRED_TOOLS = frozenset({
     "memory",
     "send_message",
 })
+_PLAN_FIRST_NAMED_AGENTS = frozenset({"prometheus"})
+_PLAN_FIRST_RUNTIME_MODES = frozenset({"interview_planning", "planning"})
+_PLAN_FIRST_READ_ONLY_TOOLS = frozenset({
+    "browser_console",
+    "browser_get_images",
+    "browser_navigate",
+    "browser_scroll",
+    "browser_snapshot",
+    "browser_vision",
+    "ha_get_state",
+    "ha_list_entities",
+    "ha_list_services",
+    "read_file",
+    "search_files",
+    "session_search",
+    "skill_view",
+    "skills_list",
+    "task",
+    "vision_analyze",
+    "web_extract",
+    "web_search",
+})
+_PLAN_FIRST_MUTATING_REQUIRED_TOOLS = frozenset({
+    "delegate_task",
+    "execute_code",
+    "memory",
+    "patch",
+    "send_message",
+    "terminal",
+    "write_file",
+})
+_PLAN_FIRST_APPROVAL_PATTERN = re.compile(
+    r"\b(approved|approve|approval granted|continue with implementation|continue with execution|explicit continue|proceed with implementation|proceed with execution)\b",
+    re.IGNORECASE,
+)
+_PLAN_FIRST_APPROVAL_NEGATION_PATTERN = re.compile(
+    r"\b(?:do\s+not|don't|not|no|without|until|pending)\b.{0,80}"
+    r"\b(?:approved|approve|approval|continue with implementation|continue with execution|proceed with implementation|proceed with execution)\b",
+    re.IGNORECASE | re.DOTALL,
+)
+_PLAN_FIRST_DEFAULT_READ_ONLY_TOOLS = [
+    "read_file",
+    "search_files",
+    "session_search",
+    "skills_list",
+    "skill_view",
+]
 DEFAULT_DELEGATION_PROFILES = {
     "general": {"max_concurrent_children": _DEFAULT_MAX_CONCURRENT_CHILDREN},
     "research": {
@@ -309,6 +357,25 @@ def _canonicalize_named_agent_lookup_key(value: Any) -> str:
     return token.strip("-")
 
 
+def _resolve_disabled_named_agent_names(config: Dict[str, Any], registry: Dict[str, Dict[str, Any]]) -> set[str]:
+    """Resolve globally disabled named agents, including aliases, from config."""
+    disabled: set[str] = set()
+    if not isinstance(config, dict) or not isinstance(registry, dict):
+        return disabled
+    requested_disabled = {_canonicalize_named_agent_lookup_key(value) for value in _normalize_named_string_list(config.get("disabled_agents"))}
+    requested_disabled.discard("")
+    if not requested_disabled:
+        return disabled
+    for raw_name, raw_entry in registry.items():
+        if not isinstance(raw_entry, dict):
+            continue
+        keys = {_canonicalize_named_agent_lookup_key(raw_name)}
+        keys.update(_canonicalize_named_agent_lookup_key(alias) for alias in _normalize_named_string_list(raw_entry.get("aliases")))
+        if keys.intersection(requested_disabled):
+            disabled.add(raw_name)
+    return disabled
+
+
 def _resolve_named_agent_config(
     task: Dict[str, Any],
     *,
@@ -381,6 +448,34 @@ def _apply_named_agent_tool_restrictions(
     return toolsets, sorted(tool for tool in restricted_tools if tool in parent_tool_names)
 
 
+def _normalize_named_agent_runtime_mode(value: Any) -> Optional[str]:
+    raw = str(value or "").strip().lower()
+    if raw == "subagent":
+        return "subagent-only"
+    if raw in {"primary", "subagent-only", "disabled"}:
+        return raw
+    return None
+
+
+def _named_agent_permission_gates(named_agent: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    permission = named_agent.get("permission")
+    return copy.deepcopy(permission) if isinstance(permission, dict) and permission else None
+
+
+def _named_agent_runtime_surface(named_agent: Dict[str, Any], *, fallback_models: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+    if not isinstance(named_agent, dict) or not named_agent:
+        return {}
+    return {
+        "named_agent_mode": _normalize_named_agent_runtime_mode(named_agent.get("mode")),
+        "provider": str(named_agent.get("provider") or "").strip() or None,
+        "model": str(named_agent.get("model") or "").strip() or None,
+        "fallback_models": copy.deepcopy(fallback_models if fallback_models is not None else named_agent.get("fallback_models") or []),
+        "permission_gates": _named_agent_permission_gates(named_agent),
+        "allowed_tools": _normalize_named_string_list(named_agent.get("allowed_tools")),
+        "blocked_tools": _normalize_named_string_list(named_agent.get("blocked_tools")),
+    }
+
+
 def _canonicalize_archetype_name(value: Optional[str]) -> str:
     return resolve_archetype(value).name
 
@@ -413,6 +508,13 @@ def _get_parent_runtime_activation_defaults(parent_agent) -> Dict[str, Any]:
         "task_contract": state.get("task_contract"),
         "named_workflow": state.get("named_workflow"),
         "activation_applied": bool(state.get("activation_applied")),
+        "named_agent_mode": state.get("named_agent_mode"),
+        "provider": state.get("provider"),
+        "model": state.get("model"),
+        "fallback_models": copy.deepcopy(state.get("fallback_models") or []),
+        "permission_gates": copy.deepcopy(state.get("permission_gates")),
+        "allowed_tools": _normalize_named_string_list(state.get("allowed_tools")),
+        "blocked_tools": _normalize_named_string_list(state.get("blocked_tools")),
     }
 
 
@@ -550,6 +652,202 @@ def _apply_named_role_completion_gate(
         )
         entry["exit_reason"] = "verification_evidence_missing"
     return entry
+
+
+def _plan_first_summary_has_artifact(summary: Any) -> bool:
+    text = str(summary or "")
+    if not text.strip():
+        return False
+    markers = (
+        "TASK_CONTRACT_JSON:",
+        "NAMED_WORKFLOW_JSON:",
+        "ORCHESTRATION_HINTS_JSON:",
+        "<plan>",
+        "PLAN_ARTIFACT",
+        "Plan artifact",
+    )
+    if any(marker in text for marker in markers):
+        return True
+    lowered = text.lower()
+    return "plan" in lowered and ("acceptance" in lowered or "handoff" in lowered or "task_contract" in lowered)
+
+
+def _apply_plan_first_completion_gate(
+    entry: Dict[str, Any],
+    *,
+    resolved_inputs: Optional[Dict[str, Any]],
+) -> Dict[str, Any]:
+    if not _is_plan_first_resolution(resolved_inputs):
+        return entry
+    hints = resolved_inputs.get("orchestration_hints") if isinstance(resolved_inputs, dict) else None
+    approved = bool(isinstance(hints, dict) and hints.get("approval_received") is True)
+    if approved:
+        return entry
+    if entry.get("status") == "completed" and not _plan_first_summary_has_artifact(entry.get("summary")):
+        entry["status"] = "failed"
+        entry["error"] = (
+            "Plan-first completion gate blocked success: planner output did not include a "
+            "machine-readable plan artifact or explicit plan/handoff artifact."
+        )
+        entry["exit_reason"] = "plan_artifact_missing"
+    return entry
+
+
+def _is_plan_first_resolution(resolved_inputs: Optional[Dict[str, Any]]) -> bool:
+    if not isinstance(resolved_inputs, dict):
+        return False
+    named_agent = _canonicalize_named_agent_lookup_key(
+        resolved_inputs.get("named_agent") or resolved_inputs.get("agent")
+    )
+    specialist = str(resolved_inputs.get("specialist") or "").strip().lower()
+    runtime_mode = _normalize_category_name(resolved_inputs.get("runtime_mode"))
+    named_workflow = resolved_inputs.get("named_workflow") if isinstance(resolved_inputs.get("named_workflow"), dict) else {}
+    workflow_name = _canonicalize_named_agent_lookup_key(named_workflow.get("workflow_name"))
+    return bool(
+        named_agent in _PLAN_FIRST_NAMED_AGENTS
+        or specialist == "planner"
+        or runtime_mode in _PLAN_FIRST_RUNTIME_MODES
+        or workflow_name == "planner"
+    )
+
+
+def _contains_plan_first_approval_signal(value: Any) -> bool:
+    if not isinstance(value, str):
+        return False
+    candidate = value.strip()
+    if not candidate:
+        return False
+    if _PLAN_FIRST_APPROVAL_NEGATION_PATTERN.search(candidate):
+        return False
+    return bool(_PLAN_FIRST_APPROVAL_PATTERN.search(candidate))
+
+
+def _plan_first_has_approval_signal(task: Optional[Dict[str, Any]], resolved_inputs: Optional[Dict[str, Any]] = None) -> bool:
+    if isinstance(task, dict):
+        explicit_flag = task.get("approved")
+        if explicit_flag is True:
+            return True
+        if explicit_flag is False:
+            return False
+    if isinstance(resolved_inputs, dict):
+        hints = resolved_inputs.get("orchestration_hints")
+        if isinstance(hints, dict) and hints.get("approval_received") is True:
+            return True
+    for candidate in (
+        task.get("goal") if isinstance(task, dict) else None,
+        task.get("context") if isinstance(task, dict) else None,
+        task.get("approval") if isinstance(task, dict) else None,
+    ):
+        if _contains_plan_first_approval_signal(candidate):
+            return True
+    return False
+
+
+def _build_plan_first_orchestration_hints(*, approved: bool, read_only_tools: Optional[List[str]] = None) -> Dict[str, Any]:
+    hints: Dict[str, Any] = {
+        "behavior_boundary": "plan_first_approval_required",
+        "approval_required": True,
+        "approval_received": bool(approved),
+        "execution_blocked": not approved,
+        "completion_gate": "plan_artifact_required",
+        "plan_artifact_required": True,
+        "handoff_target": "deep_worker",
+    }
+    if read_only_tools is not None:
+        hints["read_only_tools"] = list(read_only_tools)
+    if approved:
+        hints["behavior_boundary"] = "plan_first_approved_handoff"
+    return hints
+
+
+def _promote_plan_first_handoff(
+    resolved_inputs: Dict[str, Any],
+    *,
+    task: Optional[Dict[str, Any]] = None,
+) -> None:
+    task_contract = resolved_inputs.get("task_contract") if isinstance(resolved_inputs, dict) else None
+    current_named_workflow = resolved_inputs.get("named_workflow") if isinstance(resolved_inputs, dict) else None
+    if not isinstance(task_contract, dict):
+        return
+    if isinstance(current_named_workflow, dict) and str(current_named_workflow.get("workflow_name") or "").strip() == "deep_worker":
+        return
+    objective = str(task_contract.get("task") or "").strip()
+    if not objective and isinstance(current_named_workflow, dict):
+        objective = str(current_named_workflow.get("objective") or "").strip()
+    if not objective and isinstance(task, dict):
+        objective = str(task.get("goal") or "").strip()
+    promoted_named_workflow = build_named_workflow_artifact(
+        objective=objective,
+        specialist=None,
+        archetype=str(resolved_inputs.get("archetype") or "implementer").strip() or "implementer",
+        route_category=str(resolved_inputs.get("route_category") or DEFAULT_ROUTE_CATEGORY).strip() or DEFAULT_ROUTE_CATEGORY,
+        runtime_mode="default",
+        delegation_profile=str(resolved_inputs.get("delegation_profile") or DEFAULT_DELEGATION_PROFILE).strip() or DEFAULT_DELEGATION_PROFILE,
+        task_contract=task_contract,
+    )
+    if promoted_named_workflow is not None:
+        resolved_inputs["named_workflow"] = promoted_named_workflow
+        resolved_inputs["runtime_mode"] = "default"
+
+
+def _apply_plan_first_tool_policy(
+    *,
+    task: Optional[Dict[str, Any]],
+    resolved_inputs: Dict[str, Any],
+    toolsets: Optional[List[str]],
+    enabled_tools: Optional[List[str]],
+    parent_agent=None,
+) -> tuple[Optional[List[str]], Optional[List[str]]]:
+    if not _is_plan_first_resolution(resolved_inputs):
+        return toolsets, enabled_tools
+
+    approved = _plan_first_has_approval_signal(task, resolved_inputs)
+    existing_hints = resolved_inputs.get("orchestration_hints")
+    resolved_inputs["orchestration_hints"] = dict(existing_hints) if isinstance(existing_hints, dict) else {}
+
+    if approved:
+        resolved_inputs["orchestration_hints"].update(_build_plan_first_orchestration_hints(approved=True))
+        _promote_plan_first_handoff(resolved_inputs, task=task)
+        return toolsets, enabled_tools
+
+    contract = resolved_inputs.get("task_contract") if isinstance(resolved_inputs, dict) else None
+    required_tools = []
+    if isinstance(contract, dict):
+        required_tools = _normalize_named_string_list(contract.get("required_tools"))
+    forbidden_required = sorted(tool for tool in required_tools if tool in _PLAN_FIRST_MUTATING_REQUIRED_TOOLS)
+    if forbidden_required:
+        raise ValueError(
+            "Plan-first delegations are read-only until approval and cannot require mutating tools: "
+            + ", ".join(forbidden_required)
+        )
+
+    parent_tool_names = set(getattr(parent_agent, "valid_tool_names", set()) or [])
+    available_read_only = sorted(
+        tool_name for tool_name in parent_tool_names if tool_name in _PLAN_FIRST_READ_ONLY_TOOLS
+    )
+    requested_tools = _normalize_named_string_list(enabled_tools)
+    if requested_tools:
+        filtered_tools = [tool for tool in requested_tools if tool in _PLAN_FIRST_READ_ONLY_TOOLS]
+    elif available_read_only:
+        filtered_tools = list(available_read_only)
+    else:
+        filtered_tools = [tool for tool in _PLAN_FIRST_DEFAULT_READ_ONLY_TOOLS if tool in _PLAN_FIRST_READ_ONLY_TOOLS]
+
+    resolved_inputs["orchestration_hints"].update(
+        _build_plan_first_orchestration_hints(approved=False, read_only_tools=filtered_tools)
+    )
+
+    normalized_toolsets = _normalize_named_string_list(toolsets)
+    normalized_toolsets = [toolset for toolset in normalized_toolsets if toolset != "terminal"]
+    if any(tool in filtered_tools for tool in ("read_file", "search_files")) and "file" not in normalized_toolsets:
+        normalized_toolsets.append("file")
+    if any(tool in filtered_tools for tool in ("web_search", "web_extract", "browser_navigate", "browser_snapshot", "browser_console", "browser_scroll", "browser_get_images", "browser_vision", "vision_analyze")) and "web" not in normalized_toolsets:
+        normalized_toolsets.append("web")
+    if any(tool in filtered_tools for tool in ("task",)) and "orchestration" not in normalized_toolsets:
+        normalized_toolsets.append("orchestration")
+    if not resolved_inputs.get("runtime_mode"):
+        resolved_inputs["runtime_mode"] = "interview_planning"
+    return normalized_toolsets or None, filtered_tools
 
 
 def _resolve_route_category_entry(category_name: Optional[str], cfg: Dict[str, Any]) -> Dict[str, str]:
@@ -749,6 +1047,9 @@ def _resolve_wave1_task_inputs(
     requested_specialist = explicit_task_specialist or str(inherited_parent_specialist or "").strip()
     specialist_mapping = resolve_specialist_mapping(requested_specialist)
     resolved_specialist = specialist_mapping.name if specialist_mapping is not None else None
+    requested_named_agent = str(task.get("agent") or "").strip()
+    if resolved_specialist is None and _canonicalize_named_agent_lookup_key(requested_named_agent) in _PLAN_FIRST_NAMED_AGENTS:
+        resolved_specialist = "planner"
     if specialist_mapping is not None and not explicit_task_archetype and not explicit_top_level_archetype:
         inherited_archetype = specialist_mapping.archetype_name
     configured_archetype = str(cfg.get("archetype") or "").strip()
@@ -1182,6 +1483,73 @@ def _resolve_named_agent_fallback_models(
         })
 
     return fallback_chain
+
+
+def _route_policy_map_from_config(cfg: Dict[str, Any], route_category_name: Optional[str]) -> Dict[str, Dict[str, Any]]:
+    """Return resolver-ready route-category policy metadata from config.
+
+    This intentionally reads only model-policy fields. The existing delegation
+    profile/category merge path remains responsible for credentials, toolsets,
+    and other child runtime settings.
+    """
+    normalized_route_category = _normalize_category_name(route_category_name)
+    if not normalized_route_category or not isinstance(cfg, dict):
+        return {}
+    route_categories = cfg.get("route_categories")
+    if not isinstance(route_categories, dict):
+        return {}
+    entry = route_categories.get(normalized_route_category)
+    if not isinstance(entry, dict):
+        return {}
+    policy: Dict[str, Any] = {}
+    for key in ("provider", "model", "fallback_models", "fallbacks", "providerOptions", "provider_options", "provider_chain"):
+        value = entry.get(key)
+        if value not in (None, ""):
+            policy[key] = copy.deepcopy(value)
+    return {normalized_route_category: policy} if policy else {}
+
+
+def _apply_model_policy_to_delegate_credentials(
+    cfg: Dict[str, Any],
+    policy: ResolvedModelPolicy,
+    parent_agent,
+) -> Dict[str, Any]:
+    """Resolve provider/model policy through the existing credential path."""
+    policy_cfg = dict(cfg or {})
+    if policy.primary_model not in (None, ""):
+        policy_cfg["model"] = policy.primary_model
+    if policy.primary_provider not in (None, ""):
+        policy_cfg["provider"] = policy.primary_provider
+    return _resolve_delegation_credentials(policy_cfg, parent_agent)
+
+
+def _resolve_model_policy_fallback_credentials(
+    cfg: Dict[str, Any],
+    policy: ResolvedModelPolicy,
+    parent_agent,
+) -> List[Dict[str, Any]]:
+    """Resolve policy fallback provider/model pairs without changing secrets behavior."""
+    resolved: List[Dict[str, Any]] = []
+    for entry in policy.fallback_chain or []:
+        if not isinstance(entry, dict):
+            continue
+        fallback_cfg = dict(cfg or {})
+        for key in ("provider", "model"):
+            value = entry.get(key)
+            if value not in (None, ""):
+                fallback_cfg[key] = value
+        try:
+            fallback_creds = _resolve_delegation_credentials(fallback_cfg, parent_agent)
+        except ValueError:
+            continue
+        normalized = {
+            key: value
+            for key, value in fallback_creds.items()
+            if key in {"provider", "model", "base_url", "api_key"} and value
+        }
+        if normalized:
+            resolved.append(normalized)
+    return _merge_fallback_model_chains(resolved)
 
 
 def _ensure_fallback_entries_runtime_compatible(
@@ -2033,6 +2401,9 @@ def _run_single_child(
             child,
             result,
             runtime_mode=runtime_mode,
+            gap_check_plan=(resolution.get("task_contract") or resolution.get("named_workflow")) if isinstance(resolution, dict) else None,
+            gap_check_evidence=result,
+            gap_check_role=(resolution.get("specialist") or resolution.get("archetype")) if isinstance(resolution, dict) else None,
         )
         result = continuation_state["result"]
         final_snapshot = continuation_state["snapshot"]
@@ -2112,6 +2483,8 @@ def _run_single_child(
         completion_confirmed = (outcome_status == "completed" and not has_open_todos) or bool(completed)
         if continuation_state.get("exhausted"):
             exit_reason = "continuation_exhausted"
+        elif continuation_state.get("done"):
+            exit_reason = "completed"
         elif outcome_status == "interrupted" or interrupted:
             exit_reason = "interrupted"
         elif completion_confirmed:
@@ -2145,11 +2518,13 @@ def _run_single_child(
                 "final_outcome_status": outcome_status,
                 "open_todos": final_snapshot.get("activeTodos") or [],
                 "exhausted": bool(continuation_state.get("exhausted")),
+                "gap_check": continuation_state.get("gap_check"),
             },
         }
         if resolution:
             entry["resolved_inputs"] = resolution
         entry = _apply_named_role_completion_gate(entry, resolved_inputs=resolution)
+        entry = _apply_plan_first_completion_gate(entry, resolved_inputs=resolution)
         if entry.get("status") == "failed" and not entry.get("error"):
             entry["error"] = result.get("error", "Subagent did not produce a response.")
         elif entry.get("status") == "interrupted" and not summary:
@@ -2466,6 +2841,7 @@ def delegate_task(
     full_cfg = _load_full_config()
     cfg = _load_config()
     named_agent_registry = full_cfg.get("agents", {}) if isinstance(full_cfg, dict) else {}
+    disabled_named_agents = _resolve_disabled_named_agent_names(full_cfg, named_agent_registry)
     default_max_iter = cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS)
     # Model-supplied max_iterations is ignored — the config value is authoritative
     # so users get predictable budgets. The kwarg is retained for internal callers
@@ -2578,6 +2954,10 @@ def delegate_task(
     try:
         for i, t in enumerate(task_list):
             task = dict(t)
+            explicit_task_model = task.get("model")
+            explicit_task_provider = task.get("provider")
+            explicit_task_fallback_models = task.get("fallback_models") or task.get("fallbacks")
+            explicit_task_provider_options = task.get("providerOptions") or task.get("provider_options")
             resolved_named_agent = {}
             try:
                 resolved_named_agent = _resolve_named_agent_config(
@@ -2588,7 +2968,11 @@ def delegate_task(
             except ValueError as exc:
                 return tool_error(str(exc))
 
-            if str(resolved_named_agent.get("mode") or "").strip().lower() == "disabled":
+            if (
+                str(resolved_named_agent.get("mode") or "").strip().lower() == "disabled"
+                or resolved_named_agent.get("disable") is True
+                or resolved_named_agent.get("name") in disabled_named_agents
+            ):
                 agent_name = resolved_named_agent.get("name") or task.get("agent") or agent
                 return tool_error(f"Named agent '{agent_name}' is disabled in config.")
 
@@ -2615,16 +2999,43 @@ def delegate_task(
             resolved_profile = resolved_inputs["delegation_profile"]
             category_profile = _resolve_category_profile(cfg, resolved_profile)
             merged_cfg = _merge_category_profile(cfg, category_profile)
-            category_creds = _resolve_delegation_credentials(merged_cfg, parent_agent)
+            route_policy_map = _route_policy_map_from_config(cfg, resolved_inputs.get("route_category"))
+            model_policy = resolve_model_policy(
+                named_agent=resolved_named_agent,
+                archetype=resolved_inputs.get("archetype"),
+                specialist=resolved_inputs.get("specialist"),
+                route_category=resolved_inputs.get("route_category"),
+                runtime_mode=resolved_inputs.get("runtime_mode"),
+                model=explicit_task_model,
+                provider=explicit_task_provider,
+                fallback_models=explicit_task_fallback_models,
+                provider_options=explicit_task_provider_options,
+                route_policies=route_policy_map,
+                defaults=merged_cfg,
+            )
+            policy_cred_cfg = dict(merged_cfg)
             if resolved_named_agent:
-                named_agent_cred_cfg = dict(merged_cfg)
-                for key in ("model", "provider", "base_url", "api_key"):
+                # Compatibility seam for Wave 2: final named-agent contract may
+                # move fields, but this branch accepts the current dict shape.
+                for key in ("model", "provider"):
                     value = resolved_named_agent.get(key)
                     if value not in (None, ""):
-                        named_agent_cred_cfg[key] = value
-                category_creds = _resolve_delegation_credentials(named_agent_cred_cfg, parent_agent)
-            else:
-                named_agent_cred_cfg = dict(merged_cfg)
+                        policy_cred_cfg[key] = value
+            category_creds = _apply_model_policy_to_delegate_credentials(
+                policy_cred_cfg,
+                model_policy,
+                parent_agent,
+            )
+            named_agent_cred_cfg = dict(policy_cred_cfg)
+            if model_policy.primary_model not in (None, ""):
+                named_agent_cred_cfg["model"] = model_policy.primary_model
+            if model_policy.primary_provider not in (None, ""):
+                named_agent_cred_cfg["provider"] = model_policy.primary_provider
+            policy_fallback_models = _resolve_model_policy_fallback_credentials(
+                named_agent_cred_cfg,
+                model_policy,
+                parent_agent,
+            )
             named_agent_fallback_models = _resolve_named_agent_fallback_models(
                 named_agent_cred_cfg,
                 resolved_named_agent,
@@ -2636,6 +3047,7 @@ def delegate_task(
                 parent_agent,
             )
             fallback_model_chain = _merge_fallback_model_chains(
+                policy_fallback_models,
                 named_agent_fallback_models,
                 route_category_fallback_models,
             )
@@ -2644,6 +3056,9 @@ def delegate_task(
                 primary_creds=category_creds,
                 inherited_creds=creds,
             )
+            if resolved_named_agent:
+                resolved_inputs.update(_named_agent_runtime_surface(resolved_named_agent))
+                resolved_inputs["named_agent"] = resolved_named_agent.get("name") or resolved_inputs.get("agent")
             contract_tool_policy = _resolve_contract_tool_requirements(
                 resolved_inputs.get("task_contract"),
                 parent_agent=parent_agent,
@@ -2668,6 +3083,16 @@ def delegate_task(
                 enabled_tools=task_enabled_tools,
                 parent_agent=parent_agent,
             )
+            try:
+                task_toolsets, task_enabled_tools = _apply_plan_first_tool_policy(
+                    task=task,
+                    resolved_inputs=resolved_inputs,
+                    toolsets=task_toolsets,
+                    enabled_tools=task_enabled_tools,
+                    parent_agent=parent_agent,
+                )
+            except ValueError as exc:
+                return tool_error(str(exc))
             task_max_iter = int(category_profile.get("max_iterations") or effective_max_iter)
             task_overlay_prompt = build_wave1_overlay_prompt_from_normalized(
                 normalize_wave1_overlay_inputs(
@@ -2684,6 +3109,7 @@ def delegate_task(
             effective_agent_name = resolved_named_agent.get("name") or task.get("agent") or agent
             if effective_agent_name:
                 resolved_inputs["agent"] = effective_agent_name
+            resolved_inputs["model_policy"] = model_policy.as_dict()
             child = _build_child_agent(
                 task_index=i, goal=task["goal"], context=task.get("context"),
                 toolsets=task_toolsets, enabled_tools=task_enabled_tools, model=category_creds["model"] or creds["model"],

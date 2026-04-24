@@ -13,7 +13,7 @@ This module provides:
 """
 
 import copy
-import difflib
+import logging
 import os
 import platform
 import re
@@ -25,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
 
+logger = logging.getLogger(__name__)
 
 _IS_WINDOWS = platform.system() == "Windows"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
@@ -64,6 +65,8 @@ from agent.archetypes import (
     DEFAULT_ARCHETYPE_NAME,
     REQUIRED_ARCHETYPE_FIELDS,
     get_tool_restrictions,
+    normalize_named_agent_contract as _normalize_canonical_named_agent_contract,
+    normalize_named_agent_registry as _normalize_canonical_named_agent_registry,
     resolve_archetype,
     resolve_archetype_defaults,
     resolve_specialist_mapping,
@@ -114,7 +117,7 @@ DEFAULT_OMO_AGENTS = {
         "archetype": "researcher",
         "specialist": "investigator",
         "mode": "subagent",
-        "blocked_tools": ["write_file", "patch", "execute_code", "delegate_task"],
+        "blocked_tools": ["write_file", "patch", "terminal", "execute_code", "delegate_task", "task"],
         "aliases": ["explorer"],
     },
     "multimodal-looker": {
@@ -303,7 +306,7 @@ def get_container_exec_info() -> Optional[dict]:
 # =============================================================================
 
 # Re-export from hermes_constants — canonical definition lives there.
-from hermes_constants import get_default_hermes_root, get_hermes_home  # noqa: F811,E402
+from hermes_constants import get_hermes_home  # noqa: F811,E402
 
 def get_config_path() -> Path:
     """Get the main config file path."""
@@ -316,57 +319,6 @@ def get_env_path() -> Path:
 def get_project_root() -> Path:
     """Get the project installation directory."""
     return Path(__file__).parent.parent.resolve()
-
-
-def _normalize_profile_local_path(value: Any) -> Any:
-    """Map legacy in-container profile paths onto the local Hermes root when safe.
-
-    Older profile files sometimes persisted paths like
-    ``/root/.hermes/profiles/<name>/workspace``. On a host install, the same
-    profile lives under the local Hermes root (for example
-    ``/Users/alice/.hermes/profiles/<name>/workspace``). Only rewrite when the
-    equivalent local target already exists, so we don't silently point users at
-    a guessed path.
-    """
-    if not isinstance(value, str):
-        return value
-
-    raw = value.strip()
-    if not raw.startswith("/root/.hermes/"):
-        return raw
-
-    try:
-        relative = Path(raw).relative_to(Path("/root/.hermes"))
-    except ValueError:
-        return raw
-
-    candidate = get_default_hermes_root() / relative
-    if candidate.exists() or candidate.parent.exists():
-        return str(candidate)
-    return raw
-
-
-def _normalize_profile_path_settings(config: Dict[str, Any]) -> Dict[str, Any]:
-    """Normalize known profile-local path settings without touching unrelated keys."""
-    normalized = dict(config)
-
-    terminal_cfg = normalized.get("terminal")
-    if isinstance(terminal_cfg, dict) and "cwd" in terminal_cfg:
-        updated_terminal = dict(terminal_cfg)
-        updated_terminal["cwd"] = _normalize_profile_local_path(updated_terminal.get("cwd"))
-        normalized["terminal"] = updated_terminal
-
-    skills_cfg = normalized.get("skills")
-    if isinstance(skills_cfg, dict):
-        external_dirs = skills_cfg.get("external_dirs")
-        if isinstance(external_dirs, list):
-            updated_skills = dict(skills_cfg)
-            updated_skills["external_dirs"] = [
-                _normalize_profile_local_path(item) for item in external_dirs
-            ]
-            normalized["skills"] = updated_skills
-
-    return normalized
 
 def _secure_dir(path):
     """Set directory to owner-only access (0700 by default). No-op on Windows.
@@ -497,10 +449,6 @@ DEFAULT_CONFIG = {
     "providers": {},
     "fallback_providers": [],
     "credential_pool_strategies": {},
-    "agents": copy.deepcopy(DEFAULT_OMO_AGENTS),
-    "categories": {},
-    "runtime_fallback": {"enabled": False},
-    "model_capabilities": {},
     "toolsets": ["hermes-cli"],
     "agent": {
         "max_turns": 90,
@@ -543,7 +491,7 @@ DEFAULT_CONFIG = {
         # bot is dead and /restart.
         "gateway_notify_interval": 180,
     },
-    
+
     "terminal": {
         "backend": "local",
         "modal_mode": "auto",
@@ -597,7 +545,11 @@ DEFAULT_CONFIG = {
         "container_persistent": True,   # Persist filesystem across sessions
         # Docker volume mounts — share host directories with the container.
         # Each entry is "host_path:container_path" (standard Docker -v syntax).
-        # Example: ["/home/user/projects:/workspace/projects", "/data:/data"]
+        # Example:
+        # ["/home/user/projects:/workspace/projects",
+        #  "/home/user/.hermes/cache/documents:/output"]
+        # For gateway MEDIA delivery, write inside Docker to /output/... and emit
+        # the host-visible path in MEDIA:, not the container path.
         "docker_volumes": [],
         # Explicit opt-in: mount the host cwd into /workspace for Docker sessions.
         # Default off because passing host directories into a sandbox weakens isolation.
@@ -608,19 +560,13 @@ DEFAULT_CONFIG = {
         # via TERMINAL_LOCAL_PERSISTENT env var.
         "persistent_shell": True,
     },
-    
+
     "browser": {
         "inactivity_timeout": 120,
         "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
         "allow_private_urls": False,  # Allow navigating to private/internal IPs (localhost, 192.168.x.x, etc.)
         "cdp_url": "",  # Optional persistent CDP endpoint for attaching to an existing Chromium/Chrome
-        # CDP supervisor — dialog + frame detection via a persistent WebSocket.
-        # Active only when a CDP-capable backend is attached (Browserbase or
-        # local Chrome via /browser connect). See
-        # website/docs/developer-guide/browser-supervisor.md.
-        "dialog_policy": "must_respond",  # must_respond | auto_dismiss | auto_accept
-        "dialog_timeout_s": 300,  # Safety auto-dismiss after N seconds under must_respond
         "camofox": {
             # When true, Hermes sends a stable profile-scoped userId to Camofox
             # so the server maps it to a persistent Firefox profile automatically.
@@ -642,43 +588,12 @@ DEFAULT_CONFIG = {
     # 100K chars ≈ 25–35K tokens across typical tokenisers.
     "file_read_max_chars": 100_000,
 
-    # Tool-output truncation thresholds. When terminal output or a
-    # single read_file page exceeds these limits, Hermes truncates the
-    # payload sent to the model (keeping head + tail for terminal,
-    # enforcing pagination for read_file). Tuning these trades context
-    # footprint against how much raw output the model can see in one
-    # shot. Ported from anomalyco/opencode PR #23770.
-    #
-    # - max_bytes:       terminal_tool output cap, in chars
-    #                    (default 50_000 ≈ 12-15K tokens).
-    # - max_lines:       read_file pagination cap — the maximum `limit`
-    #                    a single read_file call can request before
-    #                    being clamped (default 2000).
-    # - max_line_length: per-line cap applied when read_file emits a
-    #                    line-numbered view (default 2000 chars).
-    "tool_output": {
-        "max_bytes": 50_000,
-        "max_lines": 2000,
-        "max_line_length": 2000,
-    },
-
     "compression": {
         "enabled": True,
         "threshold": 0.50,            # compress when context usage exceeds this ratio
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
-        "protected_tools": [
-            "delegate_task",
-            "todo",
-            "session_search",
-        ],
 
-    },
-
-    # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
-    # cache_ttl must be "5m" or "1h" (Anthropic-supported tiers); other values are ignored.
-    "prompt_caching": {
-        "cache_ttl": "5m",
     },
 
     # AWS Bedrock provider configuration.
@@ -701,13 +616,6 @@ DEFAULT_CONFIG = {
         },
     },
 
-    "smart_model_routing": {
-        "enabled": False,
-        "max_simple_chars": 160,
-        "max_simple_words": 28,
-        "cheap_model": {},
-    },
-    
     # Auxiliary model config — provider:model for each side task.
     # Format: provider is the provider name, model is the model slug.
     # "auto" for provider = auto-detect best available provider.
@@ -721,6 +629,7 @@ DEFAULT_CONFIG = {
             "base_url": "",        # direct OpenAI-compatible endpoint (takes precedence over provider)
             "api_key": "",         # API key for base_url (falls back to OPENAI_API_KEY)
             "timeout": 120,        # seconds — LLM API call timeout; vision payloads need generous timeout
+            "extra_body": {},      # OpenAI-compatible provider-specific request fields
             "download_timeout": 30,  # seconds — image HTTP download timeout; increase for slow connections
         },
         "web_extract": {
@@ -729,6 +638,7 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 360,        # seconds (6min) — per-attempt LLM summarization timeout; increase for slow local models
+            "extra_body": {},
         },
         "compression": {
             "provider": "auto",
@@ -736,6 +646,7 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 120,        # seconds — compression summarises large contexts; increase for local models
+            "extra_body": {},
         },
         "session_search": {
             "provider": "auto",
@@ -743,6 +654,8 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 30,
+            "extra_body": {},
+            "max_concurrency": 3,  # Clamp parallel summaries to avoid request-burst 429s on small providers
         },
         "skills_hub": {
             "provider": "auto",
@@ -750,6 +663,7 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 30,
+            "extra_body": {},
         },
         "approval": {
             "provider": "auto",
@@ -757,6 +671,7 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 30,
+            "extra_body": {},
         },
         "mcp": {
             "provider": "auto",
@@ -764,6 +679,7 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 30,
+            "extra_body": {},
         },
         "flush_memories": {
             "provider": "auto",
@@ -771,6 +687,7 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 30,
+            "extra_body": {},
         },
         "title_generation": {
             "provider": "auto",
@@ -778,9 +695,10 @@ DEFAULT_CONFIG = {
             "base_url": "",
             "api_key": "",
             "timeout": 30,
+            "extra_body": {},
         },
     },
-    
+
     "display": {
         "compact": False,
         "personality": "kawaii",
@@ -789,17 +707,18 @@ DEFAULT_CONFIG = {
         "bell_on_complete": False,
         "show_reasoning": False,
         "streaming": False,
+        "final_response_markdown": "strip",  # render | strip | raw
         "inline_diffs": True,     # Show inline diff previews for write actions (write_file, patch, skill_manage)
         "show_cost": False,       # Show $ cost in the status bar (off by default)
         "skin": "default",
+        "user_message_preview": {  # CLI: how many submitted user-message lines to echo back in scrollback
+            "first_lines": 2,
+            "last_lines": 2,
+        },
         "interim_assistant_messages": True,  # Gateway: show natural mid-turn assistant status messages
         "tool_progress_command": False,  # Enable /verbose command in messaging gateway
         "tool_progress_overrides": {},  # DEPRECATED — use display.platforms instead
         "tool_preview_length": 0,  # Max chars for tool call previews (0 = no limit, show full paths/commands)
-        "user_message_preview": {
-            "first_lines": 2,
-            "last_lines": 2,
-        },
         "platforms": {},  # Per-platform display overrides: {"telegram": {"tool_progress": "all"}, "slack": {"tool_progress": "off"}}
     },
 
@@ -812,8 +731,12 @@ DEFAULT_CONFIG = {
     "privacy": {
         "redact_pii": False,  # When True, hash user IDs and strip phone numbers from LLM context
     },
-    
+
     # Text-to-speech configuration
+    # Each provider supports an optional `max_text_length:` override for the
+    # per-request input-character cap. Omit it to use the provider's documented
+    # limit (OpenAI 4096, xAI 15000, MiniMax 10000, ElevenLabs 5k-40k model-aware,
+    # Gemini 5000, Edge 5000, Mistral 4000, NeuTTS/KittenTTS 2000).
     "tts": {
         "provider": "edge",  # "edge" (free) | "elevenlabs" (premium) | "openai" | "xai" | "minimax" | "mistral" | "neutts" (local)
         "edge": {
@@ -846,7 +769,7 @@ DEFAULT_CONFIG = {
             "device": "cpu",  # cpu, cuda, or mps
         },
     },
-    
+
     "stt": {
         "enabled": True,
         "provider": "local",  # "local" (free, faster-whisper) | "groq" | "openai" (Whisper API) | "mistral" (Voxtral Transcribe)
@@ -866,16 +789,17 @@ DEFAULT_CONFIG = {
         "record_key": "ctrl+b",
         "max_recording_seconds": 120,
         "auto_tts": False,
+        "beep_enabled": True,         # Play record start/stop beeps in CLI voice mode
         "silence_threshold": 200,     # RMS below this = silence (0-32767)
         "silence_duration": 3.0,      # Seconds of silence before auto-stop
     },
-    
+
     "human_delay": {
         "mode": "off",
         "min_ms": 800,
         "max_ms": 2500,
     },
-    
+
     # Context engine -- controls how the context window is managed when
     # approaching the model's token limit.
     # "compressor" = built-in lossy summarization (default).
@@ -884,6 +808,39 @@ DEFAULT_CONFIG = {
     # a plugin in plugins/context_engine/<name>/ or ~/.hermes/plugins/.
     "context": {
         "engine": "compressor",
+    },
+
+    # OMO compatibility / parity-decision surface.
+    # These keys make Hermes' stance explicit without silently cloning
+    # OpenCode/OMO internals. Defaults are safe and backward-compatible:
+    # YAML remains canonical; JSONC is import/interop-only; scheduler and
+    # hashline edit UX are opt-in/config-documented until runtime bridges are
+    # proven by their owning waves.
+    "omo_compat": {
+        "jsonc_config": "import-only",  # canonical config is YAML; JSONC may be translated at import boundaries only
+        "disable_omo_env": False,        # env-bridge kill switch placeholder; false preserves existing env behavior
+        "hashline_edit": False,          # HERMES_HASHLINE_EDIT equivalent; off unless explicitly enabled
+        "stale_edit_mode": "warn",      # warn | error | off; default preserves existing permissive behavior
+        "dynamic_context_pruning": {
+            "protected_tools": [],       # additive aliases for pruning protection; built-ins stay protected in code
+        },
+        "named_agents": {
+            "mode": "primary",          # primary | subagent-only | disabled
+            "color": "auto",
+            "providerOptions": {},
+            "permissions": {},          # e.g. edit/bash/webfetch/doom_loop/external_directory booleans
+        },
+        "task_scheduler": {
+            "enabled": False,            # do not imply Atlas/OMO scheduler parity unless Wave 5 runtime exists
+        },
+        "runtime_modes": {
+            "ralph": {
+                "max_iterations": 100,   # documented OMO-style default; runtime enforcement is wave-backed
+            },
+        },
+        "mcp": {
+            "builtins": "configured",   # configured | disabled; no always-on network defaults
+        },
     },
 
     # Persistent memory -- bounded curated memory injected into system prompt
@@ -903,114 +860,38 @@ DEFAULT_CONFIG = {
     # so child agents can run on a different (cheaper/faster) provider and model.
     # Uses the same runtime provider resolution as CLI/gateway startup, so all
     # configured providers (OpenRouter, Nous, Z.ai, Kimi, etc.) are supported.
-    # delegation_profiles is the primary Wave 1 config surface for delegation
-    # policy. DG2 adds category as a bounded literal upstream product surface.
-    # Route categories and runtime modes stay separate internal registries:
-    # their metadata is still rendered into prompts and runtime state, while
-    # literal category names map onto that substrate truthfully.
     "delegation": {
         "model": "",       # e.g. "google/gemini-3-flash-preview" (empty = inherit parent model)
         "provider": "",    # e.g. "openrouter" (empty = inherit parent provider + credentials)
         "base_url": "",    # direct OpenAI-compatible endpoint for subagents
         "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
+        # When delegate_task narrows child toolsets explicitly, preserve any
+        # MCP toolsets the parent already has enabled. On by default so
+        # narrowing (e.g. toolsets=["web","browser"]) expresses "I want these
+        # extras" without silently stripping MCP tools the parent already has.
+        # Set to false for strict intersection.
+        "inherit_mcp_toolsets": True,
         "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
         "child_timeout_seconds": 600,  # wall-clock timeout for each child agent (floor 30s,
                                        # no ceiling). High-reasoning models on large tasks
                                        # (e.g. gpt-5.5 xhigh, opus-4.6) need generous budgets;
                                        # raise if children time out before producing output.
-        "max_concurrent_children": 3,
         "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
                                  # "low", "minimal", "none" (empty = inherit parent's level)
-        "auto_decompose_large_tasks": True,  # prompt the primary agent to make a todo list on large requests
-        "auto_fanout_batch_mode": True,      # prefer one batched delegate_task call over many single-task calls
-        "auto_fanout_max_tasks": 3,          # soft cap for one delegated batch after routing/truncation logic
-        "default_category": DEFAULT_LITERAL_CATEGORY,
-        # Wave 1 schema/default surfaces. These remain structurally distinct:
-        # category is the literal upstream-facing product surface, route_category
-        # is the mapped internal routing label, delegation_profile selects a child
-        # policy profile, runtime_mode is an operating-mode concept, and
-        # task_contract stays canonical structured data.
-        "category": DEFAULT_LITERAL_CATEGORY,
-        "archetype": DEFAULT_ARCHETYPE_NAME,
-        "runtime_mode": DEFAULT_RUNTIME_MODE_NAME,
-        "route_category": DEFAULT_ROUTE_CATEGORY,
-        "default_route_category": DEFAULT_ROUTE_CATEGORY,
-        "default_delegation_profile": "general",
-        "default_skills": ["general_reasoning", "task_execution"],
-        "default_required_tools": ["read_file", "search_files"],
-        "permission_preset": "inherit",
-        "fallback_policy": "legacy_default_mapping",
-        "task_contract": None,
-        "literal_categories": {
-            name: {
-                "summary": category.summary,
-                "route_category": category.route_category,
-                "default_runtime_mode": category.default_runtime_mode,
-            }
-            for name, category in BUILTIN_LITERAL_CATEGORIES.items()
-        },  # built-in literal-category mapping metadata
-        "route_categories": {
-            name: {
-                "summary": category.summary,
-                "intensity": category.intensity,
-            }
-            for name, category in BUILTIN_ROUTE_CATEGORIES.items()
-        },  # built-in route-category metadata overrides only
-        "runtime_modes": {
-            mode.name: {
-                "description": mode.description,
-                "operating_posture": mode.operating_posture,
-                "kind": mode.kind,
-            }
-            for mode in BUILTIN_RUNTIME_MODES
-        },  # built-in runtime-mode metadata overrides only
-        "delegation_profiles": {
-            "general": {
-                "routing_description": "Default fallback for uncategorized delegated work.",
-                "max_concurrent_children": 3,
-            },
-            "research": {
-                "routing_description": "Audits, comparisons, investigation, and read-heavy research.",
-                "max_concurrent_children": 3,
-                "max_iterations": 25,
-                "enabled_tools": [
-                    "read_file",
-                    "search_files",
-                    "session_search",
-                    "skills_list",
-                    "skill_view",
-                    "web_search",
-                    "web_extract",
-                    "browser_navigate",
-                    "browser_snapshot",
-                    "browser_console",
-                    "browser_scroll",
-                    "browser_get_images",
-                    "vision_analyze",
-                    "browser_vision",
-                ],
-            },
-            "implementation": {
-                "routing_description": "Code changes, patches, refactors, and other write-heavy implementation work.",
-                "max_concurrent_children": 2,
-                "max_iterations": 35,
-                "toolsets": ["terminal", "file"],
-            },
-            "verification": {
-                "routing_description": "Tests, validation, regression checks, and review passes.",
-                "max_concurrent_children": 3,
-                "max_iterations": 20,
-                "toolsets": ["terminal", "file", "web"],
-            },
-        },
+        "max_concurrent_children": 3,  # max parallel children per batch; floor of 1 enforced, no ceiling
+        # Orchestrator role controls (see tools/delegate_tool.py:_get_max_spawn_depth
+        # and _get_orchestrator_enabled).  Values are clamped to [1, 3] with a
+        # warning log if out of range.
+        "max_spawn_depth": 1,        # depth cap (1 = flat [default], 2 = orchestrator→leaf, 3 = three-level)
+        "orchestrator_enabled": True,  # kill switch for role="orchestrator"
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
     # injected at the start of every API call for few-shot priming.
     # Never saved to sessions, logs, or trajectories.
     "prefill_messages_file": "",
-    
+
     # Skills — external skill directories for sharing skills across tools/agents.
     # Each path is expanded (~, ${VAR}) and resolved.  Read-only — skill creation
     # always goes to ~/.hermes/skills/.
@@ -1060,6 +941,14 @@ DEFAULT_CONFIG = {
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
         "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
         "channel_prompts": {},         # Per-channel ephemeral system prompts (forum parents apply to child threads)
+        # discord_server tool: restrict which actions the agent may call.
+        # Default (empty) = all actions allowed (subject to bot privileged intents).
+        # Accepts comma-separated string ("list_guilds,list_channels,fetch_messages")
+        # or YAML list. Unknown names are dropped with a warning at load time.
+        # Actions: list_guilds, server_info, list_channels, channel_info,
+        # list_roles, member_info, search_members, fetch_messages, list_pins,
+        # pin_message, unpin_message, create_thread, add_role, remove_role.
+        "server_actions": "",
     },
 
     # WhatsApp platform settings (gateway mode)
@@ -1089,15 +978,35 @@ DEFAULT_CONFIG = {
     #   manual — always prompt the user (default)
     #   smart  — use auxiliary LLM to auto-approve low-risk commands, prompt for high-risk
     #   off    — skip all approval prompts (equivalent to --yolo)
+    #
+    # cron_mode — what to do when a cron job hits a dangerous command:
+    #   deny    — block the command and let the agent find another way (default, safe)
+    #   approve — auto-approve all dangerous commands in cron jobs
     "approvals": {
         "mode": "manual",
         "timeout": 60,
+        "cron_mode": "deny",
     },
 
     # Permanently allowed dangerous command patterns (added via "always" approval)
     "command_allowlist": [],
     # User-defined quick commands that bypass the agent loop (type: exec only)
     "quick_commands": {},
+
+    # Shell-script hooks — declarative bridge that invokes shell scripts
+    # on plugin-hook events (pre_tool_call, post_tool_call, pre_llm_call,
+    # subagent_stop, etc.).  Each entry maps an event name to a list of
+    # {matcher, command, timeout} dicts.  First registration of a new
+    # command prompts the user for consent; subsequent runs reuse the
+    # stored approval from ~/.hermes/shell-hooks-allowlist.json.
+    # See `website/docs/user-guide/features/hooks.md` for schema + examples.
+    "hooks": {},
+
+    # Auto-accept shell-hook registrations without a TTY prompt.  Also
+    # toggleable per-invocation via --accept-hooks or HERMES_ACCEPT_HOOKS=1.
+    # Gateway / cron / non-interactive runs need this (or one of the other
+    # channels) to pick up newly-added hooks.
+    "hooks_auto_accept": False,
     # Custom personalities — add your own entries here
     # Supports string format: {"name": "system prompt"}
     # Or dict format: {"name": {"description": "...", "system_prompt": "...", "tone": "...", "style": "..."}}
@@ -1105,6 +1014,7 @@ DEFAULT_CONFIG = {
 
     # Pre-exec security scanning via tirith
     "security": {
+        "allow_private_urls": False,  # Allow requests to private/internal IPs (for OpenWrt, proxies, VPNs)
         "redact_secrets": True,
         "tirith_enabled": True,
         "tirith_path": "tirith",
@@ -1121,6 +1031,25 @@ DEFAULT_CONFIG = {
         # Wrap delivered cron responses with a header (task name) and footer
         # ("The agent cannot see this message").  Set to false for clean output.
         "wrap_response": True,
+        # Maximum number of due jobs to run in parallel per tick.
+        # null/0 = unbounded (limited only by thread count).
+        # 1 = serial (pre-v0.9 behaviour).
+        # Also overridable via HERMES_CRON_MAX_PARALLEL env var.
+        "max_parallel_jobs": None,
+    },
+
+    # execute_code settings — controls the tool used for programmatic tool calls.
+    "code_execution": {
+        # Execution mode:
+        #   project (default) — scripts run in the session's working directory
+        #     with the active virtualenv/conda env's python, so project deps
+        #     (pandas, torch, project packages) and relative paths resolve.
+        #   strict            — scripts run in an isolated temp directory with
+        #     hermes-agent's own python (sys.executable). Maximum isolation
+        #     and reproducibility; project deps and relative paths won't work.
+        # Env scrubbing (strips *_API_KEY, *_TOKEN, *_SECRET, ...) and the
+        # tool whitelist apply identically in both modes.
+        "mode": "project",
     },
 
     # Logging — controls file logging to ~/.hermes/logs/.
@@ -1139,8 +1068,36 @@ DEFAULT_CONFIG = {
         "force_ipv4": False,
     },
 
+    # Session storage — controls automatic cleanup of ~/.hermes/state.db.
+    # state.db accumulates every session, message, tool call, and FTS5 index
+    # entry forever.  Without auto-pruning, a heavy user (gateway + cron)
+    # reports 384MB+ databases with 68K+ messages, which slows down FTS5
+    # inserts, /resume listing, and insights queries.
+    "sessions": {
+        # When true, prune ended sessions older than retention_days once
+        # per (roughly) min_interval_hours at CLI/gateway/cron startup.
+        # Only touches ended sessions — active sessions are always preserved.
+        # Default false: session history is valuable for search recall, and
+        # silently deleting it could surprise users.  Opt in explicitly.
+        "auto_prune": False,
+        # How many days of ended-session history to keep.  Matches the
+        # default of ``hermes sessions prune``.
+        "retention_days": 90,
+        # VACUUM after a prune that actually deleted rows.  SQLite does not
+        # reclaim disk space on DELETE — freed pages are just reused on
+        # subsequent INSERTs — so without VACUUM the file stays bloated
+        # even after pruning.  VACUUM blocks writes for a few seconds per
+        # 100MB, so it only runs at startup, and only when prune deleted
+        # ≥1 session.
+        "vacuum_after_prune": True,
+        # Minimum hours between auto-maintenance runs (avoids repeating
+        # the sweep on every CLI invocation).  Tracked via state_meta in
+        # state.db itself, so it's shared across all processes.
+        "min_interval_hours": 24,
+    },
+
     # Config schema version - bump this when adding new required fields
-    "_config_version": 20,
+    "_config_version": 22,
 }
 
 # =============================================================================
@@ -1293,6 +1250,22 @@ OPTIONAL_ENV_VARS = {
         "prompt": "Kimi (China) API key",
         "url": "https://platform.moonshot.cn/",
         "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "STEPFUN_API_KEY": {
+        "description": "StepFun Step Plan API key",
+        "prompt": "StepFun Step Plan API key",
+        "url": "https://platform.stepfun.com/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "STEPFUN_BASE_URL": {
+        "description": "StepFun Step Plan base URL override",
+        "prompt": "StepFun Step Plan base URL (leave empty for default)",
+        "url": None,
+        "password": False,
         "category": "provider",
         "advanced": True,
     },
@@ -2055,22 +2028,22 @@ OPTIONAL_ENV_VARS = {
 def get_missing_env_vars(required_only: bool = False) -> List[Dict[str, Any]]:
     """
     Check which environment variables are missing.
-    
+
     Returns list of dicts with var info for missing variables.
     """
     missing = []
-    
+
     # Check required vars
     for var_name, info in REQUIRED_ENV_VARS.items():
         if not get_env_value(var_name):
             missing.append({"name": var_name, **info, "is_required": True})
-    
+
     # Check optional vars (if not required_only)
     if not required_only:
         for var_name, info in OPTIONAL_ENV_VARS.items():
             if not get_env_value(var_name):
                 missing.append({"name": var_name, **info, "is_required": False})
-    
+
     return missing
 
 
@@ -2092,7 +2065,7 @@ def _set_nested(config: dict, dotted_key: str, value):
 def get_missing_config_fields() -> List[Dict[str, Any]]:
     """
     Check which config fields are missing or outdated (recursive).
-    
+
     Walks the DEFAULT_CONFIG tree at arbitrary depth and reports any keys
     present in defaults but absent from the user's loaded config.
     """
@@ -2163,12 +2136,53 @@ def _normalize_custom_provider_entry(
     if not isinstance(entry, dict):
         return None
 
+    # Accept camelCase aliases commonly used in hand-written configs.
+    _CAMEL_ALIASES: Dict[str, str] = {
+        "apiKey": "api_key",
+        "baseUrl": "base_url",
+        "apiMode": "api_mode",
+        "keyEnv": "key_env",
+        "defaultModel": "default_model",
+        "contextLength": "context_length",
+        "rateLimitDelay": "rate_limit_delay",
+    }
+    _KNOWN_KEYS = {
+        "name", "api", "url", "base_url", "api_key", "key_env",
+        "api_mode", "transport", "model", "default_model", "models",
+        "context_length", "rate_limit_delay",
+    }
+    for camel, snake in _CAMEL_ALIASES.items():
+        if camel in entry and snake not in entry:
+            logger.warning(
+                "providers.%s: camelCase key '%s' auto-mapped to '%s' "
+                "(use snake_case to avoid this warning)",
+                provider_key or "?", camel, snake,
+            )
+            entry[snake] = entry[camel]
+    unknown = set(entry.keys()) - _KNOWN_KEYS - set(_CAMEL_ALIASES.keys())
+    if unknown:
+        logger.warning(
+            "providers.%s: unknown config keys ignored: %s",
+            provider_key or "?", ", ".join(sorted(unknown)),
+        )
+
+    from urllib.parse import urlparse
+
     base_url = ""
     for url_key in ("base_url", "url", "api"):
         raw_url = entry.get(url_key)
         if isinstance(raw_url, str) and raw_url.strip():
-            base_url = raw_url.strip()
-            break
+            candidate = raw_url.strip()
+            parsed = urlparse(candidate)
+            if parsed.scheme and parsed.netloc:
+                base_url = candidate
+                break
+            else:
+                logger.warning(
+                    "providers.%s: '%s' value '%s' is not a valid URL "
+                    "(no scheme or host) — skipped",
+                    provider_key or "?", url_key, candidate,
+                )
     if not base_url:
         return None
 
@@ -2209,6 +2223,14 @@ def _normalize_custom_provider_entry(
     models = entry.get("models")
     if isinstance(models, dict) and models:
         normalized["models"] = models
+    elif isinstance(models, list) and models:
+        # Hand-edited configs (and older Hermes versions) write ``models`` as
+        # a plain list of model ids. Preserve them by converting to the dict
+        # shape downstream code expects; otherwise normalize silently drops
+        # the list and /model shows the provider with (0) models.
+        normalized["models"] = {
+            str(m): {} for m in models if isinstance(m, str) and m.strip()
+        }
 
     context_length = entry.get("context_length")
     if isinstance(context_length, int) and context_length > 0:
@@ -2288,7 +2310,7 @@ def get_compatible_custom_providers(
 def check_config_version() -> Tuple[int, int]:
     """
     Check config version.
-    
+
     Returns (current_version, latest_version).
     """
     config = load_config()
@@ -2304,10 +2326,14 @@ def check_config_version() -> Tuple[int, int]:
 # Fields that are valid at root level of config.yaml
 _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
-    "fallback_providers", "credential_pool_strategies", "agents",
-    "categories", "runtime_fallback", "model_capabilities", "toolsets",
+    "fallback_providers", "credential_pool_strategies", "toolsets",
     "agent", "terminal", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
+    "sessions", "browser", "bedrock", "honcho", "timezone", "discord",
+    "whatsapp", "telegram", "slack", "mattermost", "approvals",
+    "command_allowlist", "quick_commands", "hooks", "hooks_auto_accept",
+    "personalities", "security", "cron", "code_execution", "skills",
+    "omo_compat",
 }
 
 # Valid fields inside a custom_providers list entry
@@ -2318,6 +2344,184 @@ _VALID_CUSTOM_PROVIDER_FIELDS = {
 
 # Fields that look like they should be inside custom_providers, not at root
 _CUSTOM_PROVIDER_LIKE_FIELDS = {"base_url", "api_key", "rate_limit_delay", "api_mode"}
+
+
+def _looks_like_jsonc_config(raw: str) -> bool:
+    """Best-effort detection for foreign JSONC config files.
+
+    This is intentionally only a diagnostic helper. It does not make JSONC a
+    core config format; it lets `hermes doctor`/validation return a readable
+    error instead of silently falling back to defaults after a YAML parse error.
+    """
+    stripped = raw.lstrip()
+    if not stripped.startswith(("{", "[")):
+        return False
+    return bool(
+        re.search(r"(^|\s)//", raw)
+        or re.search(r"/\*.*?\*/", raw, re.S)
+        or re.search(r",\s*[}\]]", raw)
+    )
+
+
+def _validate_raw_config_file_parse(issues: List["ConfigIssue"]) -> bool:
+    """Return True when a raw config file parse issue was reported."""
+    config_path = get_config_path()
+    if not config_path.exists():
+        return False
+    try:
+        raw = config_path.read_text(encoding="utf-8")
+    except Exception:
+        return False
+    try:
+        yaml.safe_load(raw) or {}
+        return False
+    except Exception as exc:
+        if _looks_like_jsonc_config(raw):
+            issues.append(ConfigIssue(
+                "error",
+                "config.yaml looks like JSONC, but Hermes canonical config is YAML",
+                "Remove JSONC comments/trailing commas or translate the foreign JSONC file into YAML before using it as ~/.hermes/config.yaml.",
+            ))
+        else:
+            issues.append(ConfigIssue(
+                "error",
+                "Could not parse config.yaml",
+                f"Fix YAML syntax before running Hermes. Parser error: {exc}",
+            ))
+        return True
+
+
+def _validate_omo_compat_config(config: Dict[str, Any], issues: List["ConfigIssue"]) -> None:
+    """Validate explicit OMO compatibility decision knobs.
+
+    Wave 8 intentionally keeps Hermes YAML-first. These checks document and
+    enforce the safe compatibility boundary so future config examples cannot
+    accidentally imply core JSONC/OpenCode parity or enabled scheduler parity.
+    """
+    source_format = str(config.get("_source_format", "")).lower()
+    if source_format == "jsonc":
+        issues.append(ConfigIssue(
+            "error",
+            "JSONC is not a core Hermes config format",
+            "Use config.yaml as canonical YAML. JSONC is supported only by explicit import/translation tools, not by load_config().",
+        ))
+
+    compat = config.get("omo_compat")
+    if compat is None:
+        return
+    if not isinstance(compat, dict):
+        issues.append(ConfigIssue(
+            "error",
+            f"omo_compat should be a dict, got {type(compat).__name__}",
+            "Use omo_compat: { jsonc_config: import-only, ... }",
+        ))
+        return
+
+    jsonc_mode = compat.get("jsonc_config")
+    if jsonc_mode is not None and jsonc_mode not in {"import-only", "disabled"}:
+        issues.append(ConfigIssue(
+            "error",
+            "omo_compat.jsonc_config must be 'import-only' or 'disabled' (not core JSONC)",
+            "Hermes canonical config remains YAML; translate foreign JSONC into config.yaml before loading.",
+        ))
+
+    for key in ("disable_omo_env", "hashline_edit"):
+        value = compat.get(key)
+        if value is not None and not isinstance(value, bool):
+            issues.append(ConfigIssue(
+                "error",
+                f"omo_compat.{key} should be a boolean",
+                f"Set omo_compat.{key}: true or false",
+            ))
+
+    stale_mode = compat.get("stale_edit_mode")
+    if stale_mode is not None and stale_mode not in {"warn", "error", "off"}:
+        issues.append(ConfigIssue(
+            "error",
+            "omo_compat.stale_edit_mode must be one of: warn, error, off",
+            "Use warn for backward-compatible default behavior; error for strict stale-edit rejection.",
+        ))
+
+    pruning = compat.get("dynamic_context_pruning")
+    if pruning is not None:
+        if not isinstance(pruning, dict):
+            issues.append(ConfigIssue("error", "omo_compat.dynamic_context_pruning should be a dict", "Use protected_tools: [...]"))
+        else:
+            protected = pruning.get("protected_tools")
+            if protected is not None and not (
+                isinstance(protected, list) and all(isinstance(item, str) for item in protected)
+            ):
+                issues.append(ConfigIssue(
+                    "error",
+                    "omo_compat.dynamic_context_pruning.protected_tools should be a list of strings",
+                    "Example: protected_tools: [delegate_task, todo, session.info]",
+                ))
+
+    named = compat.get("named_agents")
+    if named is not None:
+        if not isinstance(named, dict):
+            issues.append(ConfigIssue("error", "omo_compat.named_agents should be a dict", "Use mode/color/providerOptions/permissions keys."))
+        else:
+            mode = named.get("mode")
+            if mode is not None and mode not in {"primary", "subagent-only", "disabled"}:
+                issues.append(ConfigIssue(
+                    "error",
+                    "omo_compat.named_agents.mode must be one of: primary, subagent-only, disabled",
+                    "Use disabled for aliases that should be documented but not invokable.",
+                ))
+            provider_options = named.get("providerOptions")
+            if provider_options is not None and not isinstance(provider_options, dict):
+                issues.append(ConfigIssue("error", "omo_compat.named_agents.providerOptions should be a dict", "Use providerOptions: {} or provider-specific request fields."))
+            permissions = named.get("permissions")
+            if permissions is not None:
+                if not isinstance(permissions, dict):
+                    issues.append(ConfigIssue("error", "omo_compat.named_agents.permissions should be a dict", "Use permission-name: true/false entries."))
+                else:
+                    for perm, allowed in permissions.items():
+                        if not isinstance(allowed, bool):
+                            issues.append(ConfigIssue(
+                                "error",
+                                f"omo_compat.named_agents.permissions.{perm} should be a boolean",
+                                "Permission gates are explicit true/false values; omit unknown permissions until implemented.",
+                            ))
+
+    scheduler = compat.get("task_scheduler")
+    if scheduler is not None:
+        if not isinstance(scheduler, dict):
+            issues.append(ConfigIssue("error", "omo_compat.task_scheduler should be a dict", "Use enabled: false unless scheduler runtime is installed."))
+        elif "enabled" in scheduler and not isinstance(scheduler.get("enabled"), bool):
+            issues.append(ConfigIssue("error", "omo_compat.task_scheduler.enabled should be a boolean", "Default false avoids overclaiming scheduler parity."))
+
+    runtime_modes = compat.get("runtime_modes")
+    if runtime_modes is not None:
+        if not isinstance(runtime_modes, dict):
+            issues.append(ConfigIssue("error", "omo_compat.runtime_modes should be a dict", "Use runtime_modes.ralph.max_iterations."))
+        else:
+            ralph = runtime_modes.get("ralph")
+            if ralph is not None:
+                if not isinstance(ralph, dict):
+                    issues.append(ConfigIssue("error", "omo_compat.runtime_modes.ralph should be a dict", "Use max_iterations: 100."))
+                else:
+                    max_iterations = ralph.get("max_iterations")
+                    if max_iterations is not None and not (
+                        type(max_iterations) is int and max_iterations >= 1
+                    ):
+                        issues.append(ConfigIssue(
+                            "error",
+                            "omo_compat.runtime_modes.ralph.max_iterations should be a positive integer",
+                            "Use 100 for OMO-style default, or a smaller positive integer for bounded local runs.",
+                        ))
+
+    mcp = compat.get("mcp")
+    if mcp is not None:
+        if not isinstance(mcp, dict):
+            issues.append(ConfigIssue("error", "omo_compat.mcp should be a dict", "Use builtins: configured or disabled."))
+        elif mcp.get("builtins") is not None and mcp.get("builtins") not in {"configured", "disabled"}:
+            issues.append(ConfigIssue(
+                "error",
+                "omo_compat.mcp.builtins must be 'configured' or 'disabled'",
+                "Hermes does not enable network MCP defaults silently; declare servers in MCP config.",
+            ))
 
 
 @dataclass
@@ -2335,20 +2539,18 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
     Catches common YAML formatting mistakes that produce confusing runtime
     errors (like "Unknown provider") instead of clear diagnostics.
 
-    Can be called with a pre-loaded config dict, or will load the raw config
-    from disk so warnings can still see ignored/unknown keys before
-    normalization drops them.
+    Can be called with a pre-loaded config dict, or will load from disk.
     """
-    raw_config = config
     if config is None:
+        issues: List[ConfigIssue] = []
+        if _validate_raw_config_file_parse(issues):
+            return issues
         try:
-            config = read_raw_config()
-            raw_config = config
+            config = load_config()
         except Exception:
             return [ConfigIssue("error", "Could not load config.yaml", "Run 'hermes setup' to create a valid config")]
 
     issues: List[ConfigIssue] = []
-
     agents_cfg = config.get("agents")
     if agents_cfg is not None and not isinstance(agents_cfg, dict):
         issues.append(ConfigIssue(
@@ -2356,6 +2558,40 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
             f"agents should be a mapping of named agent configs, got {type(agents_cfg).__name__}",
             "Change to:\n  agents:\n    oracle:\n      model: openai/gpt-5.4",
         ))
+    elif isinstance(agents_cfg, dict):
+        for agent_name, agent_entry in agents_cfg.items():
+            if not isinstance(agent_entry, (dict, str)):
+                issues.append(ConfigIssue(
+                    "error",
+                    f"agents.{agent_name} must be a named-agent mapping or model string, got {type(agent_entry).__name__}",
+                    "Change to a mapping such as agents.<name>.model/archetype/mode, or use a string model shorthand.",
+                ))
+                continue
+            if isinstance(agent_entry, str):
+                try:
+                    _normalize_canonical_named_agent_contract(str(agent_name), agent_entry)
+                except ValueError as exc:
+                    issues.append(ConfigIssue(
+                        "error",
+                        f"agents.{agent_name} is not a valid Hermes named-agent contract: {exc}",
+                        "Use a non-empty model string or a mapping with valid named-agent fields.",
+                    ))
+                continue
+            for field_name in agent_entry:
+                if field_name not in _NAMED_AGENT_ALLOWED_FIELDS:
+                    issues.append(ConfigIssue(
+                        "error",
+                        f"agents.{agent_name}.{field_name} is an unknown field for Hermes named agents",
+                        "Use a supported Hermes named-agent field such as role/archetype, specialist, mode, color, category, route_category, provider, model, fallback_models, providerOptions, ultrawork, permission, allowed_tools, blocked_tools, description, safe_claim_text, or disable.",
+                    ))
+            try:
+                _normalize_canonical_named_agent_contract(str(agent_name), agent_entry)
+            except ValueError as exc:
+                issues.append(ConfigIssue(
+                    "error",
+                    f"agents.{agent_name} is not a valid Hermes named-agent contract: {exc}",
+                    "Use mode primary/subagent-only/disabled, known archetype/specialist names, mapping providerOptions/ultrawork, and permission values allow/ask/deny.",
+                ))
 
     categories_cfg = config.get("categories")
     if categories_cfg is not None and not isinstance(categories_cfg, dict):
@@ -2380,6 +2616,8 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
             f"model_capabilities should be a config dict, got {type(model_capabilities_cfg).__name__}",
             "Change to:\n  model_capabilities:\n    enabled: true",
         ))
+
+    _validate_omo_compat_config(config, issues)
 
     # ── custom_providers must be a list, not a dict ──────────────────────
     cp = config.get("custom_providers")
@@ -2452,36 +2690,6 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                     "Add: model: anthropic/claude-sonnet-4 (or another model)",
                 ))
 
-    fallback_providers = config.get("fallback_providers")
-    if fallback_providers is not None:
-        if not isinstance(fallback_providers, list):
-            issues.append(ConfigIssue(
-                "error",
-                f"fallback_providers should be a list of provider/model dicts, got {type(fallback_providers).__name__}",
-                "Change to:\n  fallback_providers:\n    - provider: openrouter\n      model: anthropic/claude-sonnet-4",
-            ))
-        else:
-            for i, entry in enumerate(fallback_providers):
-                if not isinstance(entry, dict):
-                    issues.append(ConfigIssue(
-                        "warning",
-                        f"fallback_providers[{i}] should be a dict, got {type(entry).__name__}",
-                        "Each fallback_providers entry should include provider and model fields.",
-                    ))
-                    continue
-                if not entry.get("provider"):
-                    issues.append(ConfigIssue(
-                        "warning",
-                        f"fallback_providers[{i}] is missing 'provider' field",
-                        "Add: provider: openrouter (or another provider)",
-                    ))
-                if not entry.get("model"):
-                    issues.append(ConfigIssue(
-                        "warning",
-                        f"fallback_providers[{i}] is missing 'model' field",
-                        "Add: model: anthropic/claude-sonnet-4 (or another model)",
-                    ))
-
     # ── Check for fallback_model accidentally nested inside custom_providers ──
     if isinstance(cp, dict) and "fallback_model" not in config and "fallback_model" in (cp or {}):
         issues.append(ConfigIssue(
@@ -2502,111 +2710,6 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
             "    default: your-model-name\n"
             "    base_url: https://...",
         ))
-
-    delegation_cfg = config.get("delegation")
-    if delegation_cfg is not None:
-        if not isinstance(delegation_cfg, dict):
-            issues.append(ConfigIssue(
-                "error",
-                f"delegation should be a dict, got {type(delegation_cfg).__name__}",
-                "Change to:\n  delegation:\n    max_iterations: 50\n    max_concurrent_children: 3",
-            ))
-        else:
-            profile_buckets = []
-            delegation_profiles = delegation_cfg.get("delegation_profiles")
-            if delegation_profiles is not None:
-                profile_buckets.append(("delegation_profiles", delegation_profiles, "primary Wave 1 delegation-profile config"))
-            categories = delegation_cfg.get("categories")
-            if categories is not None:
-                profile_buckets.append(("categories", categories, "legacy alias for delegation_profiles"))
-
-            for bucket_name, bucket_value, bucket_note in profile_buckets:
-                if not isinstance(bucket_value, dict):
-                    issues.append(ConfigIssue(
-                        "error",
-                        f"delegation.{bucket_name} should be a dict of delegation profiles, got {type(bucket_value).__name__}",
-                        f"Change to:\n  delegation:\n    {bucket_name}:\n      research:\n        enabled_tools:\n          - read_file",
-                    ))
-                    continue
-
-                for name, entry in bucket_value.items():
-                    if not isinstance(entry, dict):
-                        issues.append(ConfigIssue(
-                            "warning",
-                            f"delegation.{bucket_name}.{name} should be a dict, got {type(entry).__name__}",
-                            f"Each {bucket_note} entry should define keys like toolsets, enabled_tools, runtime_mode, max_iterations, or max_concurrent_children",
-                        ))
-                        continue
-
-                    routing_description = entry.get("routing_description")
-                    if routing_description is not None and not isinstance(routing_description, str):
-                        issues.append(ConfigIssue(
-                            "warning",
-                            f"delegation.{bucket_name}.{name}.routing_description should be a string, got {type(routing_description).__name__}",
-                            "Use a short sentence describing when the primary agent should route work into this delegation profile.",
-                        ))
-
-            route_categories = delegation_cfg.get("route_categories")
-            if route_categories is not None and not isinstance(route_categories, dict):
-                issues.append(ConfigIssue(
-                    "error",
-                    f"delegation.route_categories should be a dict of built-in route-category metadata overrides, got {type(route_categories).__name__}",
-                    "Change to:\n  delegation:\n    route_categories:\n      quick:\n        summary: Fast-path routing lane\n        intensity: low",
-                ))
-
-            runtime_modes = delegation_cfg.get("runtime_modes")
-            if runtime_modes is not None and not isinstance(runtime_modes, dict):
-                issues.append(ConfigIssue(
-                    "error",
-                    f"delegation.runtime_modes should be a dict of built-in runtime-mode metadata overrides, got {type(runtime_modes).__name__}",
-                    "Change to:\n  delegation:\n    runtime_modes:\n      default:\n        description: Standard Hermes operating posture\n        operating_posture: balanced_general_operation",
-                ))
-
-            delegation_metadata = inspect_wave1_delegation_metadata(
-                _normalize_wave1_delegation_config({"delegation": delegation_cfg}, include_defaults=False),
-                raw_config if isinstance(raw_config, dict) else {"delegation": delegation_cfg},
-            )
-            ignored_route_category_names = delegation_metadata["ignored_route_category_names"]
-            if ignored_route_category_names:
-                issues.append(ConfigIssue(
-                    "warning",
-                    "delegation.route_categories contains unknown names that stay inactive metadata only: "
-                    + ", ".join(ignored_route_category_names),
-                    "Wave 1 only applies built-in route-category metadata overrides. Unknown names are ignored for routing semantics; use delegation_profiles/categories for active delegation profiles.",
-                ))
-
-            ignored_runtime_mode_names = delegation_metadata["ignored_runtime_mode_names"]
-            if ignored_runtime_mode_names:
-                issues.append(ConfigIssue(
-                    "warning",
-                    "delegation.runtime_modes contains unknown names that stay inactive metadata only: "
-                    + ", ".join(ignored_runtime_mode_names),
-                    "Wave 1 only applies built-in runtime-mode metadata overrides. Unknown names are ignored for runtime semantics.",
-                ))
-
-            task_contract = delegation_cfg.get("task_contract")
-            if task_contract not in (None, "", {}) and not isinstance(task_contract, dict):
-                issues.append(ConfigIssue(
-                    "error",
-                    f"delegation.task_contract should be a dict matching the Wave 1 task-contract schema, got {type(task_contract).__name__}",
-                    "Remove delegation.task_contract to preserve legacy delegation behavior, or add all required fields under delegation.task_contract.",
-                ))
-
-            permission_preset = delegation_cfg.get("permission_preset")
-            if permission_preset is not None and not isinstance(permission_preset, str):
-                issues.append(ConfigIssue(
-                    "warning",
-                    f"delegation.permission_preset should be a string, got {type(permission_preset).__name__}",
-                    "Use values like 'inherit' or 'workspace_write' to preserve Wave 1 permission semantics.",
-                ))
-
-            fallback_policy = delegation_cfg.get("fallback_policy")
-            if fallback_policy is not None and not isinstance(fallback_policy, str):
-                issues.append(ConfigIssue(
-                    "warning",
-                    f"delegation.fallback_policy should be a string, got {type(fallback_policy).__name__}",
-                    "Use values like 'legacy_default_mapping' or 'degrade_to_generalist' to preserve Wave 1 fallback semantics.",
-                ))
 
     # ── Root-level keys that look misplaced ──────────────────────────────
     for key in config:
@@ -2636,7 +2739,6 @@ def print_config_warnings(config: Optional[Dict[str, Any]] = None) -> None:
     if not issues:
         return
 
-    import sys
     lines = ["\033[33m⚠ Config issues detected in config.yaml:\033[0m"]
     for ci in issues:
         marker = "\033[31m✗\033[0m" if ci.severity == "error" else "\033[33m⚠\033[0m"
@@ -2651,7 +2753,6 @@ def warn_deprecated_cwd_env_vars(config: Optional[Dict[str, Any]] = None) -> Non
     These env vars are deprecated — the canonical setting is terminal.cwd
     in config.yaml.  Prints a migration hint to stderr.
     """
-    import os, sys
     messaging_cwd = os.environ.get("MESSAGING_CWD")
     terminal_cwd_env = os.environ.get("TERMINAL_CWD")
 
@@ -2694,11 +2795,11 @@ def warn_deprecated_cwd_env_vars(config: Optional[Dict[str, Any]] = None) -> Non
 def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, Any]:
     """
     Migrate config to latest version, prompting for new required fields.
-    
+
     Args:
         interactive: If True, prompt user for missing values
         quiet: If True, suppress output
-        
+
     Returns:
         Dict with migration results: {"env_added": [...], "config_added": [...], "warnings": [...]}
     """
@@ -2714,7 +2815,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
 
     # Check config version
     current_ver, latest_ver = check_config_version()
-    
+
     # ── Version 3 → 4: migrate tool progress from .env to config.yaml ──
     if current_ver < 4:
         config = load_config()
@@ -2737,7 +2838,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             save_config(config)
             if not quiet:
                 print(f"  ✓ Migrated tool progress to config.yaml: {display['tool_progress']}")
-    
+
     # ── Version 4 → 5: add timezone field ──
     if current_ver < 5:
         config = load_config()
@@ -2969,29 +3070,94 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     else:
                         print("  ✓ Removed unused compression.summary_* keys")
 
+    # ── Version 20 → 21: plugins are now opt-in; grandfather existing user plugins ──
+    # The loader now requires plugins to appear in ``plugins.enabled`` before
+    # loading. Existing installs had all discovered plugins loading by default
+    # (minus anything in ``plugins.disabled``). To avoid silently breaking
+    # those setups on upgrade, populate ``plugins.enabled`` with the set of
+    # currently-installed user plugins that aren't already disabled.
+    #
+    # Bundled plugins (shipped in the repo itself) are NOT grandfathered —
+    # they ship off for everyone, including existing users, so any user who
+    # wants one has to opt in explicitly.
+    if current_ver < 21:
+        config = read_raw_config()
+        plugins_cfg = config.get("plugins")
+        if not isinstance(plugins_cfg, dict):
+            plugins_cfg = {}
+        # Only migrate if the enabled allow-list hasn't been set yet.
+        if "enabled" not in plugins_cfg:
+            disabled = plugins_cfg.get("disabled", []) or []
+            if not isinstance(disabled, list):
+                disabled = []
+            disabled_set = set(disabled)
+
+            # Scan ``$HERMES_HOME/plugins/`` for currently installed user plugins.
+            grandfathered: List[str] = []
+            try:
+                user_plugins_dir = get_hermes_home() / "plugins"
+                if user_plugins_dir.is_dir():
+                    for child in sorted(user_plugins_dir.iterdir()):
+                        if not child.is_dir():
+                            continue
+                        manifest_file = child / "plugin.yaml"
+                        if not manifest_file.exists():
+                            manifest_file = child / "plugin.yml"
+                        if not manifest_file.exists():
+                            continue
+                        try:
+                            with open(manifest_file) as _mf:
+                                manifest = yaml.safe_load(_mf) or {}
+                        except Exception:
+                            manifest = {}
+                        name = manifest.get("name") or child.name
+                        if name in disabled_set:
+                            continue
+                        grandfathered.append(name)
+            except Exception:
+                grandfathered = []
+
+            plugins_cfg["enabled"] = grandfathered
+            config["plugins"] = plugins_cfg
+            save_config(config)
+            results["config_added"].append(
+                f"plugins.enabled (opt-in allow-list, {len(grandfathered)} grandfathered)"
+            )
+            if not quiet:
+                if grandfathered:
+                    print(
+                        f"  ✓ Plugins now opt-in: grandfathered "
+                        f"{len(grandfathered)} existing plugin(s) into plugins.enabled"
+                    )
+                else:
+                    print(
+                        "  ✓ Plugins now opt-in: no existing plugins to grandfather. "
+                        "Use `hermes plugins enable <name>` to activate."
+                    )
+
     if current_ver < latest_ver and not quiet:
         print(f"Config version: {current_ver} → {latest_ver}")
-    
+
     # Check for missing required env vars
     missing_env = get_missing_env_vars(required_only=True)
-    
+
     if missing_env and not quiet:
         print("\n⚠️  Missing required environment variables:")
         for var in missing_env:
             print(f"   • {var['name']}: {var['description']}")
-    
+
     if interactive and missing_env:
         print("\nLet's configure them now:\n")
         for var in missing_env:
             if var.get("url"):
                 print(f"  Get your key at: {var['url']}")
-            
+
             if var.get("password"):
                 import getpass
                 value = getpass.getpass(f"  {var['prompt']}: ")
             else:
                 value = input(f"  {var['prompt']}: ").strip()
-            
+
             if value:
                 save_env_value(var["name"], value)
                 results["env_added"].append(var["name"])
@@ -2999,7 +3165,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
             else:
                 results["warnings"].append(f"Skipped {var['name']} - some features may not work")
             print()
-    
+
     # Check for missing optional env vars and offer to configure interactively
     # Skip "advanced" vars (like OPENAI_BASE_URL) -- those are for power users
     missing_optional = get_missing_env_vars(required_only=False)
@@ -3008,7 +3174,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         v for v in missing_optional
         if v["name"] not in required_names and not v.get("advanced")
     ]
-    
+
     # Only offer to configure env vars that are NEW since the user's previous version
     new_var_names = set()
     for ver in range(current_ver + 1, latest_ver + 1):
@@ -3050,22 +3216,22 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
                     print()
             else:
                 print("  Set later with: hermes config set <key> <value>")
-    
+
     # Check for missing config fields
     missing_config = get_missing_config_fields()
-    
+
     if missing_config:
         config = load_config()
-        
+
         for field in missing_config:
             key = field["key"]
             default = field["default"]
-            
+
             _set_nested(config, key, default)
             results["config_added"].append(key)
             if not quiet:
                 print(f"  ✓ Added {key} = {default}")
-        
+
         # Update version and save
         config["_config_version"] = latest_ver
         save_config(config)
@@ -3381,6 +3547,43 @@ _NAMED_AGENT_PERMISSION_KEYS = (
     "external_directory",
 )
 _NAMED_AGENT_PERMISSION_VALUES = {"ask", "allow", "deny"}
+_NAMED_AGENT_ALLOWED_FIELDS = {
+    "acp_args",
+    "acp_command",
+    "aliases",
+    "allowed_tools",
+    "api_key",
+    "archetype",
+    "base_url",
+    "blocked_tools",
+    "category",
+    "color",
+    "description",
+    "disable",
+    "enabled_tools",
+    "fallback_models",
+    "mode",
+    "model",
+    "permission",
+    "provider",
+    "provider_options",
+    "providerOptions",
+    "reasoning_effort",
+    "role",
+    "route_category",
+    "routing_description",
+    "safe_claim_text",
+    "runtime_mode",
+    "specialist",
+    "toolsets",
+    "ultrawork",
+}
+_NAMED_AGENT_MODE_ALIASES = {
+    "primary": "primary",
+    "subagent": "subagent-only",
+    "subagent-only": "subagent-only",
+    "disabled": "disabled",
+}
 _NAMED_AGENT_FALLBACK_MODEL_KEYS = (
     "model",
     "variant",
@@ -3461,6 +3664,35 @@ def _normalize_named_agent_disable_flag(value: Any) -> bool:
     return value is True
 
 
+def _normalize_named_agent_mode(value: Any, default: str = "subagent-only") -> str:
+    """Normalize named-agent mode aliases into the canonical Hermes wording."""
+    raw_mode = str(value or "").strip().lower()
+    return _NAMED_AGENT_MODE_ALIASES.get(raw_mode, default)
+
+
+def _sanitize_named_agent_mapping(value: Any) -> Optional[Dict[str, Any]]:
+    """Return a shallow secret-safe mapping summary for status output."""
+    if not isinstance(value, dict):
+        return None
+
+    sanitized: Dict[str, Any] = {}
+    for raw_key, raw_value in value.items():
+        key = str(raw_key or "").strip()
+        if not key:
+            continue
+        lowered = key.lower()
+        if any(secret_token in lowered for secret_token in ("key", "token", "secret", "password", "authorization")):
+            sanitized[key] = "[redacted]"
+            continue
+        if isinstance(raw_value, dict):
+            sanitized[key] = _sanitize_named_agent_mapping(raw_value) or {}
+            continue
+        if isinstance(raw_value, (str, int, float, bool)):
+            sanitized[key] = raw_value
+            continue
+        sanitized[key] = type(raw_value).__name__
+    return sanitized or None
+
 
 def _resolve_disabled_named_agents(
     registry: Dict[str, Dict[str, Any]],
@@ -3532,6 +3764,21 @@ def _format_named_agent_fallback_models(fallback_models: List[Dict[str, Any]]) -
     return " -> ".join(rendered_models)
 
 
+def _format_named_agent_mapping(value: Optional[Dict[str, Any]]) -> str:
+    """Render a shallow mapping for status output without leaking secrets."""
+    if not value:
+        return "-"
+    parts: List[str] = []
+    for key in sorted(value):
+        rendered = value[key]
+        if isinstance(rendered, dict):
+            nested = ", ".join(f"{nested_key}={rendered[nested_key]}" for nested_key in sorted(rendered))
+            parts.append(f"{key}={{ {nested} }}")
+        else:
+            parts.append(f"{key}={rendered}")
+    return "; ".join(parts) if parts else "-"
+
+
 def _normalize_openagent_named_entry(
     entry: Any,
     *,
@@ -3581,8 +3828,8 @@ def _normalize_openagent_named_entry(
             else:
                 normalized.pop(key, None)
 
-    if "provider_options" in entry:
-        provider_options = entry.get("provider_options")
+    if "providerOptions" in entry or "provider_options" in entry:
+        provider_options = entry.get("providerOptions") if "providerOptions" in entry else entry.get("provider_options")
         if isinstance(provider_options, dict):
             normalized["provider_options"] = copy.deepcopy(provider_options)
         else:
@@ -3624,8 +3871,8 @@ def _normalize_openagent_named_entry(
             normalized.pop("ultrawork", None)
 
     if "mode" in entry:
-        mode = str(entry.get("mode") or "").strip().lower()
-        if mode in {"primary", "subagent", "disabled"}:
+        mode = _normalize_named_agent_mode(entry.get("mode"), default="subagent-only")
+        if mode in set(_NAMED_AGENT_MODE_ALIASES.values()):
             normalized["mode"] = mode
         else:
             normalized.pop("mode", None)
@@ -3633,9 +3880,61 @@ def _normalize_openagent_named_entry(
     return normalized
 
 
+def _named_agent_contract_to_config_entry(contract: Any, legacy_entry: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Convert canonical NamedAgentContract into the config/status dict shape.
+
+    The canonical contract is the source of truth for Wave 2 runtime fields;
+    legacy config-only fields are preserved for backward-compatible status output.
+    """
+    legacy_entry = copy.deepcopy(legacy_entry or {})
+    entry: Dict[str, Any] = {
+        "name": contract.name,
+        "role": contract.role,
+        "archetype": contract.archetype,
+        "specialist": contract.specialist,
+        "mode": contract.mode,
+        "color": contract.color,
+        "category": contract.category,
+        "route_category": contract.route_category,
+        "provider": contract.provider,
+        "model": contract.model,
+        "fallback_models": [dict(item) for item in contract.fallback_models],
+        "provider_options": dict(contract.providerOptions or {}),
+        "providerOptions": dict(contract.providerOptions or {}),
+        "ultrawork": dict(contract.ultrawork or {}),
+        "allowed_tools": list(contract.allowed_tools),
+        "blocked_tools": list(contract.blocked_tools),
+        "permission": dict(contract.permissions or {}),
+        "permissions": dict(contract.permissions or {}),
+        "description": contract.description,
+        "safe_claim_text": contract.safe_claim_text,
+        "aliases": list(contract.aliases),
+    }
+    for key in (
+        "toolsets",
+        "enabled_tools",
+        "runtime_mode",
+        "base_url",
+        "api_key",
+        "reasoning_effort",
+        "routing_description",
+        "acp_command",
+        "acp_args",
+        "disable",
+    ):
+        if key in legacy_entry:
+            entry[key] = copy.deepcopy(legacy_entry[key])
+    return {key: value for key, value in entry.items() if value not in (None, "", [], {})}
+
+
 def _normalize_named_agent_registry(bucket: Any) -> Dict[str, Dict[str, Any]]:
-    """Normalize named agents, merging user config onto built-in OMO defaults."""
-    return _normalize_openagent_named_bucket_with_defaults(bucket, DEFAULT_OMO_AGENTS)
+    """Normalize named agents, merging user config onto canonical OMO defaults."""
+    legacy_registry = _normalize_openagent_named_bucket_with_defaults(bucket, DEFAULT_OMO_AGENTS)
+    canonical_registry = _normalize_canonical_named_agent_registry(legacy_registry)
+    return {
+        name: _named_agent_contract_to_config_entry(contract, legacy_registry.get(name))
+        for name, contract in canonical_registry.items()
+    }
 
 
 def get_named_agent_registry(config: Optional[Dict[str, Any]] = None) -> Dict[str, Dict[str, Any]]:
@@ -3683,16 +3982,21 @@ def describe_named_agent(name: str, config: Optional[Dict[str, Any]] = None) -> 
     configured_permission_surface = _normalize_named_agent_permission_surface(entry.get("permission"))
     configured_fallback_models = _normalize_named_agent_fallback_models(entry.get("fallback_models"))
 
+    mode = _normalize_named_agent_mode(entry.get("mode"), default="subagent-only")
+    is_disabled = canonical_name in disabled_names or mode == "disabled"
+    parent_invocation = "allowed" if mode == "primary" and not is_disabled else "blocked"
     return {
         "name": canonical_name,
         "requested_name": requested_name or canonical_name,
         "aliases": _normalize_named_string_list(entry.get("aliases")),
         "description": str(entry.get("description") or "").strip(),
-        "mode": str(entry.get("mode") or "subagent").strip() or "subagent",
+        "mode": mode,
+        "parent_invocation": parent_invocation,
         "provider": str(entry.get("provider") or "").strip(),
         "model": str(entry.get("model") or "").strip(),
         "resolved_archetype": resolved_archetype,
         "resolved_specialist": specialist,
+        "resolved_category": str(entry.get("category") or "").strip() or str(entry.get("route_category") or archetype_defaults.get("default_route_category") or DEFAULT_ROUTE_CATEGORY).strip(),
         "resolved_route_category": str(entry.get("route_category") or archetype_defaults.get("default_route_category") or DEFAULT_ROUTE_CATEGORY).strip(),
         "resolved_runtime_mode": str(entry.get("runtime_mode") or DEFAULT_RUNTIME_MODE_NAME).strip(),
         "toolsets": _normalize_named_string_list(entry.get("toolsets")),
@@ -3702,13 +4006,15 @@ def describe_named_agent(name: str, config: Optional[Dict[str, Any]] = None) -> 
         "effective_allowed_tools": sorted(effective_allowed),
         "effective_blocked_tools": sorted(effective_blocked),
         "configured_permission_surface": configured_permission_surface,
+        "configured_provider_options": _sanitize_named_agent_mapping(entry.get("provider_options")),
+        "configured_ultrawork": _sanitize_named_agent_mapping(entry.get("ultrawork")),
         "configured_fallback_models": configured_fallback_models,
         "permission_truth_surface": "configured_named_agent_surface" if configured_permission_surface else None,
         "fallback_truth_surface": "configured_named_agent_surface" if configured_fallback_models else None,
         "completion_gate": "verification_evidence_required" if reviewer_like else None,
         "behavior_boundary": "reviewer_read_only" if reviewer_like else None,
-        "is_disabled": canonical_name in disabled_names,
-        "disabled_via": disabled_via.get(canonical_name),
+        "is_disabled": is_disabled,
+        "disabled_via": disabled_via.get(canonical_name) or ("agents.mode" if mode == "disabled" else None),
     }
 
 
@@ -3732,7 +4038,8 @@ def render_named_agents_text(name: Optional[str] = None, config: Optional[Dict[s
         lines.extend(
             [
                 f"Mode: {desc['mode']}",
-                f"Invocation: @{desc['name']} <prompt> (leading mention only)",
+                f"Default parent-agent selection: {desc['parent_invocation']}",
+                f"Invocation: @{desc['name']} <prompt> (leading mention only; disabled agents are not invoked)",
                 f"Archetype: {desc['resolved_archetype']}",
                 f"Specialist: {desc['resolved_specialist'] or '-'}",
                 f"Route category: {desc['resolved_route_category']}",
@@ -3746,6 +4053,8 @@ def render_named_agents_text(name: Optional[str] = None, config: Optional[Dict[s
                 f"Effective allowed tools: {', '.join(desc['effective_allowed_tools']) if desc['effective_allowed_tools'] else '-'}",
                 f"Effective blocked tools: {', '.join(desc['effective_blocked_tools']) if desc['effective_blocked_tools'] else '-'}",
                 f"Configured permission surface: {_format_named_agent_permission_surface(desc['configured_permission_surface'])}",
+                f"Configured providerOptions: {_format_named_agent_mapping(desc['configured_provider_options'])}",
+                f"Configured ultrawork override: {_format_named_agent_mapping(desc['configured_ultrawork'])}",
                 f"Permission truth surface: {desc['permission_truth_surface'] or '-'}",
                 f"Configured fallback models: {_format_named_agent_fallback_models(desc['configured_fallback_models'])}",
                 f"Fallback truth surface: {desc['fallback_truth_surface'] or '-'}",
@@ -3755,11 +4064,11 @@ def render_named_agents_text(name: Optional[str] = None, config: Optional[Dict[s
         )
         return "\n".join(lines)
 
-    visible_agent_names = [
-        agent_name for agent_name in registry
-        if not describe_named_agent(agent_name, config=source)["is_disabled"]
+    visible_agent_names = list(registry)
+    lines = [
+        f"Hermes named agents ({len(visible_agent_names)}):",
+        "Hermes-native named-agent modes: primary, subagent-only, disabled. This is not a claim of OpenCode Tab-cycle parity.",
     ]
-    lines = [f"Named agents ({len(visible_agent_names)}):"]
     for agent_name in visible_agent_names:
         desc = describe_named_agent(agent_name, config=source)
         label = agent_name
@@ -3769,6 +4078,11 @@ def render_named_agents_text(name: Optional[str] = None, config: Optional[Dict[s
         if desc["resolved_specialist"]:
             summary.append(desc["resolved_specialist"])
         summary.append(desc["mode"])
+        if desc["parent_invocation"] == "blocked" and desc["mode"] == "subagent-only":
+            summary.append("subagent-only; leading @ invocation allowed, default parent-agent selection blocked")
+        if desc["is_disabled"]:
+            disabled_label = f"disabled via {desc['disabled_via']}" if desc["disabled_via"] else "disabled"
+            summary.append(disabled_label)
         if desc["model"]:
             summary.append(desc["model"])
         restriction = ""
@@ -4114,9 +4428,9 @@ def load_config() -> Dict[str, Any]:
     """Load configuration from ~/.hermes/config.yaml."""
     ensure_hermes_home()
     config_path = get_config_path()
-    
+
     config = copy.deepcopy(DEFAULT_CONFIG)
-    
+
     if config_path.exists():
         try:
             with open(config_path, encoding="utf-8") as f:
@@ -4133,17 +4447,10 @@ def load_config() -> Dict[str, Any]:
         except Exception as e:
             print(f"Warning: Failed to load config: {e}")
 
-    normalized = _normalize_profile_path_settings(
-        _expand_env_vars(
-            _normalize_wave1_delegation_config(
-                _normalize_openagent_config_buckets(
-                    _normalize_root_model_keys(_normalize_max_turns_config(config))
-                )
-            )
-        )
-    )
-    _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(normalized)
-    return normalized
+    normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
+    expanded = _expand_env_vars(normalized)
+    _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(expanded)
+    return expanded
 
 
 _SECURITY_COMMENT = """
@@ -4178,24 +4485,11 @@ _FALLBACK_COMMENT = """
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
 #   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
 #
-# For custom OpenAI-compatible endpoints, add base_url and api_key_env.
+# For custom OpenAI-compatible endpoints, add base_url and key_env.
 #
 # fallback_model:
 #   provider: openrouter
 #   model: anthropic/claude-sonnet-4
-#
-# ── Smart Model Routing ────────────────────────────────────────────────
-# Optional cheap-vs-strong routing for simple turns.
-# Keeps the primary model for complex work, but can route short/simple
-# messages to a cheaper model across providers.
-#
-# smart_model_routing:
-#   enabled: true
-#   max_simple_chars: 160
-#   max_simple_words: 28
-#   cheap_model:
-#     provider: openrouter
-#     model: google/gemini-2.5-flash
 """
 
 
@@ -4222,24 +4516,11 @@ _COMMENTED_SECTIONS = """
 #   minimax      (MINIMAX_API_KEY)     — MiniMax
 #   minimax-cn   (MINIMAX_CN_API_KEY)  — MiniMax (China)
 #
-# For custom OpenAI-compatible endpoints, add base_url and api_key_env.
+# For custom OpenAI-compatible endpoints, add base_url and key_env.
 #
 # fallback_model:
 #   provider: openrouter
 #   model: anthropic/claude-sonnet-4
-#
-# ── Smart Model Routing ────────────────────────────────────────────────
-# Optional cheap-vs-strong routing for simple turns.
-# Keeps the primary model for complex work, but can route short/simple
-# messages to a cheaper model across providers.
-#
-# smart_model_routing:
-#   enabled: true
-#   max_simple_chars: 160
-#   max_simple_words: 28
-#   cheap_model:
-#     provider: openrouter
-#     model: google/gemini-2.5-flash
 """
 
 
@@ -4252,25 +4533,9 @@ def save_config(config: Dict[str, Any]):
 
     ensure_hermes_home()
     config_path = get_config_path()
-    current_normalized = _normalize_profile_path_settings(
-        _normalize_wave1_delegation_config(
-            _normalize_openagent_config_buckets(
-                _normalize_root_model_keys(_normalize_max_turns_config(config)),
-                include_defaults=False,
-            ),
-            include_defaults=False,
-        )
-    )
+    current_normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
     normalized = current_normalized
-    raw_existing = _normalize_profile_path_settings(
-        _normalize_wave1_delegation_config(
-            _normalize_openagent_config_buckets(
-                _normalize_root_model_keys(_normalize_max_turns_config(read_raw_config())),
-                include_defaults=False,
-            ),
-            include_defaults=False,
-        )
-    )
+    raw_existing = _normalize_root_model_keys(_normalize_max_turns_config(read_raw_config()))
     if raw_existing:
         normalized = _preserve_env_ref_templates(
             normalized,
@@ -4285,7 +4550,7 @@ def save_config(config: Dict[str, Any]):
     if not sec or sec.get("redact_secrets") is None:
         parts.append(_SECURITY_COMMENT)
     fb = normalized.get("fallback_model", {})
-    if not fb or not (fb.get("provider") and fb.get("model")):
+    if not fb or not isinstance(fb, dict) or not (fb.get("provider") and fb.get("model")):
         parts.append(_FALLBACK_COMMENT)
 
     atomic_yaml_write(
@@ -4307,7 +4572,7 @@ def load_env() -> Dict[str, str]:
     """
     env_path = get_env_path()
     env_vars = {}
-    
+
     if env_path.exists():
         # On Windows, open() defaults to the system locale (cp1252) which can
         # fail on UTF-8 .env files. Use explicit UTF-8 only on Windows.
@@ -4321,12 +4586,8 @@ def load_env() -> Dict[str, str]:
             line = line.strip()
             if line and not line.startswith('#') and '=' in line:
                 key, _, value = line.partition('=')
-                parsed_key = key.strip()
-                parsed_value = value.strip().strip('"\'')
-                if parsed_key in {"MESSAGING_CWD", "TERMINAL_CWD"}:
-                    parsed_value = _normalize_profile_local_path(parsed_value)
-                env_vars[parsed_key] = parsed_value
-    
+                env_vars[key.strip()] = value.strip().strip('"\'')
+
     return env_vars
 
 
@@ -4452,7 +4713,6 @@ def _check_non_ascii_credential(key: str, value: str) -> str:
             bad_chars.append(f"  position {i}: {ch!r} (U+{ord(ch):04X})")
     sanitized = value.encode("ascii", errors="ignore").decode("ascii")
 
-    import sys
     print(
         f"\n  Warning: {key} contains non-ASCII characters that will break API requests.\n"
         f"  This usually happens when copy-pasting from a PDF, rich-text editor,\n"
@@ -4475,13 +4735,11 @@ def save_env_value(key: str, value: str):
     if not _ENV_VAR_NAME_RE.match(key):
         raise ValueError(f"Invalid environment variable name: {key!r}")
     value = value.replace("\n", "").replace("\r", "")
-    if key in {"MESSAGING_CWD", "TERMINAL_CWD"}:
-        value = _normalize_profile_local_path(value)
     # API keys / tokens must be ASCII — strip non-ASCII with a warning.
     value = _check_non_ascii_credential(key, value)
     ensure_hermes_home()
     env_path = get_env_path()
-    
+
     # On Windows, open() defaults to the system locale (cp1252) which can
     # cause OSError errno 22 on UTF-8 .env files.
     read_kw = {"encoding": "utf-8", "errors": "replace"} if _IS_WINDOWS else {}
@@ -4493,7 +4751,7 @@ def save_env_value(key: str, value: str):
             lines = f.readlines()
         # Sanitize on every read: split concatenated keys, drop stale placeholders
         lines = _sanitize_env_lines(lines)
-    
+
     # Find and update or append
     found = False
     for i, line in enumerate(lines):
@@ -4501,13 +4759,13 @@ def save_env_value(key: str, value: str):
             lines[i] = f"{key}={value}\n"
             found = True
             break
-    
+
     if not found:
         # Ensure there's a newline at the end of the file before appending
         if lines and not lines[-1].endswith("\n"):
             lines[-1] += "\n"
         lines.append(f"{key}={value}\n")
-    
+
     fd, tmp_path = tempfile.mkstemp(dir=str(env_path.parent), suffix='.tmp', prefix='.env_')
     # Preserve original permissions so Docker volume mounts aren't clobbered.
     original_mode = None
@@ -4653,7 +4911,7 @@ def get_env_value(key: str) -> Optional[str]:
     # Check environment first
     if key in os.environ:
         return os.environ[key]
-    
+
     # Then check .env file
     env_vars = load_env()
     return env_vars.get(key)
@@ -4675,23 +4933,23 @@ def redact_key(key: str) -> str:
 def show_config():
     """Display current configuration."""
     config = load_config()
-    
+
     print()
     print(color("┌─────────────────────────────────────────────────────────┐", Colors.CYAN))
     print(color("│              ⚕ Hermes Configuration                    │", Colors.CYAN))
     print(color("└─────────────────────────────────────────────────────────┘", Colors.CYAN))
-    
+
     # Paths
     print()
     print(color("◆ Paths", Colors.CYAN, Colors.BOLD))
     print(f"  Config:       {get_config_path()}")
     print(f"  Secrets:      {get_env_path()}")
     print(f"  Install:      {get_project_root()}")
-    
+
     # API Keys
     print()
     print(color("◆ API Keys", Colors.CYAN, Colors.BOLD))
-    
+
     keys = [
         ("OPENROUTER_API_KEY", "OpenRouter"),
         ("VOICE_TOOLS_OPENAI_KEY", "OpenAI (STT/TTS)"),
@@ -4703,41 +4961,19 @@ def show_config():
         ("BROWSER_USE_API_KEY", "Browser Use"),
         ("FAL_KEY", "FAL"),
     ]
-    
+
     for env_key, name in keys:
         value = get_env_value(env_key)
         print(f"  {name:<14} {redact_key(value)}")
     from hermes_cli.auth import get_anthropic_key
     anthropic_value = get_anthropic_key()
     print(f"  {'Anthropic':<14} {redact_key(anthropic_value)}")
-    
+
     # Model settings
     print()
     print(color("◆ Model", Colors.CYAN, Colors.BOLD))
     print(f"  Model:        {config.get('model', 'not set')}")
     print(f"  Max turns:    {config.get('agent', {}).get('max_turns', DEFAULT_CONFIG['agent']['max_turns'])}")
-
-    # Delegation
-    print()
-    print(color("◆ Delegation", Colors.CYAN, Colors.BOLD))
-    delegation = config.get('delegation', {}) if isinstance(config.get('delegation'), dict) else {}
-    raw_config = read_raw_config()
-    delegation_metadata = inspect_wave1_delegation_metadata(config, raw_config)
-    print(f"  Default profile: {delegation.get('default_delegation_profile', 'general')}")
-    print(f"  Category:        {delegation.get('category', DEFAULT_LITERAL_CATEGORY)}")
-    print(f"  Route category:  {delegation.get('route_category', DEFAULT_ROUTE_CATEGORY)}")
-    print(f"  Runtime mode:    {delegation.get('runtime_mode', DEFAULT_RUNTIME_MODE_NAME)}")
-
-    effective_route_overrides = delegation_metadata['effective_route_category_override_names']
-    effective_runtime_overrides = delegation_metadata['effective_runtime_mode_override_names']
-    ignored_route_names = delegation_metadata['ignored_route_category_names']
-    ignored_runtime_names = delegation_metadata['ignored_runtime_mode_names']
-    print(f"  Route metadata overrides:   {', '.join(effective_route_overrides) if effective_route_overrides else color('(none)', Colors.DIM)}")
-    print(f"  Runtime metadata overrides: {', '.join(effective_runtime_overrides) if effective_runtime_overrides else color('(none)', Colors.DIM)}")
-    if ignored_route_names:
-        print(f"  Ignored route metadata:     {', '.join(ignored_route_names)}")
-    if ignored_runtime_names:
-        print(f"  Ignored runtime metadata:   {', '.join(ignored_runtime_names)}")
 
     # Display
     print()
@@ -4746,6 +4982,10 @@ def show_config():
     print(f"  Personality:  {display.get('personality', 'kawaii')}")
     print(f"  Reasoning:    {'on' if display.get('show_reasoning', False) else 'off'}")
     print(f"  Bell:         {'on' if display.get('bell_on_complete', False) else 'off'}")
+    ump = display.get('user_message_preview', {}) if isinstance(display.get('user_message_preview', {}), dict) else {}
+    ump_first = ump.get('first_lines', 2)
+    ump_last = ump.get('last_lines', 2)
+    print(f"  User preview: first {ump_first} line(s), last {ump_last} line(s)")
 
     # Terminal
     print()
@@ -4754,7 +4994,7 @@ def show_config():
     print(f"  Backend:      {terminal.get('backend', 'local')}")
     print(f"  Working dir:  {terminal.get('cwd', '.')}")
     print(f"  Timeout:      {terminal.get('timeout', 60)}s")
-    
+
     if terminal.get('backend') == 'docker':
         print(f"  Docker image: {terminal.get('docker_image', 'nikolaik/python-nodejs:python3.11-nodejs20')}")
     elif terminal.get('backend') == 'singularity':
@@ -4772,7 +5012,7 @@ def show_config():
         ssh_user = get_env_value('TERMINAL_SSH_USER')
         print(f"  SSH host:     {ssh_host or '(not set)'}")
         print(f"  SSH user:     {ssh_user or '(not set)'}")
-    
+
     # Timezone
     print()
     print(color("◆ Timezone", Colors.CYAN, Colors.BOLD))
@@ -4798,7 +5038,7 @@ def show_config():
         comp_provider = _aux_comp.get('provider', 'auto')
         if comp_provider and comp_provider != 'auto':
             print(f"  Provider:     {comp_provider}")
-    
+
     # Auxiliary models
     auxiliary = config.get('auxiliary', {})
     aux_tasks = {
@@ -4820,17 +5060,17 @@ def show_config():
                 if mdl:
                     parts.append(f"model={mdl}")
                 print(f"  {label:12s}  {', '.join(parts)}")
-    
+
     # Messaging
     print()
     print(color("◆ Messaging Platforms", Colors.CYAN, Colors.BOLD))
-    
+
     telegram_token = get_env_value('TELEGRAM_BOT_TOKEN')
     discord_token = get_env_value('DISCORD_BOT_TOKEN')
-    
+
     print(f"  Telegram:     {'configured' if telegram_token else color('not configured', Colors.DIM)}")
     print(f"  Discord:      {'configured' if discord_token else color('not configured', Colors.DIM)}")
-    
+
     # Skill config
     try:
         from agent.skill_utils import discover_all_skill_config_vars, resolve_skill_config_values
@@ -4862,15 +5102,15 @@ def edit_config():
         managed_error("edit configuration")
         return
     config_path = get_config_path()
-    
+
     # Ensure config exists
     if not config_path.exists():
         save_config(DEFAULT_CONFIG)
         print(f"Created {config_path}")
-    
+
     # Find editor
     editor = os.getenv('EDITOR') or os.getenv('VISUAL')
-    
+
     if not editor:
         # Try common editors
         for cmd in ['nano', 'vim', 'vi', 'code', 'notepad']:
@@ -4878,12 +5118,12 @@ def edit_config():
             if shutil.which(cmd):
                 editor = cmd
                 break
-    
+
     if not editor:
         print("No editor found. Config file is at:")
         print(f"  {config_path}")
         return
-    
+
     print(f"Opening {config_path} in {editor}...")
     subprocess.run([editor, str(config_path)])
 
@@ -4906,12 +5146,12 @@ def set_config_value(key: str, value: str):
         'GITHUB_TOKEN', 'HONCHO_API_KEY', 'WANDB_API_KEY',
         'TINKER_API_KEY',
     ]
-    
+
     if key.upper() in api_keys or key.upper().endswith(('_API_KEY', '_TOKEN')) or key.upper().startswith('TERMINAL_SSH'):
         save_env_value(key.upper(), value)
         print(f"✓ Set {key} in {get_env_path()}")
         return
-    
+
     # Otherwise it goes to config.yaml
     # Read the raw user config (not merged with defaults) to avoid
     # dumping all default values back to the file
@@ -4923,16 +5163,16 @@ def set_config_value(key: str, value: str):
                 user_config = yaml.safe_load(f) or {}
         except Exception:
             user_config = {}
-    
+
     # Handle nested keys (e.g., "tts.provider")
     parts = key.split('.')
     current = user_config
-    
+
     for part in parts[:-1]:
         if part not in current or not isinstance(current.get(part), dict):
             current[part] = {}
         current = current[part]
-    
+
     # Convert value to appropriate type
     if value.lower() in ('true', 'yes', 'on'):
         value = True
@@ -4942,14 +5182,14 @@ def set_config_value(key: str, value: str):
         value = int(value)
     elif value.replace('.', '', 1).isdigit():
         value = float(value)
-    
+
     current[parts[-1]] = value
-    
+
     # Write only user config back (not the full merged defaults)
     ensure_hermes_home()
     from utils import atomic_yaml_write
     atomic_yaml_write(config_path, user_config, sort_keys=False)
-    
+
     # Keep .env in sync for keys that terminal_tool reads directly from env vars.
     # config.yaml is authoritative, but terminal_tool only reads TERMINAL_ENV etc.
     _config_to_env_sync = {
@@ -4982,13 +5222,13 @@ def set_config_value(key: str, value: str):
 def config_command(args):
     """Handle config subcommands."""
     subcmd = getattr(args, 'config_command', None)
-    
+
     if subcmd is None or subcmd == "show":
         show_config()
-    
+
     elif subcmd == "edit":
         edit_config()
-    
+
     elif subcmd == "set":
         key = getattr(args, 'key', None)
         value = getattr(args, 'value', None)
@@ -5001,81 +5241,81 @@ def config_command(args):
             print("  hermes config set OPENROUTER_API_KEY sk-or-...")
             sys.exit(1)
         set_config_value(key, value)
-    
+
     elif subcmd == "path":
         print(get_config_path())
-    
+
     elif subcmd == "env-path":
         print(get_env_path())
-    
+
     elif subcmd == "migrate":
         print()
         print(color("🔄 Checking configuration for updates...", Colors.CYAN, Colors.BOLD))
         print()
-        
+
         # Check what's missing
         missing_env = get_missing_env_vars(required_only=False)
         missing_config = get_missing_config_fields()
         current_ver, latest_ver = check_config_version()
-        
+
         if not missing_env and not missing_config and current_ver >= latest_ver:
             print(color("✓ Configuration is up to date!", Colors.GREEN))
             print()
             return
-        
+
         # Show what needs to be updated
         if current_ver < latest_ver:
             print(f"  Config version: {current_ver} → {latest_ver}")
-        
+
         if missing_config:
             print(f"\n  {len(missing_config)} new config option(s) will be added with defaults")
-        
+
         required_missing = [v for v in missing_env if v.get("is_required")]
         optional_missing = [
             v for v in missing_env
             if not v.get("is_required") and not v.get("advanced")
         ]
-        
+
         if required_missing:
             print(f"\n  ⚠️  {len(required_missing)} required API key(s) missing:")
             for var in required_missing:
                 print(f"     • {var['name']}")
-        
+
         if optional_missing:
             print(f"\n  ℹ️  {len(optional_missing)} optional API key(s) not configured:")
             for var in optional_missing:
                 tools = var.get("tools", [])
                 tools_str = f" (enables: {', '.join(tools[:2])})" if tools else ""
                 print(f"     • {var['name']}{tools_str}")
-        
+
         print()
-        
+
         # Run migration
         results = migrate_config(interactive=True, quiet=False)
-        
+
         print()
         if results["env_added"] or results["config_added"]:
             print(color("✓ Configuration updated!", Colors.GREEN))
-        
+
         if results["warnings"]:
             print()
             for warning in results["warnings"]:
                 print(color(f"  ⚠️  {warning}", Colors.YELLOW))
-        
+
         print()
-    
+
     elif subcmd == "check":
         # Non-interactive check for what's missing
         print()
         print(color("📋 Configuration Status", Colors.CYAN, Colors.BOLD))
         print()
-        
+
         current_ver, latest_ver = check_config_version()
         if current_ver >= latest_ver:
             print(f"  Config version: {current_ver} ✓")
         else:
             print(color(f"  Config version: {current_ver} → {latest_ver} (update available)", Colors.YELLOW))
-        
+
         print()
         print(color("  Required:", Colors.BOLD))
         for var_name in REQUIRED_ENV_VARS:
@@ -5083,7 +5323,7 @@ def config_command(args):
                 print(f"    ✓ {var_name}")
             else:
                 print(color(f"    ✗ {var_name} (missing)", Colors.RED))
-        
+
         print()
         print(color("  Optional:", Colors.BOLD))
         for var_name, info in OPTIONAL_ENV_VARS.items():
@@ -5093,15 +5333,15 @@ def config_command(args):
                 tools = info.get("tools", [])
                 tools_str = f" → {', '.join(tools[:2])}" if tools else ""
                 print(color(f"    ○ {var_name}{tools_str}", Colors.DIM))
-        
+
         missing_config = get_missing_config_fields()
         if missing_config:
             print()
             print(color(f"  {len(missing_config)} new config option(s) available", Colors.YELLOW))
             print("    Run 'hermes config migrate' to add them")
-        
+
         print()
-    
+
     else:
         print(f"Unknown config command: {subcmd}")
         print()

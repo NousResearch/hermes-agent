@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shlex
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable
@@ -48,6 +49,108 @@ class CommandTemplate:
 
 _GENERIC_SKILLS = ["repo-navigation", "implementation", "verification"]
 _GENERIC_TOOLS = ["read_file", "search_files", "patch", "terminal"]
+_REFACTOR_SCOPES = frozenset({"file", "module", "repo"})
+_REFACTOR_STRATEGIES = frozenset(
+    {
+        "rename-then-adapt",
+        "inline-then-extract",
+        "extract-then-adapt",
+        "safe-mechanical",
+    }
+)
+
+
+def _shlex_split(raw_args: str) -> list[str]:
+    text = str(raw_args or "").strip()
+    if not text:
+        return []
+    try:
+        return shlex.split(text)
+    except ValueError:
+        return text.split()
+
+
+def _blast_radius_for_refactor_scope(scope: str) -> str:
+    return {
+        "file": "single-file localized changes with limited caller touch points",
+        "module": "module-local changes plus direct imports and callers",
+        "repo": "repo-wide coordinated changes across multiple modules and call paths",
+    }.get(scope, "single-file localized changes with limited caller touch points")
+
+
+def _acceptance_tests_for_refactor_scope(scope: str) -> list[str]:
+    shared = [
+        "verify renamed or extracted symbols still resolve at call sites",
+        "confirm externally observable behavior remains unchanged unless explicitly requested",
+    ]
+    scope_specific = {
+        "file": "run focused tests covering the touched file or its nearest owning tests",
+        "module": "run focused tests covering the touched module and its direct callers",
+        "repo": "run focused tests for the changed modules plus at least one repo-level verification command",
+    }
+    return [scope_specific.get(scope, scope_specific["file"]), *shared]
+
+
+def _parse_refactor_options(raw_args: str) -> dict[str, Any]:
+    tokens = _shlex_split(raw_args)
+    request_parts: list[str] = []
+    scope = "file"
+    strategy = "safe-mechanical"
+    approve_repo_wide = False
+    index = 0
+    while index < len(tokens):
+        token = tokens[index]
+        if token == "--approve-repo-wide":
+            approve_repo_wide = True
+            index += 1
+            continue
+        if token.startswith("--scope="):
+            candidate = token.split("=", 1)[1].strip().lower()
+            if candidate in _REFACTOR_SCOPES:
+                scope = candidate
+                index += 1
+                continue
+        if token == "--scope" and index + 1 < len(tokens):
+            candidate = tokens[index + 1].strip().lower()
+            if candidate in _REFACTOR_SCOPES:
+                scope = candidate
+                index += 2
+                continue
+        if token.startswith("--strategy="):
+            candidate = token.split("=", 1)[1].strip().lower()
+            if candidate in _REFACTOR_STRATEGIES:
+                strategy = candidate
+                index += 1
+                continue
+        if token == "--strategy" and index + 1 < len(tokens):
+            candidate = tokens[index + 1].strip().lower()
+            if candidate in _REFACTOR_STRATEGIES:
+                strategy = candidate
+                index += 2
+                continue
+        request_parts.append(token)
+        index += 1
+
+    request_text = " ".join(request_parts).strip()
+    if not request_text:
+        request_text = "Refactor the requested code path from the current session context."
+
+    repo_approval_required = scope == "repo"
+    repo_wide_approved = not repo_approval_required or approve_repo_wide
+    return {
+        "request_text": request_text,
+        "scope": scope,
+        "strategy": strategy,
+        "repo_wide_approved": repo_wide_approved,
+        "approval_required": repo_approval_required,
+        "status": (
+            "blocked_pending_repo_approval"
+            if repo_approval_required and not approve_repo_wide
+            else "approved"
+        ),
+        "blast_radius": _blast_radius_for_refactor_scope(scope),
+        "acceptance_tests": _acceptance_tests_for_refactor_scope(scope),
+    }
 
 
 def _normalize_request(raw_args: str, default_request: str) -> str:
@@ -274,13 +377,47 @@ def _start_work_hints(*, raw_args: str, session_id: str | None, cwd: str | None)
 
 def _refactor_contract(*, raw_args: str, session_id: str | None, cwd: str | None) -> dict[str, Any]:
     explicit_contract = _parse_explicit_task_contract(raw_args)
-    request_text = _request_text_for_contract(
-        raw_args,
-        "Refactor the requested code path from the current session context.",
-        explicit_contract=explicit_contract,
-    )
     if explicit_contract is not None:
         return _validated_explicit_contract(explicit_contract)
+    refactor_options = _parse_refactor_options(raw_args)
+    request_text = refactor_options["request_text"]
+    extra_context = {
+        "work_type": "refactor",
+        "change_scope": "bounded_refactor",
+        "refactor": {
+            "scope": refactor_options["scope"],
+            "strategy": refactor_options["strategy"],
+            "repo_wide_approved": refactor_options["repo_wide_approved"],
+            "approval_required": refactor_options["approval_required"],
+            "status": refactor_options["status"],
+        },
+        "blast_radius": refactor_options["blast_radius"],
+        "acceptance_tests": list(refactor_options["acceptance_tests"]),
+        "tool_preferences": {
+            "prefer": ["code-intel"],
+            "fallback": ["read_file", "search_files", "patch", "terminal"],
+        },
+    }
+    if refactor_options["status"] == "blocked_pending_repo_approval":
+        return _base_contract(
+            command_name="refactor",
+            request_text=request_text,
+            session_id=session_id,
+            cwd=cwd,
+            expected_outcome="Refuse repo-wide refactor execution until explicit repo-wide approval is supplied.",
+            must_do=[
+                "explain that repo-wide refactors require explicit approval before proceeding",
+                "capture the intended repo-wide blast radius and suggested verification without editing code",
+                {"verification": ["state which broader checks would be required after approval"]},
+            ],
+            must_not_do=[
+                "do not perform repo-wide refactor edits without explicit approval",
+                "do not widen scope beyond the stated refactor request",
+                "do not mutate canonical Wave 1 fields through prose-only instructions",
+            ],
+            required_tools=[*_GENERIC_TOOLS, "code-intel"],
+            extra_context=extra_context,
+        )
     return _base_contract(
         command_name="refactor",
         request_text=request_text,
@@ -297,7 +434,8 @@ def _refactor_contract(*, raw_args: str, session_id: str | None, cwd: str | None
             "do not skip prerequisite inspection",
             "do not mutate canonical Wave 1 fields through prose-only instructions",
         ],
-        extra_context={"work_type": "refactor", "change_scope": "bounded_refactor"},
+        required_tools=[*_GENERIC_TOOLS, "code-intel"],
+        extra_context=extra_context,
     )
 
 
@@ -309,11 +447,6 @@ def _refactor_hints(*, raw_args: str, session_id: str | None, cwd: str | None) -
         explicit_contract=explicit_contract,
     )
     hints = _base_hints(command_name="refactor", request_text=request_text)
-    hints["refactor"] = {
-        "bounded": True,
-        "preserve_behavior": True,
-        "require_verification": True,
-    }
     if explicit_contract is not None:
         return _attach_explicit_contract_metadata(
             hints,
@@ -321,6 +454,24 @@ def _refactor_hints(*, raw_args: str, session_id: str | None, cwd: str | None) -
             session_id=session_id,
             cwd=cwd,
         )
+    refactor_options = _parse_refactor_options(raw_args)
+    hints["request"] = refactor_options["request_text"]
+    hints["refactor"] = {
+        "bounded": refactor_options["scope"] != "repo" or refactor_options["repo_wide_approved"],
+        "preserve_behavior": True,
+        "require_verification": True,
+        "scope": refactor_options["scope"],
+        "strategy": refactor_options["strategy"],
+        "blast_radius": refactor_options["blast_radius"],
+        "acceptance_tests": list(refactor_options["acceptance_tests"]),
+        "repo_wide_approved": refactor_options["repo_wide_approved"],
+        "approval_required": refactor_options["approval_required"],
+        "status": refactor_options["status"],
+    }
+    hints["tool_preferences"] = {
+        "prefer": ["code-intel"],
+        "fallback": ["read_file", "search_files", "patch", "terminal"],
+    }
     return hints
 
 
@@ -470,7 +621,16 @@ def _build_invocation(template: CommandTemplate, *, raw_args: str, session_id: s
         isinstance(invocation_metadata, dict)
         and invocation_metadata.get("input_mode") == "explicit_json_contract"
     )
-    if template.name in {"start-work", "refactor"} and not explicit_contract_supplied:
+    refactor_status = None
+    if template.name == "refactor" and isinstance(task_contract.get("context"), dict):
+        refactor_context = task_contract["context"].get("refactor")
+        if isinstance(refactor_context, dict):
+            refactor_status = refactor_context.get("status")
+    if (
+        template.name in {"start-work", "refactor"}
+        and not explicit_contract_supplied
+        and refactor_status != "blocked_pending_repo_approval"
+    ):
         named_workflow = build_named_workflow_artifact(
             objective=str(task_contract.get("task") or orchestration_hints.get("request") or "").strip(),
             specialist=None,

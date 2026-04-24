@@ -27,7 +27,10 @@ from acp.schema import (
 # ---------------------------------------------------------------------------
 
 
-COMMON_HERMES_TOOLS = ["read_file", "search_files", "terminal", "patch", "write_file", "process", "lsp_rename"]
+COMMON_HERMES_TOOLS = [
+    "read_file", "search_files", "terminal", "patch", "write_file", "process",
+    "lsp_rename", "code_references", "code_definition",
+]
 
 
 class TestToolKindMap:
@@ -50,6 +53,10 @@ class TestToolKindMap:
 
     def test_tool_kind_lsp_rename(self):
         assert get_tool_kind("lsp_rename") == "edit"
+
+    def test_code_intel_read_only_tools_are_read_kind(self):
+        assert get_tool_kind("code_references") == "read"
+        assert get_tool_kind("code_definition") == "read"
 
     def test_tool_kind_web_search(self):
         assert get_tool_kind("web_search") == "fetch"
@@ -123,6 +130,12 @@ class TestBuildToolTitle:
         title = build_tool_title("lsp_rename", {"path": "src/app.py", "new_name": "count"})
         assert "src/app.py" in title
         assert "count" in title
+
+    def test_code_intel_read_only_titles(self):
+        references_title = build_tool_title("code_references", {"path": "src/app.py", "line": 12})
+        definition_title = build_tool_title("code_definition", {"path": "src/app.py", "line": 12})
+        assert references_title == "references: src/app.py:12"
+        assert definition_title == "definition: src/app.py:12"
 
 
 # ---------------------------------------------------------------------------

@@ -8,6 +8,7 @@ import tools.skills_tool as skills_tool_module
 from agent.skill_commands import (
     build_preloaded_skills_prompt,
     build_skill_invocation_message,
+    get_skill_loader_precedence,
     resolve_skill_command_key,
     scan_skill_commands,
 )
@@ -167,6 +168,41 @@ class TestScanSkillCommands:
             result = scan_skill_commands()
         assert "/sonarr-v3v4-api" in result
         assert any("/" in k[1:] for k in result) is False  # no unescaped /
+
+
+    def test_project_local_skill_precedes_user_global(self, tmp_path, monkeypatch):
+        project = tmp_path / "project"
+        project_skills = project / ".hermes" / "skills"
+        user_skills = tmp_path / "user-skills"
+        _make_skill(project_skills, "shared-skill", body="Project local body.")
+        _make_skill(user_skills, "shared-skill", body="User global body.")
+
+        monkeypatch.setenv("HERMES_PROJECT_ROOT", str(project))
+        with patch("tools.skills_tool.SKILLS_DIR", user_skills):
+            result = scan_skill_commands()
+
+        assert result["/shared-skill"]["skill_dir"] == str(project_skills / "shared-skill")
+        assert result["/shared-skill"]["source"] == "project"
+
+    def test_claude_skills_project_compatibility(self, tmp_path, monkeypatch):
+        project = tmp_path / "project"
+        claude_skills = project / ".claude" / "skills"
+        _make_skill(claude_skills, "claude-local")
+
+        monkeypatch.setenv("HERMES_PROJECT_ROOT", str(project))
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "empty-global"):
+            result = scan_skill_commands()
+
+        assert "/claude-local" in result
+        assert result["/claude-local"]["compatibility"] == ".claude/skills"
+
+    def test_loader_precedence_documents_command_and_mdc_scope(self):
+        precedence = get_skill_loader_precedence()
+
+        assert precedence[0]["source"] == "project"
+        assert any(item["compatibility"] == ".claude/skills" for item in precedence)
+        assert precedence[-1]["compatibility"] == ".mdc rules"
+        assert precedence[-1]["scope"] == "wave8"
 
 
 class TestResolveSkillCommandKey:

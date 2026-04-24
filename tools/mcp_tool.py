@@ -2814,43 +2814,80 @@ def discover_mcp_tools() -> List[str]:
 
 
 def get_mcp_status() -> List[dict]:
-    """Return status of all configured MCP servers for banner display.
+    """Return status of configured MCP servers for legacy banner display.
 
-    Returns a list of dicts with keys: name, transport, tools, connected.
-    Includes both successfully connected servers and configured-but-failed ones.
+    This legacy shape is now derived from the Wave 7 control-plane snapshot so
+    CLI/TUI/ACP-facing surfaces share one source of truth for connected/tool/auth
+    state while preserving the old ``[{name, transport, tools, connected}]`` API.
     """
-    result: List[dict] = []
+    snapshot = get_mcp_control_plane_status()
+    return [
+        {
+            "name": entry.get("name"),
+            "transport": entry.get("transport"),
+            "tools": entry.get("tools", 0),
+            "connected": entry.get("connected", False),
+        }
+        for entry in snapshot.get("servers", [])
+    ]
 
-    # Get configured servers from config
-    configured = _load_mcp_config()
-    if not configured:
-        return result
 
+def get_mcp_control_plane_status() -> dict:
+    """Return the unified Wave 7 MCP control-plane status snapshot.
+
+    Read-only and network-free: reports configured servers, live connection/tool
+    state, and best-effort auth/session-expiry state without forcing login or
+    reconnect attempts.
+    """
+    configured = _load_mcp_config() or {}
     with _lock:
         active_servers = dict(_servers)
 
+    servers: List[dict] = []
+    connected_count = 0
+    enabled_count = 0
+    total_tools = 0
     for name, cfg in configured.items():
+        enabled = _parse_boolish(cfg.get("enabled", True), default=True)
+        if enabled:
+            enabled_count += 1
         transport = "http" if "url" in cfg else "stdio"
         server = active_servers.get(name)
-        if server and server.session is not None:
-            entry = {
-                "name": name,
-                "transport": transport,
-                "tools": len(server._registered_tool_names) if hasattr(server, "_registered_tool_names") else len(server._tools),
-                "connected": True,
-            }
-            if server._sampling:
-                entry["sampling"] = dict(server._sampling.metrics)
-            result.append(entry)
-        else:
-            result.append({
-                "name": name,
-                "transport": transport,
-                "tools": 0,
-                "connected": False,
-            })
+        connected = bool(server and getattr(server, "session", None) is not None)
+        tool_count = 0
+        if connected:
+            connected_count += 1
+            tool_count = len(getattr(server, "_registered_tool_names", []) or getattr(server, "_tools", []) or [])
+            total_tools += tool_count
+        auth_required = bool(cfg.get("oauth") or cfg.get("auth") or cfg.get("authorization") or cfg.get("headers"))
+        auth_state = "not_required"
+        if auth_required:
+            auth_state = "authenticated" if connected else "unknown"
+        servers.append({
+            "name": name,
+            "transport": transport,
+            "enabled": enabled,
+            "connected": connected,
+            "tools": tool_count,
+            "registered_tools": list(getattr(server, "_registered_tool_names", []) or []) if server else [],
+            "auth": {
+                "required": auth_required,
+                "state": auth_state,
+                "session_expired": False,
+            },
+            "reload_action": "register_mcp_servers",
+        })
 
-    return result
+    return {
+        "available": bool(_MCP_AVAILABLE),
+        "summary": {
+            "configured": len(configured),
+            "enabled": enabled_count,
+            "connected": connected_count,
+            "tools": total_tools,
+        },
+        "servers": servers,
+    }
 
 
 def probe_mcp_server_tools() -> Dict[str, List[tuple]]:

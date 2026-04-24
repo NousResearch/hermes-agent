@@ -649,6 +649,58 @@ class TestPythonAstAwareReadChunking:
         assert len(lines) == 10
         assert result.hint == "Use offset=210 to continue reading (showing 200-209 of 360 lines)"
 
+
+class TestTreeSitterAwareReadChunking:
+    def test_non_python_supported_extension_surfaces_graceful_fallback_metadata(self, tmp_path):
+        file_path = tmp_path / "sample.js"
+        file_path.write_text(
+            "const before = 1;\nfunction demo() {\n  return before + 1;\n}\n",
+            encoding="utf-8",
+        )
+        ops = ShellFileOperations(LocalShellEnv(str(tmp_path)))
+
+        result = ops.read_file(str(file_path), offset=3, limit=1)
+
+        assert result.content == "     3|  return before + 1;"
+        assert result.returned_start_line == 3
+        assert result.returned_end_line == 3
+        assert result.chunking_strategy in {"line", "tree_sitter"}
+        if result.chunking_strategy == "line":
+            assert result.chunking_fallback_reason == "tree_sitter_unavailable"
+
+    def test_tree_sitter_expansion_preserves_actual_line_numbers_and_hint(self, tmp_path):
+        file_path = tmp_path / "sample.ts"
+        file_path.write_text(
+            "const before = 1;\nfunction demo() {\n  return before + 1;\n}\nconst after = 2;\n",
+            encoding="utf-8",
+        )
+        ops = ShellFileOperations(LocalShellEnv(str(tmp_path)))
+
+        with patch(
+            "tools.file_operations.maybe_expand_syntax_read_window",
+            return_value={
+                "content": "function demo() {\n  return before + 1;\n}",
+                "start_line": 2,
+                "end_line": 4,
+                "total_lines": 5,
+                "strategy": "tree_sitter",
+                "language": "typescript",
+                "fallback_reason": None,
+            },
+        ):
+            result = ops.read_file(str(file_path), offset=3, limit=1)
+
+        assert result.content.splitlines() == [
+            "     2|function demo() {",
+            "     3|  return before + 1;",
+            "     4|}",
+        ]
+        assert result.returned_start_line == 2
+        assert result.returned_end_line == 4
+        assert result.hint == "Use offset=5 to continue reading (showing 2-4 of 5 lines)"
+        assert result.chunking_strategy == "tree_sitter"
+        assert result.chunking_language == "typescript"
+
     def test_hashline_ast_expanded_read_preserves_actual_line_numbers_and_anchors(self, tmp_path):
         file_path = tmp_path / "sample.py"
         file_path.write_text(textwrap.dedent("""

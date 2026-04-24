@@ -6,6 +6,8 @@ description: "Configure Hermes Agent — config.yaml, providers, models, API key
 
 # Configuration
 
+For OMO/OpenCode compatibility decisions, JSONC stance, explicit non-goals, and the Wave 8 parity verification map, see [Hermes OMO Parity Matrix](/docs/reference/omo-parity).
+
 All settings are stored in the `~/.hermes/` directory for easy access.
 
 ## Directory Structure
@@ -54,6 +56,43 @@ Settings are resolved in this order (highest priority first):
 :::info Rule of Thumb
 Secrets (API keys, bot tokens, passwords) go in `.env`. Everything else (model, terminal backend, compression settings, memory limits, toolsets) goes in `config.yaml`. When both are set, `config.yaml` wins for non-secret settings.
 :::
+
+## OMO / OpenCode Compatibility Stance
+
+Hermes remains YAML-first. `~/.hermes/config.yaml` is the canonical runtime config; JSONC/OpenCode/OMO config files are not silently loaded as a second runtime format.
+
+For the full evidence ledger, feature classification, and non-goals, see [Hermes OMO Parity Matrix](/docs/reference/omo-parity).
+
+The `omo_compat` block is a conservative compatibility-decision surface. It documents bridge settings and validation boundaries without implying full OMO parity:
+
+```yaml
+omo_compat:
+  jsonc_config: "import-only"      # import-only | disabled; YAML remains canonical
+  disable_omo_env: false           # false preserves existing Hermes environment behavior
+  hashline_edit: false             # opt-in stance; runtime proof belongs to file-tool waves
+  stale_edit_mode: "warn"          # warn | error | off
+  dynamic_context_pruning:
+    protected_tools: []            # additive aliases; built-in protected tools remain code-owned
+  named_agents:
+    mode: "primary"                # primary | subagent-only | disabled
+    color: "auto"
+    providerOptions: {}
+    permissions: {}                # explicit booleans such as edit/bash/webfetch/external_directory
+  task_scheduler:
+    enabled: false                 # safe default; Atlas scheduler behavior is wave-backed
+  runtime_modes:
+    ralph:
+      max_iterations: 100          # documented OMO-style cap
+  mcp:
+    builtins: "configured"         # configured | disabled; no silent always-on network MCP defaults
+```
+
+Important boundaries:
+
+- `jsonc_config: import-only` means explicit translation/import tooling only, not core JSONC config loading.
+- `mcp.builtins: configured` means Hermes reports/uses configured MCP servers; it does not force login, reconnect, or enable external network defaults silently.
+- `task_scheduler.enabled: false` prevents docs/config from claiming Atlas scheduler parity before the scheduler branch is merged and verified.
+- Named-agent provider options and permissions must stay non-secret; credentials still belong in `.env` or provider auth stores.
 
 ## Environment Variable Substitution
 

@@ -316,6 +316,27 @@ _REVIEWER_ARCHETYPES = frozenset({"verifier"})
 _REVIEWER_SPECIALISTS = frozenset({"code_reviewer", "qa_guard"})
 _REVIEWER_DELEGATION_PROFILES = frozenset({"verification"})
 _REVIEWER_BLOCKED_TOOLS = frozenset({"write_file", "patch", "memory", "send_message"})
+_PLAN_FIRST_READ_ONLY_TOOLS = frozenset({
+    "browser_console",
+    "browser_get_images",
+    "browser_navigate",
+    "browser_scroll",
+    "browser_snapshot",
+    "browser_vision",
+    "ha_get_state",
+    "ha_list_entities",
+    "ha_list_services",
+    "read_file",
+    "search_files",
+    "session_search",
+    "skill_view",
+    "skills_list",
+    "task",
+    "vision_analyze",
+    "web_extract",
+    "web_search",
+})
+_PLAN_FIRST_MUTATING_TOOLS = frozenset({"write_file", "patch", "memory", "send_message", "execute_code"})
 _MULTIMODAL_SPECIALIST = "multimodal_specialist"
 _MULTIMODAL_CAPABILITY_TOOLS = frozenset({
     "vision_analyze",
@@ -380,12 +401,13 @@ def _extract_leading_named_agent_invocation_payload(user_message: Any) -> Option
     except Exception:
         return None
 
+    if desc.get("is_disabled"):
+        return None
+
     specialist_hint = str(desc.get("resolved_specialist") or desc.get("name") or "").strip() or None
     specialist_mapping = resolve_specialist_mapping(specialist_hint)
-    resolved_archetype = (
-        specialist_mapping.archetype_name
-        if specialist_mapping is not None
-        else str(desc.get("resolved_archetype") or "").strip() or resolve_archetype(None).name
+    resolved_archetype = str(desc.get("resolved_archetype") or "").strip() or (
+        specialist_mapping.archetype_name if specialist_mapping is not None else resolve_archetype(None).name
     )
     resolved_route_category = str(desc.get("resolved_route_category") or "").strip() or (
         specialist_mapping.default_route_category if specialist_mapping is not None else resolve_archetype(resolved_archetype).default_route_category
@@ -401,10 +423,18 @@ def _extract_leading_named_agent_invocation_payload(user_message: Any) -> Option
         "named_agent": desc["name"],
         "specialist": specialist_hint,
         "archetype": resolved_archetype,
+        "category": str(desc.get("resolved_category") or desc.get("category") or "").strip() or None,
         "route_category": resolved_route_category,
         "runtime_mode": str(desc.get("resolved_runtime_mode") or "default").strip() or "default",
         "delegation_profile": resolved_delegation_profile,
         "activation_reason": f"named-agent invocation: {desc['name']}",
+        "named_agent_mode": desc.get("mode"),
+        "provider": desc.get("provider") or None,
+        "model": desc.get("model") or None,
+        "fallback_models": copy.deepcopy(desc.get("configured_fallback_models") or []),
+        "permission_gates": copy.deepcopy(desc.get("configured_permission_surface")),
+        "allowed_tools": list(desc.get("effective_allowed_tools") or []),
+        "blocked_tools": list(desc.get("effective_blocked_tools") or []),
     }
 
 
@@ -3972,6 +4002,13 @@ class AIAgent:
             "activation_reason": "fallback: compatibility-safe default activation",
             "task_contract": None,
             "named_workflow": None,
+            "named_agent_mode": None,
+            "provider": None,
+            "model": None,
+            "fallback_models": [],
+            "permission_gates": None,
+            "allowed_tools": [],
+            "blocked_tools": [],
             "wave1_overlay_prompt": "",
             "activation_note": "",
             "activation_applied": False,
@@ -4069,6 +4106,13 @@ class AIAgent:
             "route_category": state.get("route_category"),
             "delegation_profile": state.get("delegation_profile"),
             "runtime_mode": state.get("runtime_mode"),
+            "named_agent_mode": state.get("named_agent_mode"),
+            "provider": state.get("provider"),
+            "model": state.get("model"),
+            "fallback_models": copy.deepcopy(state.get("fallback_models") or []),
+            "permission_gates": copy.deepcopy(state.get("permission_gates")),
+            "allowed_tools": list(state.get("allowed_tools") or []),
+            "blocked_tools": list(state.get("blocked_tools") or []),
             "activation_identity": activation_identity,
             "task_contract_present": bool(task_contract),
             "task_contract_summary": self._summarize_task_contract_for_snapshot(task_contract),
@@ -4196,6 +4240,15 @@ class AIAgent:
         archetype = str(state.get("archetype") or "").strip().lower()
         delegation_profile = str(state.get("delegation_profile") or "").strip().lower()
         reviewer_like = bool(specialist in _REVIEWER_SPECIALISTS)
+        hints = state.get("orchestration_hints") if isinstance(state.get("orchestration_hints"), dict) else {}
+        named_workflow = state.get("named_workflow") if isinstance(state.get("named_workflow"), dict) else {}
+        plan_first = bool(
+            named_agent == "prometheus"
+            or specialist == "planner"
+            or str(hints.get("behavior_boundary") or "") == "plan_first_approval_required"
+            or str(named_workflow.get("workflow_name") or "").strip() == "planner"
+        )
+        plan_first_approved = bool(isinstance(hints, dict) and hints.get("approval_received") is True)
         valid_tool_names = set(getattr(self, "valid_tool_names", set()) or [])
 
         blocked_tool_names: set[str] = set()
@@ -4223,11 +4276,21 @@ class AIAgent:
             blocked_tool_names.update(_REVIEWER_BLOCKED_TOOLS)
             restriction_source = restriction_source or "reviewer_read_only"
 
+        if plan_first and not plan_first_approved:
+            blocked_tool_names.update(_PLAN_FIRST_MUTATING_TOOLS)
+            allowed_tool_boundary_active = True
+            allowed_tool_names.intersection_update(_PLAN_FIRST_READ_ONLY_TOOLS)
+            if not valid_tool_names:
+                allowed_tool_names = set(_PLAN_FIRST_READ_ONLY_TOOLS)
+            restriction_source = "plan_first_read_only"
+
         allowed_tool_names.difference_update(blocked_tool_names)
-        runtime_boundary_active = reviewer_like or bool(blocked_tool_names) or allowed_tool_boundary_active
+        runtime_boundary_active = reviewer_like or (plan_first and not plan_first_approved) or bool(blocked_tool_names) or allowed_tool_boundary_active
 
         return {
             "reviewer_like": reviewer_like,
+            "plan_first": plan_first,
+            "plan_first_approved": plan_first_approved,
             "named_agent": named_agent,
             "identity_name": named_agent or specialist or archetype or None,
             "specialist": specialist or None,
@@ -4270,6 +4333,13 @@ class AIAgent:
                 return (
                     "Reviewer/verifier runtime boundary: destructive terminal commands are blocked in "
                     "read-only verification sessions."
+                )
+
+        if policy.get("plan_first") and not policy.get("plan_first_approved"):
+            if function_name == "terminal" or function_name in _PLAN_FIRST_MUTATING_TOOLS:
+                return (
+                    "Plan-first runtime boundary: planner/Prometheus mode is read-only until explicit "
+                    "approval or continue is supplied. Produce a plan artifact before execution."
                 )
 
         if not policy.get("runtime_boundary_active"):
@@ -4502,35 +4572,116 @@ class AIAgent:
         self._supervisor_task_snapshot = snapshots
         return snapshots
 
+    def _launch_execution_supervisor_task(self, record: Any, launch_spec: Dict[str, Any], *, store: Any) -> dict[str, Any]:
+        """Launch one Atlas-lite persistent task without recursive delegate_task calls."""
+        if dict(record.launch_spec or {}).get("runner") != "delegate":
+            raise ValueError(f"task {record.id} does not declare a supported Atlas-lite runner")
+        from tools.background_delegate_tools import launch_background_delegate_task
+
+        return launch_background_delegate_task(record.id, store=store)
+
     def _build_execution_supervisor_note(self) -> str:
         state = getattr(self, "runtime_activation_state", {}) or {}
         if state.get("runtime_mode") != "execution_supervisor":
             self._supervisor_task_snapshot = []
             return ""
 
-        snapshots = self._reconcile_supervisor_tasks()
-        if not snapshots:
+        if getattr(self, "session_id", None) in (None, ""):
+            self._supervisor_task_snapshot = []
             return ""
 
-        lines = [
-            "<execution-supervisor-state>",
-            "Persistent task state snapshot",
-        ]
-        for item in snapshots:
-            lines.append(
-                "- task_id={task_id} status={status} archetype={archetype} route_category={route_category} delegation_profile={delegation_profile} runtime_mode={runtime_mode}".format(
-                    task_id=item.get("task_id"),
-                    status=item.get("status"),
-                    archetype=item.get("archetype") or "none",
-                    route_category=item.get("route_category") or "none",
-                    delegation_profile=item.get("delegation_profile") or "none",
-                    runtime_mode=item.get("runtime_mode") or "none",
-                )
+        try:
+            from agent.task_scheduler import AtlasTaskScheduler
+            from agent.task_store import TaskStatus, TaskStore
+
+            store = TaskStore()
+            store.reconcile_tasks(owner_session_id=self.session_id)
+
+            def _launcher(record: Any, launch_spec: Dict[str, Any]) -> dict[str, Any]:
+                return self._launch_execution_supervisor_task(record, launch_spec, store=store)
+
+            scheduler = AtlasTaskScheduler(
+                task_store=store,
+                launcher=_launcher,
+                owner="atlas",
+                agent_name="Atlas-lite",
+                model=str(getattr(self, "model", "") or ""),
+                runtime_mode="execution_supervisor",
+                default_max_launches=1,
             )
-            if item.get("summary"):
-                lines.append(f"  summary: {item['summary']}")
-        lines.append("</execution-supervisor-state>")
-        return "\n".join(lines)
+            pre_status = scheduler.status(owner_session_id=self.session_id)
+            launch_result: dict[str, Any] = {"launched_task_ids": [], "prepared_retry_task_ids": []}
+            launch_error = ""
+            auto_launch_disabled = getattr(self, "_delegate_depth", 0) != 0
+            if auto_launch_disabled:
+                launch_result = {**scheduler.dry_run(max_launches=1, owner_session_id=self.session_id), "launched_task_ids": []}
+            else:
+                try:
+                    launch_result = scheduler.run_once(max_launches=1, owner_session_id=self.session_id)
+                except Exception as exc:
+                    launch_error = str(exc)
+                    logger.debug("Execution supervisor launch failed: %s", exc, exc_info=True)
+
+            records = store.list_tasks(owner_session_id=self.session_id)
+            snapshots = [
+                {
+                    "task_id": record.id,
+                    "status": record.execution.status.value,
+                    "archetype": record.archetype,
+                    "route_category": record.route_category,
+                    "delegation_profile": record.delegation_profile,
+                    "runtime_mode": record.runtime_mode,
+                    "summary": record.summary,
+                }
+                for record in records
+            ]
+            self._supervisor_task_snapshot = snapshots
+
+            counts = dict(pre_status.get("counts") or {})
+            running_count = counts.get(TaskStatus.running.value, 0)
+            completed_count = counts.get(TaskStatus.completed.value, 0)
+            runnable_ids = list(pre_status.get("runnable_task_ids") or [])
+            blocked_tasks = dict(pre_status.get("blocked_tasks") or {})
+
+            lines = [
+                "<execution-supervisor-state>",
+                "Persistent task state snapshot",
+                "summary: runnable={runnable} blocked={blocked} running={running} completed={completed}".format(
+                    runnable=len(runnable_ids),
+                    blocked=len(blocked_tasks),
+                    running=running_count,
+                    completed=completed_count,
+                ),
+                f"runnable_task_ids={runnable_ids}",
+                f"blocked_task_ids={sorted(blocked_tasks)}",
+                f"prepared_retry_task_ids={launch_result.get('prepared_retry_task_ids', [])}",
+                f"launched_task_ids={launch_result.get('launched_task_ids', [])}",
+            ]
+            if auto_launch_disabled:
+                lines.append("auto_launch=disabled reason=delegate_depth")
+            if launch_error:
+                lines.append(f"launch_error={launch_error}")
+            for item in snapshots:
+                lines.append(
+                    "- task_id={task_id} status={status} archetype={archetype} route_category={route_category} delegation_profile={delegation_profile} runtime_mode={runtime_mode}".format(
+                        task_id=item.get("task_id"),
+                        status=item.get("status"),
+                        archetype=item.get("archetype") or "none",
+                        route_category=item.get("route_category") or "none",
+                        delegation_profile=item.get("delegation_profile") or "none",
+                        runtime_mode=item.get("runtime_mode") or "none",
+                    )
+                )
+                if item.get("summary"):
+                    lines.append(f"  summary: {item['summary']}")
+            lines.append("</execution-supervisor-state>")
+            note = "\n".join(lines)
+            self._last_execution_supervisor_note = note
+            return note
+        except Exception as exc:
+            logger.debug("Execution supervisor note build failed: %s", exc, exc_info=True)
+            self._supervisor_task_snapshot = []
+            return ""
 
     def _resolve_runtime_activation_state(self, user_message: Any) -> Dict[str, Any]:
         if getattr(self, "_delegate_depth", 0) != 0:
@@ -4589,6 +4740,13 @@ class AIAgent:
                 "delegation_profile": normalized_inputs["delegation_profile"],
                 "task_contract": effective_task_contract,
                 "named_workflow": resolved_named_workflow,
+                "named_agent_mode": delegate_resolution.get("named_agent_mode"),
+                "provider": delegate_resolution.get("provider"),
+                "model": delegate_resolution.get("model"),
+                "fallback_models": copy.deepcopy(delegate_resolution.get("fallback_models") or []),
+                "permission_gates": copy.deepcopy(delegate_resolution.get("permission_gates")),
+                "allowed_tools": list(delegate_resolution.get("allowed_tools") or []),
+                "blocked_tools": list(delegate_resolution.get("blocked_tools") or []),
                 "wave1_overlay_prompt": build_wave1_overlay_prompt_from_normalized(normalized_inputs),
             })
             state["activation_reason"] = self._finalize_runtime_activation_reason(
@@ -4608,17 +4766,21 @@ class AIAgent:
 
         preclassification_input = user_message
         if isinstance(user_message, str):
-            try:
-                from hermes_cli.command_templates import extract_structured_command_prompt_payload
+            leading_named_agent_invocation = _extract_leading_named_agent_invocation_payload(user_message)
+            if leading_named_agent_invocation is not None:
+                preclassification_input = dict(leading_named_agent_invocation)
+            else:
+                try:
+                    from hermes_cli.command_templates import extract_structured_command_prompt_payload
 
-                structured_payload = extract_structured_command_prompt_payload(user_message)
-                if structured_payload is not None:
-                    preclassification_input = {
-                        "message": user_message,
-                        **structured_payload,
-                    }
-            except Exception as exc:
-                logger.debug("Failed to extract structured command payload for runtime activation: %s", exc)
+                    structured_payload = extract_structured_command_prompt_payload(user_message)
+                    if structured_payload is not None:
+                        preclassification_input = {
+                            "message": user_message,
+                            **structured_payload,
+                        }
+                except Exception as exc:
+                    logger.debug("Failed to extract structured command payload for runtime activation: %s", exc)
 
         explicit_named_agent = None
         explicit_specialist = None
@@ -4637,6 +4799,25 @@ class AIAgent:
             explicit_runtime_mode = str(preclassification_input.get("runtime_mode") or "").strip() or None
             explicit_delegation_profile = str(preclassification_input.get("delegation_profile") or "").strip() or None
             explicit_activation_reason = str(preclassification_input.get("activation_reason") or "").strip()
+            explicit_named_agent_surface = {
+                "named_agent_mode": preclassification_input.get("named_agent_mode"),
+                "provider": preclassification_input.get("provider"),
+                "model": preclassification_input.get("model"),
+                "fallback_models": copy.deepcopy(preclassification_input.get("fallback_models") or []),
+                "permission_gates": copy.deepcopy(preclassification_input.get("permission_gates")),
+                "allowed_tools": list(preclassification_input.get("allowed_tools") or []),
+                "blocked_tools": list(preclassification_input.get("blocked_tools") or []),
+            }
+        else:
+            explicit_named_agent_surface = {
+                "named_agent_mode": None,
+                "provider": None,
+                "model": None,
+                "fallback_models": [],
+                "permission_gates": None,
+                "allowed_tools": [],
+                "blocked_tools": [],
+            }
 
         try:
             preclassification = preclassify_intent(preclassification_input)
@@ -4648,11 +4829,23 @@ class AIAgent:
         raw_specialist = explicit_specialist or getattr(preclassification, "inferred_specialist", None)
         specialist_mapping = resolve_specialist_mapping(raw_specialist)
         resolved_specialist = specialist_mapping.name if specialist_mapping is not None else None
+        explicit_named_agent_key = str(explicit_named_agent or "").strip().lower().replace("_", "-")
+        plan_first_named_agent = explicit_named_agent_key in {"prometheus"}
+        plan_first_runtime_mode = str(explicit_runtime_mode or "").strip().lower().replace("-", "_") in {
+            "interview_planning",
+            "planning",
+            "plan_first",
+        }
+        if plan_first_named_agent or (resolved_specialist is None and plan_first_runtime_mode):
+            specialist_mapping = resolve_specialist_mapping("planner")
+            resolved_specialist = specialist_mapping.name if specialist_mapping is not None else "planner"
         activation_reason = str(
             explicit_activation_reason
             or getattr(preclassification, "activation_reason", "")
             or default_state["activation_reason"]
         ).strip()
+        if plan_first_named_agent and "plan-first" not in activation_reason.lower():
+            activation_reason = f"{activation_reason}; plan-first named agent: {explicit_named_agent}".strip("; ")
 
         if resolved_specialist == _MULTIMODAL_SPECIALIST and not self._has_multimodal_capability_tools():
             available_multimodal_tools = sorted(
@@ -4718,6 +4911,27 @@ class AIAgent:
             named_workflow_payload=structured_named_workflow,
             log_context="runtime activation preclassifier/payload",
         )
+        plan_first_active = bool(
+            plan_first_named_agent
+            or plan_first_runtime_mode
+            or (
+                isinstance(structured_named_workflow, dict)
+                and structured_named_workflow.get("workflow_name") == "planner"
+            )
+        )
+        if plan_first_active and runtime_mode == get_default_runtime_mode().name:
+            runtime_mode = resolve_runtime_mode("interview_planning").name
+        plan_first_hints = None
+        if plan_first_active:
+            plan_first_hints = {
+                "behavior_boundary": "plan_first_approval_required",
+                "approval_required": True,
+                "approval_received": False,
+                "execution_blocked": True,
+                "completion_gate": "plan_artifact_required",
+                "plan_artifact_required": True,
+                "handoff_target": "deep_worker",
+            }
 
         normalized_inputs = normalize_wave1_overlay_inputs(
             archetype_name=resolved_archetype.name,
@@ -4727,6 +4941,7 @@ class AIAgent:
             runtime_mode=runtime_mode,
             skills=resolved_archetype.default_skills,
             task_contract=task_contract_payload,
+            orchestration_hints=plan_first_hints,
         )
 
         resolved_named_agent = (
@@ -4754,6 +4969,7 @@ class AIAgent:
             "delegation_profile": normalized_inputs["delegation_profile"],
             "activation_reason": activation_reason,
             "task_contract": normalized_inputs["task_contract"],
+            **explicit_named_agent_surface,
             "inference_source": str(
                 getattr(preclassification, "inference_source", "")
                 or default_state["inference_source"]
@@ -4781,6 +4997,20 @@ class AIAgent:
                 delegation_profile=state["delegation_profile"],
                 task_contract=state["task_contract"],
             )
+        if plan_first_active and isinstance(state.get("named_workflow"), dict):
+            workflow_contract = state["named_workflow"].get("execution_task_contract")
+            if isinstance(workflow_contract, dict) and workflow_contract:
+                state["task_contract"] = validate_task_contract(workflow_contract).model_dump()
+                normalized_inputs = normalize_wave1_overlay_inputs(
+                    archetype_name=state["archetype"],
+                    category=state["category"],
+                    route_category=state["route_category"],
+                    delegation_profile=state["delegation_profile"],
+                    runtime_mode=state["runtime_mode"],
+                    skills=normalized_inputs.get("skills"),
+                    task_contract=state["task_contract"],
+                    orchestration_hints=plan_first_hints,
+                )
         state["wave1_overlay_prompt"] = build_wave1_overlay_prompt_from_normalized(normalized_inputs)
         state["activation_note"] = self._build_runtime_activation_note(state)
         state["activation_applied"] = bool(state["activation_note"])

@@ -45,11 +45,49 @@ class HookRegistry:
         # event_type -> [handler_fn, ...]
         self._handlers: Dict[str, List[Callable]] = {}
         self._loaded_hooks: List[dict] = []  # metadata for listing
+        self._hook_errors: List[dict] = []
 
     @property
     def loaded_hooks(self) -> List[dict]:
         """Return metadata about all loaded hooks."""
         return list(self._loaded_hooks)
+
+    def list_hooks(self) -> List[dict]:
+        """Return unified hook metadata for gateway hooks.
+
+        Precedence is exact event handlers first, then wildcard handlers; within
+        each event list handlers fire in registration order.  Errors are
+        reported in metadata but never make runtime hook emission fail.
+        """
+        result: List[dict] = []
+        event_orders: Dict[str, int] = {}
+        for hook in self._loaded_hooks:
+            events = hook.get("events") or []
+            if isinstance(events, str):
+                events = [events]
+            for event in events:
+                order = event_orders.get(event, 0)
+                event_orders[event] = order + 1
+                handlers = self._handlers.get(event, [])
+                hook_errors = [
+                    err.get("message", str(err))
+                    for err in self._hook_errors
+                    if err.get("hook") == hook.get("name") and err.get("event") in (event, None)
+                ]
+                result.append({
+                    "name": hook.get("name", ""),
+                    "description": hook.get("description", ""),
+                    "source": hook.get("source") or "gateway",
+                    "event": event,
+                    "enabled": len(handlers) > order,
+                    "order": order,
+                    "path": hook.get("path"),
+                    "allowlist": hook.get("allowlist"),
+                    "consent": hook.get("consent"),
+                    "errors": list(hook.get("errors") or []) + hook_errors,
+                    "precedence": "exact before wildcard; registration order within each event",
+                })
+        return result
 
     def _register_builtin_hooks(self) -> None:
         """Register built-in hooks that are always active."""
@@ -64,7 +102,9 @@ class HookRegistry:
                 "path": "(builtin)",
             })
         except Exception as e:
-            print(f"[hooks] Could not load built-in boot-md hook: {e}", flush=True)
+            msg = f"Could not load built-in boot-md hook: {e}"
+            self._hook_errors.append({"hook": "boot-md", "event": "gateway:startup", "message": msg})
+            print(f"[hooks] {msg}", flush=True)
 
     def discover_and_load(self) -> None:
         """
@@ -133,7 +173,9 @@ class HookRegistry:
                 print(f"[hooks] Loaded hook '{hook_name}' for events: {events}", flush=True)
 
             except Exception as e:
-                print(f"[hooks] Error loading hook {hook_dir.name}: {e}", flush=True)
+                msg = f"Error loading hook {hook_dir.name}: {e}"
+                self._hook_errors.append({"hook": hook_dir.name, "event": None, "message": msg})
+                print(f"[hooks] {msg}", flush=True)
 
     def _resolve_handlers(self, event_type: str) -> List[Callable]:
         """Return all handlers that should fire for ``event_type``.
@@ -171,6 +213,11 @@ class HookRegistry:
                 if asyncio.iscoroutine(result):
                     await result
             except Exception as e:
+                self._hook_errors.append({
+                    "hook": getattr(fn, "__name__", repr(fn)),
+                    "event": event_type,
+                    "message": str(e),
+                })
                 print(f"[hooks] Error in handler for '{event_type}': {e}", flush=True)
 
     async def emit_collect(
@@ -199,5 +246,10 @@ class HookRegistry:
                 if result is not None:
                     results.append(result)
             except Exception as e:
+                self._hook_errors.append({
+                    "hook": getattr(fn, "__name__", repr(fn)),
+                    "event": event_type,
+                    "message": str(e),
+                })
                 print(f"[hooks] Error in handler for '{event_type}': {e}", flush=True)
         return results

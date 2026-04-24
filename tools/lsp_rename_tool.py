@@ -8,6 +8,7 @@ import difflib
 import io
 import keyword
 import tokenize
+from contextlib import ExitStack
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -57,18 +58,18 @@ LSP_RENAME_SCHEMA = {
             },
             "apply": {
                 "type": "boolean",
-                "default": True,
+                "default": False,
                 "description": "When false, return a diff preview and do not modify files.",
             },
             "project_root": {
                 "type": "string",
-                "description": "Optional project root. Current MVP stays bounded to a single Python file.",
+                "description": "Optional project root. Enables a conservative Python project-wide rename for top-level exported functions/classes when every affected file can be proven.",
             },
             "max_files": {
                 "type": "integer",
                 "default": DEFAULT_MAX_FILES,
                 "minimum": 1,
-                "description": "Maximum number of files the rename may touch. Current AST fallback is bounded to 1.",
+                "description": "Maximum number of files the rename may touch. Values greater than 1 are allowed only for the conservative proven project-wide Python path.",
             },
             "language": {
                 "type": "string",
@@ -85,6 +86,13 @@ class Replacement:
     start: tuple[int, int]
     end: tuple[int, int]
     new_text: str
+
+
+@dataclass(frozen=True)
+class FileRenamePlan:
+    path: Path
+    old_source: str
+    new_source: str
 
 
 def _detect_language(path: Path, language: str | None) -> str | None:
@@ -323,6 +331,348 @@ def _make_diff(path: Path, old: str, new: str) -> str:
     )
 
 
+def _collect_name_tokens(source: str) -> list[tokenize.TokenInfo]:
+    return [
+        token
+        for token in tokenize.generate_tokens(io.StringIO(source).readline)
+        if token.type == tokenize.NAME
+    ]
+
+
+def _find_name_token_at_cursor(source: str, line: int, column: int) -> tokenize.TokenInfo | None:
+    for token in _collect_name_tokens(source):
+        if token.start[0] != line:
+            continue
+        for candidate_column in dict.fromkeys([column, column - 1]):
+            if candidate_column < 0:
+                continue
+            if token.start[1] <= candidate_column < token.end[1]:
+                return token
+    return None
+
+
+def _source_contains_name_token(source: str, name: str) -> bool:
+    return any(token.string == name for token in _collect_name_tokens(source))
+
+
+def _module_name_for_path(path: Path, project_root: Path) -> str | None:
+    try:
+        relative = path.relative_to(project_root)
+    except ValueError:
+        return None
+    if relative.suffix != ".py":
+        return None
+    parts = list(relative.with_suffix("").parts)
+    if not parts:
+        return None
+    if parts[-1] == "__init__":
+        parts = parts[:-1]
+    return ".".join(parts)
+
+
+def _resolve_import_from_module(importer_module: str | None, module: str | None, level: int) -> str | None:
+    if level == 0:
+        return module
+    if importer_module is None:
+        return None
+    package_parts = importer_module.split(".")
+    if package_parts and package_parts[-1] != "__init__":
+        package_parts = package_parts[:-1]
+    if level - 1 > len(package_parts):
+        return None
+    base_parts = package_parts[: len(package_parts) - (level - 1)]
+    if module:
+        base_parts.extend(module.split("."))
+    return ".".join(part for part in base_parts if part)
+
+
+def _find_project_symbol_target(
+    tree: ast.AST,
+    source: str,
+    *,
+    line: int,
+    column: int,
+) -> tuple[ast.AST, Replacement, str] | None:
+    token = _find_name_token_at_cursor(source, line, column)
+    if token is None:
+        return None
+    for node in getattr(tree, "body", []):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)) and node.name == token.string:
+            if node.lineno == token.start[0]:
+                return node, Replacement(token.start, token.end, token.string), token.string
+    return None
+
+
+def _binding_conflict_reason(
+    tree: ast.AST,
+    *,
+    bound_name: str,
+    allowed_def_ids: set[int] | None = None,
+    allowed_import_ids: set[int] | None = None,
+) -> str | None:
+    allowed_def_ids = allowed_def_ids or set()
+    allowed_import_ids = allowed_import_ids or set()
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+            if node.name == bound_name and id(node) not in allowed_def_ids:
+                return "binding_collision"
+        elif isinstance(node, ast.arg) and node.arg == bound_name:
+            return "binding_collision"
+        elif isinstance(node, ast.Name) and node.id == bound_name and isinstance(node.ctx, (ast.Store, ast.Del)):
+            return "binding_collision"
+        elif isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                binding = alias.asname or alias.name.split(".")[0]
+                if binding == bound_name and id(alias) not in allowed_import_ids:
+                    return "binding_collision"
+    return None
+
+
+def _collect_name_replacements(tree: ast.AST, *, target_name: str, new_name: str) -> list[Replacement]:
+    replacements: list[Replacement] = []
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Name) and node.id == target_name:
+            replacements.append(_replacement_for_node(node, new_name))
+    return replacements
+
+
+def _plan_module_symbol_rename(
+    path: Path,
+    source: str,
+    *,
+    target_node: ast.AST,
+    target_name: str,
+    new_name: str,
+) -> tuple[FileRenamePlan | None, str | None]:
+    tree = ast.parse(source, filename=str(path))
+    allowed_target_ids = {
+        id(node)
+        for node in getattr(tree, "body", [])
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef))
+        and node.name == target_name
+        and node.lineno == target_node.lineno
+    }
+    conflict = _binding_conflict_reason(tree, bound_name=target_name, allowed_def_ids=allowed_target_ids)
+    if conflict:
+        return None, conflict
+    if new_name != target_name:
+        new_name_conflict = _binding_conflict_reason(tree, bound_name=new_name)
+        if new_name_conflict:
+            return None, new_name_conflict
+    token = next(
+        (
+            item
+            for item in _collect_name_tokens(source)
+            if item.start[0] == target_node.lineno and item.string == target_name and item.start[1] >= getattr(target_node, "col_offset", 0)
+        ),
+        None,
+    )
+    if token is None:
+        return None, "target_not_found"
+    replacements = [Replacement(token.start, token.end, new_name)]
+    replacements.extend(_collect_name_replacements(tree, target_name=target_name, new_name=new_name))
+    updated_source = _apply_replacements(source, replacements)
+    if updated_source == source:
+        return None, None
+    return FileRenamePlan(path=path, old_source=source, new_source=updated_source), None
+
+
+def _plan_importer_symbol_rename(
+    path: Path,
+    source: str,
+    *,
+    target_module: str,
+    target_name: str,
+    new_name: str,
+    project_root: Path,
+) -> tuple[FileRenamePlan | None, dict | None]:
+    try:
+        tree = ast.parse(source, filename=str(path))
+    except SyntaxError as exc:
+        return None, {
+            "error": "Failed to parse Python source for rename.",
+            "code": "parse_error",
+            "details": str(exc),
+        }
+    importer_module = _module_name_for_path(path, project_root)
+    import_replacements: list[Replacement] = []
+    allowed_import_ids: set[int] = set()
+    matched = False
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.ImportFrom):
+            continue
+        resolved_module = _resolve_import_from_module(importer_module, node.module, node.level)
+        if resolved_module != target_module:
+            continue
+        for alias in node.names:
+            if alias.name == "*":
+                return None, {
+                    "error": "Refusing ambiguous project-wide rename.",
+                    "code": "ambiguous_workspace_rename",
+                    "reason": "star_import_not_supported",
+                    "path": str(path),
+                }
+            if alias.name != target_name:
+                continue
+            matched = True
+            if alias.asname is not None:
+                return None, {
+                    "error": "Refusing ambiguous project-wide rename.",
+                    "code": "ambiguous_workspace_rename",
+                    "reason": "import_alias_not_supported",
+                    "path": str(path),
+                }
+            allowed_import_ids.add(id(alias))
+            import_replacements.append(Replacement((alias.lineno, alias.col_offset), (alias.end_lineno, alias.end_col_offset), new_name))
+    if not matched:
+        return None, None
+    conflict = _binding_conflict_reason(tree, bound_name=target_name, allowed_import_ids=allowed_import_ids)
+    if conflict:
+        return None, {
+            "error": "Refusing ambiguous project-wide rename.",
+            "code": "ambiguous_workspace_rename",
+            "reason": conflict,
+            "path": str(path),
+        }
+    if new_name != target_name:
+        new_name_conflict = _binding_conflict_reason(tree, bound_name=new_name, allowed_import_ids=allowed_import_ids)
+        if new_name_conflict:
+            return None, {
+                "error": "Refusing ambiguous project-wide rename.",
+                "code": "ambiguous_workspace_rename",
+                "reason": new_name_conflict,
+                "path": str(path),
+            }
+    replacements = import_replacements + _collect_name_replacements(tree, target_name=target_name, new_name=new_name)
+    updated_source = _apply_replacements(source, replacements)
+    if updated_source == source:
+        return None, None
+    return FileRenamePlan(path=path, old_source=source, new_source=updated_source), None
+
+
+def _build_project_rename_plan(
+    path: Path,
+    source: str,
+    *,
+    line: int,
+    column: int,
+    new_name: str,
+    project_root: Path,
+) -> tuple[list[FileRenamePlan] | None, dict | None, str | None]:
+    try:
+        tree = ast.parse(source, filename=str(path))
+    except SyntaxError as exc:
+        return None, {
+            "error": "Failed to parse Python source for rename.",
+            "code": "parse_error",
+            "details": str(exc),
+        }, None
+    project_target = _find_project_symbol_target(tree, source, line=line, column=column)
+    if project_target is None:
+        return None, None, None
+    target_node, _, target_name = project_target
+    target_module = _module_name_for_path(path, project_root)
+    if target_module is None:
+        return None, {
+            "error": "Refusing ambiguous project-wide rename.",
+            "code": "ambiguous_workspace_rename",
+            "reason": "path_not_importable",
+            "path": str(path),
+        }, None
+    target_plan, target_error = _plan_module_symbol_rename(
+        path,
+        source,
+        target_node=target_node,
+        target_name=target_name,
+        new_name=new_name,
+    )
+    if target_error:
+        return None, {
+            "error": "Refusing ambiguous project-wide rename.",
+            "code": "ambiguous_workspace_rename",
+            "reason": target_error,
+            "path": str(path),
+        }, None
+    plans: list[FileRenamePlan] = []
+    if target_plan is not None:
+        plans.append(target_plan)
+    for candidate in sorted(project_root.rglob("*.py")):
+        if candidate == path:
+            continue
+        candidate_source = candidate.read_text(encoding="utf-8")
+        plan, error = _plan_importer_symbol_rename(
+            candidate,
+            candidate_source,
+            target_module=target_module,
+            target_name=target_name,
+            new_name=new_name,
+            project_root=project_root,
+        )
+        if error:
+            return None, error, None
+        if plan is not None:
+            plans.append(plan)
+        elif _source_contains_name_token(candidate_source, target_name):
+            return None, {
+                "error": "Refusing ambiguous project-wide rename.",
+                "code": "ambiguous_workspace_rename",
+                "reason": "unsupported_reference_pattern",
+                "path": str(candidate),
+            }, None
+    return plans, None, target_name
+
+
+def _apply_rename_plans(
+    *,
+    plans: list[FileRenamePlan],
+    apply: bool,
+    task_id: str,
+    engine: str,
+    target_name: str,
+    new_name: str,
+    max_files: int,
+    project_root: str | None,
+) -> str:
+    ordered_plans = sorted(plans, key=lambda item: str(item.path))
+    diff = "".join(_make_diff(plan.path, plan.old_source, plan.new_source) for plan in ordered_plans)
+    stale_warning = None
+    if apply:
+        with ExitStack() as stack:
+            for plan in ordered_plans:
+                stack.enter_context(file_state.lock_path(str(plan.path)))
+            for plan in ordered_plans:
+                resolved_path = str(plan.path)
+                cross_warning = file_state.check_stale(task_id, resolved_path)
+                warning = cross_warning or _check_file_staleness(resolved_path, task_id)
+                if _get_stale_edit_mode() == "strict":
+                    strict_error = _strict_stale_error(resolved_path, task_id, cross_warning=cross_warning)
+                    if strict_error:
+                        return tool_error(strict_error, code="stale_edit_blocked", path=resolved_path)
+                if stale_warning is None and warning:
+                    stale_warning = warning
+            for plan in ordered_plans:
+                resolved_path = str(plan.path)
+                plan.path.write_text(plan.new_source, encoding="utf-8")
+                _update_read_timestamp(resolved_path, task_id)
+                file_state.note_write(task_id, resolved_path)
+    result_payload = {
+        "success": True,
+        "applied": apply,
+        "engine": engine,
+        "path": str(ordered_plans[0].path),
+        "target_name": target_name,
+        "new_name": new_name,
+        "changed_files": len(ordered_plans),
+        "max_files": max_files,
+        "project_root": project_root,
+        "diff": diff,
+        "files": [str(plan.path) for plan in ordered_plans],
+    }
+    if stale_warning:
+        result_payload["_warning"] = stale_warning
+    return tool_result(result_payload)
+
+
 def _python_single_file_rename(
     path: Path,
     source: str,
@@ -508,13 +858,14 @@ def lsp_rename_tool(
     line: int,
     column: int,
     new_name: str,
-    apply: bool = True,
+    apply: bool = False,
     project_root: str | None = None,
     max_files: int = DEFAULT_MAX_FILES,
     language: str | None = None,
     task_id: str = "default",
 ) -> str:
     file_path = _resolve_path_for_task(path, task_id)
+    root_path = None
     if project_root:
         root_path = _resolve_path_for_task(project_root, task_id)
         try:
@@ -534,13 +885,6 @@ def lsp_rename_tool(
         return tool_error("column must be a non-negative integer.", code="invalid_column")
     if not isinstance(max_files, int) or max_files < 1:
         return tool_error("max_files must be >= 1.", code="invalid_max_files")
-    if max_files > DEFAULT_MAX_FILES:
-        return tool_error(
-            "Workspace rename is not supported by bounded lsp_rename.",
-            code="workspace_rename_not_supported",
-            max_files=max_files,
-            supported_max_files=DEFAULT_MAX_FILES,
-        )
     if not isinstance(new_name, str) or not new_name.isidentifier() or keyword.iskeyword(new_name):
         return tool_error("Invalid Python identifier for rename target.", code="invalid_new_name")
 
@@ -554,6 +898,35 @@ def lsp_rename_tool(
         )
 
     source = file_path.read_text(encoding="utf-8")
+    if root_path is not None:
+        project_plans, project_error, target_name = _build_project_rename_plan(
+            file_path,
+            source,
+            line=line,
+            column=column,
+            new_name=new_name,
+            project_root=root_path,
+        )
+        if project_error:
+            return tool_result(project_error)
+        if project_plans is not None:
+            if len(project_plans) > max_files:
+                return tool_error(
+                    "Project-wide rename would exceed max_files.",
+                    code="rename_limit_exceeded",
+                    changed_files=len(project_plans),
+                    max_files=max_files,
+                )
+            return _apply_rename_plans(
+                plans=project_plans,
+                apply=apply,
+                task_id=task_id,
+                engine="python_ast_project_wide",
+                target_name=target_name or "",
+                new_name=new_name,
+                max_files=max_files,
+                project_root=str(root_path),
+            )
     return _python_single_file_rename(
         file_path,
         source,
@@ -562,7 +935,7 @@ def lsp_rename_tool(
         new_name=new_name,
         apply=apply,
         max_files=max_files,
-        project_root=str(root_path) if project_root else None,
+        project_root=str(root_path) if root_path else None,
         task_id=task_id,
     )
 
@@ -580,7 +953,7 @@ registry.register(
         line=args.get("line"),
         column=args.get("column"),
         new_name=args.get("new_name", ""),
-        apply=args.get("apply", True),
+        apply=args.get("apply", False),
         project_root=args.get("project_root"),
         max_files=args.get("max_files", DEFAULT_MAX_FILES),
         language=args.get("language"),

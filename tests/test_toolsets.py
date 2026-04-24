@@ -90,14 +90,17 @@ class TestResolveToolset:
         tools = resolve_toolset("*")
         assert len(tools) > 10
 
-    def test_code_intel_toolset_resolves_lsp_rename(self):
+    def test_code_intel_toolset_resolves_code_intel_tools(self):
         tools = resolve_toolset("code_intel")
         assert "lsp_rename" in tools
+        assert "code_references" in tools
+        assert "code_definition" in tools
 
-    def test_hermes_cli_and_api_server_expose_lsp_rename_without_global_core_promotion(self):
-        assert "lsp_rename" in TOOLSETS["hermes-cli"]["tools"]
-        assert "lsp_rename" in TOOLSETS["hermes-api-server"]["tools"]
-        assert "lsp_rename" not in TOOLSETS["hermes-telegram"]["tools"]
+    def test_hermes_cli_and_api_server_expose_code_intel_without_global_core_promotion(self):
+        for tool_name in ["lsp_rename", "code_references", "code_definition"]:
+            assert tool_name in TOOLSETS["hermes-cli"]["tools"]
+            assert tool_name in TOOLSETS["hermes-api-server"]["tools"]
+            assert tool_name not in TOOLSETS["hermes-telegram"]["tools"]
 
 
 class TestResolveMultipleToolsets:

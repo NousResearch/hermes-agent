@@ -133,6 +133,34 @@ model:
 # worktree: false   # Default — only create when -w flag is passed
 
 # =============================================================================
+# OMO compatibility / parity-decision surface
+# =============================================================================
+# Hermes is YAML-first. JSONC/OpenCode/OMO config files are not loaded as the
+# canonical runtime config; use a future import/translation tool to convert
+# foreign JSONC into config.yaml if needed. These knobs document compatibility
+# decisions and small bridge settings without implying full OMO parity.
+#
+# omo_compat:
+#   jsonc_config: "import-only"      # import-only | disabled; never core
+#   disable_omo_env: false           # placeholder kill switch; false preserves env bridges
+#   hashline_edit: false             # opt-in equivalent to hashline edit UX
+#   stale_edit_mode: "warn"          # warn | error | off
+#   dynamic_context_pruning:
+#     protected_tools: []            # additive tool aliases to preserve during pruning
+#   named_agents:
+#     mode: "primary"                # primary | subagent-only | disabled
+#     color: "auto"
+#     providerOptions: {}
+#     permissions: {}                # e.g. edit/bash/webfetch/external_directory booleans
+#   task_scheduler:
+#     enabled: false                 # safe default; Atlas/OMO scheduler parity is wave-backed
+#   runtime_modes:
+#     ralph:
+#       max_iterations: 100          # documented Ralph cap; runtime enforcement must be proven separately
+#   mcp:
+#     builtins: "configured"         # configured | disabled; no silent always-on network MCP defaults
+
+# =============================================================================
 # Terminal Tool Configuration
 # =============================================================================
 # Choose ONE of the following terminal configurations by uncommenting it.
@@ -325,16 +353,6 @@ compression:
 
   # To pin a specific model/provider for compression summaries, use the
   # auxiliary section below (auxiliary.compression.provider / model).
-
-# =============================================================================
-# Anthropic prompt caching TTL
-# =============================================================================
-# When prompt caching is active (Claude via OpenRouter or native Anthropic),
-# Anthropic supports two TTL tiers for cached prefixes: "5m" (default) and
-# "1h". Other values are ignored and "5m" is used.
-#
-prompt_caching:
-  cache_ttl: "5m" # use "1h" for long sessions with pauses between turns
 
 # =============================================================================
 # Auxiliary Models (Advanced — Experimental)

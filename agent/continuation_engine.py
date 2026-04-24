@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Dict, Optional
 
+from agent.gap_check import analyze_gap, should_skip_next_iteration
 from agent.runtime_modes import resolve_runtime_mode
 
 
@@ -42,7 +43,9 @@ def _normalize_todos(items: Any) -> list[dict[str, str]]:
 
 
 def response_contains_promise_done(response_text: Any) -> bool:
-    return PROMISE_DONE_TAG in str(response_text or "")
+    if response_text is None:
+        return False
+    return PROMISE_DONE_TAG in str(response_text)
 
 
 def resolve_iteration_cap(runtime_mode: Optional[str], iteration_cap: Optional[int] = None) -> int:
@@ -50,6 +53,16 @@ def resolve_iteration_cap(runtime_mode: Optional[str], iteration_cap: Optional[i
         return max(int(iteration_cap), 0)
     resolved_mode = resolve_runtime_mode(runtime_mode)
     return max(int(getattr(resolved_mode, "iteration_cap", DEFAULT_ITERATION_CAP) or DEFAULT_ITERATION_CAP), 0)
+
+
+def resolve_max_resumes(
+    *, runtime_mode: Optional[str], max_resumes: Optional[int] = None, iteration_cap: Optional[int] = None
+) -> int:
+    if max_resumes is not None:
+        return max(int(max_resumes), 0)
+    if _normalize_runtime_mode(runtime_mode) == "ralph":
+        return resolve_iteration_cap(runtime_mode, iteration_cap)
+    return DEFAULT_MAX_RUNTIME_RESUMES
 
 
 def build_continuation_snapshot(agent: Any, result: Optional[dict[str, Any]]) -> dict[str, Any]:
@@ -145,63 +158,132 @@ def build_runtime_resume_message(
     )
 
 
+def _resolve_gap_check(
+    *,
+    plan: Any,
+    result: dict[str, Any],
+    evidence: Any,
+    caller_role: str | None = None,
+) -> dict[str, Any] | None:
+    if not plan:
+        return None
+    gap_result = analyze_gap(
+        plan=plan,
+        result=result,
+        evidence=evidence if evidence is not None else result,
+        caller_role=caller_role,
+    )
+    return gap_result.to_dict()
+
+
+def _append_gap_to_snapshot(snapshot: dict[str, Any], gap_result: dict[str, Any] | None) -> None:
+    if isinstance(gap_result, dict):
+        snapshot["gapCheck"] = gap_result
+
+
 def apply_bounded_continuation_engine(
     child: Any,
     initial_result: dict[str, Any],
     *,
     runtime_mode: Optional[str],
-    max_resumes: int = DEFAULT_MAX_RUNTIME_RESUMES,
+    max_resumes: Optional[int] = None,
     iteration_cap: Optional[int] = None,
     on_snapshot: Optional[Callable[[dict[str, Any], int], None]] = None,
+    gap_check_plan: Any = None,
+    gap_check_evidence: Any = None,
+    gap_check_role: str | None = None,
 ) -> dict[str, Any]:
     result = dict(initial_result or {})
     snapshot = build_continuation_snapshot(child, result)
     snapshots = [snapshot]
+    normalized_mode = _normalize_runtime_mode(runtime_mode) or "default"
     effective_iteration_cap = resolve_iteration_cap(runtime_mode, iteration_cap)
+    effective_max_resumes = resolve_max_resumes(
+        runtime_mode=runtime_mode,
+        max_resumes=max_resumes,
+        iteration_cap=effective_iteration_cap,
+    )
+    gap_result = _resolve_gap_check(
+        plan=gap_check_plan,
+        result=result,
+        evidence=gap_check_evidence,
+        caller_role=gap_check_role,
+    )
+    _append_gap_to_snapshot(snapshot, gap_result)
     if callable(on_snapshot):
         on_snapshot(snapshot, 0)
 
     if response_contains_promise_done(snapshot.get("responsePreview")):
         logger.info(
             "Continuation engine exiting on promise DONE tag (%s mode, initial response)",
-            _normalize_runtime_mode(runtime_mode) or "default",
+            normalized_mode,
         )
 
     resume_count = 0
     while (
-        resume_count < max(int(max_resumes or 0), 0)
+        resume_count < effective_max_resumes
         and resume_count < effective_iteration_cap
+        and not should_skip_next_iteration(gap_result or {})
         and should_use_continuation_engine(runtime_mode, snapshot)
     ):
         resume_count += 1
-        continuation_message = build_runtime_resume_message(
-            snapshot,
-            runtime_mode=runtime_mode,
-            attempt=resume_count,
-            max_attempts=max(int(max_resumes or 0), 0),
-        )
+        if isinstance(gap_result, dict) and gap_result.get("next_prompt"):
+            continuation_message = str(gap_result.get("next_prompt"))
+        else:
+            continuation_message = build_runtime_resume_message(
+                snapshot,
+                runtime_mode=runtime_mode,
+                attempt=resume_count,
+                max_attempts=effective_max_resumes,
+            )
         next_result = child.run_conversation(user_message=continuation_message)
         if isinstance(next_result, dict):
             result = next_result
         else:
             result = {"final_response": str(next_result)}
         snapshot = build_continuation_snapshot(child, result)
+        gap_result = _resolve_gap_check(
+            plan=gap_check_plan,
+            result=result,
+            evidence=gap_check_evidence if gap_check_evidence is not None else result,
+            caller_role=gap_check_role,
+        )
+        _append_gap_to_snapshot(snapshot, gap_result)
         snapshots.append(snapshot)
         if callable(on_snapshot):
             on_snapshot(snapshot, resume_count)
         if response_contains_promise_done(snapshot.get("responsePreview")):
             logger.info(
                 "Continuation engine exiting on promise DONE tag (%s mode, attempt %s)",
-                _normalize_runtime_mode(runtime_mode) or "default",
+                normalized_mode,
                 resume_count,
             )
 
     if resume_count >= effective_iteration_cap and should_use_continuation_engine(runtime_mode, snapshot):
         logger.info(
             "Continuation engine hit-max iteration cap (%s mode, cap=%s)",
-            _normalize_runtime_mode(runtime_mode) or "default",
+            normalized_mode,
             effective_iteration_cap,
         )
+
+    exhausted = (not should_skip_next_iteration(gap_result or {})) and should_use_continuation_engine(runtime_mode, snapshot)
+    continuation_state = {
+        "mode": normalized_mode,
+        "resume_count": resume_count,
+        "attempt_count": len(snapshots),
+        "snapshot_count": len(snapshots),
+        "iteration_cap": effective_iteration_cap,
+        "max_resumes": effective_max_resumes,
+        "done": response_contains_promise_done(snapshot.get("responsePreview")),
+        "gap_check": gap_result,
+        "gap_complete": should_skip_next_iteration(gap_result or {}),
+        "exhausted": exhausted,
+        "stop_requested": bool(snapshot.get("stopRequested")),
+        "session_id": str(snapshot.get("sessionId") or getattr(child, "session_id", "") or ""),
+    }
+    result["continuation_state"] = continuation_state
+    for item in snapshots:
+        item["continuation_state"] = continuation_state
 
     return {
         "result": result,
@@ -209,7 +291,10 @@ def apply_bounded_continuation_engine(
         "resume_count": resume_count,
         "attempt_count": len(snapshots),
         "snapshots": snapshots,
-        "exhausted": should_use_continuation_engine(runtime_mode, snapshot),
+        "exhausted": exhausted,
         "iteration_cap": effective_iteration_cap,
-        "mode": str(runtime_mode or "").strip().lower() or None,
+        "max_resumes": effective_max_resumes,
+        "mode": normalized_mode,
+        "gap_check": gap_result,
+        "continuation_state": continuation_state,
     }

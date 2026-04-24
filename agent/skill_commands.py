@@ -6,6 +6,7 @@ can invoke skills via /skill-name commands.
 
 import json
 import logging
+import os
 import re
 import subprocess
 from pathlib import Path
@@ -31,6 +32,71 @@ _INLINE_SHELL_RE = re.compile(r"!`([^`\n]+)`")
 
 # Cap inline-shell output so a runaway command can't blow out the context.
 _INLINE_SHELL_MAX_OUTPUT = 4000
+
+
+def get_skill_loader_precedence(project_root: str | Path | None = None) -> list[dict[str, Any]]:
+    """Document the Wave 7 skill/command compatibility precedence contract.
+
+    Hermes execution still uses the existing skill and command dispatchers; this
+    function makes the loader order introspectable and keeps explicit
+    compatibility boundaries for Claude/OpenCode-style locations.
+    """
+    root = Path(project_root or os.getenv("HERMES_PROJECT_ROOT") or "").expanduser() if (project_root or os.getenv("HERMES_PROJECT_ROOT")) else None
+    entries: list[dict[str, Any]] = []
+    if root:
+        active_project = True
+        entries.extend([
+            {"source": "project", "path": str(root / ".hermes" / "skills"), "compatibility": "Hermes project skills", "scope": "wave7", "active": active_project},
+            {"source": "project", "path": str(root / "skills"), "compatibility": "Hermes project skills", "scope": "wave7", "active": active_project},
+            {"source": "project", "path": str(root / ".claude" / "skills"), "compatibility": ".claude/skills", "scope": "wave7", "active": active_project},
+        ])
+    else:
+        entries.extend([
+            {"source": "project", "path": ".hermes/skills", "compatibility": "Hermes project skills", "scope": "wave7", "active": False, "activation": "set HERMES_PROJECT_ROOT"},
+            {"source": "project", "path": "skills", "compatibility": "Hermes project skills", "scope": "wave7", "active": False, "activation": "set HERMES_PROJECT_ROOT"},
+            {"source": "project", "path": ".claude/skills", "compatibility": ".claude/skills", "scope": "wave7", "active": False, "activation": "set HERMES_PROJECT_ROOT"},
+        ])
+    entries.extend([
+        {"source": "user", "path": str(Path("~/.hermes/skills").expanduser()), "compatibility": "Hermes user skills", "scope": "wave7", "active": True},
+        {"source": "external", "path": "skills.external_dirs[]", "compatibility": "configured external skills", "scope": "wave7", "active": True},
+        {"source": "project", "path": ".claude/commands", "compatibility": ".claude/commands", "scope": "out_of_scope", "reason": "command files are documented as compatibility follow-up; Wave 7 proves skills and metadata envelope"},
+        {"source": "project", "path": ".mdc", "compatibility": ".mdc rules", "scope": "wave8", "reason": "rules ingestion belongs to Wave 8 config/platform polish"},
+    ])
+    return entries
+
+
+def _iter_skill_scan_roots(skills_dir: Path, external_dirs: list[Path]) -> list[tuple[Path, str, str]]:
+    """Return ordered (path, source, compatibility) roots for command scanning."""
+    roots: list[tuple[Path, str, str]] = []
+    project_root_raw = os.getenv("HERMES_PROJECT_ROOT", "").strip()
+    if project_root_raw:
+        project_root = Path(project_root_raw).expanduser().resolve()
+        for rel, compatibility in (
+            (Path(".hermes") / "skills", "Hermes project skills"),
+            (Path("skills"), "Hermes project skills"),
+            (Path(".claude") / "skills", ".claude/skills"),
+        ):
+            p = project_root / rel
+            if p.is_dir():
+                roots.append((p, "project", compatibility))
+
+    if skills_dir.exists():
+        roots.append((skills_dir, "user", "Hermes user skills"))
+    for p in external_dirs:
+        roots.append((p, "external", "configured external skills"))
+
+    seen: set[Path] = set()
+    ordered: list[tuple[Path, str, str]] = []
+    for p, source, compatibility in roots:
+        try:
+            resolved = p.resolve()
+        except Exception:
+            resolved = p
+        if resolved in seen:
+            continue
+        seen.add(resolved)
+        ordered.append((p, source, compatibility))
+    return ordered
 
 
 def _load_skills_config() -> dict:
@@ -325,13 +391,12 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
 
-        # Scan local dir first, then external dirs
-        dirs_to_scan = []
-        if SKILLS_DIR.exists():
-            dirs_to_scan.append(SKILLS_DIR)
-        dirs_to_scan.extend(get_external_skills_dirs())
+        # Scan project-local skills first, then user-global, then configured external dirs.
+        # This preserves existing skill execution while making precedence explicit for
+        # Wave 7 command metadata and Claude-compatible project skills.
+        dirs_to_scan = _iter_skill_scan_roots(SKILLS_DIR, get_external_skills_dirs())
 
-        for scan_dir in dirs_to_scan:
+        for scan_dir, scan_source, compatibility in dirs_to_scan:
             for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
                 if any(part in ('.git', '.github', '.hub') for part in skill_md.parts):
                     continue
@@ -368,6 +433,8 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                         "description": description or f"Invoke the {name} skill",
                         "skill_md_path": str(skill_md),
                         "skill_dir": str(skill_md.parent),
+                        "source": scan_source,
+                        "compatibility": compatibility,
                     }
                 except Exception:
                     continue

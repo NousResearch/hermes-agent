@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import threading
 import time
@@ -15,6 +16,10 @@ from agent.task_contracts import TaskContract, validate_task_contract
 
 
 TERMINAL_TASK_STATUSES = {"completed", "failed", "cancelled"}
+RETRY_REQUESTED_CONTINUATION_STATUSES = {"pending", "retry_requested"}
+
+
+logger = logging.getLogger(__name__)
 
 
 class TaskStatus(str, Enum):
@@ -93,11 +98,12 @@ class PersistentTaskRecord(BaseModel):
 
 
 class TaskStore:
-    def __init__(self, root_dir: Optional[str | os.PathLike[str]] = None):
+    def __init__(self, root_dir: Optional[str | os.PathLike[str]] = None, hooks: Any = None):
         base = Path(root_dir) if root_dir is not None else self._default_root_dir()
         self.root_dir = base
         self.root_dir.mkdir(parents=True, exist_ok=True)
         self._lock = threading.RLock()
+        self._hooks = hooks
 
     @staticmethod
     def _default_root_dir() -> Path:
@@ -141,6 +147,65 @@ class TaskStore:
         record.updated_at = time.time()
         self._write_json_atomic(self._task_path(record.id), record.model_dump(mode="json"))
         return record
+
+    @staticmethod
+    def _is_sensitive_key(key: Any) -> bool:
+        normalized = str(key or "").strip().lower()
+        if not normalized:
+            return False
+        return any(
+            marker in normalized
+            for marker in (
+                "secret",
+                "token",
+                "password",
+                "passwd",
+                "api_key",
+                "apikey",
+                "authorization",
+                "credential",
+                "cookie",
+                "session",
+                "private_key",
+                "bearer",
+            )
+        )
+
+    @classmethod
+    def _redact_sensitive_data(cls, value: Any, *, key: Any = None) -> Any:
+        if cls._is_sensitive_key(key):
+            return "[REDACTED]"
+        if isinstance(value, dict):
+            return {k: cls._redact_sensitive_data(v, key=k) for k, v in value.items()}
+        if isinstance(value, list):
+            return [cls._redact_sensitive_data(item) for item in value]
+        if isinstance(value, tuple):
+            return [cls._redact_sensitive_data(item) for item in value]
+        return value
+
+    def _build_hook_payload(self, event_name: str, record: PersistentTaskRecord, **extra: Any) -> dict[str, Any]:
+        payload = {
+            "event": event_name,
+            "task_id": record.id,
+            "task": self._redact_sensitive_data(record.model_dump(mode="json")),
+        }
+        for key, value in extra.items():
+            payload[key] = self._redact_sensitive_data(value, key=key)
+        return payload
+
+    def _emit_hook(self, event_name: str, record: PersistentTaskRecord, **extra: Any) -> None:
+        if self._hooks is None:
+            return
+        payload = self._build_hook_payload(event_name, record, **extra)
+        try:
+            if callable(self._hooks):
+                self._hooks(event_name, payload)
+                return
+            emitter = getattr(self._hooks, "emit", None) or getattr(self._hooks, "fire", None)
+            if callable(emitter):
+                emitter(event_name, payload)
+        except Exception:
+            logger.warning("task lifecycle hook failed for %s", event_name, exc_info=True)
 
     def _sync_block_relationships(self, record: PersistentTaskRecord) -> PersistentTaskRecord:
         previous = self._load_task_unlocked(record.id)
@@ -340,7 +405,9 @@ class TaskStore:
             resolved_inputs=dict(resolved_inputs or {}),
             launch_spec=dict(launch_spec or {}),
         )
-        return self.save_task(record)
+        saved = self.save_task(record)
+        self._emit_hook("task.created", saved)
+        return saved
 
     def get_task(self, task_id: str) -> Optional[PersistentTaskRecord]:
         return self._load_task_unlocked(task_id)
@@ -462,6 +529,14 @@ class TaskStore:
                 setattr(record.execution, key, value)
         self._sync_session_delegation_visibility(record)
         saved = self.save_task(record)
+        if target == TaskStatus.running and current != TaskStatus.running:
+            self._emit_hook("task.started", saved)
+        elif target == TaskStatus.cancelled and current != TaskStatus.cancelled:
+            self._emit_hook("task.cancelled", saved)
+        elif target == TaskStatus.completed and current != TaskStatus.completed:
+            self._emit_hook("task.completed", saved)
+        elif target == TaskStatus.failed and current != TaskStatus.failed:
+            self._emit_hook("task.failed", saved)
         if target == TaskStatus.completed:
             self._update_blocked_dependents(task_id)
         return saved
@@ -518,8 +593,20 @@ class TaskStore:
         if target.value in TERMINAL_TASK_STATUSES:
             record.execution.finished_at = time.time()
             record.execution.process_session_id = None
+            if target in {TaskStatus.completed, TaskStatus.cancelled}:
+                continuation = dict(record.execution.continuation or {})
+                if str(continuation.get("status") or "").strip().lower() in RETRY_REQUESTED_CONTINUATION_STATUSES:
+                    continuation.pop("status", None)
+                    continuation["retry_cleared_at"] = time.time()
+                    record.execution.continuation = continuation
         self._sync_session_delegation_visibility(record)
         saved = self.save_task(record)
+        if target == TaskStatus.completed and current != TaskStatus.completed:
+            self._emit_hook("task.completed", saved)
+        elif target == TaskStatus.failed and current != TaskStatus.failed:
+            self._emit_hook("task.failed", saved)
+        elif target == TaskStatus.cancelled and current != TaskStatus.cancelled:
+            self._emit_hook("task.cancelled", saved)
         if target == TaskStatus.completed:
             self._update_blocked_dependents(task_id)
         return saved
@@ -538,6 +625,7 @@ class TaskStore:
     ) -> PersistentTaskRecord:
         record = self.require_task(task_id)
         state = dict(record.execution.continuation or {})
+        previous_status = str(state.get("status") or "").strip().lower()
         if mode is not None:
             state["mode"] = str(mode or "").strip() or None
         if status is not None:
@@ -555,7 +643,14 @@ class TaskStore:
         state["updated_at"] = time.time()
         record.execution.continuation = state
         self._sync_session_delegation_visibility(record)
-        return self.save_task(record)
+        saved = self.save_task(record)
+        current_status = str(saved.execution.continuation.get("status") or "").strip().lower()
+        if (
+            current_status in RETRY_REQUESTED_CONTINUATION_STATUSES
+            and previous_status not in RETRY_REQUESTED_CONTINUATION_STATUSES
+        ):
+            self._emit_hook("task.retry_requested", saved, continuation_status=current_status)
+        return saved
 
     def clear_continuation(self, task_id: str) -> PersistentTaskRecord:
         record = self.require_task(task_id)
@@ -581,6 +676,9 @@ class TaskStore:
         record.execution.finished_at = None
         record.execution.last_error = None
         record.execution.result = None
+        continuation.pop("status", None)
+        continuation["retry_prepared_at"] = time.time()
+        record.execution.continuation = continuation
         record.summary = None
         self.clear_delegate_exit_artifact(task_id)
         self._sync_session_delegation_visibility(record)
@@ -704,6 +802,7 @@ class TaskStore:
         if status == "running":
             if record.execution.status in {TaskStatus.draft, TaskStatus.queued}:
                 record = self.transition_task(task_id, TaskStatus.running)
+            self._emit_hook("task.reconciled", record, process_status=status)
             return record
 
         if status == "exited":
@@ -718,17 +817,19 @@ class TaskStore:
             }
             if record.execution.status not in {TaskStatus.completed, TaskStatus.failed, TaskStatus.cancelled}:
                 if is_delegate_runner:
-                    return self._reconcile_delegate_exit(
+                    reconciled = self._reconcile_delegate_exit(
                         task_id,
                         record=record,
                         exit_code=exit_code,
                         fallback_error=None if exit_code == 0 else (poll.get("output_preview") or "background task failed"),
                     )
+                    self._emit_hook("task.reconciled", reconciled, process_status=status, exit_code=exit_code)
+                    return reconciled
                 if exit_code == 0 and record.execution.status in {TaskStatus.draft, TaskStatus.queued}:
                     record = self.transition_task(task_id, TaskStatus.running)
                 summary = record.summary or ((poll.get("output_preview") or "").strip()[:400] or None)
                 error = None if exit_code == 0 else (poll.get("output_preview") or "background task failed")
-                return self.record_result(
+                reconciled = self.record_result(
                     task_id,
                     status=TaskStatus.completed if exit_code == 0 else TaskStatus.failed,
                     result=result_payload,
@@ -736,24 +837,30 @@ class TaskStore:
                     error=error,
                     exit_code=exit_code,
                 )
+                self._emit_hook("task.reconciled", reconciled, process_status=status, exit_code=exit_code)
+                return reconciled
             record.execution.process_session_id = None
             record.execution.exit_code = exit_code
             if record.execution.result is None:
                 record.execution.result = result_payload
             self._sync_session_delegation_visibility(record)
-            return self.save_task(record)
+            reconciled = self.save_task(record)
+            self._emit_hook("task.reconciled", reconciled, process_status=status, exit_code=exit_code)
+            return reconciled
 
         if status == "not_found":
             delegate_exit_code = _load_delegate_exit_code() if record.launch_spec.get("runner") == "delegate" else None
             if delegate_exit_code is not None and record.execution.status not in {TaskStatus.completed, TaskStatus.failed, TaskStatus.cancelled}:
-                return self._reconcile_delegate_exit(
+                reconciled = self._reconcile_delegate_exit(
                     task_id,
                     record=record,
                     exit_code=delegate_exit_code,
                     fallback_error=None if delegate_exit_code == 0 else (record.execution.last_error or "background task failed"),
                 )
+                self._emit_hook("task.reconciled", reconciled, process_status=status, exit_code=delegate_exit_code)
+                return reconciled
             if record.execution.status not in {TaskStatus.completed, TaskStatus.failed, TaskStatus.cancelled}:
-                return self.record_result(
+                reconciled = self.record_result(
                     task_id,
                     status=TaskStatus.failed,
                     result=record.execution.result,
@@ -761,9 +868,13 @@ class TaskStore:
                     error=record.execution.last_error or "background process record was lost",
                     exit_code=record.execution.exit_code,
                 )
+                self._emit_hook("task.reconciled", reconciled, process_status=status)
+                return reconciled
             record.execution.process_session_id = None
             self._sync_session_delegation_visibility(record)
-            return self.save_task(record)
+            reconciled = self.save_task(record)
+            self._emit_hook("task.reconciled", reconciled, process_status=status)
+            return reconciled
 
         return record
 

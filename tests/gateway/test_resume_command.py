@@ -180,6 +180,40 @@ class TestHandleResumeCommand:
         db.close()
 
     @pytest.mark.asyncio
+    async def test_resume_follows_compression_continuation(self, tmp_path):
+        """Gateway /resume should reopen the live descendant after compression."""
+        from hermes_state import SessionDB
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        db.create_session("compressed_root", "telegram")
+        db.set_session_title("compressed_root", "Compressed Work")
+        db.end_session("compressed_root", "compression")
+        db.create_session("compressed_child", "telegram", parent_session_id="compressed_root")
+        db.append_message("compressed_child", "user", "hello from continuation")
+        db.create_session("current_session_001", "telegram")
+
+        event = _make_event(text="/resume Compressed Work")
+        runner = _make_runner(
+            session_db=db,
+            current_session_id="current_session_001",
+            event=event,
+        )
+        runner.session_store.load_transcript.side_effect = (
+            lambda session_id: [{"role": "user", "content": "hello from continuation"}]
+            if session_id == "compressed_child"
+            else []
+        )
+
+        result = await runner._handle_resume_command(event)
+
+        assert "Resumed session" in result
+        assert "(1 message)" in result
+        call_args = runner.session_store.switch_session.call_args
+        assert call_args[0][1] == "compressed_child"
+        runner.session_store.load_transcript.assert_called_with("compressed_child")
+        db.close()
+
+    @pytest.mark.asyncio
     async def test_resume_clears_running_agent(self, tmp_path):
         """Switching sessions clears any cached running agent."""
         from hermes_state import SessionDB

@@ -1,4 +1,4 @@
-import { useEffect, useState, useMemo } from "react";
+import { useCallback, useEffect, useState, useMemo } from "react";
 import {
   Eye,
   EyeOff,
@@ -358,13 +358,25 @@ export default function EnvPage() {
   const [edits, setEdits] = useState<Record<string, string>>({});
   const [revealed, setRevealed] = useState<Record<string, string>>({});
   const [saving, setSaving] = useState<string | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
   const [showAdvanced, setShowAdvanced] = useState(true); // Show all providers by default
   const { toast, showToast } = useToast();
   const { t } = useI18n();
 
-  useEffect(() => {
-    api.getEnvVars().then(setVars).catch(() => {});
+  const loadVars = useCallback(() => {
+    setLoading(true);
+    setError(null);
+    api
+      .getEnvVars()
+      .then(setVars)
+      .catch((err) => setError(String(err)))
+      .finally(() => setLoading(false));
   }, []);
+
+  useEffect(() => {
+    loadVars();
+  }, [loadVars]);
 
   const handleSave = async (key: string) => {
     const value = edits[key];
@@ -477,12 +489,29 @@ export default function EnvPage() {
     return { providerGroups: groups, nonProviderGrouped: nonProvider };
   }, [vars, showAdvanced, t]);
 
-  if (!vars) {
+  if (loading) {
     return (
       <div className="flex items-center justify-center py-24">
         <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
       </div>
     );
+  }
+
+  if (error) {
+    return (
+      <Card>
+        <CardContent className="flex flex-col items-center gap-3 py-8 text-center">
+          <p className="text-sm text-destructive">{error}</p>
+          <Button size="sm" variant="outline" onClick={loadVars}>
+            {t.common.retry}
+          </Button>
+        </CardContent>
+      </Card>
+    );
+  }
+
+  if (!vars) {
+    return null;
   }
 
   const totalProviders = providerGroups.length;

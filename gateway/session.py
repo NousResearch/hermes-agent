@@ -289,13 +289,26 @@ def build_session_context_prompt(
             "that you can only read messages sent directly to you and respond."
         )
     elif context.source.platform == Platform.DISCORD:
-        # Only emit the "no Discord APIs" disclaimer when the discord tool
-        # can't load.  The tool self-gates on DISCORD_BOT_TOKEN at registry
-        # check time, so matching that condition keeps the prompt honest:
+        # The discord tool self-gates on DISCORD_BOT_TOKEN at registry
+        # check time.  Match that condition so the prompt stays honest:
         # with a token the agent has fetch_messages/search_members/
-        # create_thread (and optionally discord_admin); without one it
-        # really is limited to reading/replying via the gateway.
-        if not (os.environ.get("DISCORD_BOT_TOKEN") or "").strip():
+        # create_thread (and optionally discord_admin) and should know
+        # the IDs it can call them with; without one it really is
+        # limited to reading/replying via the gateway.
+        if (os.environ.get("DISCORD_BOT_TOKEN") or "").strip():
+            src = context.source
+            id_lines = ["", "**Discord IDs (for the `discord` / `discord_admin` tools):**"]
+            if src.guild_id:
+                id_lines.append(f"  - Guild: `{src.guild_id}`")
+            if src.thread_id and src.parent_chat_id:
+                id_lines.append(f"  - Parent channel: `{src.parent_chat_id}`")
+                id_lines.append(f"  - Thread: `{src.thread_id}` (use as `channel_id` for fetch_messages etc.)")
+            else:
+                id_lines.append(f"  - Channel: `{src.chat_id}`")
+            if src.message_id:
+                id_lines.append(f"  - Triggering message: `{src.message_id}`")
+            lines.extend(id_lines)
+        else:
             lines.append("")
             lines.append(
                 "**Platform notes:** You are running inside Discord. "

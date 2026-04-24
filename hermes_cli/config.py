@@ -848,7 +848,7 @@ DEFAULT_CONFIG = {
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
         "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
         "channel_prompts": {},         # Per-channel ephemeral system prompts (forum parents apply to child threads)
-        # discord_server tool: restrict which actions the agent may call.
+        # discord / discord_admin tools: restrict which actions the agent may call.
         # Default (empty) = all actions allowed (subject to bot privileged intents).
         # Accepts comma-separated string ("list_guilds,list_channels,fetch_messages")
         # or YAML list. Unknown names are dropped with a warning at load time.

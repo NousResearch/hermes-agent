@@ -1442,9 +1442,26 @@ class AIAgent:
                     }
                     if _provider_timeout is not None:
                         client_kwargs["timeout"] = _provider_timeout
-                    # Preserve any default_headers the router set
-                    if hasattr(_routed_client, '_default_headers') and _routed_client._default_headers:
-                        client_kwargs["default_headers"] = dict(_routed_client._default_headers)
+                    # Preserve any default_headers the router set.
+                    #
+                    # OpenAI SDK v2 stores provider-specific headers on
+                    # ``_custom_headers`` (also exposed via the public
+                    # ``default_headers`` property); ``_default_headers``
+                    # is the v1-legacy attribute.  For Copilot's Claude
+                    # chat-completions path in particular, the headers that
+                    # actually matter (``copilot-integration-id``,
+                    # ``editor-version``, ``api-version``, ...) live on
+                    # ``_custom_headers`` — reading only ``_default_headers``
+                    # silently dropped them and the server returned a
+                    # misleading ``400 model_not_supported`` (#12066).
+                    # Probe v2 attrs first, fall back to v1 for older SDKs.
+                    _routed_headers = (
+                        getattr(_routed_client, "_custom_headers", None)
+                        or getattr(_routed_client, "default_headers", None)
+                        or getattr(_routed_client, "_default_headers", None)
+                    )
+                    if _routed_headers:
+                        client_kwargs["default_headers"] = dict(_routed_headers)
                 else:
                     # When the user explicitly chose a non-OpenRouter provider
                     # but no credentials were found, fail fast with a clear
@@ -5394,6 +5411,21 @@ class AIAgent:
         try:
             import httpx as _httpx
             import socket as _socket
+
+            # Per-endpoint transport compatibility allow-list.
+            #
+            # GitHub Copilot's Claude chat-completions endpoint is
+            # sensitive to the custom ``HTTPTransport(socket_options=...)``
+            # we inject for TCP-keepalive: the server rejects the request
+            # with a misleading ``400 model_not_supported`` even though the
+            # same token + model + payload succeed on a plain client
+            # (confirmed by reporter and independently by a second user on
+            # #12066).  For this host we skip the custom transport entirely
+            # and let the OpenAI SDK construct its default client — the
+            # keepalive optimisation isn't worth breaking Copilot Claude.
+            if base_url_host_matches(base_url, "api.githubcopilot.com"):
+                _proxy = _get_proxy_for_base_url(base_url)
+                return _httpx.Client(proxy=_proxy)
 
             _sock_opts = [(_socket.SOL_SOCKET, _socket.SO_KEEPALIVE, 1)]
             if hasattr(_socket, "TCP_KEEPIDLE"):

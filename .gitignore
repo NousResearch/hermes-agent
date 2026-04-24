@@ -69,3 +69,7 @@ mini-swe-agent/
 .nix-stamps/
 result
 website/static/api/skills-index.json
+
+
+# dev skip
+.hermes-dev/

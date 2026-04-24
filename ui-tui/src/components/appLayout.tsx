@@ -185,56 +185,58 @@ const ComposerPane = memo(function ComposerPane({
 
       <StatusRulePane at="top" composer={composer} status={status} />
 
-      {!isBlocked && (
-        <Box flexDirection="column" marginTop={ui.statusBar === 'top' ? 0 : 1} position="relative">
-          <FloatingOverlays
-            cols={composer.cols}
-            compIdx={composer.compIdx}
-            completions={composer.completions}
-            onModelSelect={actions.onModelSelect}
-            onPickerSelect={actions.resumeById}
-            pagerPageSize={composer.pagerPageSize}
-          />
+      <Box flexDirection="column" marginTop={ui.statusBar === 'top' ? 0 : 1} position="relative">
+        <FloatingOverlays
+          cols={composer.cols}
+          compIdx={composer.compIdx}
+          completions={composer.completions}
+          onModelSelect={actions.onModelSelect}
+          onPickerSelect={actions.resumeById}
+          pagerPageSize={composer.pagerPageSize}
+        />
 
-          {composer.inputBuf.map((line, i) => (
-            <Box key={i}>
-              <Box width={3}>
-                <Text color={ui.theme.color.dim}>{i === 0 ? `${ui.theme.brand.prompt} ` : '  '}</Text>
+        {!isBlocked && (
+          <>
+            {composer.inputBuf.map((line, i) => (
+              <Box key={i}>
+                <Box width={3}>
+                  <Text color={ui.theme.color.dim}>{i === 0 ? `${ui.theme.brand.prompt} ` : '  '}</Text>
+                </Box>
+
+                <Text color={ui.theme.color.cornsilk}>{line || ' '}</Text>
+              </Box>
+            ))}
+
+            <Box position="relative">
+              <Box width={pw}>
+                {sh ? (
+                  <Text color={ui.theme.color.shellDollar}>$ </Text>
+                ) : (
+                  <Text bold color={ui.theme.color.prompt}>
+                    {composer.inputBuf.length ? '  ' : `${ui.theme.brand.prompt} `}
+                  </Text>
+                )}
               </Box>
 
-              <Text color={ui.theme.color.cornsilk}>{line || ' '}</Text>
-            </Box>
-          ))}
+              <Box flexGrow={1} position="relative">
+                {/* subtract NoSelect paddingX={1} (2 cols) + pw so wrap-ansi and cursorLayout agree */}
+                <TextInput
+                  columns={Math.max(20, composer.cols - pw - 2)}
+                  onChange={composer.updateInput}
+                  onPaste={composer.handleTextPaste}
+                  onSubmit={composer.submit}
+                  placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}
+                  value={composer.input}
+                />
 
-          <Box position="relative">
-            <Box width={pw}>
-              {sh ? (
-                <Text color={ui.theme.color.shellDollar}>$ </Text>
-              ) : (
-                <Text bold color={ui.theme.color.prompt}>
-                  {composer.inputBuf.length ? '  ' : `${ui.theme.brand.prompt} `}
-                </Text>
-              )}
-            </Box>
-
-            <Box flexGrow={1} position="relative">
-              {/* subtract NoSelect paddingX={1} (2 cols) + pw so wrap-ansi and cursorLayout agree */}
-              <TextInput
-                columns={Math.max(20, composer.cols - pw - 2)}
-                onChange={composer.updateInput}
-                onPaste={composer.handleTextPaste}
-                onSubmit={composer.submit}
-                placeholder={composer.empty ? PLACEHOLDER : ui.busy ? 'Ctrl+C to interrupt…' : ''}
-                value={composer.input}
-              />
-
-              <Box position="absolute" right={0}>
-                <GoodVibesHeart t={ui.theme} tick={status.goodVibesTick} />
+                <Box position="absolute" right={0}>
+                  <GoodVibesHeart t={ui.theme} tick={status.goodVibesTick} />
+                </Box>
               </Box>
             </Box>
-          </Box>
-        </Box>
-      )}
+          </>
+        )}
+      </Box>
 
       {!composer.empty && !ui.sid && <Text color={ui.theme.color.dim}>⚕ {ui.status}</Text>}
 

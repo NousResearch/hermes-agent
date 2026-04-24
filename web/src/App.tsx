@@ -251,8 +251,6 @@ export default function App() {
   );
 
   const layoutVariant = theme.layoutVariant ?? "standard";
-  const mainMaxWidth =
-    layoutVariant === "tiled" ? "max-w-none" : "max-w-[1600px]";
 
   useEffect(() => {
     if (!mobileOpen) return;
@@ -463,20 +461,20 @@ export default function App() {
           </aside>
 
           <PageHeaderProvider pluginTabs={pluginTabMeta}>
-            <main
+            <div
               className={cn(
                 "relative z-2 flex min-w-0 min-h-0 flex-1 flex-col",
-                "overflow-y-auto",
-                "px-3 pb-4 sm:px-6 sm:pb-8",
+                "px-3 sm:px-6",
                 "pt-2 sm:pt-4 lg:pt-6",
+                "pb-4 sm:pb-8",
+                isDocsRoute && "min-h-0 flex-1",
               )}
             >
               <PluginSlot name="pre-main" />
               <div
                 className={cn(
-                  "mx-auto w-full",
-                  mainMaxWidth,
-                  isDocsRoute && "min-h-0 flex-1 flex flex-col",
+                  "w-full min-w-0",
+                  isDocsRoute && "min-h-0 flex flex-1 flex-col",
                 )}
               >
                 <Routes>
@@ -490,7 +488,7 @@ export default function App() {
                 </Routes>
               </div>
               <PluginSlot name="post-main" />
-            </main>
+            </div>
           </PageHeaderProvider>
         </div>
       </div>

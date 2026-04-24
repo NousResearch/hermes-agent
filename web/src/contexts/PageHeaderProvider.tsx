@@ -48,17 +48,19 @@ export function PageHeaderProvider({
       <div className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-hidden">
         <header
           className={cn(
-            "z-1 box-border h-14 shrink-0 border-b border-current/20",
+            "z-1 w-full shrink-0",
+            "box-border h-14 min-h-14",
+            "border-b border-current/20",
             "bg-background-base/40 backdrop-blur-sm",
             "overflow-hidden",
+            "sm:min-h-0",
           )}
           role="banner"
         >
           <div
             className={cn(
               "flex h-full w-full min-w-0 flex-1 flex-col justify-center gap-2",
-              "px-3 py-2 sm:px-6",
-              "min-h-14 sm:min-h-0 sm:flex-row sm:items-center sm:gap-3 sm:py-0",
+              "px-3 py-2 sm:flex-row sm:items-center sm:gap-3 sm:px-6 sm:py-0",
             )}
           >
             <div className="flex min-w-0 flex-1 items-center gap-2 sm:gap-3">
@@ -78,8 +80,12 @@ export function PageHeaderProvider({
             ) : null}
           </div>
         </header>
+
         <main
-          className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden"
+          className={cn(
+            "min-h-0 w-full min-w-0 flex-1 flex flex-col",
+            "overflow-y-auto overflow-x-hidden [scrollbar-gutter:stable]",
+          )}
         >
           {children}
         </main>

@@ -2091,9 +2091,26 @@ def _is_remote_session() -> bool:
 
 def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     """Read Codex OAuth tokens from Hermes auth store (~/.hermes/auth.json).
-    
+
     Returns dict with 'tokens' (access_token, refresh_token) and 'last_refresh'.
     Raises AuthError if no Codex tokens are stored.
+
+    Reads from two slots in order of preference:
+
+    1. ``providers["openai-codex"]`` — the legacy slot written by the
+       original ``hermes auth`` Codex flow.
+    2. ``credential_pool["openai-codex"]`` — written by
+       ``hermes auth add openai-codex --type oauth`` (the newer pooled path).
+       A fresh OAuth add only populates this slot, so without the fallback
+       every consumer of Codex tokens (``_fetch_codex_account_usage``,
+       refresh flows, and downstream API calls) raised ``codex_auth_missing``
+       despite a valid OAuth credential being on disk (#15167).
+
+    The pool fallback picks the first entry with ``auth_type == "oauth"``
+    that carries an access_token, and projects it onto the same
+    ``{"tokens": {...}, "last_refresh": ..., "base_url": ...}`` shape the
+    legacy slot returns so the rest of this module doesn't need to know
+    where the credential came from.
     """
     if _lock:
         with _auth_store_lock():
@@ -2101,6 +2118,29 @@ def _read_codex_tokens(*, _lock: bool = True) -> Dict[str, Any]:
     else:
         auth_store = _load_auth_store()
     state = _load_provider_state(auth_store, "openai-codex")
+    if not state:
+        pool_entries = (auth_store.get("credential_pool") or {}).get("openai-codex") or []
+        oauth_entry = next(
+            (
+                e for e in pool_entries
+                if isinstance(e, dict)
+                and e.get("auth_type") == "oauth"
+                and isinstance(e.get("access_token"), str)
+                and e.get("access_token").strip()
+            ),
+            None,
+        )
+        if oauth_entry:
+            state = {
+                "tokens": {
+                    "access_token": oauth_entry.get("access_token"),
+                    "refresh_token": oauth_entry.get("refresh_token"),
+                    "id_token": oauth_entry.get("id_token"),
+                    "account_id": oauth_entry.get("account_id"),
+                },
+                "last_refresh": oauth_entry.get("last_refresh"),
+                "base_url": oauth_entry.get("base_url"),
+            }
     if not state:
         raise AuthError(
             "No Codex credentials stored. Run `hermes auth` to authenticate.",

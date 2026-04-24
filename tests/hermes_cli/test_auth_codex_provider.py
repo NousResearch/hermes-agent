@@ -75,6 +75,145 @@ def test_read_codex_tokens_missing(tmp_path, monkeypatch):
     assert exc.value.code == "codex_auth_missing"
 
 
+# ---------------------------------------------------------------------------
+# credential_pool fallback (#15167)
+#
+# ``hermes auth add openai-codex --type oauth`` writes into
+# ``auth.json -> credential_pool["openai-codex"]`` rather than the legacy
+# ``providers["openai-codex"]`` slot.  Before the fix, ``_read_codex_tokens``
+# only consulted the legacy slot, so a freshly-OAuth-logged-in user hit
+# ``codex_auth_missing`` on every consumer (``/usage``, refresh paths, the
+# account-usage fetcher) despite holding a valid credential on disk.
+# ---------------------------------------------------------------------------
+
+
+def _write_pool_only_auth_store(hermes_home: Path, entries: list) -> Path:
+    """Write an auth store where credential_pool is populated but the
+    legacy providers slot is deliberately empty — mirrors the state left
+    by ``hermes auth add ... --type oauth`` on a fresh install."""
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    auth_store = {
+        "version": 1,
+        "providers": {},  # legacy slot deliberately empty
+        "credential_pool": {"openai-codex": entries},
+    }
+    auth_file = hermes_home / "auth.json"
+    auth_file.write_text(json.dumps(auth_store, indent=2))
+    return auth_file
+
+
+def test_read_codex_tokens_falls_back_to_credential_pool_oauth_entry(tmp_path, monkeypatch):
+    """The #15167 fix: OAuth credential in the pool is surfaced when the
+    legacy providers slot is empty."""
+    hermes_home = tmp_path / "hermes"
+    _write_pool_only_auth_store(hermes_home, [{
+        "auth_type": "oauth",
+        "access_token": "pool-access-token",
+        "refresh_token": "pool-refresh-token",
+        "id_token": "pool-id-token",
+        "account_id": "acct-123",
+        "last_refresh": "2026-04-24T12:00:00Z",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+    }])
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    data = _read_codex_tokens()
+    assert data["tokens"]["access_token"] == "pool-access-token"
+    assert data["tokens"]["refresh_token"] == "pool-refresh-token"
+    assert data["tokens"]["id_token"] == "pool-id-token"
+    assert data["tokens"]["account_id"] == "acct-123"
+    assert data["last_refresh"] == "2026-04-24T12:00:00Z"
+
+
+def test_read_codex_tokens_prefers_legacy_slot_over_pool(tmp_path, monkeypatch):
+    """Backward-compat guard: when BOTH slots have credentials (hybrid
+    state during migration), the legacy slot must still win so existing
+    tooling sees the same tokens it's seen before.  The pool fallback is
+    strictly a plug for the empty-legacy-slot case."""
+    hermes_home = tmp_path / "hermes"
+    _setup_hermes_auth(hermes_home, access_token="legacy-at", refresh_token="legacy-rt")
+    # Mutate the file in place to add a credential_pool alongside the
+    # legacy providers slot.
+    auth_store = json.loads((hermes_home / "auth.json").read_text())
+    auth_store["credential_pool"] = {
+        "openai-codex": [{
+            "auth_type": "oauth",
+            "access_token": "pool-at",
+            "refresh_token": "pool-rt",
+        }]
+    }
+    (hermes_home / "auth.json").write_text(json.dumps(auth_store))
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    data = _read_codex_tokens()
+    assert data["tokens"]["access_token"] == "legacy-at", (
+        "hybrid state (both slots populated) must still return the legacy "
+        "slot's credential — the pool is a fallback, not an override"
+    )
+    assert data["tokens"]["refresh_token"] == "legacy-rt"
+
+
+def test_read_codex_tokens_skips_non_oauth_pool_entries(tmp_path, monkeypatch):
+    """The pool may contain entries of other auth types (api_key, etc.).
+    The Codex token reader must only surface OAuth entries — an api_key
+    entry lacks refresh_token and would crash downstream refresh logic."""
+    hermes_home = tmp_path / "hermes"
+    _write_pool_only_auth_store(hermes_home, [
+        {"auth_type": "api_key", "access_token": "sk-...", "api_key": "sk-..."},
+    ])
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    with pytest.raises(AuthError) as exc:
+        _read_codex_tokens()
+    assert exc.value.code == "codex_auth_missing"
+
+
+def test_read_codex_tokens_skips_pool_entries_missing_access_token(tmp_path, monkeypatch):
+    """Defense-in-depth: a malformed OAuth entry that somehow lost its
+    access_token (corrupted auth.json, interrupted write, etc.) must not
+    be silently returned — better to raise codex_auth_missing so the user
+    re-runs setup and gets a clean credential."""
+    hermes_home = tmp_path / "hermes"
+    _write_pool_only_auth_store(hermes_home, [
+        {"auth_type": "oauth", "access_token": "", "refresh_token": "rt"},
+        {"auth_type": "oauth", "refresh_token": "rt-no-at"},  # missing access_token
+    ])
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    with pytest.raises(AuthError) as exc:
+        _read_codex_tokens()
+    assert exc.value.code == "codex_auth_missing"
+
+
+def test_read_codex_tokens_picks_first_valid_oauth_entry_when_multiple(tmp_path, monkeypatch):
+    """When the pool has multiple OAuth entries (user logged in twice
+    without revoking the old session, or suppressed a source), the reader
+    should pick the first one with a valid access_token — matching the
+    same 'first entry wins' convention as the rest of the pool API."""
+    hermes_home = tmp_path / "hermes"
+    _write_pool_only_auth_store(hermes_home, [
+        {"auth_type": "oauth", "access_token": "first-at", "refresh_token": "first-rt"},
+        {"auth_type": "oauth", "access_token": "second-at", "refresh_token": "second-rt"},
+    ])
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    data = _read_codex_tokens()
+    assert data["tokens"]["access_token"] == "first-at"
+
+
+def test_read_codex_tokens_empty_pool_raises_auth_error(tmp_path, monkeypatch):
+    """Both legacy slot empty AND credential_pool empty → still raises.
+    Confirms the fix doesn't silently hand back empty tokens when nothing
+    is configured — the error message is the user's cue to run setup."""
+    hermes_home = tmp_path / "hermes"
+    _write_pool_only_auth_store(hermes_home, [])
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    with pytest.raises(AuthError) as exc:
+        _read_codex_tokens()
+    assert exc.value.code == "codex_auth_missing"
+
+
 def test_resolve_codex_runtime_credentials_missing_access_token(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     _setup_hermes_auth(hermes_home, access_token="")

@@ -251,3 +251,161 @@ class TestUsageAccountSection:
         assert calls["kwargs"]["base_url"] == "https://chatgpt.com/backend-api/codex"
         assert "📊 **Session Info**" in result
         assert "📈 **Account limits**" in result
+
+    @pytest.mark.asyncio
+    async def test_usage_command_probes_credential_pool_when_no_agent_and_no_billing_row(
+        self, monkeypatch,
+    ):
+        """Regression guard for #15167: a fresh-after-login user who fires
+        ``/usage`` before sending a turn has (a) no agent in cache and
+        (b) no ``billing_provider`` row on the session DB.  Before the fix,
+        the handler would emit the 'Session Info' stub and never attempt
+        to read account usage — even though an OAuth credential existed
+        on disk in ``auth.json -> credential_pool``.  The fallback probe
+        must now pick that credential up and resolve ``provider`` from it.
+        """
+        runner = _make_runner(SK)
+        runner._session_db = MagicMock()
+        # No billing row on the session — simulates a fresh session.
+        runner._session_db.get_session.return_value = {}
+        session_entry = MagicMock()
+        session_entry.session_id = "sess-empty"
+        runner.session_store.get_or_create_session.return_value = session_entry
+        runner.session_store.load_transcript.return_value = []
+
+        calls = {}
+
+        async def _fake_to_thread(fn, *args, **kwargs):
+            calls["args"] = args
+            calls["kwargs"] = kwargs
+            return fn(*args, **kwargs)
+
+        monkeypatch.setattr("gateway.run.asyncio.to_thread", _fake_to_thread)
+        monkeypatch.setattr(
+            "gateway.run.fetch_account_usage",
+            lambda provider, base_url=None, api_key=None: object(),
+        )
+        monkeypatch.setattr(
+            "gateway.run.render_account_usage_lines",
+            lambda snapshot, markdown=False: [
+                "📈 **Account limits**",
+                "Provider: openai-codex (Plus)",
+            ],
+        )
+
+        # Simulate an OAuth credential stored in the pool but no legacy
+        # providers row and no billing row — the state `hermes auth add
+        # openai-codex --type oauth` leaves on disk before the first turn.
+        def _fake_read_pool(provider_id=None):
+            if provider_id == "openai-codex":
+                return [{
+                    "auth_type": "oauth",
+                    "access_token": "pool-at",
+                    "refresh_token": "pool-rt",
+                }]
+            return []
+
+        monkeypatch.setattr(
+            "hermes_cli.auth.read_credential_pool", _fake_read_pool,
+        )
+
+        event = MagicMock()
+        result = await runner._handle_usage_command(event)
+
+        assert calls.get("args") == ("openai-codex",), (
+            "gateway must probe the auth credential_pool when no agent "
+            "and no billing row resolve a provider — otherwise /usage "
+            "silently skips account-usage fetch (#15167)"
+        )
+        assert "📈 **Account limits**" in result
+
+    @pytest.mark.asyncio
+    async def test_usage_command_stops_probing_pool_on_first_hit(self, monkeypatch):
+        """The probe iterates known providers in order (currently
+        openai-codex, anthropic).  First one with a stored credential
+        wins — we don't scan the whole pool and pick arbitrarily."""
+        runner = _make_runner(SK)
+        runner._session_db = MagicMock()
+        runner._session_db.get_session.return_value = {}
+        session_entry = MagicMock()
+        session_entry.session_id = "sess-e"
+        runner.session_store.get_or_create_session.return_value = session_entry
+        runner.session_store.load_transcript.return_value = []
+
+        calls = {}
+
+        async def _fake_to_thread(fn, *args, **kwargs):
+            calls["args"] = args
+            return fn(*args, **kwargs)
+
+        monkeypatch.setattr("gateway.run.asyncio.to_thread", _fake_to_thread)
+        monkeypatch.setattr(
+            "gateway.run.fetch_account_usage",
+            lambda provider, base_url=None, api_key=None: object(),
+        )
+        monkeypatch.setattr(
+            "gateway.run.render_account_usage_lines",
+            lambda snapshot, markdown=False: ["📈 Account limits"],
+        )
+
+        probed = []
+
+        def _fake_read_pool(provider_id=None):
+            probed.append(provider_id)
+            # Both providers have credentials — the first probed wins.
+            return [{"auth_type": "oauth", "access_token": "x", "refresh_token": "y"}]
+
+        monkeypatch.setattr(
+            "hermes_cli.auth.read_credential_pool", _fake_read_pool,
+        )
+
+        event = MagicMock()
+        await runner._handle_usage_command(event)
+
+        assert probed == ["openai-codex"], (
+            f"expected to stop after first hit, but probed {probed}"
+        )
+        assert calls["args"] == ("openai-codex",)
+
+    @pytest.mark.asyncio
+    async def test_usage_command_pool_probe_errors_fall_through_gracefully(
+        self, monkeypatch,
+    ):
+        """The pool probe is strictly best-effort.  If ``read_credential_pool``
+        raises (corrupted auth.json, permissions issue, etc.) the handler
+        must fall through to the no-provider path rather than bubbling the
+        exception up and breaking /usage entirely."""
+        runner = _make_runner(SK)
+        runner._session_db = MagicMock()
+        runner._session_db.get_session.return_value = {}
+        session_entry = MagicMock()
+        session_entry.session_id = "sess-e"
+        runner.session_store.get_or_create_session.return_value = session_entry
+        runner.session_store.load_transcript.return_value = []
+
+        def _boom(provider_id=None):
+            raise RuntimeError("simulated auth.json corruption")
+
+        monkeypatch.setattr("hermes_cli.auth.read_credential_pool", _boom)
+
+        # fetch_account_usage should NOT be called, because provider is still
+        # unresolved.  Make it raise if it IS called so a silent regression
+        # fails the test loudly.
+        monkeypatch.setattr(
+            "gateway.run.fetch_account_usage",
+            lambda *a, **kw: (_ for _ in ()).throw(
+                AssertionError("provider should not have been resolved")
+            ),
+        )
+
+        event = MagicMock()
+        # Must not raise — the handler swallows the pool-probe exception
+        # and falls through to its normal no-provider path.  The exact
+        # message ("Session Info" stub vs "No usage data available") depends
+        # on whether the session has transcript history; either is fine,
+        # the invariant is that the handler returned SOMETHING rather than
+        # propagating the RuntimeError.
+        result = await runner._handle_usage_command(event)
+        assert isinstance(result, str) and result, (
+            "handler must return a string even when pool probe raises"
+        )

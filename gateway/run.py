@@ -349,6 +349,15 @@ logger = logging.getLogger(__name__)
 _AGENT_PENDING_SENTINEL = object()
 
 
+# Provider IDs that expose account-usage APIs via agent/account_usage.py.
+# When ``/usage`` can't resolve a provider from the live/cached agent or
+# the session DB's billing row, it probes these slots in the auth
+# credential pool so users whose agent has been evicted still see their
+# plan quota (#15167).  Order matters: the first provider with a stored
+# credential wins.
+_USAGE_ACCOUNT_PROVIDERS = ("openai-codex", "anthropic")
+
+
 def _resolve_runtime_agent_kwargs() -> dict:
     """Resolve provider credentials for gateway-created AIAgent instances.
 
@@ -7427,6 +7436,24 @@ class GatewayRunner:
                 persisted = {}
             provider = provider or persisted.get("billing_provider")
             base_url = base_url or persisted.get("billing_base_url")
+
+        # When the agent has been evicted from the in-memory cache AND no
+        # billing row exists on the session (common for a fresh-after-login
+        # user who sends /usage before their first turn), we still have
+        # OAuth credentials on disk — probe the auth pool for provider IDs
+        # that expose account-usage APIs so ``/usage`` surfaces the plan
+        # window instead of falling back to the "Session Info" stub (#15167).
+        if not provider:
+            try:
+                from hermes_cli.auth import read_credential_pool
+                for candidate in _USAGE_ACCOUNT_PROVIDERS:
+                    if read_credential_pool(candidate):
+                        provider = candidate
+                        break
+            except Exception:
+                # Auth-store probe is strictly best-effort; any failure
+                # just drops us through to the original stub message.
+                pass
 
         # Fetch account usage off the event loop so slow provider APIs don't
         # block the gateway. Failures are non-fatal -- account_lines stays [].

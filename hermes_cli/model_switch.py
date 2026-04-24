@@ -956,7 +956,34 @@ def list_authenticated_providers(
                         models_list.append(m)
 
             # Try to probe /v1/models if URL is set (but don't block on it)
-            # For now just show what we know from config
+            dynamic_models = []
+            if api_url:
+                try:
+                    import requests
+                    models_url = api_url.rstrip("/") + "/models"
+                    api_key = ep_cfg.get("api_key", "")
+                    headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+                    # Add custom headers from config
+                    custom_headers = ep_cfg.get("headers", {})
+                    if isinstance(custom_headers, dict):
+                        headers.update(custom_headers)
+                    
+                    resp = requests.get(models_url, headers=headers, timeout=3)
+                    if resp.status_code == 200:
+                        data = resp.json()
+                        if isinstance(data, dict) and "data" in data:
+                            for model_obj in data["data"]:
+                                if isinstance(model_obj, dict) and "id" in model_obj:
+                                    model_id = model_obj["id"]
+                                    if model_id and model_id not in dynamic_models:
+                                        dynamic_models.append(model_id)
+                except Exception:
+                    pass  # Silently fall back to config-based list
+            
+            # Merge: prefer dynamic models if available, otherwise use config
+            if dynamic_models:
+                models_list = dynamic_models
+            
             results.append({
                 "slug": ep_name,
                 "name": display_name,
@@ -992,6 +1019,12 @@ def list_authenticated_providers(
             default_model = (entry.get("model") or "").strip()
             if default_model:
                 models_list.append(default_model)
+            # Also include the full models list from config
+            cfg_models = entry.get("models", [])
+            if isinstance(cfg_models, list):
+                for m in cfg_models:
+                    if m and m not in models_list:
+                        models_list.append(m)
 
             results.append({
                 "slug": slug,

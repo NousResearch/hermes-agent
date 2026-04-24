@@ -1606,6 +1606,8 @@ def _normalize_custom_provider_entry(
 
     models = entry.get("models")
     if isinstance(models, dict) and models:
+        normalized["models"] = list(models.keys())
+    elif isinstance(models, list) and models:
         normalized["models"] = models
 
     context_length = entry.get("context_length")

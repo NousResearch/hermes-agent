@@ -67,12 +67,13 @@ CONFIGURABLE_TOOLSETS = [
     ("messaging",       "📨 Cross-Platform Messaging",  "send_message"),
     ("rl",              "🧪 RL Training",               "Tinker-Atropos training tools"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
+    ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
 ]
 
 # Toolsets that are OFF by default for new installs.
 # They're still in _HERMES_CORE_TOOLS (available at runtime if enabled),
 # but the setup checklist won't pre-select them for first-time users.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl"}
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify"}
 
 
 def _get_effective_configurable_toolsets():
@@ -357,6 +358,22 @@ TOOL_CATEGORIES = {
                 "env_vars": [
                     {"key": "HASS_TOKEN", "prompt": "Home Assistant Long-Lived Access Token"},
                     {"key": "HASS_URL", "prompt": "Home Assistant URL", "default": "http://homeassistant.local:8123"},
+                ],
+            },
+        ],
+    },
+    "spotify": {
+        "name": "Spotify",
+        "icon": "🎵",
+        "providers": [
+            {
+                "name": "Spotify Web API",
+                "tag": "PKCE OAuth — run `hermes auth spotify` after this",
+                "env_vars": [
+                    {"key": "HERMES_SPOTIFY_CLIENT_ID", "prompt": "Spotify app client_id",
+                     "url": "https://developer.spotify.com/dashboard"},
+                    {"key": "HERMES_SPOTIFY_REDIRECT_URI", "prompt": "Redirect URI (must be allow-listed in your Spotify app)",
+                     "default": "http://127.0.0.1:8888/callback"},
                 ],
             },
         ],

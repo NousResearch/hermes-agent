@@ -500,6 +500,15 @@ def _print_setup_summary(config: dict, hermes_home):
     if get_env_value("HASS_TOKEN"):
         tool_status.append(("Smart Home (Home Assistant)", True, None))
 
+    # Spotify (OAuth via hermes auth spotify — check auth.json, not env vars)
+    try:
+        from hermes_cli.auth import get_provider_auth_state
+        _spotify_state = get_provider_auth_state("spotify") or {}
+        if _spotify_state.get("access_token") or _spotify_state.get("refresh_token"):
+            tool_status.append(("Spotify (PKCE OAuth)", True, None))
+    except Exception:
+        pass
+
     # Skills Hub
     if get_env_value("GITHUB_TOKEN"):
         tool_status.append(("Skills Hub (GitHub)", True, None))

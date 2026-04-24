@@ -105,6 +105,9 @@ _ANTHROPIC_OUTPUT_LIMITS = {
     "claude-3-haiku":      4_096,
     # Third-party Anthropic-compatible providers
     "minimax":            131_072,
+    # Qwen models via DashScope Anthropic-compatible endpoint
+    # DashScope enforces max_tokens ∈ [1, 65536]
+    "qwen3":               65_536,
 }
 
 # For any model not in the table, assume the highest current limit.

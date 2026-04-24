@@ -12,8 +12,8 @@ Different LLM providers expect model identifiers in different formats:
   model IDs, but Claude still uses hyphenated native names like
   ``claude-sonnet-4-6``.
 - **OpenCode Go** preserves dots in model names: ``minimax-m2.7``.
-- **DeepSeek** only accepts two model identifiers:
-  ``deepseek-chat`` and ``deepseek-reasoner``.
+- **DeepSeek** accepts three model identifiers:
+  ``deepseek-chat``, ``deepseek-reasoner``, and ``deepseek-v4-pro``.
 - **Custom** and remaining providers pass the name through as-is.
 
 This module centralises that translation so callers can simply write::
@@ -117,14 +117,15 @@ _DEEPSEEK_REASONER_KEYWORDS: frozenset[str] = frozenset({
 _DEEPSEEK_CANONICAL_MODELS: frozenset[str] = frozenset({
     "deepseek-chat",
     "deepseek-reasoner",
+    "deepseek-v4-pro",
 })
 
 
 def _normalize_for_deepseek(model_name: str) -> str:
-    """Map any model input to one of DeepSeek's two accepted identifiers.
+    """Map any model input to one of DeepSeek's accepted identifiers.
 
     Rules:
-    - Already ``deepseek-chat`` or ``deepseek-reasoner`` -> pass through.
+    - Already a canonical model -> pass through.
     - Contains any reasoner keyword (r1, think, reasoning, cot, reasoner)
       -> ``deepseek-reasoner``.
     - Everything else -> ``deepseek-chat``.
@@ -133,7 +134,7 @@ def _normalize_for_deepseek(model_name: str) -> str:
         model_name: The bare model name (vendor prefix already stripped).
 
     Returns:
-        One of ``"deepseek-chat"`` or ``"deepseek-reasoner"``.
+        One of the canonical DeepSeek model identifiers.
     """
     bare = _strip_vendor_prefix(model_name).lower()
 

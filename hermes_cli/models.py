@@ -248,6 +248,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "deepseek": [
         "deepseek-chat",
         "deepseek-reasoner",
+        "deepseek-v4-pro",
     ],
     "xiaomi": [
         "mimo-v2.5-pro",

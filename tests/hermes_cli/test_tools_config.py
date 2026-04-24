@@ -697,3 +697,17 @@ def test_get_platform_tools_second_pass_skips_fully_claimed_toolsets():
     enabled = _get_platform_tools({}, "cli")
 
     assert "search" not in enabled
+
+
+def test_get_platform_tools_discord_includes_discord_not_admin():
+    enabled = _get_platform_tools({}, "discord")
+    assert "discord" in enabled
+    assert "discord_admin" not in enabled
+
+
+def test_discord_admin_in_configurable_toolsets():
+    assert any(ts_key == "discord_admin" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
+
+
+def test_discord_admin_in_default_off():
+    assert "discord_admin" in _DEFAULT_OFF_TOOLSETS

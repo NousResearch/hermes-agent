@@ -221,16 +221,15 @@ class TestShouldSkipCompression:
         assert result is True
         assert reason == "blocklist"
 
-    def test_small_non_blocklisted_command_is_compressed(self):
-        """Small output from a non-blocklisted command compresses normally."""
-        # A small output from a non-interactive command should NOT skip compression
+    def test_small_non_blocklisted_command_skips(self):
+        """Small output is treated as potentially interactive — skip compression."""
         result, reason = should_skip_compression(
             "ls -la",
             "total 8\ndrwxr-xr-x  2 pi pi 4096 Apr 19 10:00 .\n",
             "",
         )
-        assert result is False
-        assert reason == "none"
+        assert result is True
+        assert reason == "size"
 
     def test_large_output_from_unknown_command_compresses(self):
         """Large output (even from unknown commands) should not be skipped."""
@@ -253,36 +252,40 @@ class TestShouldSkipCompression:
         assert result is False
         assert reason == "none"
 
-    def test_git_diff_compresses(self):
-        """git diff output is non-interactive and should compress."""
+    def test_git_diff_small_skips_size_threshold(self):
+        """Small git diff output is skipped (below INTERACTIVE_SIZE_THRESHOLD)."""
         git_diff = (
             "diff --git a/file.txt b/file.txt\n"
             "-old line\n+new line\n"
-            "This is a realistic git diff output.\n" * 50
+            "This is a realistic git diff output.\n" * 50  # ~4500 chars < 5KB
         )
         result, reason = should_skip_compression("git diff", git_diff, "")
-        assert result is False
+        assert result is True
+        assert reason == "size"
 
     def test_pytest_compresses(self):
+        """Large pytest output (above 5KB) does not skip."""
         result, reason = should_skip_compression(
             "pytest tests/",
-            "tests/test_foo.py::test_one PASSED\n" * 100,
+            "tests/test_foo.py::test_one PASSED\n" * 150,  # ~5700 chars > 5KB
             "",
         )
         assert result is False
 
     def test_unknown_command_small_output(self):
-        """Unknown commands with small output are NOT skipped."""
+        """Small unknown command output skips (below size threshold)."""
         result, reason = should_skip_compression(
             "my_custom_command",
             "short output",
             "",
         )
-        assert result is False
+        assert result is True
+        assert reason == "size"
 
     def test_empty_stdout_stderr(self):
         result, reason = should_skip_compression("echo hello", "", "")
-        assert result is False
+        assert result is True
+        assert reason == "size"
 
     def test_top_large_output(self):
         """top running with huge output (misuse) is still detected as interactive command."""

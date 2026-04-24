@@ -247,11 +247,13 @@ class GitDiffCompressor(CommandCompressor):
                 plus_lines = minus_lines = 0
             elif line.startswith("@@"):
                 # Count +/- in this hunk
-                hunk_match = re.search(r"\+(\d+)(?:,(\d+))?\s+-(\d+)(?:,(\d+))?", line)
+                # Unified diff format: @@ -start,count +start,count @@
+                hunk_match = re.search(r"-(\d+)(?:,(\d+))?\s+\+(\d+)(?:,(\d+))?", line)
                 if hunk_match:
-                    # group(1)=start_line, group(2)=count (default 1); same for (3),(4)
-                    plus_lines += int(hunk_match.group(2) or 1)
-                    minus_lines += int(hunk_match.group(4) or 1)
+                    # group(1)=minus_start, group(2)=minus_count(default1)
+                    # group(3)=plus_start,  group(4)=plus_count(default1)
+                    plus_lines += int(hunk_match.group(4) or 1)
+                    minus_lines += int(hunk_match.group(2) or 1)
             elif line.startswith("+") and not line.startswith("+++"):
                 plus_lines += 1
             elif line.startswith("-") and not line.startswith("---"):

@@ -6,7 +6,7 @@ import { userDisplay } from '../domain/messages.js'
 import { ROLE } from '../domain/roles.js'
 import { compactPreview, hasAnsi, isPasteBackedText, stripAnsi } from '../lib/text.js'
 import type { Theme } from '../theme.js'
-import type { DetailsMode, Msg } from '../types.js'
+import type { DetailsMode, Msg, SectionVisibility } from '../types.js'
 
 import { Md } from './markdown.js'
 import { ToolTrail } from './thinking.js'
@@ -17,12 +17,13 @@ export const MessageLine = memo(function MessageLine({
   detailsMode = 'collapsed',
   isStreaming = false,
   msg,
+  sections,
   t
 }: MessageLineProps) {
   if (msg.kind === 'trail' && msg.tools?.length) {
     return detailsMode === 'hidden' ? null : (
       <Box flexDirection="column" marginTop={1}>
-        <ToolTrail detailsMode={detailsMode} t={t} trail={msg.tools} />
+        <ToolTrail detailsMode={detailsMode} sections={sections} t={t} trail={msg.tools} />
       </Box>
     )
   }
@@ -98,6 +99,7 @@ export const MessageLine = memo(function MessageLine({
             detailsMode={detailsMode}
             reasoning={thinking}
             reasoningTokens={msg.thinkingTokens}
+            sections={sections}
             t={t}
             toolTokens={msg.toolTokens}
             trail={msg.tools}
@@ -124,5 +126,6 @@ interface MessageLineProps {
   detailsMode?: DetailsMode
   isStreaming?: boolean
   msg: Msg
+  sections?: SectionVisibility
   t: Theme
 }

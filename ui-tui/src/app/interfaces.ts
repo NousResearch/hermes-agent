@@ -16,6 +16,7 @@ import type {
   Msg,
   PanelSection,
   SecretReq,
+  SectionVisibility,
   SessionInfo,
   SlashCatalog,
   SubagentProgress,
@@ -87,6 +88,7 @@ export interface UiState {
   detailsMode: DetailsMode
   info: null | SessionInfo
   inlineDiffs: boolean
+  sections: SectionVisibility
   showCost: boolean
   showReasoning: boolean
   sid: null | string

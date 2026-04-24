@@ -62,6 +62,53 @@ describe('applyDisplay', () => {
     expect(s.showReasoning).toBe(false)
     expect(s.statusBar).toBe('top')
     expect(s.streaming).toBe(true)
+    expect(s.sections).toEqual({})
+  })
+
+  it('parses display.sections into per-section overrides', () => {
+    const setBell = vi.fn()
+
+    applyDisplay(
+      {
+        config: {
+          display: {
+            details_mode: 'collapsed',
+            sections: {
+              activity: 'hidden',
+              tools: 'expanded',
+              thinking: 'expanded',
+              bogus: 'expanded'
+            }
+          }
+        }
+      },
+      setBell
+    )
+
+    const s = $uiState.get()
+    expect(s.detailsMode).toBe('collapsed')
+    expect(s.sections).toEqual({
+      activity: 'hidden',
+      tools: 'expanded',
+      thinking: 'expanded'
+    })
+  })
+
+  it('drops invalid section modes', () => {
+    const setBell = vi.fn()
+
+    applyDisplay(
+      {
+        config: {
+          display: {
+            sections: { tools: 'maximised' as unknown as string, activity: 'hidden' }
+          }
+        }
+      },
+      setBell
+    )
+
+    expect($uiState.get().sections).toEqual({ activity: 'hidden' })
   })
 
   it('treats a null config like an empty display block', () => {

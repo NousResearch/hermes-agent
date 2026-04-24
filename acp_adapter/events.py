@@ -192,3 +192,19 @@ def make_message_cb(
         _send_update(conn, session_id, loop, update)
 
     return _message
+
+
+def make_stream_delta_cb(
+    conn: acp.Client,
+    session_id: str,
+    loop: asyncio.AbstractEventLoop,
+) -> Callable:
+    """Create a callback that forwards live LLM text deltas to ACP."""
+
+    def _stream_delta(text: str) -> None:
+        if not text:
+            return
+        update = acp.update_agent_message_text(text)
+        _send_update(conn, session_id, loop, update)
+
+    return _stream_delta

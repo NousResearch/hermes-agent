@@ -494,8 +494,49 @@ class TestPrompt:
         assert state.history == expected_history
 
     @pytest.mark.asyncio
+    async def test_prompt_wires_stream_delta_callback(self, agent):
+        """prompt() should bridge live text deltas through ACP session updates."""
+        new_resp = await agent.new_session(cwd=".")
+        state = agent.session_manager.get_session(new_resp.session_id)
+
+        def _run_conversation(**kwargs):
+            assert callable(state.agent.stream_delta_callback)
+            state.agent.stream_delta_callback("live chunk")
+            return {
+                "final_response": "final message",
+                "messages": [],
+            }
+
+        state.agent.run_conversation = MagicMock(side_effect=_run_conversation)
+
+        mock_conn = MagicMock(spec=acp.Client)
+        mock_conn.session_update = AsyncMock()
+        agent._conn = mock_conn
+
+        prompt = [TextContentBlock(type="text", text="stream this")]
+        await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
+
+        # Stream delta should have been sent as agent_message_chunk
+        streamed_updates = [
+            call[1].get("update") or call[0][1]
+            for call in mock_conn.session_update.call_args_list
+            if (call[1].get("update") or call[0][1]).session_update == "agent_message_chunk"
+        ]
+        assert any(update.content.text == "live chunk" for update in streamed_updates)
+
+        # Final response should NOT be sent separately when stream_delta_cb is active
+        final_texts = [u.content.text for u in streamed_updates if u.content.text == "final message"]
+        assert len(final_texts) == 0, "Final response should be suppressed when streaming"
+
+    @pytest.mark.asyncio
     async def test_prompt_sends_final_message_update(self, agent):
-        """The final response should be sent as an AgentMessageChunk."""
+        """Final response is suppressed when stream_delta_callback is active.
+
+        When streaming is wired (the normal ACP path with a connected
+        client), the client receives every text delta incrementally via
+        stream_delta_callback, so sending final_response again would
+        duplicate the output.  Verify the suppression works.
+        """
         new_resp = await agent.new_session(cwd=".")
         state = agent.session_manager.get_session(new_resp.session_id)
 
@@ -511,12 +552,18 @@ class TestPrompt:
         prompt = [TextContentBlock(type="text", text="help me")]
         await agent.prompt(prompt=prompt, session_id=new_resp.session_id)
 
-        # session_update should have been called with the final message
-        mock_conn.session_update.assert_called()
-        # Get the last call's update argument
-        last_call = mock_conn.session_update.call_args_list[-1]
-        update = last_call[1].get("update") or last_call[0][1]
-        assert update.session_update == "agent_message_chunk"
+        # With stream_delta_cb active, final_response must NOT appear as
+        # a separate agent_message_chunk — it was already delivered via deltas.
+        all_updates = [
+            call[1].get("update") or call[0][1]
+            for call in mock_conn.session_update.call_args_list
+            if hasattr(call[1].get("update") or call[0][1], "session_update")
+               and (call[1].get("update") or call[0][1]).session_update == "agent_message_chunk"
+        ]
+        final_chunks = [u for u in all_updates if u.content.text == "I can help with that!"]
+        assert len(final_chunks) == 0, (
+            "final_response should be suppressed when stream_delta_cb is active"
+        )
 
     @pytest.mark.asyncio
     async def test_prompt_auto_titles_session(self, agent):

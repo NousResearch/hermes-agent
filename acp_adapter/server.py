@@ -56,6 +56,7 @@ from acp_adapter.auth import detect_provider
 from acp_adapter.events import (
     make_message_cb,
     make_step_cb,
+    make_stream_delta_cb,
     make_thinking_cb,
     make_tool_progress_cb,
 )
@@ -545,12 +546,14 @@ class HermesACPAgent(acp.Agent):
             thinking_cb = make_thinking_cb(conn, session_id, loop)
             step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
             message_cb = make_message_cb(conn, session_id, loop)
+            stream_delta_cb = make_stream_delta_cb(conn, session_id, loop)
             approval_cb = make_approval_callback(conn.request_permission, loop, session_id)
         else:
             tool_progress_cb = None
             thinking_cb = None
             step_cb = None
             message_cb = None
+            stream_delta_cb = None
             approval_cb = None
 
         agent = state.agent
@@ -558,6 +561,7 @@ class HermesACPAgent(acp.Agent):
         agent.thinking_callback = thinking_cb
         agent.step_callback = step_cb
         agent.message_callback = message_cb
+        agent.stream_delta_callback = stream_delta_cb
 
         # Approval callback is per-thread (thread-local, GHSA-qg5c-hvr5-hjgr).
         # Set it INSIDE _run_agent so the TLS write happens in the executor
@@ -633,7 +637,10 @@ class HermesACPAgent(acp.Agent):
                 )
             except Exception:
                 logger.debug("Failed to auto-title ACP session %s", session_id, exc_info=True)
-        if final_response and conn:
+        # When stream_delta_callback is active, the client already received
+        # every text delta incrementally — sending final_response again would
+        # duplicate the output for clients that append chunks.
+        if final_response and conn and not stream_delta_cb:
             update = acp.update_agent_message_text(final_response)
             await conn.session_update(session_id, update)
 

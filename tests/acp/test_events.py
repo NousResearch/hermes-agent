@@ -12,6 +12,7 @@ from acp.schema import ToolCallStart, ToolCallProgress, AgentThoughtChunk, Agent
 from acp_adapter.events import (
     make_message_cb,
     make_step_cb,
+    make_stream_delta_cb,
     make_thinking_cb,
     make_tool_progress_cb,
 )
@@ -325,3 +326,30 @@ class TestMessageCallback:
             cb("")
 
         mock_rcts.assert_not_called()
+
+
+class TestStreamDeltaCallback:
+    def test_emits_agent_message_chunk(self, mock_conn, event_loop_fixture):
+        """Stream delta callback should emit AgentMessageChunk."""
+        loop = event_loop_fixture
+
+        cb = make_stream_delta_cb(mock_conn, "session-1", loop)
+
+        with patch("acp_adapter.events._send_update") as mock_send:
+            cb("Partial")
+
+        mock_send.assert_called_once()
+        update = mock_send.call_args.args[3]
+        assert update.session_update == "agent_message_chunk"
+        assert update.content.text == "Partial"
+
+    def test_ignores_empty_message(self, mock_conn, event_loop_fixture):
+        """Empty stream deltas should not emit any update."""
+        loop = event_loop_fixture
+
+        cb = make_stream_delta_cb(mock_conn, "session-1", loop)
+
+        with patch("acp_adapter.events._send_update") as mock_send:
+            cb("")
+
+        mock_send.assert_not_called()

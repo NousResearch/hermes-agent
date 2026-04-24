@@ -4874,6 +4874,106 @@ OFFICIAL_REPO_URLS = {
 }
 OFFICIAL_REPO_URL = "https://github.com/NousResearch/hermes-agent.git"
 SKIP_UPSTREAM_PROMPT_FILE = ".skip_upstream_prompt"
+INSTALL_CHANNEL_FILE = "install-channel"
+PROD_CHANNEL = "prod"
+
+# ═══════════════════════════════════════════════════════════════════════
+# PROD-CHANNEL UPDATE LOGIC — FORK-SPECIFIC, DO NOT REMOVE OR REFACTOR AWAY
+# ═══════════════════════════════════════════════════════════════════════
+#
+# WHY THIS EXISTS:
+#   The original `hermes update` command hardcoded branch="main" and silently
+#   switched to main/origin/main when on any other branch.  For agents running
+#   on a forked `prod` branch (with custom patches like ACP streaming fixes),
+#   this meant every update silently DROPPED all fork-only changes — the agent
+#   would end up on upstream `main` with no way to know it had lost its patches.
+#
+#   This was discovered after issue #9 (ACP stream_delta_callback) was merged
+#   into fork/prod but `hermes update` left the agent on origin/main without
+#   the fix.  The supply chain scanner also produced false positives because
+#   PR branches based on origin/main targeting prod created giant merge diffs.
+#
+# WHAT THESE FUNCTIONS DO:
+#   - _detect_update_channel(): reads ~/.hermes/install-channel or detects
+#     prod-branch heuristic → returns "prod" or "main"
+#   - _prod_channel_update(): tag-based sync of fork/prod to latest upstream
+#     release via temp worktree merge.  FAILS LOUDLY (sys.exit(1)) on:
+#       * wrong branch (not on prod)
+#       * merge conflict (prints conflicted files, does NOT fall back to main)
+#   - _resolve_fork_prod_ref() / _get_fork_remote_name(): git remote helpers
+#
+# IF YOU ARE RESOLVING A MERGE CONFLICT IN THIS SECTION:
+#   Do NOT remove these functions or route around them.  Doing so will cause
+#   prod-channel agents to silently fall back to main-channel behavior,
+#   losing fork-only changes on every future update.
+#   Keep both the channel detection AND the loud-fail guards.
+#
+# See: tests/hermes_cli/test_prod_channel_update.py (15 tests)
+# See: https://github.com/NousResearch/hermes-agent/pull/15071 (upstream PR)
+# ═══════════════════════════════════════════════════════════════════════
+
+
+def _detect_update_channel(git_cmd: list[str], cwd: Path) -> str:
+    """Detect which update channel this install uses.
+
+    Resolution order (first match wins):
+      1. ``~/.hermes/install-channel`` file content
+      2. Local ``prod`` branch that tracks a remote named ``fork`` or ``origin``
+         whose remote ref looks like a fork (not official repo)
+      3. Default: ``"main"``
+
+    Returns ``"prod"`` or ``"main"``.
+
+    **FORK-SPECIFIC**: This function enables the prod-channel update path.
+    Removing it causes fallback to "main", which silently drops fork changes.
+    DO NOT remove or bypass this detection.
+    """
+    from hermes_constants import get_hermes_home
+
+    # 1. Explicit channel file
+    channel_file = get_hermes_home() / INSTALL_CHANNEL_FILE
+    if channel_file.exists():
+        try:
+            raw = channel_file.read_text().strip().lower()
+            if raw in (PROD_CHANNEL, "main"):
+                return raw
+        except Exception:
+            pass
+
+    # 2. Heuristic: local prod branch tracking a fork remote
+    try:
+        result = subprocess.run(
+            git_cmd + ["rev-parse", "--abbrev-ref", "prod"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip() == "prod":
+            # Check what remote prod tracks
+            track_result = subprocess.run(
+                git_cmd + ["rev-parse", "--abbrev-ref", "prod@{upstream}"],
+                cwd=cwd,
+                capture_output=True,
+                text=True,
+            )
+            if track_result.returncode == 0:
+                upstream_ref = track_result.stdout.strip()
+                # fork/prod, origin/prod, etc. — any remote's prod branch
+                if upstream_ref and "/" in upstream_ref:
+                    remote_name = upstream_ref.split("/")[0]
+                    url_result = subprocess.run(
+                        git_cmd + ["remote", "get-url", remote_name],
+                        cwd=cwd,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if url_result.returncode == 0:
+                        if _is_fork(url_result.stdout.strip()):
+                            return PROD_CHANNEL
+    except Exception:
+        pass
+
+    return "main"
 
 
 def _get_origin_url(git_cmd: list[str], cwd: Path) -> Optional[str]:
@@ -5099,6 +5199,310 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path) -> None:
             "  ℹ Got updates from upstream but couldn't push to fork (no write access?)"
         )
         print("    Your local repo is updated, but your fork on GitHub may be behind.")
+
+
+def _prod_channel_update(
+    git_cmd: list[str],
+    cwd: Path,
+    gateway_mode: bool = False,
+) -> None:
+    """Update a prod-channel install: sync fork/prod with latest upstream tag.
+
+    **FORK-SPECIFIC — DO NOT REMOVE OR BYPASS.**  See the block comment above
+    _detect_update_channel() for the full rationale.  In short: without this
+    function, prod-channel agents silently fall back to main/origin/main on
+    every update, losing all fork-only patches.
+
+    This is the prod-specific update path.  It:
+
+    1. Verifies we are on the ``prod`` branch (fails loud if not).
+    2. Fetches upstream tags and the fork remote.
+    3. Finds the latest ``v*`` release tag.
+    4. If ``fork/prod`` already contains that tag → no-op (already up to date).
+    5. Otherwise merges the tag into ``fork/prod`` in a **temporary detached
+       worktree** so the live checkout stays clean.
+    6. If the merge is **clean** → pushes to ``fork/prod`` and fast-forwards
+       the local checkout.
+    7. If the merge **conflicts** → aborts, prints every conflicted file,
+       and exits with an error (does NOT silently fall back to main).
+
+    Loud-fail design choice:  A silent fallback to main was the original bug.
+    We intentionally exit(1) so the operator knows something needs attention.
+    """
+    import tempfile
+
+    from hermes_constants import get_hermes_home
+
+    gw_input_fn = (
+        (lambda prompt, default="": _gateway_prompt(prompt, default))
+        if gateway_mode
+        else None
+    )
+
+    # ── Step 1: Verify we're on prod ──────────────────────────────────
+    result = subprocess.run(
+        git_cmd + ["rev-parse", "--abbrev-ref", "HEAD"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    current_branch = result.stdout.strip()
+
+    if current_branch != PROD_CHANNEL:
+        print()
+        print("✗ UPDATE ABORTED — wrong branch for prod channel")
+        print()
+        print(f"  Your install channel is '{PROD_CHANNEL}' but you are on "
+              f"'{current_branch}'.")
+        print()
+        print("  Prod-channel updates MUST run from the 'prod' branch.")
+        print("  Switching to 'main' would discard your fork-only changes.")
+        print()
+        print("  To fix:")
+        print(f"    git checkout {PROD_CHANNEL}")
+        print(f"    git reset --hard fork/{PROD_CHANNEL}")
+        print("    hermes update")
+        sys.exit(1)
+
+    # ── Stash uncommitted changes before any destructive operations ─────
+    # The main-channel path does this via _stash_local_changes_if_needed().
+    # We must do the same here because Step 7 does `reset --hard` which
+    # would otherwise destroy uncommitted work.
+    auto_stash_ref = _stash_local_changes_if_needed(git_cmd, cwd)
+
+    # ── Step 2: Fetch upstream tags + fork remote ─────────────────────
+    print("→ Fetching upstream tags...")
+    try:
+        subprocess.run(
+            git_cmd + ["fetch", "origin", "--tags", "--quiet"],
+            cwd=cwd,
+            capture_output=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError as exc:
+        stderr = exc.stderr.strip() if exc.stderr else ""
+        print(f"✗ Failed to fetch upstream tags.")
+        if stderr:
+            print(f"  {stderr.splitlines()[0]}")
+        sys.exit(1)
+
+    # Also fetch the fork remote so we have a fresh fork/prod for the merge.
+    # Without this, the worktree merge could start from a stale fork/prod and
+    # produce unnecessary conflicts or fail to push (non-fast-forward).
+    fork_remote = _get_fork_remote_name(git_cmd, cwd)
+    try:
+        subprocess.run(
+            git_cmd + ["fetch", fork_remote, "--quiet"],
+            cwd=cwd,
+            capture_output=True,
+            check=True,
+        )
+    except subprocess.CalledProcessError:
+        pass  # non-fatal; best-effort
+
+    origin_url = _get_origin_url(git_cmd, cwd)
+    if _is_fork(origin_url):
+        try:
+            subprocess.run(
+                git_cmd + ["fetch", "origin", "--quiet"],
+                cwd=cwd,
+                capture_output=True,
+                check=True,
+            )
+        except subprocess.CalledProcessError:
+            pass  # non-fatal; we may still have a fresh enough fork/prod
+
+    # ── Step 3: Find latest release tag ────────────────────────────────
+    result = subprocess.run(
+        git_cmd + ["tag", "-l", "v*", "--sort=-version:refname"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    tags = [t for t in result.stdout.strip().splitlines() if t]
+    if not tags:
+        print("✗ No v* release tags found on upstream.")
+        sys.exit(1)
+
+    latest_tag = tags[0]
+
+    # ── Step 4: Check if fork/prod already has this tag ────────────────
+    # Determine which remote ref is the canonical fork prod
+    fork_prod_ref = _resolve_fork_prod_ref(git_cmd, cwd)
+
+    result = subprocess.run(
+        git_cmd + ["merge-base", "--is-ancestor", latest_tag, fork_prod_ref],
+        cwd=cwd,
+        capture_output=True,
+    )
+    if result.returncode == 0:
+        _invalidate_update_cache()
+        print(f"✓ Already up to date ({latest_tag})")
+        return
+
+    print(f"→ Syncing {PROD_CHANNEL} to upstream {latest_tag}...")
+
+    # ── Step 5-7: Merge tag into fork/prod via temp worktree ───────────
+    tmpdir = None
+    try:
+        tmpdir = tempfile.mkdtemp(prefix="hermes-prod-update-")
+
+        # Create a detached worktree from fork/prod
+        subprocess.run(
+            git_cmd + ["worktree", "add", "--detach", tmpdir, fork_prod_ref],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        # Attempt the merge
+        merge_result = subprocess.run(
+            git_cmd + ["merge", "--no-commit", "--no-ff", latest_tag],
+            cwd=tmpdir,
+            capture_output=True,
+            text=True,
+        )
+
+        if merge_result.returncode != 0:
+            # Check if it's a real conflict or just a failed merge for other reasons
+            diff_result = subprocess.run(
+                git_cmd + ["diff", "--name-only", "--diff-filter=U"],
+                cwd=tmpdir,
+                capture_output=True,
+                text=True,
+            )
+            conflicted = [
+                f for f in diff_result.stdout.strip().splitlines() if f
+            ]
+
+            if conflicted:
+                print()
+                print("✗ MERGE CONFLICTS — cannot auto-sync prod to "
+                      f"{latest_tag}")
+                print()
+                print(f"  {len(conflicted)} file(s) conflict between your "
+                      "fork changes and upstream:")
+                for cf in conflicted:
+                    print(f"    - {cf}")
+                print()
+                print("  This means upstream changed files that your fork also "
+                      "modified.")
+                print("  A maintainer must resolve these conflicts manually.")
+                print()
+                print("  To fix:")
+                print(f"    cd {tmpdir}")
+                print("    # Resolve each conflicted file, then:")
+                print("    git add <resolved-files>")
+                print('    git commit -m "merge: sync prod to '
+                      f'{latest_tag}"')
+                print(f"    git push origin HEAD:{PROD_CHANNEL}")
+                return  # don't sys.exit — let the rest of update finish
+            else:
+                # Non-conflict failure (e.g. GPG sig issue)
+                print(f"⚠ Merge reported error but no file conflicts.")
+                print(f"  {merge_result.stderr.strip()[:200] if merge_result.stderr else 'Unknown error'}")
+                print("  Aborting this sync attempt.")
+                subprocess.run(
+                    git_cmd + ["merge", "--abort"],
+                    cwd=tmpdir,
+                    capture_output=True,
+                )
+                return
+
+        # Clean merge! Commit it.
+        subprocess.run(
+            git_cmd + ["commit", "-m",
+                       f"merge: sync {PROD_CHANNEL} to upstream {latest_tag}\n\n"
+                       f"Co-Authored-By: hermes-update <update@hermes.ai>"],
+            cwd=tmpdir,
+            capture_output=True,
+            text=True,
+            check=True,
+        )
+
+        # Push to fork remote
+        print(f"→ Pushing {PROD_CHANNEL}...")
+        push_remote = _get_fork_remote_name(git_cmd, cwd)
+        push_result = subprocess.run(
+            git_cmd + ["push", push_remote, f"HEAD:{PROD_CHANNEL}"],
+            cwd=tmpdir,
+            capture_output=True,
+            text=True,
+        )
+        if push_result.returncode != 0:
+            print(f"⚠ Push to {push_remote}/{PROD_CHANNEL} failed:")
+            print(f"  {push_result.stderr.strip().splitlines()[0] if push_result.stderr else 'Unknown error'}")
+            print(f"  Local worktree at {tmpdir} has the merged result.")
+            print(f"  Push manually: cd {tmpdir} && git push "
+                  f"{push_remote} HEAD:{PROD_CHANNEL}")
+            return
+
+        # Fast-forward local prod to match
+        subprocess.run(
+            git_cmd + ["fetch", push_remote, PROD_CHANNEL],
+            cwd=cwd,
+            capture_output=True,
+            check=True,
+        )
+        subprocess.run(
+            git_cmd + ["reset", "--hard", f"{push_remote}/{PROD_CHANNEL}"],
+            cwd=cwd,
+            capture_output=True,
+            check=True,
+        )
+
+        # Restore any stashed uncommitted changes
+        if auto_stash_ref is not None:
+            _restore_stashed_changes(git_cmd, cwd, auto_stash_ref)
+
+        _invalidate_update_cache()
+        print(f"✓ {PROD_CHANNEL} synced to {latest_tag}")
+
+    finally:
+        # Clean up temp worktree
+        if tmpdir:
+            try:
+                subprocess.run(
+                    git_cmd + ["worktree", "remove", "--force", tmpdir],
+                    cwd=cwd,
+                    capture_output=True,
+                )
+            except Exception:
+                pass
+
+
+def _resolve_fork_prod_ref(git_cmd: list[str], cwd: Path) -> str:
+    """Resolve the git ref for the canonical fork prod branch.
+
+    Checks remotes in order: ``fork``, then ``origin``.
+    Returns something like ``fork/prod`` or ``origin/prod``.
+    """
+    for remote in ("fork", "origin"):
+        result = subprocess.run(
+            git_cmd + ["rev-parse", "--verify", f"{remote}/{PROD_CHANNEL}"],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return f"{remote}/{PROD_CHANNEL}"
+    # Fallback: local prod branch
+    return PROD_CHANNEL
+
+
+def _get_fork_remote_name(git_cmd: list[str], cwd: Path) -> str:
+    """Return the name of the fork remote ('fork' preferred, else 'origin')."""
+    result = subprocess.run(
+        git_cmd + ["remote", "get-url", "fork"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        return "fork"
+    return "origin"
 
 
 def _invalidate_update_cache():
@@ -5548,108 +5952,64 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
         current_branch = result.stdout.strip()
 
-        # Always update against main
-        branch = "main"
+        # ── Detect update channel ─────────────────────────────────────
+        # FORK-SPECIFIC: This routing is critical.  Do NOT remove the
+        # prod-channel branch below or merge it into the main-channel path.
+        # See block comment above _detect_update_channel() for rationale.
+        update_channel = _detect_update_channel(git_cmd, PROJECT_ROOT)
 
-        # If user is on a non-main branch or detached HEAD, switch to main
-        if current_branch != "main":
-            label = (
-                "detached HEAD"
-                if current_branch == "HEAD"
-                else f"branch '{current_branch}'"
+        # ── Prod channel: use tag-based fork/prod sync ───────────────
+        # This branch MUST exist.  Removing it re-introduces the silent
+        # fallback bug where fork/prod agents end up on origin/main.
+        if update_channel == PROD_CHANNEL:
+            print(f"  (update channel: {PROD_CHANNEL})")
+            print()
+            _prod_channel_update(git_cmd, PROJECT_ROOT, gateway_mode=gateway_mode)
+            # _prod_channel_update handles stashing, fetching, merging,
+            # and fast-forwarding.  Fall through to dependency install.
+            auto_stash_ref = None  # prod path manages its own stash
+        else:
+            # ── Main channel: original behavior ───────────────────────
+            branch = "main"
+
+            # If user is on a non-main branch or detached HEAD, switch to main
+            if current_branch != "main":
+                label = (
+                    "detached HEAD"
+                    if current_branch == "HEAD"
+                    else f"branch '{current_branch}'"
+                )
+                print(f"  ⚠ Currently on {label} — switching to main for update...")
+                # Stash before checkout so uncommitted work isn't lost
+                auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+                subprocess.run(
+                    git_cmd + ["checkout", "main"],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+            else:
+                auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+
+            prompt_for_restore = auto_stash_ref is not None and (
+                gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty())
             )
-            print(f"  ⚠ Currently on {label} — switching to main for update...")
-            # Stash before checkout so uncommitted work isn't lost
-            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
-            subprocess.run(
-                git_cmd + ["checkout", "main"],
+
+            # Check if there are updates
+            result = subprocess.run(
+                git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
                 cwd=PROJECT_ROOT,
                 capture_output=True,
                 text=True,
                 check=True,
             )
-        else:
-            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+            commit_count = int(result.stdout.strip())
 
-        prompt_for_restore = auto_stash_ref is not None and (
-            gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty())
-        )
-
-        # Check if there are updates
-        result = subprocess.run(
-            git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        commit_count = int(result.stdout.strip())
-
-        if commit_count == 0:
-            _invalidate_update_cache()
-            # Restore stash and switch back to original branch if we moved
-            if auto_stash_ref is not None:
-                _restore_stashed_changes(
-                    git_cmd,
-                    PROJECT_ROOT,
-                    auto_stash_ref,
-                    prompt_user=prompt_for_restore,
-                    input_fn=gw_input_fn,
-                )
-            if current_branch not in ("main", "HEAD"):
-                subprocess.run(
-                    git_cmd + ["checkout", current_branch],
-                    cwd=PROJECT_ROOT,
-                    capture_output=True,
-                    text=True,
-                    check=False,
-                )
-            print("✓ Already up to date!")
-            return
-
-        print(f"→ Found {commit_count} new commit(s)")
-
-        print("→ Pulling updates...")
-        update_succeeded = False
-        try:
-            pull_result = subprocess.run(
-                git_cmd + ["pull", "--ff-only", "origin", branch],
-                cwd=PROJECT_ROOT,
-                capture_output=True,
-                text=True,
-            )
-            if pull_result.returncode != 0:
-                # ff-only failed — local and remote have diverged (e.g. upstream
-                # force-pushed or rebase).  Since local changes are already
-                # stashed, reset to match the remote exactly.
-                print(
-                    "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
-                )
-                reset_result = subprocess.run(
-                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
-                    cwd=PROJECT_ROOT,
-                    capture_output=True,
-                    text=True,
-                )
-                if reset_result.returncode != 0:
-                    print(f"✗ Failed to reset to origin/{branch}.")
-                    if reset_result.stderr.strip():
-                        print(f"  {reset_result.stderr.strip()}")
-                    print(
-                        "  Try manually: git fetch origin && git reset --hard origin/main"
-                    )
-                    sys.exit(1)
-            update_succeeded = True
-        finally:
-            if auto_stash_ref is not None:
-                # Don't attempt stash restore if the code update itself failed —
-                # working tree is in an unknown state.
-                if not update_succeeded:
-                    print(
-                        f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})"
-                    )
-                    print(f"  Restore manually with: git stash apply")
-                else:
+            if commit_count == 0:
+                _invalidate_update_cache()
+                # Restore stash and switch back to original branch if we moved
+                if auto_stash_ref is not None:
                     _restore_stashed_changes(
                         git_cmd,
                         PROJECT_ROOT,
@@ -5657,6 +6017,67 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         prompt_user=prompt_for_restore,
                         input_fn=gw_input_fn,
                     )
+                if current_branch not in ("main", "HEAD"):
+                    subprocess.run(
+                        git_cmd + ["checkout", current_branch],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                print("✓ Already up to date!")
+                return
+
+            print(f"→ Found {commit_count} new commit(s)")
+
+            print("→ Pulling updates...")
+            update_succeeded = False
+            try:
+                pull_result = subprocess.run(
+                    git_cmd + ["pull", "--ff-only", "origin", branch],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                )
+                if pull_result.returncode != 0:
+                    # ff-only failed — local and remote have diverged (e.g. upstream
+                    # force-pushed or rebase).  Since local changes are already
+                    # stashed, reset to match the remote exactly.
+                    print(
+                        "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
+                    )
+                    reset_result = subprocess.run(
+                        git_cmd + ["reset", "--hard", f"origin/{branch}"],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if reset_result.returncode != 0:
+                        print(f"✗ Failed to reset to origin/{branch}.")
+                        if reset_result.stderr.strip():
+                            print(f"  {reset_result.stderr.strip()}")
+                        print(
+                            "  Try manually: git fetch origin && git reset --hard origin/main"
+                        )
+                        sys.exit(1)
+                update_succeeded = True
+            finally:
+                if auto_stash_ref is not None:
+                    # Don't attempt stash restore if the code update itself failed —
+                    # working tree is in an unknown state.
+                    if not update_succeeded:
+                        print(
+                            f"  ℹ️  Local changes preserved in stash (ref: {auto_stash_ref})"
+                        )
+                        print(f"  Restore manually with: git stash apply")
+                    else:
+                        _restore_stashed_changes(
+                            git_cmd,
+                            PROJECT_ROOT,
+                            auto_stash_ref,
+                            prompt_user=prompt_for_restore,
+                            input_fn=gw_input_fn,
+                        )
 
         _invalidate_update_cache()
 

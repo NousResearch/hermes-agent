@@ -9,6 +9,7 @@ Run with:  python -m pytest tests/test_delegate.py -v
    or:     python tests/test_delegate.py
 """
 
+import importlib
 import json
 import os
 import sys
@@ -1398,6 +1399,51 @@ class TestDelegationReasoningEffort(unittest.TestCase):
 
 class TestDispatchDelegateTask(unittest.TestCase):
     """Tests for the _dispatch_delegate_task helper and full param forwarding."""
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_model_forwarded(self, mock_creds, mock_cfg):
+        """Dispatcher-level model overrides must reach child agent construction."""
+        mock_creds.return_value = {
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+            "model": None,
+        }
+        parent = _make_mock_parent(depth=0)
+        with patch("tools.delegate_tool._build_child_agent") as mock_build:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "api_calls": 1,
+                "messages": [],
+            }
+            mock_child._delegate_saved_tool_names = []
+            mock_child._credential_pool = None
+            mock_child.session_prompt_tokens = 0
+            mock_child.session_completion_tokens = 0
+            mock_child.model = "test"
+            mock_build.return_value = mock_child
+
+            sys.modules.pop("run_agent", None)
+            with patch.dict(sys.modules, {
+                "openai": MagicMock(OpenAI=MagicMock()),
+                "fire": MagicMock(),
+            }):
+                run_agent = importlib.import_module("run_agent")
+
+            run_agent.AIAgent._dispatch_delegate_task(
+                parent,
+                {
+                    "goal": "test",
+                    "model": "anthropic/claude-sonnet-4-20250514",
+                },
+            )
+
+            _, kwargs = mock_build.call_args
+            self.assertEqual(kwargs["model"], "anthropic/claude-sonnet-4-20250514")
 
     @patch("tools.delegate_tool._load_config", return_value={})
     @patch("tools.delegate_tool._resolve_delegation_credentials")

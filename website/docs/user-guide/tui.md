@@ -120,7 +120,7 @@ display:
   sections:                  # optional: per-section overrides (any subset)
     thinking: expanded       # always open
     tools: expanded          # always open
-    activity: hidden         # never show errors/warnings/info panel
+    activity: collapsed      # opt back IN to the activity panel (hidden by default)
   mouse_tracking: true       # disable if your terminal conflicts with mouse reporting
 ```
 
@@ -130,10 +130,26 @@ Runtime toggles:
 - `/details <section> [hidden|collapsed|expanded|reset]` — override one section
   (sections: `thinking`, `tools`, `subagents`, `activity`)
 
-Per-section overrides take precedence over the global `details_mode`. With
-`activity: hidden`, errors/warnings are suppressed entirely (the floating-alert
-fallback that normally surfaces under `details_mode: hidden` is also silenced
-when activity is explicitly hidden).
+**Default visibility**
+
+- `thinking`, `tools`, `subagents` — fall through to the global `details_mode`
+  (collapsed under chevron by default, click to expand).
+- `activity` — **hidden by default**. The activity panel surfaces ambient
+  meta (gateway hints, terminal-parity nudges, background notifications) and
+  is noise for most day-to-day use. Tool failures still render inline on the
+  failing tool row, so this default suppresses the noise feed without losing
+  the signal.
+
+Per-section overrides take precedence over both the section default and the
+global `details_mode`. To opt the activity panel back in:
+
+- `display.sections.activity: collapsed` — under a chevron
+- `display.sections.activity: expanded` — always open
+- `/details activity collapsed` at runtime
+
+With `activity: hidden` (the default), errors/warnings are suppressed entirely
+— the floating-alert fallback that surfaces under `details_mode: hidden` is
+silenced as well.
 
 ## Sessions
 

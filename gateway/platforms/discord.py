@@ -3871,6 +3871,15 @@ if DISCORD_AVAILABLE:
 
             self.resolved = True
             model_id = interaction.data["values"][0]
+            self.clear_items()
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="⚙ Switching Model",
+                    description=f"Switching to `{model_id}`...",
+                    color=discord.Color.blue(),
+                ),
+                view=None,
+            )
 
             try:
                 result_text = await self.on_model_selected(
@@ -3881,14 +3890,13 @@ if DISCORD_AVAILABLE:
             except Exception as exc:
                 result_text = f"Error switching model: {exc}"
 
-            self.clear_items()
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 embed=discord.Embed(
                     title="⚙ Model Switched",
                     description=result_text,
                     color=discord.Color.green(),
                 ),
-                view=self,
+                view=None,
             )
 
         async def _on_back(self, interaction: discord.Interaction):

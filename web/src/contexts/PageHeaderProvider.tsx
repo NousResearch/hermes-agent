@@ -79,7 +79,7 @@ export function PageHeaderProvider({
           </div>
         </header>
         <main
-          className="min-h-0 w-full min-w-0 flex-1 overflow-y-auto overflow-x-hidden"
+          className="flex min-h-0 w-full min-w-0 flex-1 flex-col overflow-y-auto overflow-x-hidden"
         >
           {children}
         </main>

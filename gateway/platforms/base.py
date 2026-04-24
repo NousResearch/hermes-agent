@@ -2432,11 +2432,15 @@ class BasePlatformAdapter(ABC):
                 # Send the text portion
                 if text_content:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
+                    # Build send metadata: thread_id + mention target for platforms that need it
+                    send_metadata = dict(_thread_metadata) if _thread_metadata else {}
+                    if event.source.user_id:
+                        send_metadata["mention_user_id"] = event.source.user_id
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,
                         reply_to=event.message_id,
-                        metadata=_thread_metadata,
+                        metadata=send_metadata,
                     )
                     _record_delivery(result)
 

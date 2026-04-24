@@ -909,6 +909,11 @@ class GatewayRunner:
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
 
+        # Cross-session human approval requests created via request_human_approval.
+        # Key: approval_id, Value: {event, result, question, target, requester_*...}
+        self._pending_human_approvals: Dict[str, Dict[str, Any]] = {}
+        self._pending_human_approvals_lock = threading.Lock()
+
         # Track platforms that failed to connect for background reconnection.
         # Key: Platform enum, Value: {"config": platform_config, "attempts": int, "next_retry": float}
         self._failed_platforms: Dict[Platform, Dict[str, Any]] = {}
@@ -4080,7 +4085,22 @@ class GatewayRunner:
             if normalized_user_id:
                 check_ids.add(normalized_user_id)
 
-        return bool(check_ids & allowed_ids)
+        if check_ids & allowed_ids:
+            return True
+
+        # Delegate to platform adapter for extended checks (e.g. Discord
+        # role-based allowlist via DISCORD_ALLOWED_ROLES).  The adapter's
+        # _is_allowed_user performs the role lookup which requires the
+        # discord.py client/guild cache — something the gateway layer
+        # cannot replicate on its own.
+        if source.platform == Platform.DISCORD:
+            adapter = self.adapters.get(Platform.DISCORD)
+            if adapter and hasattr(adapter, "_is_allowed_user"):
+                _is_dm = getattr(source, "chat_type", "dm") == "dm"
+                if adapter._is_allowed_user(user_id, is_dm=_is_dm):
+                    return True
+
+        return False
 
     def _get_unauthorized_dm_behavior(self, platform: Optional[Platform]) -> str:
         """Return how unauthorized DMs should be handled for a platform.
@@ -4149,6 +4169,224 @@ class GatewayRunner:
             return "ignore"
 
         return "pair"
+
+    def _new_human_approval_id(self) -> str:
+        import secrets
+        return f"ha_{secrets.token_hex(4)}"
+
+    def _prune_expired_human_approvals(self) -> None:
+        now = time.time()
+        with self._pending_human_approvals_lock:
+            expired = [
+                approval_id
+                for approval_id, entry in self._pending_human_approvals.items()
+                if float(entry.get("expires_at", 0) or 0) <= now
+            ]
+            for approval_id in expired:
+                entry = self._pending_human_approvals.pop(approval_id, None)
+                if entry and entry.get("event") and not entry["event"].is_set():
+                    entry["result"] = {
+                        "decision": "timeout",
+                        "approved": False,
+                        "approval_id": approval_id,
+                    }
+                    entry["event"].set()
+
+    def _resolve_human_approval_target(self, target: str) -> dict[str, Any]:
+        from gateway.config import load_gateway_config, Platform
+        from tools.send_message_tool import _parse_target_ref
+
+        platform_map = {
+            "telegram": Platform.TELEGRAM,
+            "discord": Platform.DISCORD,
+            "slack": Platform.SLACK,
+            "whatsapp": Platform.WHATSAPP,
+            "signal": Platform.SIGNAL,
+            "matrix": Platform.MATRIX,
+            "mattermost": Platform.MATTERMOST,
+            "email": Platform.EMAIL,
+            "sms": Platform.SMS,
+            "dingtalk": Platform.DINGTALK,
+            "feishu": Platform.FEISHU,
+            "wecom": Platform.WECOM,
+            "wecom_callback": Platform.WECOM_CALLBACK,
+            "weixin": Platform.WEIXIN,
+            "bluebubbles": Platform.BLUEBUBBLES,
+            "qqbot": Platform.QQBOT,
+            "homeassistant": Platform.HOMEASSISTANT,
+        }
+
+        parts = str(target or "").split(":", 1)
+        platform_name = parts[0].strip().lower()
+        target_ref = parts[1].strip() if len(parts) > 1 else None
+        platform = platform_map.get(platform_name)
+        if not platform:
+            raise ValueError(f"Unknown approval target platform: {platform_name}")
+
+        config = load_gateway_config()
+        chat_id = None
+        thread_id = None
+        if target_ref:
+            chat_id, thread_id, is_explicit = _parse_target_ref(platform_name, target_ref)
+            if not is_explicit and not chat_id:
+                raise ValueError(
+                    f"Human approval target must use an explicit chat ID, got: {target}"
+                )
+        else:
+            home = config.get_home_channel(platform)
+            if not home:
+                raise ValueError(f"No home channel configured for approval target {platform_name}")
+            chat_id = str(home.chat_id)
+
+        expected_user_id = None
+        if platform == Platform.TELEGRAM and chat_id and str(chat_id).lstrip("-").isdigit() and not str(chat_id).startswith("-"):
+            expected_user_id = str(chat_id)
+
+        return {
+            "platform": platform,
+            "platform_name": platform_name,
+            "chat_id": str(chat_id),
+            "thread_id": str(thread_id) if thread_id else None,
+            "expected_user_id": expected_user_id,
+        }
+
+    def _request_human_approval_callback(
+        self,
+        *,
+        question: str,
+        target: str,
+        timeout_seconds: int,
+        metadata: dict[str, Any] | None = None,
+        requester_source: SessionSource | None = None,
+    ) -> str:
+        import json as _json
+        metadata = metadata or {}
+        self._prune_expired_human_approvals()
+        target_info = self._resolve_human_approval_target(target)
+        approval_id = self._new_human_approval_id()
+        wait_event = threading.Event()
+
+        requester_platform = requester_source.platform.value if requester_source and requester_source.platform else metadata.get("requester_platform", "")
+        requester_user_id = requester_source.user_id if requester_source else metadata.get("requester_user_id")
+        requester_chat_id = requester_source.chat_id if requester_source else metadata.get("requester_chat_id")
+        requester_thread_id = requester_source.thread_id if requester_source else metadata.get("requester_thread_id")
+        excerpt = str(metadata.get("excerpt", "")).strip()
+        if len(excerpt) > 240:
+            excerpt = excerpt[:240] + "…"
+
+        entry = {
+            "approval_id": approval_id,
+            "question": question,
+            "target": target,
+            "target_info": target_info,
+            "requester_platform": requester_platform,
+            "requester_user_id": requester_user_id,
+            "requester_chat_id": requester_chat_id,
+            "requester_thread_id": requester_thread_id,
+            "requester_user_name": requester_source.user_name if requester_source else metadata.get("requester_user_name"),
+            "excerpt": excerpt,
+            "event": wait_event,
+            "result": None,
+            "created_at": time.time(),
+            "expires_at": time.time() + int(timeout_seconds),
+        }
+        with self._pending_human_approvals_lock:
+            self._pending_human_approvals[approval_id] = entry
+
+        lines = [
+            f"[APPROVAL REQUEST #{approval_id}]",
+            "",
+            question.strip(),
+        ]
+        if requester_platform or requester_user_id or requester_chat_id:
+            lines.extend([
+                "",
+                f"Requester: platform={requester_platform or 'unknown'} user_id={requester_user_id or 'unknown'} chat_id={requester_chat_id or 'unknown'}" + (f" thread_id={requester_thread_id}" if requester_thread_id else ""),
+            ])
+        if excerpt:
+            lines.extend(["", f'Excerpt: "{excerpt}"'])
+        lines.extend([
+            "",
+            f"Reply with: `approve {approval_id}` or `deny {approval_id}`",
+            f"Timeout: {int(timeout_seconds)}s",
+        ])
+        payload = "\n".join(lines)
+
+        adapter = self.adapters.get(target_info["platform"])
+        if not adapter:
+            with self._pending_human_approvals_lock:
+                self._pending_human_approvals.pop(approval_id, None)
+            return _json.dumps({
+                "error": f"Approval target platform {target_info['platform_name']} is not connected.",
+                "approval_id": approval_id,
+            })
+
+        metadata_out = {"thread_id": target_info["thread_id"]} if target_info.get("thread_id") else None
+        fut = asyncio.run_coroutine_threadsafe(
+            adapter.send(target_info["chat_id"], payload, metadata=metadata_out),
+            self.loop,
+        )
+        fut.result(timeout=30)
+
+        if not wait_event.wait(timeout_seconds):
+            with self._pending_human_approvals_lock:
+                self._pending_human_approvals.pop(approval_id, None)
+            return _json.dumps({
+                "approval_id": approval_id,
+                "approved": False,
+                "decision": "timeout",
+            }, ensure_ascii=False)
+
+        with self._pending_human_approvals_lock:
+            resolved = self._pending_human_approvals.pop(approval_id, None) or entry
+        result = resolved.get("result") or {"approval_id": approval_id, "approved": False, "decision": "timeout"}
+        return _json.dumps(result, ensure_ascii=False)
+
+    def _maybe_handle_human_approval_response(self, event: MessageEvent) -> Optional[str]:
+        import re as _re
+        self._prune_expired_human_approvals()
+        raw = (event.text or "").strip()
+        if not raw:
+            return None
+
+        m = _re.fullmatch(r"/?(approve|deny)\s+(ha_[0-9a-fA-F]{8})\s*", raw, flags=_re.IGNORECASE)
+        if not m:
+            return None
+
+        decision = m.group(1).lower()
+        approval_id = m.group(2)
+        with self._pending_human_approvals_lock:
+            entry = self._pending_human_approvals.get(approval_id)
+            if not entry:
+                return f"No pending approval found for `{approval_id}`."
+            target_info = entry.get("target_info") or {}
+            expected_platform = target_info.get("platform")
+            expected_chat_id = str(target_info.get("chat_id") or "")
+            expected_thread_id = str(target_info.get("thread_id") or "")
+            expected_user_id = str(target_info.get("expected_user_id") or "")
+
+            if expected_platform and event.source.platform != expected_platform:
+                return None
+            if expected_chat_id and str(event.source.chat_id or "") != expected_chat_id:
+                return None
+            if expected_thread_id and str(event.source.thread_id or "") != expected_thread_id:
+                return None
+            if expected_user_id and str(event.source.user_id or "") != expected_user_id:
+                return None
+
+            entry["result"] = {
+                "approval_id": approval_id,
+                "approved": decision == "approve",
+                "decision": decision,
+                "approver_platform": event.source.platform.value if event.source.platform else "",
+                "approver_user_id": event.source.user_id,
+                "approver_chat_id": event.source.chat_id,
+            }
+            ev = entry.get("event")
+            if ev and not ev.is_set():
+                ev.set()
+
+        return f"✅ Approval `{approval_id}` recorded as **{decision}**."
 
     async def _handle_message(self, event: MessageEvent) -> Optional[str]:
         """
@@ -4369,6 +4607,10 @@ class GatewayRunner:
             # the confirm doesn't block normal usage indefinitely.  The user
             # clearly moved on.
             _slash_confirm_mod.clear_if_stale(_quick_key)
+
+        _human_approval_result = self._maybe_handle_human_approval_response(event)
+        if _human_approval_result is not None:
+            return _human_approval_result
 
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages
@@ -6205,30 +6447,27 @@ class GatewayRunner:
                     if _resets_in and _resets_in > 0:
                         import math
                         _hours = math.ceil(_resets_in / 3600)
-                        status_hint = f" Your plan's usage limit has been reached. It resets in ~{_hours}h."
+                        status_hint = f" το plan σου εφτασε το οριο. Resets σε ~{_hours}h."
                     else:
-                        status_hint = " Your plan's usage limit has been reached. Please wait until it resets."
+                        status_hint = " το plan σου εφτασε το οριο, περιμενε μεχρι το reset."
                 else:
-                    status_hint = " You are being rate-limited. Please wait a moment and try again."
+                    status_hint = " με ραιτ-λιμιταρει, περιμενε λιγο."
             elif status_code == 529:
-                status_hint = " The API is temporarily overloaded. Please try again shortly."
+                status_hint = " το API ειναι overloaded, δοκιμασε σε λιγο."
             elif status_code in (400, 500):
                 # 400 with a large session is context overflow.
                 # 500 with a large session often means the payload is too large
                 # for the API to process — treat it the same way.
                 if _hist_len > 50:
                     return (
-                        "⚠️ Session too large for the model's context window.\n"
-                        "Use /compact to compress the conversation, or "
-                        "/reset to start fresh."
+                        "⚠️ το session ειναι πολυ μεγαλο για το context window του model.\n"
+                        "κανε /compact για συμπιεση η /reset για καθαρη αρχη."
                     )
                 elif status_code == 400:
-                    status_hint = " The request was rejected by the API."
+                    status_hint = " το request απορριφθηκε απο το API."
             return (
-                f"Sorry, I encountered an error ({error_type}).\n"
-                f"{error_detail}\n"
-                f"{status_hint}"
-                "Try again or use /reset to start a fresh session."
+                f"κολλησα στιγμιαια ({error_type}). {status_hint}".rstrip()
+                + "\nδοκιμασε ξανα, η /reset για καθαρη αρχη."
             )
         finally:
             # Restore session context variables to their pre-handler state
@@ -11779,6 +12018,7 @@ class GatewayRunner:
                     chat_type=source.chat_type,
                     thread_id=source.thread_id,
                     gateway_session_key=session_key,
+                    human_approval_callback=None,
                     session_db=self._session_db,
                     fallback_model=self._fallback_model,
                 )
@@ -11795,6 +12035,10 @@ class GatewayRunner:
             agent.stream_delta_callback = _stream_delta_cb
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
             agent.status_callback = _status_callback_sync
+            agent.human_approval_callback = lambda **kw: self._request_human_approval_callback(
+                requester_source=source,
+                **kw,
+            )
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides") or {}

@@ -666,6 +666,16 @@ def handle_function_call(
     Returns:
         Function result as a JSON string.
     """
+    # Reverse the rename applied for Anthropic's Claude Code billing route.
+    # Some tool names / combinations trigger a 400 "extra usage" classification,
+    # so anthropic_adapter renames them on the wire; map them back here.
+    try:
+        from agent.anthropic_adapter import _TOOL_NAME_RENAME_REVERSE
+        if function_name in _TOOL_NAME_RENAME_REVERSE:
+            function_name = _TOOL_NAME_RENAME_REVERSE[function_name]
+    except Exception:
+        pass
+
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
 

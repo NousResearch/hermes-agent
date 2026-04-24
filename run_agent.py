@@ -919,6 +919,7 @@ class AIAgent:
         thinking_callback: callable = None,
         reasoning_callback: callable = None,
         clarify_callback: callable = None,
+        human_approval_callback: callable = None,
         step_callback: callable = None,
         stream_delta_callback: callable = None,
         interim_assistant_callback: callable = None,
@@ -976,6 +977,8 @@ class AIAgent:
             tool_progress_callback (callable): Callback function(tool_name, args_preview) for progress notifications
             clarify_callback (callable): Callback function(question, choices) -> str for interactive user questions.
                 Provided by the platform layer (CLI or gateway). If None, the clarify tool returns an error.
+            human_approval_callback (callable): Callback function(question, target, timeout_seconds, metadata=None) -> str
+                for cross-session human approval requests. Provided by the gateway. If None, the tool returns an error.
             max_tokens (int): Maximum tokens for model responses (optional, uses model default if not set)
             reasoning_config (Dict): OpenRouter reasoning configuration override (e.g. {"effort": "none"} to disable thinking).
                 If None, defaults to {"enabled": True, "effort": "medium"} for OpenRouter. Set to disable/customize reasoning.
@@ -1139,6 +1142,7 @@ class AIAgent:
         self.thinking_callback = thinking_callback
         self.reasoning_callback = reasoning_callback
         self.clarify_callback = clarify_callback
+        self.human_approval_callback = human_approval_callback
         self.step_callback = step_callback
         self.stream_delta_callback = stream_delta_callback
         self.interim_assistant_callback = interim_assistant_callback
@@ -9219,6 +9223,15 @@ class AIAgent:
                 question=function_args.get("question", ""),
                 choices=function_args.get("choices"),
                 callback=self.clarify_callback,
+            )
+        elif function_name == "request_human_approval":
+            from tools.human_approval_tool import request_human_approval_tool as _approval_tool
+            return _approval_tool(
+                question=function_args.get("question", ""),
+                target=function_args.get("target", ""),
+                timeout_seconds=function_args.get("timeout_seconds"),
+                metadata=function_args.get("metadata"),
+                callback=self.human_approval_callback,
             )
         elif function_name == "delegate_task":
             return self._dispatch_delegate_task(function_args)

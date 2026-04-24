@@ -148,10 +148,42 @@ def send_message_tool(args, **kw):
     """Handle cross-channel send_message tool calls."""
     action = args.get("action", "send")
 
+    identity_error = _gateway_context_identity_error()
+    if identity_error:
+        return identity_error
+
     if action == "list":
         return _handle_list()
 
     return _handle_send(args)
+
+
+def _gateway_context_identity_error():
+    """Fail closed for gateway sessions that lack an authoritative sender ID.
+
+    Cross-platform messaging can leak data outside the current chat. In gateway
+    contexts we must know the numeric sender identity before exposing the target
+    directory or sending anything. CLI/cron/local contexts do not set a gateway
+    platform and keep their existing behavior.
+    """
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:
+        return None
+
+    platform = (get_session_env("HERMES_SESSION_PLATFORM", "") or "").strip().lower()
+    if not platform or platform in {"local", "cli"}:
+        return None
+
+    user_id = (get_session_env("HERMES_SESSION_USER_ID", "") or "").strip()
+    if user_id:
+        return None
+
+    return tool_error(
+        "send_message is disabled for this gateway turn because the sender has "
+        "no authoritative numeric user_id. Refusing to list targets or send "
+        "cross-chat messages from an unverified/null identity."
+    )
 
 
 def _handle_list():

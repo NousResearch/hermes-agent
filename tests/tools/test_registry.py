@@ -292,6 +292,7 @@ class TestBuiltinDiscovery:
     def test_matches_previous_manual_builtin_tool_set(self):
         expected = {
             "tools.browser_cdp_tool",
+            "tools.browser_dialog_tool",
             "tools.browser_tool",
             "tools.clarify_tool",
             "tools.code_execution_tool",

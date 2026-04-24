@@ -357,11 +357,32 @@ class TestWorkingDirResolution:
         result = mgr.get_working_dir_for_path(str(subdir / "file.py"))
         assert result == str(project)
 
-    def test_falls_back_to_parent(self, tmp_path):
+    def test_falls_back_to_parent(self, tmp_path, monkeypatch):
         mgr = CheckpointManager(enabled=True)
         filepath = tmp_path / "random" / "file.py"
         filepath.parent.mkdir(parents=True)
         filepath.write_text("x\\n")
+
+        # The walk-up scan for project markers (.git, pyproject.toml, etc.)
+        # stops at tmp_path — otherwise stray markers in ``/tmp`` (e.g.
+        # ``/tmp/pyproject.toml`` left by other tools on the host) get
+        # picked up as the project root and this test flakes on shared CI.
+        import pathlib as _pl
+        _real_exists = _pl.Path.exists
+
+        def _guarded_exists(self):
+            s = str(self)
+            stop = str(tmp_path)
+            if not s.startswith(stop) and any(
+                s.endswith("/" + m) or s == "/" + m
+                for m in (".git", "pyproject.toml", "package.json",
+                          "Cargo.toml", "go.mod", "Makefile", "pom.xml",
+                          ".hg", "Gemfile")
+            ):
+                return False
+            return _real_exists(self)
+
+        monkeypatch.setattr(_pl.Path, "exists", _guarded_exists)
 
         result = mgr.get_working_dir_for_path(str(filepath))
         assert result == str(filepath.parent)

@@ -38,6 +38,9 @@ class _FakeRegistry:
     def is_completion_consumed(self, session_id):
         return session_id in self._completion_consumed
 
+    def mark_completion_consumed(self, session_id):
+        self._completion_consumed.add(session_id)
+
 
 def _build_runner(monkeypatch, tmp_path) -> GatewayRunner:
     """Create a GatewayRunner with notifications set to 'all'."""
@@ -97,6 +100,56 @@ async def test_notify_on_complete_sets_internal_flag(monkeypatch, tmp_path):
     event = adapter.handle_message.await_args.args[0]
     assert isinstance(event, MessageEvent)
     assert event.internal is True, "Synthetic completion event must be marked internal"
+
+
+@pytest.mark.asyncio
+async def test_notify_on_complete_marks_completion_consumed_after_injection(monkeypatch, tmp_path):
+    """Injected completion notifications must suppress later duplicate watcher delivery."""
+    import tools.process_registry as pr_module
+
+    fake_registry = _FakeRegistry([
+        SimpleNamespace(
+            output_buffer="done\n", exited=True, exit_code=0, command="echo test"
+        ),
+    ])
+    monkeypatch.setattr(pr_module, "process_registry", fake_registry)
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = _build_runner(monkeypatch, tmp_path)
+
+    await runner._run_process_watcher(_watcher_dict_with_notify())
+
+    assert fake_registry.is_completion_consumed("proc_test_internal")
+
+
+@pytest.mark.asyncio
+async def test_watch_notification_skips_already_consumed_process(monkeypatch, tmp_path):
+    """Watch-pattern events should not interrupt after completion was delivered."""
+    import tools.process_registry as pr_module
+
+    fake_registry = _FakeRegistry([])
+    fake_registry.mark_completion_consumed("proc_test_internal")
+    monkeypatch.setattr(pr_module, "process_registry", fake_registry)
+
+    runner = _build_runner(monkeypatch, tmp_path)
+    adapter = runner.adapters[Platform.DISCORD]
+
+    await runner._inject_watch_notification(
+        "[SYSTEM: Background process proc_test_internal matched watch pattern \"spec.md\".]",
+        {
+            "type": "watch_match",
+            "session_id": "proc_test_internal",
+            "session_key": "agent:main:discord:dm:123",
+            "platform": "discord",
+            "chat_id": "123",
+            "thread_id": "",
+        },
+    )
+
+    assert adapter.handle_message.await_count == 0
 
 
 @pytest.mark.asyncio

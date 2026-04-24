@@ -298,6 +298,14 @@ class TestCodeExecutionBlocked:
 class TestCompletionConsumed:
     """Test that wait/poll/log suppress redundant completion notifications."""
 
+    def test_mark_completion_consumed_suppresses_later_notifications(self, registry):
+        """Gateway delivery can mark a completion consumed without wait/poll/log."""
+        assert not registry.is_completion_consumed("proc_agent_notify")
+
+        registry.mark_completion_consumed("proc_agent_notify")
+
+        assert registry.is_completion_consumed("proc_agent_notify")
+
     def test_wait_marks_completion_consumed(self, registry):
         """wait() returning exited status marks session as consumed."""
         s = _make_session(sid="proc_wait", notify_on_complete=True, output="done")

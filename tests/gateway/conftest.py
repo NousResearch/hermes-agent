@@ -88,11 +88,63 @@ def _ensure_discord_mock() -> None:
     discord_mod.Thread = type("Thread", (), {})
     discord_mod.ForumChannel = type("ForumChannel", (), {})
     discord_mod.Interaction = object
-    discord_mod.Embed = MagicMock
+    discord_mod.Message = type("Message", (), {})
+
+    # Embed: accept the kwargs production code / tests use
+    # (title, description, color). MagicMock auto-attributes work too,
+    # but some tests construct and inspect .title/.description directly.
+    class _FakeEmbed:
+        def __init__(self, *, title=None, description=None, color=None, **_):
+            self.title = title
+            self.description = description
+            self.color = color
+    discord_mod.Embed = _FakeEmbed
+
+    # ui.View / ui.Select / ui.Button: real classes (not MagicMock) so
+    # tests that subclass ModelPickerView / iterate .children / clear
+    # items work.
+    class _FakeView:
+        def __init__(self, timeout=None):
+            self.timeout = timeout
+            self.children = []
+        def add_item(self, item):
+            self.children.append(item)
+        def clear_items(self):
+            self.children.clear()
+
+    class _FakeSelect:
+        def __init__(self, *, placeholder=None, options=None, custom_id=None, **_):
+            self.placeholder = placeholder
+            self.options = options or []
+            self.custom_id = custom_id
+            self.callback = None
+            self.disabled = False
+
+    class _FakeButton:
+        def __init__(self, *, label=None, style=None, custom_id=None, emoji=None,
+                     url=None, disabled=False, row=None, sku_id=None, **_):
+            self.label = label
+            self.style = style
+            self.custom_id = custom_id
+            self.emoji = emoji
+            self.url = url
+            self.disabled = disabled
+            self.row = row
+            self.sku_id = sku_id
+            self.callback = None
+
+    class _FakeSelectOption:
+        def __init__(self, *, label=None, value=None, description=None, **_):
+            self.label = label
+            self.value = value
+            self.description = description
+    discord_mod.SelectOption = _FakeSelectOption
+
     discord_mod.ui = SimpleNamespace(
-        View=object,
+        View=_FakeView,
+        Select=_FakeSelect,
+        Button=_FakeButton,
         button=lambda *a, **k: (lambda fn: fn),
-        Button=object,
     )
     discord_mod.ButtonStyle = SimpleNamespace(
         success=1, primary=2, secondary=2, danger=3,
@@ -100,7 +152,7 @@ def _ensure_discord_mock() -> None:
     )
     discord_mod.Color = SimpleNamespace(
         orange=lambda: 1, green=lambda: 2, blue=lambda: 3,
-        red=lambda: 4, purple=lambda: 5,
+        red=lambda: 4, purple=lambda: 5, greyple=lambda: 6,
     )
 
     # app_commands — needed by _register_slash_commands auto-registration

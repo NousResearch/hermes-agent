@@ -10638,7 +10638,6 @@ class HermesCLI:
         app._on_resize = _resize_clear_ghosts
 
         def spinner_loop():
-            last_idle_refresh = 0.0
             while not self._should_exit:
                 if not self._app:
                     time.sleep(0.1)
@@ -10647,10 +10646,11 @@ class HermesCLI:
                     self._invalidate(min_interval=0.1)
                     time.sleep(0.1)
                 else:
-                    now = time.monotonic()
-                    if now - last_idle_refresh >= 1.0:
-                        last_idle_refresh = now
-                        self._invalidate(min_interval=1.0)
+                    # Do not repaint the idle prompt every second. In non-full-screen
+                    # prompt_toolkit mode, background redraws can fight tmux/Ghostty/cmux
+                    # viewport restoration after focus changes and visually move the
+                    # command input area. Keep idle stable; input/agent events still
+                    # invalidate explicitly when the UI actually changes.
                     time.sleep(0.2)
 
         spinner_thread = threading.Thread(target=spinner_loop, daemon=True)

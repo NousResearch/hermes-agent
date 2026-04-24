@@ -365,7 +365,7 @@ class TestSkillView:
         result = json.loads(raw)
         assert result["success"] is True
         assert f"Run {skill_dir}/scripts/do.sh in session-123" in result["content"]
-        assert "${HERMES_SKILL_DIR}" in result["raw_content"]
+        assert "${HERMES_SKILL_DIR}" not in result["content"]
 
     def test_skill_view_applies_inline_shell_when_enabled(self, tmp_path):
         with (
@@ -390,7 +390,6 @@ class TestSkillView:
         assert result["success"] is True
         assert "Current date: 2026-04-24" in result["content"]
         assert "!`printf 2026-04-24`" not in result["content"]
-        assert "!`printf 2026-04-24`" in result["raw_content"]
 
     def test_skill_view_leaves_inline_shell_literal_when_disabled(self, tmp_path):
         with (

@@ -77,6 +77,8 @@ class FakeThread:
 def adapter(monkeypatch):
     monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
     monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
+    monkeypatch.delenv("DISCORD_ALLOWED_CHANNELS", raising=False)
+    monkeypatch.delenv("DISCORD_IGNORE_NO_MENTION", raising=False)
 
     config = PlatformConfig(enabled=True, token="fake-token")
     adapter = DiscordAdapter(config)
@@ -86,18 +88,78 @@ def adapter(monkeypatch):
     return adapter
 
 
-def make_message(*, channel, content: str, mentions=None):
+def make_message(*, channel, content: str, mentions=None, role_mentions=None):
     author = SimpleNamespace(id=42, display_name="TestUser", name="TestUser")
     return SimpleNamespace(
         id=123,
         content=content,
         mentions=list(mentions or []),
+        role_mentions=list(role_mentions or []),
         attachments=[],
         reference=None,
         created_at=datetime.now(timezone.utc),
         channel=channel,
         author=author,
     )
+
+
+def test_explicit_specialist_target_overrides_incidental_bot_mentions(monkeypatch):
+    monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
+    monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
+
+    config = PlatformConfig(enabled=True, token="fake-token")
+    adapter = DiscordAdapter(config)
+    seo_user = SimpleNamespace(id=999, name="SEO", bot=True)
+    code_user = SimpleNamespace(id=1000, name="Code", bot=True)
+    adapter._client = SimpleNamespace(user=seo_user)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=700),
+        content="@Code what brief do you currently have to implement on the draft page?",
+        mentions=[seo_user, code_user],
+    )
+
+    assert adapter._explicit_specialist_targets(message) == {"code"}
+
+
+def test_raw_discord_bot_mention_target_overrides_incidental_bot_mentions(monkeypatch):
+    monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
+    monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
+
+    config = PlatformConfig(enabled=True, token="fake-token")
+    adapter = DiscordAdapter(config)
+    analytics_user = SimpleNamespace(id=999, name="Analytics", bot=True)
+    comms_user = SimpleNamespace(id=1000, name="Comms", bot=True)
+    code_user = SimpleNamespace(id=1001, name="Code", bot=True)
+    adapter._client = SimpleNamespace(user=analytics_user)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=700),
+        content=f"<@{comms_user.id}> http://localhost:1/?state=abc&code=123",
+        mentions=[analytics_user, comms_user, code_user],
+    )
+
+    assert adapter._explicit_specialist_targets(message) == {"comms"}
+
+
+def test_raw_discord_bot_mention_does_not_false_target_code_from_oauth_callback(monkeypatch):
+    monkeypatch.setattr(discord_platform.discord, "DMChannel", FakeDMChannel, raising=False)
+    monkeypatch.setattr(discord_platform.discord, "Thread", FakeThread, raising=False)
+
+    config = PlatformConfig(enabled=True, token="fake-token")
+    adapter = DiscordAdapter(config)
+    comms_user = SimpleNamespace(id=1000, name="Comms", bot=True)
+    analytics_user = SimpleNamespace(id=1001, name="Analytics", bot=True)
+    code_user = SimpleNamespace(id=1002, name="Code", bot=True)
+    adapter._client = SimpleNamespace(user=code_user)
+
+    message = make_message(
+        channel=FakeTextChannel(channel_id=700),
+        content=f"<@{comms_user.id}> http://localhost:1/?state=abc&code=oauth-token",
+        mentions=[code_user, comms_user, analytics_user],
+    )
+
+    assert adapter._explicit_specialist_targets(message) == {"comms"}
 
 
 # ── ignored_channels ─────────────────────────────────────────────────

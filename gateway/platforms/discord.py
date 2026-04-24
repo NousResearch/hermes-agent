@@ -530,6 +530,69 @@ class DiscordAdapter(BasePlatformAdapter):
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
 
+    def _normalize_specialist_label(self, label: Any) -> str | None:
+        """Map a bot/user/role label to the canonical specialist slug."""
+        value = str(label or "").strip().lower()
+        if not value:
+            return None
+        if re.search(r"\bseo\b", value):
+            return "seo"
+        if re.search(r"\b(?:code|coding)\b", value):
+            return "code"
+        if re.search(r"\banalytics\b", value):
+            return "analytics"
+        if re.search(r"\bcomms\b", value):
+            return "comms"
+        return None
+
+    def _current_specialist_name(self) -> str:
+        bot_name = (
+            getattr(getattr(self, "_client", None), "user", None)
+            and getattr(self._client.user, "name", "")
+        ) or ""
+        return self._normalize_specialist_label(bot_name) or bot_name.strip().lower()
+
+    def _explicit_specialist_targets(self, message: DiscordMessage) -> set[str]:
+        """Return the specialists explicitly targeted in the raw Discord message.
+
+        We trust only signals the sender actually typed: raw Discord bot mentions
+        like ``<@123>``, role mentions, or plain-text specialist names such as
+        ``@Comms``. This prevents incidental extra ``message.mentions`` entries
+        from replies from waking unrelated specialists.
+        """
+        body = str(getattr(message, "content", "") or "")
+        targets: set[str] = set()
+
+        for mentioned_user in list(getattr(message, "mentions", []) or []):
+            mention_id = getattr(mentioned_user, "id", None)
+            if mention_id is None:
+                continue
+            if f"<@{mention_id}>" not in body and f"<@!{mention_id}>" not in body:
+                continue
+            normalized = self._normalize_specialist_label(
+                getattr(mentioned_user, "display_name", None)
+                or getattr(mentioned_user, "name", None)
+            )
+            if normalized:
+                targets.add(normalized)
+
+        patterns = {
+            "seo": re.compile(r"(?<![\w/])@?seo(?![\w=/-])", re.IGNORECASE),
+            "code": re.compile(r"(?<![\w/])@?(?:code|coding)(?![\w=/-])", re.IGNORECASE),
+            "analytics": re.compile(r"(?<![\w/])@?analytics(?![\w=/-])", re.IGNORECASE),
+            "comms": re.compile(r"(?<![\w/])@?comms(?![\w=/-])", re.IGNORECASE),
+        }
+        for name, pattern in patterns.items():
+            if pattern.search(body):
+                targets.add(name)
+
+        for role in list(getattr(message, "role_mentions", []) or []):
+            normalized = self._normalize_specialist_label(getattr(role, "name", ""))
+            if normalized:
+                targets.add(normalized)
+
+        return targets
+
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
         if not DISCORD_AVAILABLE:
@@ -681,16 +744,16 @@ class DiscordAdapter(BasePlatformAdapter):
                     if not self._is_allowed_user(str(message.author.id), message.author):
                         return
                 
-                # Multi-agent filtering: if the message mentions specific bots
-                # but NOT this bot, the sender is talking to another agent —
-                # stay silent.  Messages with no bot mentions (general chat)
-                # still fall through to _handle_message for the existing
-                # DISCORD_REQUIRE_MENTION check.
-                #
-                # This replaces the older DISCORD_IGNORE_NO_MENTION logic
-                # with bot-aware filtering that works correctly when multiple
-                # agents share a channel.
+                # Multi-agent filtering: if the message explicitly targets a
+                # different specialist, stay silent even when Discord's reply
+                # mechanics include us in message.mentions.
                 if not isinstance(message.channel, discord.DMChannel) and message.mentions:
+                    _explicit_targets = self._explicit_specialist_targets(message)
+                    _current_specialist = self._current_specialist_name()
+                    if _explicit_targets and _current_specialist:
+                        if _current_specialist not in _explicit_targets:
+                            return
+
                     _self_mentioned = (
                         self._client.user is not None
                         and self._client.user in message.mentions

@@ -1,11 +1,11 @@
-"""Native Spotify tools for Hermes."""
+"""Native Spotify tools for Hermes (registered via plugins/spotify)."""
 
 from __future__ import annotations
 
 from typing import Any, Dict, List
 
 from hermes_cli.auth import get_auth_status
-from tools.providers.spotify_client import (
+from plugins.spotify.client import (
     SpotifyAPIError,
     SpotifyAuthRequiredError,
     SpotifyClient,
@@ -14,7 +14,7 @@ from tools.providers.spotify_client import (
     normalize_spotify_uri,
     normalize_spotify_uris,
 )
-from tools.registry import registry, tool_error, tool_result
+from tools.registry import tool_error, tool_result
 
 
 def _check_spotify_available() -> bool:
@@ -452,12 +452,3 @@ SPOTIFY_LIBRARY_SCHEMA = {
         "required": ["kind", "action"],
     },
 }
-
-
-registry.register(name="spotify_playback", toolset="spotify", schema=SPOTIFY_PLAYBACK_SCHEMA, handler=_handle_spotify_playback, check_fn=_check_spotify_available, emoji="🎵")
-registry.register(name="spotify_devices", toolset="spotify", schema=SPOTIFY_DEVICES_SCHEMA, handler=_handle_spotify_devices, check_fn=_check_spotify_available, emoji="🔈")
-registry.register(name="spotify_queue", toolset="spotify", schema=SPOTIFY_QUEUE_SCHEMA, handler=_handle_spotify_queue, check_fn=_check_spotify_available, emoji="📻")
-registry.register(name="spotify_search", toolset="spotify", schema=SPOTIFY_SEARCH_SCHEMA, handler=_handle_spotify_search, check_fn=_check_spotify_available, emoji="🔎")
-registry.register(name="spotify_playlists", toolset="spotify", schema=SPOTIFY_PLAYLISTS_SCHEMA, handler=_handle_spotify_playlists, check_fn=_check_spotify_available, emoji="📚")
-registry.register(name="spotify_albums", toolset="spotify", schema=SPOTIFY_ALBUMS_SCHEMA, handler=_handle_spotify_albums, check_fn=_check_spotify_available, emoji="💿")
-registry.register(name="spotify_library", toolset="spotify", schema=SPOTIFY_LIBRARY_SCHEMA, handler=_handle_spotify_library, check_fn=_check_spotify_available, emoji="❤️")

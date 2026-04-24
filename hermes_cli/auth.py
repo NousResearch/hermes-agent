@@ -955,10 +955,12 @@ def clear_provider_auth(provider_id: Optional[str] = None) -> bool:
             del pool[target]
             cleared = True
 
-        if not cleared:
-            return False
         if auth_store.get("active_provider") == target:
             auth_store["active_provider"] = None
+            cleared = True
+
+        if not cleared:
+            return False
         _save_auth_store(auth_store)
     return True
 
@@ -2826,6 +2828,46 @@ def _update_config_for_provider(
     return config_path
 
 
+def _get_config_provider() -> Optional[str]:
+    """Return model.provider from config.yaml, normalized, if present."""
+    try:
+        config = read_raw_config()
+    except Exception:
+        return None
+    if not config:
+        return None
+    model = config.get("model")
+    if not isinstance(model, dict):
+        return None
+    provider = model.get("provider")
+    if not isinstance(provider, str):
+        return None
+    provider = provider.strip().lower()
+    return provider or None
+
+
+def _config_provider_matches(provider_id: Optional[str]) -> bool:
+    """Return True when config.yaml currently selects *provider_id*."""
+    if not provider_id:
+        return False
+    return _get_config_provider() == provider_id.strip().lower()
+
+
+def _logout_default_provider_from_config() -> Optional[str]:
+    """Fallback logout target when auth.json has no active provider.
+
+    `hermes logout` historically keyed off auth.json.active_provider only.
+    That left users stuck when auth state had already been cleared but
+    config.yaml still selected an OAuth provider such as openai-codex for the
+    agent model: there was no active auth provider to target, so logout printed
+    "No provider is currently logged in" and never reset model.provider.
+    """
+    provider = _get_config_provider()
+    if provider in {"nous", "openai-codex"}:
+        return provider
+    return None
+
+
 def _reset_config_provider() -> Path:
     """Reset config.yaml provider back to auto after logout."""
     config_path = get_config_path()
@@ -3524,15 +3566,16 @@ def logout_command(args) -> None:
         raise SystemExit(1)
 
     active = get_active_provider()
-    target = provider_id or active
+    target = provider_id or active or _logout_default_provider_from_config()
 
     if not target:
         print("No provider is currently logged in.")
         return
 
     provider_name = PROVIDER_REGISTRY[target].name if target in PROVIDER_REGISTRY else target
+    config_matches = _config_provider_matches(target)
 
-    if clear_provider_auth(target):
+    if clear_provider_auth(target) or config_matches:
         _reset_config_provider()
         print(f"Logged out of {provider_name}.")
         if os.getenv("OPENROUTER_API_KEY"):

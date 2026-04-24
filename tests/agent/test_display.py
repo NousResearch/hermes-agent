@@ -127,6 +127,15 @@ class TestEditDiffPreview:
     def test_extract_edit_diff_ignores_non_edit_tools(self):
         assert extract_edit_diff("web_search", '{"diff": "--- a\\n+++ b\\n"}') is None
 
+    def test_extract_edit_diff_for_lsp_rename(self):
+        diff = extract_edit_diff(
+            "lsp_rename",
+            '{"success": true, "diff": "--- a/pkg/mod.py\\n+++ b/pkg/mod.py\\n@@ -1 +1 @@\\n-value\\n+count\\n"}',
+        )
+        assert diff is not None
+        assert "+++ b/pkg/mod.py" in diff
+        assert "+count" in diff
+
     def test_extract_edit_diff_uses_local_snapshot_for_write_file(self, tmp_path):
         target = tmp_path / "note.txt"
         target.write_text("old\n", encoding="utf-8")

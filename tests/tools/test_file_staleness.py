@@ -357,6 +357,55 @@ class TestPatchStaleness(unittest.TestCase):
         self.assertIn("error", result)
         self.assertIn("changed while it was being read", result["error"])
 
+    def test_strict_write_allows_ast_expanded_read_that_covers_entire_python_file(self):
+        pyfile = os.path.join(self._tmpdir, "full_symbol.py")
+        with open(pyfile, "w") as f:
+            f.write("def demo():\n    return 1\n")
+
+        from tools.file_operations import ShellFileOperations
+        from tests.tools.test_file_operations import LocalShellEnv
+
+        fake_ops = ShellFileOperations(LocalShellEnv(self._tmpdir))
+
+        with patch.dict(os.environ, {"HERMES_STALE_EDIT_MODE": "strict"}, clear=False), \
+             patch("tools.file_tools._get_file_ops", return_value=fake_ops):
+            read_result = json.loads(read_file_tool(pyfile, offset=2, limit=1, task_id="p10_ast"))
+            write_result = json.loads(write_file_tool(pyfile, "def demo():\n    return 2\n", task_id="p10_ast"))
+
+        self.assertIn("content", read_result)
+        self.assertNotIn("error", write_result)
+
+    def test_strict_write_blocks_after_ast_expanded_method_read_that_does_not_cover_whole_file(self):
+        pyfile = os.path.join(self._tmpdir, "method_only.py")
+        with open(pyfile, "w") as f:
+            f.write(
+                "class Outer:\n"
+                "    padding0 = 0\n"
+                "    padding1 = 1\n"
+                "    padding2 = 2\n"
+                "    def method(self):\n"
+                "        target = 1\n"
+                "        return target\n"
+                "    def second(self):\n"
+                "        return 2\n"
+                "    padding3 = 3\n"
+            )
+
+        from tools.file_operations import ShellFileOperations
+        from tests.tools.test_file_operations import LocalShellEnv
+
+        fake_ops = ShellFileOperations(LocalShellEnv(self._tmpdir))
+
+        with patch.dict(os.environ, {"HERMES_STALE_EDIT_MODE": "strict"}, clear=False), \
+             patch("tools.file_tools._get_file_ops", return_value=fake_ops):
+            read_result = json.loads(read_file_tool(pyfile, offset=6, limit=1, task_id="p10_method"))
+            write_result = json.loads(write_file_tool(pyfile, "class Outer:\n    changed = True\n", task_id="p10_method"))
+
+        self.assertEqual(read_result.get("returned_start_line"), 5)
+        self.assertEqual(read_result.get("returned_end_line"), 7)
+        self.assertIn("error", write_result)
+        self.assertIn("partial", write_result["error"].lower())
+
     def test_dedup_uses_hash_not_mtime_only(self):
         """Same-mtime content drift must force a real reread instead of an unchanged stub."""
         task_id = "p11"

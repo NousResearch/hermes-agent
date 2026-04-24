@@ -2,6 +2,7 @@
 
 import os
 import pytest
+import textwrap
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 import subprocess
@@ -571,4 +572,172 @@ class TestHashlinePatchEditing:
         assert result.success is False
         assert result.error is not None
         assert "truncated line" in result.error.lower() or "stale" in result.error.lower()
+
+
+class TestPythonAstAwareReadChunking:
+    def test_read_inside_function_snaps_to_function_boundaries(self, tmp_path):
+        file_path = tmp_path / "sample.py"
+        file_path.write_text(textwrap.dedent("""
+            before = 1
+
+            def demo():
+                first = 1
+                second = 2
+                return first + second
+
+            after = 2
+        """).lstrip(), encoding="utf-8")
+        ops = ShellFileOperations(LocalShellEnv(str(tmp_path)))
+
+        result = ops.read_file(str(file_path), offset=5, limit=1)
+
+        assert result.content.splitlines() == [
+            "     3|def demo():",
+            "     4|    first = 1",
+            "     5|    second = 2",
+            "     6|    return first + second",
+        ]
+        assert result.hint == "Use offset=7 to continue reading (showing 3-6 of 8 lines)"
+
+    def test_requested_end_inside_function_expands_to_complete_boundary(self, tmp_path):
+        file_path = tmp_path / "sample.py"
+        file_path.write_text(textwrap.dedent("""
+            preface = 0
+
+            def demo():
+                a = 1
+                b = 2
+                return a + b
+
+            tail = 3
+        """).lstrip(), encoding="utf-8")
+        ops = ShellFileOperations(LocalShellEnv(str(tmp_path)))
+
+        result = ops.read_file(str(file_path), offset=1, limit=5)
+
+        assert result.content.splitlines() == [
+            "     1|preface = 0",
+            "     2|",
+            "     3|def demo():",
+            "     4|    a = 1",
+            "     5|    b = 2",
+            "     6|    return a + b",
+        ]
+        assert result.hint == "Use offset=7 to continue reading (showing 1-6 of 8 lines)"
+
+    def test_parse_failure_falls_back_to_exact_raw_pagination(self, tmp_path):
+        file_path = tmp_path / "broken.py"
+        file_path.write_text("x = 1\ndef broken(:\n    pass\ny = 2\n", encoding="utf-8")
+        ops = ShellFileOperations(LocalShellEnv(str(tmp_path)))
+
+        result = ops.read_file(str(file_path), offset=3, limit=1)
+
+        assert result.content == "     3|    pass"
+        assert result.hint == "Use offset=4 to continue reading (showing 3-3 of 4 lines)"
+
+    def test_too_large_ast_expansion_falls_back_to_exact_range(self, tmp_path):
+        file_path = tmp_path / "large.py"
+        body = "\n".join(f"    line_{i} = {i}" for i in range(1, 360))
+        file_path.write_text(f"def giant():\n{body}\n", encoding="utf-8")
+        ops = ShellFileOperations(LocalShellEnv(str(tmp_path)))
+
+        result = ops.read_file(str(file_path), offset=200, limit=10)
+
+        lines = result.content.splitlines()
+        assert lines[0] == "   200|    line_199 = 199"
+        assert lines[-1] == "   209|    line_208 = 208"
+        assert len(lines) == 10
+        assert result.hint == "Use offset=210 to continue reading (showing 200-209 of 360 lines)"
+
+    def test_hashline_ast_expanded_read_preserves_actual_line_numbers_and_anchors(self, tmp_path):
+        file_path = tmp_path / "sample.py"
+        file_path.write_text(textwrap.dedent("""
+            prefix = 1
+
+            def demo():
+                value = 1
+                return value
+
+            suffix = 2
+        """).lstrip(), encoding="utf-8")
+        ops = ShellFileOperations(LocalShellEnv(str(tmp_path)))
+
+        with patch.dict(os.environ, {"HERMES_HASHLINE_EDIT": "1"}, clear=False):
+            read_result = ops.read_file(str(file_path), offset=5, limit=1)
+            anchored_lines = read_result.content.splitlines()
+            assert anchored_lines[0].startswith("     3#")
+            assert anchored_lines[-1].startswith("     5#")
+
+            result = ops.patch_replace(str(file_path), anchored_lines[0], "def renamed():")
+
+        assert result.success is True
+        assert file_path.read_text(encoding="utf-8").splitlines()[2] == "def renamed():"
+
+    def test_ast_expansion_hint_uses_actual_returned_end_line(self, tmp_path):
+        file_path = tmp_path / "sample.py"
+        file_path.write_text(textwrap.dedent("""
+            start = 1
+
+            def demo():
+                one = 1
+                two = 2
+                three = 3
+                return one + two + three
+
+            finish = 9
+        """).lstrip(), encoding="utf-8")
+        ops = ShellFileOperations(LocalShellEnv(str(tmp_path)))
+
+        result = ops.read_file(str(file_path), offset=5, limit=1)
+
+        assert result.hint == "Use offset=8 to continue reading (showing 3-7 of 9 lines)"
+
+    def test_read_inside_class_method_prefers_method_not_containing_class(self, tmp_path):
+        file_path = tmp_path / "nested.py"
+        file_path.write_text(textwrap.dedent("""
+            class Outer:
+                padding0 = 0
+                padding1 = 1
+                padding2 = 2
+                def method(self):
+                    target = 1
+                    return target
+                def second(self):
+                    return 2
+                padding3 = 3
+        """).lstrip(), encoding="utf-8")
+        ops = ShellFileOperations(LocalShellEnv(str(tmp_path)))
+
+        result = ops.read_file(str(file_path), offset=6, limit=1)
+
+        assert result.content.splitlines() == [
+            "     5|    def method(self):",
+            "     6|        target = 1",
+            "     7|        return target",
+        ]
+        assert result.returned_start_line == 5
+        assert result.returned_end_line == 7
+
+    def test_read_inside_nested_function_prefers_innermost_function(self, tmp_path):
+        file_path = tmp_path / "nested_func.py"
+        file_path.write_text(textwrap.dedent("""
+            def outer():
+                before = 1
+                def inner():
+                    target = 1
+                    return target
+                after = 2
+                return inner()
+        """).lstrip(), encoding="utf-8")
+        ops = ShellFileOperations(LocalShellEnv(str(tmp_path)))
+
+        result = ops.read_file(str(file_path), offset=4, limit=1)
+
+        assert result.content.splitlines() == [
+            "     3|    def inner():",
+            "     4|        target = 1",
+            "     5|        return target",
+        ]
+        assert result.returned_start_line == 3
+        assert result.returned_end_line == 5
 

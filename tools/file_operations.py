@@ -27,6 +27,7 @@ Usage:
 
 import os
 import re
+import ast
 import hashlib
 import difflib
 from abc import ABC, abstractmethod
@@ -83,6 +84,8 @@ class ReadResult:
     file_size: int = 0
     truncated: bool = False
     hint: Optional[str] = None
+    returned_start_line: Optional[int] = None
+    returned_end_line: Optional[int] = None
     is_binary: bool = False
     is_image: bool = False
     base64_content: Optional[str] = None
@@ -276,6 +279,7 @@ DEFAULT_READ_OFFSET = 1
 DEFAULT_READ_LIMIT = 500
 DEFAULT_SEARCH_OFFSET = 0
 DEFAULT_SEARCH_LIMIT = 50
+PY_AST_EXPANSION_MAX_CHARS = 32 * 1024
 
 _HASHLINE_RE = re.compile(r'^(?P<number>\s*\d+)#(?P<anchor>[0-9a-fA-F]{8})\|(?P<content>.*)$')
 
@@ -619,6 +623,79 @@ class ShellFileOperations(FileOperations):
             tofile=f"b/{filename}"
         )
         return ''.join(diff)
+
+    def _maybe_expand_python_read_window(
+        self,
+        path: str,
+        offset: int,
+        end_line: int,
+        limit: int,
+    ) -> Optional[dict[str, Any]]:
+        if os.path.splitext(path)[1].lower() != ".py":
+            return None
+
+        raw_result = self.read_file_raw(path)
+        if raw_result.error or raw_result.is_binary or raw_result.is_image:
+            return None
+
+        source = raw_result.content
+        try:
+            tree = ast.parse(source)
+        except SyntaxError:
+            return None
+
+        lines = source.splitlines()
+        total_lines = len(lines)
+        if total_lines == 0:
+            return None
+
+        expanded_start = max(1, offset)
+        expanded_end = min(max(expanded_start, end_line), total_lines)
+        symbol_ranges: list[tuple[int, int]] = []
+        for node in ast.walk(tree):
+            if not isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef, ast.ClassDef)):
+                continue
+            node_start = getattr(node, "lineno", None)
+            node_end = getattr(node, "end_lineno", None)
+            if node_start is None or node_end is None:
+                continue
+            symbol_ranges.append((node_start, node_end))
+
+        def smallest_symbol_containing(line_number: int) -> Optional[tuple[int, int]]:
+            containing = [
+                (node_start, node_end)
+                for node_start, node_end in symbol_ranges
+                if node_start <= line_number <= node_end
+            ]
+            if not containing:
+                return None
+            return min(containing, key=lambda span: (span[1] - span[0], -span[0]))
+
+        for boundary_line in (offset, min(end_line, total_lines)):
+            symbol = smallest_symbol_containing(boundary_line)
+            if symbol is None:
+                continue
+            expanded_start = min(expanded_start, symbol[0])
+            expanded_end = max(expanded_end, symbol[1])
+
+        if expanded_start == offset and expanded_end == min(end_line, total_lines):
+            return None
+
+        expanded_line_count = expanded_end - expanded_start + 1
+        if expanded_line_count > max(limit * 2, 300):
+            return None
+
+        raw_lines = lines[expanded_start - 1:expanded_end]
+        raw_content = "\n".join(raw_lines)
+        if len(raw_content) > PY_AST_EXPANSION_MAX_CHARS:
+            return None
+
+        return {
+            "content": raw_content,
+            "start_line": expanded_start,
+            "end_line": expanded_end,
+            "total_lines": total_lines,
+        }
     
     # =========================================================================
     # READ Implementation
@@ -682,34 +759,48 @@ class ShellFileOperations(FileOperations):
                 error="Binary file - cannot display as text. Use appropriate tools to handle this file type."
             )
         
-        # Read with pagination using sed
+        # Read with pagination using sed, optionally expanding Python symbol boundaries.
         end_line = offset + limit - 1
-        read_cmd = f"sed -n '{offset},{end_line}p' {self._escape_shell_arg(path)}"
-        read_result = self._exec(read_cmd)
-        
-        if read_result.exit_code != 0:
-            return ReadResult(error=f"Failed to read file: {read_result.stdout}")
-        
-        # Get total line count
         wc_cmd = f"wc -l < {self._escape_shell_arg(path)}"
         wc_result = self._exec(wc_cmd)
         try:
             total_lines = int(wc_result.stdout.strip())
         except ValueError:
             total_lines = 0
-        
-        # Check if truncated
-        truncated = total_lines > end_line
+
+        expanded_window = self._maybe_expand_python_read_window(path, offset, end_line, limit)
+        if expanded_window is not None:
+            raw_content = expanded_window["content"]
+            actual_start = expanded_window["start_line"]
+            actual_end = expanded_window["end_line"]
+            total_lines = expanded_window["total_lines"]
+        else:
+            read_cmd = f"sed -n '{offset},{end_line}p' {self._escape_shell_arg(path)}"
+            read_result = self._exec(read_cmd)
+
+            if read_result.exit_code != 0:
+                return ReadResult(error=f"Failed to read file: {read_result.stdout}")
+
+            raw_content = read_result.stdout.rstrip("\n")
+            actual_start = offset if raw_content else offset
+            actual_end = offset + len(raw_content.splitlines()) - 1 if raw_content else offset - 1
+
+        truncated = actual_end < total_lines
         hint = None
         if truncated:
-            hint = f"Use offset={end_line + 1} to continue reading (showing {offset}-{end_line} of {total_lines} lines)"
-        
+            hint = (
+                f"Use offset={actual_end + 1} to continue reading "
+                f"(showing {actual_start}-{actual_end} of {total_lines} lines)"
+            )
+
         return ReadResult(
-            content=self._add_line_numbers(read_result.stdout, offset),
+            content=self._add_line_numbers(raw_content, actual_start),
             total_lines=total_lines,
             file_size=file_size,
             truncated=truncated,
-            hint=hint
+            hint=hint,
+            returned_start_line=actual_start,
+            returned_end_line=actual_end,
         )
     
     def _suggest_similar_files(self, path: str) -> ReadResult:

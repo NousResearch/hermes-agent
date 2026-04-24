@@ -551,7 +551,13 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
 
         # ── Track for consecutive-loop detection ──────────────────────
         read_key = ("read", path, offset, limit)
-        _partial = (offset > 1) or bool(result_dict.get("truncated"))
+        actual_start = result_dict.get("returned_start_line")
+        actual_end = result_dict.get("returned_end_line")
+        total_lines = result_dict.get("total_lines")
+        if isinstance(actual_start, int) and isinstance(actual_end, int) and isinstance(total_lines, int):
+            _partial = actual_start > 1 or actual_end < total_lines
+        else:
+            _partial = (offset > 1) or bool(result_dict.get("truncated"))
         _post_read_fp = None if _partial else _get_live_file_fingerprint(resolved_str)
         _read_raced = (
             not _partial

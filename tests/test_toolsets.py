@@ -94,6 +94,11 @@ class TestResolveToolset:
         tools = resolve_toolset("code_intel")
         assert "lsp_rename" in tools
 
+    def test_hermes_cli_and_api_server_expose_lsp_rename_without_global_core_promotion(self):
+        assert "lsp_rename" in TOOLSETS["hermes-cli"]["tools"]
+        assert "lsp_rename" in TOOLSETS["hermes-api-server"]["tools"]
+        assert "lsp_rename" not in TOOLSETS["hermes-telegram"]["tools"]
+
 
 class TestResolveMultipleToolsets:
     def test_combines_and_deduplicates(self):

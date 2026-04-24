@@ -418,14 +418,14 @@ def extract_edit_diff(
     snapshot: LocalEditSnapshot | None = None,
 ) -> str | None:
     """Extract a unified diff from a file-edit tool result."""
-    if tool_name == "patch" and result:
+    if tool_name in {"patch", "lsp_rename"} and result:
         data = safe_json_loads(result)
         if isinstance(data, dict):
             diff = data.get("diff")
             if isinstance(diff, str) and diff.strip():
                 return diff
 
-    if tool_name not in {"write_file", "patch", "skill_manage"}:
+    if tool_name not in {"write_file", "patch", "skill_manage", "lsp_rename"}:
         return None
     if not _result_succeeded(result):
         return None

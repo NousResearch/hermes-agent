@@ -12,6 +12,14 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
 
+from tools import file_state
+from tools.file_tools import (
+    _check_file_staleness,
+    _get_stale_edit_mode,
+    _resolve_path_for_task,
+    _strict_stale_error,
+    _update_read_timestamp,
+)
 from tools.registry import registry, tool_error, tool_result
 
 SUPPORTED_LANGUAGES = ["python"]
@@ -325,6 +333,7 @@ def _python_single_file_rename(
     apply: bool,
     max_files: int,
     project_root: str | None,
+    task_id: str,
 ) -> str:
     try:
         tree = ast.parse(source, filename=str(path))
@@ -446,9 +455,22 @@ def _python_single_file_rename(
         )
 
     if apply:
-        path.write_text(updated_source, encoding="utf-8")
+        resolved_path = str(path)
+        with file_state.lock_path(resolved_path):
+            cross_warning = file_state.check_stale(task_id, resolved_path)
+            stale_warning = cross_warning or _check_file_staleness(str(path), task_id)
+            strict_error = None
+            if _get_stale_edit_mode() == "strict":
+                strict_error = _strict_stale_error(str(path), task_id, cross_warning=cross_warning)
+            if strict_error:
+                return tool_error(strict_error, code="stale_edit_blocked", path=str(path))
+            path.write_text(updated_source, encoding="utf-8")
+            _update_read_timestamp(str(path), task_id)
+            file_state.note_write(task_id, resolved_path)
+    else:
+        stale_warning = None
 
-    return tool_result(
+    result = tool_result(
         success=True,
         applied=apply,
         engine="python_ast_single_file",
@@ -461,6 +483,23 @@ def _python_single_file_rename(
         diff=diff,
         files=[str(path)],
     )
+    if stale_warning:
+        data = tool_result(
+            success=True,
+            applied=apply,
+            engine="python_ast_single_file",
+            path=str(path),
+            target_name=target_name,
+            new_name=new_name,
+            changed_files=1,
+            max_files=max_files,
+            project_root=project_root,
+            diff=diff,
+            files=[str(path)],
+            _warning=stale_warning,
+        )
+        return data
+    return result
 
 
 def lsp_rename_tool(
@@ -473,10 +512,11 @@ def lsp_rename_tool(
     project_root: str | None = None,
     max_files: int = DEFAULT_MAX_FILES,
     language: str | None = None,
+    task_id: str = "default",
 ) -> str:
-    file_path = Path(path).expanduser().resolve()
+    file_path = _resolve_path_for_task(path, task_id)
     if project_root:
-        root_path = Path(project_root).expanduser().resolve()
+        root_path = _resolve_path_for_task(project_root, task_id)
         try:
             file_path.relative_to(root_path)
         except ValueError:
@@ -494,6 +534,13 @@ def lsp_rename_tool(
         return tool_error("column must be a non-negative integer.", code="invalid_column")
     if not isinstance(max_files, int) or max_files < 1:
         return tool_error("max_files must be >= 1.", code="invalid_max_files")
+    if max_files > DEFAULT_MAX_FILES:
+        return tool_error(
+            "Workspace rename is not supported by bounded lsp_rename.",
+            code="workspace_rename_not_supported",
+            max_files=max_files,
+            supported_max_files=DEFAULT_MAX_FILES,
+        )
     if not isinstance(new_name, str) or not new_name.isidentifier() or keyword.iskeyword(new_name):
         return tool_error("Invalid Python identifier for rename target.", code="invalid_new_name")
 
@@ -514,8 +561,9 @@ def lsp_rename_tool(
         column=column,
         new_name=new_name,
         apply=apply,
-        max_files=min(max_files, DEFAULT_MAX_FILES),
-        project_root=project_root,
+        max_files=max_files,
+        project_root=str(root_path) if project_root else None,
+        task_id=task_id,
     )
 
 
@@ -536,6 +584,7 @@ registry.register(
         project_root=args.get("project_root"),
         max_files=args.get("max_files", DEFAULT_MAX_FILES),
         language=args.get("language"),
+        task_id=kwargs.get("task_id", "default"),
     ),
     check_fn=check_lsp_rename_requirements,
     description=LSP_RENAME_SCHEMA["description"],

@@ -147,7 +147,7 @@ def build_topic_resume_context(
     state = parse_workspace_state(workspace / "state.md")
     recent_messages: list[dict[str, str]] = []
     recent_session_id = session_entry.session_id
-    if bool(getattr(session_entry, "was_auto_reset", False)) and getattr(session_entry, "previous_session_id", None):
+    if is_new_session and getattr(session_entry, "previous_session_id", None):
         recent_session_id = session_entry.previous_session_id
     if config.include_recent_messages:
         recent_messages = load_recent_topic_messages(

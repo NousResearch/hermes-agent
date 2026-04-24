@@ -243,6 +243,44 @@ def test_build_topic_resume_context_uses_previous_session_messages_after_auto_re
 
 
 
+def test_build_topic_resume_context_uses_previous_session_messages_for_manual_new_session(tmp_path):
+    from gateway.topic_resume import build_topic_resume_context
+
+    _make_workspace(tmp_path, "telegram--1003748162924-853-recorder-project")
+    session_entry = _make_session_entry()
+    session_entry.was_auto_reset = False
+    session_entry.session_id = "session-new"
+    session_entry.previous_session_id = "session-old"
+
+    store = _FakeSessionStore(
+        messages_by_session_id={
+            "session-old": [
+                {"role": "user", "content": "Last thing we did was verify the hydration bug."},
+                {"role": "assistant", "content": "Next I should patch the resume path."},
+            ],
+            "session-new": [
+                {"role": "user", "content": "brand new empty session"},
+            ],
+        }
+    )
+
+    ctx = build_topic_resume_context(
+        source=_make_source(),
+        session_store=store,
+        session_entry=session_entry,
+        config=GatewayConfig().topic_resume,
+        hermes_home=tmp_path / ".hermes",
+        is_new_session=True,
+    )
+
+    assert ctx is not None
+    assert ctx.recent_messages == [
+        {"role": "user", "content": "Last thing we did was verify the hydration bug."},
+        {"role": "assistant", "content": "Next I should patch the resume path."},
+    ]
+
+
+
 def test_build_topic_resume_prompt_includes_contract_and_recent_messages(tmp_path):
     from gateway.topic_resume import build_topic_resume_context, build_topic_resume_prompt
 

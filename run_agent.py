@@ -4567,7 +4567,10 @@ class AIAgent:
         # constructs a fresh one — no stale closed transport can be reused.
         # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
         # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
-        if "http_client" not in client_kwargs:
+        # Skip keepalive http_client for localhost URLs (#14916)
+        _base_url_raw = str(client_kwargs.get("base_url", "")).lower()
+        _skip_local = "localhost" in _base_url_raw or "127.0.0.1" in _base_url_raw
+        if "http_client" not in client_kwargs and not _skip_local:
             keepalive_http = self._build_keepalive_http_client()
             if keepalive_http is not None:
                 client_kwargs["http_client"] = keepalive_http

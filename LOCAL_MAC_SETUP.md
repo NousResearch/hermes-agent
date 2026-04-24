@@ -42,15 +42,20 @@ To authorize Codex/OpenAI OAuth interactively:
 
 ```bash
 cd /Users/steven/.openclaw/workspace/repos/hermes-agent
-HERMES_HOME="$PWD/.hermes-home" ./venv/bin/python -m hermes_cli.main login --provider openai-codex --no-browser
+HERMES_HOME="$PWD/.hermes-home" ./scripts/run-local-hermes.sh auth add openai-codex --type oauth --no-browser
 ```
 
 Hermes will then print:
 - a browser URL: `https://auth.openai.com/codex/device`
 - a one-time code to enter there
 
-After approval, Hermes saves tokens to `.hermes-home/auth.json` and updates
-`.hermes-home/config.yaml` to `model.provider=openai-codex`.
+After approval, Hermes saves tokens to `.hermes-home/auth.json`.
+Then set the active provider/model:
+
+```bash
+./scripts/run-local-hermes.sh config set model.provider openai-codex
+./scripts/run-local-hermes.sh config set model.default openai-codex/gpt-5.4
+```
 
 ## Verification summary
 

@@ -48,12 +48,25 @@ Observed:
 - Hermes **does support OpenAI OAuth directly** for `openai-codex`
 - This is a **device code flow**, not a silent noninteractive login
 - Standard OpenAI API usage can still use API keys instead
+- On the tested local build, the old `hermes login` flow has been replaced by `hermes auth add`
 
-Exact interactive step still needed:
+Working interactive step:
 
 ```bash
-HERMES_HOME="$PWD/.hermes-home" ./venv/bin/python -m hermes_cli.main login --provider openai-codex --no-browser
+HERMES_HOME="$PWD/.hermes-home" ./scripts/run-local-hermes.sh auth add openai-codex --type oauth --no-browser
 ```
 
 Then open `https://auth.openai.com/codex/device`, enter the displayed code, and
 finish approval in the browser.
+
+After approval, set the active provider/model:
+
+```bash
+./scripts/run-local-hermes.sh config set model.provider openai-codex
+./scripts/run-local-hermes.sh config set model.default openai-codex/gpt-5.4
+```
+
+Verified result:
+- `hermes auth list` shows `openai-codex` device-code credentials
+- `hermes status` shows `Provider: OpenAI Codex`
+- `hermes chat -q 'Reply with exactly OK'` succeeds under isolated `.hermes-home/`

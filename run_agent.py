@@ -7210,6 +7210,7 @@ class AIAgent:
             or base_url_host_matches(self.base_url, "moonshot.ai")
             or base_url_host_matches(self.base_url, "moonshot.cn")
         )
+        _is_deepseek = base_url_host_matches(self.base_url, "api.deepseek.com")
 
         # Temperature: _fixed_temperature_for_model may return OMIT_TEMPERATURE
         # sentinel (temperature omitted entirely), a numeric override, or None.
@@ -7278,6 +7279,7 @@ class AIAgent:
             is_github_models=_is_gh,
             is_nvidia_nim=_is_nvidia,
             is_kimi=_is_kimi,
+            is_deepseek=_is_deepseek,
             is_custom_provider=self.provider == "custom",
             ollama_num_ctx=self._ollama_num_ctx,
             provider_preferences=_prefs or None,
@@ -7527,6 +7529,11 @@ class AIAgent:
         )
         if kimi_requires_reasoning and source_msg.get("tool_calls"):
             api_msg["reasoning_content"] = ""
+
+        # DeepSeek: strip reasoning_content on all assistant messages so the API
+        # doesn't return 400 when the model was invoked with thinking enabled.
+        if base_url_host_matches(self.base_url, "api.deepseek.com"):
+            api_msg.pop("reasoning_content", None)
 
     @staticmethod
     def _sanitize_tool_calls_for_strict_api(api_msg: dict) -> dict:

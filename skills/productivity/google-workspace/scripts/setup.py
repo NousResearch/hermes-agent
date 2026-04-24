@@ -21,6 +21,8 @@ Agent workflow:
   6. Run --check to verify. Done.
 """
 
+from __future__ import annotations  # allow PEP 604 `X | None` on Python 3.9+
+
 import argparse
 import json
 import os
@@ -110,7 +112,11 @@ def install_deps():
         return True
     except subprocess.CalledProcessError as e:
         print(f"ERROR: Failed to install dependencies: {e}")
-        print(f"Try manually: {sys.executable} -m pip install {' '.join(REQUIRED_PACKAGES)}")
+        print(
+            "On environments without pip (e.g. Nix), install the optional extra instead:"
+        )
+        print("  pip install 'hermes-agent[google]'")
+        print(f"Or manually: {sys.executable} -m pip install {' '.join(REQUIRED_PACKAGES)}")
         return False
 
 

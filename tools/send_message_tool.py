@@ -532,7 +532,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, and signal; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, and feishu; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -540,11 +540,11 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, and signal"
+                "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, and feishu"
         )
 
     last_result = None
-    for chunk in chunks:
+    for i, chunk in enumerate(chunks):
         if platform == Platform.SLACK:
             result = await _send_slack(pconfig.token, chat_id, chunk)
         elif platform == Platform.WHATSAPP:
@@ -564,7 +564,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
         elif platform == Platform.DINGTALK:
             result = await _send_dingtalk(pconfig.extra, chat_id, chunk)
         elif platform == Platform.FEISHU:
-            result = await _send_feishu(pconfig, chat_id, chunk, thread_id=thread_id)
+            is_last = (i == len(chunks) - 1)
+            result = await _send_feishu(pconfig, chat_id, chunk, media_files=media_files if is_last else [], thread_id=thread_id)
         elif platform == Platform.WECOM:
             result = await _send_wecom(pconfig.extra, chat_id, chunk)
         elif platform == Platform.BLUEBUBBLES:

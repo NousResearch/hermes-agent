@@ -367,18 +367,26 @@ class _CodexCompletionsAdapter:
         # Separate system/instructions from conversation messages.
         # Convert chat.completions multimodal content blocks to Responses
         # API format (input_text / input_image instead of text / image_url).
+        # The Codex Responses endpoint only accepts user/assistant roles in
+        # input — skip tool/function messages and map system/developer to
+        # instructions.
+        _RESPONSES_INPUT_ROLES = {"user", "assistant"}
         instructions = "You are a helpful assistant."
         input_msgs: List[Dict[str, Any]] = []
         for msg in messages:
             role = msg.get("role", "user")
             content = msg.get("content") or ""
-            if role == "system":
+            if role in ("system", "developer"):
                 instructions = content if isinstance(content, str) else str(content)
-            else:
+            elif role in ("tool", "function"):
+                # Codex Responses endpoint does not support tool/function roles
+                continue
+            elif role in _RESPONSES_INPUT_ROLES:
                 input_msgs.append({
                     "role": role,
                     "content": _convert_content_for_responses(content),
                 })
+            # Unknown roles: skip rather than send an unsupported value
 
         resp_kwargs: Dict[str, Any] = {
             "model": model,

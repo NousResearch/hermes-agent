@@ -368,13 +368,9 @@ TOOL_CATEGORIES = {
         "providers": [
             {
                 "name": "Spotify Web API",
-                "tag": "PKCE OAuth — run `hermes auth spotify` after this",
-                "env_vars": [
-                    {"key": "HERMES_SPOTIFY_CLIENT_ID", "prompt": "Spotify app client_id",
-                     "url": "https://developer.spotify.com/dashboard"},
-                    {"key": "HERMES_SPOTIFY_REDIRECT_URI", "prompt": "Redirect URI (must be allow-listed in your Spotify app)",
-                     "default": "http://127.0.0.1:43827/spotify/callback"},
-                ],
+                "tag": "PKCE OAuth — opens the setup wizard",
+                "env_vars": [],
+                "post_setup": "spotify",
             },
         ],
     },
@@ -477,6 +473,35 @@ def _run_post_setup(post_setup_key: str):
         except subprocess.TimeoutExpired:
             _print_warning("    kittentts install timed out (>5min)")
             _print_info(f"    Run manually: python -m pip install -U '{wheel_url}' soundfile")
+
+    elif post_setup_key == "spotify":
+        # Run the full `hermes auth spotify` flow — if the user has no
+        # client_id yet, this drops them into the interactive wizard
+        # (opens the Spotify dashboard, prompts for client_id, persists
+        # to ~/.hermes/.env), then continues straight into PKCE. If they
+        # already have an app, it skips the wizard and just does OAuth.
+        from types import SimpleNamespace
+        try:
+            from hermes_cli.auth import login_spotify_command
+        except Exception as exc:
+            _print_warning(f"    Could not load Spotify auth: {exc}")
+            _print_info("    Run manually: hermes auth spotify")
+            return
+        _print_info("    Starting Spotify login...")
+        try:
+            login_spotify_command(SimpleNamespace(
+                client_id=None, redirect_uri=None, scope=None,
+                no_browser=False, timeout=None,
+            ))
+            _print_success("    Spotify authenticated")
+        except SystemExit as exc:
+            # User aborted the wizard, or OAuth failed — don't fail the
+            # toolset enable; they can retry with `hermes auth spotify`.
+            _print_warning(f"    Spotify login did not complete: {exc}")
+            _print_info("    Run later: hermes auth spotify")
+        except Exception as exc:
+            _print_warning(f"    Spotify login failed: {exc}")
+            _print_info("    Run manually: hermes auth spotify")
 
     elif post_setup_key == "rl_training":
         try:

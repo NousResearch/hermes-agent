@@ -12,19 +12,35 @@ Unlike Hermes' built-in OAuth integrations (Google, GitHub Copilot, Codex), Spot
 
 ## Setup
 
-### 1. Enable the toolset
+### One-shot: `hermes tools`
+
+The fastest path. Run:
 
 ```bash
 hermes tools
 ```
 
-Scroll to `🎵 Spotify`, press space to toggle it on, then `s` to save. The 9 Spotify tools only appear in the agent's toolset after this — they're off by default so users who don't want them don't ship extra tool schemas on every API call.
+Scroll to `🎵 Spotify`, press space to toggle it on, then `s` to save. Hermes drops you straight into the OAuth flow — if you don't have a Spotify app yet, it walks you through creating one inline. Once you finish, the toolset is enabled AND authenticated in one pass.
 
-### 2. Run the login wizard
+If you prefer to do the steps separately (or you're re-authing later), use the two-step flow below.
+
+### Two-step flow
+
+#### 1. Enable the toolset
+
+```bash
+hermes tools
+```
+
+Toggle `🎵 Spotify` on, save, and when the inline wizard opens, dismiss it (Ctrl+C). The toolset stays on; only the auth step is deferred.
+
+#### 2. Run the login wizard
 
 ```bash
 hermes auth spotify
 ```
+
+The 7 Spotify tools only appear in the agent's toolset after step 1 — they're off by default so users who don't want them don't ship extra tool schemas on every API call.
 
 If no `HERMES_SPOTIFY_CLIENT_ID` is set, Hermes walks you through the app registration inline:
 
@@ -152,6 +168,42 @@ Read-only tools work on Free accounts. Anything that mutates playback or the que
 | `spotify_playlists` (all) | |
 | `spotify_albums` (all) | |
 | `spotify_library` (all) | |
+
+## Scheduling: Spotify + cron
+
+Because Spotify tools are regular Hermes tools, a cron job running in a Hermes session can trigger playback on any schedule. No new code needed.
+
+### Morning wake-up playlist
+
+```bash
+hermes cron add \
+  --name "morning-commute" \
+  "0 7 * * 1-5" \
+  "Transfer playback to my kitchen speaker and start my 'Morning Commute' playlist. Volume to 40. Shuffle on."
+```
+
+What happens at 7am every weekday:
+1. Cron spins up a headless Hermes session.
+2. Agent reads the prompt, calls `spotify_devices list` to find "kitchen speaker" by name, then `spotify_devices transfer` → `spotify_playback set_volume` → `spotify_playback set_shuffle` → `spotify_search` + `spotify_playback play`.
+3. Music starts on the target speaker. Total cost: one session, a few tool calls, no human input.
+
+### Wind-down at night
+
+```bash
+hermes cron add \
+  --name "wind-down" \
+  "30 22 * * *" \
+  "Pause Spotify. Then set volume to 20 so it's quiet when I start it again tomorrow."
+```
+
+### Gotchas
+
+- **An active device must exist when the cron fires.** If no Spotify client is running (phone/desktop/Connect speaker), playback actions return `403 no active device`. For morning playlists, the trick is to target a device that's always on (Sonos, Echo, a smart speaker) rather than your phone.
+- **Premium required for anything that mutates playback** — play, pause, skip, volume, transfer. Read-only cron jobs (scheduled "email me my recently played tracks") work fine on Free.
+- **The cron agent inherits your active toolsets.** Spotify must be enabled in `hermes tools` for the cron session to see the Spotify tools.
+- **Cron jobs run with `skip_memory=True`** so they don't write to your memory store.
+
+Full cron reference: [Cron Jobs](./cron).
 
 ## Sign out
 

@@ -94,4 +94,4 @@ To refresh this skill with updated documentation:
 1. Re-run the scraper with the same configuration
 2. The skill will be rebuilt with the latest information
 
-&lt;!-- Trigger re-upload 1763621536 -->
+<!-- Trigger re-upload 1763621536 -->

@@ -485,6 +485,11 @@ class TestNormalizeModelName:
         assert normalize_model_name("anthropic/qwen3.5-plus", preserve_dots=True) == "qwen3.5-plus"
         assert normalize_model_name("qwen3.5-flash", preserve_dots=True) == "qwen3.5-flash"
 
+    def test_non_claude_models_keep_dots_by_default(self):
+        """Anthropic-compatible custom endpoints can serve non-Claude IDs like Qwen."""
+        assert normalize_model_name("qwen3.6-35B") == "qwen3.6-35B"
+        assert normalize_model_name("anthropic/qwen3.6-35B") == "qwen3.6-35B"
+
 
 # ---------------------------------------------------------------------------
 # Tool conversion

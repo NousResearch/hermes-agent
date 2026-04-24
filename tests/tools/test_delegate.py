@@ -2021,3 +2021,45 @@ class TestOrchestratorEndToEnd(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestSubagentApprovalCallback(unittest.TestCase):
+    """fix(delegate): subagent threads must have approval callback set
+    to prevent deadlock when encountering dangerous commands."""
+
+    def test_subagent_executor_initializer_sets_approval_callback(self):
+        """ThreadPoolExecutor initializer must set approval callback in
+        worker thread so dangerous commands do not fall through to input()."""
+        from concurrent.futures import ThreadPoolExecutor
+        from tools.terminal_tool import (
+            set_approval_callback as _set_cb,
+            _get_approval_callback,
+        )
+        from tools.delegate_tool import _subagent_auto_approve
+
+        seen_in_worker = []
+
+        def worker():
+            seen_in_worker.append(_get_approval_callback())
+
+        with ThreadPoolExecutor(
+            max_workers=1,
+            initializer=_set_cb,
+            initargs=(_subagent_auto_approve,),
+        ) as executor:
+            executor.submit(worker).result()
+
+        self.assertEqual(
+            seen_in_worker,
+            [_subagent_auto_approve],
+            "Worker thread must have _subagent_auto_approve set as approval "
+            "callback — without this, dangerous commands call input() and "
+            "deadlock the parent TUI"
+        )
+
+    def test_subagent_auto_approve_returns_once(self):
+        """_subagent_auto_approve must return once for any command."""
+        from tools.delegate_tool import _subagent_auto_approve
+
+        result = _subagent_auto_approve("rm -rf /tmp/test", "dangerous command")
+        self.assertEqual(result, "once")

@@ -34,6 +34,7 @@ from typing import Any, Dict, List, Optional
 from toolsets import TOOLSETS
 from tools import file_state
 from utils import base_url_hostname, is_truthy_value
+from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 
 
 # Tools that children must never have access to
@@ -46,6 +47,19 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
         "execute_code",  # children should reason step-by-step, not write scripts
     ]
 )
+
+def _subagent_auto_approve(command: str, description: str, **kwargs) -> str:
+    """Auto-approve dangerous commands in subagent threads.
+
+    Subagents run in ThreadPoolExecutor worker threads and cannot safely
+    call input() — it competes with the parent's prompt_toolkit TUI for
+    stdin causing a deadlock. This callback returns 'once' automatically
+    so subagents can proceed without blocking the parent UI.
+    """
+    logger.warning(
+        "Subagent auto-approved dangerous command: %s (%s)", command, description
+    )
+    return "once"
 
 # Build a description fragment listing toolsets available for subagents.
 # Excludes toolsets where ALL tools are blocked, composite/platform toolsets
@@ -1174,7 +1188,11 @@ def _run_single_child(
         # Run child with a hard timeout to prevent indefinite blocking
         # when the child's API call or tool-level HTTP request hangs.
         child_timeout = _get_child_timeout()
-        _timeout_executor = ThreadPoolExecutor(max_workers=1)
+        _timeout_executor = ThreadPoolExecutor(
+            max_workers=1,
+            initializer=_set_subagent_approval_cb,
+            initargs=(_subagent_auto_approve,),
+        )
         _child_future = _timeout_executor.submit(
             child.run_conversation,
             user_message=goal,

@@ -9,11 +9,15 @@ import pytest
 from ingestion import (
     SCHEMA_VERSION,
     _looks_like_heading,
+    _read_url_list,
     extract_references,
+    ingest_crawl,
     ingest_directory,
     ingest_file,
+    ingest_urls,
     parse_sections,
 )
+from web_fetch import FetchedPage
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "tiny-corpus"
@@ -121,3 +125,119 @@ def test_dry_run_lists_without_writing(tmp_path):
     assert r["dry_run"] is True
     assert r["count"] >= 3
     assert not any(out.glob("*.json")) if out.exists() else True
+
+
+# ---------------------------------------------------------------------------
+# URL / crawl ingestion (no network — injected stub fetcher)
+# ---------------------------------------------------------------------------
+
+
+class StubFetcher:
+    name = "stub"
+
+    def __init__(self, pages):
+        self._pages = {p.url: p for p in pages}
+        self._crawl_results = list(pages)
+
+    def fetch_markdown(self, url, *, timeout=60):
+        if url not in self._pages:
+            raise RuntimeError(f"no stub page for {url}")
+        return self._pages[url]
+
+    def crawl(self, start_url, **kwargs):
+        return list(self._crawl_results)
+
+
+def test_ingest_urls_writes_cache_entries(tmp_path):
+    cache = tmp_path / "cache"
+    pages = [
+        FetchedPage(
+            url="https://example.com/a",
+            markdown="# Alpha\n\n## Intro\n\nbody about Bogoliubov\n",
+            title="Alpha",
+        ),
+        FetchedPage(
+            url="https://example.com/b",
+            markdown="# Beta\n\nsome text",
+            title="Beta",
+        ),
+    ]
+    fetcher = StubFetcher(pages)
+    r = ingest_urls(
+        urls=["https://example.com/a", "https://example.com/b"],
+        cache_dir=cache,
+        fetcher=fetcher,
+    )
+    assert r["manifest"]["counts"]["ingested"] == 2
+    assert r["manifest"]["counts"]["errors"] == 0
+
+    files = list(cache.glob("*.json"))
+    assert len(files) >= 2
+
+    for r in r["results"]:
+        doc = json.loads(Path(r["cache_file"]).read_text())
+        assert doc["schema_version"] == SCHEMA_VERSION
+        assert doc["metadata"]["source_type"] == "url"
+        assert doc["metadata"]["source_url"].startswith("https://example.com/")
+
+
+def test_ingest_urls_idempotent(tmp_path):
+    cache = tmp_path / "cache"
+    pages = [FetchedPage(url="https://example.com/a", markdown="# A\n\nbody")]
+    fetcher = StubFetcher(pages)
+
+    first = ingest_urls(urls=["https://example.com/a"], cache_dir=cache, fetcher=fetcher)
+    second = ingest_urls(urls=["https://example.com/a"], cache_dir=cache, fetcher=fetcher)
+    assert first["manifest"]["counts"]["ingested"] == 1
+    assert second["manifest"]["counts"]["skipped"] == 1
+    assert second["manifest"]["counts"]["ingested"] == 0
+
+
+def test_ingest_urls_records_fetch_errors(tmp_path):
+    cache = tmp_path / "cache"
+    fetcher = StubFetcher([FetchedPage(url="https://example.com/good", markdown="# ok")])
+    r = ingest_urls(
+        urls=["https://example.com/good", "https://example.com/missing"],
+        cache_dir=cache,
+        fetcher=fetcher,
+    )
+    counts = r["manifest"]["counts"]
+    assert counts["ingested"] == 1
+    assert counts["errors"] == 1
+    assert (cache / "_ingest_errors.json").exists()
+
+
+def test_ingest_crawl_processes_multi_page_result(tmp_path):
+    cache = tmp_path / "cache"
+    pages = [
+        FetchedPage(url="https://site/p1", markdown="# P1\n\ntext", title="P1"),
+        FetchedPage(url="https://site/p2", markdown="# P2\n\ntext", title="P2"),
+        FetchedPage(url="https://site/p3", markdown="# P3\n\ntext", title="P3"),
+    ]
+    fetcher = StubFetcher(pages)
+    r = ingest_crawl(
+        start_url="https://site/",
+        cache_dir=cache,
+        fetcher=fetcher,
+        max_depth=3,
+        limit=10,
+    )
+    assert r["manifest"]["counts"]["ingested"] == 3
+
+
+def test_read_url_list_ignores_blanks_and_comments(tmp_path):
+    p = tmp_path / "urls.txt"
+    p.write_text(
+        "# top comment\n"
+        "\n"
+        "https://example.com/one\n"
+        "   https://example.com/two   \n"
+        "# another comment\n"
+        "https://example.com/three\n"
+    )
+    urls = _read_url_list(p)
+    assert urls == [
+        "https://example.com/one",
+        "https://example.com/two",
+        "https://example.com/three",
+    ]

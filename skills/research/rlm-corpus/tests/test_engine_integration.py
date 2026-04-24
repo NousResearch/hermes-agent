@@ -101,3 +101,85 @@ def test_engine_max_iterations_exits_gracefully(tmp_path):
 
     assert result["stopped_because"] == "max_iterations"
     assert result["answer"] is None
+
+
+def test_kernel_bootstrap_exposes_web_helpers(tmp_path):
+    """The kernel should have `fetch_url` and `ingest_url` defined even when
+    credentials are missing; they only raise when actually called."""
+    from pathlib import Path
+    fixtures = Path(__file__).parent / "fixtures" / "tiny-corpus"
+    cache = tmp_path / "cache"
+    ingest_directory(fixtures, cache)
+    corpus = load_corpus(cache)
+
+    scripted = [
+        "```repl\n"
+        "print('fetch_url:', callable(fetch_url))\n"
+        "print('ingest_url:', callable(ingest_url))\n"
+        "print('corpus size:', len(corpus))\n"
+        "```",
+        "FINAL(checked)",
+    ]
+    cfg = RLMConfig(max_iterations=3, enable_sub_calls=False)
+    spec = {"endpoint": "anthropic", "model": "dummy", "base_url": None}
+    with RLMEngine(corpus, StubLLM(scripted), spec, cfg) as eng:
+        result = eng.answer("q")
+
+    output = "\n".join(
+        step["content"] for step in result["trajectory"] if step["role"] == "user"
+    )
+    assert "fetch_url: True" in output
+    assert "ingest_url: True" in output
+
+
+def test_kernel_ingest_url_adds_page_to_corpus(tmp_path, monkeypatch):
+    """Monkey-patch requests.post inside the kernel by pre-importing a fake
+    module into the kernel, then call ingest_url and verify corpus grew."""
+    from pathlib import Path
+    fixtures = Path(__file__).parent / "fixtures" / "tiny-corpus"
+    cache = tmp_path / "cache"
+    ingest_directory(fixtures, cache)
+    corpus = load_corpus(cache)
+    initial_size = len(corpus)
+
+    scripted = [
+        # Install a fake requests module that returns a canned CF response.
+        "```repl\n"
+        "import sys, types\n"
+        "_fake = types.ModuleType('requests')\n"
+        "class _R:\n"
+        "    status_code = 200\n"
+        "    def json(self):\n"
+        "        return {'success': True, 'result': '# Live Page\\n\\nhello'}\n"
+        "def _post(*a, **k): return _R()\n"
+        "def _get(*a, **k): return _R()\n"
+        "_fake.post = _post\n"
+        "_fake.get = _get\n"
+        "sys.modules['requests'] = _fake\n"
+        "print('patched')\n"
+        "```",
+        "```repl\n"
+        "_RLM_CF_ACCOUNT_ID = 'stub-acct'\n"
+        "_RLM_CF_API_TOKEN = 'stub-tok'\n"
+        "key = ingest_url('https://example.com/article')\n"
+        "print('added key:', key)\n"
+        "print('new size:', len(corpus))\n"
+        "print('title:', corpus[key]['metadata']['title'])\n"
+        "```",
+        "FINAL(done)",
+    ]
+    cfg = RLMConfig(max_iterations=5, enable_sub_calls=False)
+    # Use the default cloudflare fetcher path and inject fake creds via config
+    cfg.cf_account_id = "stub-acct"
+    cfg.cf_api_token = "stub-tok"
+    spec = {"endpoint": "anthropic", "model": "dummy", "base_url": None}
+
+    with RLMEngine(corpus, StubLLM(scripted), spec, cfg) as eng:
+        result = eng.answer("q")
+
+    output = "\n".join(
+        step["content"] for step in result["trajectory"] if step["role"] == "user"
+    )
+    assert "added key: https://example.com/article" in output
+    assert f"new size: {initial_size + 1}" in output
+    assert "title: Live Page" in output

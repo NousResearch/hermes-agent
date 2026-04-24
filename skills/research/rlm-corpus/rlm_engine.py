@@ -186,6 +186,9 @@ class RLMEngine:
         base_url = spec.get("base_url")
         max_chars_default = self.config.max_sub_llm_chars
         enable = self.config.enable_sub_calls
+        web_fetcher = self.config.web_fetcher
+        cf_account = self.config.cf_account_id
+        cf_token = self.config.cf_api_token
 
         # NOTE: double braces for any literal `{` `}` in generated Python.
         return textwrap.dedent(
@@ -200,6 +203,9 @@ class RLMEngine:
             _RLM_SUB_MODEL = {model!r}
             _RLM_SUB_BASE_URL = {base_url!r}
             _RLM_SUB_DEFAULT_MAX_CHARS = {max_chars_default!r}
+            _RLM_WEB_FETCHER = {web_fetcher!r}
+            _RLM_CF_ACCOUNT_ID = {cf_account!r}
+            _RLM_CF_API_TOKEN = {cf_token!r}
 
             def list_papers():
                 rows = []
@@ -296,6 +302,82 @@ class RLMEngine:
                     )
                     return _resp.choices[0].message.content or ""
 
+            def fetch_url(url, timeout=60):
+                # Fetch a URL as markdown and return the string.
+                # Does NOT add the page to `corpus` -- use ingest_url() for that.
+                import requests as _rq
+                if _RLM_WEB_FETCHER == "cloudflare":
+                    if not _RLM_CF_ACCOUNT_ID or not _RLM_CF_API_TOKEN:
+                        raise RuntimeError(
+                            "fetch_url needs CLOUDFLARE_ACCOUNT_ID + CLOUDFLARE_API_TOKEN "
+                            "(or RLM_CF_ACCOUNT_ID / RLM_CF_API_TOKEN)"
+                        )
+                    _u = (
+                        "https://api.cloudflare.com/client/v4/accounts/"
+                        + _RLM_CF_ACCOUNT_ID + "/browser-rendering/markdown"
+                    )
+                    _resp = _rq.post(
+                        _u,
+                        headers={{
+                            "Authorization": "Bearer " + _RLM_CF_API_TOKEN,
+                            "Content-Type": "application/json",
+                        }},
+                        json={{"url": url}},
+                        timeout=timeout,
+                    )
+                    _body = _resp.json()
+                    if not _body.get("success"):
+                        raise RuntimeError(
+                            "cloudflare /markdown error: " + str(_body.get("errors") or _body)
+                        )
+                    _r = _body.get("result")
+                    if isinstance(_r, dict):
+                        return _r.get("markdown") or _r.get("content") or ""
+                    return _r or ""
+                elif _RLM_WEB_FETCHER == "jina":
+                    _resp = _rq.get(
+                        "https://r.jina.ai/" + url,
+                        headers={{"Accept": "text/markdown"}},
+                        timeout=timeout,
+                    )
+                    _resp.raise_for_status()
+                    return _resp.text
+                else:
+                    raise RuntimeError("unknown RLM_WEB_FETCHER: " + str(_RLM_WEB_FETCHER))
+
+            def ingest_url(url, timeout=60):
+                # Fetch a URL as markdown and add it to `corpus` under the URL as key.
+                # Returns the key. Non-persistent -- does NOT write to the on-disk
+                # cache. For persistent ingestion, re-run the ingest-urls CLI.
+                _md = fetch_url(url, timeout=timeout)
+                _m = _re.search(r"^#\\s+(.+)$", _md, _re.MULTILINE)
+                _title = _m.group(1).strip() if _m else url
+                corpus[url] = {{
+                    "file_path": url,
+                    "metadata": {{
+                        "title": _title,
+                        "authors": [],
+                        "year": None,
+                        "source_type": "url",
+                        "source_url": url,
+                    }},
+                    "full_text": _md,
+                    "sections": [{{
+                        "heading": _title or "Body",
+                        "level": 1,
+                        "text": _md,
+                        "start_char": 0,
+                        "end_char": len(_md),
+                    }}],
+                    "references": [],
+                    "stats": {{
+                        "char_count": len(_md),
+                        "section_count": 1,
+                        "reference_count": 0,
+                    }},
+                }}
+                return url
+
             print("RLM kernel ready:", len(corpus), "docs,", sum((d.get('stats') or {{}}).get('char_count', 0) for d in corpus.values()), "chars")
             """
         )
@@ -364,7 +446,10 @@ class RLMEngine:
 
     def answer(self, query: str) -> dict[str, Any]:
         system = build_root_system_prompt(
-            self.corpus, query, enable_sub_calls=self.config.enable_sub_calls
+            self.corpus,
+            query,
+            enable_sub_calls=self.config.enable_sub_calls,
+            web_fetch_available=self.config.has_web_fetcher_credentials(),
         )
         messages: list[ChatMessage] = []
         trajectory: list[dict[str, Any]] = []

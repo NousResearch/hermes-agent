@@ -16,6 +16,10 @@ Env vars:
     RLM_ENABLE_SUB_CALLS    default "true"
     RLM_CACHE_DIR           default "~/.hermes/rlm-cache"
     RLM_ALLOW_NETWORK       default "false"
+    RLM_WEB_FETCHER         default "cloudflare" (also "jina")
+    RLM_CF_ACCOUNT_ID       Cloudflare account ID (also CLOUDFLARE_ACCOUNT_ID)
+    RLM_CF_API_TOKEN        Cloudflare API token with Browser Rendering scope
+                            (also CLOUDFLARE_API_TOKEN)
 """
 from __future__ import annotations
 
@@ -88,9 +92,34 @@ class RLMConfig:
         default_factory=lambda: _env_bool("RLM_ALLOW_NETWORK", False)
     )
 
+    # Web fetching (URLs / crawls)
+    web_fetcher: str = field(
+        default_factory=lambda: os.environ.get("RLM_WEB_FETCHER", "cloudflare")
+    )
+    cf_account_id: str | None = field(
+        default_factory=lambda: (
+            os.environ.get("RLM_CF_ACCOUNT_ID")
+            or os.environ.get("CLOUDFLARE_ACCOUNT_ID")
+        )
+    )
+    cf_api_token: str | None = field(
+        default_factory=lambda: (
+            os.environ.get("RLM_CF_API_TOKEN")
+            or os.environ.get("CLOUDFLARE_API_TOKEN")
+        )
+    )
+
     def describe(self) -> str:
         return (
             f"RLMConfig(root={self.root_model}, sub={self.sub_model} via "
             f"{self.sub_llm_endpoint}, iters<={self.max_iterations}, "
-            f"sub_calls={'on' if self.enable_sub_calls else 'off'})"
+            f"sub_calls={'on' if self.enable_sub_calls else 'off'}, "
+            f"web_fetcher={self.web_fetcher})"
         )
+
+    def has_web_fetcher_credentials(self) -> bool:
+        if self.web_fetcher == "cloudflare":
+            return bool(self.cf_account_id and self.cf_api_token)
+        if self.web_fetcher == "jina":
+            return True
+        return False

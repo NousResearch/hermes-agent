@@ -28,7 +28,13 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from config import RLMConfig  # noqa: E402
 from corpus_loader import is_cache_dir, load_corpus, corpus_summary  # noqa: E402
-from ingestion import SUPPORTED_EXTENSIONS, ingest_directory  # noqa: E402
+from ingestion import (  # noqa: E402
+    SUPPORTED_EXTENSIONS,
+    _read_url_list,
+    ingest_crawl,
+    ingest_directory,
+    ingest_urls,
+)
 from llm_clients import make_client  # noqa: E402
 from rlm_engine import RLMEngine, format_answer_with_references  # noqa: E402
 
@@ -137,6 +143,24 @@ def _build_parser() -> argparse.ArgumentParser:
 
     summ = sub.add_parser("summary", help="Print corpus summary without running a query")
     summ.add_argument("--corpus", required=True, type=Path)
+
+    urls = sub.add_parser("ingest-urls", help="Fetch URLs as markdown and add to cache")
+    urls.add_argument("--cache", required=True, type=Path)
+    urls.add_argument("--url", action="append", default=[])
+    urls.add_argument("--urls-file", type=Path)
+    urls.add_argument("--fetcher", default=None, choices=["cloudflare", "jina"])
+    urls.add_argument("--force", action="store_true")
+
+    crawl = sub.add_parser("ingest-crawl", help="Crawl a site and ingest every discovered page")
+    crawl.add_argument("--cache", required=True, type=Path)
+    crawl.add_argument("--start-url", required=True, type=str)
+    crawl.add_argument("--max-depth", type=int, default=2)
+    crawl.add_argument("--limit", type=int, default=50)
+    crawl.add_argument("--include", action="append", default=[])
+    crawl.add_argument("--exclude", action="append", default=[])
+    crawl.add_argument("--fetcher", default=None, choices=["cloudflare", "jina"])
+    crawl.add_argument("--force", action="store_true")
+
     return p
 
 
@@ -160,6 +184,39 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "summary":
         corpus = load_corpus(args.corpus.expanduser().resolve())
         print(json.dumps(corpus_summary(corpus), indent=2))
+        return 0
+
+    if args.command == "ingest-urls":
+        urls = list(args.url)
+        if args.urls_file:
+            if not args.urls_file.exists():
+                print(f"error: --urls-file does not exist: {args.urls_file}", file=sys.stderr)
+                return 2
+            urls.extend(_read_url_list(args.urls_file))
+        if not urls:
+            print("error: no URLs provided (use --url and/or --urls-file)", file=sys.stderr)
+            return 2
+        result = ingest_urls(
+            urls=urls,
+            cache_dir=args.cache,
+            fetcher_name=args.fetcher,
+            force=args.force,
+        )
+        print(json.dumps(result["manifest"], indent=2))
+        return 0
+
+    if args.command == "ingest-crawl":
+        result = ingest_crawl(
+            start_url=args.start_url,
+            cache_dir=args.cache,
+            max_depth=args.max_depth,
+            limit=args.limit,
+            include_patterns=args.include or None,
+            exclude_patterns=args.exclude or None,
+            fetcher_name=args.fetcher,
+            force=args.force,
+        )
+        print(json.dumps(result["manifest"], indent=2))
         return 0
 
     if args.command == "query":

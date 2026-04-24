@@ -33,7 +33,8 @@ Reference: Zhang, Kraska, Khattab. "Recursive Language Models." arXiv:2512.24601
 
 | File | Purpose |
 |------|---------|
-| `ingestion.py` | Directory of docs → JSON cache (hash-incremental) |
+| `ingestion.py` | Directory / URLs / crawls → JSON cache (hash-incremental) |
+| `web_fetch.py` | URL-to-markdown backends: Cloudflare Browser Rendering, Jina Reader |
 | `corpus_loader.py` | JSON cache → in-memory dict |
 | `rlm_engine.py` | Jupyter kernel + agent loop |
 | `prompts.py` | System prompt templates |
@@ -62,8 +63,49 @@ python ingestion.py ingest \
 - `--dry-run` lists what would be processed.
 
 Per-doc output JSON schema: `file_path`, `file_hash`, `ingested_at`, `metadata`
-(title / authors / year / doi / source_type), `full_text`, `sections`
-(heading, level, text, char offsets), `references`, `stats`.
+(title / authors / year / doi / source_type / source_url), `full_text`,
+`sections` (heading, level, text, char offsets), `references`, `stats`.
+
+#### Ingesting websites
+
+Single pages (or a list of URLs) via the Cloudflare Browser Rendering
+`/markdown` endpoint:
+
+```bash
+export CLOUDFLARE_ACCOUNT_ID=...   # or RLM_CF_ACCOUNT_ID
+export CLOUDFLARE_API_TOKEN=...    # needs "Browser Rendering - Edit"
+
+python ingestion.py ingest-urls \
+  --cache ~/.hermes/rlm-cache/my-corpus/ \
+  --url   https://example.com/paper-a \
+  --url   https://example.com/paper-b
+
+# Or from a newline-separated file (# comments allowed)
+python ingestion.py ingest-urls --cache ~/.hermes/rlm-cache/my-corpus/ \
+  --urls-file reading-list.txt
+```
+
+Whole-site crawls via Cloudflare's `/crawl` endpoint (async job, pagination
+and status polling handled internally):
+
+```bash
+python ingestion.py ingest-crawl \
+  --cache ~/.hermes/rlm-cache/docs-site/ \
+  --start-url https://docs.example.com/ \
+  --max-depth 3 \
+  --limit 200 \
+  --include "/reference/*" \
+  --exclude "*.pdf"
+```
+
+URL-sourced docs share the cache with file-sourced ones and appear in the
+same `corpus` dict at query time. `metadata.source_type` is `"url"` and
+`metadata.source_url` holds the original URL. The cache filename is
+`sha1(url).json`; content re-ingestion is hash-gated.
+
+Fallback without Cloudflare creds: set `RLM_WEB_FETCHER=jina` or pass
+`--fetcher jina` to route single-page fetches through the unauthenticated
+`https://r.jina.ai/<url>` reader. (Crawl is Cloudflare-only.)
 
 ### 2. Query
 
@@ -96,7 +138,13 @@ Inside the kernel, the root model has:
 | `get_section(filename, heading)` | `-> str` | Fetch a specific section |
 | `get_paper(filename)` | `-> dict` | Full document record |
 | `llm_query(prompt, max_chars=500_000)` | `-> str` | Sub-LLM call on any text |
+| `fetch_url(url, timeout=60)` | `-> str` | Fetch a URL as markdown (Cloudflare/Jina) |
+| `ingest_url(url, timeout=60)` | `-> str` | Fetch + add to `corpus` in-memory (non-persistent) |
 | standard library | — | `re`, `json`, `collections`, etc. |
+
+`fetch_url` and `ingest_url` are advertised in the system prompt only when
+Cloudflare or Jina credentials are present. `ingest_url` is live-only — to
+persist a URL across sessions, run `ingest-urls` / `ingest-crawl` via the CLI.
 
 ## Protocol
 
@@ -124,6 +172,9 @@ Env vars (see `config.py`):
 | `RLM_TEMPERATURE` | `0.3` | Root LM temperature |
 | `RLM_ENABLE_SUB_CALLS` | `true` | Turn off for ablation / cost control |
 | `RLM_CACHE_DIR` | `~/.hermes/rlm-cache` | Default cache root |
+| `RLM_WEB_FETCHER` | `cloudflare` | Also `jina` (unauthenticated fallback) |
+| `RLM_CF_ACCOUNT_ID` / `CLOUDFLARE_ACCOUNT_ID` | — | Cloudflare account |
+| `RLM_CF_API_TOKEN` / `CLOUDFLARE_API_TOKEN` | — | Token with Browser Rendering - Edit |
 
 ## Dependencies
 
@@ -142,6 +193,8 @@ Optional:
 marker-pdf                 # heavy but excellent for math-heavy PDFs
 pypdf                      # last-resort PDF fallback
 openai                     # only if RLM_SUB_ENDPOINT=openai or omlx
+requests   >= 2.33         # only if using web fetching (ingestion.py already
+                           #   needs this indirectly; already a hermes core dep)
 ```
 
 ## Testing

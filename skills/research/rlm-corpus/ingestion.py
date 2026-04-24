@@ -34,7 +34,7 @@ from typing import Any, Callable, Iterable
 log = logging.getLogger("rlm_corpus.ingest")
 
 SUPPORTED_EXTENSIONS = {".pdf", ".md", ".markdown", ".tex", ".txt"}
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2  # bumped: added url source type + optional source_url metadata
 
 
 # ---------------------------------------------------------------------------
@@ -64,6 +64,7 @@ class DocumentMetadata:
     year: int | None = None
     doi: str | None = None
     source_type: str = "txt"
+    source_url: str | None = None  # set for URL-sourced docs (source_type="url")
 
 
 @dataclass
@@ -604,6 +605,281 @@ def ingest_directory(
 
 
 # ---------------------------------------------------------------------------
+# URL ingestion (single pages + crawls)
+# ---------------------------------------------------------------------------
+
+
+def _url_cache_filename(url: str) -> str:
+    return hashlib.sha1(url.encode("utf-8")).hexdigest() + ".json"
+
+
+def _ingest_page_record(
+    url: str,
+    markdown: str,
+    cache_dir: Path,
+    *,
+    title_hint: str | None = None,
+    force: bool = False,
+    fetcher_name: str | None = None,
+) -> dict[str, Any]:
+    """Turn a (url, markdown) pair into a cache JSON record.
+
+    The markdown is parsed with the same section/reference/metadata extractors
+    used for on-disk documents, so URL-sourced docs live in the same corpus
+    as local ones and are interchangeable to the RLM engine.
+    """
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    out_file = cache_dir / _url_cache_filename(url)
+
+    digest = hashlib.sha256(markdown.encode("utf-8")).hexdigest()
+
+    if not force and out_file.exists():
+        try:
+            existing = json.loads(out_file.read_text())
+            if (
+                existing.get("file_hash") == digest
+                and existing.get("schema_version") == SCHEMA_VERSION
+            ):
+                return {
+                    "status": "skipped",
+                    "source": url,
+                    "cache_file": str(out_file),
+                    "reason": "content unchanged",
+                }
+        except (json.JSONDecodeError, OSError):
+            pass
+
+    sections = parse_sections(markdown, "md")
+    # Use a synthetic Path for metadata title-from-stem extraction; prefer the
+    # title hint from the fetcher if we have one.
+    synthetic = Path(url.rstrip("/").split("/")[-1] or "page")
+    metadata = extract_metadata(synthetic, markdown, "md")
+    metadata.source_type = "url"
+    metadata.source_url = url
+    if title_hint:
+        metadata.title = title_hint
+    elif not metadata.title or metadata.title == synthetic.stem:
+        # Fall back to the first markdown H1 if present (extract_metadata
+        # already tries this for md, but synthesize a better default).
+        m = re.search(r"^\#\s+(.+)$", markdown, re.MULTILINE)
+        if m:
+            metadata.title = m.group(1).strip()
+
+    references = extract_references(sections, markdown)
+
+    doc = IngestedDocument(
+        file_path=url,
+        file_hash=digest,
+        ingested_at=datetime.now(timezone.utc).isoformat(),
+        schema_version=SCHEMA_VERSION,
+        metadata=metadata,
+        full_text=markdown,
+        sections=sections,
+        references=references,
+        stats={
+            "char_count": len(markdown),
+            "token_count_estimate": estimate_tokens(markdown),
+            "section_count": len(sections),
+            "reference_count": len(references),
+        },
+    )
+
+    payload = asdict(doc)
+    if fetcher_name:
+        payload["extraction_backend"] = fetcher_name
+
+    tmp_file = out_file.with_suffix(out_file.suffix + ".tmp")
+    tmp_file.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp_file.replace(out_file)
+
+    return {
+        "status": "ingested",
+        "source": url,
+        "cache_file": str(out_file),
+        "backend": fetcher_name or "url",
+        "char_count": len(markdown),
+        "section_count": len(sections),
+    }
+
+
+def ingest_urls(
+    urls: list[str],
+    cache_dir: Path,
+    *,
+    fetcher: Any | None = None,
+    fetcher_name: str | None = None,
+    force: bool = False,
+) -> dict[str, Any]:
+    """Fetch a list of URLs as markdown and add them to the cache.
+
+    ``fetcher`` is any object implementing ``URLFetcher`` (see ``web_fetch``).
+    If None, one is created from env vars.
+    """
+    if fetcher is None:
+        from web_fetch import make_fetcher  # lazy import
+
+        fetcher = make_fetcher(fetcher_name)
+
+    cache_dir = Path(cache_dir).resolve()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    results: list[dict[str, Any]] = []
+    for url in urls:
+        try:
+            page = fetcher.fetch_markdown(url)
+        except (KeyboardInterrupt, SystemExit):
+            raise
+        except BaseException as exc:  # noqa: BLE001
+            results.append({
+                "status": "error",
+                "source": url,
+                "error": f"{type(exc).__name__}: {exc}",
+                "traceback": traceback.format_exc(),
+            })
+            continue
+
+        if not page.markdown.strip():
+            results.append({"status": "error", "source": url, "error": "empty markdown"})
+            continue
+
+        results.append(
+            _ingest_page_record(
+                url=url,
+                markdown=page.markdown,
+                cache_dir=cache_dir,
+                title_hint=page.title,
+                force=force,
+                fetcher_name=getattr(fetcher, "name", None),
+            )
+        )
+
+    _write_error_log_and_manifest(cache_dir, results, source_label=f"urls({len(urls)})")
+    return {
+        "manifest": _build_manifest(cache_dir, f"urls({len(urls)})", results),
+        "results": results,
+    }
+
+
+def ingest_crawl(
+    start_url: str,
+    cache_dir: Path,
+    *,
+    fetcher: Any | None = None,
+    max_depth: int = 2,
+    limit: int = 50,
+    include_patterns: list[str] | None = None,
+    exclude_patterns: list[str] | None = None,
+    force: bool = False,
+    fetcher_name: str | None = None,
+) -> dict[str, Any]:
+    """Crawl a site starting at ``start_url`` and ingest every discovered page."""
+    if fetcher is None:
+        from web_fetch import make_fetcher  # lazy import
+
+        fetcher = make_fetcher(fetcher_name)
+
+    cache_dir = Path(cache_dir).resolve()
+    cache_dir.mkdir(parents=True, exist_ok=True)
+
+    try:
+        pages = fetcher.crawl(
+            start_url,
+            max_depth=max_depth,
+            limit=limit,
+            include_patterns=include_patterns,
+            exclude_patterns=exclude_patterns,
+        )
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except BaseException as exc:  # noqa: BLE001
+        err = {
+            "status": "error",
+            "source": start_url,
+            "error": f"{type(exc).__name__}: {exc}",
+            "traceback": traceback.format_exc(),
+        }
+        _write_error_log_and_manifest(cache_dir, [err], source_label=f"crawl({start_url})")
+        return {"manifest": _build_manifest(cache_dir, f"crawl({start_url})", [err]), "results": [err]}
+
+    results: list[dict[str, Any]] = []
+    for page in pages:
+        if not page.markdown.strip():
+            results.append({"status": "error", "source": page.url, "error": "empty markdown"})
+            continue
+        results.append(
+            _ingest_page_record(
+                url=page.url,
+                markdown=page.markdown,
+                cache_dir=cache_dir,
+                title_hint=page.title,
+                force=force,
+                fetcher_name=getattr(fetcher, "name", None),
+            )
+        )
+
+    _write_error_log_and_manifest(cache_dir, results, source_label=f"crawl({start_url})")
+    return {
+        "manifest": _build_manifest(cache_dir, f"crawl({start_url})", results),
+        "results": results,
+    }
+
+
+def _build_manifest(
+    cache_dir: Path,
+    source_label: str,
+    results: list[dict[str, Any]],
+) -> dict[str, Any]:
+    errors = [r for r in results if r.get("status") == "error"]
+    return {
+        "source_root": source_label,
+        "cache_dir": str(cache_dir),
+        "schema_version": SCHEMA_VERSION,
+        "ingested_at": datetime.now(timezone.utc).isoformat(),
+        "counts": {
+            "total": len(results),
+            "ingested": sum(1 for r in results if r.get("status") == "ingested"),
+            "skipped": sum(1 for r in results if r.get("status") == "skipped"),
+            "errors": len(errors),
+        },
+    }
+
+
+def _write_error_log_and_manifest(
+    cache_dir: Path,
+    results: list[dict[str, Any]],
+    *,
+    source_label: str,
+) -> None:
+    errors = [r for r in results if r.get("status") == "error"]
+    if errors:
+        (cache_dir / "_ingest_errors.json").write_text(
+            json.dumps(
+                {
+                    "ingested_at": datetime.now(timezone.utc).isoformat(),
+                    "source": source_label,
+                    "errors": errors,
+                },
+                indent=2,
+            ),
+            encoding="utf-8",
+        )
+    (cache_dir / "_manifest.json").write_text(
+        json.dumps(_build_manifest(cache_dir, source_label, results), indent=2),
+        encoding="utf-8",
+    )
+
+
+def _read_url_list(path: Path) -> list[str]:
+    urls: list[str] = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        s = line.strip()
+        if not s or s.startswith("#"):
+            continue
+        urls.append(s)
+    return urls
+
+
+# ---------------------------------------------------------------------------
 # CLI
 # ---------------------------------------------------------------------------
 
@@ -625,6 +901,30 @@ def _build_parser() -> argparse.ArgumentParser:
     ingest.add_argument("--force", action="store_true", help="Re-ingest even if hash matches")
     ingest.add_argument("--dry-run", action="store_true")
     ingest.add_argument("--verbose", "-v", action="store_true")
+
+    urls = sub.add_parser("ingest-urls", help="Fetch URLs and add them to the cache as markdown")
+    urls.add_argument("--cache", required=True, type=Path)
+    urls.add_argument("--url", action="append", default=[],
+                      help="A URL to fetch (repeatable)")
+    urls.add_argument("--urls-file", type=Path,
+                      help="Path to a text file with one URL per line (# comments allowed)")
+    urls.add_argument("--fetcher", default=None, choices=["cloudflare", "jina"],
+                      help="Override RLM_WEB_FETCHER")
+    urls.add_argument("--force", action="store_true")
+    urls.add_argument("--verbose", "-v", action="store_true")
+
+    crawl = sub.add_parser("ingest-crawl", help="Crawl a site and ingest every discovered page")
+    crawl.add_argument("--cache", required=True, type=Path)
+    crawl.add_argument("--start-url", required=True, type=str)
+    crawl.add_argument("--max-depth", type=int, default=2)
+    crawl.add_argument("--limit", type=int, default=50)
+    crawl.add_argument("--include", action="append", default=[],
+                       help="URL pattern to include (repeatable)")
+    crawl.add_argument("--exclude", action="append", default=[],
+                       help="URL pattern to exclude (repeatable)")
+    crawl.add_argument("--fetcher", default=None, choices=["cloudflare", "jina"])
+    crawl.add_argument("--force", action="store_true")
+    crawl.add_argument("--verbose", "-v", action="store_true")
 
     sub.add_parser("show-schema", help="Print the JSON schema version")
     return p
@@ -654,6 +954,39 @@ def main(argv: list[str] | None = None) -> int:
             dry_run=args.dry_run,
         )
         print(json.dumps(result.get("manifest", result), indent=2))
+        return 0
+
+    if args.command == "ingest-urls":
+        urls = list(args.url)
+        if args.urls_file:
+            if not args.urls_file.exists():
+                print(f"error: --urls-file does not exist: {args.urls_file}", file=sys.stderr)
+                return 2
+            urls.extend(_read_url_list(args.urls_file))
+        if not urls:
+            print("error: no URLs provided (use --url and/or --urls-file)", file=sys.stderr)
+            return 2
+        result = ingest_urls(
+            urls=urls,
+            cache_dir=args.cache,
+            fetcher_name=args.fetcher,
+            force=args.force,
+        )
+        print(json.dumps(result["manifest"], indent=2))
+        return 0
+
+    if args.command == "ingest-crawl":
+        result = ingest_crawl(
+            start_url=args.start_url,
+            cache_dir=args.cache,
+            max_depth=args.max_depth,
+            limit=args.limit,
+            include_patterns=args.include or None,
+            exclude_patterns=args.exclude or None,
+            fetcher_name=args.fetcher,
+            force=args.force,
+        )
+        print(json.dumps(result["manifest"], indent=2))
         return 0
 
     return 1

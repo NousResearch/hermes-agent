@@ -26,7 +26,7 @@ corpus in your context — you interact with it through code.
 - `search(pattern, regex=False, case_sensitive=False)` → list[dict] of matches
 - `get_section(filename, heading)` → str
 - `get_paper(filename)` → dict (the full document record)
-- `llm_query(prompt, max_chars=500000)` → str (call a sub-LLM on any text){sub_note}
+- `llm_query(prompt, max_chars=500000)` → str (call a sub-LLM on any text){sub_note}{web_note}
 - Standard Python (re, json, collections, itertools, statistics, pathlib, etc.)
 
 ## How to respond
@@ -77,6 +77,7 @@ def build_root_system_prompt(
     user_query: str,
     *,
     enable_sub_calls: bool = True,
+    web_fetch_available: bool = False,
 ) -> str:
     total_chars = sum((d.get("stats") or {}).get("char_count", 0) for d in corpus.values())
     sub_note = (
@@ -84,12 +85,21 @@ def build_root_system_prompt(
         if enable_sub_calls
         else "\n- [sub-LLM calls are DISABLED for this run — do not call llm_query()]"
     )
+    web_note = (
+        (
+            "\n- `fetch_url(url, timeout=60)` → str markdown (one-shot web fetch)"
+            "\n- `ingest_url(url)` → adds the URL to `corpus` in-memory (non-persistent)"
+        )
+        if web_fetch_available
+        else ""
+    )
     return ROOT_SYSTEM_TEMPLATE.format(
         num_docs=len(corpus),
         total_chars=total_chars,
         file_type_breakdown=_file_type_breakdown(corpus),
         user_query=user_query,
         sub_note=sub_note,
+        web_note=web_note,
     )
 
 

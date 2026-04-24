@@ -70,6 +70,9 @@ def _make_runner():
     runner.session_store = None
     runner.hooks = MagicMock()
     runner.hooks.emit = AsyncMock()
+    runner.pairing_store = MagicMock()
+    runner.pairing_store.is_approved.return_value = True
+    runner._is_user_authorized = lambda _source: True
     return runner, _AGENT_PENDING_SENTINEL
 
 
@@ -90,6 +93,30 @@ def _make_adapter(platform_val="telegram"):
 
 class TestBusySessionAck:
     """User sends a message while agent is running — should get acknowledgment."""
+
+    @pytest.mark.asyncio
+    async def test_handle_message_queue_mode_queues_without_interrupt(self):
+        """Runner queue mode must not interrupt an active agent for text follow-ups."""
+        from gateway.run import GatewayRunner
+
+        runner, _sentinel = _make_runner()
+        adapter = _make_adapter()
+
+        event = _make_event(text="follow up in queue mode")
+        sk = build_session_key(event.source)
+
+        running_agent = MagicMock()
+        runner._busy_input_mode = "queue"
+        runner._running_agents[sk] = running_agent
+        runner.adapters[event.source.platform] = adapter
+
+        result = await GatewayRunner._handle_message(runner, event)
+
+        assert result is None
+        assert sk in adapter._pending_messages
+        assert adapter._pending_messages[sk] is event
+        assert sk not in runner._pending_messages
+        running_agent.interrupt.assert_not_called()
 
     @pytest.mark.asyncio
     async def test_sends_ack_when_agent_running(self):

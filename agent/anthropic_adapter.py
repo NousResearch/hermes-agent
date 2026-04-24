@@ -14,6 +14,8 @@ import copy
 import json
 import logging
 import os
+import platform
+import subprocess
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
@@ -277,8 +279,9 @@ def _is_oauth_token(key: str) -> bool:
     Positively identifies Anthropic OAuth tokens by their key format:
     - ``sk-ant-`` prefix (but NOT ``sk-ant-api``) → setup tokens, managed keys
     - ``eyJ`` prefix → JWTs from the Anthropic OAuth flow
+    - ``cc-`` prefix → Claude Code OAuth access tokens (from CLAUDE_CODE_OAUTH_TOKEN)
 
-    Non-Anthropic keys (MiniMax, Alibaba, etc.) don't match either pattern
+    Non-Anthropic keys (MiniMax, Alibaba, etc.) don't match any pattern
     and correctly return False.
     """
     if not key:
@@ -291,6 +294,9 @@ def _is_oauth_token(key: str) -> bool:
         return True
     # JWTs from Anthropic OAuth flow
     if key.startswith("eyJ"):
+        return True
+    # Claude Code OAuth access tokens (opaque, from CLAUDE_CODE_OAUTH_TOKEN)
+    if key.startswith("cc-"):
         return True
     return False
 
@@ -461,8 +467,72 @@ def build_anthropic_bedrock_client(region: str):
     )
 
 
+def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
+    """Read Claude Code OAuth credentials from the macOS Keychain.
+
+    Claude Code >=2.1.114 stores credentials in the macOS Keychain under the
+    service name "Claude Code-credentials" rather than (or in addition to)
+    the JSON file at ~/.claude/.credentials.json.
+
+    The password field contains a JSON string with the same claudeAiOauth
+    structure as the JSON file.
+
+    Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
+    """
+    import platform
+    import subprocess
+
+    if platform.system() != "Darwin":
+        return None
+
+    try:
+        # Read the "Claude Code-credentials" generic password entry
+        result = subprocess.run(
+            ["security", "find-generic-password",
+             "-s", "Claude Code-credentials",
+             "-w"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        logger.debug("Keychain: security command not available or timed out")
+        return None
+
+    if result.returncode != 0:
+        logger.debug("Keychain: no entry found for 'Claude Code-credentials'")
+        return None
+
+    raw = result.stdout.strip()
+    if not raw:
+        return None
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.debug("Keychain: credentials payload is not valid JSON")
+        return None
+
+    oauth_data = data.get("claudeAiOauth")
+    if oauth_data and isinstance(oauth_data, dict):
+        access_token = oauth_data.get("accessToken", "")
+        if access_token:
+            return {
+                "accessToken": access_token,
+                "refreshToken": oauth_data.get("refreshToken", ""),
+                "expiresAt": oauth_data.get("expiresAt", 0),
+                "source": "macos_keychain",
+            }
+
+    return None
+
+
 def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
-    """Read refreshable Claude Code OAuth credentials from ~/.claude/.credentials.json.
+    """Read refreshable Claude Code OAuth credentials.
+
+    Checks two sources in order:
+      1. macOS Keychain (Darwin only) — "Claude Code-credentials" entry
+      2. ~/.claude/.credentials.json file
 
     This intentionally excludes ~/.claude.json primaryApiKey. Opencode's
     subscription flow is OAuth/setup-token based with refreshable credentials,
@@ -471,6 +541,12 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
 
     Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
     """
+    # Try macOS Keychain first (covers Claude Code >=2.1.114)
+    kc_creds = _read_claude_code_credentials_from_keychain()
+    if kc_creds:
+        return kc_creds
+
+    # Fall back to JSON file
     cred_path = Path.home() / ".claude" / ".credentials.json"
     if cred_path.exists():
         try:
@@ -641,7 +717,9 @@ def _write_claude_code_credentials(
         existing["claudeAiOauth"] = oauth_data
 
         cred_path.parent.mkdir(parents=True, exist_ok=True)
-        cred_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        _tmp_cred = cred_path.with_suffix(".tmp")
+        _tmp_cred.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        _tmp_cred.replace(cred_path)
         # Restrict permissions (credentials file)
         cred_path.chmod(0o600)
     except (OSError, IOError) as e:
@@ -908,6 +986,26 @@ def read_hermes_oauth_credentials() -> Optional[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+def _is_bedrock_model_id(model: str) -> bool:
+    """Detect AWS Bedrock model IDs that use dots as namespace separators.
+
+    Bedrock model IDs come in two forms:
+    - Bare:    ``anthropic.claude-opus-4-7``
+    - Regional (inference profiles): ``us.anthropic.claude-sonnet-4-5-v1:0``
+
+    In both cases the dots separate namespace components, not version
+    numbers, and must be preserved verbatim for the Bedrock API.
+    """
+    lower = model.lower()
+    # Regional inference-profile prefixes
+    if any(lower.startswith(p) for p in ("global.", "us.", "eu.", "ap.", "jp.")):
+        return True
+    # Bare Bedrock model IDs: provider.model-family
+    if lower.startswith("anthropic."):
+        return True
+    return False
+
+
 def normalize_model_name(model: str, preserve_dots: bool = False) -> str:
     """Normalize a model name for the Anthropic API.
 
@@ -915,11 +1013,19 @@ def normalize_model_name(model: str, preserve_dots: bool = False) -> str:
     - Converts dots to hyphens in version numbers (OpenRouter uses dots,
       Anthropic uses hyphens: claude-opus-4.6 → claude-opus-4-6), unless
       preserve_dots is True (e.g. for Alibaba/DashScope: qwen3.5-plus).
+    - Preserves Bedrock model IDs (``anthropic.claude-opus-4-7``) and
+      regional inference profiles (``us.anthropic.claude-*``) whose dots
+      are namespace separators, not version separators.
     """
     lower = model.lower()
     if lower.startswith("anthropic/"):
         model = model[len("anthropic/"):]
     if not preserve_dots:
+        # Bedrock model IDs use dots as namespace separators
+        # (e.g. "anthropic.claude-opus-4-7", "us.anthropic.claude-*").
+        # These must not be converted to hyphens.  See issue #12295.
+        if _is_bedrock_model_id(model):
+            return model
         # OpenRouter uses dots for version separators (claude-opus-4.6),
         # Anthropic uses hyphens (claude-opus-4-6). Convert dots to hyphens.
         model = model.replace(".", "-")
@@ -1596,6 +1702,5 @@ def build_anthropic_kwargs(
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
 
     return kwargs
-
 
 

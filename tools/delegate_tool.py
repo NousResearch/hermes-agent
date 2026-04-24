@@ -140,6 +140,15 @@ def _get_child_timeout() -> float:
 
 DEFAULT_MAX_ITERATIONS = 50
 _HEARTBEAT_INTERVAL = 30  # seconds between parent activity heartbeats during delegation
+# Stale-heartbeat thresholds. A child with no API-call progress is either:
+#   - idle between turns (no current_tool) — probably stuck on a slow API call
+#   - inside a tool (current_tool set) — probably running a legitimately long
+#     operation (terminal command, web fetch, large file read)
+# The idle ceiling stays tight so genuinely stuck children don't mask the gateway
+# timeout. The in-tool ceiling is much higher so legit long-running tools get
+# time to finish; child_timeout_seconds (default 600s) is still the hard cap.
+_HEARTBEAT_STALE_CYCLES_IDLE = 5  # 5 * 30s = 150s idle between turns → stale
+_HEARTBEAT_STALE_CYCLES_IN_TOOL = 20  # 20 * 30s = 600s stuck on same tool → stale
 DEFAULT_TOOLSETS = ["terminal", "file", "web"]
 DEFAULT_DELEGATION_PROFILE = "general"
 _REVIEWER_ARCHETYPES = frozenset({"verifier"})
@@ -2225,6 +2234,12 @@ def _run_single_child(
     # Without this, the parent's _last_activity_ts freezes when delegate_task
     # starts and the gateway eventually kills the agent for "no activity".
     _heartbeat_stop = threading.Event()
+    # Stale detection: track the child's (tool, iteration) pair across
+    # heartbeat cycles. If neither advances, count the cycle as stale.
+    # Different thresholds for idle vs in-tool (see _HEARTBEAT_STALE_CYCLES_*).
+    _last_seen_iter = [0]
+    _last_seen_tool = [None]  # type: list
+    _stale_count = [0]
 
     def _heartbeat_loop():
         while not _heartbeat_stop.wait(_HEARTBEAT_INTERVAL):
@@ -2240,6 +2255,43 @@ def _run_single_child(
                 child_tool = child_summary.get("current_tool")
                 child_iter = child_summary.get("api_call_count", 0)
                 child_max = child_summary.get("max_iterations", 0)
+
+
+                # Stale detection: count cycles where neither the iteration
+                # count nor the current_tool advances. A child running a
+                # legitimately long-running tool (terminal command, web
+                # fetch) keeps current_tool set but doesn't advance
+                # api_call_count — we don't want that to look stale at the
+                # idle threshold.
+                iter_advanced = child_iter > _last_seen_iter[0]
+                tool_changed = child_tool != _last_seen_tool[0]
+                if iter_advanced or tool_changed:
+                    _last_seen_iter[0] = child_iter
+                    _last_seen_tool[0] = child_tool
+                    _stale_count[0] = 0
+                else:
+                    _stale_count[0] += 1
+
+                # Pick threshold based on whether the child is currently
+                # inside a tool call. In-tool threshold is high enough to
+                # cover legitimately slow tools; idle threshold stays
+                # tight so the gateway timeout can fire on a truly wedged
+                # child.
+                stale_limit = (
+                    _HEARTBEAT_STALE_CYCLES_IN_TOOL
+                    if child_tool
+                    else _HEARTBEAT_STALE_CYCLES_IDLE
+                )
+                if _stale_count[0] >= stale_limit:
+                    logger.warning(
+                        "Subagent %d appears stale (no progress for %d "
+                        "heartbeat cycles, tool=%s) — stopping heartbeat",
+                        task_index,
+                        _stale_count[0],
+                        child_tool or "<none>",
+                    )
+                    break  # stop touching parent, let gateway timeout fire
+
                 if child_tool:
                     desc = (f"delegate_task: subagent running {child_tool} "
                             f"(iteration {child_iter}/{child_max})")

@@ -114,6 +114,7 @@ AUTHOR_MAP = {
     "30841158+n-WN@users.noreply.github.com": "n-WN",
     "tsuijinglei@gmail.com": "hiddenpuppy",
     "jerome@clawwork.ai": "HiddenPuppy",
+    "jerome.benoit@sap.com": "jerome-benoit",
     "wysie@users.noreply.github.com": "Wysie",
     "leoyuan0099@gmail.com": "keyuyuan",
     "bxzt2006@163.com": "Only-Code-A",

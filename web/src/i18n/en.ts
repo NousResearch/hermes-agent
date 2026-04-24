@@ -53,6 +53,7 @@ export const en: Translations = {
     brand: "Hermes Agent",
     brandShort: "HA",
     closeNavigation: "Close navigation",
+    closeModelTools: "Close model and tools",
     footer: {
       org: "Nous Research",
     },
@@ -67,6 +68,7 @@ export const en: Translations = {
     },
     nav: {
       analytics: "Analytics",
+      chat: "Chat",
       config: "Config",
       cron: "Cron",
       documentation: "Documentation",
@@ -75,6 +77,8 @@ export const en: Translations = {
       sessions: "Sessions",
       skills: "Skills",
     },
+    modelToolsSheetSubtitle: "& tools",
+    modelToolsSheetTitle: "Model",
     navigation: "Navigation",
     openDocumentation: "Open documentation in a new tab",
     openNavigation: "Open navigation",
@@ -131,6 +135,7 @@ export const en: Translations = {
       "This permanently removes the conversation and all of its messages. This cannot be undone.",
     sessionDeleted: "Session deleted",
     failedToDelete: "Failed to delete session",
+    resumeInChat: "Resume in Chat",
     previousPage: "Previous page",
     nextPage: "Next page",
     roles: {

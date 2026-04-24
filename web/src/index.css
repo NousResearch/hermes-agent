@@ -6,6 +6,36 @@
 @source '../node_modules/@nous-research/ui/dist';
 
 /* ------------------------------------------------------------------ */
+/* JetBrains Mono — bundled for the embedded TUI (/chat tab).          */
+/* Gives the terminal a proper monospace font even on systems where    */
+/* the user doesn't have one installed locally; xterm.js picks it up   */
+/* via ChatPage's `fontFamily` option.                                 */
+/* Apache-2.0.                                                         */
+/* ------------------------------------------------------------------ */
+
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts-terminal/JetBrainsMono-Regular.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: normal;
+  font-weight: 700;
+  font-display: swap;
+  src: url('/fonts-terminal/JetBrainsMono-Bold.woff2') format('woff2');
+}
+@font-face {
+  font-family: 'JetBrains Mono';
+  font-style: italic;
+  font-weight: 400;
+  font-display: swap;
+  src: url('/fonts-terminal/JetBrainsMono-Italic.woff2') format('woff2');
+}
+
+/* ------------------------------------------------------------------ */
 /* Hermes Agent — Nous DS with the LENS_0 (Hermes teal) lens applied   */
 /* statically. Mirrors nousnet-web/(hermes-agent)/layout.tsx so the    */
 /* canonical Hermes palette is the default — teal canvas + cream      */

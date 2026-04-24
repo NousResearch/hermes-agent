@@ -37,13 +37,13 @@ hermes dashboard --no-open
 
 ## Prerequisites
 
-The web dashboard requires FastAPI and Uvicorn. Install them with:
+The default `hermes-agent` install does not ship the HTTP stack or PTY helper — those are optional extras. The **web dashboard** needs FastAPI and Uvicorn (`web` extra). The **Chat** tab also needs `ptyprocess` to spawn the embedded TUI behind a pseudo-terminal (`pty` extra on POSIX). Install both with:
 
 ```bash
-pip install hermes-agent[web]
+pip install 'hermes-agent[web,pty]'
 ```
 
-If you installed with `pip install hermes-agent[all]`, the web dependencies are already included.
+The `web` extra pulls in FastAPI/Uvicorn; `pty` pulls in `ptyprocess` (POSIX) or `pywinpty` (native Windows — note that the embedded TUI itself still requires WSL). `pip install hermes-agent[all]` includes both extras and is the easiest path if you also want messaging/voice/etc.
 
 When you run `hermes dashboard` without the dependencies, it will tell you what to install. If the frontend hasn't been built yet and `npm` is available, it builds automatically on first launch.
 
@@ -59,6 +59,28 @@ The landing page shows a live overview of your installation:
 - **Recent sessions** — list of the 20 most recent sessions with model, message count, token usage, and a preview of the conversation
 
 The status page auto-refreshes every 5 seconds.
+
+### Chat
+
+The **Chat** tab embeds the full Hermes TUI (the same interface you get from `hermes --tui`) directly in the browser. Everything you can do in the terminal TUI — slash commands, model picker, tool-call cards, markdown streaming, clarify/sudo/approval prompts, skin theming — works identically here, because the dashboard is running the real TUI binary and rendering its ANSI output through [xterm.js](https://xtermjs.org/) with its WebGL renderer for pixel-perfect cell layout.
+
+**How it works:**
+
+- `/api/pty` opens a WebSocket authenticated with the dashboard's session token
+- The server spawns `hermes --tui` behind a POSIX pseudo-terminal
+- Keystrokes travel to the PTY; ANSI output streams back to the browser
+- xterm.js's WebGL renderer paints each cell to an integer-pixel grid; mouse tracking (SGR 1006), wide characters (Unicode 11), and box-drawing glyphs all render natively
+- Resizing the browser window resizes the TUI via the `@xterm/addon-fit` addon
+
+**Resume an existing session:** from the **Sessions** tab, click the play icon (▶) next to any session. That jumps to `/chat?resume=<id>` and launches the TUI with `--resume`, loading the full history.
+
+**Prerequisites:**
+
+- Node.js (same requirement as `hermes --tui`; the TUI bundle is built on first launch)
+- `ptyprocess` — installed by the `pty` extra (`pip install 'hermes-agent[web,pty]'`, or `[all]` covers both)
+- POSIX kernel (Linux, macOS, or WSL). Native Windows Python is not supported — use WSL.
+
+Close the browser tab and the PTY is reaped cleanly on the server. Re-opening spawns a fresh session.
 
 ### Config
 

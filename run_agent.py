@@ -6454,6 +6454,7 @@ class AIAgent:
                     base_url=self.base_url,
                     api_key=getattr(self, "api_key", ""),
                     provider=self.provider,
+                    api_mode=self.api_mode,
                 )
 
             self._emit_status(

@@ -26,7 +26,7 @@ Lifecycle:
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
 
 class ContextEngine(ABC):
@@ -78,6 +78,7 @@ class ContextEngine(ABC):
         self,
         messages: List[Dict[str, Any]],
         current_tokens: int = None,
+        focus_topic: Optional[str] = None,
     ) -> List[Dict[str, Any]]:
         """Compact the message list and return the new message list.
 
@@ -86,6 +87,13 @@ class ContextEngine(ABC):
         context budget. The implementation is free to summarize, build a
         DAG, or do anything else — as long as the returned list is a valid
         OpenAI-format message sequence.
+
+        Args:
+            messages: Full conversation message list (OpenAI format).
+            current_tokens: Approximate current token count, if known.
+            focus_topic: Optional focus string for guided compression,
+                passed by ``/compact <topic>``. When set, the engine
+                should preserve context relevant to this topic.
         """
 
     # -- Optional: pre-flight check ----------------------------------------
@@ -173,12 +181,21 @@ class ContextEngine(ABC):
         base_url: str = "",
         api_key: str = "",
         provider: str = "",
+        api_mode: str = "",
     ) -> None:
         """Called when the user switches models or on fallback activation.
 
         Default updates context_length and recalculates threshold_tokens
         from threshold_percent. Override if your engine needs more
         (e.g. recalculate DAG budgets, switch summary models).
+
+        Args:
+            model: Model identifier string (e.g. 'anthropic/claude-opus-4.6').
+            context_length: Context window size in tokens.
+            base_url: API base URL, if applicable.
+            api_key: API key, if applicable.
+            provider: Provider name (e.g. 'anthropic', 'openai').
+            api_mode: API mode string (e.g. 'responses', 'chat').
         """
         self.context_length = context_length
         self.threshold_tokens = int(context_length * self.threshold_percent)

@@ -679,7 +679,21 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
     finish_reason_raw = str(cand.get("finishReason") or "")
     if finish_reason_raw:
         mapped = "tool_calls" if tool_call_indices else _map_gemini_finish_reason(finish_reason_raw)
-        chunks.append(_make_stream_chunk(model=model, finish_reason=mapped))
+        finish_chunk = _make_stream_chunk(model=model, finish_reason=mapped)
+        # Attach usage from this event's usageMetadata so the streaming
+        # loop in run_agent.py can record token counts (mirrors the
+        # non-streaming path in translate_gemini_response).
+        usage_meta = event.get("usageMetadata") or {}
+        if usage_meta:
+            finish_chunk.usage = SimpleNamespace(
+                prompt_tokens=int(usage_meta.get("promptTokenCount") or 0),
+                completion_tokens=int(usage_meta.get("candidatesTokenCount") or 0),
+                total_tokens=int(usage_meta.get("totalTokenCount") or 0),
+                prompt_tokens_details=SimpleNamespace(
+                    cached_tokens=int(usage_meta.get("cachedContentTokenCount") or 0),
+                ),
+            )
+        chunks.append(finish_chunk)
     return chunks
 
 

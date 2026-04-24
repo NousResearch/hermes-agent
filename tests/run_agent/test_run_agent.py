@@ -888,6 +888,25 @@ class TestBuildSystemPrompt:
         prompt = agent._build_system_prompt()
         assert "NOUS SUBSCRIPTION BLOCK" in prompt
 
+    @pytest.mark.parametrize("value", [None, "", "0", "false", "off", "random"])
+    def test_safe_orchestration_guidance_default_off(self, agent, monkeypatch, value):
+        from agent.prompt_builder import OMC_SAFE_ORCHESTRATION_GUIDANCE
+
+        if value is None:
+            monkeypatch.delenv("HERMES_OMC_GUIDANCE", raising=False)
+        else:
+            monkeypatch.setenv("HERMES_OMC_GUIDANCE", value)
+        prompt = agent._build_system_prompt()
+        assert OMC_SAFE_ORCHESTRATION_GUIDANCE not in prompt
+
+    @pytest.mark.parametrize("value", ["1", "true", "TRUE", " yes ", "on"])
+    def test_safe_orchestration_guidance_enabled_by_env(self, agent, monkeypatch, value):
+        from agent.prompt_builder import OMC_SAFE_ORCHESTRATION_GUIDANCE
+
+        monkeypatch.setenv("HERMES_OMC_GUIDANCE", value)
+        prompt = agent._build_system_prompt()
+        assert OMC_SAFE_ORCHESTRATION_GUIDANCE in prompt
+
     def test_skills_prompt_derives_available_toolsets_from_loaded_tools(self):
         tools = _make_tool_defs("web_search", "skills_list", "skill_view", "skill_manage")
         toolset_map = {

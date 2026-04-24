@@ -97,7 +97,17 @@ from agent.model_metadata import (
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
+from agent.prompt_builder import (
+    build_context_files_prompt,
+    build_environment_hints,
+    build_safe_orchestration_guidance,
+    build_skills_system_prompt,
+    GOOGLE_MODEL_OPERATIONAL_GUIDANCE,
+    load_soul_md,
+    OPENAI_MODEL_EXECUTION_GUIDANCE,
+    TOOL_USE_ENFORCEMENT_GUIDANCE,
+    TOOL_USE_ENFORCEMENT_MODELS,
+)
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.codex_responses_adapter import (
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
@@ -4264,6 +4274,13 @@ class AIAgent:
             skills_prompt = ""
         if skills_prompt:
             prompt_parts.append(skills_prompt)
+
+        omc_enabled = os.getenv("HERMES_OMC_GUIDANCE", "").strip().lower() in {
+            "1", "true", "yes", "on"
+        }
+        safe_orchestration_guidance = build_safe_orchestration_guidance(omc_enabled)
+        if safe_orchestration_guidance:
+            prompt_parts.append(safe_orchestration_guidance)
 
         if not self.skip_context_files:
             # Use TERMINAL_CWD for context file discovery when set (gateway

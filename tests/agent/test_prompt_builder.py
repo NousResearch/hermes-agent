@@ -26,6 +26,8 @@ from agent.prompt_builder import (
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
+    OMC_SAFE_ORCHESTRATION_GUIDANCE,
+    build_safe_orchestration_guidance,
     PLATFORM_HINTS,
     WSL_ENVIRONMENT_HINT,
 )
@@ -48,6 +50,30 @@ class TestGuidanceConstants:
     def test_session_search_guidance_is_simple_cross_session_recall(self):
         assert "relevant cross-session context exists" in SESSION_SEARCH_GUIDANCE
         assert "recent turns of the current session" not in SESSION_SEARCH_GUIDANCE
+
+
+class TestSafeOrchestrationGuidance:
+    def test_disabled_returns_empty(self):
+        assert build_safe_orchestration_guidance(False) == ""
+
+    def test_enabled_returns_constant(self):
+        assert build_safe_orchestration_guidance(True) == OMC_SAFE_ORCHESTRATION_GUIDANCE
+
+    def test_enabled_contains_safety_markers(self):
+        result = build_safe_orchestration_guidance(True)
+        assert "Safe orchestration guidance" in result
+        assert "Do not restart gateway" in result
+        assert "kill Hermes processes" in result
+        assert "verification evidence" in result
+        assert "default-off feature flags" in result
+
+    def test_guidance_does_not_include_executable_dangerous_commands(self):
+        result = build_safe_orchestration_guidance(True)
+        assert "hermes gateway restart" not in result
+        assert "pkill" not in result
+        assert "kill -9" not in result
+        assert "self-update" not in result
+        assert "rotate" not in result
 
 
 # =========================================================================

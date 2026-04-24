@@ -176,6 +176,31 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+OMC_SAFE_ORCHESTRATION_GUIDANCE = (
+    "# Safe orchestration guidance\n"
+    "When handling complex coding, debugging, or upgrade work, use a staged "
+    "orchestration flow: observe context, form a concise plan, execute the "
+    "smallest safe change, collect verification evidence, then report results.\n"
+    "Safety rules for Hermes/Slack environments:\n"
+    "- Do not restart gateway services or kill Hermes processes unless the user "
+    "explicitly approves that activation step.\n"
+    "- Do not modify tokens, credential files, or destructive runtime config as "
+    "part of routine implementation work.\n"
+    "- Prefer default-off feature flags, isolated source edits, focused tests, "
+    "and clear rollback paths before any live activation.\n"
+    "- Treat verifier work as separate from implementation: tests, static checks, "
+    "runtime evidence, or focused read-only state checks must support completion "
+    "claims."
+)
+
+
+def build_safe_orchestration_guidance(enabled: bool) -> str:
+    """Return opt-in safe orchestration guidance for OMC-style workflows.
+
+    The caller controls enablement so this builder remains pure and deterministic.
+    """
+    return OMC_SAFE_ORCHESTRATION_GUIDANCE if enabled else ""
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "

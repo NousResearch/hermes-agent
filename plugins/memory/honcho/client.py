@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import logging
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -570,8 +571,6 @@ class HonchoClientConfig:
         max_len = cls._HONCHO_SESSION_ID_MAX_LEN
         if len(sanitized) <= max_len:
             return sanitized
-
-        import hashlib
 
         hash_len = cls._HONCHO_SESSION_ID_HASH_LEN
         digest = hashlib.sha256(original.encode("utf-8")).hexdigest()[:hash_len]

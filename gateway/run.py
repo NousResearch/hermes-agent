@@ -3591,6 +3591,10 @@ class GatewayRunner:
                     if self._queue_during_drain_enabled()
                     else f"⏳ Gateway is {self._status_action_gerund()} and is not accepting another turn right now."
                 )
+            if self._busy_input_mode == "queue":
+                logger.debug("PRIORITY queue follow-up for session %s", _quick_key[:20])
+                self._queue_or_replace_pending_event(_quick_key, event)
+                return None
             logger.debug("PRIORITY interrupt for session %s", _quick_key[:20])
             running_agent.interrupt(event.text)
             if _quick_key in self._pending_messages:

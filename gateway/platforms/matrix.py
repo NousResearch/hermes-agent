@@ -532,6 +532,20 @@ class MatrixAdapter(BasePlatformAdapter):
                 )
                 await crypto_store.open()
 
+                # Bind the store to the runtime device_id before any
+                # put_account() runs. PgCryptoStore defaults _device_id
+                # to "" and its crypto_account UPSERT never updates the
+                # device_id column on conflict — so once put_account
+                # writes blank, it stays blank forever. That breaks
+                # every downstream device-scoped olm operation: peer
+                # to-device ciphertext can't find our identity key and
+                # no megolm sessions ever land. Setting _device_id here
+                # (in-memory; the on-disk row may not exist yet) makes
+                # the first put_account write the correct value.
+                if client.device_id:
+                    from mautrix.types import DeviceID as _DeviceID
+                    await crypto_store.put_device_id(_DeviceID(client.device_id))
+
                 crypto_state = _CryptoStateStore(state_store, self._joined_rooms)
                 olm = OlmMachine(client, crypto_store, crypto_state)
 

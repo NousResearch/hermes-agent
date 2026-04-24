@@ -12,6 +12,7 @@ from gateway.session import SessionSource
 def _clear_auth_env(monkeypatch) -> None:
     for key in (
         "TELEGRAM_ALLOWED_USERS",
+        "TELEGRAM_GROUP_ALLOWED_USERS",
         "DISCORD_ALLOWED_USERS",
         "WHATSAPP_ALLOWED_USERS",
         "SLACK_ALLOWED_USERS",
@@ -176,6 +177,26 @@ def test_qq_group_allowlist_does_not_authorize_other_groups(monkeypatch):
     )
 
     assert runner._is_user_authorized(source) is False
+
+
+def test_telegram_group_allowlist_authorizes_forum_chat_without_user_allowlist(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_GROUP_ALLOWED_USERS", "-1001878443972")
+
+    runner, _adapter = _make_runner(
+        Platform.TELEGRAM,
+        GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="t")}),
+    )
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id="999",
+        chat_id="-1001878443972",
+        user_name="tester",
+        chat_type="forum",
+    )
+
+    assert runner._is_user_authorized(source) is True
 
 
 @pytest.mark.asyncio

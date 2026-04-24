@@ -3037,6 +3037,7 @@ class GatewayRunner:
             Platform.QQBOT: "QQ_ALLOWED_USERS",
         }
         platform_group_env_map = {
+            Platform.TELEGRAM: "TELEGRAM_GROUP_ALLOWED_USERS",
             Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
         }
         platform_allow_all_map = {
@@ -3093,7 +3094,7 @@ class GatewayRunner:
         # Check platform-specific and global allowlists
         platform_allowlist = os.getenv(platform_env_map.get(source.platform, ""), "").strip()
         group_allowlist = ""
-        if source.chat_type == "group":
+        if source.chat_type in {"group", "forum"}:
             group_allowlist = os.getenv(platform_group_env_map.get(source.platform, ""), "").strip()
         global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
 
@@ -3102,7 +3103,7 @@ class GatewayRunner:
             return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes")
 
         # Some platforms authorize group traffic by chat ID rather than sender ID.
-        if group_allowlist and source.chat_type == "group" and source.chat_id:
+        if group_allowlist and source.chat_type in {"group", "forum"} and source.chat_id:
             allowed_group_ids = {
                 chat_id.strip() for chat_id in group_allowlist.split(",") if chat_id.strip()
             }

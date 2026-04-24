@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import threading
 import time
 from dataclasses import dataclass
 from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
@@ -85,13 +86,23 @@ class WSCallbacks:
     on_connected: Callable[[], None]
     on_disconnected: Callable[[], None]
     on_fatal_error: Callable[[str, str, bool], None]
-    get_token: Callable[[], Awaitable[str]]
+    get_token: Callable[[], str]
+    """Synchronous — returns a valid access token string.
+
+    Called from the WS thread loop; must not perform async I/O.
+    Use ``QQApiClient.ensure_token_sync`` as the implementation.
+    """
     get_session: Callable[[], Tuple[Optional[str], Optional[int]]]
     set_session: Callable[[Optional[str], Optional[int]], None]
     set_heartbeat_interval: Callable[[float], None]
     clear_token: Callable[[], None]
     fail_pending: Callable[[str], None]
-    get_gateway_url: Callable[[], Awaitable[str]]
+    get_gateway_url: Callable[[], str]
+    """Synchronous — returns the WebSocket gateway URL string.
+
+    Called from the WS thread loop; must not perform async I/O.
+    Use ``QQApiClient.get_gateway_url_sync`` as the implementation.
+    """
     on_interaction_event: Optional[Callable[[str, dict], Awaitable[None]]] = None
     """Called for INTERACTION_CREATE events (button clicks).
 
@@ -133,17 +144,38 @@ class QQCloseError(Exception):
 class QQWebSocket:
     """WebSocket lifecycle manager for the QQ Bot gateway.
 
-    Manages connection, reconnection with exponential backoff, heartbeat,
-    event reading, and payload dispatch.  All adapter state is accessed
-    exclusively through :class:`WSCallbacks`.
+    Runs its own asyncio event loop in a dedicated daemon thread so that
+    network I/O, reconnect backoff, and heartbeat never block the caller's
+    event loop (e.g. the gateway main loop shared with Discord/Feishu).
+
+    Inbound message callbacks that need to run on the *caller's* loop are
+    dispatched via :func:`asyncio.run_coroutine_threadsafe` using the
+    ``main_loop`` supplied to :meth:`start`.
+
+    Architecture::
+
+        Caller loop (main)          WS thread loop
+        ──────────────────          ───────────────
+        start()  ──────────────────► _run_ws_thread()
+                                        open()
+                                        _listen_loop()
+                                        _heartbeat_loop()
+        stop()   ──────────────────► _stop_async()  (via run_coroutine_threadsafe)
+
+        on_message_event ◄──────────── run_coroutine_threadsafe(main_loop)
+        on_interaction_event ◄───────── run_coroutine_threadsafe(main_loop)
+
+    All other :class:`WSCallbacks` callbacks (sync) are called directly
+    from the WS thread; they must be thread-safe (update in-memory state
+    only, no asyncio operations).
 
     Usage::
 
         ws = QQWebSocket(callbacks=WSCallbacks(...), log_tag="QQBot:12345")
-        await ws.open(gateway_url, aiohttp_session)
-        ws.start_listeners()
+        main_loop = asyncio.get_running_loop()
+        ws.start(gateway_url, aio_session, main_loop)
         # ... later ...
-        await ws.stop()
+        await ws.async_stop()
     """
 
     def __init__(self, callbacks: WSCallbacks, log_tag: str = "QQBot") -> None:
@@ -153,25 +185,73 @@ class QQWebSocket:
         self._ws: Any = None            # aiohttp.ClientWebSocketResponse
         self._session: Any = None       # aiohttp.ClientSession
         self._running = False
+        self._stop_requested = False   # Set True on fatal errors / user stop
 
         self._heartbeat_interval: float = 30.0
         self._listen_task: Optional[asyncio.Task] = None
         self._heartbeat_task: Optional[asyncio.Task] = None
 
+        # Dedicated thread + loop
+        self._ws_loop: Optional[asyncio.AbstractEventLoop] = None
+        self._ws_thread: Optional[threading.Thread] = None
+        self._main_loop: Optional[asyncio.AbstractEventLoop] = None
+
         # Message deduplication: msg_id → received_at timestamp.
-        # Keeps at most DEDUP_MAX_SIZE entries; entries older than
-        # DEDUP_WINDOW_SECONDS are evicted on each insertion.
         self._seen_msg_ids: Dict[str, float] = {}
 
     # ------------------------------------------------------------------
-    # Public lifecycle API
+    # Public lifecycle API (called from the main/caller loop)
+    # ------------------------------------------------------------------
+
+    def start(
+        self,
+        gateway_url: str,
+        main_loop: asyncio.AbstractEventLoop,
+    ) -> None:
+        """Start the WebSocket in a dedicated daemon thread.
+
+        :param gateway_url: WebSocket URL.
+        :param main_loop: The caller's event loop — used to dispatch
+            ``on_message_event`` and ``on_interaction_event`` callbacks.
+        """
+        self._main_loop = main_loop
+        self._ws_thread = threading.Thread(
+            target=self._run_ws_thread,
+            args=(gateway_url,),
+            name=f"qqbot-ws-{self._log_tag}",
+            daemon=True,
+        )
+        self._ws_thread.start()
+
+    async def async_stop(self) -> None:
+        """Stop the WebSocket thread and wait for it to exit.
+
+        Must be called from the main loop (not from the WS thread).
+        """
+        ws_loop = self._ws_loop
+        if ws_loop is not None and not ws_loop.is_closed():
+            future = asyncio.run_coroutine_threadsafe(self._stop_async(), ws_loop)
+            try:
+                await asyncio.get_running_loop().run_in_executor(
+                    None, future.result, 10.0
+                )
+            except Exception:
+                pass
+
+        thread = self._ws_thread
+        if thread and thread.is_alive():
+            thread.join(timeout=5.0)
+        self._ws_thread = None
+        self._ws_loop = None
+
+    # ------------------------------------------------------------------
+    # Legacy API (kept for backward compat with tests / one-shot callers)
     # ------------------------------------------------------------------
 
     async def open(self, gateway_url: str, aio_session: Any) -> None:
-        """Open a WebSocket connection to *gateway_url*.
+        """Open a WebSocket connection (runs in the *current* loop).
 
-        :param gateway_url: WebSocket URL from :meth:`~api_client.QQApiClient.get_gateway_url`.
-        :param aio_session: An ``aiohttp.ClientSession`` to use for the connection.
+        Used internally during reconnect and by tests.
         """
         if self._ws and not self._ws.closed:
             await self._ws.close()
@@ -185,14 +265,65 @@ class QQWebSocket:
         logger.info("[%s] WebSocket connected to %s", self._log_tag, gateway_url)
 
     def start_listeners(self) -> None:
-        """Create listen and heartbeat asyncio tasks."""
+        """Create listen and heartbeat tasks in the *current* loop.
+
+        Used by :meth:`_run_ws_thread` and legacy callers / tests.
+        """
         self._running = True
+        self._stop_requested = False
         self._listen_task = asyncio.create_task(self._listen_loop())
         self._heartbeat_task = asyncio.create_task(self._heartbeat_loop())
 
     async def stop(self) -> None:
-        """Cancel listeners and close the WebSocket."""
+        """Cancel listeners and close the WebSocket (runs in current loop)."""
+        await self._stop_async()
+
+    # ------------------------------------------------------------------
+    # Thread entry point
+    # ------------------------------------------------------------------
+
+    def _run_ws_thread(self, gateway_url: str) -> None:
+        """Entry point for the dedicated WS thread."""
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        self._ws_loop = loop
+        try:
+            loop.run_until_complete(self._run_ws_async(gateway_url))
+        except Exception as exc:
+            logger.error("[%s] WS thread exited with error: %s", self._log_tag, exc, exc_info=True)
+        finally:
+            try:
+                pending = asyncio.all_tasks(loop)
+                if pending:
+                    loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            except Exception:
+                pass
+            try:
+                loop.close()
+            except Exception:
+                pass
+            self._ws_loop = None
+
+    async def _run_ws_async(self, gateway_url: str) -> None:
+        """Open the connection and start listeners inside the WS loop.
+
+        Creates its own aiohttp.ClientSession so nothing from the main loop
+        bleeds into the WS thread loop.  Token refresh uses the synchronous
+        ``get_token`` callback (httpx.Client), which is safe from any thread.
+        """
+        import aiohttp as _aiohttp
+
+        async with _aiohttp.ClientSession() as aio_session:
+            await self.open(gateway_url, aio_session)
+            self.start_listeners()
+            tasks = [t for t in (self._listen_task, self._heartbeat_task) if t]
+            if tasks:
+                await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def _stop_async(self) -> None:
+        """Cancel listeners and close the WebSocket (runs inside WS loop)."""
         self._running = False
+        self._stop_requested = True
         for task in (self._listen_task, self._heartbeat_task):
             if task:
                 task.cancel()
@@ -213,7 +344,8 @@ class QQWebSocket:
 
     async def _listen_loop(self) -> None:
         """Outer reconnect loop — reads events and reconnects on errors."""
-        backoff_idx = 0
+        backoff_idx = 0      # index into RECONNECT_BACKOFF (caps at len-1)
+        attempt_count = 0    # total reconnect attempts (checked against MAX)
         quick_count = 0
         connect_time = 0.0
 
@@ -221,31 +353,49 @@ class QQWebSocket:
             try:
                 connect_time = time.monotonic()
                 await self._read_events()
+                # _read_events returned normally (ws closed cleanly or _running=False)
                 backoff_idx = 0
+                attempt_count = 0
                 quick_count = 0
             except asyncio.CancelledError:
                 return
             except Exception as exc:
-                if not self._running:
+                if not self._running or self._stop_requested:
                     return
+
                 quick_count = self._update_quick_count(connect_time, quick_count)
                 if quick_count < 0:
                     return  # too many rapid disconnects
 
-                reconnected = await self._handle_ws_error(exc, backoff_idx)
-                if reconnected:
-                    backoff_idx = 0
-                    quick_count = 0
-                else:
-                    backoff_idx = min(backoff_idx + 1, MAX_RECONNECT_ATTEMPTS)
-                    if backoff_idx >= MAX_RECONNECT_ATTEMPTS:
-                        logger.error("[%s] Max reconnect attempts reached", self._log_tag)
-                        self._cb.on_fatal_error(
-                            "qq_max_reconnect",
-                            "Max reconnect attempts reached",
-                            True,
-                        )
+                # Reconnect loop with exponential backoff — keep retrying until
+                # success or fatal error, never falling back to _read_events
+                # with a broken/None ws.
+                reconnected = False
+                first_attempt = True
+                while self._running and not reconnected:
+                    reconnected = await self._handle_ws_error(exc, backoff_idx, notify_disconnect=first_attempt)
+                    first_attempt = False
+                    if self._stop_requested:
+                        # Fatal close code reached — stop retrying.
                         return
+                    if reconnected:
+                        backoff_idx = 0
+                        attempt_count = 0
+                        quick_count = 0
+                    else:
+                        attempt_count += 1
+                        backoff_idx = min(backoff_idx + 1, len(RECONNECT_BACKOFF) - 1)
+                        if attempt_count >= MAX_RECONNECT_ATTEMPTS:
+                            logger.error("[%s] Max reconnect attempts reached", self._log_tag)
+                            self._cb.on_fatal_error(
+                                "qq_max_reconnect",
+                                "Max reconnect attempts reached",
+                                True,
+                            )
+                            return
+                        # Use exc=RuntimeError on subsequent retries so
+                        # _handle_ws_error skips close-code analysis.
+                        exc = RuntimeError("reconnect retry")
 
     def _update_quick_count(self, connect_time: float, count: int) -> int:
         """Increment quick-disconnect counter; return -1 if fatal threshold hit."""
@@ -262,6 +412,7 @@ class QQWebSocket:
                 "[%s] Too many quick disconnects — check bot permissions on QQ Open Platform",
                 self._log_tag,
             )
+            self._stop_requested = True
             self._cb.on_fatal_error(
                 "qq_quick_disconnect",
                 "Too many quick disconnects — check bot permissions",
@@ -270,10 +421,11 @@ class QQWebSocket:
             return -1
         return count
 
-    async def _handle_ws_error(self, exc: Exception, backoff_idx: int) -> bool:
+    async def _handle_ws_error(self, exc: Exception, backoff_idx: int, notify_disconnect: bool = True) -> bool:
         """Classify the error and attempt reconnection. Returns True on success."""
-        self._cb.on_disconnected()
-        self._cb.fail_pending("Connection interrupted")
+        if notify_disconnect:
+            self._cb.on_disconnected()
+            self._cb.fail_pending("Connection interrupted")
 
         if isinstance(exc, QQCloseError):
             logger.warning(
@@ -299,6 +451,7 @@ class QQWebSocket:
                 4014: "intent not authorized",
             }.get(code, f"fatal error (code={code})")
             logger.error("[%s] Bot is %s. Check QQ Open Platform.", self._log_tag, desc)
+            self._stop_requested = True
             self._cb.on_fatal_error(f"qq_{desc}", f"Bot is {desc}", False)
             return False
 
@@ -339,11 +492,16 @@ class QQWebSocket:
 
         self._heartbeat_interval = 30.0
         try:
-            await self._cb.get_token()   # ensure token refreshed
-            gateway_url = await self._cb.get_gateway_url()
-            await self.open(gateway_url, self._session)
+            async def _do_reconnect() -> None:
+                gateway_url = await asyncio.to_thread(self._cb.get_gateway_url)
+                await self.open(gateway_url, self._session)
+
+            await asyncio.wait_for(_do_reconnect(), timeout=CONNECT_TIMEOUT_SECONDS * 3)
             logger.info("[%s] Reconnected", self._log_tag)
             return True
+        except asyncio.TimeoutError:
+            logger.warning("[%s] Reconnect timed out", self._log_tag)
+            return False
         except Exception as exc:
             logger.warning("[%s] Reconnect failed: %s", self._log_tag, exc)
             return False
@@ -465,10 +623,10 @@ class QQWebSocket:
             if msg_id and self._is_duplicate(msg_id):
                 logger.debug("[%s] Duplicate message id dropped: %s", self._log_tag, msg_id)
                 return
-            self._create_task(self._cb.on_message_event(event_type, data))
+            self._dispatch_to_main(self._cb.on_message_event(event_type, data))
         elif event_type in INTERACTION_EVENT_TYPES:
             if self._cb.on_interaction_event is not None:
-                self._create_task(self._cb.on_interaction_event(event_type, data))
+                self._dispatch_to_main(self._cb.on_interaction_event(event_type, data))
             else:
                 logger.debug("[%s] Unhandled interaction (no callback): %s", self._log_tag, event_type)
         else:
@@ -537,7 +695,7 @@ class QQWebSocket:
 
     async def _send_identify(self) -> None:
         """Send op 2 Identify."""
-        token = await self._cb.get_token()
+        token = await asyncio.to_thread(self._cb.get_token)
         payload = {
             "op": OPCode.IDENTIFY,
             "d": {
@@ -555,7 +713,7 @@ class QQWebSocket:
 
     async def _send_resume(self) -> None:
         """Send op 6 Resume."""
-        token = await self._cb.get_token()
+        token = await asyncio.to_thread(self._cb.get_token)
         session_id, last_seq = self._cb.get_session()
         payload = {
             "op": OPCode.RESUME,
@@ -598,3 +756,23 @@ class QQWebSocket:
         except RuntimeError:
             coro.close()  # type: ignore[attr-defined]
             return None
+
+    def _dispatch_to_main(self, coro: Awaitable) -> None:
+        """Dispatch a coroutine to the main (caller) event loop.
+
+        Used for callbacks that belong to the gateway framework
+        (``on_message_event``, ``on_interaction_event``) — they must run on
+        the main loop, not the WS-thread loop.
+
+        Falls back to scheduling on the current loop when no main loop has
+        been set (e.g. in tests or legacy single-loop usage).
+        """
+        main_loop = self._main_loop
+        if main_loop is not None and not main_loop.is_closed():
+            try:
+                asyncio.run_coroutine_threadsafe(coro, main_loop)  # type: ignore[arg-type]
+                return
+            except RuntimeError:
+                # Main loop may have just closed (race with shutdown).
+                pass
+        self._create_task(coro)

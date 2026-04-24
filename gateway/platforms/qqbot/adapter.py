@@ -167,7 +167,6 @@ class QQAdapter(BasePlatformAdapter):
         )
 
         # Connection state
-        self._aio_session: Optional[Any] = None
         self._http_client: Optional[Any] = None
         self._session_id: Optional[str] = None
         self._last_seq: Optional[int] = None
@@ -248,8 +247,8 @@ class QQAdapter(BasePlatformAdapter):
             on_connected=self._mark_connected,
             on_disconnected=self._mark_disconnected,
             on_fatal_error=self._set_fatal_error,
-            get_token=self._api.ensure_token,
-            get_gateway_url=self._api.get_gateway_url,
+            get_token=self._api.ensure_token_sync,
+            get_gateway_url=self._api.get_gateway_url_sync,
             get_session=lambda: (self._session_id, self._last_seq),
             set_session=self._set_session,
             set_heartbeat_interval=lambda v: setattr(self, "_heartbeat_interval", v),
@@ -305,9 +304,8 @@ class QQAdapter(BasePlatformAdapter):
             gateway_url = await self._api.get_gateway_url()
             logger.info("[%s] Gateway URL: %s", self._log_tag, gateway_url)
 
-            self._aio_session = aiohttp.ClientSession()
-            await self._ws_manager.open(gateway_url, self._aio_session)
-            self._ws_manager.start_listeners()
+            main_loop = asyncio.get_running_loop()
+            self._ws_manager.start(gateway_url, main_loop)
             self._mark_connected()
             logger.info("[%s] Connected", self._log_tag)
             return True
@@ -325,7 +323,7 @@ class QQAdapter(BasePlatformAdapter):
         self._running = False
         self._mark_disconnected()
         self._flush_session()
-        await self._ws_manager.stop()
+        await self._ws_manager.async_stop()
         await self._cleanup()
         self._release_platform_lock()
         logger.info("[%s] Disconnected", self._log_tag)
@@ -346,10 +344,6 @@ class QQAdapter(BasePlatformAdapter):
         self._media_uploader.update_http_client(http_client)
 
     async def _cleanup(self) -> None:
-        if self._aio_session and not self._aio_session.closed:
-            await self._aio_session.close()
-        self._aio_session = None
-
         if self._http_client:
             await self._http_client.aclose()
             self._http_client = None
@@ -989,23 +983,46 @@ class QQAdapter(BasePlatformAdapter):
             # Mark dirty — flushed on next heartbeat ACK or disconnect.
             self._session_dirty = True
         elif not session_id and self._app_id:
-            # Session cleared (re-identify) — flush immediately.
+            # Session cleared (re-identify) — remove stale persisted data.
             self._session_dirty = False
-            self._ws_session_store.clear(self._app_id)
+            app_id = self._app_id
+            store = self._ws_session_store
+            try:
+                loop = asyncio.get_running_loop()
+                loop.run_in_executor(None, store.clear, app_id)
+            except RuntimeError:
+                store.clear(app_id)
 
     def _flush_session(self) -> None:
-        """Write dirty session state to disk."""
+        """Write dirty session state to disk via thread pool to avoid blocking the event loop."""
         if not self._session_dirty:
             return
         self._session_dirty = False
-        if self._session_id and self._app_id:
-            self._ws_session_store.save(
-                app_id=self._app_id,
-                session_id=self._session_id,
-                seq=self._last_seq,
-                intents=self._intents,
-                bot_username=self._bot_username,
+        if not (self._session_id and self._app_id):
+            return
+        # Capture values now (in the event-loop thread) before handing off.
+        app_id = self._app_id
+        session_id = self._session_id
+        seq = self._last_seq
+        intents = self._intents
+        bot_username = self._bot_username
+        store = self._ws_session_store
+
+        def _write() -> None:
+            store.save(
+                app_id=app_id,
+                session_id=session_id,
+                seq=seq,
+                intents=intents,
+                bot_username=bot_username,
             )
+
+        try:
+            loop = asyncio.get_running_loop()
+            loop.run_in_executor(None, _write)
+        except RuntimeError:
+            # No running loop (e.g. called from disconnect before loop teardown)
+            _write()
 
     def _fail_pending(self, reason: str) -> None:
         """No-op: QQAdapter doesn't use pending-response futures."""

@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
 import time
 import uuid
 from typing import Any, Dict, Optional
@@ -94,13 +95,14 @@ class QQApiClient:
 
         self._access_token: Optional[str] = None
         self._token_expires_at: float = 0.0
-        self._token_lock = asyncio.Lock()
+        # threading.Lock for ensure_token_sync() — safe to call from any thread
+        self._token_lock = threading.Lock()
 
     def setup(self, http_client: Any) -> None:
-        """Attach an ``httpx.AsyncClient`` for making requests.
+        """Attach an ``httpx.AsyncClient`` for making async requests (main loop).
 
-        :param http_client: Any object with ``.request()``, ``.post()``,
-            and ``.get()`` async methods compatible with httpx.
+        :param http_client: Any object with async ``.request()`` / ``.post()``
+            methods compatible with httpx.
         """
         self._http_client = http_client
 
@@ -113,8 +115,12 @@ class QQApiClient:
     # Token management
     # ------------------------------------------------------------------
 
-    async def ensure_token(self) -> str:
-        """Return a valid access token, refreshing if needed (singleflight).
+    def ensure_token_sync(self) -> str:
+        """Return a valid access token, refreshing synchronously if needed.
+
+        Uses ``httpx.Client`` (synchronous) so this method is safe to call
+        from any thread without asyncio loop affinity issues — identical
+        pattern to how lark_oapi handles Feishu tokens.
 
         :returns: Valid ``access_token`` string.
         :raises RuntimeError: If the token request fails.
@@ -122,18 +128,14 @@ class QQApiClient:
         if self._access_token and time.time() < self._token_expires_at - 60:
             return self._access_token
 
-        async with self._token_lock:
+        with self._token_lock:
             # Double-check inside lock to avoid stampede.
             if self._access_token and time.time() < self._token_expires_at - 60:
                 return self._access_token
 
-            if not self._http_client:
-                raise RuntimeError(
-                    "HTTP client not initialized — call setup() first"
-                )
-
+            import httpx as _httpx
             try:
-                resp = await self._http_client.post(
+                resp = _httpx.post(
                     TOKEN_URL,
                     json={
                         "appId": self._app_id,
@@ -163,6 +165,45 @@ class QQApiClient:
                 expires_in,
             )
             return self._access_token
+
+    async def ensure_token(self) -> str:
+        """Async wrapper around :meth:`ensure_token_sync` for main-loop callers."""
+        return await asyncio.to_thread(self.ensure_token_sync)
+
+    def get_gateway_url_sync(self) -> str:
+        """Fetch the WebSocket gateway URL synchronously.
+
+        Uses ``httpx.Client`` so it is safe to call from the WS thread.
+
+        :returns: WebSocket gateway URL string.
+        :raises RuntimeError: If the response is missing ``url``.
+        """
+        token = self.ensure_token_sync()
+        import httpx as _httpx
+        try:
+            resp = _httpx.get(
+                f"{API_BASE}{GATEWAY_URL_PATH}",
+                headers={
+                    "Authorization": f"QQBot {token}",
+                    "Content-Type": "application/json",
+                    "User-Agent": build_user_agent(),
+                },
+                timeout=DEFAULT_API_TIMEOUT,
+            )
+            trace_id = resp.headers.get("x-tps-trace-id", "-")
+            logger.info(
+                "[%s] API GET %s: status=%d trace_id=%s",
+                self._log_tag, GATEWAY_URL_PATH, resp.status_code, trace_id,
+            )
+            resp.raise_for_status()
+            data = resp.json()
+        except Exception as exc:
+            raise RuntimeError(f"Failed to get QQ gateway URL: {exc}") from exc
+
+        url = data.get("url")
+        if not url:
+            raise RuntimeError(f"QQ Bot gateway response missing url: {data}")
+        return url
 
     def clear_token(self) -> None:
         """Invalidate the cached token (e.g. after a 4004 close code)."""
@@ -222,16 +263,21 @@ class QQApiClient:
                     "[%s] API %s %s failed: status=%d trace_id=%s",
                     self._log_tag, method, path, resp.status_code, trace_id,
                 )
-                data = resp.json()
+                try:
+                    data = resp.json()
+                except Exception:
+                    data = {}
                 raise RuntimeError(
                     f"QQ Bot API error [{resp.status_code}] {path}: "
-                    f"{data.get('message', data)}"
+                    f"{data.get('message', data) if data else resp.text[:200]}"
                 )
 
             logger.info(
                 "[%s] API %s %s: status=%d trace_id=%s",
                 self._log_tag, method, path, resp.status_code, trace_id,
             )
+            if not resp.content:
+                return {}
             return resp.json()
 
         except httpx.TimeoutException as exc:

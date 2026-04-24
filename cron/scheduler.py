@@ -795,6 +795,30 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         chat_name=origin.get("chat_name", "") if origin else "",
     )
 
+    # Per-job working directory.  When set (and validated at create/update
+    # time), we point TERMINAL_CWD at it so:
+    #   - build_context_files_prompt() picks up AGENTS.md / CLAUDE.md /
+    #     .cursorrules from the job's project dir, AND
+    #   - the terminal, file, and code-exec tools run commands from there.
+    #
+    # tick() serializes workdir-jobs outside the parallel pool, so mutating
+    # os.environ["TERMINAL_CWD"] here is safe for those jobs.  For workdir-less
+    # jobs we leave TERMINAL_CWD untouched — preserves the original behaviour
+    # (skip_context_files=True, tools use whatever cwd the scheduler has).
+    _job_workdir = (job.get("workdir") or "").strip() or None
+    if _job_workdir and not Path(_job_workdir).is_dir():
+        # Directory was removed between create-time validation and now.  Log
+        # and drop back to old behaviour rather than crashing the job.
+        logger.warning(
+            "Job '%s': configured workdir %r no longer exists — running without it",
+            job_id, _job_workdir,
+        )
+        _job_workdir = None
+    _prior_terminal_cwd = os.environ.get("TERMINAL_CWD", "_UNSET_")
+    if _job_workdir:
+        os.environ["TERMINAL_CWD"] = _job_workdir
+        logger.info("Job '%s': using workdir %s", job_id, _job_workdir)
+
     try:
         # Re-read .env and config.yaml fresh every run so provider/key
         # changes take effect without a gateway restart.
@@ -920,7 +944,10 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             enabled_toolsets=_resolve_cron_enabled_toolsets(job, _cfg),
             disabled_toolsets=["cronjob", "messaging", "clarify"],
             quiet_mode=True,
-            skip_context_files=True,  # Don't inject SOUL.md/AGENTS.md from scheduler cwd
+            # When a workdir is configured, inject AGENTS.md / CLAUDE.md /
+            # .cursorrules from that directory; otherwise preserve the old
+            # behaviour (don't inject SOUL.md/AGENTS.md from the scheduler cwd).
+            skip_context_files=not bool(_job_workdir),
             skip_memory=True,  # Cron system prompts would corrupt user representations
             platform="cron",
             session_id=_cron_session_id,
@@ -1059,6 +1086,14 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         return False, output, "", error_msg
 
     finally:
+        # Restore TERMINAL_CWD to whatever it was before this job ran.  We
+        # only ever mutate it when the job has a workdir; see the setup block
+        # at the top of run_job for the serialization guarantee.
+        if _job_workdir:
+            if _prior_terminal_cwd == "_UNSET_":
+                os.environ.pop("TERMINAL_CWD", None)
+            else:
+                os.environ["TERMINAL_CWD"] = _prior_terminal_cwd
         # Clean up ContextVar session/delivery state for this job.
         clear_session_vars(_ctx_tokens)
         if _session_db:
@@ -1186,14 +1221,28 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                 mark_job_run(job["id"], False, str(e))
                 return False
 
-        # Run all due jobs concurrently, each in its own ContextVar copy
-        # so session/delivery state stays isolated per-thread.
-        with concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers) as _tick_pool:
-            _futures = []
-            for job in due_jobs:
-                _ctx = contextvars.copy_context()
-                _futures.append(_tick_pool.submit(_ctx.run, _process_job, job))
-            _results = [f.result() for f in _futures]
+        # Partition due jobs: those with a per-job workdir mutate
+        # os.environ["TERMINAL_CWD"] inside run_job, which is process-global —
+        # so they MUST run sequentially to avoid corrupting each other.  Jobs
+        # without a workdir leave env untouched and stay parallel-safe.
+        workdir_jobs = [j for j in due_jobs if (j.get("workdir") or "").strip()]
+        parallel_jobs = [j for j in due_jobs if not (j.get("workdir") or "").strip()]
+
+        _results: list = []
+
+        # Sequential pass for workdir jobs.
+        for job in workdir_jobs:
+            _ctx = contextvars.copy_context()
+            _results.append(_ctx.run(_process_job, job))
+
+        # Parallel pass for the rest — same behaviour as before.
+        if parallel_jobs:
+            with concurrent.futures.ThreadPoolExecutor(max_workers=_max_workers) as _tick_pool:
+                _futures = []
+                for job in parallel_jobs:
+                    _ctx = contextvars.copy_context()
+                    _futures.append(_tick_pool.submit(_ctx.run, _process_job, job))
+                _results.extend(f.result() for f in _futures)
 
         return sum(_results)
     finally:

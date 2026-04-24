@@ -3089,6 +3089,7 @@ def _normalize_custom_provider_entry(
             provider_key or "?", ", ".join(sorted(unknown)),
         )
 
+    import re
     from urllib.parse import urlparse
 
     base_url = ""
@@ -3096,6 +3097,11 @@ def _normalize_custom_provider_entry(
         raw_url = entry.get(url_key)
         if isinstance(raw_url, str) and raw_url.strip():
             candidate = raw_url.strip()
+            # Accept URLs containing {placeholder} tokens — they will be
+            # expanded at runtime and cannot be validated yet (#14457).
+            if re.search(r'\{[^}]+\}', candidate):
+                base_url = candidate
+                break
             parsed = urlparse(candidate)
             if parsed.scheme and parsed.netloc:
                 base_url = candidate

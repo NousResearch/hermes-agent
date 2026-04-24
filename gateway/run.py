@@ -7102,10 +7102,7 @@ class GatewayRunner:
                 tmp_agent._print_fn = lambda *a, **kw: None
 
                 compressor = tmp_agent.context_compressor
-                compress_start = compressor.protect_first_n
-                compress_start = compressor._align_boundary_forward(msgs, compress_start)
-                compress_end = compressor._find_tail_cut_by_tokens(msgs, compress_start)
-                if compress_start >= compress_end:
+                if not compressor.has_content_to_compress(msgs):
                     return "Nothing to compress yet (the transcript is still all protected context)."
 
                 loop = asyncio.get_running_loop()

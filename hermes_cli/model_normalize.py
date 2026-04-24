@@ -100,6 +100,15 @@ _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
     "custom",
 })
 
+# Providers whose APIs require lowercase model IDs.  Xiaomi's
+# ``api.xiaomimimo.com`` rejects mixed-case names like ``MiMo-V2.5-Pro``
+# that users might copy from marketing docs — it only accepts
+# ``mimo-v2.5-pro``.  After stripping a matching provider prefix, these
+# providers also get ``.lower()`` applied.
+_LOWERCASE_MODEL_PROVIDERS: frozenset[str] = frozenset({
+    "xiaomi",
+})
+
 # ---------------------------------------------------------------------------
 # DeepSeek special handling
 # ---------------------------------------------------------------------------
@@ -347,6 +356,9 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 
         >>> normalize_model_for_provider("claude-sonnet-4.6", "zai")
         'claude-sonnet-4.6'
+
+        >>> normalize_model_for_provider("MiMo-V2.5-Pro", "xiaomi")
+        'mimo-v2.5-pro'
     """
     name = (model_input or "").strip()
     if not name:
@@ -410,7 +422,12 @@ def normalize_model_for_provider(model_input: str, target_provider: str) -> str:
 
     # --- Direct providers: repair matching provider prefixes only ---
     if provider in _MATCHING_PREFIX_STRIP_PROVIDERS:
-        return _strip_matching_provider_prefix(name, provider)
+        result = _strip_matching_provider_prefix(name, provider)
+        # Some providers require lowercase model IDs (e.g. Xiaomi's API
+        # rejects "MiMo-V2.5-Pro" but accepts "mimo-v2.5-pro").
+        if provider in _LOWERCASE_MODEL_PROVIDERS:
+            result = result.lower()
+        return result
 
     # --- Authoritative native providers: preserve user-facing slugs as-is ---
     if provider in _AUTHORITATIVE_NATIVE_PROVIDERS:

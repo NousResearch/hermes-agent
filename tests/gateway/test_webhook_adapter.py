@@ -170,6 +170,15 @@ class TestValidateSignature:
         req = _mock_request(headers={"X-Webhook-Signature": sig})
         assert adapter._validate_signature(req, body, secret) is True
 
+    def test_validate_chorus_signature_valid(self):
+        """Valid X-Chorus-Signature (sha256=<hex>) is accepted."""
+        adapter = _make_adapter()
+        body = b'{"signal":{"signal_type":"alert"}}'
+        secret = "chorus-secret"
+        sig = _github_signature(body, secret)
+        req = _mock_request(headers={"X-Chorus-Signature": sig})
+        assert adapter._validate_signature(req, body, secret) is True
+
 
 # ===================================================================
 # Prompt rendering
@@ -257,6 +266,28 @@ class TestEventFilter:
                 "/webhooks/gh",
                 json={"action": "opened"},
                 headers={"X-GitHub-Event": "pull_request"},
+            )
+            assert resp.status == 202
+
+    @pytest.mark.asyncio
+    async def test_event_filter_accepts_chorus_event_header(self):
+        """Chorus webhooks use X-Chorus-Event for signal_type filtering."""
+        routes = {
+            "chorus": {
+                "secret": _INSECURE_NO_AUTH,
+                "events": ["alert"],
+                "prompt": "Signal: {signal.content}",
+            }
+        }
+        adapter = _make_adapter(routes=routes)
+        adapter.handle_message = AsyncMock()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/chorus",
+                json={"signal": {"content": "wake"}},
+                headers={"X-Chorus-Event": "alert"},
             )
             assert resp.status == 202
 

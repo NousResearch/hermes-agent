@@ -1965,6 +1965,50 @@ def fetch_ollama_cloud_models(
     return []
 
 
+def _configured_user_provider_models(provider: str) -> set[str]:
+    """Return configured model ids for a true user-defined provider from config.yaml."""
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.providers import get_provider
+        config = load_config()
+    except Exception:
+        return set()
+
+    normalized = normalize_provider(provider)
+    if get_provider(normalized) is not None:
+        return set()
+
+    providers = config.get("providers") or {}
+    if not isinstance(providers, dict):
+        return set()
+
+    entry = None
+    for key, value in providers.items():
+        if str(key).strip().lower() == normalized:
+            entry = value
+            break
+
+    if not isinstance(entry, dict):
+        return set()
+
+    configured: set[str] = set()
+    default_model = entry.get("default_model") or entry.get("model")
+    if isinstance(default_model, str) and default_model.strip():
+        configured.add(default_model.strip())
+
+    models = entry.get("models") or {}
+    if isinstance(models, dict):
+        for model_id in models:
+            if isinstance(model_id, str) and model_id.strip():
+                configured.add(model_id.strip())
+    elif isinstance(models, list):
+        for model_id in models:
+            if isinstance(model_id, str) and model_id.strip():
+                configured.add(model_id.strip())
+
+    return configured
+
+
 def validate_requested_model(
     model_name: str,
     provider: Optional[str],
@@ -2195,6 +2239,22 @@ def validate_requested_model(
             "message": (
                 f"Model `{requested}` was not found in this provider's model listing."
                 f"{suggestion_text}"
+            ),
+        }
+
+    # api_models is None — couldn't reach API.  Accept configured user-defined
+    # providers so endpoints that serve chat completions but do not expose
+    # /models (e.g. Manifest) remain operational via /model.
+    configured_models = _configured_user_provider_models(normalized)
+    if configured_models and requested in configured_models:
+        provider_label = _PROVIDER_LABELS.get(normalized, normalized)
+        return {
+            "accepted": True,
+            "persist": True,
+            "recognized": False,
+            "message": (
+                f"Could not reach the {provider_label} API to validate `{requested}`, "
+                "but this model is already configured for that provider. Hermes will keep it and try to use the endpoint directly."
             ),
         }
 

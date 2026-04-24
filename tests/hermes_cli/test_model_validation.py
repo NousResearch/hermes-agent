@@ -504,6 +504,62 @@ class TestValidateApiFallback:
         assert "http://localhost:8000/v1/models" in result["message"]
         assert "http://localhost:8000/v1" in result["message"]
 
+    def test_user_config_provider_accepts_configured_model_when_models_endpoint_is_unreachable(self):
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "providers": {
+                    "manifest": {
+                        "base_url": "http://localhost:3001/v1",
+                        "default_model": "auto",
+                        "models": {"auto": {}},
+                    }
+                }
+            },
+        ), patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=None,
+        ):
+            result = validate_requested_model(
+                "auto",
+                "manifest",
+                api_key="mnfst_test_key",
+                base_url="http://localhost:3001/v1",
+            )
+
+        assert result["accepted"] is True
+        assert result["persist"] is True
+        assert result["recognized"] is False
+        assert "could not reach" in result["message"].lower()
+        assert "configured" in result["message"].lower()
+
+    def test_builtin_provider_does_not_bypass_validation_from_provider_config(self):
+        with patch(
+            "hermes_cli.config.load_config",
+            return_value={
+                "providers": {
+                    "openrouter": {
+                        "base_url": "https://openrouter.ai/api/v1",
+                        "default_model": "anthropic/claude-opus-4.6",
+                        "models": {"anthropic/claude-opus-4.6": {}},
+                    }
+                }
+            },
+        ), patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=None,
+        ):
+            result = validate_requested_model(
+                "anthropic/claude-opus-4.6",
+                "openrouter",
+                api_key="or_test_key",
+                base_url="https://openrouter.ai/api/v1",
+            )
+
+        assert result["accepted"] is False
+        assert result["persist"] is False
+        assert "could not reach" in result["message"].lower()
+
 
 # -- validate — Codex auto-correction ------------------------------------------
 

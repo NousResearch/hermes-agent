@@ -2,6 +2,7 @@
 
 import asyncio
 import json
+import threading
 import time
 from unittest.mock import patch
 
@@ -84,6 +85,39 @@ class _ToolProgressFakeAgent:
         }
 
 
+class _TuiRuntimeFakeAgent:
+    def __init__(
+        self,
+        *,
+        release_event,
+        reasoning_callback,
+        status_callback,
+        thinking_callback,
+        tool_complete_callback,
+        tool_start_callback,
+    ):
+        self.release_event = release_event
+        self.reasoning_callback = reasoning_callback
+        self.status_callback = status_callback
+        self.thinking_callback = thinking_callback
+        self.tool_complete_callback = tool_complete_callback
+        self.tool_start_callback = tool_start_callback
+
+    def run_conversation(self, user_content, conversation_history=None, persist_user_message=True):
+        self.status_callback("status", "checking workspace")
+        self.thinking_callback("mapping the plan")
+        self.reasoning_callback("reasoning through the run")
+        self.tool_start_callback("tool-1", "terminal", {"command": "pytest -q"})
+        self.release_event.wait(timeout=1)
+        self.tool_complete_callback("tool-1", "terminal", {"command": "pytest -q"}, "tests passed")
+        return {
+            "final_response": "Runtime finished",
+            "completed": True,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 def _make_adapter(api_key: str = "") -> APIServerAdapter:
     extra = {}
     if api_key:
@@ -97,6 +131,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/api/sessions/{session_id}/chat/stream", adapter._handle_session_chat_stream)
     app.router.add_post("/api/sessions/{session_id}/chat/start", adapter._handle_session_chat_start)
     app.router.add_get("/api/chat/stream", adapter._handle_chat_stream_attach)
+    app.router.add_get("/api/chat/stream/snapshot", adapter._handle_chat_stream_snapshot)
     app.router.add_get("/api/chat/stream/status", adapter._handle_chat_stream_status)
     app.router.add_post("/api/chat/cancel", adapter._handle_chat_stream_cancel)
     app.router.add_post("/api/approval/respond", adapter._handle_approval_respond)
@@ -233,6 +268,98 @@ async def test_backend_owned_stream_emits_live_tool_before_final_answer():
     assert tool_index < final_index
     assert '"name": "terminal"' in body
     assert '"command": "pwd"' in body
+
+
+@pytest.mark.asyncio
+async def test_backend_owned_stream_exposes_tui_style_live_runtime_snapshot():
+    adapter = _make_adapter()
+    app = _create_app(adapter)
+    release_event = threading.Event()
+
+    def create_agent(**kwargs):
+        return _TuiRuntimeFakeAgent(
+            release_event=release_event,
+            reasoning_callback=kwargs["reasoning_callback"],
+            status_callback=kwargs["status_callback"],
+            thinking_callback=kwargs["thinking_callback"],
+            tool_complete_callback=kwargs["tool_complete_callback"],
+            tool_start_callback=kwargs["tool_start_callback"],
+        )
+
+    with (
+        patch.object(adapter, "_get_session_db", return_value=_FakeSessionDb()),
+        patch.object(adapter, "_create_agent", side_effect=create_agent),
+    ):
+        async with TestClient(TestServer(app)) as cli:
+            started = await cli.post(
+                "/api/sessions/sess-runtime/chat/start",
+                json={"message": "show live runtime state"},
+            )
+            stream_id = (await started.json())["stream_id"]
+
+            snapshot_payload = {}
+            for _ in range(20):
+                snapshot = await cli.get(f"/api/chat/stream/snapshot?stream_id={stream_id}")
+                assert snapshot.status == 200
+                snapshot_payload = await snapshot.json()
+                if snapshot_payload.get("active_tools"):
+                    break
+                await asyncio.sleep(0.01)
+
+            assert snapshot_payload["active"] is True
+            assert snapshot_payload["status"]["text"] == "checking workspace"
+            assert snapshot_payload["thinking"] == "mapping the plan"
+            assert snapshot_payload["reasoning"] == "reasoning through the run"
+            assert snapshot_payload["active_tools"] == [
+                {
+                    "tool_id": "tool-1",
+                    "name": "terminal",
+                    "context": "pytest -q",
+                }
+            ]
+
+            release_event.set()
+            attached = await cli.get(f"/api/chat/stream?stream_id={stream_id}")
+            body = await attached.text()
+            final_snapshot = await cli.get(f"/api/chat/stream/snapshot?stream_id={stream_id}")
+            final_snapshot_payload = await final_snapshot.json()
+
+    assert "event: status.update" in body
+    assert "event: thinking.delta" in body
+    assert "event: reasoning.delta" in body
+    assert body.index("event: tool.start") < body.index("event: assistant.completed")
+    assert "event: tool.complete" in body
+    assert "Runtime finished" in body
+    assert final_snapshot_payload["active"] is False
+    assert final_snapshot_payload["active_tools"] == []
+    event_names = [entry["event"] for entry in final_snapshot_payload["events"]]
+    assert "message.complete" in event_names
+    assert "run.completed" in event_names
+    assert "done" in event_names
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_snapshot_requires_existing_api_auth():
+    adapter = _make_adapter(api_key="sk-secret")
+    app = _create_app(adapter)
+
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.get("/api/chat/stream/snapshot?stream_id=abc123")
+
+    assert response.status == 401
+
+
+@pytest.mark.asyncio
+async def test_chat_stream_snapshot_rejects_malformed_stream_id():
+    adapter = _make_adapter()
+    app = _create_app(adapter)
+
+    async with TestClient(TestServer(app)) as cli:
+        response = await cli.get("/api/chat/stream/snapshot?stream_id=../../etc/passwd")
+        payload = await response.json()
+
+    assert response.status == 400
+    assert payload == {"error": "invalid stream_id"}
 
 
 @pytest.mark.asyncio

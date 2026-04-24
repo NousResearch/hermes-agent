@@ -30,6 +30,7 @@ import queue as _queue
 import socket as _socket
 import re
 import sqlite3
+import threading
 import time
 import uuid
 from typing import Any, Dict, List, Optional
@@ -830,6 +831,9 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        thinking_callback=None,
+        reasoning_callback=None,
+        status_callback=None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -870,6 +874,9 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
             tool_complete_callback=tool_complete_callback,
+            thinking_callback=thinking_callback,
+            reasoning_callback=reasoning_callback,
+            status_callback=status_callback,
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
         )
@@ -1437,12 +1444,62 @@ class APIServerAdapter(BasePlatformAdapter):
         stream_q: _q.Queue = _q.Queue()
         agent_ref: List[Any] = [None]
         loop = asyncio.get_event_loop()
+        stream_state: Dict[str, Any] = {}
 
         def _encode_sse(event_name: str, payload: Dict[str, Any]) -> bytes:
             return f"event: {event_name}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n".encode("utf-8")
 
         def _queue_event(event_name: str, payload: Dict[str, Any]) -> None:
+            _record_runtime_event(event_name, payload)
             stream_q.put(_encode_sse(event_name, payload))
+
+        def _record_runtime_event(event_name: str, payload: Dict[str, Any]) -> None:
+            if not stream_state:
+                return
+            lock = stream_state.get("lock")
+
+            def _record() -> None:
+                stream_state["last_event_at"] = time.time()
+                events = stream_state.setdefault("events", [])
+                events.append({"event": event_name, "payload": payload})
+                del events[:-200]
+
+            if lock is not None:
+                with lock:
+                    _record()
+            else:
+                _record()
+
+        def _snapshot_args(args: Any) -> Dict[str, str]:
+            if not isinstance(args, dict):
+                return {}
+            args_snap: Dict[str, str] = {}
+            for key, value in list(args.items())[:4]:
+                value_text = str(value)
+                args_snap[key] = value_text[:120] + ("..." if len(value_text) > 120 else "")
+            return args_snap
+
+        def _tool_context(name: Any, args: Any) -> str:
+            try:
+                from agent.display import build_tool_preview
+                preview = build_tool_preview(str(name or "tool"), args if isinstance(args, dict) else {}, max_len=80)
+                if preview:
+                    return str(preview)
+            except Exception as exc:
+                logger.debug("[chat/start] Tool preview builder unavailable: %s", exc)
+            if isinstance(args, dict):
+                command = args.get("command")
+                if command:
+                    return str(command)
+            return ""
+
+        def _update_runtime(mutator) -> None:
+            lock = stream_state.get("lock")
+            if lock is not None:
+                with lock:
+                    mutator()
+            else:
+                mutator()
 
         def _tool_map(messages: List[Dict[str, Any]]) -> Dict[str, Dict[str, Any]]:
             mapping: Dict[str, Dict[str, Any]] = {}
@@ -1471,10 +1528,139 @@ class APIServerAdapter(BasePlatformAdapter):
 
         def _on_delta(delta):
             if delta:
+                def _mutate() -> None:
+                    stream_state["assistant_content"] = str(stream_state.get("assistant_content") or "") + str(delta)
+
+                _update_runtime(_mutate)
                 _queue_event(
                     "token",
                     {"session_id": session_id, "stream_id": stream_id, "run_id": run_id, "message_id": assistant_message_id, "text": delta},
                 )
+                _queue_event(
+                    "message.delta",
+                    {"session_id": session_id, "stream_id": stream_id, "run_id": run_id, "message_id": assistant_message_id, "text": delta},
+                )
+
+        def _on_thinking(text):
+            text = str(text or "")
+
+            def _mutate() -> None:
+                stream_state["thinking"] = text
+
+            _update_runtime(_mutate)
+            _queue_event(
+                "thinking.delta",
+                {"session_id": session_id, "stream_id": stream_id, "run_id": run_id, "message_id": assistant_message_id, "text": text},
+            )
+
+        def _on_reasoning(text):
+            text = str(text or "")
+            if not text:
+                return
+
+            def _mutate() -> None:
+                stream_state["reasoning"] = str(stream_state.get("reasoning") or "") + text
+
+            _update_runtime(_mutate)
+            _queue_event(
+                "reasoning.delta",
+                {"session_id": session_id, "stream_id": stream_id, "run_id": run_id, "message_id": assistant_message_id, "text": text},
+            )
+
+        def _on_status(kind, text=None):
+            body = str(text if text is not None else kind).strip()
+            if not body:
+                return
+            payload = {
+                "session_id": session_id,
+                "stream_id": stream_id,
+                "run_id": run_id,
+                "message_id": assistant_message_id,
+                "kind": str(kind if text is not None else "status"),
+                "text": body,
+            }
+
+            def _mutate() -> None:
+                stream_state["status"] = {"kind": payload["kind"], "text": body}
+
+            _update_runtime(_mutate)
+            _queue_event("status.update", payload)
+
+        def _on_tool_start(tool_call_id, name, args):
+            tool_id = str(tool_call_id or f"tool_{uuid.uuid4().hex[:8]}")
+            tool_name = str(name or "tool")
+            context = _tool_context(tool_name, args)
+            args_snap = _snapshot_args(args)
+            tui_payload = {
+                "session_id": session_id,
+                "stream_id": stream_id,
+                "run_id": run_id,
+                "message_id": assistant_message_id,
+                "tool_id": tool_id,
+                "name": tool_name,
+                "context": context,
+            }
+            compat_payload = {
+                "session_id": session_id,
+                "stream_id": stream_id,
+                "run_id": run_id,
+                "message_id": assistant_message_id,
+                "tool_call_id": tool_id,
+                "event_type": "tool.started",
+                "name": tool_name,
+                "preview": context,
+                "args": args_snap,
+            }
+
+            def _mutate() -> None:
+                active_tools = [
+                    tool for tool in stream_state.setdefault("active_tools", [])
+                    if tool.get("tool_id") != tool_id
+                ]
+                active_tools.append({"tool_id": tool_id, "name": tool_name, "context": context})
+                stream_state["active_tools"] = active_tools
+
+            _update_runtime(_mutate)
+            _queue_event("tool.start", tui_payload)
+            _queue_event("tool", compat_payload)
+
+        def _on_tool_complete(tool_call_id, name, args, result):
+            tool_id = str(tool_call_id or "")
+            tool_name = str(name or "tool")
+            context = _tool_context(tool_name, args)
+            result_preview = _result_preview(result)
+            args_snap = _snapshot_args(args)
+            tui_payload = {
+                "session_id": session_id,
+                "stream_id": stream_id,
+                "run_id": run_id,
+                "message_id": assistant_message_id,
+                "tool_id": tool_id,
+                "name": tool_name,
+                "summary": result_preview,
+            }
+            compat_payload = {
+                "session_id": session_id,
+                "stream_id": stream_id,
+                "run_id": run_id,
+                "message_id": assistant_message_id,
+                "tool_call_id": tool_id,
+                "tool_name": tool_name,
+                "name": tool_name,
+                "args": args_snap,
+                "result_preview": result_preview,
+                "preview": context,
+            }
+
+            def _mutate() -> None:
+                stream_state["active_tools"] = [
+                    tool for tool in stream_state.setdefault("active_tools", [])
+                    if tool.get("tool_id") != tool_id
+                ]
+
+            _update_runtime(_mutate)
+            _queue_event("tool.complete", tui_payload)
+            _queue_event("tool.completed", compat_payload)
 
         def _on_tool_progress(*cb_args, **cb_kwargs):
             event_type = None
@@ -1496,11 +1682,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 if reason_text:
                     _queue_event("reasoning", {"session_id": session_id, "stream_id": stream_id, "run_id": run_id, "text": str(reason_text)})
                 return
-            args_snap = {}
-            if isinstance(args, dict):
-                for key, value in list(args.items())[:4]:
-                    value_text = str(value)
-                    args_snap[key] = value_text[:120] + ("..." if len(value_text) > 120 else "")
+            args_snap = _snapshot_args(args)
             if event_type in (None, "tool.started"):
                 _queue_event(
                     "tool",
@@ -1535,35 +1717,51 @@ class APIServerAdapter(BasePlatformAdapter):
         def _on_approval_request(approval_data):
             if not isinstance(approval_data, dict):
                 approval_data = {"description": str(approval_data)}
-            _queue_event(
-                "approval",
-                {
-                    "session_id": session_id,
-                    "stream_id": stream_id,
-                    "run_id": run_id,
-                    "message_id": assistant_message_id,
-                    "approval_id": str(approval_data.get("approval_id") or approval_data.get("id") or ""),
-                    "command": str(approval_data.get("command") or "")[:8000],
-                    "description": str(approval_data.get("description") or "Command approval required")[:1000],
-                    "pattern_key": str(approval_data.get("pattern_key") or ""),
-                    "pattern_keys": approval_data.get("pattern_keys") if isinstance(approval_data.get("pattern_keys"), list) else [],
-                },
-            )
+            payload = {
+                "session_id": session_id,
+                "stream_id": stream_id,
+                "run_id": run_id,
+                "message_id": assistant_message_id,
+                "approval_id": str(approval_data.get("approval_id") or approval_data.get("id") or ""),
+                "command": str(approval_data.get("command") or "")[:8000],
+                "description": str(approval_data.get("description") or "Command approval required")[:1000],
+                "pattern_key": str(approval_data.get("pattern_key") or ""),
+                "pattern_keys": approval_data.get("pattern_keys") if isinstance(approval_data.get("pattern_keys"), list) else [],
+            }
 
-        stream_state: Dict[str, Any] = {
+            def _mutate() -> None:
+                stream_state["pending_approval"] = payload
+                stream_state["status"] = {"kind": "approval", "text": payload["description"]}
+
+            _update_runtime(_mutate)
+            _queue_event("approval.request", payload)
+            _queue_event("approval", payload)
+
+        # Mirrors the TUI runtime state in memory so web refresh/reconnect can render active work.
+        stream_state.update({
             "session_id": session_id,
             "stream_id": stream_id,
             "run_id": run_id,
+            "message_id": assistant_message_id,
             "queue": stream_q,
             "agent_ref": agent_ref,
             "created_at": time.time(),
+            "last_event_at": time.time(),
+            "assistant_content": "",
+            "reasoning": "",
+            "thinking": "",
+            "status": {"kind": "status", "text": "running"},
+            "active_tools": [],
+            "pending_approval": None,
+            "events": [],
+            "lock": threading.Lock(),
             "active": True,
-        }
+        })
         self._chat_streams[stream_id] = stream_state
 
-        stream_q.put(_encode_sse("session.created", {"session_id": session_id, "stream_id": stream_id, "run_id": run_id, "title": session.get("title") or "New Chat"}))
-        stream_q.put(_encode_sse("run.started", {"session_id": session_id, "stream_id": stream_id, "run_id": run_id, "user_message": {"id": user_message_id, "role": "user", "content": message}}))
-        stream_q.put(_encode_sse("message.started", {"session_id": session_id, "stream_id": stream_id, "run_id": run_id, "message": {"id": assistant_message_id, "role": "assistant"}}))
+        _queue_event("session.created", {"session_id": session_id, "stream_id": stream_id, "run_id": run_id, "title": session.get("title") or "New Chat"})
+        _queue_event("run.started", {"session_id": session_id, "stream_id": stream_id, "run_id": run_id, "user_message": {"id": user_message_id, "role": "user", "content": message}})
+        _queue_event("message.started", {"session_id": session_id, "stream_id": stream_id, "run_id": run_id, "message": {"id": assistant_message_id, "role": "assistant"}})
 
         async def _run_agent_task():
             def _run():
@@ -1590,6 +1788,11 @@ class APIServerAdapter(BasePlatformAdapter):
                         session_id=session_id,
                         stream_delta_callback=_on_delta,
                         tool_progress_callback=_on_tool_progress,
+                        tool_start_callback=_on_tool_start,
+                        tool_complete_callback=_on_tool_complete,
+                        thinking_callback=_on_thinking,
+                        reasoning_callback=_on_reasoning,
+                        status_callback=_on_status,
                     )
                     agent._session_db = db
                     agent_ref[0] = agent
@@ -1621,7 +1824,7 @@ class APIServerAdapter(BasePlatformAdapter):
                         continue
                     tool_id = item.get("tool_call_id")
                     tool_meta = tools.get(tool_id, {})
-                    stream_q.put(_encode_sse("tool_complete", {
+                    _queue_event("tool_complete", {
                         "session_id": session_id,
                         "stream_id": stream_id,
                         "run_id": run_id,
@@ -1629,8 +1832,8 @@ class APIServerAdapter(BasePlatformAdapter):
                         "tool_name": tool_meta.get("tool_name") or item.get("tool_name") or "unknown",
                         "args": tool_meta.get("args"),
                         "result_preview": _result_preview(item.get("content")),
-                    }))
-                stream_q.put(_encode_sse("assistant.completed", {
+                    })
+                _queue_event("assistant.completed", {
                     "session_id": session_id,
                     "stream_id": stream_id,
                     "run_id": run_id,
@@ -1639,8 +1842,16 @@ class APIServerAdapter(BasePlatformAdapter):
                     "completed": result.get("completed", False),
                     "partial": result.get("partial", False),
                     "interrupted": result.get("interrupted", False),
-                }))
-                stream_q.put(_encode_sse("run.completed", {
+                })
+                _queue_event("message.complete", {
+                    "session_id": session_id,
+                    "stream_id": stream_id,
+                    "run_id": run_id,
+                    "message_id": assistant_message_id,
+                    "text": result.get("final_response") or "",
+                    "status": "interrupted" if result.get("interrupted") else "complete",
+                })
+                _queue_event("run.completed", {
                     "session_id": session_id,
                     "stream_id": stream_id,
                     "run_id": run_id,
@@ -1649,14 +1860,20 @@ class APIServerAdapter(BasePlatformAdapter):
                     "partial": result.get("partial", False),
                     "interrupted": result.get("interrupted", False),
                     "api_calls": result.get("api_calls"),
-                }))
-                stream_q.put(_encode_sse("done", {"session_id": session_id, "stream_id": stream_id, "run_id": run_id, "state": "final"}))
+                })
+                _queue_event("done", {"session_id": session_id, "stream_id": stream_id, "run_id": run_id, "state": "final"})
             except Exception as exc:
                 logger.error("Backend-owned session stream failed for %s: %s", session_id, exc, exc_info=True)
-                stream_q.put(_encode_sse("error", {"session_id": session_id, "stream_id": stream_id, "run_id": run_id, "error": str(exc)}))
+                _on_status("error", "stream failed")
+                _queue_event("error", {"session_id": session_id, "stream_id": stream_id, "run_id": run_id, "error": str(exc)})
             finally:
-                stream_state["active"] = False
-                stream_state["completed_at"] = time.time()
+                def _mutate() -> None:
+                    stream_state["active"] = False
+                    stream_state["active_tools"] = []
+                    stream_state["pending_approval"] = None
+                    stream_state["completed_at"] = time.time()
+
+                _update_runtime(_mutate)
                 stream_q.put(None)
 
         stream_state["task"] = asyncio.ensure_future(_finish_stream())
@@ -1680,6 +1897,54 @@ class APIServerAdapter(BasePlatformAdapter):
             "session_id": stream_state.get("session_id"),
             "run_id": stream_state.get("run_id"),
         })
+
+    async def _handle_chat_stream_snapshot(self, request: "web.Request") -> "web.Response":
+        """GET /api/chat/stream/snapshot — return reconnect-safe live chat runtime state."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        stream_id = request.query.get("stream_id", "")
+        if not stream_id:
+            return web.json_response({"error": "stream_id required"}, status=400)
+        if len(stream_id) > 128 or not re.fullmatch(r"[A-Za-z0-9_-]+", stream_id):
+            return web.json_response({"error": "invalid stream_id"}, status=400)
+        stream_state = self._chat_streams.get(stream_id)
+        if not stream_state:
+            return web.json_response({"error": "stream not found", "active": False, "stream_id": stream_id}, status=404)
+
+        def _snapshot() -> Dict[str, Any]:
+            return {
+                "active": bool(stream_state.get("active")),
+                "stream_id": stream_state.get("stream_id"),
+                "session_id": stream_state.get("session_id"),
+                "run_id": stream_state.get("run_id"),
+                "message_id": stream_state.get("message_id"),
+                "created_at": stream_state.get("created_at"),
+                "last_event_at": stream_state.get("last_event_at"),
+                "status": dict(stream_state.get("status") or {"kind": "status", "text": "running"}),
+                "thinking": str(stream_state.get("thinking") or ""),
+                "reasoning": str(stream_state.get("reasoning") or ""),
+                "assistant_content": str(stream_state.get("assistant_content") or ""),
+                "active_tools": [
+                    {
+                        "tool_id": str(tool.get("tool_id") or ""),
+                        "name": str(tool.get("name") or "tool"),
+                        "context": str(tool.get("context") or ""),
+                    }
+                    for tool in list(stream_state.get("active_tools") or [])
+                    if isinstance(tool, dict)
+                ],
+                "pending_approval": stream_state.get("pending_approval"),
+                "events": list(stream_state.get("events") or [])[-50:],
+            }
+
+        lock = stream_state.get("lock")
+        if lock is not None:
+            with lock:
+                payload = _snapshot()
+        else:
+            payload = _snapshot()
+        return web.json_response(payload)
 
     async def _handle_chat_stream_attach(self, request: "web.Request") -> "web.StreamResponse":
         """GET /api/chat/stream — attach to a backend-owned WebUI-style chat stream."""
@@ -3739,6 +4004,7 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream)
             self._app.router.add_post("/api/sessions/{session_id}/chat/start", self._handle_session_chat_start)
             self._app.router.add_get("/api/chat/stream", self._handle_chat_stream_attach)
+            self._app.router.add_get("/api/chat/stream/snapshot", self._handle_chat_stream_snapshot)
             self._app.router.add_get("/api/chat/stream/status", self._handle_chat_stream_status)
             self._app.router.add_post("/api/chat/cancel", self._handle_chat_stream_cancel)
             self._app.router.add_post("/api/approval/respond", self._handle_approval_respond)

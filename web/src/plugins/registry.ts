@@ -37,6 +37,7 @@ import { registerSlot, PluginSlot } from "./slots";
 type RegistryListener = () => void;
 
 const _registered: Map<string, React.ComponentType> = new Map();
+const _loadErrors: Map<string, string> = new Map();
 const _listeners: Set<RegistryListener> = new Set();
 
 function _notify() {
@@ -45,8 +46,14 @@ function _notify() {
   }
 }
 
+/** Re-run registry subscribers (e.g. after a plugin script onload, or dev HMR re-inject). */
+export function notifyPluginRegistry() {
+  _notify();
+}
+
 /** Register a plugin component. Called by plugin JS bundles. */
 function registerPlugin(name: string, component: React.ComponentType) {
+  _loadErrors.delete(name);
   _registered.set(name, component);
   _notify();
 }
@@ -54,6 +61,15 @@ function registerPlugin(name: string, component: React.ComponentType) {
 /** Get a registered component by plugin name. */
 export function getPluginComponent(name: string): React.ComponentType | undefined {
   return _registered.get(name);
+}
+
+export function getPluginLoadError(name: string): string | undefined {
+  return _loadErrors.get(name);
+}
+
+export function setPluginLoadError(name: string, message: string) {
+  _loadErrors.set(name, message);
+  _notify();
 }
 
 /** Subscribe to registry changes (returns unsubscribe fn). */

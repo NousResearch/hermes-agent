@@ -73,9 +73,12 @@ def _chat_response_with_memory_call():
     """Simulated chat completions response with a memory tool call."""
     return SimpleNamespace(
         choices=[SimpleNamespace(
+            finish_reason="tool_calls",
             message=SimpleNamespace(
                 content=None,
                 tool_calls=[SimpleNamespace(
+                    id="call_mem_0",
+                    type="function",
                     function=SimpleNamespace(
                         name="memory",
                         arguments=json.dumps({

@@ -258,7 +258,7 @@ model:
   claude_cli_runtime: "stripped"   # or "standard"
 ```
 
-Hermes tool calls are marshalled through Claude's text output, so this provider is best treated like an external-process transport rather than a native API.
+Hermes tool calls are marshalled through Claude's text output, so this provider is best treated like an external-process transport rather than a native API. For lower process-start latency, enable the opt-in persistent worker or shared broker with `HERMES_CLAUDE_CLI_PERSISTENT=true` or `HERMES_CLAUDE_CLI_BROKER=true`.
 
 ### First-Class Chinese AI Providers
 

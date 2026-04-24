@@ -100,6 +100,11 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `HERMES_CLAUDE_CLI_RESUME` | Enable or disable Claude session reuse for `claude-cli` (`true`/`false`, default: `true`) |
 | `HERMES_CLAUDE_CLI_STRIP_RUNTIME` | Force stripped runtime behavior for `claude-cli` (`true`/`false`) |
 | `HERMES_CLAUDE_CLI_USE_PROCESS_CWD` | Use the current process cwd instead of Hermes' neutral Claude runtime dir |
+| `HERMES_CLAUDE_CLI_PERSISTENT` | Enable the in-process persistent Claude CLI worker (`true`/`false`, default: `false`) |
+| `HERMES_CLAUDE_CLI_BROKER` | Enable the shared Claude CLI broker daemon (`true`/`false`, default: `false`) |
+| `HERMES_CLAUDE_CLI_BROKER_SOCKET` | Override the Unix socket path for the shared broker |
+| `HERMES_CLAUDE_CLI_BROKER_IDLE_SECONDS` | Seconds before idle broker workers are closed (default: 1800) |
+| `HERMES_CLAUDE_CLI_BROKER_SERVER_IDLE_SECONDS` | Seconds before an empty broker daemon exits (default: worker idle timeout) |
 | `HERMES_CLAUDE_CLI_DEBUG_LOG` | Write verbose Claude CLI transport logs to the given file path |
 
 ## Tool APIs

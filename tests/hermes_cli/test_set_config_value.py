@@ -91,6 +91,12 @@ class TestCatchAllPatterns:
         env_content = _read_env(_isolated_hermes_home)
         assert "TERMINAL_SSH_PORT=2222" in env_content
 
+    def test_rtk_nested_key_routes_to_env(self, _isolated_hermes_home):
+        set_config_value("rtk.enabled", "force")
+        env_content = _read_env(_isolated_hermes_home)
+        assert "TERMINAL_RTK_ENABLED=force" in env_content
+        assert "rtk:" not in _read_config(_isolated_hermes_home)
+
 
 # ---------------------------------------------------------------------------
 # Non-secret keys → config.yaml

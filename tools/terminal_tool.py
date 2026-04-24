@@ -501,6 +501,81 @@ def _rewrite_real_sudo_invocations(command: str) -> tuple[str, bool]:
     return "".join(out), found
 
 
+_RTK_CONTROL_TOKENS = (
+    "&&",
+    "||",
+    ";",
+    "|",
+    "&",
+    "<<",
+    ">>",
+    "<(",
+    ">(",
+    "`",
+    "$(",
+    "\n",
+)
+
+
+def _normalize_rtk_mode(raw_mode: Any) -> str:
+    """Normalize the RTK mode knob to off|auto|force."""
+    mode = str(raw_mode or "auto").strip().lower()
+    if mode not in {"off", "auto", "force"}:
+        return "auto"
+    return mode
+
+
+def _should_try_rtk_rewrite(command: str) -> bool:
+    """Return True when a command is simple enough for conservative RTK routing."""
+    stripped = command.strip()
+    if not stripped:
+        return False
+    if stripped == "rtk" or stripped.startswith("rtk "):
+        return False
+    return not any(token in command for token in _RTK_CONTROL_TOKENS)
+
+
+def _apply_rtk_rewrite(command: str, mode: str, rtk_path: str) -> tuple[str, str | None, bool]:
+    """Try to rewrite *command* through RTK and return the rewritten shell text.
+
+    Returns ``(command_to_execute, error_message, used_rtk)``.
+    """
+    mode = _normalize_rtk_mode(mode)
+    if mode == "off" or not _should_try_rtk_rewrite(command):
+        return command, None, False
+
+    rtk_bin = rtk_path or shutil.which("rtk")
+    if not rtk_bin:
+        if mode == "force":
+            return command, "RTK is enabled in force mode, but the `rtk` binary was not found.", False
+        return command, None, False
+
+    try:
+        result = subprocess.run(
+            [rtk_bin, "rewrite", command],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            check=False,
+        )
+    except (FileNotFoundError, PermissionError, OSError, subprocess.TimeoutExpired) as exc:
+        if mode == "force":
+            return command, f"RTK rewrite failed: {exc}", False
+        logger.debug("RTK rewrite unavailable for %r: %s", _safe_command_preview(command), exc)
+        return command, None, False
+
+    rewritten = (result.stdout or "").strip()
+    if result.returncode == 0 and rewritten:
+        return rewritten, None, True
+
+    if mode == "force":
+        if result.returncode == 1 and not rewritten:
+            return command, "RTK could not rewrite this command in force mode.", False
+        return command, f"RTK rewrite failed with exit code {result.returncode}.", False
+
+    return command, None, False
+
+
 def _rewrite_compound_background(command: str) -> str:
     """Wrap `A && B &` (or `A || B &`) to `A && { B & }` at depth 0.
 
@@ -867,6 +942,8 @@ def _get_env_config() -> Dict[str, Any]:
 
     return {
         "env_type": env_type,
+        "rtk_enabled": _normalize_rtk_mode(os.getenv("TERMINAL_RTK_ENABLED", "auto")),
+        "rtk_path": os.getenv("TERMINAL_RTK_PATH", "rtk"),
         "modal_mode": coerce_modal_mode(os.getenv("TERMINAL_MODAL_MODE", "auto")),
         "docker_image": os.getenv("TERMINAL_DOCKER_IMAGE", default_image),
         "docker_forward_env": _parse_env_var("TERMINAL_DOCKER_FORWARD_ENV", "[]", json.loads, "valid JSON"),
@@ -1644,8 +1721,25 @@ def terminal_tool(
                 "EOF."
             )
 
+        rtk_note = None
+        rewritten_command, rtk_error, used_rtk = _apply_rtk_rewrite(
+            command,
+            config.get("rtk_enabled", "auto"),
+            config.get("rtk_path", "rtk"),
+        )
+        if rtk_error:
+            return json.dumps({
+                "output": "",
+                "exit_code": -1,
+                "error": rtk_error,
+                "status": "blocked",
+            }, ensure_ascii=False)
+        if used_rtk:
+            command = rewritten_command
+            rtk_note = "RTK rewrote the command before execution."
+
         if background:
-            # Spawn a tracked background process via the process registry.
+
             # For local backends: uses subprocess.Popen with output buffering.
             # For non-local backends: runs inside the sandbox via env.execute().
             from tools.approval import get_current_session_key
@@ -1683,6 +1777,8 @@ def terminal_tool(
                     result_data["approval"] = approval_note
                 if pty_disabled_reason:
                     result_data["pty_note"] = pty_disabled_reason
+                if rtk_note:
+                    result_data["rtk_note"] = rtk_note
 
                 # Populate routing metadata on the session so that
                 # watch-pattern and completion notifications can be
@@ -1839,6 +1935,8 @@ def terminal_tool(
                 result_dict["approval"] = approval_note
             if exit_note:
                 result_dict["exit_code_meaning"] = exit_note
+            if rtk_note:
+                result_dict["rtk_note"] = rtk_note
 
             return json.dumps(result_dict, ensure_ascii=False)
 

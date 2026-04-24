@@ -116,11 +116,11 @@ export type Role = 'assistant' | 'system' | 'tool' | 'user'
 export type DetailsMode = 'hidden' | 'collapsed' | 'expanded'
 export type ThinkingMode = 'collapsed' | 'truncated' | 'full'
 
-// Per-section overrides on top of the global DetailsMode.  Each missing key
-// falls back to the global mode; an explicit value overrides for that one
-// section only — so users can keep the accordion collapsed by default while
-// auto-expanding tools, or hide the activity panel entirely without touching
-// thinking/tools/subagents.
+// Per-section overrides for the agent details accordion.  Resolution order
+// at lookup time is: explicit `display.sections.<name>` → built-in
+// SECTION_DEFAULTS → global `details_mode`.  Today the built-in defaults
+// expand `thinking`/`tools` and hide `activity`; `subagents` falls through
+// to the global mode.  Any explicit value still wins for that one section.
 export type SectionName = 'thinking' | 'tools' | 'subagents' | 'activity'
 export type SectionVisibility = Partial<Record<SectionName, DetailsMode>>
 

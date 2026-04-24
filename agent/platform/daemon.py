@@ -29,6 +29,20 @@ class DaemonManager:
                     stdin=subprocess.DEVNULL,
                     creationflags=flags
                 )
+            elif platform_info.is_termux:
+                import shlex
+                import uuid
+                # Termux doesn't support setsid surviving terminal closes natively, wrap in tmux
+                escaped_args = " ".join(shlex.quote(arg) for arg in args)
+                session_name = f"hermes-daemon-{uuid.uuid4().hex[:8]}"
+                tmux_cmd = ["tmux", "new-session", "-d", "-s", session_name, f"{escaped_args}"]
+                subprocess.Popen(
+                    tmux_cmd,
+                    cwd=cwd,
+                    stdout=log_file,
+                    stderr=subprocess.STDOUT,
+                    stdin=subprocess.DEVNULL
+                )
             else:
                 # Use standard setsid via preexec_fn for Unix
                 subprocess.Popen(

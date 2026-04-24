@@ -12,6 +12,9 @@ class PlatformInfo:
         self.is_linux = self.os_name == "Linux"
         self.is_macos = self.os_name == "Darwin"
 
+        # Termux detection via PREFIX environment variable
+        self.is_termux = "com.termux" in os.environ.get("PREFIX", "")
+
         self.is_wsl = False
         if self.is_linux:
             try:

@@ -408,6 +408,44 @@ def auth_reset_command(args) -> None:
     print(f"Reset status on {count} {provider} credentials")
 
 
+def auth_status_command(args) -> None:
+    provider = _normalize_provider(getattr(args, "provider", "") or "")
+    if not provider:
+        raise SystemExit("Provider is required. Example: `hermes auth status spotify`.")
+    status = auth_mod.get_auth_status(provider)
+    if not status.get("logged_in"):
+        reason = status.get("error")
+        if reason:
+            print(f"{provider}: logged out ({reason})")
+        else:
+            print(f"{provider}: logged out")
+        return
+
+    print(f"{provider}: logged in")
+    for key in ("auth_type", "client_id", "redirect_uri", "scope", "expires_at", "api_base_url"):
+        value = status.get(key)
+        if value:
+            print(f"  {key}: {value}")
+
+
+def auth_logout_command(args) -> None:
+    auth_mod.logout_command(SimpleNamespace(provider=getattr(args, "provider", None)))
+
+
+def auth_spotify_command(args) -> None:
+    action = str(getattr(args, "spotify_action", "") or "login").strip().lower()
+    if action in {"", "login"}:
+        auth_mod.login_spotify_command(args)
+        return
+    if action == "status":
+        auth_status_command(SimpleNamespace(provider="spotify"))
+        return
+    if action == "logout":
+        auth_logout_command(SimpleNamespace(provider="spotify"))
+        return
+    raise SystemExit(f"Unknown Spotify auth action: {action}")
+
+
 def _interactive_auth() -> None:
     """Interactive credential pool management when `hermes auth` is called bare."""
     # Show current pool status first
@@ -604,6 +642,15 @@ def auth_command(args) -> None:
         return
     if action == "reset":
         auth_reset_command(args)
+        return
+    if action == "status":
+        auth_status_command(args)
+        return
+    if action == "logout":
+        auth_logout_command(args)
+        return
+    if action == "spotify":
+        auth_spotify_command(args)
         return
     # No subcommand — launch interactive mode
     _interactive_auth()

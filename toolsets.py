@@ -60,6 +60,10 @@ _HERMES_CORE_TOOLS = [
     "send_message",
     # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)
     "ha_list_entities", "ha_get_state", "ha_list_services", "ha_call_service",
+    # Spotify playback and library tools (gated on Spotify auth via check_fn)
+    "spotify_playback", "spotify_devices", "spotify_queue", "spotify_search",
+    "spotify_playlists", "spotify_albums", "spotify_saved_tracks",
+    "spotify_saved_albums", "spotify_activity",
 ]
 
 
@@ -213,6 +217,16 @@ TOOLSETS = {
         "tools": [
             "feishu_drive_list_comments", "feishu_drive_list_comment_replies",
             "feishu_drive_reply_comment", "feishu_drive_add_comment",
+        ],
+        "includes": []
+    },
+
+    "spotify": {
+        "description": "Native Spotify playback, search, playlist, album, library, and activity tools",
+        "tools": [
+            "spotify_playback", "spotify_devices", "spotify_queue", "spotify_search",
+            "spotify_playlists", "spotify_albums", "spotify_saved_tracks",
+            "spotify_saved_albums", "spotify_activity",
         ],
         "includes": []
     },

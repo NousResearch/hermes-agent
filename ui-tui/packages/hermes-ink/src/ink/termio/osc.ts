@@ -11,6 +11,8 @@ import { BEL, ESC, ESC_TYPE, SEP } from './ansi.js'
 import type { Action, Color, TabStatusAction } from './types.js'
 
 export const OSC_PREFIX = ESC + String.fromCharCode(ESC_TYPE.OSC)
+const ENV_ON_RE = /^(?:1|true|yes|on)$/i
+const ENV_OFF_RE = /^(?:0|false|no|off)$/i
 
 /** String Terminator (ESC \) - alternative to BEL for terminating OSC */
 export const ST = ESC + '\\'
@@ -79,6 +81,20 @@ export function getClipboardPath(): ClipboardPath {
   }
 
   return 'osc52'
+}
+
+export function shouldEmitClipboardSequence(env: NodeJS.ProcessEnv = process.env): boolean {
+  const override = (env.HERMES_TUI_CLIPBOARD_OSC52 ?? env.HERMES_TUI_COPY_OSC52 ?? '').trim()
+
+  if (ENV_ON_RE.test(override)) {
+    return true
+  }
+
+  if (ENV_OFF_RE.test(override)) {
+    return false
+  }
+
+  return !!env['SSH_CONNECTION'] || (!env['TMUX'] && !env['STY'])
 }
 
 /**
@@ -152,6 +168,7 @@ export async function tmuxLoadBuffer(text: string): Promise<boolean> {
 export async function setClipboard(text: string): Promise<string> {
   const b64 = Buffer.from(text, 'utf8').toString('base64')
   const raw = osc(OSC.CLIPBOARD, 'c', b64)
+  const emitSequence = shouldEmitClipboardSequence(process.env)
 
   // Native safety net — fire FIRST, before the tmux await, so a quick
   // focus-switch after selecting doesn't race pbcopy. Previously this ran
@@ -170,10 +187,10 @@ export async function setClipboard(text: string): Promise<string> {
   // Inner OSC uses BEL directly (not osc()) — ST's ESC would need doubling
   // too, and BEL works everywhere for OSC 52.
   if (tmuxBufferLoaded) {
-    return tmuxPassthrough(`${ESC}]52;c;${b64}${BEL}`)
+    return emitSequence ? tmuxPassthrough(`${ESC}]52;c;${b64}${BEL}`) : ''
   }
 
-  return raw
+  return emitSequence ? raw : ''
 }
 
 // Linux clipboard tool: undefined = not yet probed, null = none available.

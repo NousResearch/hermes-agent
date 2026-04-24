@@ -722,6 +722,33 @@ def get_next_probe_tier(current_length: int) -> Optional[int]:
     return None
 
 
+def choose_context_length_after_overflow(
+    old_ctx: int,
+    parsed_limit: Optional[int] = None,
+    config_context_length: Optional[int] = None,
+) -> Optional[int]:
+    """Choose the runtime context window after a prompt-overflow error.
+
+    If the provider reports a concrete lower limit, trust it.  Otherwise,
+    preserve an explicit user-configured context window and only compress the
+    history.  Blindly probing down from a configured 1M window to the generic
+    128K tier makes long TUI sessions appear to "lose" their context window
+    after transient/generic errors.
+    """
+    if parsed_limit and parsed_limit < old_ctx:
+        return parsed_limit
+
+    if config_context_length is not None:
+        try:
+            configured = int(config_context_length)
+        except (TypeError, ValueError):
+            configured = 0
+        if configured > 0:
+            return old_ctx
+
+    return get_next_probe_tier(old_ctx)
+
+
 def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
     """Try to extract the actual context limit from an API error message.
 

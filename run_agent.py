@@ -88,8 +88,8 @@ from agent.prompt_builder import (
 from agent.model_metadata import (
     fetch_model_metadata,
     estimate_tokens_rough, estimate_messages_tokens_rough, estimate_request_tokens_rough,
-    get_next_probe_tier, parse_context_limit_from_error,
-    parse_available_output_tokens_from_error,
+    choose_context_length_after_overflow,
+    parse_context_limit_from_error, parse_available_output_tokens_from_error,
     save_context_length, is_local_endpoint,
     query_ollama_num_ctx,
 )
@@ -10600,8 +10600,15 @@ class AIAgent:
                                 force=True,
                             )
                         else:
-                            # Step down to the next probe tier
-                            new_ctx = get_next_probe_tier(old_ctx)
+                            # Step down only for auto-detected windows.  When the
+                            # user explicitly configured model.context_length,
+                            # keep that runtime window unless the provider gave a
+                            # concrete lower parsed_limit.
+                            new_ctx = choose_context_length_after_overflow(
+                                old_ctx,
+                                parsed_limit=parsed_limit,
+                                config_context_length=getattr(self, "_config_context_length", None),
+                            )
 
                         if new_ctx and new_ctx < old_ctx:
                             compressor.update_model(

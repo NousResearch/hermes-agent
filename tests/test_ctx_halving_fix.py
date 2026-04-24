@@ -282,18 +282,46 @@ class TestContextNotHalvedOnOutputCapError:
         assert agent.context_compressor.context_length == old_ctx
         assert agent._ephemeral_max_output_tokens == 19_936
 
-    def test_prompt_too_long_still_triggers_probe_tier(self):
-        """Genuine prompt-too-long errors must still use get_next_probe_tier."""
+    def test_prompt_too_long_still_triggers_probe_tier_without_explicit_config(self):
+        """Genuine prompt-too-long errors may probe down only when there is no explicit config override."""
         from agent.model_metadata import parse_available_output_tokens_from_error
-        from agent.model_metadata import get_next_probe_tier
+        from agent.model_metadata import choose_context_length_after_overflow
 
         error_msg = "prompt is too long: 205000 tokens > 200000 maximum"
 
         available_out = parse_available_output_tokens_from_error(error_msg)
         assert available_out is None, "prompt-too-long must not be caught by output-cap parser"
 
-        # The old halving path is still used for this class of error
-        new_ctx = get_next_probe_tier(200_000)
+        # The old probing path is still used when the window was auto-detected.
+        new_ctx = choose_context_length_after_overflow(
+            old_ctx=200_000,
+            parsed_limit=None,
+            config_context_length=None,
+        )
+        assert new_ctx == 128_000
+
+    def test_explicit_config_context_length_prevents_probe_down_without_parsed_limit(self):
+        """If the user configured a 1M context window, generic overflow errors must not degrade it to 128K."""
+        from agent.model_metadata import choose_context_length_after_overflow
+
+        new_ctx = choose_context_length_after_overflow(
+            old_ctx=1_000_000,
+            parsed_limit=None,
+            config_context_length=1_000_000,
+        )
+
+        assert new_ctx == 1_000_000
+
+    def test_parsed_provider_limit_still_overrides_explicit_config(self):
+        """A concrete provider-reported lower limit is trusted even when config had a larger hint."""
+        from agent.model_metadata import choose_context_length_after_overflow
+
+        new_ctx = choose_context_length_after_overflow(
+            old_ctx=1_000_000,
+            parsed_limit=128_000,
+            config_context_length=1_000_000,
+        )
+
         assert new_ctx == 128_000
 
     def test_output_cap_error_safety_margin(self):

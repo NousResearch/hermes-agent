@@ -139,6 +139,28 @@ class TestToolsetAvailability:
         )
         assert reg.is_toolset_available("locked") is False
 
+    def test_toolset_is_available_when_any_tool_in_group_is_available(self):
+        reg = ToolRegistry()
+        reg.register(
+            name="browser_cdp",
+            toolset="browser",
+            schema=_make_schema("browser_cdp"),
+            handler=_dummy_handler,
+            check_fn=lambda: False,
+        )
+        reg.register(
+            name="browser_navigate",
+            toolset="browser",
+            schema=_make_schema("browser_navigate"),
+            handler=_dummy_handler,
+            check_fn=lambda: True,
+        )
+
+        assert reg.is_toolset_available("browser") is True
+        available, unavailable = reg.check_tool_availability()
+        assert "browser" in available
+        assert all(item["name"] != "browser" for item in unavailable)
+
     def test_check_toolset_requirements(self):
         reg = ToolRegistry()
         reg.register(

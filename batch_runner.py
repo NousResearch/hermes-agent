@@ -23,6 +23,7 @@ Usage:
 import json
 import logging
 import os
+import sys
 import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional, Tuple
@@ -33,6 +34,10 @@ from rich.progress import Progress, SpinnerColumn, BarColumn, TextColumn, TimeRe
 from rich.console import Console
 
 logger = logging.getLogger(__name__)
+console_handler = logging.StreamHandler(sys.stderr)
+console_handler.setFormatter(logging.Formatter('%(message)s'))
+logger.addHandler(console_handler)
+logger.setLevel(logging.INFO)
 import fire
 
 from run_agent import AIAgent
@@ -367,7 +372,7 @@ def _process_single_prompt(
         }
     
     except Exception as e:
-        print(f"❌ Error processing prompt {prompt_index}: {e}")
+        logger.error(f"❌ Error processing prompt {prompt_index}: {e}")
         if config.get("verbose"):
             traceback.print_exc()
         
@@ -641,11 +646,11 @@ class BatchRunner:
                 try:
                     entry = json.loads(line)
                     if 'prompt' not in entry:
-                        print(f"⚠️  Warning: Line {line_num} missing 'prompt' field, skipping")
+                        logger.warning(f"⚠️  Warning: Line {line_num} missing 'prompt' field, skipping")
                         continue
                     dataset.append(entry)
                 except json.JSONDecodeError as e:
-                    print(f"⚠️  Warning: Invalid JSON on line {line_num}: {e}")
+                    logger.warning(f"⚠️  Warning: Invalid JSON on line {line_num}: {e}")
                     continue
         
         if not dataset:
@@ -686,7 +691,7 @@ class BatchRunner:
             with open(self.checkpoint_file, 'r', encoding='utf-8') as f:
                 return json.load(f)
         except Exception as e:
-            print(f"⚠️  Warning: Failed to load checkpoint: {e}")
+            logger.warning(f"⚠️  Warning: Failed to load checkpoint: {e}")
             return {
                 "run_name": self.run_name,
                 "completed_prompts": [],
@@ -751,7 +756,7 @@ class BatchRunner:
                         except json.JSONDecodeError:
                             continue
             except Exception as e:
-                print(f"  ⚠️  Warning: Error reading {batch_file.name}: {e}")
+                logger.warning(f"  ⚠️  Warning: Error reading {batch_file.name}: {e}")
         
         return completed_prompts
     
@@ -939,7 +944,7 @@ class BatchRunner:
                             self._save_checkpoint(checkpoint_data, lock=checkpoint_lock)
                         except Exception as ckpt_err:
                             # Don't fail the run if checkpoint write fails
-                            print(f"⚠️  Warning: Failed to save incremental checkpoint: {ckpt_err}")
+                            logger.warning(f"⚠️  Warning: Failed to save incremental checkpoint: {ckpt_err}")
                 except Exception as e:
                     logger.error("Batch worker failed: %s", e, exc_info=True)
                     raise
@@ -1032,7 +1037,7 @@ class BatchRunner:
                             print(f"   ⚠️  Filtering invalid JSON entry (batch {batch_num})")
         
         if filtered_entries > 0:
-            print(f"⚠️  Filtered {filtered_entries} corrupted entries out of {total_entries} total")
+            logger.warning(f"⚠️  Filtered {filtered_entries} corrupted entries out of {total_entries} total")
         print(f"✅ Combined {batch_files_found} batch files into trajectories.jsonl ({total_entries - filtered_entries} entries)")
         
         # Save final statistics
@@ -1202,15 +1207,15 @@ def main(
     
     # Validate required arguments
     if not dataset_file:
-        print("❌ Error: --dataset_file is required")
+        logger.error("❌ Error: --dataset_file is required")
         return
     
     if not batch_size or batch_size < 1:
-        print("❌ Error: --batch_size must be a positive integer")
+        logger.error("❌ Error: --batch_size must be a positive integer")
         return
     
     if not run_name:
-        print("❌ Error: --run_name is required")
+        logger.error("❌ Error: --run_name is required")
         return
     
     # Parse provider preferences (comma-separated strings to lists)
@@ -1229,7 +1234,7 @@ def main(
         # Use specified effort level
         valid_efforts = ["none", "minimal", "low", "medium", "high", "xhigh"]
         if reasoning_effort not in valid_efforts:
-            print(f"❌ Error: --reasoning_effort must be one of: {', '.join(valid_efforts)}")
+            logger.error(f"❌ Error: --reasoning_effort must be one of: {', '.join(valid_efforts)}")
             return
         reasoning_config = {"enabled": True, "effort": reasoning_effort}
         print(f"🧠 Reasoning effort: {reasoning_effort}")
@@ -1241,11 +1246,11 @@ def main(
             with open(prefill_messages_file, 'r', encoding='utf-8') as f:
                 prefill_messages = json.load(f)
             if not isinstance(prefill_messages, list):
-                print("❌ Error: prefill_messages_file must contain a JSON array of messages")
+                logger.error("❌ Error: prefill_messages_file must contain a JSON array of messages")
                 return
             print(f"💬 Loaded {len(prefill_messages)} prefill messages from {prefill_messages_file}")
         except Exception as e:
-            print(f"❌ Error loading prefill messages: {e}")
+            logger.error(f"❌ Error loading prefill messages: {e}")
             return
     
     # Initialize and run batch runner

@@ -287,7 +287,7 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
     "display.busy_input_mode": {
         "type": "select",
         "description": "Input behavior while agent is running",
-        "options": ["queue", "interrupt", "block"],
+        "options": ["interrupt", "queue"],
     },
     "memory.provider": {
         "type": "select",

@@ -67,6 +67,7 @@ class Platform(Enum):
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
+    GOOGLE_CHAT = "google_chat"
 
 
 @dataclass
@@ -1270,6 +1271,27 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 chat_id=qq_home,
                 name=os.getenv("QQBOT_HOME_CHANNEL_NAME") or os.getenv(qq_home_name_env, "Home"),
             )
+
+    # Google Chat (via Cloud Pub/Sub)
+    google_chat_project = os.getenv("GOOGLE_CHAT_GCP_PROJECT")
+    if google_chat_project:
+        if Platform.GOOGLE_CHAT not in config.platforms:
+            config.platforms[Platform.GOOGLE_CHAT] = PlatformConfig()
+        config.platforms[Platform.GOOGLE_CHAT].enabled = True
+        config.platforms[Platform.GOOGLE_CHAT].extra.update({
+            "gcp_project": google_chat_project,
+            "pubsub_subscription": os.getenv("GOOGLE_CHAT_PUBSUB_SUBSCRIPTION", "hermes-chat-inbound-sub"),
+        })
+        google_chat_credentials = os.getenv("GOOGLE_CHAT_CREDENTIALS", "")
+        if google_chat_credentials:
+            config.platforms[Platform.GOOGLE_CHAT].extra["chat_credentials"] = google_chat_credentials
+    google_chat_home = os.getenv("GOOGLE_CHAT_HOME_CHANNEL")
+    if google_chat_home and Platform.GOOGLE_CHAT in config.platforms:
+        config.platforms[Platform.GOOGLE_CHAT].home_channel = HomeChannel(
+            platform=Platform.GOOGLE_CHAT,
+            chat_id=google_chat_home,
+            name=os.getenv("GOOGLE_CHAT_HOME_CHANNEL_NAME", "Home"),
+        )
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

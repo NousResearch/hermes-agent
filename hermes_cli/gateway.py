@@ -2724,6 +2724,37 @@ _PLATFORMS = [
              "help": "OpenID to deliver cron results and notifications to."},
         ],
     },
+    {
+        "key": "google_chat",
+        "label": "Google Chat",
+        "emoji": "💬",
+        "token_var": "GOOGLE_CHAT_GCP_PROJECT",
+        "setup_instructions": [
+            "1. Create a Google Chat app in the Google Cloud Console:",
+            "   https://console.cloud.google.com/apis/api/chat.googleapis.com",
+            "2. Enable the Google Chat API for your project",
+            "3. Configure the app to use Cloud Pub/Sub connection mode:",
+            "   Under 'Connection settings', select 'Cloud Pub/Sub'",
+            "4. Create a service account with the 'Chat Bots' role",
+            "   Download the JSON key file",
+            "5. Create a Pub/Sub topic and subscription for inbound events",
+            "   The Chat API will publish events to your topic automatically",
+            "6. Install dependencies: pip install google-cloud-pubsub google-auth google-api-python-client",
+        ],
+        "vars": [
+            {"name": "GOOGLE_CHAT_GCP_PROJECT", "prompt": "GCP Project ID", "password": False,
+             "help": "The GCP project ID where the Chat app and Pub/Sub are configured."},
+            {"name": "GOOGLE_CHAT_PUBSUB_SUBSCRIPTION", "prompt": "Pub/Sub subscription name (default: hermes-chat-inbound-sub)", "password": False,
+             "help": "The Pub/Sub subscription that receives inbound Chat events."},
+            {"name": "GOOGLE_CHAT_CREDENTIALS", "prompt": "Path to service account JSON key (or empty for ADC)", "password": False,
+             "help": "Path to the service account JSON key file. Leave empty to use Application Default Credentials."},
+            {"name": "GOOGLE_CHAT_ALLOWED_USERS", "prompt": "Allowed email addresses (comma-separated)", "password": False,
+             "is_allowlist": True,
+             "help": "Google Workspace email addresses allowed to interact with the bot."},
+            {"name": "GOOGLE_CHAT_HOME_CHANNEL", "prompt": "Home space name (for cron/notification delivery, or empty to set later with /set-home)", "password": False,
+             "help": "The Google Chat space name (e.g. spaces/AAAA...) for cron delivery."},
+        ],
+    },
 ]
 
 

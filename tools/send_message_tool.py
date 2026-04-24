@@ -215,6 +215,7 @@ def _handle_send(args):
         "weixin": Platform.WEIXIN,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
+        "google_chat": Platform.GOOGLE_CHAT,
     }
     platform = platform_map.get(platform_name)
     if not platform:
@@ -571,6 +572,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
         elif platform == Platform.QQBOT:
             result = await _send_qqbot(pconfig, chat_id, chunk)
+        elif platform == Platform.GOOGLE_CHAT:
+            result = await _send_google_chat(pconfig.extra, chat_id, chunk)
         else:
             result = {"error": f"Direct sending not yet implemented for {platform.value}"}
 
@@ -1508,6 +1511,52 @@ async def _send_qqbot(pconfig, chat_id, message):
                 return _error(f"QQBot send failed: {resp.status_code} {resp.text}")
     except Exception as e:
         return _error(f"QQBot send failed: {e}")
+
+
+async def _send_google_chat(extra, chat_id, message):
+    """Send via Google Chat REST API (one-shot, no gateway needed).
+
+    Uses the Chat API with service-account or ADC credentials
+    to post a text message to a specified space.
+    """
+    try:
+        from google.oauth2 import service_account
+        from googleapiclient.discovery import build
+    except ImportError:
+        return _error(
+            "Google Chat direct send requires google-auth and google-api-python-client. "
+            "Run: pip install google-auth google-api-python-client"
+        )
+
+    try:
+        scopes = ["https://www.googleapis.com/auth/chat.bot"]
+        credentials_path = extra.get("chat_credentials") or os.getenv("GOOGLE_CHAT_CREDENTIALS", "")
+
+        if credentials_path and os.path.isfile(credentials_path):
+            credentials = service_account.Credentials.from_service_account_file(
+                credentials_path, scopes=scopes
+            )
+        else:
+            import google.auth
+            credentials, _ = google.auth.default(scopes=scopes)
+
+        service = build("chat", "v1", credentials=credentials, cache_discovery=False)
+
+        # Chunk if needed (4096 char limit)
+        max_len = 4096
+        chunks = [message[i:i + max_len] for i in range(0, len(message), max_len)] if len(message) > max_len else [message]
+
+        last_msg_name = None
+        for chunk in chunks:
+            result = service.spaces().messages().create(
+                parent=chat_id,
+                body={"text": chunk},
+            ).execute()
+            last_msg_name = result.get("name", "")
+
+        return {"success": True, "platform": "google_chat", "chat_id": chat_id, "message_id": last_msg_name}
+    except Exception as e:
+        return _error(f"Google Chat send failed: {e}")
 
 
 # --- Registry ---

@@ -60,6 +60,7 @@ AUTHOR_MAP = {
     "abner.the.foreman@agentmail.to": "Abnertheforeman",
     "harryykyle1@gmail.com": "hharry11",
     "kshitijk4poor@gmail.com": "kshitijk4poor",
+    "keira.voss94@gmail.com": "keiravoss94",
     "16443023+stablegenius49@users.noreply.github.com": "stablegenius49",
     "185121704+stablegenius49@users.noreply.github.com": "stablegenius49",
     "101283333+batuhankocyigit@users.noreply.github.com": "batuhankocyigit",

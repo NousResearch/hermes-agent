@@ -607,7 +607,10 @@ def _get_platform_tools(
             default_off.remove(platform)
         enabled_toolsets -= default_off
 
-    # Plugin toolsets: enabled by default unless explicitly disabled.
+    # Plugin toolsets: enabled by default unless explicitly disabled, or
+    # unless the toolset is in _DEFAULT_OFF_TOOLSETS (e.g. spotify —
+    # shipped as a bundled plugin but user must opt in via `hermes tools`
+    # so we don't ship 7 Spotify tool schemas to users who don't use it).
     # A plugin toolset is "known" for a platform once `hermes tools`
     # has been saved for that platform (tracked via known_plugin_toolsets).
     # Unknown plugins default to enabled; known-but-absent = disabled.
@@ -619,6 +622,9 @@ def _get_platform_tools(
             if pts in toolset_names:
                 # Explicitly listed in config — enabled
                 enabled_toolsets.add(pts)
+            elif pts in _DEFAULT_OFF_TOOLSETS:
+                # Opt-in plugin toolset — stay off until user picks it
+                continue
             elif pts not in known_for_platform:
                 # New plugin not yet seen by hermes tools — default enabled
                 enabled_toolsets.add(pts)

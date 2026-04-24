@@ -2740,6 +2740,16 @@ def validate_requested_model(
     api_models = fetch_api_models(api_key, base_url)
 
     if api_models is not None:
+        # Gemini's OpenAI-compat /v1beta/openai/models endpoint returns IDs
+        # prefixed with "models/" (e.g. "models/gemini-2.5-flash") — native
+        # Gemini-API convention.  Our curated list and user input both use
+        # the bare ID, so a direct set-membership check drops every known
+        # Gemini model.  Strip the prefix before comparison.  See #12532.
+        if normalized == "gemini":
+            api_models = [
+                m[len("models/"):] if isinstance(m, str) and m.startswith("models/") else m
+                for m in api_models
+            ]
         if requested_for_lookup in set(api_models):
             # API confirmed the model exists
             return {

@@ -539,6 +539,7 @@ def run_doctor(args):
             get_nous_auth_status,
             get_codex_auth_status,
             get_gemini_oauth_auth_status,
+            get_minimax_oauth_auth_status,
         )
 
         nous_status = get_nous_auth_status()
@@ -568,6 +569,13 @@ def run_doctor(args):
             check_ok("Google Gemini OAuth", f"(logged in{suffix})")
         else:
             check_warn("Google Gemini OAuth", "(not logged in)")
+
+        minimax_status = get_minimax_oauth_auth_status()
+        if minimax_status.get("logged_in"):
+            region = minimax_status.get("region", "global")
+            check_ok("MiniMax OAuth", f"(logged in, region={region})")
+        else:
+            check_warn("MiniMax OAuth", "(not logged in)")
     except Exception as e:
         check_warn("Auth provider status", f"(could not check: {e})")
 

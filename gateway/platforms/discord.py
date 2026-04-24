@@ -3261,6 +3261,7 @@ class DiscordAdapter(BasePlatformAdapter):
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
                 thread = await self._auto_create_thread(message)
                 if thread:
+                    parent_channel_id = str(message.channel.id)
                     is_thread = True
                     thread_id = str(thread.id)
                     auto_threaded_channel = thread
@@ -3320,6 +3321,9 @@ class DiscordAdapter(BasePlatformAdapter):
             thread_id=thread_id,
             chat_topic=chat_topic,
             is_bot=getattr(message.author, "bot", False),
+            guild_id=str(message.guild.id) if message.guild else None,
+            parent_chat_id=parent_channel_id,
+            message_id=str(message.id),
         )
 
         # Build media URLs -- download image attachments to local cache so the

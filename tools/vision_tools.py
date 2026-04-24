@@ -489,7 +489,10 @@ async def vision_analyze_tool(
             should_cleanup = True
         else:
             raise ValueError(
-                "Invalid image source. Provide an HTTP/HTTPS URL or a valid local file path."
+                f"Invalid image source: '{image_url}'. "
+                "Provide either an HTTP/HTTPS URL (e.g., https://example.com/image.jpg) "
+                "or an absolute local file path (e.g., /Users/username/image.png or ~/image.png). "
+                "Note: Relative paths and paths inaccessible to the tool process are not supported."
             )
         
         # Get image file size for logging
@@ -760,7 +763,9 @@ VISION_ANALYZE_SCHEMA = {
         "properties": {
             "image_url": {
                 "type": "string",
-                "description": "Image URL (http/https) or local file path to analyze."
+                "description": "Image URL (http/https only) or local file path to analyze. "
+                              "For local files, use absolute paths or paths with ~ prefix. "
+                              "The file must be accessible from the tool's execution environment."
             },
             "question": {
                 "type": "string",

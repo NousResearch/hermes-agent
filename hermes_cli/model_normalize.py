@@ -14,8 +14,8 @@ Different LLM providers expect model identifiers in different formats:
 - **OpenCode Go** preserves dots in model names: ``minimax-m2.7``.
 - **DeepSeek** accepts V4 API identifiers:
   ``deepseek-v4-flash`` and ``deepseek-v4-pro``. Legacy names
-  ``deepseek-chat`` and ``deepseek-reasoner`` remain compatible but are
-  deprecated; they map to non-thinking and thinking modes of
+  ``deepseek-chat`` and ``deepseek-reasoner`` remain compatible until
+  2026-07-24; they map to non-thinking and thinking modes of
   ``deepseek-v4-flash`` respectively.
 - **Custom** and remaining providers pass the name through as-is.
 
@@ -108,8 +108,8 @@ _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
 # ---------------------------------------------------------------------------
 # DeepSeek supports V4 model identifiers while keeping legacy aliases for
 # backwards compatibility.  ``deepseek-chat`` and ``deepseek-reasoner`` are
-# deprecated names that correspond to non-thinking and thinking modes of
-# ``deepseek-v4-flash`` respectively.
+# deprecated after 2026-07-24 and correspond to non-thinking and thinking
+# modes of ``deepseek-v4-flash`` respectively.
 
 _DEEPSEEK_REASONER_KEYWORDS: frozenset[str] = frozenset({
     "reasoner",

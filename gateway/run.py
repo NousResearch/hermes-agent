@@ -7228,13 +7228,19 @@ class GatewayRunner:
                 logger.debug("Failed to list titled sessions: %s", e)
                 return f"Could not list sessions: {e}"
 
-        # Resolve the name to a session ID
+        # Resolve the name to a session ID.
         target_id = self._session_db.resolve_session_by_title(name)
         if not target_id:
             return (
                 f"No session found matching '**{name}**'.\n"
                 "Use `/resume` with no arguments to see available sessions."
             )
+        # Compression creates child continuations that hold the live transcript.
+        # Follow that chain so gateway /resume matches CLI behavior (#15000).
+        try:
+            target_id = self._session_db.resolve_resume_session_id(target_id)
+        except Exception as e:
+            logger.debug("Failed to resolve resume continuation for %s: %s", target_id, e)
 
         # Check if already on that session
         current_entry = self.session_store.get_or_create_session(source)

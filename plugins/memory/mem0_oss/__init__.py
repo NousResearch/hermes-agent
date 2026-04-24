@@ -500,6 +500,22 @@ class Mem0OSSMemoryProvider(MemoryProvider):
     (or OpenAI / Ollama) for LLM fact-extraction and embedding.
     """
 
+    def __init__(self):
+        # Config / identity
+        self._cfg: dict = {}
+        self._user_id: str = "hermes-user"
+        self._top_k: int = 10
+        self._session_id: str = ""
+        self._agent_context: str = "primary"
+        # Circuit-breaker state (lock-protected)
+        self._lock = threading.Lock()
+        self._fail_count: int = 0
+        self._last_fail_ts: float = 0.0
+        # Background thread state
+        self._sync_thread: Optional[threading.Thread] = None
+        self._prefetch_thread: Optional[threading.Thread] = None
+        self._prefetch_result: str = ""
+
     # -- MemoryProvider identity --------------------------------------------
 
     @property
@@ -554,18 +570,12 @@ class Mem0OSSMemoryProvider(MemoryProvider):
         self._cfg = _load_config()
         self._user_id = self._cfg["user_id"]
         self._top_k = self._cfg["top_k"]
-
-        # Circuit-breaker state
-        self._fail_count = 0
-        self._last_fail_ts = 0.0
-        self._lock = threading.Lock()
-
-        # Background sync state
-        self._sync_thread: Optional[threading.Thread] = None
-
-        # Prefetch state (background thread fills this before each turn)
-        self._prefetch_result: str = ""
-        self._prefetch_thread: Optional[threading.Thread] = None
+        # Reset circuit-breaker and prefetch state for this session.
+        # (Lock is created in __init__ and reused across sessions.)
+        with self._lock:
+            self._fail_count = 0
+            self._last_fail_ts = 0.0
+        self._prefetch_result = ""
         import pathlib
         pathlib.Path(self._cfg["vector_store_path"]).mkdir(parents=True, exist_ok=True)
         pathlib.Path(self._cfg["history_db_path"]).parent.mkdir(parents=True, exist_ok=True)
@@ -628,8 +638,8 @@ class Mem0OSSMemoryProvider(MemoryProvider):
             "## Mem0 OSS Memory (self-hosted)\n"
             "You have access to long-term memory stored locally via mem0.\n"
             "- Use `mem0_oss_search` to recall relevant facts before answering.\n"
-            "- Facts are extracted and deduplicated automatically on each turn via sync_turn.\n"
-            "- To explicitly save something, use the built-in `memory` tool — it mirrors to mem0 automatically.\n"
+            "- Use `mem0_oss_add` to store important new facts, preferences, or context.\n"
+            "- Facts are extracted and deduplicated automatically on each turn.\n"
             "- Search is semantic — natural-language queries work well.\n"
         )
 
@@ -714,7 +724,7 @@ class Mem0OSSMemoryProvider(MemoryProvider):
     # -- Tool schemas & dispatch -------------------------------------------
 
     def get_tool_schemas(self) -> List[dict]:
-        return [SEARCH_SCHEMA]
+        return [SEARCH_SCHEMA, ADD_SCHEMA]
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
         if tool_name == "mem0_oss_search":

@@ -55,6 +55,7 @@ export interface ConfigDisplayConfig {
   bell_on_complete?: boolean
   details_mode?: string
   inline_diffs?: boolean
+  sections?: Record<string, string>
   show_cost?: boolean
   show_reasoning?: boolean
   streaming?: boolean

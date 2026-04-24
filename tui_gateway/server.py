@@ -2642,6 +2642,41 @@ def _(rid, params: dict) -> dict:
         _write_config_key("display.details_mode", nv)
         return _ok(rid, {"key": key, "value": nv})
 
+    if key.startswith("details_mode."):
+        # Per-section override: `details_mode.<section>` writes to
+        # `display.sections.<section>`.  Empty value clears the override
+        # and lets the section fall back to the global details_mode.
+        section = key.split(".", 1)[1]
+        allowed_sections = frozenset({"thinking", "tools", "subagents", "activity"})
+        if section not in allowed_sections:
+            return _err(rid, 4002, f"unknown section: {section}")
+
+        cfg = _load_cfg()
+        display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
+        sections_cfg = (
+            display.get("sections")
+            if isinstance(display.get("sections"), dict)
+            else {}
+        )
+
+        nv = str(value or "").strip().lower()
+        if not nv:
+            sections_cfg.pop(section, None)
+            display["sections"] = sections_cfg
+            cfg["display"] = display
+            _save_cfg(cfg)
+            return _ok(rid, {"key": key, "value": ""})
+
+        allowed_dm = frozenset({"hidden", "collapsed", "expanded"})
+        if nv not in allowed_dm:
+            return _err(rid, 4002, f"unknown details_mode: {value}")
+
+        sections_cfg[section] = nv
+        display["sections"] = sections_cfg
+        cfg["display"] = display
+        _save_cfg(cfg)
+        return _ok(rid, {"key": key, "value": nv})
+
     if key == "thinking_mode":
         nv = str(value or "").strip().lower()
         allowed_tm = frozenset({"collapsed", "truncated", "full"})

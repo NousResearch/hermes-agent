@@ -629,11 +629,15 @@ class Mem0OSSMemoryProvider(MemoryProvider):
                         )
                         _time.sleep(delay)
                         continue
+                    # Last attempt also a lock error — fall through to raise below
                 else:
                     # Non-lock error — fail fast, no retry
                     logger.error("mem0_oss: failed to initialize Memory: %s", exc)
                     raise
-        logger.error("mem0_oss: failed to initialize Memory after %d attempts: %s", _LOCK_RETRY_ATTEMPTS, last_exc)
+        logger.warning(
+            "mem0_oss: Qdrant lock still held after %d attempts — giving up: %s",
+            _LOCK_RETRY_ATTEMPTS, last_exc,
+        )
         raise last_exc  # type: ignore[misc]
 
     # -- Circuit breaker helpers -------------------------------------------

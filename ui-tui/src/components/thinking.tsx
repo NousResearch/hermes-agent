@@ -707,34 +707,39 @@ export const ToolTrail = memo(function ToolTrail({
   trail?: string[]
   activity?: ActivityItem[]
 }) {
-  const thinkingSection = sectionMode('thinking', detailsMode, sections)
-  const toolsSection = sectionMode('tools', detailsMode, sections)
-  const subagentsSection = sectionMode('subagents', detailsMode, sections)
-  const activitySection = sectionMode('activity', detailsMode, sections)
+  const visible = useMemo(
+    () => ({
+      thinking: sectionMode('thinking', detailsMode, sections),
+      tools: sectionMode('tools', detailsMode, sections),
+      subagents: sectionMode('subagents', detailsMode, sections),
+      activity: sectionMode('activity', detailsMode, sections)
+    }),
+    [detailsMode, sections]
+  )
 
   const [now, setNow] = useState(() => Date.now())
-  const [openThinking, setOpenThinking] = useState(thinkingSection === 'expanded')
-  const [openTools, setOpenTools] = useState(toolsSection === 'expanded')
-  const [openSubagents, setOpenSubagents] = useState(subagentsSection === 'expanded')
-  const [deepSubagents, setDeepSubagents] = useState(subagentsSection === 'expanded')
-  const [openMeta, setOpenMeta] = useState(activitySection === 'expanded')
+  const [openThinking, setOpenThinking] = useState(visible.thinking === 'expanded')
+  const [openTools, setOpenTools] = useState(visible.tools === 'expanded')
+  const [openSubagents, setOpenSubagents] = useState(visible.subagents === 'expanded')
+  const [deepSubagents, setDeepSubagents] = useState(visible.subagents === 'expanded')
+  const [openMeta, setOpenMeta] = useState(visible.activity === 'expanded')
 
   useEffect(() => {
-    if (!tools.length || (toolsSection !== 'expanded' && !openTools)) {
+    if (!tools.length || (visible.tools !== 'expanded' && !openTools)) {
       return
     }
 
     const id = setInterval(() => setNow(Date.now()), 500)
 
     return () => clearInterval(id)
-  }, [toolsSection, openTools, tools.length])
+  }, [openTools, tools.length, visible.tools])
 
   useEffect(() => {
-    setOpenThinking(thinkingSection === 'expanded')
-    setOpenTools(toolsSection === 'expanded')
-    setOpenSubagents(subagentsSection === 'expanded')
-    setOpenMeta(activitySection === 'expanded')
-  }, [thinkingSection, toolsSection, subagentsSection, activitySection])
+    setOpenThinking(visible.thinking === 'expanded')
+    setOpenTools(visible.tools === 'expanded')
+    setOpenSubagents(visible.subagents === 'expanded')
+    setOpenMeta(visible.activity === 'expanded')
+  }, [visible])
 
   const cot = useMemo(() => thinkingPreview(reasoning, 'full', THINKING_COT_MAX), [reasoning])
 
@@ -877,7 +882,7 @@ export const ToolTrail = memo(function ToolTrail({
   // override means "I don't want to see meta at all", so respect it.
 
   if (detailsMode === 'hidden') {
-    if (activitySection === 'hidden') {
+    if (visible.activity === 'hidden') {
       return null
     }
 
@@ -900,13 +905,13 @@ export const ToolTrail = memo(function ToolTrail({
   // hidden sections stay hidden so the override is honoured.
 
   const expandAll = () => {
-    if (thinkingSection !== 'hidden') setOpenThinking(true)
-    if (toolsSection !== 'hidden') setOpenTools(true)
-    if (subagentsSection !== 'hidden') {
+    if (visible.thinking !== 'hidden') setOpenThinking(true)
+    if (visible.tools !== 'hidden') setOpenTools(true)
+    if (visible.subagents !== 'hidden') {
       setOpenSubagents(true)
       setDeepSubagents(true)
     }
-    if (activitySection !== 'hidden') setOpenMeta(true)
+    if (visible.activity !== 'hidden') setOpenMeta(true)
   }
 
   const metaTone: 'dim' | 'error' | 'warn' = activity.some(i => i.tone === 'error')
@@ -920,7 +925,7 @@ export const ToolTrail = memo(function ToolTrail({
       {spawnTree.map((node, index) => (
         <SubagentAccordion
           branch={index === spawnTree.length - 1 ? 'last' : 'mid'}
-          expanded={subagentsSection === 'expanded' || deepSubagents}
+          expanded={visible.subagents === 'expanded' || deepSubagents}
           key={node.item.id}
           node={node}
           peak={spawnPeak}
@@ -938,7 +943,7 @@ export const ToolTrail = memo(function ToolTrail({
     render: (rails: boolean[]) => ReactNode
   }[] = []
 
-  if (hasThinking && thinkingSection !== 'hidden') {
+  if (hasThinking && visible.thinking !== 'hidden') {
     panels.push({
       header: (
         <Box
@@ -951,7 +956,7 @@ export const ToolTrail = memo(function ToolTrail({
           }}
         >
           <Text color={t.color.dim} dim={!thinkingLive}>
-            <Text color={t.color.amber}>{thinkingSection === 'expanded' || openThinking ? '▾ ' : '▸ '}</Text>
+            <Text color={t.color.amber}>{visible.thinking === 'expanded' || openThinking ? '▾ ' : '▸ '}</Text>
             {thinkingLive ? (
               <Text bold color={t.color.cornsilk}>
                 Thinking
@@ -971,7 +976,7 @@ export const ToolTrail = memo(function ToolTrail({
         </Box>
       ),
       key: 'thinking',
-      open: thinkingSection === 'expanded' || openThinking,
+      open: visible.thinking === 'expanded' || openThinking,
       render: rails => (
         <Thinking
           active={reasoningActive}
@@ -986,7 +991,7 @@ export const ToolTrail = memo(function ToolTrail({
     })
   }
 
-  if (hasTools && toolsSection !== 'hidden') {
+  if (hasTools && visible.tools !== 'hidden') {
     panels.push({
       header: (
         <Chevron
@@ -998,14 +1003,14 @@ export const ToolTrail = memo(function ToolTrail({
               setOpenTools(v => !v)
             }
           }}
-          open={toolsSection === 'expanded' || openTools}
+          open={visible.tools === 'expanded' || openTools}
           suffix={toolTokensLabel}
           t={t}
           title="Tool calls"
         />
       ),
       key: 'tools',
-      open: toolsSection === 'expanded' || openTools,
+      open: visible.tools === 'expanded' || openTools,
       render: rails => (
         <Box flexDirection="column">
           {groups.map((group, index) => {
@@ -1045,7 +1050,7 @@ export const ToolTrail = memo(function ToolTrail({
     })
   }
 
-  if (hasSubagents && !inlineDelegateKey && subagentsSection !== 'hidden') {
+  if (hasSubagents && !inlineDelegateKey && visible.subagents !== 'hidden') {
     // Spark + summary give a one-line read on the branch shape before
     // opening the subtree.  `/agents` opens the full-screen audit overlay.
     const suffix = spawnSpark ? `${spawnSummaryLabel}  ${spawnSpark}  (/agents)` : `${spawnSummaryLabel}  (/agents)`
@@ -1063,19 +1068,19 @@ export const ToolTrail = memo(function ToolTrail({
               setDeepSubagents(false)
             }
           }}
-          open={subagentsSection === 'expanded' || openSubagents}
+          open={visible.subagents === 'expanded' || openSubagents}
           suffix={suffix}
           t={t}
           title="Spawn tree"
         />
       ),
       key: 'subagents',
-      open: subagentsSection === 'expanded' || openSubagents,
+      open: visible.subagents === 'expanded' || openSubagents,
       render: renderSubagentList
     })
   }
 
-  if (hasMeta && activitySection !== 'hidden') {
+  if (hasMeta && visible.activity !== 'hidden') {
     panels.push({
       header: (
         <Chevron
@@ -1087,14 +1092,14 @@ export const ToolTrail = memo(function ToolTrail({
               setOpenMeta(v => !v)
             }
           }}
-          open={activitySection === 'expanded' || openMeta}
+          open={visible.activity === 'expanded' || openMeta}
           t={t}
           title="Activity"
           tone={metaTone}
         />
       ),
       key: 'meta',
-      open: activitySection === 'expanded' || openMeta,
+      open: visible.activity === 'expanded' || openMeta,
       render: rails => (
         <Box flexDirection="column">
           {meta.map((row, index) => (

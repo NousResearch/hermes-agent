@@ -706,10 +706,8 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                     f"{prompt}"
                 )
             else:
-                prompt = (
-                    "[Script ran successfully but produced no output.]\n\n"
-                    f"{prompt}"
-                )
+                # Script produced no output — nothing to report, skip AI call.
+                return None
         else:
             prompt = (
                 "## Script Error\n"
@@ -869,6 +867,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             return True, silent_doc, SILENT_MARKER, None
 
     prompt = _build_job_prompt(job, prerun_script=prerun_script)
+    if prompt is None:
+        logger.info("Job '%s': script produced no output, skipping AI call.", job_name)
+        return True, "", SILENT_MARKER, None
     origin = _resolve_origin(job)
     _cron_session_id = f"cron_{job_id}_{_hermes_now().strftime('%Y%m%d_%H%M%S')}"
 

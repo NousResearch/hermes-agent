@@ -223,6 +223,51 @@ def test_setup_gateway_in_container_shows_docker_guidance(monkeypatch, capsys):
     assert "restart" in out.lower()
 
 
+def test_setup_wecom_callback_delegates_to_gateway_helper(monkeypatch):
+    called = []
+
+    monkeypatch.setattr(
+        "hermes_cli.gateway._setup_wecom_callback",
+        lambda: called.append(True),
+    )
+
+    setup_mod._setup_wecom_callback()
+
+    assert called == [True]
+
+
+def test_setup_gateway_treats_wecom_callback_as_messaging(monkeypatch, capsys):
+    env = {"WECOM_CALLBACK_CORP_ID": ""}
+
+    def fake_get_env_value(key):
+        return env.get(key, "")
+
+    def fake_setup_wecom_callback():
+        env["WECOM_CALLBACK_CORP_ID"] = "wxcorp"
+
+    monkeypatch.setattr(setup_mod, "get_env_value", fake_get_env_value)
+    monkeypatch.setattr(setup_mod, "prompt_checklist", lambda *_args, **_kwargs: [0])
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *args, **kwargs: False)
+    monkeypatch.setattr(
+        setup_mod,
+        "_GATEWAY_PLATFORMS",
+        [("WeCom Callback (Self-Built App)", "WECOM_CALLBACK_CORP_ID", fake_setup_wecom_callback)],
+    )
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+
+    import hermes_cli.gateway as gateway_mod
+
+    monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway_mod, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway_mod, "_is_service_installed", lambda: False)
+    monkeypatch.setattr(gateway_mod, "_is_service_running", lambda: False)
+
+    setup_mod.setup_gateway({})
+
+    out = capsys.readouterr().out
+    assert "Messaging platforms configured!" in out
+
+
 def test_setup_syncs_custom_provider_removal_from_disk(tmp_path, monkeypatch):
     """Removing the last custom provider in model setup should persist."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

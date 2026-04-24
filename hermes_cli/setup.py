@@ -2274,6 +2274,7 @@ def setup_gateway(config: dict):
         or get_env_value("DINGTALK_CLIENT_ID")
         or get_env_value("FEISHU_APP_ID")
         or get_env_value("WECOM_BOT_ID")
+        or get_env_value("WECOM_CALLBACK_CORP_ID")
         or get_env_value("WEIXIN_ACCOUNT_ID")
         or get_env_value("BLUEBUBBLES_SERVER_URL")
         or get_env_value("QQ_APP_ID")

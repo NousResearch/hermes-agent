@@ -2905,6 +2905,21 @@ def _remap_path_for_user(path: str, target_home_dir: str) -> str:
         return str(p)
 
 
+def _systemd_env_line(name: str, value: str) -> str:
+    """One ``Environment="NAME=value"`` line; systemd's quoting needs ``\\`` and ``"`` escaped."""
+    escaped = value.replace("\\", "\\\\").replace('"', '\\"')
+    return f'Environment="{name}={escaped}"\n'
+
+
+def _ld_library_path_line(target_home_dir: str | None = None) -> str:
+    """Carry the installer's LD_LIBRARY_PATH into the unit (glibc reads it only at process start, so
+    ~/.hermes/.env is too late for CUDA libs — #14613); system units remap caller-home components."""
+    components = [p for p in os.environ.get("LD_LIBRARY_PATH", "").split(":") if p]
+    if target_home_dir is not None:
+        components = [_remap_path_for_user(p, target_home_dir) for p in components]
+    return _systemd_env_line("LD_LIBRARY_PATH", ":".join(components)) if components else ""
+
+
 def _hermes_home_for_target_user(target_home_dir: str) -> str:
     """Remap the current HERMES_HOME (root's, under sudo) to the target user's equivalent:
     ``/root/.hermes[/profiles/x]`` → ``/home/alice/.hermes[/profiles/x]``; custom paths kept as-is."""
@@ -3053,13 +3068,15 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
             f'Environment="HOME={home_dir}"\n'
             f'Environment="USER={username}"\n'
             f'Environment="LOGNAME={username}"\n'
+            f"{_ld_library_path_line(home_dir)}"
         )
         wanted_by = "multi-user.target"
     else:
         hermes_home = str(get_hermes_home().resolve())
         profile_arg = _profile_arg(hermes_home)
         user_home = Path.home()
-        identity_lines = env_lines = ordering_lines = ""
+        identity_lines = ordering_lines = ""
+        env_lines = _ld_library_path_line()
         wanted_by = "default.target"
 
     watchdog_seconds = _systemd_watchdog_seconds(hermes_home)

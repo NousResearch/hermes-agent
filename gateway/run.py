@@ -1187,26 +1187,45 @@ class GatewayRunner:
                     adapter.platform.value,
                 )
 
-        if not self.adapters and not self._failed_platforms:
-            self._exit_reason = adapter.fatal_error_message or "All messaging adapters disconnected"
-            if adapter.fatal_error_retryable:
-                self._exit_with_failure = True
-                logger.error("No connected messaging platforms remain. Shutting down gateway for service restart.")
-            else:
-                logger.error("No connected messaging platforms remain. Shutting down gateway cleanly.")
-            await self.stop()
-        elif not self.adapters and self._failed_platforms:
-            # All platforms are down and queued for background reconnection.
-            # If the error is retryable, exit with failure so systemd Restart=on-failure
-            # can restart the process. Otherwise stay alive and keep retrying in background.
-            if adapter.fatal_error_retryable:
-                self._exit_reason = adapter.fatal_error_message or "All messaging platforms failed with retryable errors"
-                self._exit_with_failure = True
-                logger.error(
-                    "All messaging platforms failed with retryable errors. "
-                    "Shutting down gateway for service restart (systemd will retry)."
+        # Service adapters (API server, webhook) are not messaging platforms — their
+        # presence means the gateway is still actively serving clients and must not shut
+        # down just because all *messaging* platform adapters have disconnected.
+        _service_platforms = {Platform.LOCAL, Platform.API_SERVER, Platform.WEBHOOK}
+        _messaging_adapters = {p for p in self.adapters if p not in _service_platforms}
+        _service_still_active = bool(self.adapters.keys() & _service_platforms)
+
+        if not _messaging_adapters and not self._failed_platforms:
+            if _service_still_active:
+                logger.warning(
+                    "All messaging platform adapters disconnected, but API/service adapters remain active. "
+                    "Gateway will keep running to serve API requests."
                 )
+            else:
+                self._exit_reason = adapter.fatal_error_message or "All messaging adapters disconnected"
+                if adapter.fatal_error_retryable:
+                    self._exit_with_failure = True
+                    logger.error("No connected messaging platforms remain. Shutting down gateway for service restart.")
+                else:
+                    logger.error("No connected messaging platforms remain. Shutting down gateway cleanly.")
                 await self.stop()
+        elif not _messaging_adapters and self._failed_platforms:
+            # All messaging platforms are down and queued for background reconnection.
+            # If the error is retryable, exit with failure so systemd Restart=on-failure
+            # can restart the process — but only if no service adapter is still active.
+            if adapter.fatal_error_retryable:
+                if _service_still_active:
+                    logger.warning(
+                        "All messaging platforms failed with retryable errors, but API/service adapters remain "
+                        "active. Gateway will keep running; messaging platforms queued for reconnection."
+                    )
+                else:
+                    self._exit_reason = adapter.fatal_error_message or "All messaging platforms failed with retryable errors"
+                    self._exit_with_failure = True
+                    logger.error(
+                        "All messaging platforms failed with retryable errors. "
+                        "Shutting down gateway for service restart (systemd will retry)."
+                    )
+                    await self.stop()
             else:
                 logger.warning(
                     "No connected messaging platforms remain, but %d platform(s) queued for reconnection",

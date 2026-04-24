@@ -740,10 +740,19 @@ def resolve_alias(
 
     # Reverse lookup: match by model ID so full names (e.g. "kimi-k2.5",
     # "glm-4.7") route through direct aliases instead of falling through
-    # to the catalog/OpenRouter.
-    for alias_name, da in DIRECT_ALIASES.items():
-        if da.model.lower() == key:
-            return (da.provider, da.model, alias_name)
+    # to the catalog/OpenRouter. When multiple direct aliases share the
+    # same model ID, prefer the alias that matches the requested provider.
+    reverse_matches = [
+        (alias_name, da)
+        for alias_name, da in DIRECT_ALIASES.items()
+        if da.model.lower() == key
+    ]
+    if reverse_matches:
+        for alias_name, da in reverse_matches:
+            if da.provider == current_provider:
+                return (da.provider, da.model, alias_name)
+        alias_name, da = reverse_matches[0]
+        return (da.provider, da.model, alias_name)
 
     identity = MODEL_ALIASES.get(key)
     if identity is None:

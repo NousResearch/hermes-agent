@@ -149,6 +149,24 @@ class TestDirectAliases:
         assert result is not None
         assert result[1] == "GLM-4.7"
 
+    def test_reverse_lookup_prefers_current_provider_when_model_is_shared(self, monkeypatch):
+        """Reverse lookup should prefer the alias matching the requested provider."""
+        from hermes_cli.model_switch import DirectAlias, resolve_alias
+        import hermes_cli.model_switch as ms
+
+        test_aliases = {
+            "my-a": DirectAlias("claude-opus-4-6", "custom:provider-a", "https://api-a.example.com"),
+            "my-b": DirectAlias("claude-opus-4-6", "custom:provider-b", "https://api-b.example.com"),
+        }
+        monkeypatch.setattr(ms, "DIRECT_ALIASES", test_aliases)
+
+        result = resolve_alias("claude-opus-4-6", "custom:provider-b")
+        assert result is not None
+        provider, model, alias = result
+        assert provider == "custom:provider-b"
+        assert model == "claude-opus-4-6"
+        assert alias == "my-b"
+
 
 # ---------------------------------------------------------------------------
 # /model command persistence
@@ -487,6 +505,55 @@ class TestSwitchModelDirectAliasOverride:
         assert result.success
         assert result.api_key == "no-key-required"
         assert result.base_url == "http://localhost:11434/v1"
+
+    def test_explicit_provider_prefers_matching_alias_base_url(self, monkeypatch):
+        """Explicit provider switches should not inherit another alias provider's base_url."""
+        from types import SimpleNamespace
+        from hermes_cli.model_switch import DirectAlias
+        import hermes_cli.model_switch as ms
+
+        test_aliases = {
+            "my-a": DirectAlias("claude-opus-4-6", "custom:provider-a", "https://api-a.example.com"),
+            "my-b": DirectAlias("claude-opus-4-6", "custom:provider-b", "https://api-b.example.com"),
+        }
+        monkeypatch.setattr(ms, "DIRECT_ALIASES", test_aliases)
+
+        monkeypatch.setattr(
+            ms,
+            "resolve_provider_full",
+            lambda explicit_provider, *_args: SimpleNamespace(
+                id="custom:provider-b",
+                name="Provider B",
+                base_url="https://api-b.example.com",
+            ),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.runtime_provider.resolve_runtime_provider",
+            lambda requested: {
+                "api_key": "sk-bbb",
+                "base_url": "https://api-b.example.com",
+                "api_mode": "openai_compat",
+                "provider": requested,
+            },
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.validate_requested_model",
+            lambda *a, **kw: {"accepted": True, "persist": True, "recognized": True, "message": None},
+        )
+        monkeypatch.setattr(
+            "hermes_cli.models.opencode_model_api_mode",
+            lambda *a, **kw: "openai_compat",
+        )
+
+        result = ms.switch_model(
+            "claude-opus-4-6",
+            "openrouter",
+            "old-model",
+            explicit_provider="custom:provider-b",
+        )
+        assert result.success
+        assert result.target_provider == "custom:provider-b"
+        assert result.base_url == "https://api-b.example.com"
 
 
 # ---------------------------------------------------------------------------

@@ -60,7 +60,7 @@
 │              │ • 本地開發調試             │                            │
 │              │ • 圖形化監控界面           │                            │
 ├──────────────┼────────────────────────────┼────────────────────────────┤
-│ OpenClaw     │ • 熱備份/故障轉移          │ ⚠️  待配置                  │
+│ OpenClaw     │ • 熱備份/故障轉移          │ 🟡 規劃完成，待實施            │
 │ (Backup)     │ • 異地冗餘存儲             │                            │
 │              │ • 峰值負載分流             │                            │
 ├──────────────┼────────────────────────────┼────────────────────────────┤
@@ -220,8 +220,8 @@ Discord  ←──Webhook──→  Gateway (Cloud)  ──→  Agent Core
          └────────────────┬───────────────────┘                     │
                           ▼                                         │
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│                          Context Engine                                     │
-│  文件：/home/ubuntu/.hermes/hermes-agent/agent/context_engine.py           │
+│                          Context Coordinator                                │
+│  文件：/home/ubuntu/.hermes/hermes-agent/agent/context_coordinator.py      │
 │  職責：協調三庫，構建每次對話的上下文                                       │
 │                                                                             │
 │  核心流程：                                                                  │
@@ -249,7 +249,7 @@ Discord  ←──Webhook──→  Gateway (Cloud)  ──→  Agent Core
 │                                                                             │
 │  knowledge/index.json                                                       │
 │      │                                                                      │
-│      ├─→ agent/context_engine.py::build_knowledge_prompt()                 │
+│      ├─→ agent/context_coordinator.py::build_knowledge_context()           │
 │      │                                                                      │
 │      ├─→ agent/knowledge_memory_interface.py::search_knowledge()          │
 │      │                                                                      │
@@ -445,13 +445,83 @@ print('Migration: all OK')
 ⚠️ STEP 6 和 7 可在 Horizon 1 完成後並行執行（兩者只依賴 Horizon 1 結果）。
    STEP 8 → STEP 9 必須順序執行。
 
-【OpenClaw 配置須知】
-系統拓撲中 OpenClaw 承擔熱備份/故障轉移職責，但目前狀態為「待配置」。
-以下 STEP 6-9 專注技能/記憶庫整合，OpenClaw 配置另需獨立的基礎設施規劃：
-  • 同步方式：rsync / git pull / 共享儲存？
-  • 故障轉移觸發條件：heartbeat 多久？自動還是半自動？
-  • 同步頻率：即時？每分鐘？
-  這些是 OpensClaw 配置的必備參數，不在此次重構計劃範圍內。
+┌─────────────────────────────────────────────────────────────────────────────┐
+│ STEP 6A：OpenClaw 熱備份基礎設施（獨立規劃後整合）                           │
+└─────────────────────────────────────────────────────────────────────────────┘
+
+目標：建立 Hermes Primary（Cloud Ubuntu）+ OpenClaw Standby（Backup）熱備份機制。
+
+前置條件：
+1. Horizon 1 已完成
+2. Hermes 主進程在 Cloud Ubuntu 穩定運行
+3. OpenClaw 已安裝，且 `openclaw.service` 可被 systemctl 啟動
+
+核心規則：
+- Hermes 每 30 秒寫入 `/tmp/hermes_heartbeat`
+- OpenClaw 監控 heartbeat
+- 連續 3 次檢查不到有效 heartbeat（約 90 秒）→ 啟動 OpenClaw 接管
+- Channel isolation 同步生效：Hermes 只處理 `#hermes-analysis` 與 `#一般(@Hermes)`
+
+文件：
+- `/home/ubuntu/hermes-heartbeat.sh`
+- `/tmp/hermes_heartbeat`
+- `/home/ubuntu/.openclaw/scripts/openclaw_heartbeat_monitor.sh`
+- `/home/ubuntu/.hermes/skills/system-architecture/hermes-channel-isolation.md`
+
+Cloud Ubuntu（Hermes primary）：
+```bash
+chmod +x /home/ubuntu/hermes-heartbeat.sh
+nohup /home/ubuntu/hermes-heartbeat.sh >/home/ubuntu/hermes-heartbeat.log 2>&1 &
+cat /tmp/hermes_heartbeat
+ps aux | grep '[h]ermes-heartbeat.sh'
+```
+
+OpenClaw（backup/standby）：
+```bash
+mkdir -p /home/ubuntu/.openclaw/scripts
+chmod +x /home/ubuntu/.openclaw/scripts/openclaw_heartbeat_monitor.sh
+nohup /home/ubuntu/.openclaw/scripts/openclaw_heartbeat_monitor.sh >/home/ubuntu/.openclaw/openclaw-heartbeat-monitor.log 2>&1 &
+ps aux | grep '[o]penclaw_heartbeat_monitor.sh'
+systemctl status openclaw.service --no-pager
+```
+
+`/home/ubuntu/.openclaw/scripts/openclaw_heartbeat_monitor.sh` 最低要求：
+```bash
+HEARTBEAT_FILE="/tmp/hermes_heartbeat"
+CHECK_INTERVAL=30
+MAX_MISSES=3
+# 連續 3 次檢查不到有效 heartbeat -> systemctl start openclaw.service
+```
+
+Channel isolation：
+- Hermes always respond: `1494998928012083290` (`#hermes-analysis`)
+- Hermes mention-only: `1226485944291688533` (`#一般`)
+- Hermes ignore / OpenClaw handle: `#新聞`, `#任務追蹤`, `#警報`, `#開發日誌`, `#痛點監控`, `#審批`, `#投資監控-雲端室`
+
+驗證：
+```bash
+cat /tmp/hermes_heartbeat
+ps aux | grep '[h]ermes-heartbeat.sh'
+ps aux | grep '[o]penclaw_heartbeat_monitor.sh'
+
+# Failover dry run
+pkill -f hermes-heartbeat.sh
+sleep 95
+systemctl status openclaw.service --no-pager
+```
+
+Rollback：
+```bash
+pkill -f hermes-heartbeat.sh || true
+pkill -f openclaw_heartbeat_monitor.sh || true
+systemctl stop openclaw.service || true
+rm -f /tmp/hermes_heartbeat
+mv /home/ubuntu/.openclaw/scripts/openclaw_heartbeat_monitor.sh /home/ubuntu/.openclaw/scripts/openclaw_heartbeat_monitor.sh.bak
+```
+
+風險：
+- 長耗時分析若超過 heartbeat/timeout 視窗，可能誤觸 failover
+- 此步驟只定義 heartbeat + failover + channel isolation；不包含 rsync/git/共享儲存同步
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ STEP 6：創建技能索引（詳細實作）                                            │
@@ -583,46 +653,189 @@ trust_level = "experimental"
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ STEP 10：Agent Core 拆分（高風險，需謹慎）                                   │
 └─────────────────────────────────────────────────────────────────────────────┘
-備份：
+
+共通前置檢查（開始 STEP 10 前一次執行，之後每步開始前再確認 `git status --short`）：
+```bash
+cd /home/ubuntu/.hermes/hermes-agent
+git status --short
+df -h /home/ubuntu
+python - <<'PY'
+import agent.anthropic_adapter
+import agent.prompt_builder
+import gateway.run
+import tools.registry
+print('import-ok')
+PY
+pytest -q tests/agent/test_anthropic_adapter.py tests/agent/test_prompt_builder.py tests/tools/test_registry.py tests/gateway/test_fast_command.py tests/gateway/test_unknown_command.py tests/gateway/test_session_info.py
+```
+
+前置門檻：
+- `git status --short` 若有與本次重構無關的髒檔，禁止混入同一提交
+- `/home/ubuntu` 可用空間必須 > 500MB
+- 若基線測試本來就失敗，先記錄失敗清單；重構後不得新增失敗項
+
+拆分原則：
+- 保留 `agent/anthropic_adapter.py`、`agent/prompt_builder.py` 作為相容 façade
+- 先搬邏輯，再改 import；最後才允許內部直接引用新模組
+- 本步不改對外 public API 名稱
+
+A. `agent/anthropic_adapter.py` → `agent/adapters/`
+- 新增：
+  - `agent/adapters/__init__.py`
+  - `agent/adapters/base.py`
+  - `agent/adapters/anthropic_auth.py`
+  - `agent/adapters/anthropic_client.py`
+  - `agent/adapters/anthropic_messages.py`
+- façade `agent/anthropic_adapter.py` 僅做 re-export
+
+B. `agent/prompt_builder.py` → `agent/prompts/`
+- 新增：
+  - `agent/prompts/__init__.py`
+  - `agent/prompts/constants.py`
+  - `agent/prompts/context_files.py`
+  - `agent/prompts/environment.py`
+  - `agent/prompts/skills_prompt.py`
+- façade `agent/prompt_builder.py` 僅做 re-export
+
+執行順序：
+1. 備份原檔
+2. 建立新 package 與新模組，先複製邏輯，不改外部 import
+3. 將舊檔縮成 façade + re-export
+4. 跑 import check
+5. 跑 adapter / prompt 相關測試
+
+驗證：
 ```bash
 cp agent/anthropic_adapter.py agent/anthropic_adapter.py.backup
 cp agent/prompt_builder.py agent/prompt_builder.py.backup
+python - <<'PY'
+from agent.anthropic_adapter import build_anthropic_client, build_anthropic_kwargs, normalize_anthropic_response
+from agent.prompt_builder import build_context_files_prompt
+print('step10-import-ok')
+PY
+pytest -q tests/agent/test_anthropic_adapter.py tests/agent/test_auxiliary_client.py tests/agent/test_credential_pool.py
+pytest -q tests/agent/test_prompt_builder.py tests/run_agent/test_run_agent.py tests/gateway/test_sms.py tests/gateway/test_email.py tests/gateway/test_bluebubbles.py
 ```
 
-拆分：
-```
-agent/anthropic_adapter.py → agent/adapters/
-                              ├── base.py      (公共介面)
-                              ├── anthropic.py (API 調用)
-                              └── openai.py    (OpenAI 適配)
-
-agent/prompt_builder.py     → agent/prompts/
-                              ├── system_prompt.py
-                              ├── user_prompt.py
-                              └── injection.py
+回滾：
+```bash
+mv agent/anthropic_adapter.py.backup agent/anthropic_adapter.py
+mv agent/prompt_builder.py.backup agent/prompt_builder.py
+rm -rf agent/adapters agent/prompts
 ```
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ STEP 11：Gateway 瘦身（高風險，需完整備份）                                 │
 └─────────────────────────────────────────────────────────────────────────────┘
-備份：
+
+目標：讓 `gateway/run.py` 保留啟動入口與 `GatewayRunner` 對外類名，其餘 helper 拆出。
+
+新增：
+- `gateway/session_manager.py`
+- `gateway/display.py`
+
+保留在 `gateway/run.py`：
+- `GatewayRunner`
+- `start_gateway()` / `main()`
+- 啟動入口、signal handling、gateway config / model resolve
+
+第一批移動到 `gateway/session_manager.py`：
+- `_session_key_for_source`
+- `_resolve_session_agent_runtime`
+- `_queue_or_replace_pending_event`
+- `_handle_active_session_busy_message`
+- `_drain_active_agents`
+- `_interrupt_running_agents`
+- `_notify_active_sessions_of_shutdown`
+
+第一批移動到 `gateway/display.py`：
+- `_format_session_info`
+- `_format_gateway_process_notification`
+- `_build_media_placeholder`
+- `_send_update_notification`
+- `_send_restart_notification`
+
+執行順序：
+1. 備份 `gateway/run.py`
+2. 先抽 display 純函式
+3. 再抽 session/restart/drain helpers
+4. `GatewayRunner` 改成薄 wrapper
+5. 跑 gateway 測試
+
+驗證：
 ```bash
 cp gateway/run.py gateway/run.py.backup
+python - <<'PY'
+from gateway.run import GatewayRunner, start_gateway, _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config
+print('step11-import-ok')
+PY
+pytest -q tests/gateway/test_fast_command.py tests/gateway/test_unknown_command.py tests/gateway/test_session_info.py
+pytest -q tests/gateway/test_platform_reconnect.py tests/gateway/test_clean_shutdown_marker.py tests/agent/test_credential_pool_routing.py
 ```
 
-拆分：
-```
-gateway/run.py → gateway/
-                 ├── session_manager.py  (Session 管理)
-                 ├── display.py          (Display 邏輯)
-                 └── run.py              (瘦身後的核心調度)
+回滾：
+```bash
+mv gateway/run.py.backup gateway/run.py
+rm -f gateway/session_manager.py gateway/display.py
 ```
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ STEP 12：工具層分組重構                                                      │
 └─────────────────────────────────────────────────────────────────────────────┘
-新建文件：/home/ubuntu/.hermes/hermes-agent/tools/tool_groups.py
-修改文件：/home/ubuntu/.hermes/hermes-agent/tools/registry.py（延遲加載）
+
+目標：在不改 registry contract 的前提下，將 built-in tool 載入改為 lazy load。
+
+新增：
+- `/home/ubuntu/.hermes/hermes-agent/tools/tool_groups.py`
+
+修改：
+- `/home/ubuntu/.hermes/hermes-agent/tools/registry.py`
+- `/home/ubuntu/.hermes/hermes-agent/model_tools.py`
+
+實作原則：
+- 保留 `discover_builtin_tools()` 作為全量 fallback
+- `model_tools.py` 啟動時只 eager 載入 `core` 群組
+- 其餘工具由 registry 在 schema / dispatch 階段按需載入
+- MCP 動態註冊邏輯保持不變
+
+執行順序：
+1. 建立 `tool_groups.py`
+2. 在 `tools/registry.py` 補 lazy loader
+3. 修改 `model_tools.py` 僅載入 `core`
+4. 跑 registry / model_tools 測試
+
+驗證：
+```bash
+python - <<'PY'
+import model_tools
+from tools.registry import registry
+print('registered-now', len(registry._tools))
+print('terminal-schema', registry.get_schema('terminal') is not None)
+PY
+pytest -q tests/tools/test_registry.py tests/hermes_cli/test_tool_token_estimation.py tests/test_model_tools.py tests/test_model_tools_async_bridge.py
+```
+
+回滾：
+```bash
+git checkout -- tools/registry.py model_tools.py
+rm -f tools/tool_groups.py
+```
+
+Horizon 3 固定順序與停損規則：
+1. STEP 10：adapter/prompt façade 拆分
+2. STEP 11：gateway/run.py 抽 helper
+3. STEP 12：tools registry lazy load
+
+禁止事項：
+- 禁止 STEP 10 與 STEP 11 並發
+- 禁止在 STEP 11 同時大改 `GatewayRunner` 行為
+- 禁止在 STEP 12 同時重命名工具模組或改 registry contract
+
+每步完成條件：
+- import check 通過
+- 指定測試集不新增失敗
+- `git diff --stat` 僅包含該步範圍文件
+- 單步回滾路徑存在且已確認備份檔仍在
 
 ---
 
@@ -786,11 +999,17 @@ echo "回滾完成"
 ```bash
 cd /home/ubuntu/.hermes/hermes-agent
 
-# 刪除新建的索引文件
+# 刪除新建的索引文件 / 協調模組 / OpenClaw 監控
 rm -f skills/.index.toml
 rm -f agent/knowledge_memory_interface.py
 rm -f agent/builtin_memory_provider.py
 rm -f agent/context_coordinator.py
+pkill -f hermes-heartbeat.sh || true
+pkill -f openclaw_heartbeat_monitor.sh || true
+systemctl stop openclaw.service || true
+rm -f /tmp/hermes_heartbeat
+rm -f /home/ubuntu/hermes-heartbeat.sh
+rm -f /home/ubuntu/.openclaw/scripts/openclaw_heartbeat_monitor.sh
 
 # 恢復修改的代碼文件
 git checkout -- agent/skill_commands.py
@@ -815,9 +1034,14 @@ mv agent/anthropic_adapter.py.backup agent/anthropic_adapter.py
 mv agent/prompt_builder.py.backup agent/prompt_builder.py
 mv gateway/run.py.backup gateway/run.py
 
-# 刪除拆分出來的新目錄
+# 恢復工具註冊相關文件
+git checkout -- tools/registry.py model_tools.py
+
+# 刪除拆分出來的新目錄 / 新文件
 rm -rf agent/adapters/
 rm -rf agent/prompts/
+rm -f gateway/session_manager.py gateway/display.py
+rm -f tools/tool_groups.py
 
 echo "回滾完成"
 ```
@@ -901,22 +1125,29 @@ python3 -c "from agent.context_engine import ContextEngine; print('OK: ContextEn
 └─────────────────────────────────────────────────────────────────────────────┘
 
 □ skills/.index.toml 已創建
+□ /home/ubuntu/hermes-heartbeat.sh 已部署
+□ /home/ubuntu/.openclaw/scripts/openclaw_heartbeat_monitor.sh 已部署
+□ /tmp/hermes_heartbeat 可持續更新
 □ agent/knowledge_memory_interface.py 已創建
 □ agent/builtin_memory_provider.py 已創建
+□ agent/context_coordinator.py 已創建
 □ agent/skill_commands.py 已更新（使用 .index.toml）
 □ tools/skills_tool.py 已更新（使用 .index.toml）
-□ agent/context_engine.py 已更新（支持三庫協調）
 □ Memory 和 Knowledge 的關聯功能已實現
+□ Hermes / OpenClaw channel isolation 驗證通過
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                        Horizon 3 完成檢查                                    │
 └─────────────────────────────────────────────────────────────────────────────┘
 
-□ agent/anthropic_adapter.py 已拆分到 agent/adapters/
-□ agent/prompt_builder.py 已拆分到 agent/prompts/
+□ agent/anthropic_adapter.py 已拆分到 agent/adapters/（並保留 façade）
+□ agent/prompt_builder.py 已拆分到 agent/prompts/（並保留 façade）
 □ gateway/run.py 已瘦身
+□ gateway/session_manager.py 已創建
+□ gateway/display.py 已創建
 □ tools/tool_groups.py 已創建
 □ tools/registry.py 已支持延遲加載
+□ model_tools.py 已切換為 core eager + 其餘 lazy load
 □ 所有舊文件 .backup 已清理或保留
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
@@ -943,25 +1174,35 @@ python3 -c "from agent.context_engine import ContextEngine; print('OK: ContextEn
 【新建文件】
 • /home/ubuntu/.hermes/hermes-agent/knowledge/index.json         （知識庫統一索引）
 • /home/ubuntu/.hermes/hermes-agent/skills/.index.toml           （技能索引）
+• /home/ubuntu/hermes-heartbeat.sh                                （Hermes heartbeat 寫入）
+• /tmp/hermes_heartbeat                                           （heartbeat 狀態檔）
+• /home/ubuntu/.openclaw/scripts/openclaw_heartbeat_monitor.sh    （OpenClaw failover 監控）
 • /home/ubuntu/.hermes/hermes-agent/agent/builtin_memory_provider.py
 • /home/ubuntu/.hermes/hermes-agent/agent/knowledge_memory_interface.py
+• /home/ubuntu/.hermes/hermes-agent/agent/context_coordinator.py
+• /home/ubuntu/.hermes/hermes-agent/agent/adapters/__init__.py
 • /home/ubuntu/.hermes/hermes-agent/agent/adapters/base.py
-• /home/ubuntu/.hermes/hermes-agent/agent/adapters/anthropic.py
-• /home/ubuntu/.hermes/hermes-agent/agent/adapters/openai.py
-• /home/ubuntu/.hermes/hermes-agent/agent/prompts/system_prompt.py
-• /home/ubuntu/.hermes/hermes-agent/agent/prompts/user_prompt.py
-• /home/ubuntu/.hermes/hermes-agent/agent/prompts/injection.py
+• /home/ubuntu/.hermes/hermes-agent/agent/adapters/anthropic_auth.py
+• /home/ubuntu/.hermes/hermes-agent/agent/adapters/anthropic_client.py
+• /home/ubuntu/.hermes/hermes-agent/agent/adapters/anthropic_messages.py
+• /home/ubuntu/.hermes/hermes-agent/agent/prompts/__init__.py
+• /home/ubuntu/.hermes/hermes-agent/agent/prompts/constants.py
+• /home/ubuntu/.hermes/hermes-agent/agent/prompts/context_files.py
+• /home/ubuntu/.hermes/hermes-agent/agent/prompts/environment.py
+• /home/ubuntu/.hermes/hermes-agent/agent/prompts/skills_prompt.py
 • /home/ubuntu/.hermes/hermes-agent/gateway/session_manager.py
-• /home/ubuntu/.hermes/hermes-agent/gateway/platforms/base.py
+• /home/ubuntu/.hermes/hermes-agent/gateway/display.py
 • /home/ubuntu/.hermes/hermes-agent/tools/tool_groups.py
 
 【修改文件】
-• /home/ubuntu/.hermes/hermes-agent/agent/context_engine.py       （三庫協調）
 • /home/ubuntu/.hermes/hermes-agent/agent/skill_commands.py         （技能索引）
 • /home/ubuntu/.hermes/hermes-agent/agent/memory_manager.py         （記憶管理）
+• /home/ubuntu/.hermes/hermes-agent/agent/anthropic_adapter.py      （façade）
+• /home/ubuntu/.hermes/hermes-agent/agent/prompt_builder.py         （façade）
 • /home/ubuntu/.hermes/hermes-agent/tools/skills_tool.py            （技能列表）
 • /home/ubuntu/.hermes/hermes-agent/tools/registry.py               （延遲加載）
-• /home/ubuntu/.hermes/hermes-agent/gateway/run.py                   （瘦身）
+• /home/ubuntu/.hermes/hermes-agent/model_tools.py                  （core eager + 其餘 lazy）
+• /home/ubuntu/.hermes/hermes-agent/gateway/run.py                  （瘦身）
 
 【遷移後需刪除的舊文件】（待遷移，Horizon 1 STEP 2-3 執行後生效）
 • /home/ubuntu/.hermes/hermes-agent/docs/plans/*                   （已遷移）

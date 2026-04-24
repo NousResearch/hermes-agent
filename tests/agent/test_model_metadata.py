@@ -192,6 +192,43 @@ class TestDefaultContextLengths:
                     f"{model_id}: expected {expected_ctx}, got {actual}"
                 )
 
+    def test_deepseek_v4_models_1m_context(self):
+        from agent.model_metadata import get_model_context_length
+        from unittest.mock import patch as mock_patch
+
+        expected_keys = {
+            "deepseek-v4-pro": 1_000_000,
+            "deepseek-v4-flash": 1_000_000,
+            "deepseek-chat": 1_000_000,
+            "deepseek-reasoner": 1_000_000,
+        }
+        for key, value in expected_keys.items():
+            assert key in DEFAULT_CONTEXT_LENGTHS, f"{key} missing"
+            assert DEFAULT_CONTEXT_LENGTHS[key] == value, (
+                f"{key} should be {value}, got {DEFAULT_CONTEXT_LENGTHS[key]}"
+            )
+
+        # Longest-first substring matching must resolve both the bare V4
+        # ids (native DeepSeek) and the vendor-prefixed forms (OpenRouter
+        # / Nous Portal) to 1M without probing down to the legacy 128K
+        # ``deepseek`` substring fallback.
+        with mock_patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
+             mock_patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
+             mock_patch("agent.model_metadata.get_cached_context_length", return_value=None):
+            cases = [
+                ("deepseek-v4-pro", 1_000_000),
+                ("deepseek-v4-flash", 1_000_000),
+                ("deepseek/deepseek-v4-pro", 1_000_000),
+                ("deepseek/deepseek-v4-flash", 1_000_000),
+                ("deepseek-chat", 1_000_000),
+                ("deepseek-reasoner", 1_000_000),
+            ]
+            for model_id, expected_ctx in cases:
+                actual = get_model_context_length(model_id)
+                assert actual == expected_ctx, (
+                    f"{model_id}: expected {expected_ctx}, got {actual}"
+                )
+
     def test_all_values_positive(self):
         for key, value in DEFAULT_CONTEXT_LENGTHS.items():
             assert value > 0, f"{key} has non-positive context length"

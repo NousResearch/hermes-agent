@@ -289,6 +289,13 @@ def build_session_context_prompt(
             platforms_list.append(f"{p.value}: Connected ✓")
     
     lines.append(f"**Connected Platforms:** {', '.join(platforms_list)}")
+    lines.append(
+        "**Cross-surface continuity:** Hermes may have relevant memory or session "
+        "history from other connected surfaces such as the local terminal or another "
+        "chat. Do not assume those are inaccessible just because the current message "
+        "came from one platform. If continuity matters, rely on persistent memory and "
+        "use session_search before saying you do not remember."
+    )
     
     # Home channels
     if context.home_channels:

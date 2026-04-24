@@ -48,6 +48,7 @@ def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> st
 class Platform(Enum):
     """Supported messaging platforms."""
     LOCAL = "local"
+    LINE = "line"
     TELEGRAM = "telegram"
     DISCORD = "discord"
     WHATSAPP = "whatsapp"
@@ -270,6 +271,10 @@ class GatewayConfig:
         connected = []
         for platform, config in self.platforms.items():
             if not config.enabled:
+                continue
+            if platform == Platform.LINE:
+                if (config.token or config.extra.get("channel_access_token")) and config.extra.get("channel_secret"):
+                    connected.append(platform)
                 continue
             # Weixin requires both a token and an account_id
             if platform == Platform.WEIXIN:
@@ -800,6 +805,7 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
     # Warn about empty bot tokens — platforms that loaded an empty string
     # won't connect and the cause can be confusing without a log line.
     _token_env_names = {
+        Platform.LINE: "LINE_CHANNEL_ACCESS_TOKEN",
         Platform.TELEGRAM: "TELEGRAM_BOT_TOKEN",
         Platform.DISCORD: "DISCORD_BOT_TOKEN",
         Platform.SLACK: "SLACK_BOT_TOKEN",
@@ -847,6 +853,39 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
 
 def _apply_env_overrides(config: GatewayConfig) -> None:
     """Apply environment variable overrides to config."""
+
+    # LINE
+    line_token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN")
+    line_secret = os.getenv("LINE_CHANNEL_SECRET")
+    line_enabled = os.getenv("LINE_ENABLED", "").lower() in ("true", "1", "yes")
+    if line_token or line_secret or line_enabled:
+        if Platform.LINE not in config.platforms:
+            config.platforms[Platform.LINE] = PlatformConfig()
+        line_cfg = config.platforms[Platform.LINE]
+        line_cfg.enabled = True
+        if line_token:
+            line_cfg.token = line_token
+        if line_secret:
+            line_cfg.extra["channel_secret"] = line_secret
+        line_host = os.getenv("LINE_WEBHOOK_HOST", "").strip()
+        if line_host:
+            line_cfg.extra["webhook_host"] = line_host
+        line_port = os.getenv("LINE_WEBHOOK_PORT", "").strip()
+        if line_port:
+            try:
+                line_cfg.extra["webhook_port"] = int(line_port)
+            except ValueError:
+                logger.warning("Invalid LINE_WEBHOOK_PORT=%r ignored", line_port)
+        line_path = os.getenv("LINE_WEBHOOK_PATH", "").strip()
+        if line_path:
+            line_cfg.extra["webhook_path"] = line_path
+    line_home = os.getenv("LINE_HOME_CHANNEL")
+    if line_home and Platform.LINE in config.platforms:
+        config.platforms[Platform.LINE].home_channel = HomeChannel(
+            platform=Platform.LINE,
+            chat_id=line_home,
+            name=os.getenv("LINE_HOME_CHANNEL_NAME", "Home"),
+        )
     
     # Telegram
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")

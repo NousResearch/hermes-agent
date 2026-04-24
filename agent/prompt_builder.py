@@ -8,6 +8,7 @@ import json
 import logging
 import os
 import re
+import sys
 import threading
 from collections import OrderedDict
 from pathlib import Path
@@ -164,7 +165,12 @@ MEMORY_GUIDANCE = (
 SESSION_SEARCH_GUIDANCE = (
     "When the user references something from a past conversation or you suspect "
     "relevant cross-session context exists, use session_search to recall it before "
-    "asking them to repeat themselves."
+    "asking them to repeat themselves. On a new session from a different surface "
+    "(for example CLI vs messaging), assume continuity first: check persistent memory "
+    "and use session_search to recover relevant prior context before concluding "
+    "that you do not remember. Never confidently claim that CLI, LINE, Slack, or "
+    "other Hermes surfaces are completely isolated unless you have verified that "
+    "the relevant context is truly unavailable in shared memory or session history."
 )
 
 SKILLS_GUIDANCE = (
@@ -358,6 +364,14 @@ PLATFORM_HINTS = {
         "When referring to a file you created or changed, just state its "
         "absolute path in plain text; the user can open it from there."
     ),
+    "line": (
+        "You are chatting on LINE via the Messaging API. Use plain text only "
+        "and keep replies compact, readable on mobile, and chat-friendly. "
+        "Do not rely on markdown rendering. Do not use asterisks for bullets "
+        "or emphasis. Prefer short paragraphs and short lists. When the answer "
+        "is long, split it into multiple short chat-sized messages rather than "
+        "one large wall of text."
+    ),
     "sms": (
         "You are communicating via SMS. Keep responses concise and use plain text "
         "only — no markdown, no formatting. SMS messages are limited to ~1600 "
@@ -441,6 +455,15 @@ WSL_ENVIRONMENT_HINT = (
     "the Windows username if needed."
 )
 
+MACOS_ENVIRONMENT_HINT = (
+    "You are running on macOS. When the user gives an absolute macOS path "
+    "(for example /Users/... or ~/...), trust that path and try to read that "
+    "exact location directly before doing any broad search. iCloud Drive files "
+    "often live under ~/Library/Mobile Documents/. If the path points into "
+    "iCloud Drive and direct reads fail, explain that the file may not be "
+    "downloaded locally instead of repeatedly searching unrelated folders."
+)
+
 
 def build_environment_hints() -> str:
     """Return environment-specific guidance for the system prompt.
@@ -451,6 +474,8 @@ def build_environment_hints() -> str:
     hints: list[str] = []
     if is_wsl():
         hints.append(WSL_ENVIRONMENT_HINT)
+    elif sys.platform == "darwin":
+        hints.append(MACOS_ENVIRONMENT_HINT)
     return "\n\n".join(hints)
 
 

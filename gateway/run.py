@@ -2787,7 +2787,14 @@ class GatewayRunner:
                 getattr(self.config, "thread_sessions_per_user", False),
             )
 
-        if platform == Platform.TELEGRAM:
+        if platform == Platform.LINE:
+            from gateway.platforms.line import LineAdapter, check_line_requirements
+            if not check_line_requirements():
+                logger.warning("LINE: aiohttp not installed")
+                return None
+            return LineAdapter(config)
+
+        elif platform == Platform.TELEGRAM:
             from gateway.platforms.telegram import TelegramAdapter, check_telegram_requirements
             if not check_telegram_requirements():
                 logger.warning("Telegram: python-telegram-bot not installed")
@@ -2951,6 +2958,7 @@ class GatewayRunner:
             return False
 
         platform_env_map = {
+            Platform.LINE: "LINE_ALLOWED_USERS",
             Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
             Platform.DISCORD: "DISCORD_ALLOWED_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
@@ -2972,6 +2980,7 @@ class GatewayRunner:
             Platform.QQBOT: "QQ_GROUP_ALLOWED_USERS",
         }
         platform_allow_all_map = {
+            Platform.LINE: "LINE_ALLOW_ALL_USERS",
             Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
             Platform.DISCORD: "DISCORD_ALLOW_ALL_USERS",
             Platform.WHATSAPP: "WHATSAPP_ALLOW_ALL_USERS",
@@ -4441,6 +4450,28 @@ class GatewayRunner:
                 "\n\n[System note: This is the user's very first message ever. "
                 "Briefly introduce yourself and mention that /help shows available commands. "
                 "Keep the introduction concise -- one or two sentences max.]"
+            )
+
+        # Cross-surface continuity bootstrap.
+        # Messaging sessions are keyed separately from CLI/local sessions, so a
+        # brand-new chat on LINE/Slack/etc. should still behave like the same
+        # Hermes when prior context exists elsewhere.  Nudge the agent to
+        # consult persistent memory + session_search before claiming it does
+        # not remember prior work.
+        if (
+            not history
+            and source.platform
+            and source.platform not in (Platform.LOCAL, Platform.WEBHOOK)
+            and self.session_store.has_any_sessions()
+        ):
+            context_prompt += (
+                "\n\n[System note: This is a new session on a messaging surface, "
+                "but Hermes may already know the user from other sessions such as "
+                "the local terminal or another chat. Treat this as the same Hermes. "
+                "Before saying you do not remember prior context, first rely on "
+                "persistent memory already in the prompt and use session_search if "
+                "the user may be referring to previous work, preferences, or ongoing "
+                "projects.]"
             )
         
         # One-time prompt if no home channel is set for this platform
@@ -7725,7 +7756,7 @@ class GatewayRunner:
     # Platforms where /update is allowed.  ACP, API server, and webhooks are
     # programmatic interfaces that should not trigger system updates.
     _UPDATE_ALLOWED_PLATFORMS = frozenset({
-        Platform.TELEGRAM, Platform.DISCORD, Platform.SLACK, Platform.WHATSAPP,
+        Platform.LINE, Platform.TELEGRAM, Platform.DISCORD, Platform.SLACK, Platform.WHATSAPP,
         Platform.SIGNAL, Platform.MATTERMOST, Platform.MATRIX,
         Platform.HOMEASSISTANT, Platform.EMAIL, Platform.SMS, Platform.DINGTALK,
         Platform.FEISHU, Platform.WECOM, Platform.WECOM_CALLBACK, Platform.WEIXIN, Platform.BLUEBUBBLES, Platform.QQBOT, Platform.LOCAL,

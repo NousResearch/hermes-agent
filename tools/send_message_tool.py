@@ -20,6 +20,7 @@ logger = logging.getLogger(__name__)
 
 _TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
 _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::([-A-Za-z0-9_]+))?\s*$")
+_LINE_TARGET_RE = re.compile(r"^\s*([UCR][0-9a-fA-F]{32})\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
 _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
@@ -198,6 +199,7 @@ def _handle_send(args):
         return json.dumps(_error(f"Failed to load gateway config: {e}"))
 
     platform_map = {
+        "line": Platform.LINE,
         "telegram": Platform.TELEGRAM,
         "discord": Platform.DISCORD,
         "slack": Platform.SLACK,
@@ -310,6 +312,10 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _TELEGRAM_TOPIC_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), match.group(2), True
+    if platform_name == "line":
+        match = _LINE_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), None, True
     if platform_name == "feishu":
         match = _FEISHU_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -438,6 +444,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
 
     # Platform message length limits (from adapter class attributes)
     _MAX_LENGTHS = {
+        Platform.LINE: 5000,
         Platform.TELEGRAM: TelegramAdapter.MAX_MESSAGE_LENGTH if _telegram_available else 4096,
         Platform.DISCORD: DiscordAdapter.MAX_MESSAGE_LENGTH,
         Platform.SLACK: SlackAdapter.MAX_MESSAGE_LENGTH,
@@ -545,7 +552,9 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
 
     last_result = None
     for chunk in chunks:
-        if platform == Platform.SLACK:
+        if platform == Platform.LINE:
+            result = await _send_line(pconfig, chat_id, chunk)
+        elif platform == Platform.SLACK:
             result = await _send_slack(pconfig.token, chat_id, chunk)
         elif platform == Platform.WHATSAPP:
             result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
@@ -933,6 +942,22 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
         return result
     except Exception as e:
         return _error(f"Discord send failed: {e}")
+
+
+async def _send_line(pconfig, chat_id, message):
+    """Send via LINE Messaging API."""
+    try:
+        from gateway.platforms.line import check_line_requirements, send_line_direct
+        if not check_line_requirements():
+            return {"error": "LINE dependencies not installed. Run: pip install 'hermes-agent[messaging]'"}
+        return await send_line_direct(
+            token=pconfig.token,
+            extra=pconfig.extra,
+            chat_id=chat_id,
+            message=message,
+        )
+    except Exception as e:
+        return _error(f"LINE send failed: {e}")
 
 
 async def _send_slack(token, chat_id, message):

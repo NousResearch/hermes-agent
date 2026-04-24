@@ -4039,6 +4039,53 @@ class AIAgent:
             if not self.quiet_mode:
                 self._vprint(f"{self.log_prefix}📋 Restored {len(last_todo_response)} todo item(s) from history")
         _set_interrupt(False)
+
+    def _build_cross_session_bootstrap_prompt(self) -> str:
+        """Return a compact prompt note describing recent prior sessions.
+
+        New sessions on another surface (CLI, LINE, etc.) should still feel like
+        the same Hermes.  We avoid injecting raw transcript content here; instead
+        we provide a tiny recent-session index and tell the model to use
+        session_search when continuity is relevant.
+        """
+        if not self._session_db or not self.session_id:
+            return ""
+
+        try:
+            recent = self._session_db.list_sessions_rich(limit=6, include_children=False)
+        except Exception:
+            return ""
+
+        if not recent:
+            return ""
+
+        filtered = []
+        for entry in recent:
+            session_id = str(entry.get("id") or "")
+            if not session_id or session_id == self.session_id:
+                continue
+            filtered.append(entry)
+            if len(filtered) >= 3:
+                break
+
+        if not filtered:
+            return ""
+
+        lines = [
+            "## Recent Cross-Session Context",
+            "This is a new session, but Hermes may already know the user from recent work on other surfaces.",
+            "Do not assume missing memory just because this session is new. Use persistent memory and session_search when continuity may matter.",
+            "Recent sessions:",
+        ]
+        for entry in filtered:
+            source = str(entry.get("source") or "unknown")
+            title = str(entry.get("title") or "").strip()
+            preview = str(entry.get("preview") or "").strip()
+            label = title or preview or "(no preview)"
+            label = re.sub(r"\s+", " ", label)[:120]
+            lines.append(f"- {source}: {label}")
+
+        return "\n".join(lines)
     
     @property
     def is_interrupted(self) -> bool:
@@ -4156,6 +4203,10 @@ class AIAgent:
                     prompt_parts.append(_ext_mem_block)
             except Exception:
                 pass
+
+        _cross_session_block = self._build_cross_session_bootstrap_prompt()
+        if _cross_session_block:
+            prompt_parts.append(_cross_session_block)
 
         has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
         if has_skills_tools:

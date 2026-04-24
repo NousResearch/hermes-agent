@@ -2363,6 +2363,30 @@ def run_gateway(verbose: int = 0, quiet: bool = False, replace: bool = False):
 # and prompts needed to configure a messaging platform.
 _PLATFORMS = [
     {
+        "key": "line",
+        "label": "LINE",
+        "emoji": "💚",
+        "token_var": "LINE_CHANNEL_ACCESS_TOKEN",
+        "setup_instructions": [
+            "1. LINE Developers Console で Messaging API チャネルを作成",
+            "2. Basic settings から Channel secret をコピー",
+            "3. Messaging API settings から Channel access token を発行",
+            "4. Webhook URL に https://<your-domain>/line/webhook を設定",
+            "5. 最初は pairing を推奨。友だち追加後にメッセージを送ると userId が取れます",
+        ],
+        "vars": [
+            {"name": "LINE_CHANNEL_ACCESS_TOKEN", "prompt": "Channel access token", "password": True,
+             "help": "Messaging API settings で発行したトークン。"},
+            {"name": "LINE_CHANNEL_SECRET", "prompt": "Channel secret", "password": True,
+             "help": "Basic settings にある Channel secret。"},
+            {"name": "LINE_ALLOWED_USERS", "prompt": "Allowed LINE user IDs (comma-separated)", "password": False,
+             "is_allowlist": True,
+             "help": "空なら pairing または allow-all を使います。"},
+            {"name": "LINE_HOME_CHANNEL", "prompt": "Home channel ID (empty to set later)", "password": False,
+             "help": "cron/notification の送信先 userId/groupId/roomId。"},
+        ],
+    },
+    {
         "key": "telegram",
         "label": "Telegram",
         "emoji": "📱",
@@ -3286,6 +3310,79 @@ def _setup_weixin():
         print_info(f"  User ID: {user_id}")
 
 
+def _setup_line():
+    """Interactive setup for LINE Messaging API."""
+    print()
+    print(color("  ─── 💚 LINE Setup ───", Colors.CYAN))
+    print()
+    print_info("  1. LINE Developers Console で Messaging API チャネルを作成します。")
+    print_info("  2. Channel access token と Channel secret を取得します。")
+    print_info("  3. Gateway はデフォルトで 0.0.0.0:8646 の /line/webhook を待ち受けます。")
+    print_info("  4. Webhook URL は HTTPS で公開してください。")
+
+    existing_token = get_env_value("LINE_CHANNEL_ACCESS_TOKEN")
+    existing_secret = get_env_value("LINE_CHANNEL_SECRET")
+    if existing_token and existing_secret:
+        print()
+        print_success("LINE is already configured.")
+        if not prompt_yes_no("  Reconfigure LINE?", False):
+            return
+
+    print()
+    token = prompt("  Channel access token", existing_token or "", password=True)
+    if not token:
+        print_warning("  Channel access token is required.")
+        return
+    secret = prompt("  Channel secret", existing_secret or "", password=True)
+    if not secret:
+        print_warning("  Channel secret is required.")
+        return
+
+    save_env_value("LINE_CHANNEL_ACCESS_TOKEN", token)
+    save_env_value("LINE_CHANNEL_SECRET", secret)
+    save_env_value("LINE_ENABLED", "true")
+
+    webhook_port = prompt("  Webhook port (default: 8646)", get_env_value("LINE_WEBHOOK_PORT") or "8646")
+    try:
+        save_env_value("LINE_WEBHOOK_PORT", str(int(webhook_port or "8646")))
+    except ValueError:
+        save_env_value("LINE_WEBHOOK_PORT", "8646")
+    webhook_path = prompt("  Webhook path (default: /line/webhook)", get_env_value("LINE_WEBHOOK_PATH") or "/line/webhook")
+    save_env_value("LINE_WEBHOOK_PATH", webhook_path or "/line/webhook")
+
+    print()
+    access_choices = [
+        "Use DM pairing approval (recommended)",
+        "Allow all direct messages",
+        "Only allow listed user IDs",
+    ]
+    access_idx = prompt_choice("  How should direct messages be authorized?", access_choices, 0)
+    if access_idx == 0:
+        save_env_value("LINE_ALLOW_ALL_USERS", "false")
+        save_env_value("LINE_ALLOWED_USERS", "")
+        print_success("  DM pairing enabled.")
+    elif access_idx == 1:
+        save_env_value("LINE_ALLOW_ALL_USERS", "true")
+        save_env_value("LINE_ALLOWED_USERS", "")
+        print_warning("  Open DM access enabled for LINE.")
+    else:
+        allowlist = prompt("  Allowed LINE user IDs (comma-separated)", get_env_value("LINE_ALLOWED_USERS") or "", password=False).replace(" ", "")
+        save_env_value("LINE_ALLOW_ALL_USERS", "false")
+        save_env_value("LINE_ALLOWED_USERS", allowlist)
+        print_success("  LINE allowlist saved.")
+
+    print()
+    home_channel = prompt("  Home channel ID (leave empty to set later)", get_env_value("LINE_HOME_CHANNEL") or "", password=False).strip()
+    if home_channel:
+        save_env_value("LINE_HOME_CHANNEL", home_channel)
+        print_success(f"  Home channel set to {home_channel}")
+
+    print()
+    print_success("LINE configured!")
+    print_info(f"  Webhook path: {get_env_value('LINE_WEBHOOK_PATH') or '/line/webhook'}")
+    print_info("  Next: expose the webhook over HTTPS and register that URL in LINE Developers.")
+
+
 def _setup_feishu():
     """Interactive setup for Feishu / Lark — scan-to-create or manual credentials."""
     print()
@@ -3751,6 +3848,8 @@ def gateway_setup():
             _setup_whatsapp()
         elif platform["key"] == "signal":
             _setup_signal()
+        elif platform["key"] == "line":
+            _setup_line()
         elif platform["key"] == "weixin":
             _setup_weixin()
         elif platform["key"] == "dingtalk":

@@ -1087,3 +1087,102 @@ class TestRewriteTranscriptPreservesReasoning:
         assert after[0].get("reasoning_content") == "provider scratchpad"
         assert after[0].get("reasoning_details") == [{"type": "summary", "text": "step by step"}]
         assert after[0].get("codex_reasoning_items") == [{"id": "r1", "type": "reasoning"}]
+
+
+class TestBuildSessionKeyProfileIsolation:
+    """Session keys must include the active profile name, not hardcode 'main'.
+
+    Fixes #12099: build_session_key() hardcodes 'agent:main', breaking
+    multi-profile session isolation.
+    """
+
+    def test_default_profile_uses_main(self):
+        """Default profile (no HERMES_HOME or standard ~/.hermes) → 'agent:main'."""
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="12345",
+            chat_type="dm",
+        )
+        # Default env (no HERMES_HOME set to a profiles/ path) → "main"
+        with patch("hermes_constants.get_hermes_home", return_value=Path.home() / ".hermes"):
+            key = build_session_key(source)
+        assert key == "agent:main:telegram:dm:12345"
+
+    def test_named_profile_uses_profile_name_dm(self):
+        """Named profile 'coder' → 'agent:coder' in DM session keys."""
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="12345",
+            chat_type="dm",
+        )
+        with patch(
+            "hermes_constants.get_hermes_home",
+            return_value=Path.home() / ".hermes" / "profiles" / "coder",
+        ):
+            key = build_session_key(source)
+        assert key == "agent:coder:telegram:dm:12345"
+
+    def test_named_profile_uses_profile_name_group(self):
+        """Named profile 'wechat-bot' → 'agent:wechat-bot' in group keys."""
+        source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="guild-456",
+            chat_type="group",
+            user_id="alice",
+        )
+        with patch(
+            "hermes_constants.get_hermes_home",
+            return_value=Path.home() / ".hermes" / "profiles" / "wechat-bot",
+        ):
+            key = build_session_key(source)
+        assert key == "agent:wechat-bot:discord:group:guild-456:alice"
+
+    def test_named_profile_dm_with_thread(self):
+        """Named profile with threaded DM → profile prefix preserved."""
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="99",
+            chat_type="dm",
+            thread_id="t42",
+        )
+        with patch(
+            "hermes_constants.get_hermes_home",
+            return_value=Path.home() / ".hermes" / "profiles" / "feishu",
+        ):
+            key = build_session_key(source)
+        assert key == "agent:feishu:telegram:dm:99:t42"
+
+    def test_different_profiles_produce_different_keys(self):
+        """Same source, different profiles → different session keys (no collision)."""
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="12345",
+            chat_type="dm",
+        )
+        with patch(
+            "hermes_constants.get_hermes_home",
+            return_value=Path.home() / ".hermes" / "profiles" / "alpha",
+        ):
+            key_alpha = build_session_key(source)
+        with patch(
+            "hermes_constants.get_hermes_home",
+            return_value=Path.home() / ".hermes" / "profiles" / "beta",
+        ):
+            key_beta = build_session_key(source)
+        assert key_alpha != key_beta
+        assert "agent:alpha:" in key_alpha
+        assert "agent:beta:" in key_beta
+
+    def test_docker_profile_path(self):
+        """Docker layout /opt/data/profiles/worker → 'agent:worker'."""
+        source = SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="55",
+            chat_type="dm",
+        )
+        with patch(
+            "hermes_constants.get_hermes_home",
+            return_value=Path("/opt/data/profiles/worker"),
+        ):
+            key = build_session_key(source)
+        assert key == "agent:worker:telegram:dm:55"

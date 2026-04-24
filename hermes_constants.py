@@ -18,6 +18,22 @@ def get_hermes_home() -> Path:
     return Path(val) if val else Path.home() / ".hermes"
 
 
+def get_profile_name() -> str:
+    """Return the current profile name derived from HERMES_HOME.
+
+    Profile detection logic:
+      - If HERMES_HOME is ``<root>/profiles/<name>``, returns ``<name>``.
+      - Otherwise returns ``"main"`` (the default profile).
+
+    This is used wherever the profile identity matters at runtime,
+    e.g. session key construction for multi-profile isolation.
+    """
+    home = get_hermes_home()
+    if home.parent.name == "profiles":
+        return home.name
+    return "main"
+
+
 def get_default_hermes_root() -> Path:
     """Return the root Hermes directory for profile-level operations.
 

@@ -497,6 +497,12 @@ def build_session_key(
 
     This is the single source of truth for session key construction.
 
+    The ``agent:<profile>`` prefix is derived from ``HERMES_HOME`` via
+    :func:`hermes_constants.get_profile_name`.  Named profiles
+    (``~/.hermes/profiles/<name>``) produce ``agent:<name>:…``; the
+    default profile produces ``agent:main:…``, preserving backward
+    compatibility.
+
     DM rules:
       - DMs include chat_id when present, so each private conversation is isolated.
       - thread_id further differentiates threaded DMs within the same DM chat.
@@ -516,18 +522,22 @@ def build_session_key(
         shared session per chat.
       - Without identifiers, messages fall back to one session per platform/chat_type.
     """
+    from hermes_constants import get_profile_name
+
+    profile = get_profile_name()
+    prefix = f"agent:{profile}"
     platform = source.platform.value
     if source.chat_type == "dm":
         if source.chat_id:
             if source.thread_id:
-                return f"agent:main:{platform}:dm:{source.chat_id}:{source.thread_id}"
-            return f"agent:main:{platform}:dm:{source.chat_id}"
+                return f"{prefix}:{platform}:dm:{source.chat_id}:{source.thread_id}"
+            return f"{prefix}:{platform}:dm:{source.chat_id}"
         if source.thread_id:
-            return f"agent:main:{platform}:dm:{source.thread_id}"
-        return f"agent:main:{platform}:dm"
+            return f"{prefix}:{platform}:dm:{source.thread_id}"
+        return f"{prefix}:{platform}:dm"
 
     participant_id = source.user_id_alt or source.user_id
-    key_parts = ["agent:main", platform, source.chat_type]
+    key_parts = [prefix, platform, source.chat_type]
 
     if source.chat_id:
         key_parts.append(source.chat_id)

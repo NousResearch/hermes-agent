@@ -111,3 +111,41 @@ class TestIsContainer:
         # Even if we make os.path.exists return False, cached value wins
         monkeypatch.setattr(os.path, "exists", lambda p: False)
         assert is_container() is True
+
+
+class TestGetProfileName:
+    """Tests for get_profile_name() — profile identity from HERMES_HOME."""
+
+    def test_default_returns_main(self, tmp_path, monkeypatch):
+        """When HERMES_HOME is ~/.hermes (default), returns 'main'."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+        from hermes_constants import get_profile_name
+        assert get_profile_name() == "main"
+
+    def test_no_env_returns_main(self, monkeypatch):
+        """When HERMES_HOME is unset, falls back to ~/.hermes → 'main'."""
+        monkeypatch.delenv("HERMES_HOME", raising=False)
+        from hermes_constants import get_profile_name
+        assert get_profile_name() == "main"
+
+    def test_named_profile(self, tmp_path, monkeypatch):
+        """HERMES_HOME=<root>/profiles/coder → 'coder'."""
+        monkeypatch.setenv(
+            "HERMES_HOME", str(tmp_path / ".hermes" / "profiles" / "coder")
+        )
+        from hermes_constants import get_profile_name
+        assert get_profile_name() == "coder"
+
+    def test_docker_profile(self, tmp_path, monkeypatch):
+        """Docker layout: /opt/data/profiles/worker → 'worker'."""
+        monkeypatch.setenv(
+            "HERMES_HOME", str(Path("/opt/data/profiles/worker"))
+        )
+        from hermes_constants import get_profile_name
+        assert get_profile_name() == "worker"
+
+    def test_custom_non_profile_path(self, tmp_path, monkeypatch):
+        """Arbitrary HERMES_HOME that is not under profiles/ → 'main'."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "my-custom-hermes"))
+        from hermes_constants import get_profile_name
+        assert get_profile_name() == "main"

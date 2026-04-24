@@ -87,6 +87,7 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
+    let cancelled = false;
     const offState = gw.onState(setState);
 
     const offSessionInfo = gw.on<SessionInfo>("session.info", (ev) => {
@@ -111,15 +112,26 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
     // sidecar is independent of the PTY pane's session by design — we
     // only need a sid to drive the model picker's slash.exec calls.
     gw.connect()
-      .then(() => gw.request<{ session_id: string }>("session.create", {}))
-      .then((created) => {
-        if (created?.session_id) {
-          setSessionId(created.session_id);
+      .then(() => {
+        if (cancelled) {
+          return;
         }
+        return gw.request<{ session_id: string }>("session.create", {});
       })
-      .catch((e: Error) => setError(e.message));
+      .then((created) => {
+        if (cancelled || !created?.session_id) {
+          return;
+        }
+        setSessionId(created.session_id);
+      })
+      .catch((e: Error) => {
+        if (!cancelled) {
+          setError(e.message);
+        }
+      });
 
     return () => {
+      cancelled = true;
       offState();
       offSessionInfo();
       offError();

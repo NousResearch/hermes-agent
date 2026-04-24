@@ -438,7 +438,7 @@ DEFAULT_CONFIG = {
         "modal_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "daytona_image": "nikolaik/python-nodejs:python3.11-nodejs20",
         "koyeb_image": "koyeb/sandbox:latest",
-        # Container resource limits (docker, singularity, modal, daytona, koyeb — ignored for local/ssh)
+        # Container resource limits (docker, singularity, modal, daytona — ignored for local/ssh/koyeb)
         "container_cpu": 1,
         "container_memory": 5120,       # MB (default 5GB)
         "container_disk": 51200,        # MB (default 50GB)

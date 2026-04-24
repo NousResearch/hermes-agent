@@ -37,7 +37,7 @@ Works on Linux, macOS, WSL2, and Android via Termux. The installer handles the p
 
 > **Android / Termux:** The tested manual path is documented in the [Termux guide](https://hermes-agent.nousresearch.com/docs/getting-started/termux). On Termux, Hermes installs a curated `.[termux]` extra because the full `.[all]` extra currently pulls Android-incompatible voice dependencies.
 >
-> **Windows:** Native Windows is not supported. Please install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run the command above.
+> **Windows / PowerShell / CMD:** Do **not** paste the Unix `curl ... | bash` command into PowerShell or CMD. Native Windows is not supported. Install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run the command above inside your WSL2 terminal.
 
 After installation:
 

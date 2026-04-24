@@ -385,10 +385,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
-        // Keep inline diffs attached to the assistant completion body so
-        // they render in the same message flow, not as a standalone system
-        // artifact that can look out-of-place around tool rows.
-        turnController.queueInlineDiff(inlineDiffText)
+        // Anchor the diff to where the edit happened in the turn — between
+        // the narration that preceded the tool call and whatever the agent
+        // streams afterwards. The previous end-merge put the diff at the
+        // bottom of the final message even when the edit fired mid-turn,
+        // which read as "the agent wrote this after saying that".
+        turnController.pushInlineDiffSegment(inlineDiffText)
 
         return
       }

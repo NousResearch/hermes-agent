@@ -69,12 +69,14 @@ export interface Translations {
       analytics: string;
       config: string;
       cron: string;
+      documentation: string;
       keys: string;
       logs: string;
       sessions: string;
       skills: string;
     };
     navigation: string;
+    openDocumentation: string;
     openNavigation: string;
     sessionsActiveCount: string;
     statusOverview: string;

@@ -10,6 +10,7 @@ import { Routes, Route, NavLink, Navigate, useNavigate } from "react-router-dom"
 import {
   Activity,
   BarChart3,
+  BookOpen,
   Clock,
   Code,
   Database,
@@ -56,6 +57,9 @@ import { PluginPage, PluginSlot, usePlugins } from "@/plugins";
 import type { PluginManifest } from "@/plugins";
 import { useTheme } from "@/themes";
 
+/** Canonical public docs (Docusaurus). */
+const HERMES_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/";
+
 function RootRedirect() {
   return <Navigate to="/sessions" replace />;
 }
@@ -90,6 +94,13 @@ const BUILTIN_NAV: NavItem[] = [
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
+  {
+    path: "nav:docs",
+    labelKey: "documentation",
+    label: "Documentation",
+    icon: BookOpen,
+    href: HERMES_DOCS_URL,
+  },
 ];
 
 const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
@@ -373,56 +384,88 @@ export default function App() {
               aria-label={t.app.navigation}
             >
               <ul className="flex flex-col">
-                {navItems.map(({ path, label, labelKey, icon: Icon }) => (
-                  <li key={path}>
-                    <NavLink
-                      to={path}
-                      end={path === "/sessions"}
-                      onClick={closeMobile}
-                      className={({ isActive }) =>
-                        cn(
-                          "group relative flex items-center gap-3",
-                          "px-5 py-2.5",
-                          "font-mondwest text-[0.8rem] tracking-[0.12em]",
-                          "whitespace-nowrap transition-colors cursor-pointer",
-                          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
-                          isActive
-                            ? "text-midground"
-                            : "opacity-60 hover:opacity-100",
-                        )
-                      }
-                      style={{
-                        clipPath: "var(--component-tab-clip-path)",
-                      }}
-                    >
-                      {({ isActive }) => (
-                        <>
-                          <Icon className="h-3.5 w-3.5 shrink-0" />
-                          <span className="truncate">
-                            {labelKey
-                              ? ((t.app.nav as Record<string, string>)[
-                                  labelKey
-                                ] ?? label)
-                              : label}
-                          </span>
+                {navItems.map(
+                  ({ path, label, labelKey, href, icon: Icon }) => {
+                    const navLabel = labelKey
+                      ? ((t.app.nav as Record<string, string>)[labelKey] ??
+                        label)
+                      : label;
+                    return (
+                      <li key={path}>
+                        {href ? (
+                          <a
+                            href={href}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            onClick={closeMobile}
+                            aria-label={t.app.openDocumentation}
+                            title={t.app.openDocumentation}
+                            className={cn(
+                              "group relative flex items-center gap-3",
+                              "px-5 py-2.5",
+                              "font-mondwest text-[0.8rem] tracking-[0.12em]",
+                              "whitespace-nowrap transition-colors cursor-pointer",
+                              "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
+                              "opacity-60 hover:opacity-100",
+                            )}
+                            style={{
+                              clipPath: "var(--component-tab-clip-path)",
+                            }}
+                          >
+                            <Icon className="h-3.5 w-3.5 shrink-0" />
+                            <span className="truncate">{navLabel}</span>
 
-                          <span
-                            aria-hidden
-                            className="absolute inset-y-0.5 left-1.5 right-1.5 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover:opacity-5"
-                          />
-
-                          {isActive && (
                             <span
                               aria-hidden
-                              className="absolute left-0 top-0 bottom-0 w-px bg-midground"
-                              style={{ mixBlendMode: "plus-lighter" }}
+                              className="absolute inset-y-0.5 left-1.5 right-1.5 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover:opacity-5"
                             />
-                          )}
-                        </>
-                      )}
-                    </NavLink>
-                  </li>
-                ))}
+                          </a>
+                        ) : (
+                          <NavLink
+                            to={path}
+                            end={path === "/sessions"}
+                            onClick={closeMobile}
+                            className={({ isActive }) =>
+                              cn(
+                                "group relative flex items-center gap-3",
+                                "px-5 py-2.5",
+                                "font-mondwest text-[0.8rem] tracking-[0.12em]",
+                                "whitespace-nowrap transition-colors cursor-pointer",
+                                "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
+                                isActive
+                                  ? "text-midground"
+                                  : "opacity-60 hover:opacity-100",
+                              )
+                            }
+                            style={{
+                              clipPath: "var(--component-tab-clip-path)",
+                            }}
+                          >
+                            {({ isActive }) => (
+                              <>
+                                <Icon className="h-3.5 w-3.5 shrink-0" />
+                                <span className="truncate">{navLabel}</span>
+
+                                <span
+                                  aria-hidden
+                                  className="absolute inset-y-0.5 left-1.5 right-1.5 bg-midground opacity-0 pointer-events-none transition-opacity duration-200 group-hover:opacity-5"
+                                />
+
+                                {isActive && (
+                                  <span
+                                    aria-hidden
+                                    className="absolute left-0 top-0 bottom-0 w-px bg-midground"
+                                    style={{ mixBlendMode: "plus-lighter" }}
+                                  />
+                                )}
+                              </>
+                            )}
+                          </NavLink>
+                        )}
+                      </li>
+                    );
+                  },
+                )}
               </ul>
             </nav>
 
@@ -590,6 +633,7 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
 }
 
 interface NavItem {
+  href?: string;
   icon: ComponentType<{ className?: string }>;
   label: string;
   labelKey?: string;

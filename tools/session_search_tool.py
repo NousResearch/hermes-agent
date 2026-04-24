@@ -123,8 +123,10 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
             sid = s.get("id", "")
             if current_root and (sid == current_root or sid == current_session_id):
                 continue
-            # Skip child / delegation sessions
-            if s.get("parent_session_id"):
+            # Skip child/delegation sessions, but keep compression-continuation
+            # sessions — their parent ended via compression, not delegation,
+            # and they carry the active conversation forward (#13840).
+            if s.get("parent_session_id") and s.get("end_reason") != "compression":
                 continue
             results.append({
                 "session_id": sid,

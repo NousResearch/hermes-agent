@@ -22,7 +22,15 @@ If you're installing on a phone, see the dedicated [Termux guide](./termux.md) f
 :::
 
 :::tip Windows Users
+Do **not** run `curl ... | bash` in **PowerShell** or **CMD**.
+
 Install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) first, then run the command above inside your WSL2 terminal.
+
+If you specifically want the Windows PowerShell installer script, use:
+
+```powershell
+irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex
+```
 :::
 
 After it finishes, reload your shell:

@@ -34,7 +34,20 @@ The installer detects Termux automatically and switches to a tested Android flow
 If you want the fully explicit path, follow the dedicated [Termux guide](./termux.md).
 
 :::warning Windows
-Native Windows is **not supported**. Please install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install) and run Hermes Agent from there. The install command above works inside WSL2.
+Native Windows is **not supported**.
+
+Do **not** paste the Unix `curl ... | bash` command into **PowerShell** or **CMD** — it is meant for a Unix shell (Linux, macOS, WSL2, Git Bash, or Termux).
+
+If you're on Windows:
+- install [WSL2](https://learn.microsoft.com/en-us/windows/wsl/install)
+- open your **WSL2 terminal**
+- run the Linux install command there
+
+If you specifically need the Windows PowerShell installer script, use:
+
+```powershell
+irm https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.ps1 | iex
+```
 :::
 
 ### What the Installer Does

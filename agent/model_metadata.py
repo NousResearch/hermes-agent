@@ -164,7 +164,17 @@ DEFAULT_CONTEXT_LENGTHS = {
     "gemma-4-31b": 256000,
     "gemma-3": 131072,
     "gemma": 8192,  # fallback for older gemma models
-    # DeepSeek
+    # DeepSeek — V4 family ships with a 1M context window. The legacy
+    # aliases ``deepseek-chat`` / ``deepseek-reasoner`` are server-side
+    # mapped to the non-thinking / thinking modes of ``deepseek-v4-flash``
+    # and inherit the same 1M window. The ``deepseek`` substring entry
+    # below remains as a 128K fallback for older / unknown DeepSeek model
+    # ids (e.g. via custom endpoints).
+    # https://api-docs.deepseek.com/zh-cn/quick_start/pricing
+    "deepseek-v4-pro": 1_000_000,
+    "deepseek-v4-flash": 1_000_000,
+    "deepseek-chat": 1_000_000,
+    "deepseek-reasoner": 1_000_000,
     "deepseek": 128000,
     # Meta
     "llama": 131072,

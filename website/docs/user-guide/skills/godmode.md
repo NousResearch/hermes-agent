@@ -11,7 +11,7 @@ Bypass safety filters on API-served LLMs using techniques from [G0DM0D3](https:/
 
 **Skill path:** `skills/red-teaming/godmode/`
 
-**Key difference from [OBLITERATUS](/docs/reference/skills-catalog#mlopsinference):** OBLITERATUS modifies model weights permanently (requires open-weight models + GPU). This skill operates at the prompt/API level — works on **any model accessible via API**, including closed-source models (GPT, Claude, Gemini, Grok).
+**Key difference from [OBLITERATUS](/docs/user-guide/skills/bundled/mlops/mlops-inference-obliteratus):** OBLITERATUS modifies model weights permanently (requires open-weight models + GPU). This skill operates at the prompt/API level — works on **any model accessible via API**, including closed-source models (GPT, Claude, Gemini, Grok).
 
 ## What is G0DM0D3?
 

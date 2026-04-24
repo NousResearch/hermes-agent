@@ -30,6 +30,7 @@ load_dotenv(PROJECT_ROOT / ".env", override=False, encoding="utf-8")
 
 from hermes_cli.colors import Colors, color
 from hermes_constants import OPENROUTER_MODELS_URL
+from utils import base_url_host_matches
 
 
 _PROVIDER_ENV_HINTS = (
@@ -945,6 +946,7 @@ def run_doctor(args):
     _apikey_providers = [
         ("Z.AI / GLM",      ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "https://api.z.ai/api/paas/v4/models", "GLM_BASE_URL", True),
         ("Kimi / Moonshot",  ("KIMI_API_KEY",),                              "https://api.moonshot.ai/v1/models",   "KIMI_BASE_URL", True),
+        ("StepFun Step Plan",   ("STEPFUN_API_KEY",),                           "https://api.stepfun.ai/step_plan/v1/models", "STEPFUN_BASE_URL", True),
         ("Kimi / Moonshot (China)", ("KIMI_CN_API_KEY",),                    "https://api.moonshot.cn/v1/models",   None, True),
         ("Arcee AI",         ("ARCEEAI_API_KEY",),                            "https://api.arcee.ai/api/v1/models",  "ARCEE_BASE_URL", True),
         ("DeepSeek",         ("DEEPSEEK_API_KEY",),                           "https://api.deepseek.com/v1/models",  "DEEPSEEK_BASE_URL", True),
@@ -976,14 +978,18 @@ def run_doctor(args):
             try:
                 import httpx
                 _base = os.getenv(_base_env, "") if _base_env else ""
-                # Auto-detect Kimi Code keys (sk-kimi-) → api.kimi.com
+                # Auto-detect Kimi Code keys (sk-kimi-) → api.kimi.com/coding/v1
+                # (OpenAI-compat surface, which exposes /models for health check).
                 if not _base and _key.startswith("sk-kimi-"):
                     _base = "https://api.kimi.com/coding/v1"
-                # Anthropic-compat endpoints (/anthropic) don't support /models.
-                # Rewrite to the OpenAI-compat /v1 surface for health checks.
+                # Anthropic-compat endpoints (/anthropic, api.kimi.com/coding
+                # with no /v1) don't support /models. Rewrite to the OpenAI-compat
+                # /v1 surface for health checks.
                 if _base and _base.rstrip("/").endswith("/anthropic"):
                     from agent.auxiliary_client import _to_openai_base_url
                     _base = _to_openai_base_url(_base)
+                if base_url_host_matches(_base, "api.kimi.com") and _base.rstrip("/").endswith("/coding"):
+                    _base = _base.rstrip("/") + "/v1"
                 _url = (_base.rstrip("/") + "/models") if _base else _default_url
                 _headers = {"Authorization": f"Bearer {_key}"}
                 if "api.kimi.com" in _url.lower():

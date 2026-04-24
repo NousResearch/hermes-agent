@@ -8483,6 +8483,7 @@ class GatewayRunner:
             The enriched message string with vision descriptions prepended.
         """
         from tools.vision_tools import vision_analyze_tool
+        from agent.memory_manager import sanitize_context
 
         analysis_prompt = (
             "Describe everything visible in this image in thorough detail. "
@@ -8501,6 +8502,14 @@ class GatewayRunner:
                 result = json.loads(result_json)
                 if result.get("success"):
                     description = result.get("analysis", "")
+                    # The auxiliary vision LLM can echo injected system-prompt
+                    # memory context back into its output (#5719).  Scrub any
+                    # <memory-context> fences and the "## Honcho Context"
+                    # section before the description lands in a user-visible
+                    # message.
+                    description = sanitize_context(description)
+                    if "## Honcho Context" in description:
+                        description = description.split("## Honcho Context", 1)[0].rstrip()
                     enriched_parts.append(
                         f"[The user sent an image~ Here's what I can see:\n{description}]\n"
                         f"[If you need a closer look, use vision_analyze with "

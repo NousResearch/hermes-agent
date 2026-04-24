@@ -2,10 +2,13 @@
 
 from unittest.mock import patch
 
+import pytest
+
 from hermes_cli.tools_config import (
     _DEFAULT_OFF_TOOLSETS,
     _apply_toolset_change,
     _configure_provider,
+    _reconfigure_provider,
     _get_platform_tools,
     _platform_toolset_summary,
     _save_platform_tools,
@@ -601,3 +604,27 @@ class TestImagegenModelPicker:
             _configure_imagegen_model("fal", config)
         assert isinstance(config["image_gen"], dict)
         assert config["image_gen"]["model"] == "fal-ai/flux-2/klein/9b"
+
+
+@pytest.mark.parametrize("provider,config_key,expected", [
+    # managed provider → use_gateway True
+    ({"name": "T", "tts_provider": "elevenlabs", "managed_nous_feature": "tts", "env_vars": []}, "tts", True),
+    ({"name": "B", "browser_provider": "browserbase", "managed_nous_feature": "browser", "env_vars": []}, "browser", True),
+    ({"name": "W", "web_backend": "tavily", "managed_nous_feature": "web", "env_vars": []}, "web", True),
+    # self-hosted provider → use_gateway False
+    ({"name": "T", "tts_provider": "elevenlabs", "env_vars": []}, "tts", False),
+    ({"name": "B", "browser_provider": "browserbase", "env_vars": []}, "browser", False),
+    ({"name": "W", "web_backend": "tavily", "env_vars": []}, "web", False),
+])
+def test_reconfigure_provider_syncs_use_gateway(provider, config_key, expected):
+    config = {}
+    _reconfigure_provider(provider, config)
+    assert config[config_key]["use_gateway"] is expected
+
+
+def test_reconfigure_browser_provider_overwrites_stale_use_gateway():
+    # Switching from managed (use_gateway=True) to self-hosted must clear the stale flag.
+    config = {"browser": {"cloud_provider": "managed-browser", "use_gateway": True}}
+    provider = {"name": "Browserbase", "browser_provider": "browserbase", "env_vars": []}
+    _reconfigure_provider(provider, config)
+    assert config["browser"]["use_gateway"] is False

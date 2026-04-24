@@ -4960,6 +4960,133 @@ For more help on a command:
     plugins_parser.set_defaults(func=cmd_plugins)
 
     # =========================================================================
+    # group command - Multi-agent group chat management
+    # =========================================================================
+    group_parser = subparsers.add_parser(
+        "group",
+        help="Multi-agent group chat management",
+        description="Create and manage multi-agent group chats with shared memory",
+    )
+    group_subparsers = group_parser.add_subparsers(dest="group_action")
+
+    # hermes group agents
+    group_agents = group_subparsers.add_parser(
+        "agents",
+        help="List all registered agents",
+        description="Show all registered agents from profiles",
+    )
+    group_agents.add_argument(
+        "register",
+        nargs="?",
+        help="Register argument (internal)",
+    )
+    group_agents.add_argument(
+        "unregister",
+        nargs="?",
+        help="Unregister argument (internal)",
+    )
+    group_agents.add_argument(
+        "--profile",
+        help="Profile name to register from",
+    )
+
+    # hermes group register <name>
+    group_register = group_subparsers.add_parser(
+        "register",
+        help="Register an agent from a profile",
+        description="Register an agent using an existing Hermes profile",
+    )
+    group_register.add_argument("agent_name", help="Agent name")
+    group_register.add_argument("--profile", help="Profile name (defaults to agent name)")
+
+    # hermes group unregister <name>
+    group_unregister = group_subparsers.add_parser(
+        "unregister",
+        help="Unregister an agent",
+        description="Remove an agent from the registry",
+    )
+    group_unregister.add_argument("agent_name", help="Agent name to unregister")
+
+    # hermes group create <name> <agents...>
+    group_create = group_subparsers.add_parser(
+        "create",
+        help="Create a new group",
+        description="Create a group with specified agents (min 2)",
+    )
+    group_create.add_argument("group_name", help="Group name")
+    group_create.add_argument("agents", nargs="+", help="Agent names (space-separated)")
+
+    # hermes group list
+    group_subparsers.add_parser(
+        "list",
+        help="List all groups",
+        description="Show all created groups",
+    )
+
+    # hermes group delete <name>
+    group_delete = group_subparsers.add_parser(
+        "delete",
+        help="Delete a group",
+        description="Remove a group by name",
+    )
+    group_delete.add_argument("group_name", help="Group name to delete")
+
+    # hermes group info <name>
+    group_info = group_subparsers.add_parser(
+        "info",
+        help="Show group details",
+        description="Display detailed information about a group",
+    )
+    group_info.add_argument("group_name", help="Group name")
+
+    # hermes group add <group> <agent>
+    group_add = group_subparsers.add_parser(
+        "add",
+        help="Add an agent to a group",
+        description="Add an existing agent to a group",
+    )
+    group_add.add_argument("group_name", help="Group name")
+    group_add.add_argument("agent_name", help="Agent name to add")
+
+    # hermes group remove <group> <agent>
+    group_remove = group_subparsers.add_parser(
+        "remove",
+        help="Remove an agent from a group",
+        description="Remove an agent from a group",
+    )
+    group_remove.add_argument("group_name", help="Group name")
+    group_remove.add_argument("agent_name", help="Agent name to remove")
+
+    # hermes group chat <name>
+    group_chat = group_subparsers.add_parser(
+        "chat",
+        help="Start a group chat",
+        description="Start an interactive group chat session",
+    )
+    group_chat.add_argument("group_name", help="Group name to chat with")
+
+    # hermes group continue <file>
+    group_continue = group_subparsers.add_parser(
+        "continue",
+        help="Continue from a memory file",
+        description="Resume a group chat from a saved memory file",
+    )
+    group_continue.add_argument("memory_file", help="Memory filename or path")
+
+    # hermes group memory
+    group_subparsers.add_parser(
+        "memory",
+        help="List memory files",
+        description="Show all saved group chat memory files",
+    )
+
+    def cmd_group(args):
+        from hermes_cli.group_commands import group_command
+        group_command(args)
+
+    group_parser.set_defaults(func=cmd_group)
+
+    # =========================================================================
     # Plugin CLI commands — dynamically registered by memory/general plugins.
     # Plugins provide a register_cli(subparser) function that builds their
     # own argparse tree.  No hardcoded plugin commands in main.py.

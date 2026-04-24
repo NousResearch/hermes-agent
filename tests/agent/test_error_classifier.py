@@ -56,6 +56,7 @@ class TestFailoverReason:
             "overloaded", "server_error", "timeout",
             "context_overflow", "payload_too_large",
             "model_not_found", "format_error",
+            "provider_policy_blocked",
             "thinking_signature", "long_context_tier", "unknown",
         }
         actual = {r.value for r in FailoverReason}
@@ -307,6 +308,59 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.unknown
         assert result.retryable is True
         assert result.should_fallback is False
+
+    # ── Provider policy-block (OpenRouter privacy/guardrail) ──
+
+    def test_404_openrouter_policy_blocked(self):
+        # Real OpenRouter error when the user's account privacy setting
+        # excludes the only endpoint serving a model (e.g. DeepSeek V4 Pro
+        # which is hosted only by DeepSeek, and their endpoint may log
+        # inputs).  Must NOT classify as model_not_found — the model
+        # exists, falling back won't help (same account setting applies),
+        # and the error body already tells the user where to fix it.
+        e = MockAPIError(
+            "No endpoints available matching your guardrail restrictions "
+            "and data policy. Configure: https://openrouter.ai/settings/privacy",
+            status_code=404,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.provider_policy_blocked
+        assert result.retryable is False
+        assert result.should_fallback is False
+
+    def test_400_openrouter_policy_blocked(self):
+        # Defense-in-depth: if OpenRouter ever returns this as 400 instead
+        # of 404, still classify it distinctly rather than as format_error
+        # or model_not_found.
+        e = MockAPIError(
+            "No endpoints available matching your data policy",
+            status_code=400,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.provider_policy_blocked
+        assert result.retryable is False
+        assert result.should_fallback is False
+
+    def test_message_only_openrouter_policy_blocked(self):
+        # No status code — classifier should still catch the fingerprint
+        # via the message-pattern fallback.
+        e = Exception(
+            "No endpoints available matching your guardrail restrictions "
+            "and data policy"
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.provider_policy_blocked
+
+    def test_404_model_not_found_still_works(self):
+        # Regression guard: the new policy-block check must not swallow
+        # genuine model_not_found 404s.
+        e = MockAPIError(
+            "openrouter/nonexistent-model is not a valid model ID",
+            status_code=404,
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.model_not_found
+        assert result.should_fallback is True
 
     # ── Payload too large ──
 

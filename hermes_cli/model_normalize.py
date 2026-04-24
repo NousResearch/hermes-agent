@@ -12,8 +12,8 @@ Different LLM providers expect model identifiers in different formats:
   model IDs, but Claude still uses hyphenated native names like
   ``claude-sonnet-4-6``.
 - **OpenCode Go** preserves dots in model names: ``minimax-m2.7``.
-- **DeepSeek** only accepts two model identifiers:
-  ``deepseek-chat`` and ``deepseek-reasoner``.
+- **DeepSeek** preserves explicit public model IDs and maps legacy reasoner
+  aliases to ``deepseek-reasoner``.
 - **Custom** and remaining providers pass the name through as-is.
 
 This module centralises that translation so callers can simply write::
@@ -103,8 +103,9 @@ _MATCHING_PREFIX_STRIP_PROVIDERS: frozenset[str] = frozenset({
 # ---------------------------------------------------------------------------
 # DeepSeek special handling
 # ---------------------------------------------------------------------------
-# DeepSeek's API only recognises exactly two model identifiers.  We map
-# common aliases and patterns to the canonical names.
+# DeepSeek's API recognises legacy aliases and explicit public model IDs. We
+# preserve exact public IDs, and map common reasoner aliases to the canonical
+# reasoner name.
 
 _DEEPSEEK_REASONER_KEYWORDS: frozenset[str] = frozenset({
     "reasoner",
@@ -117,14 +118,16 @@ _DEEPSEEK_REASONER_KEYWORDS: frozenset[str] = frozenset({
 _DEEPSEEK_CANONICAL_MODELS: frozenset[str] = frozenset({
     "deepseek-chat",
     "deepseek-reasoner",
+    "deepseek-v4-flash",
+    "deepseek-v4-pro",
 })
 
 
 def _normalize_for_deepseek(model_name: str) -> str:
-    """Map any model input to one of DeepSeek's two accepted identifiers.
+    """Map DeepSeek model input to an accepted native identifier.
 
     Rules:
-    - Already ``deepseek-chat`` or ``deepseek-reasoner`` -> pass through.
+    - Already an accepted native ID -> pass through.
     - Contains any reasoner keyword (r1, think, reasoning, cot, reasoner)
       -> ``deepseek-reasoner``.
     - Everything else -> ``deepseek-chat``.
@@ -133,7 +136,7 @@ def _normalize_for_deepseek(model_name: str) -> str:
         model_name: The bare model name (vendor prefix already stripped).
 
     Returns:
-        One of ``"deepseek-chat"`` or ``"deepseek-reasoner"``.
+        An accepted DeepSeek native model identifier.
     """
     bare = _strip_vendor_prefix(model_name).lower()
 

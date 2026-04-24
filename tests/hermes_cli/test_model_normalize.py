@@ -146,6 +146,32 @@ class TestCopilotModelNormalization:
         assert normalize_model_for_provider("openai/gpt-5.4", "openai-codex") == "gpt-5.4"
 
 
+# ── DeepSeek native model normalization (regression) ───────────────────
+
+class TestDeepSeekV4ModelPreservation:
+    """Explicit DeepSeek V4 public API model IDs must not be downgraded."""
+
+    @pytest.mark.parametrize("model,expected", [
+        ("deepseek-v4-flash", "deepseek-v4-flash"),
+        ("deepseek-v4-pro", "deepseek-v4-pro"),
+        ("deepseek/deepseek-v4-flash", "deepseek-v4-flash"),
+        ("deepseek/deepseek-v4-pro", "deepseek-v4-pro"),
+        ("deepseek-chat", "deepseek-chat"),
+        ("deepseek-reasoner", "deepseek-reasoner"),
+    ])
+    def test_deepseek_preserves_explicit_public_model_ids(self, model, expected):
+        assert normalize_model_for_provider(model, "deepseek") == expected
+
+    @pytest.mark.parametrize("model", [
+        "deepseek-r1",
+        "deepseek/deepseek-r1",
+        "deepseek-reasoning",
+        "deepseek-think",
+    ])
+    def test_deepseek_reasoner_aliases_still_map_to_reasoner(self, model):
+        assert normalize_model_for_provider(model, "deepseek") == "deepseek-reasoner"
+
+
 # ── Aggregator providers (regression) ──────────────────────────────────
 
 class TestAggregatorProviders:

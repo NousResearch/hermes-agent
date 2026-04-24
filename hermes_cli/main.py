@@ -11307,6 +11307,11 @@ def main():
         "--profile",
         help="Hermes profile name to run the job under. Use 'default' for the root profile. Named profiles must already exist. Omit to preserve the scheduler's existing profile.",
     )
+    cron_create.add_argument(
+        "--skip-preflight",
+        action="store_true",
+        help="Skip warn-only dependency preflight after creating the job",
+    )
 
     # cron edit
     cron_edit = cron_subparsers.add_parser(
@@ -11374,6 +11379,11 @@ def main():
     cron_edit.add_argument(
         "--profile",
         help="Hermes profile name to run the job under. Use 'default' for the root profile. Pass empty string to clear.",
+    )
+    cron_edit.add_argument(
+        "--skip-preflight",
+        action="store_true",
+        help="Skip warn-only dependency preflight after editing the job",
     )
 
     # lifecycle actions

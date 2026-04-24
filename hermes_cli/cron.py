@@ -16,6 +16,38 @@ sys.path.insert(0, str(PROJECT_ROOT))
 from hermes_cli.colors import Colors, color
 
 
+
+def _run_cron_preflight(job_id: str) -> dict:
+    from hermes_cli.reliability_doctor import doctor_cron
+
+    return doctor_cron(job_id, smoke=True)
+
+
+def _format_preflight_issue(prefix: str, issue: dict) -> str:
+    name = f" {issue.get('name', '')}" if issue.get("name") else ""
+    return f"{prefix} {issue.get('type')}{name}: {issue.get('message')}"
+
+
+def _print_cron_preflight(job_id: str) -> tuple[bool, dict]:
+    """Warn-only dependency preflight after create/edit.
+
+    Returns (ok, result), where ok means the preflight has no hard failures.
+    """
+    try:
+        result = _run_cron_preflight(job_id)
+    except Exception as exc:  # noqa: BLE001 - preflight must never break edits
+        print(color(f"  ⚠ Preflight check crashed: {exc}", Colors.YELLOW))
+        return False, {"status": "fail", "errors": [{"type": "preflight", "message": f"crashed: {exc}"}], "warnings": []}
+    if result.get("status") == "ok" and not result.get("warnings"):
+        print(color("  ✓ Preflight: ok", Colors.GREEN))
+        return True, result
+    print(color(f"  ⚠ Preflight: {result.get('status')}", Colors.YELLOW))
+    for err in result.get("errors", []):
+        print(color(f"    {_format_preflight_issue('ERROR', err)}", Colors.RED))
+    for warn in result.get("warnings", []):
+        print(color(f"    {_format_preflight_issue('WARN', warn)}", Colors.YELLOW))
+    return result.get("status") != "fail", result
+
 def _normalize_skills(single_skill=None, skills: Optional[Iterable[str]] = None) -> Optional[List[str]]:
     if skills is None:
         if single_skill is None:
@@ -198,6 +230,8 @@ def cron_create(args):
     if job_data.get("profile"):
         print(f"  Profile: {job_data['profile']}")
     print(f"  Next run: {result['next_run_at']}")
+    if not getattr(args, "skip_preflight", False):
+        _print_cron_preflight(result["job_id"])
     return 0
 
 
@@ -265,6 +299,8 @@ def cron_edit(args):
         print(f"  Workdir: {updated['workdir']}")
     if updated.get("profile"):
         print(f"  Profile: {updated['profile']}")
+    if not getattr(args, "skip_preflight", False):
+        _print_cron_preflight(args.job_id)
     return 0
 
 

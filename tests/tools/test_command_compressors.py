@@ -379,10 +379,10 @@ class TestNormalizeCmd:
 
 class TestHasFlag:
     def test_dash_dash(self):
-        assert _has_flag("git status --short", "short")
+        assert _has_flag("git status --short", "--short")
 
     def test_dash_s(self):
-        assert _has_flag("git status -s", "s")
+        assert _has_flag("git status -s", "-s")
 
     def test_no_match(self):
         assert not _has_flag("git log", "status")

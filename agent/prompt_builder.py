@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Any, Dict, Optional
 
 from hermes_constants import (
-    get_hermes_home, get_scratch_dir, get_skills_dir, is_wsl, reset_hermes_home_override, set_hermes_home_override,
+    get_hermes_home, get_scratch_dir, get_skills_dir, is_container, is_wsl, reset_hermes_home_override, set_hermes_home_override,
 )
 
 from agent.model_metadata import CHARS_PER_TOKEN
@@ -753,6 +753,18 @@ WSL_ENVIRONMENT_HINT = (
     "files, translate to the /mnt/c/ equivalent. You can list /mnt/c/Users/ to discover the Windows username if needed."
 )
 
+CONTAINER_IN_WSL_ENVIRONMENT_HINT = (
+    "You are running inside a Podman/Docker container on a WSL "
+    "(Windows Subsystem for Linux) host. The Windows filesystem is NOT "
+    "automounted here: /mnt/c/ and other /mnt/<drive>/ paths do not exist "
+    "inside this container unless the user explicitly bind-mounted them "
+    "(e.g. -v /mnt/c:/mnt/c). Do not suggest or assume /mnt/... paths, and "
+    "do not recommend WSL-specific tools such as wslpath — they are "
+    "unavailable in the container. Treat this as a standard Linux container "
+    "environment; if Windows file access seems required, verify the mount "
+    "exists before relying on it."
+)
+
 
 # Backends that run commands (and every file tool) in a separate container / remote host: host OS/$HOME/cwd
 # would mislead, so the agent only sees the machine it can touch.
@@ -1034,7 +1046,12 @@ def build_environment_hints() -> str:
     # open windows on the gateway host), and a sandbox-placed one is the sandbox probe's business.
     if not is_remote_backend:
         hints.append(_bot_screen_hint())
-    hints += [WSL_ENVIRONMENT_HINT] if is_wsl() else []
+    # Container-on-WSL is checked before plain WSL: the WSL kernel marker leaks into containers,
+    # so is_wsl() alone would promise /mnt/c/ paths the container cannot see unless bind-mounted.
+    if is_container() and is_wsl():
+        hints.append(CONTAINER_IN_WSL_ENVIRONMENT_HINT)
+    elif is_wsl():
+        hints.append(WSL_ENVIRONMENT_HINT)
     return "\n\n".join(h for h in (*hints, _embedder_environment_hint()) if h)
 
 

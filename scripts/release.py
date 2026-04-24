@@ -190,6 +190,7 @@ AUTHOR_MAP = {
     "hermes@nousresearch.com": "NousResearch",
     "reginaldasr@gmail.com": "ReginaldasR",
     "ntconguit@gmail.com": "0xharryriddle",
+    "agent@wildcat.local": "ericnicolaides",
     "hermes@noushq.ai": "benbarclay",
     "chinmingcock@gmail.com": "ChimingLiu",
     "openclaw@sparklab.ai": "openclaw",

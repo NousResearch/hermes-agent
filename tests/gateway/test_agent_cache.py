@@ -950,7 +950,7 @@ class TestAgentCacheIdleResume:
         release_clients() (soft — session may resume).
         """
         from run_agent import AIAgent
-        from tools import terminal_tool as _tt
+        import run_agent as _ra
 
         # Agent A: evicted from cache (soft) — terminal survives.
         # Agent B: session expired (hard) — terminal torn down.
@@ -970,13 +970,16 @@ class TestAgentCacheIdleResume:
         )
 
         vm_calls: list = []
-        original_vm = _tt.cleanup_vm
-        _tt.cleanup_vm = lambda tid: vm_calls.append(tid)
+        # AIAgent.close() calls the ``cleanup_vm`` name bound into
+        # ``run_agent`` at import time, not ``tools.terminal_tool.cleanup_vm``
+        # directly — so patch the ``run_agent`` reference.
+        original_vm = _ra.cleanup_vm
+        _ra.cleanup_vm = lambda tid: vm_calls.append(tid)
         try:
             agent_a.release_clients()   # cache eviction
             agent_b.close()              # session expiry
         finally:
-            _tt.cleanup_vm = original_vm
+            _ra.cleanup_vm = original_vm
             try:
                 agent_a.close()
             except Exception:

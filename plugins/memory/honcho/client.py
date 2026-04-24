@@ -652,6 +652,8 @@ class HonchoClientConfig:
 
 
 _honcho_client: Honcho | None = None
+_honcho_client_kwargs: dict | None = None
+_honcho_client_kwargs_active_timeout: float | None = None
 
 
 def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
@@ -660,7 +662,7 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
     When no config is provided, attempts to load ~/.honcho/config.json
     first, falling back to environment variables.
     """
-    global _honcho_client
+    global _honcho_client, _honcho_client_kwargs, _honcho_client_kwargs_active_timeout
 
     if _honcho_client is not None:
         return _honcho_client
@@ -745,11 +747,56 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
         kwargs["timeout"] = resolved_timeout
 
     _honcho_client = Honcho(**kwargs)
+    _honcho_client_kwargs = dict(kwargs)
+    _honcho_client_kwargs_active_timeout = resolved_timeout
 
     return _honcho_client
 
 
+def rebuild_honcho_client_with_timeout(new_timeout: float) -> None:
+    """Rebuild the singleton Honcho client with a new HTTP timeout.
+
+    Called by the provider's sync worker once enough latency samples
+    have accumulated for the :class:`HonchoLatencyTracker` to recommend
+    a timeout meaningfully different from the one the current client
+    was built with.  Safe to call concurrently; no-op if the delta is
+    below a 20% threshold so small jitter doesn't thrash the client.
+
+    The previous client is discarded — the Honcho SDK uses a pooled
+    httpx.Client internally but doesn't expose it for in-place timeout
+    mutation, so rebuild is the only portable option.
+    """
+    global _honcho_client, _honcho_client_kwargs_active_timeout
+
+    if _honcho_client is None or _honcho_client_kwargs is None:
+        return
+
+    active = _honcho_client_kwargs_active_timeout or _DEFAULT_HTTP_TIMEOUT
+    if active <= 0:
+        return
+    ratio = new_timeout / active
+    if 0.8 <= ratio <= 1.2:
+        # Not a meaningful change; skip rebuild.
+        return
+
+    try:
+        from honcho import Honcho
+    except ImportError:
+        return
+
+    new_kwargs = dict(_honcho_client_kwargs)
+    new_kwargs["timeout"] = new_timeout
+    logger.info(
+        "Adapting Honcho HTTP timeout: %.1fs -> %.1fs (tracker p95)",
+        active, new_timeout,
+    )
+    _honcho_client = Honcho(**new_kwargs)
+    _honcho_client_kwargs_active_timeout = new_timeout
+
+
 def reset_honcho_client() -> None:
     """Reset the Honcho client singleton (useful for testing)."""
-    global _honcho_client
+    global _honcho_client, _honcho_client_kwargs, _honcho_client_kwargs_active_timeout
     _honcho_client = None
+    _honcho_client_kwargs = None
+    _honcho_client_kwargs_active_timeout = None

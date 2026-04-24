@@ -553,7 +553,7 @@ class TestConcludeToolDispatch:
                 "Visible answer"
             ),
         )
-        provider._sync_thread.join(timeout=1.0)
+        provider._sync_worker.shutdown(timeout=1.0)
 
         assert session.add_message.call_args_list[0].args == ("user", "hello")
         assert session.add_message.call_args_list[1].args == ("assistant", "Visible answer")

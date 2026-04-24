@@ -1201,3 +1201,172 @@ class TestLeastUsedStrategy:
         assert e2.id != e1.id or e2.request_count == 2, (
             "least_used should alternate or increment"
         )
+
+
+# ── PR #10160 salvage: Nous OAuth cross-process sync tests ─────────────────
+
+def test_sync_nous_entry_from_auth_store_adopts_newer_tokens(tmp_path, monkeypatch):
+    """When auth.json has a newer refresh token, the pool entry should adopt it."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "active_provider": "nous",
+            "providers": {
+                "nous": {
+                    "portal_base_url": "https://portal.example.com",
+                    "inference_base_url": "https://inference.example.com/v1",
+                    "client_id": "hermes-cli",
+                    "token_type": "Bearer",
+                    "scope": "inference:mint_agent_key",
+                    "access_token": "access-OLD",
+                    "refresh_token": "refresh-OLD",
+                    "expires_at": "2026-03-24T12:00:00+00:00",
+                    "agent_key": "agent-key-OLD",
+                    "agent_key_expires_at": "2026-03-24T13:30:00+00:00",
+                }
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("nous")
+    entry = pool.select()
+    assert entry is not None
+    assert entry.refresh_token == "refresh-OLD"
+
+    # Simulate another process refreshing the token in auth.json
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "active_provider": "nous",
+            "providers": {
+                "nous": {
+                    "portal_base_url": "https://portal.example.com",
+                    "inference_base_url": "https://inference.example.com/v1",
+                    "client_id": "hermes-cli",
+                    "token_type": "Bearer",
+                    "scope": "inference:mint_agent_key",
+                    "access_token": "access-NEW",
+                    "refresh_token": "refresh-NEW",
+                    "expires_at": "2026-03-24T12:30:00+00:00",
+                    "agent_key": "agent-key-NEW",
+                    "agent_key_expires_at": "2026-03-24T14:00:00+00:00",
+                }
+            },
+        },
+    )
+
+    synced = pool._sync_nous_entry_from_auth_store(entry)
+    assert synced is not entry
+    assert synced.access_token == "access-NEW"
+    assert synced.refresh_token == "refresh-NEW"
+    assert synced.agent_key == "agent-key-NEW"
+    assert synced.agent_key_expires_at == "2026-03-24T14:00:00+00:00"
+
+def test_sync_nous_entry_noop_when_tokens_match(tmp_path, monkeypatch):
+    """When auth.json has the same refresh token, sync should be a no-op."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "active_provider": "nous",
+            "providers": {
+                "nous": {
+                    "portal_base_url": "https://portal.example.com",
+                    "inference_base_url": "https://inference.example.com/v1",
+                    "client_id": "hermes-cli",
+                    "token_type": "Bearer",
+                    "scope": "inference:mint_agent_key",
+                    "access_token": "access-token",
+                    "refresh_token": "refresh-token",
+                    "expires_at": "2026-03-24T12:00:00+00:00",
+                    "agent_key": "agent-key",
+                    "agent_key_expires_at": "2026-03-24T13:30:00+00:00",
+                }
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("nous")
+    entry = pool.select()
+    assert entry is not None
+
+    synced = pool._sync_nous_entry_from_auth_store(entry)
+    assert synced is entry
+
+def test_nous_exhausted_entry_recovers_via_auth_store_sync(tmp_path, monkeypatch):
+    """An exhausted Nous entry should recover when auth.json has newer tokens."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    from agent.credential_pool import load_pool, STATUS_EXHAUSTED
+    from dataclasses import replace as dc_replace
+
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "active_provider": "nous",
+            "providers": {
+                "nous": {
+                    "portal_base_url": "https://portal.example.com",
+                    "inference_base_url": "https://inference.example.com/v1",
+                    "client_id": "hermes-cli",
+                    "token_type": "Bearer",
+                    "scope": "inference:mint_agent_key",
+                    "access_token": "access-OLD",
+                    "refresh_token": "refresh-OLD",
+                    "expires_at": "2026-03-24T12:00:00+00:00",
+                    "agent_key": "agent-key",
+                    "agent_key_expires_at": "2026-03-24T13:30:00+00:00",
+                }
+            },
+        },
+    )
+
+    pool = load_pool("nous")
+    entry = pool.select()
+    assert entry is not None
+
+    # Mark entry as exhausted (simulating a failed refresh)
+    exhausted = dc_replace(
+        entry,
+        last_status=STATUS_EXHAUSTED,
+        last_status_at=time.time(),
+        last_error_code=401,
+    )
+    pool._replace_entry(entry, exhausted)
+    pool._persist()
+
+    # Simulate another process having successfully refreshed
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "active_provider": "nous",
+            "providers": {
+                "nous": {
+                    "portal_base_url": "https://portal.example.com",
+                    "inference_base_url": "https://inference.example.com/v1",
+                    "client_id": "hermes-cli",
+                    "token_type": "Bearer",
+                    "scope": "inference:mint_agent_key",
+                    "access_token": "access-FRESH",
+                    "refresh_token": "refresh-FRESH",
+                    "expires_at": "2026-03-24T12:30:00+00:00",
+                    "agent_key": "agent-key-FRESH",
+                    "agent_key_expires_at": "2026-03-24T14:00:00+00:00",
+                }
+            },
+        },
+    )
+
+    available = pool._available_entries(clear_expired=True)
+    assert len(available) == 1
+    assert available[0].refresh_token == "refresh-FRESH"
+    assert available[0].last_status is None

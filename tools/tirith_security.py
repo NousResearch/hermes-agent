@@ -33,6 +33,7 @@ import tempfile
 import threading
 import time
 import urllib.request
+from pathlib import Path
 
 from hermes_constants import get_hermes_home
 
@@ -214,6 +215,34 @@ def _download_file(url: str, dest: str, timeout: int = 10):
         shutil.copyfileobj(resp, f)
 
 
+def _safe_extract_tirith_binary(tar: tarfile.TarFile, dest_dir: str) -> bool:
+    """Extract only a regular ``tirith`` binary from the release archive."""
+    dest_path = Path(dest_dir) / "tirith"
+    for member in tar.getmembers():
+        parts = Path(member.name).parts
+        if member.name != "tirith" and (not parts or parts[-1] != "tirith"):
+            continue
+        if Path(member.name).is_absolute() or ".." in parts:
+            logger.warning("tirith install: skipping unsafe archive member %s", member.name)
+            continue
+        if not member.isfile():
+            logger.warning(
+                "tirith install: skipping non-regular archive member %s (type=%r)",
+                member.name,
+                getattr(member, "type", None),
+            )
+            continue
+        extracted = tar.extractfile(member)
+        if extracted is None:
+            logger.warning("tirith install: failed to read archive member %s", member.name)
+            continue
+        with extracted:
+            with open(dest_path, "wb") as handle:
+                shutil.copyfileobj(extracted, handle)
+        return True
+    return False
+
+
 def _verify_cosign(checksums_path: str, sig_path: str, cert_path: str) -> bool | None:
     """Verify cosign provenance signature on checksums.txt.
 
@@ -347,15 +376,7 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
             return None, "checksum_failed"
 
         with tarfile.open(archive_path, "r:gz") as tar:
-            # Extract only the tirith binary (safety: reject paths with ..)
-            for member in tar.getmembers():
-                if member.name == "tirith" or member.name.endswith("/tirith"):
-                    if ".." in member.name:
-                        continue
-                    member.name = "tirith"
-                    tar.extract(member, tmpdir)
-                    break
-            else:
+            if not _safe_extract_tirith_binary(tar, tmpdir):
                 log("tirith binary not found in archive")
                 return None, "binary_not_in_archive"
 

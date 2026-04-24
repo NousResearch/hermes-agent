@@ -1,5 +1,6 @@
 """Tests for the tirith security scanning subprocess wrapper."""
 
+import io
 import json
 import os
 import subprocess
@@ -43,6 +44,49 @@ def _mock_run(returncode=0, stdout="", stderr=""):
 
 def _json_stdout(findings=None, summary=""):
     return json.dumps({"findings": findings or [], "summary": summary})
+
+
+class TestSafeExtractTirithBinary:
+    def test_extracts_only_regular_tirith_binary(self, tmp_path):
+        from tools.tirith_security import _safe_extract_tirith_binary
+
+        member = MagicMock()
+        member.name = "tirith-v1.0.0-aarch64-apple-darwin/tirith"
+        member.isfile.return_value = True
+
+        tar = MagicMock()
+        tar.getmembers.return_value = [member]
+        tar.extractfile.return_value = io.BytesIO(b"binary-contents")
+
+        assert _safe_extract_tirith_binary(tar, str(tmp_path)) is True
+        assert (tmp_path / "tirith").read_bytes() == b"binary-contents"
+
+    def test_rejects_non_regular_archive_members(self, tmp_path):
+        from tools.tirith_security import _safe_extract_tirith_binary
+
+        member = MagicMock()
+        member.name = "tirith"
+        member.isfile.return_value = False
+        member.type = b"2"
+
+        tar = MagicMock()
+        tar.getmembers.return_value = [member]
+
+        assert _safe_extract_tirith_binary(tar, str(tmp_path)) is False
+        tar.extractfile.assert_not_called()
+
+    def test_rejects_path_traversal_members(self, tmp_path):
+        from tools.tirith_security import _safe_extract_tirith_binary
+
+        member = MagicMock()
+        member.name = "../tirith"
+        member.isfile.return_value = True
+
+        tar = MagicMock()
+        tar.getmembers.return_value = [member]
+
+        assert _safe_extract_tirith_binary(tar, str(tmp_path)) is False
+        tar.extractfile.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

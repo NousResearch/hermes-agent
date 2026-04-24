@@ -176,6 +176,14 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+HERMES_SECOND_BRAIN_GUIDANCE = (
+    "When evaluating an external agent harness, keep only the reusable upside: "
+    "role separation for planning/research/execution/verification, parallel background "
+    "work for independent steps, reusable workflows captured as skills or wiki pages, "
+    "and routing by task type and capability instead of manual model juggling. "
+    "Preserve the distilled rule set in durable knowledge, not chat history."
+)
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "

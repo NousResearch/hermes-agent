@@ -1166,6 +1166,47 @@ Supported providers: `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-a
 Fallback is configured exclusively through `config.yaml` — there are no environment variables for it. For full details on when it triggers, supported providers, and how it interacts with auxiliary tasks and delegation, see [Fallback Providers](/docs/user-guide/features/fallback-providers).
 :::
 
+## Smart Model Routing
+
+Optional cheap-vs-strong routing lets Hermes keep your main model for complex work while sending very short/simple turns to a cheaper model.
+
+```yaml
+smart_model_routing:
+  enabled: true
+  max_simple_chars: 160
+  max_simple_words: 28
+  complex_keywords: [research, review, audit, 研究, 審查, 審閱]
+  cheap_model:
+    provider: openrouter
+    model: google/gemini-2.5-flash
+  complex_model:
+    provider: openai-codex
+    model: gpt-5.4
+    # base_url: http://localhost:8000/v1  # optional custom endpoint
+    # api_key_env: MY_CUSTOM_KEY          # optional env var name for that endpoint's API key
+```
+
+How it works:
+- If a turn is short, single-line, and does not look code/tool/debug heavy, Hermes may route it to `cheap_model`
+- If the turn looks like research/review/audit work and `complex_model` is configured, Hermes may route it there instead of the primary model
+- If neither smart route applies, Hermes falls back to the primary model automatically
+
+This is intentionally conservative. It is meant for quick, low-stakes turns like:
+- short factual questions
+- quick rewrites
+- lightweight summaries
+
+The complex route is useful for:
+- coding/debugging work
+- tool-heavy requests
+
+The simple route remains preferred for:
+- short factual questions
+- quick rewrites
+- lightweight summaries
+
+Use this when you want lower latency or cost without fully changing your default model.
+
 ---
 
 ## See Also

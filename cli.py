@@ -354,6 +354,13 @@ def load_cli_config() -> Dict[str, Any]:
             "enabled": True,      # Auto-compress when approaching context limit
             "threshold": 0.50,    # Compress at 50% of model's context limit
         },
+        "smart_model_routing": {
+            "enabled": False,
+            "max_simple_chars": 160,
+            "max_simple_words": 28,
+            "cheap_model": {},
+            "complex_model": {},
+        },
         "agent": {
             "max_turns": 90,  # Default max tool-calling iterations (shared with subagents)
             "verbose": False,
@@ -695,6 +702,7 @@ import fire
 # Import the agent and tool systems
 from run_agent import AIAgent
 from model_tools import get_tool_definitions, get_toolset_for_tool
+from agent.smart_model_routing import resolve_turn_route
 
 # Extracted CLI modules (Phase 3)
 from hermes_cli.banner import build_welcome_banner
@@ -3180,10 +3188,11 @@ class HermesCLI:
     def _resolve_turn_agent_config(self, user_message: str) -> dict:
         """Build the effective model/runtime config for a single user turn.
 
-        Always uses the session's primary model/provider.  If the user has
-        toggled `/fast` on and the current model supports Priority
-        Processing / Anthropic fast mode, attach `request_overrides` so the
-        API call is marked accordingly.
+        Uses the session's primary model/provider by default. If smart model
+        routing is enabled, the turn may be routed to a cheaper or stronger
+        model based on the message content. If the user has toggled `/fast` on
+        and the current model supports Priority Processing / Anthropic fast
+        mode, attach `request_overrides` so the API call is marked accordingly.
         """
         from hermes_cli.models import resolve_fast_mode_overrides
 
@@ -3208,6 +3217,13 @@ class HermesCLI:
                 tuple(runtime["args"]),
             ),
         }
+
+        routing_cfg = CLI_CONFIG.get("smart_model_routing", {}) or {}
+        if isinstance(routing_cfg, dict) and routing_cfg.get("enabled"):
+            try:
+                route = resolve_turn_route(user_message, routing_cfg, route)
+            except Exception as exc:
+                logger.debug("Smart model routing failed; using primary model: %s", exc)
 
         service_tier = getattr(self, "service_tier", None)
         if not service_tier:

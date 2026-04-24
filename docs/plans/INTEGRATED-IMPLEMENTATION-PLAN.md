@@ -394,27 +394,53 @@ mv /home/ubuntu/.hermes/hermes-agent/memory/incident-log/ \
 回滾：刪除該文件
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ STEP 5：驗證系統可運行                                                      │
+│ STEP 5：驗證系統可運行（含 Migration 正確性）                                │
 └─────────────────────────────────────────────────────────────────────────────┘
 命令：
 ```bash
 cd /home/ubuntu/.hermes/hermes-agent
-# 測試導入關鍵模組
+
+# 基本可運行驗證
 python3 -c "from agent.context_engine import ContextEngine; print('OK')"
-# 測試 Knowledge 路徑
 python3 -c "import os; assert os.path.exists('knowledge/index.json'); print('Knowledge index OK')"
+
+# Migration 正確性驗證（全部存在才成功，任一失敗整體失敗）
+python3 -c "
+import os
+checks = [
+  ('knowledge/facts/SOUL.md', 'SOUL.md'),
+  ('knowledge/docs/AGENTS.md', 'AGENTS.md'),
+  ('knowledge/docs/plans', 'plans/'),
+  ('knowledge/docs/specs', 'specs/'),
+  ('knowledge/docs/migration', 'migration/'),
+  ('knowledge/facts/learnings.md', 'learnings.md'),
+  ('knowledge/facts/OPTIMIZATION-HISTORY.md', 'OPTIMIZATION-HISTORY.md'),
+  ('memory/incident-log', 'incident-log/'),
+]
+for path, name in checks:
+  assert os.path.exists(path), f'MISSING: {name}'
+print('Migration: all OK')
+"
 ```
 風險：無
 
 ---
 
-### 4.2 Horizon 2：Soon（1-2 週）— 技能庫與記憶庫整合
+### 4.2 Horizon 2：Soon（1-2 週）— 技能庫與記憶庫整合 + OpenClaw 配置
 
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                    Horizon 2：Soon（1-2 週）                                 │
-│                    核心目標：建立技能索引，完善記憶-知識介面                   │
+│  核心目標：建立技能索引，完善記憶-知識介面，配置 OpenClaw 熱備份             │
 └─────────────────────────────────────────────────────────────────────────────┘
+
+【OpenClaw 配置須知】
+系統拓撲中 OpenClaw 承擔熱備份/故障轉移職責，但目前狀態為「待配置」。
+以下 STEP 6-9 專注技能/記憶庫整合，OpenClaw 配置另需獨立的基礎設施規劃：
+  • 同步方式：rsync / git pull / 共享儲存？
+  • 故障轉移觸發條件：heartbeat 多久？自動還是半自動？
+  • 同步頻率：即時？每分鐘？
+  這些是 OpensClaw 配置的必備參數，不在此次重構計劃範圍內。
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ STEP 6：創建技能索引（詳細實作）                                            │
@@ -426,9 +452,14 @@ python3 -c "import os; assert os.path.exists('knowledge/index.json'); print('Kno
 
 實作步驟：
 1. 創建 /home/ubuntu/.hermes/hermes-agent/skills/.index.toml（內容見上）
-2. 修改 agent/skill_commands.py：新增 read_index_toml() 函數，fallback 到現有列表
-3. 修改 tools/skills_tool.py：skills_list() 改為讀取 .index.toml
-4. 驗證：python3 -c "from skills import list_skills; print(list_skills())"
+2. 驗證 skills/ 下實際目錄存在：
+   ```bash
+   ls -d /home/ubuntu/.hermes/hermes-agent/skills/*/ | head -10
+   ```
+   確認 TOML 中引用的路徑（`skills.github`、`skills.software-development` 等）與實際目錄對應
+3. 修改 agent/skill_commands.py：新增 read_index_toml() 函數，fallback 到現有列表
+4. 修改 tools/skills_tool.py：skills_list() 改為讀取 .index.toml
+5. 驗證：python3 -c "from skills import list_skills; print(list_skills())"
 
 風險：低（fallback 保持向後兼容）
 文件：/home/ubuntu/.hermes/hermes-agent/skills/.index.toml
@@ -505,17 +536,20 @@ trust_level = "experimental"
 3. 驗證：python3 -c "from agent.builtin_memory_provider import BuiltinMemoryProvider; print('OK')"
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
-│ STEP 9：實現 Context Engine 三庫協調（詳細實作）                              │
+│ STEP 9：實現 Context Coordinator（新建而非改造現有 context_engine.py）      │
 └─────────────────────────────────────────────────────────────────────────────┘
 
-目標：將三庫協調邏輯整合進 Context Engine
+目標：新建獨立的 Context Coordinator，實現三庫協調邏輯
 
 前置條件：STEP 6-8 完成（Skills 索引、知識-記憶介面、內存提供者已建立）
 
+說明：現有 context_engine.py 是上下文壓縮基類，三庫協調是不同職責。因此新建 context_coordinator.py 而非改造現有檔。
+
 實作步驟：
-1. 修改 agent/context_engine.py：新增 build_knowledge_prompt() 方法
+1. 新建 agent/context_coordinator.py：實現 ContextCoordinator 類
 2. 實現 Memory.prefetch() → Knowledge.search() → Skills.load_needed() 流程
-3. 驗證：python3 -c "from agent.context_engine import ContextEngine; print('OK')"
+3. 在 agent/context_engine.py 同一目錄下作為獨立模組維護
+4. 驗證：python3 -c "from agent.context_coordinator import ContextCoordinator; print('OK')"
 
 ---
 
@@ -524,8 +558,13 @@ trust_level = "experimental"
 ```
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │                    Horizon 3：Later（1 個月+）                                │
-│                    核心目標：重構核心組件，建立長期可維護架構                   │
+│  核心目標：重構核心組件，建立長期可維護架構                   │
 └─────────────────────────────────────────────────────────────────────────────┘
+
+⚠️ 前置相依：STEP 9（Context Coordinator）必須完成後才能開始 STEP 10-12。
+   原因：兩者都操作 agent/ 目錄下的文件。STEP 9 完成後，
+   agent/context_coordinator.py 與 STEP 10 的 anthropic_adapter 拆分不會衝突。
+   嚴禁並發執行 STEP 9 和 STEP 10。
 
 ┌─────────────────────────────────────────────────────────────────────────────┐
 │ STEP 10：Agent Core 拆分（高風險，需謹慎）                                   │
@@ -684,20 +723,20 @@ cd /home/ubuntu/.hermes/hermes-agent
 
 # 先檢查目錄是否存在
 if [ -d "knowledge/" ]; then
-  # 恢復遷移的文檔（反向 mv）
-  mv knowledge/docs/plans/* docs/plans/
-  mv knowledge/docs/specs/* docs/specs/
-  mv knowledge/docs/migration/* docs/migration/
+  # 恢復遷移的文檔（每個 mv 前先檢查檔案是否存在）
+  [ -f knowledge/docs/plans/* ] && mv knowledge/docs/plans/* docs/plans/
+  [ -f knowledge/docs/specs/* ] && mv knowledge/docs/specs/* docs/specs/
+  [ -f knowledge/docs/migration/* ] && mv knowledge/docs/migration/* docs/migration/
 
   # 恢復根目錄文件
-  mv knowledge/docs/AGENTS.md AGENTS.md
-  mv knowledge/facts/SOUL.md SOUL.md
+  [ -f knowledge/docs/AGENTS.md ] && mv knowledge/docs/AGENTS.md AGENTS.md
+  [ -f knowledge/facts/SOUL.md ] && mv knowledge/facts/SOUL.md SOUL.md
 
   # 恢復記憶庫事實
-  mv knowledge/facts/learnings.md memory/learnings.md
-  mv knowledge/facts/learnings-v2.md memory/learnings-v2.md
-  mv knowledge/facts/OPTIMIZATION-HISTORY.md memory/OPTIMIZATION-HISTORY.md
-  mv knowledge/facts/incident-log/ memory/incident-log/
+  [ -f knowledge/facts/learnings.md ] && mv knowledge/facts/learnings.md memory/learnings.md
+  [ -f knowledge/facts/learnings-v2.md ] && mv knowledge/facts/learnings-v2.md memory/learnings-v2.md
+  [ -f knowledge/facts/OPTIMIZATION-HISTORY.md ] && mv knowledge/facts/OPTIMIZATION-HISTORY.md memory/OPTIMIZATION-HISTORY.md
+  [ -d knowledge/facts/incident-log/ ] && mv knowledge/facts/incident-log/ memory/incident-log/
 
   # 刪除知識庫目錄
   rm -rf knowledge/

@@ -29,7 +29,104 @@ logger = logging.getLogger(__name__)
 
 T = TypeVar("T")
 
-DEFAULT_DB_PATH = get_hermes_home() / "state.db"
+def _default_db_path() -> Path:
+    """Resolve the default state.db path on every call.
+
+    Module-level ``DEFAULT_DB_PATH = get_hermes_home() / "state.db"`` was
+    evaluated at import time, before ``_apply_profile_override()`` in
+    ``hermes_cli/main.py`` had a chance to set ``HERMES_HOME`` to the
+    correct profile path.  When ``~/.hermes/active_profile`` pointed to
+    profile B but the user launched with ``-p A``, the constant would
+    resolve to profile B's directory — causing the TUI gateway, slash
+    worker, and systemd gateway service to open the wrong state.db,
+    logs, and sessions.
+
+    See: https://github.com/NousResearch/hermes-agent/issues/4707
+    """
+    return get_hermes_home() / "state.db"
+
+
+# Lazy descriptor that preserves the ``hermes_state.DEFAULT_DB_PATH``
+# module-level name (many call-sites depend on it) while deferring
+# path resolution until first attribute access — by which time
+# ``_apply_profile_override()`` has set the correct ``HERMES_HOME``.
+class _LazyDefaultDBPath:
+    """Descriptor that lazily resolves ``get_hermes_home() / "state.db"``.
+
+    Behaves like a ``Path`` for all practical purposes (str, fspath,
+    parent, exists, mkdir, division, equality, hashing) but only
+    computes the real path on first access.  Subsequent accesses
+    reuse the cached value unless ``_reset()`` is called (useful in
+    tests that swap HERMES_HOME via monkeypatch).
+    """
+
+    __slots__ = ("_resolved",)
+
+    def __init__(self):
+        self._resolved: Path | None = None
+
+    def _get(self) -> Path:
+        if self._resolved is None:
+            self._resolved = _default_db_path()
+        return self._resolved
+
+    def _reset(self) -> None:
+        """Force re-resolution on next access (for test fixtures)."""
+        self._resolved = None
+
+    # --- Path-like interface ---------------------------------------------------
+
+    def __str__(self):
+        return str(self._get())
+
+    def __fspath__(self):
+        return str(self._get())
+
+    def __repr__(self):
+        return repr(self._get())
+
+    def __truediv__(self, other):
+        return self._get() / other
+
+    def __rtruediv__(self, other):
+        return Path(other) / self._get()
+
+    def __eq__(self, other):
+        return self._get() == other
+
+    def __ne__(self, other):
+        return self._get() != other
+
+    def __hash__(self):
+        return hash(self._get())
+
+    @property
+    def parent(self):
+        return self._get().parent
+
+    def exists(self, *a, **kw):
+        return self._get().exists(*a, **kw)
+
+    def mkdir(self, *a, **kw):
+        return self._get().mkdir(*a, **kw)
+
+    def unlink(self, *a, **kw):
+        return self._get().unlink(*a, **kw)
+
+    def rename(self, *a, **kw):
+        return self._get().rename(*a, **kw)
+
+    def read_text(self, *a, **kw):
+        return self._get().read_text(*a, **kw)
+
+    def write_text(self, *a, **kw):
+        return self._get().write_text(*a, **kw)
+
+    def stat(self, *a, **kw):
+        return self._get().stat(*a, **kw)
+
+
+DEFAULT_DB_PATH: _LazyDefaultDBPath = _LazyDefaultDBPath()
 
 SCHEMA_VERSION = 8
 

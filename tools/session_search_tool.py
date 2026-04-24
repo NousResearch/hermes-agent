@@ -520,6 +520,8 @@ def check_session_search_requirements() -> bool:
     """Requires SQLite state database and an auxiliary text model."""
     try:
         from hermes_state import DEFAULT_DB_PATH
+        # DEFAULT_DB_PATH is a lazy _LazyDBPath since #XXXXX;
+        # .exists() triggers resolution with the correct HERMES_HOME.
         return DEFAULT_DB_PATH.parent.exists()
     except ImportError:
         return False

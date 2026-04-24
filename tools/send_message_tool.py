@@ -169,6 +169,31 @@ def _handle_send(args):
     else:
         is_explicit = False
 
+    try:
+        from gateway.agent_actor import (
+            blocked_tool_result,
+            evaluate_send_message_policy,
+            record_send_message_outbound,
+        )
+    except Exception:
+        blocked_tool_result = None
+        evaluate_send_message_policy = None
+        record_send_message_outbound = None
+
+    def _policy_decision(current_chat_id, current_message):
+        if not evaluate_send_message_policy:
+            return None
+        try:
+            return evaluate_send_message_policy(
+                target_platform=platform_name,
+                target_chat_id=current_chat_id,
+                target_thread_id=thread_id or "",
+                message=current_message,
+            )
+        except Exception:
+            logger.debug("send_message policy evaluation failed", exc_info=True)
+            return None
+
     # Resolve human-friendly channel names to numeric IDs
     if target_ref and not is_explicit:
         try:
@@ -190,6 +215,19 @@ def _handle_send(args):
     from tools.interrupt import is_interrupted
     if is_interrupted():
         return tool_error("Interrupted")
+
+    policy_checked = False
+    if chat_id:
+        duplicate_skip = _maybe_skip_cron_duplicate_send(platform_name, chat_id, thread_id)
+        if duplicate_skip:
+            return json.dumps(duplicate_skip)
+
+        if blocked_tool_result:
+            decision = _policy_decision(chat_id, message)
+            if decision and not decision.allowed:
+                return blocked_tool_result(decision)
+            if decision:
+                policy_checked = True
 
     try:
         from gateway.config import load_gateway_config, Platform
@@ -271,6 +309,29 @@ def _handle_send(args):
     if duplicate_skip:
         return json.dumps(duplicate_skip)
 
+    if not policy_checked and blocked_tool_result:
+        decision = _policy_decision(chat_id, cleaned_message)
+        if decision and not decision.allowed:
+            return blocked_tool_result(decision)
+
+    try:
+        from gateway.agent_actor import (
+            blocked_tool_result,
+            evaluate_send_message_policy,
+            record_send_message_outbound,
+        )
+
+        decision = evaluate_send_message_policy(
+            target_platform=platform_name,
+            target_chat_id=chat_id,
+            target_thread_id=thread_id or "",
+            message=cleaned_message,
+        )
+        if not decision.allowed:
+            return blocked_tool_result(decision)
+    except Exception:
+        record_send_message_outbound = None
+
     try:
         from model_tools import _run_async
         result = _run_async(
@@ -285,6 +346,19 @@ def _handle_send(args):
         )
         if used_home_channel and isinstance(result, dict) and result.get("success"):
             result["note"] = f"Sent to {platform_name} home channel (chat_id: {chat_id})"
+
+        if record_send_message_outbound:
+            try:
+                record_send_message_outbound(
+                    target_platform=platform_name,
+                    target_chat_id=chat_id,
+                    target_thread_id=thread_id or "",
+                    message=cleaned_message,
+                    status="succeeded" if isinstance(result, dict) and result.get("success") else "failed",
+                    result=result if isinstance(result, dict) else {"result": result},
+                )
+            except Exception:
+                pass
 
         # Mirror the sent message into the target's gateway session
         if isinstance(result, dict) and result.get("success") and mirror_text:

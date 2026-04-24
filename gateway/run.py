@@ -1073,6 +1073,14 @@ class GatewayRunner:
             pass
 
         try:
+            from gateway.agent_actor import infer_platform_authority
+
+            if infer_platform_authority(source) == "owner":
+                return "owner"
+        except Exception:
+            pass
+
+        try:
             cfg = getattr(self, "config", None)
             get_hc = getattr(cfg, "get_home_channel", None) if cfg is not None else None
             if callable(get_hc):
@@ -4151,9 +4159,49 @@ class GatewayRunner:
         
         # Build session context
         context = build_session_context(source, self.config, session_entry)
+
+        inbound_event_id = ""
+        inbound_person_id = ""
+        inbound_authority = ""
+        if self._session_db is not None:
+            try:
+                from gateway.agent_actor import (
+                    build_state_packet,
+                    infer_platform_authority,
+                    maybe_record_directive_from_inbound,
+                    record_inbound_event,
+                )
+
+                inbound_authority = infer_platform_authority(source)
+                inbound_event_id, inbound_person_id = record_inbound_event(
+                    self._session_db,
+                    source=source,
+                    session_id=session_entry.session_id,
+                    session_key=session_key,
+                    text=event.text or "",
+                    message_id=getattr(event, "message_id", "") or "",
+                    platform_update_id=str(getattr(event, "platform_update_id", "") or ""),
+                    authority=inbound_authority,
+                )
+                maybe_record_directive_from_inbound(
+                    self._session_db,
+                    source=source,
+                    session_id=session_entry.session_id,
+                    session_key=session_key,
+                    inbound_event_id=inbound_event_id,
+                    person_id=inbound_person_id,
+                    text=event.text or "",
+                    authority=inbound_authority,
+                )
+            except Exception as _actor_exc:
+                logger.debug("Agent actor inbound recording failed: %s", _actor_exc)
         
         # Set session context variables for tools (task-local, concurrency-safe)
-        _session_env_tokens = self._set_session_env(context)
+        _session_env_tokens = self._set_session_env(
+            context,
+            agent_event_id=inbound_event_id,
+            person_id=inbound_person_id,
+        )
         
         # Read privacy.redact_pii from config (re-read per message)
         _redact_pii = False
@@ -4167,6 +4215,21 @@ class GatewayRunner:
 
         # Build the context prompt to inject
         context_prompt = build_session_context_prompt(context, redact_pii=_redact_pii)
+        if self._session_db is not None:
+            try:
+                from gateway.agent_actor import build_state_packet
+
+                context_prompt += "\n\n" + build_state_packet(
+                    self._session_db,
+                    source=source,
+                    session_id=session_entry.session_id,
+                    session_key=session_key,
+                    inbound_event_id=inbound_event_id,
+                    person_id=inbound_person_id,
+                    authority=inbound_authority,
+                )
+            except Exception as _actor_exc:
+                logger.debug("Agent actor state packet failed: %s", _actor_exc)
         
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
@@ -4874,6 +4937,33 @@ class GatewayRunner:
                 session_entry.session_key,
                 last_prompt_tokens=agent_result.get("last_prompt_tokens", 0),
             )
+
+            if response and response.strip() != "NO_REPLY" and self._session_db is not None:
+                try:
+                    self._session_db.append_agent_event(
+                        event_type="outbound",
+                        event_subtype="reply",
+                        status="prepared",
+                        session_id=session_entry.session_id,
+                        session_key=session_key,
+                        actor_id="main",
+                        actor_kind="agent",
+                        source=source.platform.value if source.platform else "",
+                        person_id=inbound_person_id,
+                        sender_user_id=str(source.user_id or ""),
+                        sender_name=str(source.user_name or ""),
+                        parent_event_id=inbound_event_id,
+                        platform=source.platform.value if source.platform else "",
+                        platform_chat_id=str(source.chat_id or ""),
+                        platform_thread_id=str(source.thread_id or ""),
+                        content=(response or "").replace("\r", " ").replace("\n", " ")[:1000],
+                        payload={
+                            "api_calls": _api_calls,
+                            "response_time_seconds": round(_response_time, 3),
+                        },
+                    )
+                except Exception as _actor_exc:
+                    logger.debug("Agent actor outbound reply recording failed: %s", _actor_exc)
 
             # Auto voice reply: send TTS audio before the text response
             _already_sent = bool(agent_result.get("already_sent"))
@@ -8288,7 +8378,13 @@ class GatewayRunner:
         finally:
             notify_path.unlink(missing_ok=True)
 
-    def _set_session_env(self, context: SessionContext) -> list:
+    def _set_session_env(
+        self,
+        context: SessionContext,
+        *,
+        agent_event_id: str = "",
+        person_id: str = "",
+    ) -> list:
         """Set session context variables for the current async task.
 
         Uses ``contextvars`` instead of ``os.environ`` so that concurrent
@@ -8302,10 +8398,13 @@ class GatewayRunner:
             platform=context.source.platform.value,
             chat_id=context.source.chat_id,
             chat_name=context.source.chat_name or "",
+            chat_type=context.source.chat_type or "",
             thread_id=str(context.source.thread_id) if context.source.thread_id else "",
             user_id=str(context.source.user_id) if context.source.user_id else "",
             user_name=str(context.source.user_name) if context.source.user_name else "",
             session_key=context.session_key,
+            agent_event_id=agent_event_id,
+            person_id=person_id,
         )
 
     def _clear_session_env(self, tokens: list) -> None:

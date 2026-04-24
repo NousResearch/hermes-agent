@@ -402,6 +402,23 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
             delivery_errors.append(msg)
             continue
 
+        try:
+            from gateway.agent_actor import evaluate_send_message_policy
+
+            decision = evaluate_send_message_policy(
+                target_platform=platform_name,
+                target_chat_id=chat_id,
+                target_thread_id=thread_id or "",
+                message=cleaned_delivery_content,
+            )
+            if not decision.allowed:
+                msg = f"delivery blocked by {decision.policy}: {decision.reason}"
+                logger.warning("Job '%s': %s", job["id"], msg)
+                delivery_errors.append(msg)
+                continue
+        except Exception as e:
+            logger.debug("Job '%s': outbound policy check failed open: %s", job["id"], e)
+
         # Prefer the live adapter when the gateway is running — this supports E2EE
         # rooms (e.g. Matrix) where the standalone HTTP path cannot encrypt.
         runtime_adapter = (adapters or {}).get(platform)

@@ -1169,11 +1169,15 @@ class TestSchemaInit:
         assert "sessions" in tables
         assert "messages" in tables
         assert "schema_version" in tables
+        assert "agent_events" in tables
+        assert "agent_event_links" in tables
+        assert "agent_directives" in tables
+        assert "agent_identities" in tables
 
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 8
+        assert version == 9
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -1229,12 +1233,12 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v8
+        # Open with SessionDB — should migrate to current schema
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 8
+        assert cursor.fetchone()[0] == 9
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
@@ -1253,6 +1257,79 @@ class TestSchemaInit:
         assert session["title"] == "Migrated Title"
 
         migrated_db.close()
+
+
+class TestAgentActorEventLog:
+    def test_identity_upsert_is_per_platform(self, db):
+        p1 = db.upsert_agent_identity(
+            platform="discord",
+            platform_user_id="123",
+            display_name="A",
+            authority="trusted",
+        )
+        p2 = db.upsert_agent_identity(
+            platform="telegram",
+            platform_user_id="123",
+            display_name="A",
+            authority="trusted",
+        )
+
+        assert p1 == "discord:123"
+        assert p2 == "telegram:123"
+        assert p1 != p2
+
+    def test_append_and_fetch_agent_event(self, db):
+        event_id = db.append_agent_event(
+            event_id="evt-1",
+            event_type="inbound",
+            event_subtype="message",
+            status="received",
+            session_id="sid",
+            session_key="agent:main:discord:group:1:123",
+            platform="discord",
+            platform_chat_id="1",
+            sender_user_id="123",
+            person_id="discord:123",
+            content="hello",
+            payload={"authority": "trusted"},
+        )
+
+        assert event_id == "evt-1"
+        event = db.get_agent_event("evt-1")
+        assert event["event_type"] == "inbound"
+        assert event["payload"]["authority"] == "trusted"
+        assert db.list_recent_agent_events(event_type="inbound")[0]["event_id"] == "evt-1"
+
+    def test_directive_supersession(self, db):
+        first = db.create_or_replace_agent_directive(
+            directive_scope="actor",
+            directive_key="public-broadcast-suppression",
+            directive_type="suppress_public_broadcasts",
+            payload={"text": "stop posting digests"},
+            actor_id="main",
+            issuer_person_id="discord:1",
+            issuer_platform="discord",
+            issuer_user_id="1",
+        )
+        second = db.create_or_replace_agent_directive(
+            directive_scope="actor",
+            directive_key="public-broadcast-suppression",
+            directive_type="suppress_public_broadcasts",
+            payload={"text": "turn this off"},
+            actor_id="main",
+            issuer_person_id="discord:1",
+            issuer_platform="discord",
+            issuer_user_id="1",
+        )
+
+        active = db.list_active_agent_directives(actor_id="main")
+        assert [d["directive_id"] for d in active] == [second]
+        old = db._conn.execute(
+            "SELECT active, superseded_by_directive_id FROM agent_directives WHERE directive_id = ?",
+            (first,),
+        ).fetchone()
+        assert old["active"] == 0
+        assert old["superseded_by_directive_id"] == second
 
 
 class TestTitleUniqueness:
@@ -1911,4 +1988,3 @@ class TestAutoMaintenance:
         assert marker is not None
         # Should parse as a float timestamp close to now.
         assert abs(float(marker) - time.time()) < 60
-

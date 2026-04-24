@@ -51,6 +51,15 @@ class TestRoutingContextUserId:
         assert ctx["user_id"] == "1417636184355766305"
         assert ctx["platform"] == "discord"
 
+    def test_discord_group_owner_user_id_logs_owner_source_kind(self, monkeypatch):
+        from gateway.run import GatewayRunner
+        monkeypatch.setenv("DISCORD_OWNER_USER_ID", "1417636184355766305")
+        runner = _make_runner()
+        ctx = GatewayRunner._build_routing_context(
+            runner, _src("discord", user_id="1417636184355766305")
+        )
+        assert ctx["source_kind"] == "owner"
+
     def test_telegram_dm_exposes_user_id(self):
         from gateway.run import GatewayRunner
         runner = _make_runner()

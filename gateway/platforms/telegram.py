@@ -251,6 +251,22 @@ class TelegramAdapter(BasePlatformAdapter):
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
+        # Reply branch map: chat_id -> {message_id: branch_id}.
+        # Tracks which branch root a previously-seen message_id belongs to so
+        # follow-up replies can be routed back onto the same session lane.
+        self._reply_branch_map: Dict[str, Dict[str, str]] = {}
+
+    def _remember_reply_branch(self, chat_id: str, message_id: str, branch_id: str) -> None:
+        """Record that ``message_id`` (in ``chat_id``) is part of branch ``branch_id``."""
+        if not chat_id or not message_id or not branch_id:
+            return
+        self._reply_branch_map.setdefault(str(chat_id), {})[str(message_id)] = str(branch_id)
+
+    def _resolve_reply_branch(self, chat_id: str, message_id: str) -> Optional[str]:
+        """Look up the branch id previously associated with ``message_id`` in ``chat_id``."""
+        if not chat_id or not message_id:
+            return None
+        return self._reply_branch_map.get(str(chat_id), {}).get(str(message_id))
 
     @staticmethod
     def _is_callback_user_authorized(user_id: str) -> bool:
@@ -998,6 +1014,8 @@ class TelegramAdapter(BasePlatformAdapter):
             
             message_ids = []
             thread_id = self._metadata_thread_id(metadata)
+            force_reply_chain = bool(metadata.get("force_reply_chain")) if metadata else False
+            outgoing_branch_id = metadata.get("reply_branch_id") if metadata else None
             
             try:
                 from telegram.error import NetworkError as _NetErr
@@ -1015,7 +1033,10 @@ class TelegramAdapter(BasePlatformAdapter):
                 _TimedOut = None  # type: ignore[assignment,misc]
 
             for i, chunk in enumerate(chunks):
-                should_thread = self._should_thread_reply(reply_to, i)
+                if force_reply_chain and reply_to:
+                    should_thread = True
+                else:
+                    should_thread = self._should_thread_reply(reply_to, i)
                 reply_to_id = int(reply_to) if should_thread else None
                 effective_thread_id = self._message_thread_id_for_send(thread_id)
 
@@ -1105,7 +1126,11 @@ class TelegramAdapter(BasePlatformAdapter):
                                 continue
                         raise
                 message_ids.append(str(msg.message_id))
-            
+                if outgoing_branch_id:
+                    self._remember_reply_branch(
+                        str(chat_id), str(msg.message_id), str(outgoing_branch_id)
+                    )
+
             return SendResult(
                 success=True,
                 message_id=message_ids[0] if message_ids else None,
@@ -3020,6 +3045,15 @@ class TelegramAdapter(BasePlatformAdapter):
                             break
                     break
 
+        # Extract reply context if this message is a reply
+        reply_to_id = None
+        reply_to_text = None
+        reply_branch_id = None
+        if message.reply_to_message:
+            reply_to_id = str(message.reply_to_message.message_id)
+            reply_to_text = message.reply_to_message.text or message.reply_to_message.caption or None
+            reply_branch_id = self._resolve_reply_branch(str(chat.id), reply_to_id)
+
         # Build source
         source = self.build_source(
             chat_id=str(chat.id),
@@ -3029,14 +3063,8 @@ class TelegramAdapter(BasePlatformAdapter):
             user_name=user.full_name if user else (chat.full_name if hasattr(chat, "full_name") and chat_type == "dm" else None),
             thread_id=thread_id_str,
             chat_topic=chat_topic,
+            reply_branch_id=reply_branch_id,
         )
-        
-        # Extract reply context if this message is a reply
-        reply_to_id = None
-        reply_to_text = None
-        if message.reply_to_message:
-            reply_to_id = str(message.reply_to_message.message_id)
-            reply_to_text = message.reply_to_message.text or message.reply_to_message.caption or None
 
         # Per-channel/topic ephemeral prompt
         from gateway.platforms.base import resolve_channel_prompt

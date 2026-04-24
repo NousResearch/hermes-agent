@@ -83,6 +83,7 @@ class SessionSource:
     user_id_alt: Optional[str] = None  # Platform-specific stable alt ID (Signal UUID, Feishu union_id)
     chat_id_alt: Optional[str] = None  # Signal group internal ID
     is_bot: bool = False  # True when the message author is a bot/webhook (Discord)
+    reply_branch_id: Optional[str] = None  # Telegram-style reply chain root, isolates sessions per branch
     
     @property
     def description(self) -> str:
@@ -120,6 +121,8 @@ class SessionSource:
             d["user_id_alt"] = self.user_id_alt
         if self.chat_id_alt:
             d["chat_id_alt"] = self.chat_id_alt
+        if self.reply_branch_id:
+            d["reply_branch_id"] = self.reply_branch_id
         return d
     
     @classmethod
@@ -135,6 +138,7 @@ class SessionSource:
             chat_topic=data.get("chat_topic"),
             user_id_alt=data.get("user_id_alt"),
             chat_id_alt=data.get("chat_id_alt"),
+            reply_branch_id=data.get("reply_branch_id"),
         )
     
 
@@ -519,6 +523,8 @@ def build_session_key(
     platform = source.platform.value
     if source.chat_type == "dm":
         if source.chat_id:
+            if source.reply_branch_id:
+                return f"agent:main:{platform}:dm:{source.chat_id}:{source.reply_branch_id}"
             if source.thread_id:
                 return f"agent:main:{platform}:dm:{source.chat_id}:{source.thread_id}"
             return f"agent:main:{platform}:dm:{source.chat_id}"

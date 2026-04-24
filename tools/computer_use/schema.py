@@ -40,6 +40,7 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                     "scroll",
                     "type",
                     "key",
+                    "set_value",
                     "wait",
                     "list_apps",
                     "focus_app",
@@ -47,7 +48,9 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
                 "description": (
                     "Which action to perform. `capture` is free (no side "
                     "effects). All other actions require approval unless "
-                    "auto-approved."
+                    "auto-approved. Use `set_value` for select/popup elements "
+                    "and sliders — it selects the matching option directly "
+                    "without opening the native menu (no focus steal)."
                 ),
             },
             # ── capture ────────────────────────────────────────────
@@ -131,6 +134,16 @@ COMPUTER_USE_SCHEMA: Dict[str, Any] = {
             "amount": {
                 "type": "integer",
                 "description": "Scroll wheel ticks. Default 3.",
+            },
+            # ── set_value ──────────────────────────────────────────
+            "value": {
+                "type": "string",
+                "description": (
+                    "For action='set_value': the value to set on the element. "
+                    "For AXPopUpButton / select dropdowns, pass the option's "
+                    "display label (e.g. 'Blue'). For sliders and other "
+                    "AXValue-settable elements, pass the numeric or string value."
+                ),
             },
             # ── type / key / wait ──────────────────────────────────
             "text": {

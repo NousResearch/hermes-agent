@@ -7283,13 +7283,17 @@ class AIAgent:
             api_msg["reasoning_content"] = normalized_reasoning
             return
 
+        deepseek_requires_reasoning = (
+            self.provider in {"deepseek", "custom"}
+            and base_url_host_matches(self.base_url, "api.deepseek.com")
+        )
         kimi_requires_reasoning = (
             self.provider in {"kimi-coding", "kimi-coding-cn"}
             or base_url_host_matches(self.base_url, "api.kimi.com")
             or base_url_host_matches(self.base_url, "moonshot.ai")
             or base_url_host_matches(self.base_url, "moonshot.cn")
         )
-        if kimi_requires_reasoning and source_msg.get("tool_calls"):
+        if (kimi_requires_reasoning or deepseek_requires_reasoning) and source_msg.get("tool_calls"):
             api_msg["reasoning_content"] = ""
 
     @staticmethod

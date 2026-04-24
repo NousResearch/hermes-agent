@@ -1056,6 +1056,18 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                     "inference_base_url": state.get("inference_base_url"),
                     "agent_key": state.get("agent_key"),
                     "agent_key_expires_at": state.get("agent_key_expires_at"),
+                    # Carry the mint/refresh timestamps into the pool so
+                    # freshness-sensitive consumers (self-heal hooks, pool
+                    # pruning by age) can distinguish just-minted credentials
+                    # from stale ones.  Without these, fresh device_code
+                    # entries get obtained_at=None and look older than they
+                    # are (#15099).
+                    "obtained_at": state.get("obtained_at"),
+                    "expires_in": state.get("expires_in"),
+                    "agent_key_id": state.get("agent_key_id"),
+                    "agent_key_expires_in": state.get("agent_key_expires_in"),
+                    "agent_key_reused": state.get("agent_key_reused"),
+                    "agent_key_obtained_at": state.get("agent_key_obtained_at"),
                     "tls": state.get("tls") if isinstance(state.get("tls"), dict) else None,
                     "label": seeded_label,
                 },

@@ -1102,3 +1102,72 @@ def test_load_pool_does_not_seed_qwen_oauth_when_no_token(tmp_path, monkeypatch)
 
     assert not pool.has_credentials()
     assert pool.entries() == []
+
+
+def test_nous_seed_from_singletons_preserves_obtained_at_timestamps(tmp_path, monkeypatch):
+    """Regression test for #15099 secondary issue.
+
+    When ``_seed_from_singletons`` materialises a device_code pool entry from
+    the ``providers.nous`` singleton, it must carry the mint/refresh
+    timestamps (``obtained_at``, ``agent_key_obtained_at``, ``expires_in``,
+    etc.) into the pool entry.  Without them, freshness-sensitive consumers
+    (self-heal hooks, pool pruning by age) treat just-minted credentials as
+    older than they actually are and evict them.
+    """
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "nous": {
+                    "access_token": "at_XXXXXXXX",
+                    "refresh_token": "rt_YYYYYYYY",
+                    "client_id": "hermes-cli",
+                    "portal_base_url": "https://portal.nousresearch.com",
+                    "inference_base_url": "https://inference.nousresearch.com/v1",
+                    "token_type": "Bearer",
+                    "scope": "openid profile",
+                    "obtained_at": "2026-04-24T10:00:00+00:00",
+                    "expires_at": "2026-04-24T11:00:00+00:00",
+                    "expires_in": 3600,
+                    "agent_key": "sk-nous-AAAA",
+                    "agent_key_id": "ak_123",
+                    "agent_key_expires_at": "2026-04-25T10:00:00+00:00",
+                    "agent_key_expires_in": 86400,
+                    "agent_key_reused": False,
+                    "agent_key_obtained_at": "2026-04-24T10:00:05+00:00",
+                    "tls": {"insecure": False, "ca_bundle": None},
+                },
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("nous")
+    entries = pool.entries()
+
+    device_entries = [e for e in entries if e.source == "device_code"]
+    assert len(device_entries) == 1, f"expected single device_code entry; got {len(device_entries)}"
+    e = device_entries[0]
+
+    # Direct dataclass fields — must survive the singleton → pool copy.
+    assert e.access_token == "at_XXXXXXXX"
+    assert e.refresh_token == "rt_YYYYYYYY"
+    assert e.expires_at == "2026-04-24T11:00:00+00:00"
+    assert e.agent_key == "sk-nous-AAAA"
+    assert e.agent_key_expires_at == "2026-04-25T10:00:00+00:00"
+
+    # Extra fields — this is what regressed.  These must be carried through
+    # via ``extra`` dict or __getattr__, NOT silently dropped.
+    assert e.obtained_at == "2026-04-24T10:00:00+00:00", (
+        f"obtained_at was dropped during seed; got {e.obtained_at!r}. This breaks "
+        f"downstream pool-freshness consumers (#15099)."
+    )
+    assert e.agent_key_obtained_at == "2026-04-24T10:00:05+00:00"
+    assert e.expires_in == 3600
+    assert e.agent_key_id == "ak_123"
+    assert e.agent_key_expires_in == 86400
+    assert e.agent_key_reused is False
+

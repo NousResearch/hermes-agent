@@ -732,3 +732,83 @@ def test_persist_nous_credentials_no_label_uses_auto_derived(tmp_path, monkeypat
     # No "label" key embedded in providers.nous when the caller didn't supply one.
     payload = json.loads((hermes_home / "auth.json").read_text())
     assert "label" not in payload["providers"]["nous"]
+
+
+def test_refresh_token_reuse_detection_surfaces_actionable_message():
+    """Regression for #15099.
+
+    When the Nous Portal server returns ``invalid_grant`` with
+    ``error_description`` containing "reuse detected", Hermes must surface an
+    actionable message explaining that an external process consumed the
+    refresh token.  The default opaque "Refresh token reuse detected; please
+    re-authenticate" string led users to report this as a Hermes persistence
+    bug when the true cause is external RT consumption (monitoring scripts,
+    custom self-heal hooks).
+    """
+    from hermes_cli.auth import _refresh_access_token
+
+    class _FakeResponse:
+        status_code = 400
+
+        def json(self):
+            return {
+                "error": "invalid_grant",
+                "error_description": "Refresh token reuse detected; please re-authenticate",
+            }
+
+    class _FakeClient:
+        def post(self, *args, **kwargs):
+            return _FakeResponse()
+
+    with pytest.raises(AuthError) as exc_info:
+        _refresh_access_token(
+            client=_FakeClient(),
+            portal_base_url="https://portal.nousresearch.com",
+            client_id="hermes-cli",
+            refresh_token="rt_consumed_elsewhere",
+        )
+
+    message = str(exc_info.value)
+    assert "refresh-token reuse" in message.lower() or "refresh token reuse" in message.lower()
+    # The message must mention the external-process cause and give next steps.
+    assert "external process" in message.lower() or "monitoring script" in message.lower()
+    assert "hermes auth add nous" in message.lower()
+    # Must still be classified as invalid_grant + relogin_required.
+    assert exc_info.value.code == "invalid_grant"
+    assert exc_info.value.relogin_required is True
+
+
+def test_refresh_non_reuse_error_keeps_original_description():
+    """Non-reuse invalid_grant errors must keep their original description untouched.
+
+    Only the "reuse detected" signature should trigger the actionable message;
+    generic ``invalid_grant: Refresh session has been revoked`` (the
+    downstream consequence) keeps its original text so we don't overwrite
+    useful server context for unrelated failure modes.
+    """
+    from hermes_cli.auth import _refresh_access_token
+
+    class _FakeResponse:
+        status_code = 400
+
+        def json(self):
+            return {
+                "error": "invalid_grant",
+                "error_description": "Refresh session has been revoked",
+            }
+
+    class _FakeClient:
+        def post(self, *args, **kwargs):
+            return _FakeResponse()
+
+    with pytest.raises(AuthError) as exc_info:
+        _refresh_access_token(
+            client=_FakeClient(),
+            portal_base_url="https://portal.nousresearch.com",
+            client_id="hermes-cli",
+            refresh_token="rt_anything",
+        )
+
+    assert "Refresh session has been revoked" in str(exc_info.value)
+    # Must not have been rewritten with the reuse message.
+    assert "external process" not in str(exc_info.value).lower()

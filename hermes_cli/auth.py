@@ -1889,6 +1889,28 @@ def _refresh_access_token(
     code = str(error_payload.get("error", "invalid_grant"))
     description = str(error_payload.get("error_description") or "Refresh token exchange failed")
     relogin = code in {"invalid_grant", "invalid_token"}
+
+    # Detect the OAuth 2.1 "refresh token reuse" signal from the Nous portal
+    # server and surface an actionable message.  This fires when an external
+    # process (health-check script, monitoring tool, custom self-heal hook)
+    # called POST /api/oauth/token with Hermes's refresh_token without
+    # persisting the rotated token back to auth.json — the server then
+    # retires the original RT, Hermes's next refresh uses it, and the whole
+    # session chain gets revoked as a token-theft signal (#15099).
+    lowered = description.lower()
+    if "reuse" in lowered or "reuse detected" in lowered:
+        description = (
+            "Nous Portal detected refresh-token reuse and revoked this session.\n"
+            "This usually means an external process (monitoring script, "
+            "custom self-heal hook, or another Hermes install sharing "
+            "~/.hermes/auth.json) called POST /api/oauth/token with Hermes's "
+            "refresh token without persisting the rotated token back.\n"
+            "Nous refresh tokens are single-use — only Hermes may call the "
+            "refresh endpoint. For health checks, use `hermes auth status` "
+            "instead.\n"
+            "Re-authenticate with: hermes auth add nous"
+        )
+
     raise AuthError(description, provider="nous", code=code, relogin_required=relogin)
 
 

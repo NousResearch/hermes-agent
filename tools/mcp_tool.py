@@ -2294,6 +2294,8 @@ def _build_utility_schemas(server_name: str) -> List[dict]:
                         "arguments": {
                             "type": "object",
                             "description": "Optional arguments to pass to the prompt",
+                            "properties": {},
+                            "additionalProperties": True,
                         },
                     },
                     "required": ["name"],

@@ -343,6 +343,18 @@ def get_tool_definitions(
     global _last_resolved_tool_names
     _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
 
+    # Sanitize schemas for broad backend compatibility. llama.cpp's
+    # json-schema-to-grammar converter (used by its OAI server to build
+    # GBNF tool-call parsers) rejects some shapes that cloud providers
+    # silently accept — bare "type": "object" with no properties,
+    # string-valued schema nodes from malformed MCP servers, etc. This
+    # is a no-op for schemas that are already well-formed.
+    try:
+        from tools.schema_sanitizer import sanitize_tool_schemas
+        filtered_tools = sanitize_tool_schemas(filtered_tools)
+    except Exception as e:  # pragma: no cover — defensive
+        logger.warning("Schema sanitization skipped: %s", e)
+
     return filtered_tools
 
 

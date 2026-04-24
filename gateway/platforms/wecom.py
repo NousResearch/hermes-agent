@@ -1010,7 +1010,9 @@ class WeComAdapter(BasePlatformAdapter):
         if not aes_key:
             raise ValueError("aes_key is required")
 
-        key = base64.b64decode(aes_key)
+        # Pad base64 key if needed (WeCom AI Bot omits trailing = in aeskey)
+        padded_key = aes_key + "=" * (4 - len(aes_key) % 4) if len(aes_key) % 4 else aes_key
+        key = base64.b64decode(padded_key)
         if len(key) != 32:
             raise ValueError(f"Invalid WeCom AES key length: expected 32 bytes, got {len(key)}")
 

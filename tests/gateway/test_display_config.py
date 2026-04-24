@@ -54,6 +54,30 @@ class TestResolveDisplaySetting:
         # Unknown platform, no config → global default "all"
         assert resolve_display_setting(config, "unknown_platform", "tool_progress") == "all"
 
+    def test_progress_auto_delete_defaults_off(self):
+        """Progress auto-delete is opt-in globally and per platform."""
+        from gateway.display_config import resolve_display_setting
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        assert DEFAULT_CONFIG["display"]["progress_auto_delete"] is False
+        assert resolve_display_setting({}, "discord", "progress_auto_delete") is False
+        assert resolve_display_setting({}, "unknown_platform", "progress_auto_delete") is False
+
+    def test_progress_auto_delete_platform_override(self):
+        """display.platforms.<plat>.progress_auto_delete overrides the global setting."""
+        from gateway.display_config import resolve_display_setting
+
+        config = {
+            "display": {
+                "progress_auto_delete": False,
+                "platforms": {
+                    "discord": {"progress_auto_delete": True},
+                },
+            }
+        }
+        assert resolve_display_setting(config, "discord", "progress_auto_delete") is True
+        assert resolve_display_setting(config, "telegram", "progress_auto_delete") is False
+
     def test_fallback_parameter_used_last(self):
         """Explicit fallback is used when nothing else matches."""
         from gateway.display_config import resolve_display_setting

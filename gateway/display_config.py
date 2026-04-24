@@ -32,6 +32,7 @@ from typing import Any
 
 _GLOBAL_DEFAULTS: dict[str, Any] = {
     "tool_progress": "all",
+    "progress_auto_delete": False,
     "show_reasoning": False,
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
@@ -47,6 +48,7 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
 
 _TIER_HIGH = {
     "tool_progress": "all",
+    "progress_auto_delete": False,
     "show_reasoning": False,
     "tool_preview_length": 40,
     "streaming": None,  # follow global
@@ -54,6 +56,7 @@ _TIER_HIGH = {
 
 _TIER_MEDIUM = {
     "tool_progress": "new",
+    "progress_auto_delete": False,
     "show_reasoning": False,
     "tool_preview_length": 40,
     "streaming": None,
@@ -61,6 +64,7 @@ _TIER_MEDIUM = {
 
 _TIER_LOW = {
     "tool_progress": "off",
+    "progress_auto_delete": False,
     "show_reasoning": False,
     "tool_preview_length": 40,
     "streaming": False,
@@ -68,6 +72,7 @@ _TIER_LOW = {
 
 _TIER_MINIMAL = {
     "tool_progress": "off",
+    "progress_auto_delete": False,
     "show_reasoning": False,
     "tool_preview_length": 0,
     "streaming": False,
@@ -121,7 +126,8 @@ def resolve_display_setting(
         Platform config key (e.g. ``"telegram"``, ``"slack"``).  Use
         ``_platform_config_key(source.platform)`` from gateway/run.py.
     setting : str
-        Display setting name (e.g. ``"tool_progress"``, ``"show_reasoning"``).
+        Display setting name (e.g. ``"tool_progress"``, ``"progress_auto_delete"``,
+        ``"show_reasoning"``).
     fallback : Any
         Fallback value when the setting isn't found anywhere.
 
@@ -182,7 +188,7 @@ def _normalise(setting: str, value: Any) -> Any:
         if value is True:
             return "all"
         return str(value).lower()
-    if setting in ("show_reasoning", "streaming"):
+    if setting in ("progress_auto_delete", "show_reasoning", "streaming"):
         if isinstance(value, str):
             return value.lower() in ("true", "1", "yes", "on")
         return bool(value)

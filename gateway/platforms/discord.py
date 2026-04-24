@@ -1299,6 +1299,21 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+    async def delete_message(self, chat_id: str, message_id: str) -> SendResult:
+        """Delete a previously sent Discord message."""
+        if not self._client:
+            return SendResult(success=False, error="Not connected")
+        try:
+            channel = self._client.get_channel(int(chat_id))
+            if not channel:
+                channel = await self._client.fetch_channel(int(chat_id))
+            msg = await channel.fetch_message(int(message_id))
+            await msg.delete()
+            return SendResult(success=True, message_id=message_id)
+        except Exception as e:  # pragma: no cover - defensive logging
+            logger.error("[%s] Failed to delete Discord message %s: %s", self.name, message_id, e, exc_info=True)
+            return SendResult(success=False, error=str(e))
+
     async def _send_file_attachment(
         self,
         chat_id: str,

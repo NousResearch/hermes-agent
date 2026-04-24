@@ -58,6 +58,45 @@ class ProgressCaptureAdapter(BasePlatformAdapter):
         return {"id": chat_id}
 
 
+class ProgressDeleteCaptureAdapter(ProgressCaptureAdapter):
+    def __init__(self, platform=Platform.DISCORD):
+        super().__init__(platform=platform)
+        self.deletes = []
+
+    async def delete_message(self, chat_id: str, message_id: str) -> SendResult:
+        self.deletes.append({"chat_id": chat_id, "message_id": message_id})
+        return SendResult(success=True, message_id=message_id)
+
+
+class ProgressEditFailureDeleteCaptureAdapter(ProgressDeleteCaptureAdapter):
+    def __init__(self, platform=Platform.DISCORD):
+        super().__init__(platform=platform)
+        self._send_count = 0
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None) -> SendResult:
+        self._send_count += 1
+        message_id = f"progress-{self._send_count}"
+        self.sent.append(
+            {
+                "chat_id": chat_id,
+                "content": content,
+                "reply_to": reply_to,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=True, message_id=message_id)
+
+    async def edit_message(self, chat_id, message_id, content) -> SendResult:
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+            }
+        )
+        return SendResult(success=False, error="edit failed")
+
+
 class FakeAgent:
     def __init__(self, **kwargs):
         self.tool_progress_callback = kwargs.get("tool_progress_callback")
@@ -103,6 +142,23 @@ class DelayedProgressAgent:
         time.sleep(0.45)
         self.tool_progress_callback("tool.started", "terminal", "second command", {})
         time.sleep(0.1)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class EditFailureFallbackProgressAgent:
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback("tool.started", "terminal", "first command", {})
+        time.sleep(1.8)
+        self.tool_progress_callback("tool.started", "terminal", "second command", {})
+        time.sleep(0.8)
         return {
             "final_response": "done",
             "messages": [],
@@ -502,6 +558,7 @@ async def _run_with_agent(
     chat_id="-1001",
     chat_type="group",
     thread_id="17585",
+    adapter_cls=ProgressCaptureAdapter,
 ):
     if config_data:
         import yaml
@@ -516,7 +573,7 @@ async def _run_with_agent(
     fake_run_agent.AIAgent = agent_cls
     monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
 
-    adapter = ProgressCaptureAdapter(platform=platform)
+    adapter = adapter_cls(platform=platform)
     runner = _make_runner(adapter)
     gateway_run = importlib.import_module("gateway.run")
     if config_data and "streaming" in config_data:
@@ -549,6 +606,93 @@ async def _run_with_agent(
         session_key=session_key,
     )
     return adapter, result
+
+
+@pytest.mark.asyncio
+async def test_progress_auto_delete_deletes_progress_when_supported(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        FakeAgent,
+        session_id="sess-progress-auto-delete",
+        config_data={"display": {"tool_progress": "all", "progress_auto_delete": True}},
+        platform=Platform.DISCORD,
+        chat_id="dm-delete",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=ProgressDeleteCaptureAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.sent
+    assert adapter.deletes == [{"chat_id": "dm-delete", "message_id": "progress-1"}]
+    assert adapter.edits == []
+
+
+@pytest.mark.asyncio
+async def test_progress_auto_delete_deletes_edit_failure_fallback_send(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        EditFailureFallbackProgressAgent,
+        session_id="sess-progress-auto-delete-edit-fallback",
+        config_data={"display": {"tool_progress": "all", "progress_auto_delete": True}},
+        platform=Platform.DISCORD,
+        chat_id="dm-edit-fallback-delete",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=ProgressEditFailureDeleteCaptureAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.edits
+    assert adapter.edits[0]["message_id"] == "progress-1"
+    assert any("first command" in call["content"] for call in adapter.sent)
+    assert any("second command" in call["content"] for call in adapter.sent)
+    assert adapter.deletes == [
+        {"chat_id": "dm-edit-fallback-delete", "message_id": "progress-1"},
+        {"chat_id": "dm-edit-fallback-delete", "message_id": "progress-2"},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_progress_auto_delete_default_keeps_final_progress_edit(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        FakeAgent,
+        session_id="sess-progress-auto-delete-default-off",
+        config_data={"display": {"tool_progress": "all"}},
+        platform=Platform.DISCORD,
+        chat_id="dm-keep",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=ProgressDeleteCaptureAdapter,
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.deletes == []
+    assert adapter.edits
+    assert "browser_navigate" in adapter.edits[-1]["content"]
+
+
+@pytest.mark.asyncio
+async def test_progress_auto_delete_unsupported_adapter_keeps_final_progress_edit(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        FakeAgent,
+        session_id="sess-progress-auto-delete-unsupported",
+        config_data={"display": {"tool_progress": "all", "progress_auto_delete": True}},
+        platform=Platform.TELEGRAM,
+        chat_id="dm-unsupported",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    assert result["final_response"] == "done"
+    assert adapter.edits
+    assert "browser_navigate" in adapter.edits[-1]["content"]
 
 
 @pytest.mark.asyncio

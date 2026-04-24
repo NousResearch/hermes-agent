@@ -485,6 +485,11 @@ def _platform_config_key(platform: "Platform") -> str:
     return "cli" if platform == Platform.LOCAL else platform.value
 
 
+def _adapter_supports_delete_message(adapter: BasePlatformAdapter) -> bool:
+    """Return True when an adapter overrides the optional message delete API."""
+    return type(adapter).delete_message is not BasePlatformAdapter.delete_message
+
+
 def _load_gateway_config() -> dict:
     """Load and parse ~/.hermes/config.yaml, returning {} on any error."""
     try:
@@ -9369,6 +9374,10 @@ class GatewayRunner:
             or os.getenv("HERMES_TOOL_PROGRESS_MODE")
             or "all"
         )
+        progress_auto_delete_requested = is_truthy_value(
+            resolve_display_setting(user_config, platform_key, "progress_auto_delete", False),
+            default=False,
+        )
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform
@@ -9467,6 +9476,27 @@ class GatewayRunner:
         else:
             _progress_thread_id = source.thread_id
         _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        _progress_msg_ids: list[str] = []
+        _progress_auto_delete_active = [False]
+
+        def _remember_progress_result(result) -> None:
+            if not getattr(result, "success", False):
+                return
+
+            message_ids: list[str] = []
+            raw_response = getattr(result, "raw_response", None)
+            if isinstance(raw_response, dict):
+                raw_message_ids = raw_response.get("message_ids")
+                if isinstance(raw_message_ids, (list, tuple)):
+                    message_ids.extend(str(msg_id) for msg_id in raw_message_ids if msg_id)
+
+            message_id = getattr(result, "message_id", None)
+            if message_id:
+                message_ids.append(str(message_id))
+
+            for message_id in message_ids:
+                if message_id not in _progress_msg_ids:
+                    _progress_msg_ids.append(message_id)
 
         async def send_progress_messages():
             if not progress_queue:
@@ -9475,6 +9505,10 @@ class GatewayRunner:
             adapter = self.adapters.get(source.platform)
             if not adapter:
                 return
+            _progress_auto_delete_active[0] = (
+                progress_auto_delete_requested
+                and _adapter_supports_delete_message(adapter)
+            )
 
             # Skip tool progress for platforms that don't support message
             # editing (e.g. iMessage/BlueBubbles) — each progress update
@@ -9550,7 +9584,9 @@ class GatewayRunner:
                                     adapter.name,
                                 )
                             can_edit = False
-                            await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
+                            result = await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
+                            if result.success:
+                                _remember_progress_result(result)
                     else:
                         if can_edit:
                             # First tool: send all accumulated text as new message
@@ -9561,6 +9597,8 @@ class GatewayRunner:
                             result = await adapter.send(chat_id=source.chat_id, content=msg, metadata=_progress_metadata)
                         if result.success and result.message_id:
                             progress_msg_id = result.message_id
+                        if result.success:
+                            _remember_progress_result(result)
 
                     _last_edit_ts = time.monotonic()
 
@@ -9584,6 +9622,8 @@ class GatewayRunner:
                                 progress_lines.append(raw)
                         except Exception:
                             break
+                    if _progress_auto_delete_active[0]:
+                        return
                     # Final edit with all remaining tools (only if editing works)
                     if can_edit and progress_lines and progress_msg_id:
                         full_text = "\n".join(progress_lines)
@@ -9599,6 +9639,35 @@ class GatewayRunner:
                 except Exception as e:
                     logger.error("Progress message error: %s", e)
                     await asyncio.sleep(1)
+
+        async def delete_progress_messages():
+            if not progress_auto_delete_requested or not _progress_msg_ids:
+                return
+
+            adapter = self.adapters.get(source.platform)
+            if not adapter or not _adapter_supports_delete_message(adapter):
+                return
+
+            for message_id in list(_progress_msg_ids):
+                try:
+                    result = await adapter.delete_message(
+                        chat_id=source.chat_id,
+                        message_id=message_id,
+                    )
+                    if not result.success:
+                        logger.debug(
+                            "[%s] Progress message delete skipped for %s: %s",
+                            adapter.name,
+                            message_id,
+                            getattr(result, "error", "") or "unsupported",
+                        )
+                except Exception:
+                    logger.debug(
+                        "[%s] Progress message delete failed for %s",
+                        adapter.name,
+                        message_id,
+                        exc_info=True,
+                    )
         
         # We need to share the agent instance for interrupt support
         agent_holder = [None]  # Mutable container for the agent instance
@@ -10844,6 +10913,8 @@ class GatewayRunner:
                         await task
                     except asyncio.CancelledError:
                         pass
+
+            await delete_progress_messages()
 
         # If streaming already delivered the response, mark it so the
         # caller's send() is skipped (avoiding duplicate messages).

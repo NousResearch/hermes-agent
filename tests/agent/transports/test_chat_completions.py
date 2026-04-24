@@ -289,6 +289,106 @@ class TestChatCompletionsKimi:
         assert "type" not in kw["tools"][0]["function"]["parameters"]["properties"]["q"]
 
 
+class TestChatCompletionsDeepSeek:
+    """DeepSeek V4 native provider — thinking toggle + reasoning_effort mapping.
+
+    Reference: https://api-docs.deepseek.com/guides/thinking_mode
+    """
+
+    def test_deepseek_thinking_enabled_by_default(self, transport):
+        kw = transport.build_kwargs(
+            model="deepseek-v4-pro",
+            messages=[{"role": "user", "content": "Hi"}],
+            is_deepseek=True,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["extra_body"]["thinking"] == {"type": "enabled"}
+        # Default effort when thinking enabled: "high"
+        assert kw["reasoning_effort"] == "high"
+
+    def test_deepseek_thinking_disabled(self, transport):
+        kw = transport.build_kwargs(
+            model="deepseek-v4-flash",
+            messages=[{"role": "user", "content": "Hi"}],
+            is_deepseek=True,
+            reasoning_config={"enabled": False},
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["extra_body"]["thinking"] == {"type": "disabled"}
+        # Omit reasoning_effort entirely when thinking off
+        assert "reasoning_effort" not in kw
+
+    @pytest.mark.parametrize("input_effort,expected", [
+        ("low", "high"),
+        ("medium", "high"),
+        ("high", "high"),
+        ("xhigh", "max"),
+        ("max", "max"),
+        ("MEDIUM", "high"),       # case insensitive
+        ("  high  ", "high"),     # whitespace tolerant
+    ])
+    def test_deepseek_effort_mapping(self, transport, input_effort, expected):
+        kw = transport.build_kwargs(
+            model="deepseek-v4-pro",
+            messages=[{"role": "user", "content": "Hi"}],
+            is_deepseek=True,
+            reasoning_config={"effort": input_effort},
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["reasoning_effort"] == expected
+
+    def test_deepseek_unknown_effort_falls_back_to_high(self, transport):
+        kw = transport.build_kwargs(
+            model="deepseek-v4-pro",
+            messages=[{"role": "user", "content": "Hi"}],
+            is_deepseek=True,
+            reasoning_config={"effort": "banana"},
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["reasoning_effort"] == "high"
+
+    def test_deepseek_thinking_strips_incompatible_sampling_params(self, transport):
+        # Thinking mode forbids temperature/top_p/presence_penalty/
+        # frequency_penalty per the official API contract. fixed_temperature
+        # would normally set temperature; ensure it gets stripped when
+        # thinking is enabled.
+        kw = transport.build_kwargs(
+            model="deepseek-v4-pro",
+            messages=[{"role": "user", "content": "Hi"}],
+            is_deepseek=True,
+            fixed_temperature=0.5,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert "temperature" not in kw
+        assert kw["extra_body"]["thinking"] == {"type": "enabled"}
+
+    def test_deepseek_thinking_disabled_keeps_temperature(self, transport):
+        kw = transport.build_kwargs(
+            model="deepseek-v4-flash",
+            messages=[{"role": "user", "content": "Hi"}],
+            is_deepseek=True,
+            reasoning_config={"enabled": False},
+            fixed_temperature=0.5,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["temperature"] == 0.5
+
+    def test_non_deepseek_unaffected(self, transport):
+        """is_deepseek flag must be opt-in — other providers stay untouched."""
+        kw = transport.build_kwargs(
+            model="gpt-4o",
+            messages=[{"role": "user", "content": "Hi"}],
+            reasoning_config={"effort": "high"},
+            fixed_temperature=0.5,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        # No DeepSeek-specific surgery on non-deepseek calls
+        assert kw["temperature"] == 0.5
+        assert "thinking" not in kw.get("extra_body", {})
+        # reasoning_effort is only emitted by Kimi/DeepSeek branches
+        assert "reasoning_effort" not in kw
+
+
 class TestChatCompletionsValidate:
 
     def test_none(self, transport):

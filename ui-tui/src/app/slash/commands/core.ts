@@ -1,7 +1,7 @@
 import { NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { HOTKEYS } from '../../../content/hotkeys.js'
-import { nextDetailsMode, parseDetailsMode } from '../../../domain/details.js'
+import { SECTION_NAMES, isSectionName, nextDetailsMode, parseDetailsMode } from '../../../domain/details.js'
 import type {
   ConfigGetValueResponse,
   ConfigSetResponse,
@@ -10,7 +10,7 @@ import type {
 } from '../../../gatewayTypes.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
 import { configureDetectedTerminalKeybindings, configureTerminalKeybindings } from '../../../lib/terminalSetup.js'
-import type { DetailsMode, Msg, PanelSection } from '../../../types.js'
+import type { Msg, PanelSection } from '../../../types.js'
 import type { StatusBarMode } from '../../interfaces.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
@@ -38,7 +38,11 @@ const flagFromArg = (arg: string, current: boolean): boolean | null => {
   return null
 }
 
-const DETAIL_MODES = new Set(['collapsed', 'cycle', 'expanded', 'hidden', 'toggle'])
+const RESET_WORDS = new Set(['reset', 'clear', 'default'])
+const CYCLE_WORDS = new Set(['cycle', 'toggle'])
+const DETAILS_USAGE =
+  'usage: /details [hidden|collapsed|expanded|cycle]  or  /details <section> [hidden|collapsed|expanded|reset]'
+const DETAILS_SECTION_USAGE = 'usage: /details <section> [hidden|collapsed|expanded|reset]'
 
 export const coreCommands: SlashCommand[] = [
   {
@@ -57,7 +61,11 @@ export const coreCommands: SlashCommand[] = [
       sections.push(
         {
           rows: [
-            ['/details [hidden|collapsed|expanded|cycle]', 'set agent detail visibility mode'],
+            ['/details [hidden|collapsed|expanded|cycle]', 'set global agent detail visibility mode'],
+            [
+              '/details <section> [hidden|collapsed|expanded|reset]',
+              'override one section (thinking/tools/subagents/activity)'
+            ],
             ['/fortune [random|daily]', 'show a random or daily local fortune']
           ],
           title: 'TUI'
@@ -140,7 +148,7 @@ export const coreCommands: SlashCommand[] = [
 
   {
     aliases: ['detail'],
-    help: 'control agent detail visibility',
+    help: 'control agent detail visibility (global or per-section)',
     name: 'details',
     run: (arg, ctx) => {
       const { gateway, transcript, ui } = ctx
@@ -149,31 +157,48 @@ export const coreCommands: SlashCommand[] = [
         gateway
           .rpc<ConfigGetValueResponse>('config.get', { key: 'details_mode' })
           .then(r => {
-            if (ctx.stale()) {
-              return
-            }
+            if (ctx.stale()) return
 
             const mode = parseDetailsMode(r?.value) ?? ui.detailsMode
-
             patchUiState({ detailsMode: mode })
-            transcript.sys(`details: ${mode}`)
+
+            const overrides = SECTION_NAMES.filter(s => ui.sections[s])
+              .map(s => `${s}=${ui.sections[s]}`)
+              .join(' ')
+
+            transcript.sys(`details: ${mode}${overrides ? `  (${overrides})` : ''}`)
           })
-          .catch(() => {
-            if (!ctx.stale()) {
-              transcript.sys(`details: ${ui.detailsMode}`)
-            }
-          })
+          .catch(() => !ctx.stale() && transcript.sys(`details: ${ui.detailsMode}`))
 
         return
       }
 
-      const mode = arg.trim().toLowerCase()
+      const [first, second] = arg.trim().toLowerCase().split(/\s+/)
 
-      if (!DETAIL_MODES.has(mode)) {
-        return transcript.sys('usage: /details [hidden|collapsed|expanded|cycle]')
+      if (second && isSectionName(first)) {
+        const reset = RESET_WORDS.has(second)
+        const mode = reset ? null : parseDetailsMode(second)
+
+        if (!reset && !mode) {
+          return transcript.sys(DETAILS_SECTION_USAGE)
+        }
+
+        const { [first]: _drop, ...rest } = ui.sections
+
+        patchUiState({ sections: mode ? { ...rest, [first]: mode } : rest })
+        gateway
+          .rpc<ConfigSetResponse>('config.set', { key: `details_mode.${first}`, value: mode ?? '' })
+          .catch(() => {})
+        transcript.sys(`details ${first}: ${mode ?? 'reset'}`)
+
+        return
       }
 
-      const next = mode === 'cycle' || mode === 'toggle' ? nextDetailsMode(ui.detailsMode) : (mode as DetailsMode)
+      const next = CYCLE_WORDS.has(first ?? '') ? nextDetailsMode(ui.detailsMode) : parseDetailsMode(first)
+
+      if (!next) {
+        return transcript.sys(DETAILS_USAGE)
+      }
 
       patchUiState({ detailsMode: next })
       gateway.rpc<ConfigSetResponse>('config.set', { key: 'details_mode', value: next }).catch(() => {})

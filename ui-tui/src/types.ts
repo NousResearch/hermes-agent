@@ -116,6 +116,14 @@ export type Role = 'assistant' | 'system' | 'tool' | 'user'
 export type DetailsMode = 'hidden' | 'collapsed' | 'expanded'
 export type ThinkingMode = 'collapsed' | 'truncated' | 'full'
 
+// Per-section overrides for the agent details accordion.  Resolution order
+// at lookup time is: explicit `display.sections.<name>` → built-in
+// SECTION_DEFAULTS → global `details_mode`.  Today the built-in defaults
+// expand `thinking`/`tools` and hide `activity`; `subagents` falls through
+// to the global mode.  Any explicit value still wins for that one section.
+export type SectionName = 'thinking' | 'tools' | 'subagents' | 'activity'
+export type SectionVisibility = Partial<Record<SectionName, DetailsMode>>
+
 export interface McpServerStatus {
   connected: boolean
   name: string

@@ -31,6 +31,7 @@ import { ModelPickerDialog } from "@/components/ModelPickerDialog";
 import { ToolCall, type ToolEntry } from "@/components/ToolCall";
 import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
 
+import { cn } from "@/lib/utils";
 import { AlertCircle, ChevronDown, RefreshCw } from "lucide-react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 
@@ -66,9 +67,10 @@ const STATE_TONE: Record<ConnectionState, string> = {
 
 interface ChatSidebarProps {
   channel: string;
+  className?: string;
 }
 
-export function ChatSidebar({ channel }: ChatSidebarProps) {
+export function ChatSidebar({ channel, className }: ChatSidebarProps) {
   // `version` bumps on reconnect; gw is derived so we never call setState
   // for it inside an effect (React 19's set-state-in-effect rule). The
   // counter is the dependency on purpose — it's not read in the memo body,
@@ -284,7 +286,12 @@ export function ChatSidebar({ channel }: ChatSidebarProps) {
   const banner = error ?? info.credential_warning ?? null;
 
   return (
-    <aside className="flex h-full w-80 shrink-0 flex-col gap-3 normal-case">
+    <aside
+      className={cn(
+        "flex h-full w-full min-w-0 shrink-0 flex-col gap-3 normal-case lg:w-80",
+        className,
+      )}
+    >
       <Card className="flex items-center justify-between gap-2 px-3 py-2">
         <div className="min-w-0">
           <div className="text-xs uppercase tracking-wider text-muted-foreground">

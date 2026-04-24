@@ -51,6 +51,9 @@ _CONTEXT_INVISIBLE_CHARS = {
     '\u202a', '\u202b', '\u202c', '\u202d', '\u202e',
 }
 
+_SKILL_INDEX_MAX_NAME_CHARS = 80
+_SKILL_INDEX_MAX_DESCRIPTION_CHARS = 160
+
 
 def _scan_context_content(content: str, filename: str) -> str:
     """Scan context file content for injection. Returns sanitized content."""
@@ -71,6 +74,32 @@ def _scan_context_content(content: str, filename: str) -> str:
         return f"[BLOCKED: {filename} contained potential prompt injection ({', '.join(findings)}). Content not loaded.]"
 
     return content
+
+
+def _sanitize_skill_index_text(
+    value: object,
+    source: str,
+    *,
+    max_chars: int = _SKILL_INDEX_MAX_DESCRIPTION_CHARS,
+) -> str:
+    """Return a safe single-line fragment for the skills index prompt."""
+    if value is None:
+        return ""
+
+    raw = str(value).strip().strip("'\"")
+    if not raw:
+        return ""
+
+    scanned = _scan_context_content(raw, source)
+    if scanned.startswith("[BLOCKED:"):
+        return ""
+
+    cleaned = "".join(" " if ch in _CONTEXT_INVISIBLE_CHARS else ch for ch in raw)
+    cleaned = cleaned.replace("<", "").replace(">", "")
+    cleaned = re.sub(r"\s+", " ", cleaned).strip()
+    if len(cleaned) > max_chars:
+        return cleaned[: max_chars - 3].rstrip() + "..."
+    return cleaned
 
 
 def _find_git_root(start: Path) -> Optional[Path]:
@@ -695,7 +724,14 @@ def build_skills_system_prompt(
                 (frontmatter_name, entry.get("description", ""))
             )
         category_descriptions = {
-            str(k): str(v)
+            _sanitize_skill_index_text(
+                k,
+                f"skills snapshot category {k}",
+                max_chars=_SKILL_INDEX_MAX_NAME_CHARS,
+            ): _sanitize_skill_index_text(
+                v,
+                f"skills snapshot category {k} description",
+            )
             for k, v in (snapshot.get("category_descriptions") or {}).items()
         }
     else:
@@ -730,7 +766,10 @@ def build_skills_system_prompt(
                     continue
                 rel = desc_file.relative_to(skills_dir)
                 cat = "/".join(rel.parts[:-1]) if len(rel.parts) > 1 else "general"
-                category_descriptions[cat] = str(cat_desc).strip().strip("'\"")
+                category_descriptions[cat] = _sanitize_skill_index_text(
+                    cat_desc,
+                    str(desc_file),
+                )
             except Exception as e:
                 logger.debug("Could not read skill description %s: %s", desc_file, e)
 
@@ -788,7 +827,10 @@ def build_skills_system_prompt(
                     continue
                 rel = desc_file.relative_to(ext_dir)
                 cat = "/".join(rel.parts[:-1]) if len(rel.parts) > 1 else "general"
-                category_descriptions.setdefault(cat, str(cat_desc).strip().strip("'\""))
+                category_descriptions.setdefault(
+                    cat,
+                    _sanitize_skill_index_text(cat_desc, str(desc_file)),
+                )
             except Exception as e:
                 logger.debug("Could not read external skill description %s: %s", desc_file, e)
 
@@ -797,21 +839,40 @@ def build_skills_system_prompt(
     else:
         index_lines = []
         for category in sorted(skills_by_category.keys()):
-            cat_desc = category_descriptions.get(category, "")
+            safe_category = _sanitize_skill_index_text(
+                category,
+                f"skills category {category}",
+                max_chars=_SKILL_INDEX_MAX_NAME_CHARS,
+            )
+            if not safe_category:
+                continue
+            cat_desc = _sanitize_skill_index_text(
+                category_descriptions.get(category, ""),
+                f"skills category {category} description",
+            )
             if cat_desc:
-                index_lines.append(f"  {category}: {cat_desc}")
+                index_lines.append(f"  {safe_category}: {cat_desc}")
             else:
-                index_lines.append(f"  {category}:")
+                index_lines.append(f"  {safe_category}:")
             # Deduplicate and sort skills within each category
             seen = set()
             for name, desc in sorted(skills_by_category[category], key=lambda x: x[0]):
-                if name in seen:
+                safe_name = _sanitize_skill_index_text(
+                    name,
+                    f"skill name {name}",
+                    max_chars=_SKILL_INDEX_MAX_NAME_CHARS,
+                )
+                if not safe_name or safe_name in seen:
                     continue
-                seen.add(name)
-                if desc:
-                    index_lines.append(f"    - {name}: {desc}")
+                seen.add(safe_name)
+                safe_desc = _sanitize_skill_index_text(
+                    desc,
+                    f"skill {name} description",
+                )
+                if safe_desc:
+                    index_lines.append(f"    - {safe_name}: {safe_desc}")
                 else:
-                    index_lines.append(f"    - {name}")
+                    index_lines.append(f"    - {safe_name}")
 
         result = (
             "## Skills (mandatory)\n"

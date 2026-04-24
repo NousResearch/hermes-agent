@@ -4,7 +4,7 @@
 
 ---
 
-## 2026-04-24 - 同步上游最新变更 (v0.11.0/v2026.4.23) 🚀
+## 2026-04-24 - 同步上游最新变更 (v0.11.0/v2026.4.23+) 🚀
 
 ### 🎉 重大版本 - "The Interface release"
 - **1,556 个提交 · 761 个 PR · 290 位贡献者**
@@ -176,6 +176,50 @@
 - 更新所有模块文档以反映新架构
 - 更新技术栈和模块结构图
 - 添加传输层和 TUI 模块文档
+
+---
+
+## 2026-04-24 - 最新修复和改进 🔧
+
+### ✨ 新功能
+- **design-md 技能**：
+  - 添加 Google's DESIGN.md spec 技能
+  - 教代理编写、检查、差异和导出 DESIGN.md 文件
+  - 支持 YAML front matter + markdown body
+  - 完整的 token schema（颜色、排版、圆角、间距、组件）
+  - CLI 工作流通过 'npx @google/design.md'
+  - 包含启动模板和 Lint 规则参考
+  - 新增 18 个测试用例
+
+### ⚙️ 配置改进
+- **工具输出截断限制可配置**：
+  - 新增 `tool_output` 配置节
+  - `max_bytes`（默认 50_000）- terminal stdout/stderr 上限
+  - `max_lines`（默认 2000）- read_file 分页上限
+  - `max_line_length`（默认 2000）- 行号视图每行上限
+  - 大上下文模型可以增加限制，小上下文模型可以减少
+  - 新增 `tools/tool_output_limits.py` 读取配置
+  - 新增配置文档到 `user-guide/configuration.md`
+
+### 🐛 Bug 修复
+- **MCP stderr 重定向**：
+  - 修复 MCP stdio 服务器的 stderr 输出问题
+  - 将 stderr 重定向到 `$HERMES_HOME/logs/mcp-stderr.log`
+  - 防止 FastMCP 等服务器的 ASCII 损坏损坏终端状态
+  - 防止 slack-mcp-server 的 JSON 日志污染 TTY
+  - 修复约 80% 的启动挂起问题
+  - 每个服务器生成带时间戳的标题以保持日志可读
+
+- **TUI 浮动覆盖层可见性**：
+  - 修复 FloatingOverlays 在输入阻塞时不可见的问题
+  - 修复 `/resume`、`/history`、`/logs`、`/model`、`skills` 命令
+  - 修复完成下拉列表在阻塞覆盖层激活时的问题
+  - 将 FloatingOverlays 移到 `!isBlocked` 守卫之外
+  - 保持覆盖层在输入隐藏时仍然可见
+
+### 🧪 测试改进
+- 新增 18 个工具输出限制测试用例
+- 覆盖默认值、用户覆盖、类型强制、集成测试
 
 ---
 

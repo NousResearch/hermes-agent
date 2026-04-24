@@ -94,7 +94,7 @@ def _run_inline_shell(command: str, cwd: Path | None, timeout: int) -> str:
     except subprocess.TimeoutExpired:
         return f"[inline-shell timeout after {timeout}s: {command}]"
     except FileNotFoundError:
-        return f"[inline-shell error: bash not found]"
+        return "[inline-shell error: bash not found]"
     except Exception as exc:
         return f"[inline-shell error: {exc}]"
 
@@ -320,7 +320,7 @@ def _build_skill_message(
             parts.append(f"- {sf}  ->  {skill_dir / sf}")
         parts.append(
             f'\nLoad any of these with skill_view(name="{skill_view_target}", '
-            f'file_path="<path>"), or run scripts directly by absolute path '
+            'file_path="<path>"), or run scripts directly by absolute path '
             f"(e.g. `node {skill_dir}/scripts/foo.js`)."
         )
 

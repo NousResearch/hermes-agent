@@ -217,6 +217,15 @@ class WhatsAppAdapter(BasePlatformAdapter):
         actual = self._bridge_health_session_path(data)
         return str(actual) if actual is not None else "unknown-session"
 
+    def _bridge_health_belongs_to_current_gateway(self, data: Dict[str, Any]) -> bool:
+        """Return True only when bridge health proves current gateway ownership."""
+        if data.get("managedByGateway") is not True:
+            return False
+        try:
+            return int(data.get("ppid")) == os.getpid()
+        except (TypeError, ValueError):
+            return False
+
     def _write_bridge_health_diagnostics(self, data: Dict[str, Any]) -> None:
         """Persist current bridge health fields for live status/audit tooling."""
         diagnostics: Dict[str, Any] = {
@@ -463,15 +472,18 @@ class WhatsAppAdapter(BasePlatformAdapter):
                             self._write_bridge_health_diagnostics(data)
                             bridge_status = data.get("status", "unknown")
                             if bridge_status == "connected":
-                                if self._bridge_health_matches_configured_session(data):
+                                if (
+                                    self._bridge_health_matches_configured_session(data)
+                                    and self._bridge_health_belongs_to_current_gateway(data)
+                                ):
                                     print(f"[{self.name}] Using existing bridge (status: {bridge_status})")
                                     self._mark_connected()
-                                    self._bridge_process = None  # Not managed by us
+                                    self._bridge_process = None  # Managed by this gateway, but not spawned by this connect() call
                                     self._http_session = aiohttp.ClientSession()
                                     self._poll_task = asyncio.create_task(self._poll_messages())
                                     return True
                                 print(
-                                    f"[{self.name}] Bridge found connected for different session "
+                                    f"[{self.name}] Bridge found connected but not owned by this gateway "
                                     f"({self._bridge_health_session_label(data)}), restarting"
                                 )
                             else:
@@ -495,6 +507,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
             # Pass WHATSAPP_REPLY_PREFIX from config.yaml so the Node bridge
             # can use it without the user needing to set a separate env var.
             bridge_env = os.environ.copy()
+            bridge_env["HERMES_GATEWAY_MANAGED"] = "1"
+            bridge_env["HERMES_GATEWAY_PID"] = str(os.getpid())
             if self._reply_prefix is not None:
                 bridge_env["WHATSAPP_REPLY_PREFIX"] = self._reply_prefix
 

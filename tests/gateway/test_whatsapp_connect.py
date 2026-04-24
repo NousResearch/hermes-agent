@@ -96,7 +96,7 @@ def test_bridge_health_diagnostics_are_sanitized_and_persisted():
             "lastDisconnectReason": "connection_lost",
             "lastDisconnectAt": "2026-04-23T12:00:00Z",
             "lastConnectedAt": "2026-04-23T12:01:00Z",
-            "token": "must-not-leak",
+            "token": "***",
         })
 
     update.assert_called_once()
@@ -116,6 +116,30 @@ def test_bridge_health_diagnostics_are_sanitized_and_persisted():
         "last_connected_at": "2026-04-23T12:01:00Z",
     }
     assert "token" not in diagnostics
+
+
+def test_bridge_health_must_belong_to_current_gateway_before_reuse():
+    adapter = _make_adapter()
+
+    with patch("gateway.platforms.whatsapp.os.getpid", return_value=4242):
+        assert adapter._bridge_health_belongs_to_current_gateway({
+            "managedByGateway": True,
+            "pid": 5000,
+            "ppid": 4242,
+        }) is True
+        assert adapter._bridge_health_belongs_to_current_gateway({
+            "managedByGateway": True,
+            "pid": 5000,
+            "ppid": 1,
+        }) is False
+        assert adapter._bridge_health_belongs_to_current_gateway({
+            "managedByGateway": False,
+            "pid": 5000,
+            "ppid": 4242,
+        }) is False
+        assert adapter._bridge_health_belongs_to_current_gateway({
+            "status": "connected",
+        }) is False
 
 
 def _connect_patches(mock_proc, mock_fh, mock_client_cls=None):

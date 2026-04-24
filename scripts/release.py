@@ -78,6 +78,7 @@ AUTHOR_MAP = {
     "77628552+raulvidis@users.noreply.github.com": "raulvidis",
     "145567217+Aum08Desai@users.noreply.github.com": "Aum08Desai",
     "256820943+kshitij-eliza@users.noreply.github.com": "kshitij-eliza",
+    "jiechengwu@pony.ai": "Jason2031",
     "44278268+shitcoinsherpa@users.noreply.github.com": "shitcoinsherpa",
     "104278804+Sertug17@users.noreply.github.com": "Sertug17",
     "112503481+caentzminger@users.noreply.github.com": "caentzminger",

@@ -1393,6 +1393,59 @@ def _model_in_provider_catalog(name_lower: str, providers: set[str]) -> bool:
     )
 
 
+_AGGREGATOR_PROVIDERS = frozenset(
+    {"nous", "openrouter", "ai-gateway", "copilot", "kilocode"}
+)
+
+
+def _resolve_static_model_alias(
+    name_lower: str,
+    current_keys: set[str],
+) -> Optional[tuple[str, str]]:
+    """Resolve short aliases (e.g. sonnet/opus) using static catalogs only."""
+    try:
+        from hermes_cli.model_switch import MODEL_ALIASES
+    except Exception:
+        return None
+
+    identity = MODEL_ALIASES.get(name_lower)
+    if identity is None:
+        return None
+
+    vendor = identity.vendor
+    family = identity.family
+
+    def _match(provider: str) -> Optional[str]:
+        models = _PROVIDER_MODELS.get(provider, [])
+        if not models:
+            return None
+        prefix = (
+            f"{vendor}/{family}"
+            if provider in _AGGREGATOR_PROVIDERS
+            else family
+        ).lower()
+        for model in models:
+            if model.lower().startswith(prefix):
+                return model
+        return None
+
+    for provider in current_keys:
+        if matched := _match(provider):
+            return provider, matched
+
+    for provider in _PROVIDER_MODELS:
+        if provider in current_keys or provider in _AGGREGATOR_PROVIDERS:
+            continue
+        if matched := _match(provider):
+            return provider, matched
+
+    for provider in _AGGREGATOR_PROVIDERS:
+        if provider in current_keys and (matched := _match(provider)):
+            return provider, matched
+
+    return None
+
+
 def detect_static_provider_for_model(
     model_name: str,
     current_provider: str,
@@ -1408,6 +1461,10 @@ def detect_static_provider_for_model(
 
     name_lower = name.lower()
     current_keys = _provider_keys(current_provider)
+
+    alias_match = _resolve_static_model_alias(name_lower, current_keys)
+    if alias_match:
+        return alias_match
 
     # --- Step 0: bare provider name typed as model ---
     # If someone types `/model nous` or `/model anthropic`, treat it as a
@@ -1425,15 +1482,13 @@ def detect_static_provider_for_model(
             return (resolved_provider, default_models[0])
 
     # Aggregators list other providers' models — never auto-switch TO them
-    _AGGREGATORS = {"nous", "openrouter", "ai-gateway", "copilot", "kilocode"}
-
     # If the model belongs to the current provider's catalog, don't suggest switching
     if _model_in_provider_catalog(name_lower, current_keys):
         return None
 
     # --- Step 1: check static provider catalogs for a direct match ---
     for pid, models in _PROVIDER_MODELS.items():
-        if pid in current_keys or pid in _AGGREGATORS:
+        if pid in current_keys or pid in _AGGREGATOR_PROVIDERS:
             continue
         if any(name_lower == m.lower() for m in models):
             return (pid, name)

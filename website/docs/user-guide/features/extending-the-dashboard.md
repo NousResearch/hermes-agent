@@ -552,6 +552,8 @@ window.__HERMES_PLUGINS__.registerSlot("my-plugin", "header-left", MyCrest);
 
 #### Slot catalogue
 
+**Shell-wide slots** (render anywhere in the app chrome):
+
 | Slot | Location |
 |------|----------|
 | `backdrop` | Inside the `<Backdrop />` layer stack, above the noise layer. |
@@ -564,6 +566,35 @@ window.__HERMES_PLUGINS__.registerSlot("my-plugin", "header-left", MyCrest);
 | `footer-left` | Footer cell content (replaces default). |
 | `footer-right` | Footer cell content (replaces default). |
 | `overlay` | Fixed-position layer above everything else. Useful for chrome (scanlines, vignettes) `customCSS` can't achieve alone. |
+
+**Page-scoped slots** (render only on the named built-in page — use these to inject widgets, cards, or toolbars into an existing page without overriding the whole route):
+
+| Slot | Where it renders |
+|------|------------------|
+| `sessions:top` / `sessions:bottom` | Top / bottom of the `/sessions` page. |
+| `analytics:top` / `analytics:bottom` | Top / bottom of the `/analytics` page. |
+| `logs:top` / `logs:bottom` | Top (above filter toolbar) / bottom (below log viewer) of `/logs`. |
+| `cron:top` / `cron:bottom` | Top / bottom of the `/cron` page. |
+| `skills:top` / `skills:bottom` | Top / bottom of the `/skills` page. |
+| `config:top` / `config:bottom` | Top / bottom of the `/config` page. |
+| `env:top` / `env:bottom` | Top / bottom of the `/env` (Keys) page. |
+| `docs:top` / `docs:bottom` | Top (above the iframe) / bottom of `/docs`. |
+| `chat:top` / `chat:bottom` | Top / bottom of `/chat` (only active when embedded chat is enabled). |
+
+Example — add a banner card to the top of the Sessions page:
+
+```javascript
+function PinnedSessionsBanner() {
+  return React.createElement(Card, null,
+    React.createElement(CardContent, { className: "py-2 text-xs" },
+      "Pinned note injected by my-plugin"),
+  );
+}
+
+window.__HERMES_PLUGINS__.registerSlot("my-plugin", "sessions:top", PinnedSessionsBanner);
+```
+
+Combine page-scoped slots with `tab.hidden: true` if your plugin only augments existing pages and doesn't need a sidebar tab of its own.
 
 The shell only renders `<PluginSlot name="..." />` for the slots above. Additional names are accepted by the registry for nested plugin UIs — a plugin can expose its own slots via `SDK.components.PluginSlot`.
 

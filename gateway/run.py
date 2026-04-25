@@ -524,6 +524,10 @@ def _load_gateway_config() -> dict:
 def _resolve_gateway_model(config: dict | None = None) -> str:
     """Read model from config.yaml — single source of truth.
 
+    Supports a dedicated ``model.gateway`` override so the gateway can use
+    a different model than the CLI.  Falls back to ``model.default`` when
+    ``model.gateway`` is not set.
+
     Without this, temporary AIAgent instances (memory flush, /compress) fall
     back to the hardcoded default which fails when the active provider is
     openai-codex.
@@ -533,6 +537,10 @@ def _resolve_gateway_model(config: dict | None = None) -> str:
     if isinstance(model_cfg, str):
         return model_cfg
     elif isinstance(model_cfg, dict):
+        # Gateway-specific model takes priority over the shared default.
+        gateway_model = model_cfg.get("gateway")
+        if gateway_model:
+            return gateway_model
         return model_cfg.get("default") or model_cfg.get("model") or ""
     return ""
 

@@ -23,9 +23,14 @@ def get_transport(api_mode: str):
     This allows gradual migration — call sites can check for None
     and fall back to the legacy code path.
     """
-    if not _REGISTRY:
-        _discover_transports()
     cls = _REGISTRY.get(api_mode)
+    if cls is None:
+        # The registry can be partially populated when a specific transport
+        # module was imported directly (for example chat_completions before
+        # codex).  Discover on misses, not only when the registry is empty, so
+        # test/order-dependent imports do not make valid api_modes unavailable.
+        _discover_transports()
+        cls = _REGISTRY.get(api_mode)
     if cls is None:
         return None
     return cls()

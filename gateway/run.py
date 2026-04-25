@@ -6737,7 +6737,19 @@ class GatewayRunner:
                 level = "none (disabled)"
             else:
                 level = rc.get("effort", "medium")
-            display_state = "on ✓" if self._show_reasoning else "off"
+            # Use per-platform resolution so /reasoning shows the effective state
+            # for the current platform, not just the global fallback.
+            try:
+                from gateway.display_config import resolve_display_setting as _rds
+                platform_key = _platform_config_key(event.source.platform)
+                user_config = {}
+                if config_path.exists():
+                    with open(config_path, encoding="utf-8") as f:
+                        user_config = yaml.safe_load(f) or {}
+                show_effective = _rds(user_config, platform_key, "show_reasoning", self._show_reasoning)
+            except Exception:
+                show_effective = self._show_reasoning
+            display_state = "on ✓" if show_effective else "off"
             return (
                 "🧠 **Reasoning Settings**\n\n"
                 f"**Effort:** `{level}`\n"

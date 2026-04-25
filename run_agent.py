@@ -7754,25 +7754,40 @@ class AIAgent:
         if source_msg.get("role") != "assistant":
             return
 
-        explicit_reasoning = source_msg.get("reasoning_content")
-        if isinstance(explicit_reasoning, str):
-            api_msg["reasoning_content"] = explicit_reasoning
+        # 1. Explicit reasoning_content already set — preserve it verbatim
+        # (includes DeepSeek/Kimi's own empty-string placeholder written at
+        # creation time, and any valid reasoning content from the same provider).
+        existing = source_msg.get("reasoning_content")
+        if isinstance(existing, str):
+            api_msg["reasoning_content"] = existing
             return
 
+        # 2. DeepSeek / Kimi thinking mode: tool-call turns that lack
+        # reasoning_content are "poisoned history" — a prior provider (MiniMax,
+        # etc.) left them empty. DeepSeek returns HTTP 400 if reasoning_content
+        # is absent on replay; inject "" to satisfy the provider's requirement
+        # without forwarding any cross-provider reasoning content.
+        needs_empty_reasoning = (
+            source_msg.get("tool_calls")
+            and (
+                self._needs_kimi_tool_reasoning()
+                or self._needs_deepseek_tool_reasoning()
+            )
+        )
+        if needs_empty_reasoning:
+            api_msg["reasoning_content"] = ""
+            return
+
+        # 3. Healthy session: promote 'reasoning' field to 'reasoning_content'
+        # for providers that use the internal 'reasoning' key.
         normalized_reasoning = source_msg.get("reasoning")
         if isinstance(normalized_reasoning, str) and normalized_reasoning:
             api_msg["reasoning_content"] = normalized_reasoning
             return
 
-        # Providers that require an echoed reasoning_content on every
-        # assistant tool-call turn. Detection logic lives in the per-provider
-        # helpers so both the creation path (_build_assistant_message) and
-        # this replay path stay in sync.
-        if source_msg.get("tool_calls") and (
-            self._needs_kimi_tool_reasoning()
-            or self._needs_deepseek_tool_reasoning()
-        ):
-            api_msg["reasoning_content"] = ""
+        # 4. reasoning_content was present but not a string (e.g. None after
+        # context compaction).  Don't pass null to the API.
+        api_msg.pop("reasoning_content", None)
 
     @staticmethod
     def _sanitize_tool_calls_for_strict_api(api_msg: dict) -> dict:

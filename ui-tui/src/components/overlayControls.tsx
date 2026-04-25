@@ -2,8 +2,6 @@ import { Text, useInput } from '@hermes/ink'
 
 import type { Theme } from '../theme.js'
 
-type TextWrap = 'end' | 'middle' | 'truncate' | 'truncate-end' | 'truncate-middle' | 'wrap' | 'wrap-char' | 'wrap-trim'
-
 export function useOverlayKeys({ disabled = false, onBack, onClose }: OverlayKeysOptions) {
   useInput((ch, key) => {
     if (disabled) {
@@ -20,18 +18,29 @@ export function useOverlayKeys({ disabled = false, onBack, onClose }: OverlayKey
   })
 }
 
-export function OverlayControls({ children, t, wrap = 'truncate-end' }: OverlayControlsProps) {
+export function OverlayHint({ children, t }: OverlayHintProps) {
   return (
-    <Text color={t.color.dim} wrap={wrap}>
+    <Text color={t.color.dim} wrap="truncate-end">
       {children}
     </Text>
   )
 }
 
-interface OverlayControlsProps {
+export const windowOffset = (count: number, selected: number, visible: number) =>
+  Math.max(0, Math.min(selected - Math.floor(visible / 2), count - visible))
+
+export function windowItems<T>(items: T[], selected: number, visible: number) {
+  const offset = windowOffset(items.length, selected, visible)
+
+  return {
+    items: items.slice(offset, offset + visible),
+    offset
+  }
+}
+
+interface OverlayHintProps {
   children: string
   t: Theme
-  wrap?: TextWrap
 }
 
 interface OverlayKeysOptions {

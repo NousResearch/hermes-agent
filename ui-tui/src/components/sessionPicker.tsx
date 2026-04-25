@@ -6,7 +6,7 @@ import type { SessionListItem, SessionListResponse } from '../gatewayTypes.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
-import { OverlayControls, useOverlayKeys } from './overlayControls.js'
+import { OverlayHint, useOverlayKeys, windowOffset } from './overlayControls.js'
 
 const VISIBLE = 15
 const MIN_WIDTH = 60
@@ -87,7 +87,7 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
     return (
       <Box flexDirection="column">
         <Text color={t.color.label}>error: {err}</Text>
-        <OverlayControls t={t}>Esc/q cancel</OverlayControls>
+        <OverlayHint t={t}>Esc/q cancel</OverlayHint>
       </Box>
     )
   }
@@ -96,12 +96,12 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
     return (
       <Box flexDirection="column">
         <Text color={t.color.dim}>no previous sessions</Text>
-        <OverlayControls t={t}>Esc/q cancel</OverlayControls>
+        <OverlayHint t={t}>Esc/q cancel</OverlayHint>
       </Box>
     )
   }
 
-  const off = Math.max(0, Math.min(sel - Math.floor(VISIBLE / 2), items.length - VISIBLE))
+  const offset = windowOffset(items.length, sel, VISIBLE)
 
   return (
     <Box flexDirection="column" width={width}>
@@ -109,10 +109,10 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
         Resume Session
       </Text>
 
-      {off > 0 && <Text color={t.color.dim}> ↑ {off} more</Text>}
+      {offset > 0 && <Text color={t.color.dim}> ↑ {offset} more</Text>}
 
-      {items.slice(off, off + VISIBLE).map((s, vi) => {
-        const i = off + vi
+      {items.slice(offset, offset + VISIBLE).map((s, vi) => {
+        const i = offset + vi
         const selected = sel === i
 
         return (
@@ -140,8 +140,8 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
         )
       })}
 
-      {off + VISIBLE < items.length && <Text color={t.color.dim}> ↓ {items.length - off - VISIBLE} more</Text>}
-      <OverlayControls t={t}>↑/↓ select · Enter resume · 1-9 quick · Esc/q cancel</OverlayControls>
+      {offset + VISIBLE < items.length && <Text color={t.color.dim}> ↓ {items.length - offset - VISIBLE} more</Text>}
+      <OverlayHint t={t}>↑/↓ select · Enter resume · 1-9 quick · Esc/q cancel</OverlayHint>
     </Box>
   )
 }

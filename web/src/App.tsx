@@ -37,6 +37,7 @@ import {
   Shield,
   Sparkles,
   Star,
+  Columns3,
   Terminal,
   Wrench,
   X,
@@ -57,6 +58,7 @@ import SessionsPage from "@/pages/SessionsPage";
 import LogsPage from "@/pages/LogsPage";
 import AnalyticsPage from "@/pages/AnalyticsPage";
 import CronPage from "@/pages/CronPage";
+import KanbanPage from "@/pages/KanbanPage";
 import SkillsPage from "@/pages/SkillsPage";
 import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
@@ -85,6 +87,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/analytics": AnalyticsPage,
   "/logs": LogsPage,
   "/cron": CronPage,
+  "/kanban": KanbanPage,
   "/skills": SkillsPage,
   "/config": ConfigPage,
   "/env": EnvPage,
@@ -106,6 +109,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   },
   { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
+  { path: "/kanban", label: "Kanban", icon: Columns3 },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
@@ -137,6 +141,7 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Heart,
   Star,
   Code,
+  Columns3,
   Eye,
 };
 

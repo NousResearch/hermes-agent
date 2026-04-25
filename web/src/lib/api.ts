@@ -136,6 +136,46 @@ export const api = {
   searchSessions: (q: string) =>
     fetchJSON<SessionSearchResponse>(`/api/sessions/search?q=${encodeURIComponent(q)}`),
 
+  // Kanban
+  getKanbanBoard: () => fetchJSON<KanbanBoardResponse>("/api/kanban/board"),
+  createKanbanCard: (card: { title: string; prompt: string; workspace_path?: string }) =>
+    fetchJSON<KanbanCard>("/api/kanban/cards", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(card),
+    }),
+  updateKanbanCard: (
+    id: string,
+    card: Partial<Pick<KanbanCard, "title" | "prompt" | "column" | "workspace_path">>,
+  ) =>
+    fetchJSON<KanbanCard>(`/api/kanban/cards/${encodeURIComponent(id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(card),
+    }),
+  deleteKanbanCard: (id: string) =>
+    fetchJSON<{ ok: boolean }>(`/api/kanban/cards/${encodeURIComponent(id)}`, {
+      method: "DELETE",
+    }),
+  startKanbanCard: (id: string, workspace_path?: string) =>
+    fetchJSON<KanbanCard>(`/api/kanban/cards/${encodeURIComponent(id)}/start`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workspace_path }),
+    }),
+  stopKanbanCard: (id: string) =>
+    fetchJSON<KanbanCard>(`/api/kanban/cards/${encodeURIComponent(id)}/stop`, {
+      method: "POST",
+    }),
+  getKanbanCardLog: (id: string, lines = 160) =>
+    fetchJSON<KanbanCardLogResponse>(
+      `/api/kanban/cards/${encodeURIComponent(id)}/log?lines=${lines}`,
+    ),
+  getKanbanCardDiff: (id: string) =>
+    fetchJSON<KanbanCardDiffResponse>(
+      `/api/kanban/cards/${encodeURIComponent(id)}/diff`,
+    ),
+
   // OAuth provider management
   getOAuthProviders: () =>
     fetchJSON<OAuthProvidersResponse>("/api/providers/oauth"),
@@ -256,6 +296,57 @@ export interface StatusResponse {
   latest_config_version: number;
   release_date: string;
   version: string;
+}
+
+export type KanbanColumnId = "backlog" | "running" | "review" | "done" | "trash";
+export type KanbanTaskStatus = "idle" | "running" | "review" | "done" | "failed" | "stopped";
+
+export interface KanbanColumn {
+  id: KanbanColumnId;
+  title: string;
+}
+
+export interface KanbanCard {
+  id: string;
+  title: string;
+  prompt: string;
+  column: KanbanColumnId;
+  status: KanbanTaskStatus;
+  workspace_path: string | null;
+  pid: number | null;
+  log_path: string | null;
+  last_activity: string | null;
+  error: string | null;
+  created_at: number;
+  updated_at: number;
+  started_at: number | null;
+  finished_at: number | null;
+}
+
+export interface KanbanBoard {
+  version: number;
+  cards: KanbanCard[];
+  updated_at: number;
+}
+
+export interface KanbanBoardResponse {
+  board: KanbanBoard;
+  columns: KanbanColumn[];
+  default_workspace_path: string;
+}
+
+export interface KanbanCardLogResponse {
+  card_id: string;
+  log: string;
+  log_path: string | null;
+}
+
+export interface KanbanCardDiffResponse {
+  card_id: string;
+  workspace_path: string | null;
+  is_git_repo: boolean;
+  summary: string;
+  diff: string;
 }
 
 export interface SessionInfo {

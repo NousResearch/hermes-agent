@@ -165,6 +165,15 @@ Create and manage scheduled cron jobs that run agent prompts on a recurring sche
 - **Trigger now** — immediately execute a job outside its normal schedule
 - **Delete** — permanently remove a cron job
 
+### Kanban
+
+Create and monitor dashboard task cards that run Hermes in a selected workspace.
+
+- **Create** — add a card with a title, prompt, and workspace path
+- **Run / Stop** — launch or terminate the Hermes process attached to a card
+- **Review** — inspect the task log and git diff for the card workspace
+- **Archive** — move accepted work to Done or delete cards that are no longer needed
+
 ### Skills
 
 Browse, search, and toggle skills and toolsets. Skills are loaded from `~/.hermes/skills/` and grouped by category.

@@ -327,3 +327,72 @@ class TestFlushMemoriesCodexFallback:
         mock_stream.assert_called_once()
         mock_memory.assert_called_once()
         assert mock_memory.call_args.kwargs["content"] == "Codex flush test"
+
+    @pytest.mark.parametrize(
+        "provider,base_url",
+        [
+            # chatgpt.com/backend-api/codex — rejects temperature unconditionally
+            ("openai-codex", "https://chatgpt.com/backend-api/codex"),
+            # Native OpenAI Responses — rejects temperature on gpt-5/o-series reasoning models
+            ("openai", "https://api.openai.com/v1"),
+            # Copilot Responses — rejects temperature on reasoning models
+            ("copilot", "https://api.githubcopilot.com"),
+        ],
+    )
+    def test_codex_fallback_never_sends_temperature(self, monkeypatch, provider, base_url):
+        """Regression for the ``⚠ Auxiliary memory flush failed: HTTP 400:
+        Unsupported parameter: temperature`` error.
+
+        The codex_responses fallback must strip temperature before calling
+        _run_codex_stream — the Responses API does not accept it on any
+        supported backend, matching the transport's behavior."""
+        agent = _make_agent(monkeypatch, api_mode="codex_responses", provider=provider)
+        agent.base_url = base_url
+
+        codex_response = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="function_call",
+                    call_id="call_1",
+                    name="memory",
+                    arguments=json.dumps({
+                        "action": "add",
+                        "target": "notes",
+                        "content": "no-temp test",
+                    }),
+                ),
+            ],
+            usage=SimpleNamespace(input_tokens=50, output_tokens=10, total_tokens=60),
+            status="completed",
+            model="gpt-5.5",
+        )
+
+        with patch("agent.auxiliary_client.call_llm", side_effect=RuntimeError("no provider")), \
+             patch.object(agent, "_run_codex_stream", return_value=codex_response) as mock_stream, \
+             patch.object(agent, "_build_api_kwargs") as mock_build, \
+             patch("tools.memory_tool.memory_tool", return_value="Saved."):
+            # Simulate a transport that (correctly) never includes temperature,
+            # but also verify we strip any stray temperature the fallback used
+            # to inject before the fix.
+            mock_build.return_value = {
+                "model": "gpt-5.5",
+                "instructions": "test",
+                "input": [],
+                "tools": [],
+                "max_output_tokens": 4096,
+                # Intentionally poison the dict to prove we pop it:
+                "temperature": 0.3,
+            }
+            messages = [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi"},
+                {"role": "user", "content": "Save this"},
+            ]
+            agent.flush_memories(messages)
+
+        mock_stream.assert_called_once()
+        sent_kwargs = mock_stream.call_args.args[0]
+        assert "temperature" not in sent_kwargs, (
+            f"codex_responses fallback must strip temperature before calling "
+            f"_run_codex_stream, got: {sent_kwargs.get('temperature')!r}"
+        )

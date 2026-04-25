@@ -61,6 +61,7 @@ class Platform(Enum):
     DINGTALK = "dingtalk"
     API_SERVER = "api_server"
     WEBHOOK = "webhook"
+    NOTIONAGENT = "notionagent"
     FEISHU = "feishu"
     WECOM = "wecom"
     WECOM_CALLBACK = "wecom_callback"
@@ -296,6 +297,9 @@ class GatewayConfig:
                 connected.append(platform)
             # Webhook uses enabled flag only (secrets are per-route)
             elif platform == Platform.WEBHOOK:
+                connected.append(platform)
+            # NotionAgent uses HMAC + callback URL rather than token/api_key
+            elif platform == Platform.NOTIONAGENT and config.extra.get("secret") and config.extra.get("callback_url"):
                 connected.append(platform)
             # Feishu uses extra dict for app credentials
             elif platform == Platform.FEISHU and config.extra.get("app_id"):
@@ -548,6 +552,14 @@ def load_gateway_config() -> GatewayConfig:
                     existing = platforms_data.get(plat_name, {})
                     if not isinstance(existing, dict):
                         existing = {}
+                    if plat_name == Platform.NOTIONAGENT.value:
+                        direct_extra = {
+                            key: plat_block[key]
+                            for key in ("secret", "callback_url", "host", "port", "path")
+                            if key in plat_block
+                        }
+                        if direct_extra:
+                            plat_block = {**plat_block, "extra": {**plat_block.get("extra", {}), **direct_extra}}
                     # Deep-merge extra dicts so gateway.json defaults survive
                     merged_extra = {**existing.get("extra", {}), **plat_block.get("extra", {})}
                     merged = {**existing, **plat_block}
@@ -1089,6 +1101,37 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 pass
         if webhook_secret:
             config.platforms[Platform.WEBHOOK].extra["secret"] = webhook_secret
+
+    # NotionAgent platform
+    notionagent_secret = os.getenv("NOTIONAGENT_SECRET", "")
+    notionagent_callback_url = os.getenv("NOTIONAGENT_CALLBACK_URL", "")
+    notionagent_port = os.getenv("NOTIONAGENT_PORT")
+    if notionagent_secret or notionagent_callback_url:
+        if Platform.NOTIONAGENT not in config.platforms:
+            config.platforms[Platform.NOTIONAGENT] = PlatformConfig()
+        config.platforms[Platform.NOTIONAGENT].enabled = True
+        if notionagent_secret:
+            config.platforms[Platform.NOTIONAGENT].extra["secret"] = notionagent_secret
+        if notionagent_callback_url:
+            config.platforms[Platform.NOTIONAGENT].extra["callback_url"] = notionagent_callback_url
+        if notionagent_port:
+            try:
+                config.platforms[Platform.NOTIONAGENT].extra["port"] = int(notionagent_port)
+            except ValueError:
+                pass
+        notionagent_host = os.getenv("NOTIONAGENT_HOST", "")
+        if notionagent_host:
+            config.platforms[Platform.NOTIONAGENT].extra["host"] = notionagent_host
+        notionagent_path = os.getenv("NOTIONAGENT_PATH", "")
+        if notionagent_path:
+            config.platforms[Platform.NOTIONAGENT].extra["path"] = notionagent_path
+    notionagent_home = os.getenv("NOTIONAGENT_HOME_CHANNEL", "")
+    if notionagent_home and Platform.NOTIONAGENT in config.platforms:
+        config.platforms[Platform.NOTIONAGENT].home_channel = HomeChannel(
+            platform=Platform.NOTIONAGENT,
+            chat_id=notionagent_home,
+            name=os.getenv("NOTIONAGENT_HOME_CHANNEL_NAME", "Home"),
+        )
 
     # DingTalk
     dingtalk_client_id = os.getenv("DINGTALK_CLIENT_ID")

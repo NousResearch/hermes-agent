@@ -120,7 +120,7 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org'"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'notionagent:session-id'"
             },
             "message": {
                 "type": "string",
@@ -215,6 +215,7 @@ def _handle_send(args):
         "weixin": Platform.WEIXIN,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
+        "notionagent": Platform.NOTIONAGENT,
     }
     platform = platform_map.get(platform_name)
     if not platform:
@@ -322,6 +323,8 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _WEIXIN_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), None, True
+    if platform_name == "notionagent":
+        return target_ref.strip(), None, True
     if platform_name in _PHONE_PLATFORMS:
         match = _E164_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -571,6 +574,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
         elif platform == Platform.QQBOT:
             result = await _send_qqbot(pconfig, chat_id, chunk)
+        elif platform == Platform.NOTIONAGENT:
+            result = await _send_notionagent(pconfig, chat_id, chunk)
         else:
             result = {"error": f"Direct sending not yet implemented for {platform.value}"}
 
@@ -1508,6 +1513,35 @@ async def _send_qqbot(pconfig, chat_id, message):
                 return _error(f"QQBot send failed: {resp.status_code} {resp.text}")
     except Exception as e:
         return _error(f"QQBot send failed: {e}")
+
+
+async def _send_notionagent(pconfig, chat_id, message):
+    """Send via NotionAgent callback without requiring the gateway adapter."""
+    try:
+        from gateway.platforms.notionagent import _post_notionagent_callback
+    except ImportError:
+        return _error("NotionAgent direct send requires aiohttp and httpx.")
+
+    extra = pconfig.extra or {}
+    secret = extra.get("secret") or pconfig.token or os.getenv("NOTIONAGENT_SECRET", "")
+    callback_url = extra.get("callback_url") or os.getenv("NOTIONAGENT_CALLBACK_URL", "")
+    if not secret or not callback_url:
+        return _error("NotionAgent: NOTIONAGENT_SECRET and NOTIONAGENT_CALLBACK_URL must be configured.")
+
+    result = await _post_notionagent_callback(
+        callback_url=str(callback_url),
+        secret=str(secret),
+        session_id=str(chat_id),
+        text=message,
+    )
+    if not result.success:
+        return _error(result.error or "NotionAgent send failed")
+    return {
+        "success": True,
+        "platform": "notionagent",
+        "chat_id": str(chat_id),
+        "message_id": result.message_id,
+    }
 
 
 # --- Registry ---

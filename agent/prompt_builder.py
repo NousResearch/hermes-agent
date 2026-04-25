@@ -333,6 +333,13 @@ PLATFORM_HINTS = {
         "files arrive as downloadable documents. You can also include image "
         "URLs in markdown format ![alt](url) and they will be sent as photos."
     ),
+    "notionagent": (
+        "You are responding inside the NotionAgent web app's chat panel. "
+        "Plain text and markdown work; the frontend renders standard markdown "
+        "including code blocks. There is no voice or image return path on this "
+        "platform — text only. Each session here is scoped to a single voice "
+        "memo or task; keep answers focused on that scope."
+    ),
     "email": (
         "You are communicating via email. Write clear, well-structured responses "
         "suitable for email. Use plain text formatting (no markdown). "

@@ -311,6 +311,15 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `QQBOT_HOME_CHANNEL` | QQ user/group openID for cron delivery and notifications |
 | `QQBOT_HOME_CHANNEL_NAME` | Display name for the QQ home channel |
 | `QQ_SANDBOX` | Route QQ Bot to the sandbox gateway for development testing (`true`/`false`). Use with a sandbox app credential from [q.qq.com](https://q.qq.com). |
+| `NOTIONAGENT_SECRET` | Shared HMAC-SHA256 secret for the NotionAgent gateway adapter |
+| `NOTIONAGENT_CALLBACK_URL` | NotionAgent callback URL that receives Hermes replies |
+| `NOTIONAGENT_PORT` | Inbound NotionAgent HTTP port (default: `8645`) |
+| `NOTIONAGENT_HOST` | Inbound NotionAgent bind host (default: `0.0.0.0`) |
+| `NOTIONAGENT_PATH` | Inbound NotionAgent path (default: `/notionagent/in`) |
+| `NOTIONAGENT_ALLOWED_USERS` | Optional comma-separated NotionAgent session IDs allowed to message Hermes; unset allows all signed requests |
+| `NOTIONAGENT_ALLOW_ALL_USERS` | Explicitly allow all signed NotionAgent requests (`true`/`false`) |
+| `NOTIONAGENT_HOME_CHANNEL` | NotionAgent session ID for cron delivery and notifications |
+| `NOTIONAGENT_HOME_CHANNEL_NAME` | Display name for the NotionAgent home channel |
 | `MATTERMOST_URL` | Mattermost server URL (e.g. `https://mm.example.com`) |
 | `MATTERMOST_TOKEN` | Bot token or personal access token for Mattermost |
 | `MATTERMOST_ALLOWED_USERS` | Comma-separated Mattermost user IDs allowed to message the bot |

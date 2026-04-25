@@ -97,6 +97,7 @@ _PLATFORM_DEFAULTS: dict[str, dict[str, Any]] = {
     "email":           _TIER_MINIMAL,
     "sms":             _TIER_MINIMAL,
     "webhook":         _TIER_MINIMAL,
+    "notionagent":     _TIER_MINIMAL,
     "homeassistant":   _TIER_MINIMAL,
     "api_server":      {**_TIER_HIGH, "tool_preview_length": 0},
 }

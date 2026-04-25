@@ -221,6 +221,7 @@ class WebhookAdapter(BasePlatformAdapter):
             "weixin",
             "bluebubbles",
             "qqbot",
+            "notionagent",
         ):
             return await self._deliver_cross_platform(
                 deliver_type, content, delivery

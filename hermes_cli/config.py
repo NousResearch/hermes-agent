@@ -1877,6 +1877,62 @@ OPTIONAL_ENV_VARS = {
         "password": True,
         "category": "messaging",
     },
+    "NOTIONAGENT_SECRET": {
+        "description": "Shared HMAC secret for the NotionAgent gateway adapter.",
+        "prompt": "NotionAgent HMAC secret",
+        "url": "https://github.com/ravenviersechs/NotionAgent",
+        "password": True,
+        "category": "messaging",
+    },
+    "NOTIONAGENT_CALLBACK_URL": {
+        "description": "NotionAgent callback URL that receives Hermes replies.",
+        "prompt": "NotionAgent callback URL",
+        "url": "https://github.com/ravenviersechs/NotionAgent",
+        "password": False,
+        "category": "messaging",
+    },
+    "NOTIONAGENT_PORT": {
+        "description": "Port for the NotionAgent inbound HTTP server (default: 8645).",
+        "prompt": "NotionAgent inbound port",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "NOTIONAGENT_HOST": {
+        "description": "Bind host for the NotionAgent inbound HTTP server (default: 0.0.0.0).",
+        "prompt": "NotionAgent bind host",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "NOTIONAGENT_PATH": {
+        "description": "Inbound path for NotionAgent messages (default: /notionagent/in).",
+        "prompt": "NotionAgent inbound path",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "NOTIONAGENT_ALLOWED_USERS": {
+        "description": "Optional comma-separated NotionAgent session IDs allowed to use Hermes; empty allows all signed requests.",
+        "prompt": "NotionAgent allowed session IDs",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "NOTIONAGENT_ALLOW_ALL_USERS": {
+        "description": "Explicitly allow all signed NotionAgent requests.",
+        "prompt": "Allow all NotionAgent sessions",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
+    "NOTIONAGENT_HOME_CHANNEL": {
+        "description": "Default NotionAgent session ID for cron and send_message delivery.",
+        "prompt": "NotionAgent home session ID",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+    },
 
     # ── Agent settings ──
     # NOTE: MESSAGING_CWD was removed here — use terminal.cwd in config.yaml

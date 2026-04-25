@@ -37,7 +37,7 @@ hermes-agent/
 │   ├── platforms/        # Adapter per platform (telegram, discord, slack, whatsapp,
 │   │                     #   homeassistant, signal, matrix, mattermost, email, sms,
 │   │                     #   dingtalk, wecom, weixin, feishu, qqbot, bluebubbles,
-│   │                     #   webhook, api_server, ...). See ADDING_A_PLATFORM.md.
+│   │                     #   webhook, notionagent, api_server, ...). See ADDING_A_PLATFORM.md.
 │   └── builtin_hooks/    # Always-registered gateway hooks (boot-md, ...)
 ├── plugins/              # Plugin system (see "Plugins" section below)
 │   ├── memory/           # Memory-provider plugins (honcho, mem0, supermemory, ...)
@@ -320,6 +320,8 @@ Non-secret settings (timeouts, thresholds, feature flags, paths, display
 preferences) belong in `config.yaml`, not `.env`. If internal code needs an
 env var mirror for backward compatibility, bridge it from `config.yaml` to
 the env var in code (see `gateway_timeout`, `terminal.cwd` → `TERMINAL_CWD`).
+NotionAgent uses `NOTIONAGENT_SECRET` as the shared HMAC secret and
+`NOTIONAGENT_CALLBACK_URL` as the outbound reply endpoint.
 
 ### Config loaders (three paths — know which one you're in):
 

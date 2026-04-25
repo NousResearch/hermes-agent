@@ -2724,6 +2724,38 @@ _PLATFORMS = [
              "help": "OpenID to deliver cron results and notifications to."},
         ],
     },
+    {
+        "key": "notionagent",
+        "label": "NotionAgent",
+        "emoji": "📝",
+        "token_var": "NOTIONAGENT_SECRET",
+        "setup_instructions": [
+            "1. Generate a long shared HMAC secret and configure it in both Hermes and NotionAgent",
+            "2. Set NOTIONAGENT_CALLBACK_URL to the NotionAgent endpoint that receives Hermes replies",
+            "3. Expose the Hermes gateway endpoint to NotionAgent:",
+            "   https://your-server:8645/notionagent/in",
+            "4. NotionAgent signs POST bodies with X-NotionAgent-Signature: sha256=<hex>",
+        ],
+        "vars": [
+            {"name": "NOTIONAGENT_SECRET", "prompt": "Shared HMAC secret", "password": True,
+             "help": "Use the same secret in Hermes and NotionAgent for inbound and outbound signatures."},
+            {"name": "NOTIONAGENT_CALLBACK_URL", "prompt": "Callback URL for replies", "password": False,
+             "help": "The NotionAgent endpoint Hermes POSTs responses to."},
+            {"name": "NOTIONAGENT_PORT", "prompt": "Inbound HTTP port (default: 8645)", "password": False,
+             "help": "Local port for /notionagent/in."},
+            {"name": "NOTIONAGENT_HOST", "prompt": "Bind host (default: 0.0.0.0)", "password": False,
+             "help": "Bind address for the inbound HTTP server."},
+            {"name": "NOTIONAGENT_PATH", "prompt": "Inbound path (default: /notionagent/in)", "password": False,
+             "help": "HTTP path NotionAgent should POST chat messages to."},
+            {"name": "NOTIONAGENT_ALLOWED_USERS", "prompt": "Allowed session IDs (comma-separated, optional)", "password": False,
+             "is_allowlist": True,
+             "help": "Optional. Empty means all correctly signed NotionAgent requests are accepted."},
+            {"name": "NOTIONAGENT_ALLOW_ALL_USERS", "prompt": "Allow all signed requests (true/false, optional)", "password": False,
+             "help": "Optional explicit allow-all flag. HMAC validation is still required."},
+            {"name": "NOTIONAGENT_HOME_CHANNEL", "prompt": "Default session ID for cron/notifications (optional)", "password": False,
+             "help": "Session ID to use when sending to the NotionAgent home channel."},
+        ],
+    },
 ]
 
 
@@ -2766,6 +2798,13 @@ def _platform_status(platform: dict) -> str:
             suffix = " + E2EE" if e2ee and e2ee.lower() in ("true", "1", "yes") else ""
             return f"configured{suffix}"
         if val or password or homeserver:
+            return "partially configured"
+        return "not configured"
+    if platform.get("key") == "notionagent":
+        callback_url = get_env_value("NOTIONAGENT_CALLBACK_URL")
+        if val and callback_url:
+            return "configured"
+        if val or callback_url:
             return "partially configured"
         return "not configured"
     if platform.get("key") == "weixin":

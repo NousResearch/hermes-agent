@@ -41,6 +41,9 @@ def _make_agent(
     agent.tool_progress_callback = None
     agent._compression_warning = None
     agent._aux_compression_context_length_config = None
+    # Tools feed into the headroom calculation in _check_compression_model_feasibility.
+    # Tests that want to assert specific threshold values can override this.
+    agent.tools = []
 
     compressor = MagicMock(spec=ContextCompressor)
     compressor.context_length = main_context
@@ -82,8 +85,9 @@ def test_auto_corrects_threshold_when_aux_context_below_threshold(mock_get_clien
     assert "threshold:" in messages[0]
     # Warning stored for gateway replay
     assert agent._compression_warning is not None
-    # Threshold on the live compressor was actually lowered
-    assert agent.context_compressor.threshold_tokens == 80_000
+    # Threshold on the live compressor was actually lowered, accounting for
+    # the request-overhead headroom (empty tools list → ~12K headroom only).
+    assert agent.context_compressor.threshold_tokens == 68_000
 
 
 @patch("agent.model_metadata.get_model_context_length", return_value=32_768)
@@ -339,7 +343,93 @@ def test_just_below_threshold_auto_corrects(mock_get_client, mock_ctx_len):
     assert len(messages) == 1
     assert "small-model" in messages[0]
     assert "Auto-lowered" in messages[0]
-    assert agent.context_compressor.threshold_tokens == 99_999
+    assert agent.context_compressor.threshold_tokens == 87_999
+
+
+# ── Headroom for system prompt + tool schemas ────────────────────────
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=128_000)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_auto_lowered_threshold_reserves_headroom_for_tools_and_system(mock_get_client, mock_ctx_len):
+    """When aux context binds the threshold, new_threshold must leave room
+    for the system prompt and tool schemas that auxiliary callers
+    (compression summariser, flush_memories) prepend to the message list.
+
+    Without headroom, a full-budget message window + ~25K system/tool
+    overhead overflows the aux model with HTTP 400.  Regression guard for
+    the flush_memories-on-busy-toolset overflow path.
+    """
+    # Main context 200K, threshold 70% = 140K.  Aux pins at 128K (below
+    # threshold → triggers auto-correct).
+    agent = _make_agent(main_context=200_000, threshold_percent=0.70)
+
+    # Build a realistic tool schema load.
+    agent.tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": f"tool_{i}",
+                "description": "x" * 200,
+                "parameters": {"type": "object", "properties": {"arg": {"type": "string", "description": "y" * 120}}},
+            },
+        }
+        for i in range(50)
+    ]
+
+    mock_client = MagicMock()
+    mock_client.base_url = "https://openrouter.ai/api/v1"
+    mock_client.api_key = "sk-aux"
+    mock_get_client.return_value = (mock_client, "model-with-128k")
+
+    agent._emit_status = lambda msg: None
+    agent._check_compression_model_feasibility()
+
+    new_threshold = agent.context_compressor.threshold_tokens
+
+    # Must have strictly reserved headroom: new_threshold < aux_context.
+    assert new_threshold < 128_000, (
+        f"threshold {new_threshold} did not reserve headroom below aux=128,000 "
+        f"— system prompt + tools would overflow the aux model"
+    )
+    # Must respect the 64K hard floor.
+    from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+    assert new_threshold >= MINIMUM_CONTEXT_LENGTH
+
+
+@patch("agent.model_metadata.get_model_context_length", return_value=80_000)
+@patch("agent.auxiliary_client.get_text_auxiliary_client")
+def test_headroom_floors_at_minimum_context(mock_get_client, mock_ctx_len):
+    """If headroom subtraction would push below 64K floor, clamp to 64K
+    rather than refusing the session — the aux is still workable for a
+    smaller message window.
+    """
+    # Aux at 80K, with enough tools to push headroom > 16K → naive subtract
+    # would land at < 64K.  The max(..., MINIMUM_CONTEXT_LENGTH) clamp must
+    # keep the session running.
+    agent = _make_agent(main_context=200_000, threshold_percent=0.50)
+    agent.tools = [
+        {
+            "type": "function",
+            "function": {
+                "name": f"tool_{i}",
+                "description": "z" * 2_000,  # fat descriptions
+                "parameters": {},
+            },
+        }
+        for i in range(30)
+    ]
+
+    mock_client = MagicMock()
+    mock_client.base_url = "https://openrouter.ai/api/v1"
+    mock_client.api_key = "sk-aux"
+    mock_get_client.return_value = (mock_client, "small-aux-model")
+
+    agent._emit_status = lambda msg: None
+    agent._check_compression_model_feasibility()
+
+    from agent.model_metadata import MINIMUM_CONTEXT_LENGTH
+    assert agent.context_compressor.threshold_tokens == MINIMUM_CONTEXT_LENGTH
 
 
 # ── Two-phase: __init__ + run_conversation replay ───────────────────

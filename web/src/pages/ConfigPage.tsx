@@ -39,6 +39,7 @@ import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { PluginSlot } from "@/plugins";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
@@ -313,6 +314,7 @@ export default function ConfigPage() {
 
   return (
     <div className="flex flex-col gap-4">
+      <PluginSlot name="config:top" />
       <Toast toast={toast} />
 
       {/* ═══════════════ Header Bar ═══════════════ */}
@@ -505,6 +507,7 @@ export default function ConfigPage() {
           </div>
         </div>
       )}
+      <PluginSlot name="config:bottom" />
     </div>
   );
 }

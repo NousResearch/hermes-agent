@@ -8,7 +8,7 @@ export function useOverlayKeys({ disabled = false, onBack, onClose }: OverlayKey
       return
     }
 
-    if (ch.toLowerCase() === 'q') {
+    if (ch === 'q') {
       return onClose()
     }
 

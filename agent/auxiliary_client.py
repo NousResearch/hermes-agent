@@ -2836,6 +2836,32 @@ def _build_call_kwargs(
     if merged_extra:
         kwargs["extra_body"] = merged_extra
 
+    # DeepSeek / Kimi thinking mode requires reasoning_content on every assistant
+    # tool-call message.  Without it, replay persists poisoned history and causes
+    # HTTP 400 on subsequent API calls.  The main loop handles this in
+    # _build_assistant_message / _copy_reasoning_content_for_api; this auxiliary
+    # path must also sanitize messages before sending (refs #15250, #15353).
+    needs_tool_reasoning = (
+        "deepseek" in (provider or "").lower()
+        or "deepseek" in (model or "").lower()
+        or base_url_host_matches(base_url or "", "api.deepseek.com")
+        or provider in ("kimi-coding", "kimi-coding-cn")
+        or base_url_host_matches(base_url or "", "kimi.com")
+        or base_url_host_matches(base_url or "", "moonshot.cn")
+    )
+    if needs_tool_reasoning:
+        sanitized = []
+        for msg in messages:
+            entry = msg.copy()
+            if (
+                entry.get("role") == "assistant"
+                and entry.get("tool_calls")
+                and not isinstance(entry.get("reasoning_content"), str)
+            ):
+                entry["reasoning_content"] = ""
+            sanitized.append(entry)
+        kwargs["messages"] = sanitized
+
     return kwargs
 
 

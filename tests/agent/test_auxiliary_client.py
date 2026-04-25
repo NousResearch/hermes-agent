@@ -1007,6 +1007,146 @@ class TestKimiTemperatureOmitted:
 
 
 # ---------------------------------------------------------------------------
+# _build_call_kwargs: reasoning_content sanitization for DeepSeek / Kimi
+# The auxiliary path must preserve reasoning_content on every assistant
+# tool-call message, mirroring _build_assistant_message / _copy_reasoning_content_for_api
+# in the main loop (refs #15250, #15353).
+# ---------------------------------------------------------------------------
+
+
+class TestAuxiliaryToolReasoningContent:
+    """_build_call_kwargs sanitizes reasoning_content for DeepSeek/Kimi providers."""
+
+    def test_deepseek_tool_call_gets_empty_reasoning(self):
+        """DeepSeek assistant tool-call without reasoning_content gets empty string."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="deepseek",
+            model="deepseek-v4-flash",
+            messages=[
+                {"role": "user", "content": "run a command"},
+                {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "function": {"name": "x"}}]},
+            ],
+        )
+        msgs = kwargs["messages"]
+        assert msgs[1]["reasoning_content"] == ""
+
+    def test_deepseek_explicit_reasoning_preserved(self):
+        """Existing reasoning_content on DeepSeek assistant tool-call is preserved."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="deepseek",
+            model="deepseek-v4-flash",
+            messages=[
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "", "reasoning_content": "<think>trace</think>", "tool_calls": [{"id": "c1", "function": {"name": "x"}}]},
+            ],
+        )
+        msgs = kwargs["messages"]
+        assert msgs[1]["reasoning_content"] == "<think>trace</think>"
+
+    def test_deepseek_plain_assistant_no_tool_call_untouched(self):
+        """Plain assistant message without tool_calls is not modified."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="deepseek",
+            model="deepseek-v4-flash",
+            messages=[
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "I understand"},
+            ],
+        )
+        msgs = kwargs["messages"]
+        assert "reasoning_content" not in msgs[1]
+
+    def test_deepseek_custom_provider_by_model_name(self):
+        """Custom provider with deepseek model name is detected."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="custom",
+            model="deepseek-v4-pro",
+            messages=[
+                {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "function": {"name": "x"}}]},
+            ],
+        )
+        assert kwargs["messages"][0]["reasoning_content"] == ""
+
+    def test_deepseek_custom_provider_by_base_url(self):
+        """Custom provider pointing at api.deepseek.com is detected via host."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="custom",
+            model="my-model",
+            base_url="https://api.deepseek.com/v1",
+            messages=[
+                {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "function": {"name": "x"}}]},
+            ],
+        )
+        assert kwargs["messages"][0]["reasoning_content"] == ""
+
+    def test_kimi_tool_call_gets_empty_reasoning(self):
+        """Kimi assistant tool-call without reasoning_content gets empty string."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="kimi-coding",
+            model="kimi-k2.5",
+            messages=[
+                {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "function": {"name": "x"}}]},
+            ],
+        )
+        assert kwargs["messages"][0]["reasoning_content"] == ""
+
+    def test_kimi_moonshot_base_url_detected(self):
+        """Custom provider pointing at moonshot.cn is detected."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="custom",
+            model="kimi-k2",
+            base_url="https://api.moonshot.cn/v1",
+            messages=[
+                {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "function": {"name": "x"}}]},
+            ],
+        )
+        assert kwargs["messages"][0]["reasoning_content"] == ""
+
+    def test_non_thinking_provider_not_modified(self):
+        """Providers that don't require tool reasoning are left untouched."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="openrouter",
+            model="anthropic/claude-sonnet-4.6",
+            base_url="https://openrouter.ai/api/v1",
+            messages=[
+                {"role": "assistant", "content": "", "tool_calls": [{"id": "c1", "function": {"name": "x"}}]},
+            ],
+        )
+        assert "reasoning_content" not in kwargs["messages"][0]
+
+    def test_non_assistant_role_ignored(self):
+        """User/tool messages are not modified."""
+        from agent.auxiliary_client import _build_call_kwargs
+
+        kwargs = _build_call_kwargs(
+            provider="deepseek",
+            model="deepseek-v4-flash",
+            messages=[
+                {"role": "user", "content": "hello"},
+                {"role": "tool", "tool_call_id": "c1", "content": "done"},
+            ],
+        )
+        assert "reasoning_content" not in kwargs["messages"][0]
+        assert "reasoning_content" not in kwargs["messages"][1]
+
+
+# ---------------------------------------------------------------------------
 # async_call_llm payment / connection fallback (#7512 bug 2)
 # ---------------------------------------------------------------------------
 

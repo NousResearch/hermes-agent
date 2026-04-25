@@ -7638,16 +7638,24 @@ class AIAgent:
             "finish_reason": finish_reason,
         }
 
+        # Preserve reasoning_content for round-trip echo on DeepSeek/Kimi thinking models.
+        # Parse order (refs #15250, #15353):
+        #   1. Direct attribute / model_extra field — exists when API returned a value
+        #   2. Empty-string fallback — tool-call-only turns may omit the field entirely,
+        #      but DeepSeek still requires it on replay. hasattr can miss model_extra
+        #      fields in some SDK versions, so always evaluate the fallback.
         if hasattr(assistant_message, "reasoning_content"):
             raw_reasoning_content = getattr(assistant_message, "reasoning_content", None)
             if raw_reasoning_content is not None:
                 msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
-            elif msg.get("tool_calls") and self._needs_deepseek_tool_reasoning():
-                # DeepSeek thinking mode requires reasoning_content on every
-                # assistant tool-call message. Without it, replaying the
-                # persisted message causes HTTP 400. Include empty string
-                # as a defensive compatibility fallback (refs #15250).
-                msg["reasoning_content"] = ""
+        # Fallback: DeepSeek / Kimi thinking mode requires reasoning_content on every
+        # assistant tool-call message, even when the API omitted the field entirely
+        # (tool-call-only turns). Without it, replaying the persisted message causes
+        # HTTP 400. Always evaluate regardless of hasattr (refs #15250, #15353).
+        # Note: msg["tool_calls"] hasn't been set yet at this point (it's added
+        # after the reasoning block below), so check assistant_message directly.
+        if "reasoning_content" not in msg and getattr(assistant_message, "tool_calls", None) and self._needs_deepseek_tool_reasoning():
+            msg["reasoning_content"] = ""
 
         if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
             # Pass reasoning_details back unmodified so providers (OpenRouter,

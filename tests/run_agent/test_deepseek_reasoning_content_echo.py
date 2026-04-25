@@ -33,6 +33,10 @@ def _make_agent(provider: str = "", model: str = "", base_url: str = "") -> AIAg
     agent.provider = provider
     agent.model = model
     agent.base_url = base_url
+    agent.verbose_logging = False
+    agent.reasoning_callback = None
+    agent.stream_delta_callback = None
+    agent._stream_callback = None
     return agent
 
 
@@ -211,3 +215,66 @@ class TestNeedsKimiToolReasoning:
         )
         # model name contains 'moonshot' but host is openrouter — should be False
         assert agent._needs_kimi_tool_reasoning() is False
+
+
+class TestBuildAssistantMessage:
+    """_build_assistant_message pins reasoning_content on DeepSeek tool-calls.
+
+    When the API returns a tool-call-only message without any
+    reasoning_content field, hasattr() on the ChatCompletionMessage object
+    returns False.  The original code nested the empty-string fallback inside
+    ``if hasattr(...)`` as an ``elif`` — meaning it never ran when hasattr
+    was False.  The fix promotes the fallback to an independent ``if`` so it
+    evaluates *regardless* of hasattr (refs #15250, #15353).
+    """
+
+    def test_deepseek_tool_call_without_reasoning_field(self) -> None:
+        """Simulates the scenario: ChatCompletionMessage without reasoning_content.
+
+        This is what DeepSeek returns on a pure tool-call turn with no
+        thinking trace.  hasattr(assistant_message, "reasoning_content")
+        is False, so the fallback must live outside the block.
+        """
+        from types import SimpleNamespace
+
+        agent = _make_agent(provider="deepseek", model="deepseek-v4-flash")
+        msg = SimpleNamespace(
+            content="",
+            tool_calls=[SimpleNamespace(
+                id="c1", type="function",
+                function=SimpleNamespace(name="x", arguments="{}"),
+            )],
+        )
+        result = agent._build_assistant_message(msg, finish_reason="tool_calls")
+        assert result.get("reasoning_content") == ""
+
+    def test_deepseek_tool_call_with_reasoning_content(self) -> None:
+        """When the API does return reasoning_content, it's preserved."""
+        from types import SimpleNamespace
+
+        agent = _make_agent(provider="deepseek", model="deepseek-v4-flash")
+        msg = SimpleNamespace(
+            content="",
+            reasoning_content="<think>some reasoning</think>",
+            tool_calls=[SimpleNamespace(
+                id="c1", type="function",
+                function=SimpleNamespace(name="x", arguments="{}"),
+            )],
+        )
+        result = agent._build_assistant_message(msg, finish_reason="tool_calls")
+        assert result.get("reasoning_content") == "<think>some reasoning</think>"
+
+    def test_non_deepseek_tool_call_left_alone(self) -> None:
+        """Non-DeepSeek providers are not affected."""
+        from types import SimpleNamespace
+
+        agent = _make_agent(provider="openrouter", model="anthropic/claude-sonnet-4.6")
+        msg = SimpleNamespace(
+            content="",
+            tool_calls=[SimpleNamespace(
+                id="c1", type="function",
+                function=SimpleNamespace(name="x", arguments="{}"),
+            )],
+        )
+        result = agent._build_assistant_message(msg, finish_reason="tool_calls")
+        assert "reasoning_content" not in result

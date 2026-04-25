@@ -1,6 +1,5 @@
-import { isMac } from '../lib/platform.js'
+import { isMac, isRemoteShell } from '../lib/platform.js'
 
-const isRemoteShell = Boolean(process.env.SSH_CONNECTION || process.env.SSH_CLIENT || process.env.SSH_TTY)
 const action = isMac ? 'Cmd' : 'Ctrl'
 const paste = isMac ? 'Cmd' : 'Alt'
 
@@ -10,7 +9,7 @@ const copyHotkeys: [string, string][] = isMac
       ['Ctrl+C', 'interrupt / clear draft / exit']
     ]
   : [
-      ...(isRemoteShell ? ([['Cmd+C', 'copy selection when forwarded by the terminal']] as [string, string][]) : []),
+      ...(isRemoteShell() ? ([['Cmd+C', 'copy selection when forwarded by the terminal']] as [string, string][]) : []),
       ['Ctrl+C', 'copy selection / interrupt / clear draft / exit']
     ]
 

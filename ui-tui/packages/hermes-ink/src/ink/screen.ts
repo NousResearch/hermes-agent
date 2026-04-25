@@ -1,6 +1,6 @@
-import { type AnsiCode, ansiCodesToString, diffAnsiCodes } from '@alcalzone/ansi-tokenize'
+import { ansiCodesToString, diffAnsiCodes, type AnsiCode } from '@alcalzone/ansi-tokenize'
 
-import { type Point, type Rectangle, type Size, unionRect } from './layout/geometry.js'
+import { unionRect, type Point, type Rectangle, type Size } from './layout/geometry.js'
 import { BEL, ESC, SEP } from './termio/ansi.js'
 import * as warn from './warn.js'
 

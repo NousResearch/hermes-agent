@@ -720,11 +720,22 @@ class DiscordAdapter(BasePlatformAdapter):
                         return
                     # If humans are mentioned but we're not → not for us
                     # (preserves old DISCORD_IGNORE_NO_MENTION=true behavior)
+                    # EXCEPT in free-response channels where the bot should
+                    # answer regardless of who is mentioned.
                     _ignore_no_mention = os.getenv(
                         "DISCORD_IGNORE_NO_MENTION", "true"
                     ).lower() in ("true", "1", "yes")
                     if _ignore_no_mention and not _self_mentioned and not _other_bots_mentioned:
-                        return
+                        _channel_id = str(message.channel.id)
+                        _parent_id = None
+                        if hasattr(message.channel, "parent_id") and message.channel.parent_id:
+                            _parent_id = str(message.channel.parent_id)
+                        _free_channels = adapter_self._discord_free_response_channels()
+                        _channel_ids = {_channel_id}
+                        if _parent_id:
+                            _channel_ids.add(_parent_id)
+                        if "*" not in _free_channels and not (_channel_ids & _free_channels):
+                            return
 
                 await self._handle_message(message)
 
@@ -3797,7 +3808,7 @@ class DiscordAdapter(BasePlatformAdapter):
         if not is_thread and not isinstance(message.channel, discord.DMChannel):
             no_thread_channels_raw = os.getenv("DISCORD_NO_THREAD_CHANNELS", "")
             no_thread_channels = {ch.strip() for ch in no_thread_channels_raw.split(",") if ch.strip()}
-            skip_thread = bool(channel_ids & no_thread_channels) or is_free_channel
+            skip_thread = bool(channel_ids & no_thread_channels)
             auto_thread = os.getenv("DISCORD_AUTO_THREAD", "true").lower() in ("true", "1", "yes")
             is_reply_message = getattr(message, "type", None) == discord.MessageType.reply
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:

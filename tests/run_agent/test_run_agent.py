@@ -3403,6 +3403,89 @@ def test_is_openai_client_closed_falls_back_to_http_client():
     assert AIAgent._is_openai_client_closed(ClientWithHttpClient(http_closed=True)) is True
 
 
+def test_create_openai_client_uses_local_timeout_for_keepalive_http_client(monkeypatch):
+    """Local custom endpoints need long read timeouts on the injected httpx client."""
+
+    captured = {}
+    agent = AIAgent.__new__(AIAgent)
+    agent.provider = "custom"
+    agent._client_log_context = lambda: ""
+
+    class FakeTimeout:
+        def __init__(self, **kwargs):
+            captured["timeout"] = kwargs
+
+    class FakeTransport:
+        def __init__(self, **kwargs):
+            captured["transport"] = kwargs
+
+    class FakeHttpClient:
+        def __init__(self, **kwargs):
+            captured["http_client"] = kwargs
+
+    monkeypatch.delenv("HERMES_STREAM_READ_TIMEOUT", raising=False)
+    monkeypatch.setenv("HERMES_API_TIMEOUT", "900")
+
+    with (
+        patch("httpx.Timeout", FakeTimeout),
+        patch("httpx.HTTPTransport", FakeTransport),
+        patch("httpx.Client", FakeHttpClient),
+        patch("run_agent.OpenAI") as mock_openai,
+    ):
+        agent._create_openai_client(
+            {"api_key": "ollama", "base_url": "http://127.0.0.1:11434/v1"},
+            reason="test",
+            shared=False,
+        )
+
+    assert captured["timeout"]["timeout"] == 900.0
+    assert captured["timeout"]["read"] == 900.0
+    assert captured["timeout"]["write"] == 900.0
+    assert captured["timeout"]["connect"] == 30.0
+    assert captured["timeout"]["pool"] == 30.0
+    assert "socket_options" in captured["transport"]
+    mock_openai.assert_called_once()
+
+
+def test_create_openai_client_respects_stream_read_timeout_override(monkeypatch):
+    """Explicit HERMES_STREAM_READ_TIMEOUT should win even for local endpoints."""
+
+    captured = {}
+    agent = AIAgent.__new__(AIAgent)
+    agent.provider = "custom"
+    agent._client_log_context = lambda: ""
+
+    class FakeTimeout:
+        def __init__(self, **kwargs):
+            captured["timeout"] = kwargs
+
+    class FakeTransport:
+        def __init__(self, **kwargs):
+            pass
+
+    class FakeHttpClient:
+        def __init__(self, **kwargs):
+            pass
+
+    monkeypatch.setenv("HERMES_API_TIMEOUT", "900")
+    monkeypatch.setenv("HERMES_STREAM_READ_TIMEOUT", "240")
+
+    with (
+        patch("httpx.Timeout", FakeTimeout),
+        patch("httpx.HTTPTransport", FakeTransport),
+        patch("httpx.Client", FakeHttpClient),
+        patch("run_agent.OpenAI"),
+    ):
+        agent._create_openai_client(
+            {"api_key": "ollama", "base_url": "http://localhost:11434/v1"},
+            reason="test",
+            shared=False,
+        )
+
+    assert captured["timeout"]["read"] == 240.0
+    assert captured["timeout"]["timeout"] == 900.0
+
+
 class TestAnthropicBaseUrlPassthrough:
     """Bug fix: base_url was filtered with 'anthropic in base_url', blocking proxies."""
 

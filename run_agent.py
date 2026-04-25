@@ -4384,8 +4384,20 @@ class AIAgent:
                 elif hasattr(_socket, "TCP_KEEPALIVE"):
                     # macOS (uses TCP_KEEPALIVE instead of TCP_KEEPIDLE)
                     _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPALIVE, 30))
+                _base_timeout = float(os.getenv("HERMES_API_TIMEOUT", 1800.0))
+                _read_timeout = float(os.getenv("HERMES_STREAM_READ_TIMEOUT", 120.0))
+                _base_url = str(client_kwargs.get("base_url") or "")
+                if _read_timeout == 120.0 and _base_url and is_local_endpoint(_base_url):
+                    _read_timeout = _base_timeout
                 client_kwargs["http_client"] = _httpx.Client(
                     transport=_httpx.HTTPTransport(socket_options=_sock_opts),
+                    timeout=_httpx.Timeout(
+                        timeout=_base_timeout,
+                        connect=30.0,
+                        read=_read_timeout,
+                        write=_base_timeout,
+                        pool=30.0,
+                    ),
                 )
             except Exception:
                 pass  # Fall through to default transport if socket opts fail

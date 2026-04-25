@@ -202,6 +202,31 @@ that requires raw IDs).  Discord is excluded because mentions use ``<@user_id>``
 and the LLM needs the real ID to tag users."""
 
 
+def _discord_tools_loaded() -> bool:
+    """True iff the agent will actually have Discord tools this session.
+
+    Two conditions must hold:
+      1. The `discord` or `discord_admin` toolset is enabled for the
+         Discord platform via `hermes tools` (opt-in, default OFF).
+      2. `DISCORD_BOT_TOKEN` is set — the tool's `check_fn` gates on it
+         at registry time, so the toolset being enabled in config is not
+         enough if the token isn't configured.
+
+    Returns False (safe default — keeps the stale-API disclaimer) on any
+    error so a bad config can't silently promise tools the agent lacks.
+    """
+    if not (os.environ.get("DISCORD_BOT_TOKEN") or "").strip():
+        return False
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import _get_platform_tools
+        cfg = load_config()
+        enabled = _get_platform_tools(cfg, "discord", include_default_mcp_servers=False)
+        return "discord" in enabled or "discord_admin" in enabled
+    except Exception:
+        return False
+
+
 def build_session_context_prompt(
     context: SessionContext,
     *,
@@ -289,13 +314,12 @@ def build_session_context_prompt(
             "that you can only read messages sent directly to you and respond."
         )
     elif context.source.platform == Platform.DISCORD:
-        # The discord tool self-gates on DISCORD_BOT_TOKEN at registry
-        # check time.  Match that condition so the prompt stays honest:
-        # with a token the agent has fetch_messages/search_members/
-        # create_thread (and optionally discord_admin) and should know
-        # the IDs it can call them with; without one it really is
-        # limited to reading/replying via the gateway.
-        if (os.environ.get("DISCORD_BOT_TOKEN") or "").strip():
+        # Inject the Discord IDs block only when the agent actually has
+        # Discord tools loaded this session — i.e. the user opted into
+        # `discord` / `discord_admin` via `hermes tools` AND the bot
+        # token is configured.  Otherwise keep the stale-API disclaimer
+        # honest so we never promise tools the agent lacks.
+        if _discord_tools_loaded():
             src = context.source
             id_lines = ["", "**Discord IDs (for the `discord` / `discord_admin` tools):**"]
             if src.guild_id:

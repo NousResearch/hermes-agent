@@ -7785,7 +7785,17 @@ class AIAgent:
             api_msg["reasoning_content"] = normalized_reasoning
             return
 
-        # 4. reasoning_content was present but not a string (e.g. None after
+        # 4. DeepSeek / Kimi thinking mode: all assistant messages need
+        # reasoning_content. Inject "" to satisfy the provider's requirement
+        # when no explicit reasoning content is present.
+        if (
+            self._needs_kimi_tool_reasoning()
+            or self._needs_deepseek_tool_reasoning()
+        ):
+            api_msg["reasoning_content"] = ""
+            return
+
+        # 5. reasoning_content was present but not a string (e.g. None after
         # context compaction).  Don't pass null to the API.
         api_msg.pop("reasoning_content", None)
 

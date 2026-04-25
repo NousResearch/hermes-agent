@@ -1,0 +1,63 @@
+# Alert Enrichment Pipeline — Configuration
+# =========================================
+
+# ── Mock Lab ────────────────────────────────────────────────
+mock_lab:
+  base_url: "http://192.168.1.9:5000"
+  # Endpoints:
+  #   POST /simulate/power-alert
+  #   POST /simulate/bgp-down
+  #   GET  /zabbix/host/{device}/metrics
+
+# ── Webhook Receiver ────────────────────────────────────────
+webhook:
+  host: "0.0.0.0"
+  port: 80
+  # No HMAC validation (lab mode)
+  # Accepts: mock lab JSON or Opsgenie webhook JSON
+
+# ── Alert Buffer ────────────────────────────────────────────
+buffer:
+  max_size: 10000
+  # In-memory deque — no Redis needed for lab
+  # Lost alerts are re-fired by Opsgenie
+
+# ── Processing ───────────────────────────────────────────────
+processing:
+  batch_interval_minutes: 5
+  clustering: "by_device"  # v1: by_device | v2: by_site | v3: hierarchical
+  max_latest_alerts: 20    # max alerts to include in a cluster brief
+
+# ── NetBox ─────────────────────────────────────────────────
+netbox:
+  # Accessed via mcporter netbox-mcp
+  # mcporter call netbox-mcp.<tool> --args '{...}'
+  critical_tags:
+    - "core_device"
+    - "customer_critical_site"
+  severity_escalation:
+    # core_device + high → critical
+    # customer_critical_site + average → high
+
+# ── Telegram ────────────────────────────────────────────────
+telegram:
+  bot_token: "8764046749:AAHOX8PsdHiAFiUrzSD8LgDUFDd44zRBbCA"
+  default_channel_id: "-1003506715170"
+  # Set channel ID once discovered:
+  #   export HERMES_ALERTS_CHANNEL_ID="-1001234567890"
+  default_dm_chat_id: "8500351481"  # stout DM (fallback)
+  channel_id: ""  # e.g. "-1001234567890" — set after channel discovery
+
+# ── Delivery Routing ────────────────────────────────────────
+delivery:
+  critical: "immediate"   # → Telegram NOW
+  high:     "2min"        # → Telegram in 2 min (batched)
+  average:  "digest_15m"  # → 15-min digest
+  warning:  "digest_1h"  # → 1hr digest
+  info:     "jira_only"   # → Jira ticket only (not implemented yet)
+
+# ── Jira (TODO) ─────────────────────────────────────────────
+jira:
+  enabled: false
+  # project_key: "NOC"
+  # severity_to_priority mapping (P1→Highest, etc.)

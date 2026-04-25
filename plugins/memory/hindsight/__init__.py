@@ -592,6 +592,18 @@ class HindsightMemoryProvider(MemoryProvider):
             sys.stdout.write("  LLM API key: ")
             sys.stdout.flush()
             llm_key = getpass.getpass(prompt="") if sys.stdin.isatty() else sys.stdin.readline().strip()
+            # A blank input means "keep whatever I already have configured"
+            # (re-running ``hermes memory setup`` without retyping the key).
+            # Reading the existing value out of ``.env`` BEFORE we overwrite
+            # it below preserves the key — the previous code unconditionally
+            # stamped ``env_writes[...] = ""``, which then overwrote the
+            # existing line during the write-back loop below and left the
+            # profile env with an empty ``HINDSIGHT_API_LLM_API_KEY``, so
+            # the daemon came up unauthenticated.  Pin both the preserve
+            # behaviour and the "always emit the variable" contract below.
+            if not llm_key:
+                existing = _load_simple_env(Path(hermes_home) / ".env")
+                llm_key = existing.get("HINDSIGHT_LLM_API_KEY", "")
             # Always write explicitly (including empty) so the provider sees ""
             # rather than a missing variable.  The daemon reads from .env at
             # startup and fails when HINDSIGHT_LLM_API_KEY is unset.

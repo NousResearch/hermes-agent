@@ -562,6 +562,13 @@ def _get_plugin_toolset_names() -> Set[str]:
     ``TOOLSETS`` dict — i.e. they were added by plugins at load time.
     """
     try:
+        # Ensure plugins are discovered before querying the registry.
+        # Without this, the registry may be empty if this function is called
+        # before the agent's plugin-loading phase, causing plugin toolsets
+        # (e.g. "wiki" from hermes-wiki) to be silently excluded from the
+        # resolved tool list even when the plugin is installed and registered.
+        from hermes_cli.plugins import discover_plugins
+        discover_plugins()
         from tools.registry import registry
         return {
             toolset_name

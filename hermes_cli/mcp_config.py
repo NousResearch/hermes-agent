@@ -30,7 +30,35 @@ logger = logging.getLogger(__name__)
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
 
-_MCP_PRESETS: Dict[str, Dict[str, Any]] = {}
+def _playwright_mcp_args() -> list:
+    """Build @playwright/mcp args with root-safe flags and chromium fallback.
+
+    On Linux root (VPS/Docker), Chrome refuses to start without --no-sandbox.
+    When system Chrome is absent, fall back to the bundled chromium channel.
+    """
+    import shutil
+    args = ["-y", "@playwright/mcp@latest", "--headless"]
+
+    # Detect missing system Chrome and fall back to bundled chromium
+    chrome_path = "/opt/google/chrome/chrome"
+    import os as _os
+    if not _os.path.exists(chrome_path):
+        args += ["--browser", "chromium"]
+
+    # Inject --no-sandbox when running as root
+    if hasattr(_os, "geteuid") and _os.geteuid() == 0:
+        args.append("--no-sandbox")
+
+    return args
+
+
+_MCP_PRESETS: Dict[str, Dict[str, Any]] = {
+    "playwright": {
+        "command": "npx",
+        "args": _playwright_mcp_args(),
+        "description": "Playwright MCP browser automation (auto-detects root/chromium)",
+    },
+}
 
 
 # ─── UI Helpers ───────────────────────────────────────────────────────────────

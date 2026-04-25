@@ -1290,6 +1290,20 @@ def _run_browser_command(
         if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
             idle_ms = str(BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
             browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = idle_ms
+
+        # When running as root (common on VPS/Docker), Chromium refuses to
+        # start without --no-sandbox. Inject the flag via the env var that
+        # agent-browser passes through to its Chromium launch args (issue #15765).
+        if (
+            hasattr(os, "geteuid") and os.geteuid() == 0
+            and "AGENT_BROWSER_CHROME_FLAGS" not in browser_env
+        ):
+            browser_env["AGENT_BROWSER_CHROME_FLAGS"] = (
+                "--no-sandbox --disable-dev-shm-usage"
+            )
+            logger.debug(
+                "browser: running as root — injecting --no-sandbox into Chrome flags"
+            )
         
         # Use temp files for stdout/stderr instead of pipes.
         # agent-browser starts a background daemon that inherits file

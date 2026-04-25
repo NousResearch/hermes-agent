@@ -887,5 +887,540 @@ class TestListTasks(unittest.TestCase):
             self.assertIsInstance(entry["elapsed"], (int, float))
 
 
+# =============================================================================
+# TestOutputTruncation — _MAX_OUTPUT_LINES and _MAX_LINE_CHARS
+# =============================================================================
+
+class TestOutputTruncation(unittest.TestCase):
+    """Tests for output truncation limits (_MAX_OUTPUT_LINES=200, _MAX_LINE_CHARS=500)."""
+
+    def test_import_constants(self):
+        """Verify _MAX_OUTPUT_LINES and _MAX_LINE_CHARS are importable."""
+        from tools.async_delegate_tool import _MAX_OUTPUT_LINES, _MAX_LINE_CHARS
+        self.assertEqual(_MAX_OUTPUT_LINES, 200)
+        self.assertEqual(_MAX_LINE_CHARS, 500)
+
+    def test_oldest_lines_dropped_over_200(self):
+        """When >200 output lines are produced, oldest are dropped."""
+        from tools.async_delegate_tool import _MAX_OUTPUT_LINES, _MAX_LINE_CHARS, AsyncTask
+
+        task = AsyncTask(task_id="trunc-test", goal="test")
+
+        # Replicate _capture_print closure logic
+        def _capture_print(msg):
+            line = str(msg)[:_MAX_LINE_CHARS]
+            task.output_lines.append(line)
+            if len(task.output_lines) > _MAX_OUTPUT_LINES:
+                del task.output_lines[0]
+
+        # Produce 250 lines
+        for i in range(250):
+            _capture_print(f"line {i}")
+
+        self.assertEqual(len(task.output_lines), 200)
+        # Oldest lines should be dropped; first remaining is line 50
+        self.assertEqual(task.output_lines[0], "line 50")
+        # Most recent should be line 249
+        self.assertEqual(task.output_lines[-1], "line 249")
+
+    def test_individual_lines_truncated_at_500_chars(self):
+        """Individual lines longer than _MAX_LINE_CHARS are truncated."""
+        from tools.async_delegate_tool import _MAX_LINE_CHARS, AsyncTask
+
+        task = AsyncTask(task_id="trunc-chars", goal="test")
+
+        def _capture_print(msg):
+            line = str(msg)[:_MAX_LINE_CHARS]
+            task.output_lines.append(line)
+            if len(task.output_lines) > 200:
+                del task.output_lines[0]
+
+        long_msg = "A" * 1000
+        _capture_print(long_msg)
+
+        self.assertEqual(len(task.output_lines), 1)
+        self.assertEqual(len(task.output_lines[0]), 500)
+        self.assertTrue(task.output_lines[0].startswith("A" * 500))
+
+    def test_output_truncation_via_delegate_task_async(self):
+        """Integration: delegate_task_async child producing >200 lines drops oldest."""
+        from tools.async_delegate_tool import _MAX_OUTPUT_LINES, _MAX_LINE_CHARS
+
+        parent = make_mock_parent()
+        mock_child = make_mock_child()
+
+        def run_and_spam(user_message):
+            # Simulate child printing 250 lines via its _print_fn
+            for i in range(250):
+                mock_child._print_fn(f"spam line {i}")
+            return {"completed": True, "final_response": "done"}
+
+        mock_child.run_conversation.side_effect = run_and_spam
+
+        with _AsyncDelegatePatches(mock_child):
+            result = json.loads(delegate_task_async(goal="spam output", parent_agent=parent))
+            task_id = result["task_id"]
+            task = parent._async_tasks[task_id]
+            task.done_event.wait(timeout=5.0)
+
+        self.assertEqual(len(task.output_lines), 200)
+        self.assertEqual(task.output_lines[0], "spam line 50")
+        self.assertEqual(task.output_lines[-1], "spam line 249")
+
+
+# =============================================================================
+# TestConcurrentRegistry — Thread safety of registry
+# =============================================================================
+
+class TestConcurrentRegistry(unittest.TestCase):
+    """Tests for thread safety of _get_task_registry and task operations."""
+
+    def test_same_registry_from_two_threads(self):
+        """Two threads calling _get_task_registry get the same registry objects."""
+        parent = MockParentAgent()
+        results = []
+        barrier = threading.Barrier(2, timeout=5)
+
+        def get_reg():
+            barrier.wait()
+            tasks, lock = _get_task_registry(parent)
+            results.append((tasks, lock))
+
+        t1 = threading.Thread(target=get_reg)
+        t2 = threading.Thread(target=get_reg)
+        t1.start()
+        t2.start()
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+
+        self.assertEqual(len(results), 2)
+        self.assertIs(results[0][0], results[1][0])  # same dict
+        self.assertIs(results[0][1], results[1][1])  # same lock
+
+    def test_concurrent_steer_and_cancel_one_fails(self):
+        """Concurrent steer_task + cancel_task on same task: one should fail."""
+        parent = MockParentAgent()
+        tasks, _ = _get_task_registry(parent)
+        task = AsyncTask(task_id="t-conflict", goal="test", status="running")
+        mock_child = MagicMock()
+        mock_child._steering_injection = queue.Queue()
+        mock_child.interrupt = MagicMock()
+        task.child_agent = mock_child
+        tasks["t-conflict"] = task
+
+        results = [None, None]
+        barrier = threading.Barrier(2, timeout=5)
+
+        def do_steer():
+            barrier.wait()
+            results[0] = json.loads(steer_task(task_id="t-conflict", message="msg", parent_agent=parent))
+
+        def do_cancel():
+            barrier.wait()
+            results[1] = json.loads(cancel_task(task_id="t-conflict", parent_agent=parent))
+
+        t1 = threading.Thread(target=do_steer)
+        t2 = threading.Thread(target=do_cancel)
+        t1.start()
+        t2.start()
+        t1.join(timeout=5)
+        t2.join(timeout=5)
+
+        # At least one should report not-ok (not running anymore)
+        oks = []
+        for r in results:
+            if r is not None:
+                oks.append(r.get("ok", "error" not in r))
+        # At least one operation should fail
+        self.assertFalse(all(oks), f"Expected at least one failure, got: {results}")
+
+    def test_multiple_simultaneous_tasks_in_registry(self):
+        """Multiple tasks spawned simultaneously all appear in registry."""
+        parent = make_mock_parent()
+        task_ids = []
+        hold_events = {}
+
+        def slow_run_factory(task_id):
+            evt = threading.Event()
+            hold_events[task_id] = evt
+
+            def slow_run(user_message):
+                evt.wait(timeout=5.0)
+                return {"completed": True, "final_response": f"done-{task_id}"}
+            return slow_run
+
+        for i in range(3):
+            mock_child = make_mock_child()
+            mock_child.run_conversation.side_effect = slow_run_factory(f"task-{i}")
+            with _AsyncDelegatePatches(mock_child):
+                result = json.loads(delegate_task_async(goal=f"goal {i}", parent_agent=parent))
+                task_ids.append(result["task_id"])
+
+        # All three should be in the registry
+        tasks_dict, _ = _get_task_registry(parent)
+        for tid in task_ids:
+            self.assertIn(tid, tasks_dict)
+
+        self.assertEqual(len(tasks_dict), 3)
+
+        # Cleanup: release all hold events
+        for evt in hold_events.values():
+            evt.set()
+        for tid in task_ids:
+            tasks_dict[tid].done_event.wait(timeout=5.0)
+
+
+# =============================================================================
+# TestSkillLoading — _load_skill_for_subagent
+# =============================================================================
+
+class TestSkillLoading(unittest.TestCase):
+    """Tests for _load_skill_for_subagent from tools.delegate_tool."""
+
+    def test_empty_skill_returns_none(self):
+        """Empty string skill identifier returns None."""
+        from tools.delegate_tool import _load_skill_for_subagent
+        self.assertIsNone(_load_skill_for_subagent(""))
+
+    def test_none_skill_returns_none(self):
+        """None skill identifier returns None."""
+        from tools.delegate_tool import _load_skill_for_subagent
+        self.assertIsNone(_load_skill_for_subagent(None))
+
+    def test_whitespace_skill_returns_none(self):
+        """Whitespace-only skill identifier returns None."""
+        from tools.delegate_tool import _load_skill_for_subagent
+        self.assertIsNone(_load_skill_for_subagent("   "))
+
+    def test_nonexistent_skill_returns_none(self):
+        """Nonexistent skill returns None (skill_view returns failure)."""
+        from tools.delegate_tool import _load_skill_for_subagent
+        with patch('tools.delegate_tool.skill_view' if hasattr(__import__('tools.delegate_tool', fromlist=['skill_view']), 'skill_view')
+                   else 'tools.skills_tool.skill_view',
+                   return_value=json.dumps({"success": False, "error": "not found"})):
+            # Patch via the import path used inside the function
+            pass
+
+        # Use the actual import path as the function imports it dynamically
+        with patch('tools.skills_tool.skill_view',
+                   return_value=json.dumps({"success": False, "error": "not found"})):
+            result = _load_skill_for_subagent("nonexistent-skill")
+        self.assertIsNone(result)
+
+    def test_valid_skill_returns_correct_data(self):
+        """Valid skill returns dict with content, model, provider, name."""
+        from tools.delegate_tool import _load_skill_for_subagent
+        skill_data = {
+            "success": True,
+            "content": "Do the thing step by step.",
+            "model": "anthropic/claude-sonnet-4",
+            "provider": "openrouter",
+            "name": "my-skill",
+        }
+        with patch('tools.skills_tool.skill_view',
+                   return_value=json.dumps(skill_data)):
+            result = _load_skill_for_subagent("my-skill")
+
+        self.assertIsNotNone(result)
+        self.assertEqual(result["content"], "Do the thing step by step.")
+        self.assertEqual(result["model"], "anthropic/claude-sonnet-4")
+        self.assertEqual(result["provider"], "openrouter")
+        self.assertEqual(result["name"], "my-skill")
+
+    def test_skill_exception_returns_none(self):
+        """If skill_view raises, returns None (doesn't propagate exception)."""
+        from tools.delegate_tool import _load_skill_for_subagent
+        with patch('tools.skills_tool.skill_view', side_effect=RuntimeError("db error")):
+            result = _load_skill_for_subagent("broken-skill")
+        self.assertIsNone(result)
+
+
+# =============================================================================
+# TestThreadLifecycle — Thread cleanup after task completion
+# =============================================================================
+
+class TestThreadLifecycle(unittest.TestCase):
+    """Tests for thread cleanup and lifecycle management."""
+
+    def test_thread_not_alive_after_completion(self):
+        """After task completes, the thread is no longer alive."""
+        parent = make_mock_parent()
+        mock_child = make_mock_child()
+        mock_child.run_conversation.return_value = {
+            "completed": True, "final_response": "done"
+        }
+
+        with _AsyncDelegatePatches(mock_child):
+            result = json.loads(delegate_task_async(goal="lifecycle test", parent_agent=parent))
+            task_id = result["task_id"]
+            task = parent._async_tasks[task_id]
+            task.done_event.wait(timeout=5.0)
+
+        # Give thread a moment to fully exit
+        task.thread.join(timeout=5.0)
+        self.assertFalse(task.thread.is_alive())
+
+    def test_completed_task_has_completed_at_and_done_event(self):
+        """Completed task has completed_at set and done_event is set."""
+        parent = make_mock_parent()
+        mock_child = make_mock_child()
+        mock_child.run_conversation.return_value = {
+            "completed": True, "final_response": "done"
+        }
+
+        with _AsyncDelegatePatches(mock_child):
+            result = json.loads(delegate_task_async(goal="completion check", parent_agent=parent))
+            task_id = result["task_id"]
+            task = parent._async_tasks[task_id]
+            task.done_event.wait(timeout=5.0)
+
+        self.assertIsNotNone(task.completed_at)
+        self.assertTrue(task.done_event.is_set())
+        self.assertEqual(task.status, "completed")
+
+    def test_child_removed_from_active_children(self):
+        """child_agent is removed from parent's _active_children after completion."""
+        parent = make_mock_parent()
+        mock_child = make_mock_child()
+        mock_child.run_conversation.return_value = {
+            "completed": True, "final_response": "done"
+        }
+
+        # Manually add child to active_children (simulating what _build_child_agent would do)
+        parent._active_children.append(mock_child)
+
+        with _AsyncDelegatePatches(mock_child):
+            result = json.loads(delegate_task_async(goal="cleanup test", parent_agent=parent))
+            task_id = result["task_id"]
+            task = parent._async_tasks[task_id]
+            task.done_event.wait(timeout=5.0)
+
+        # Give cleanup code a moment
+        time.sleep(0.1)
+        self.assertNotIn(mock_child, parent._active_children)
+
+    def test_failed_task_also_cleans_up(self):
+        """Failed task still sets completed_at and done_event."""
+        parent = make_mock_parent()
+        mock_child = make_mock_child()
+        mock_child.run_conversation.side_effect = RuntimeError("boom")
+
+        with _AsyncDelegatePatches(mock_child):
+            result = json.loads(delegate_task_async(goal="fail cleanup", parent_agent=parent))
+            task_id = result["task_id"]
+            task = parent._async_tasks[task_id]
+            task.done_event.wait(timeout=5.0)
+
+        self.assertTrue(task.done_event.is_set())
+        self.assertIsNotNone(task.completed_at)
+        self.assertEqual(task.status, "failed")
+        self.assertIn("boom", task.error)
+
+
+# =============================================================================
+# TestMultipleTasks — Multiple concurrent tasks
+# =============================================================================
+
+class TestMultipleTasks(unittest.TestCase):
+    """Tests for managing multiple concurrent async tasks."""
+
+    def test_spawn_3_tasks_all_appear_in_list(self):
+        """Spawn 3 tasks, verify all appear in list_tasks output."""
+        parent = make_mock_parent()
+        hold_events = {}
+
+        def slow_run_factory(tid):
+            evt = threading.Event()
+            hold_events[tid] = evt
+
+            def slow_run(user_message):
+                evt.wait(timeout=10.0)
+                return {"completed": True, "final_response": f"done-{tid}"}
+            return slow_run
+
+        task_ids = []
+        for i in range(3):
+            mock_child = make_mock_child()
+            mock_child.run_conversation.side_effect = slow_run_factory(f"t{i}")
+            with _AsyncDelegatePatches(mock_child):
+                result = json.loads(
+                    delegate_task_async(goal=f"concurrent goal {i}", parent_agent=parent)
+                )
+                task_ids.append(result["task_id"])
+
+        # list_tasks should show all 3
+        listed = json.loads(list_tasks(parent_agent=parent))
+        listed_ids = {t["task_id"] for t in listed["tasks"]}
+        for tid in task_ids:
+            self.assertIn(tid, listed_ids)
+        self.assertEqual(len(listed["tasks"]), 3)
+
+        # Cleanup
+        for evt in hold_events.values():
+            evt.set()
+        tasks_dict = parent._async_tasks
+        for tid in task_ids:
+            tasks_dict[tid].done_event.wait(timeout=5.0)
+
+    def test_collect_each_individually(self):
+        """Spawn 3 tasks, collect each individually."""
+        parent = make_mock_parent()
+
+        task_ids = []
+        for i in range(3):
+            mock_child = make_mock_child()
+            mock_child.run_conversation.return_value = {
+                "completed": True, "final_response": f"result-{i}"
+            }
+            with _AsyncDelegatePatches(mock_child):
+                result = json.loads(
+                    delegate_task_async(goal=f"collectable {i}", parent_agent=parent)
+                )
+                task_ids.append(result["task_id"])
+
+        # Wait for all to finish then collect
+        tasks_dict = parent._async_tasks
+        for tid in task_ids:
+            tasks_dict[tid].done_event.wait(timeout=5.0)
+
+        for i, tid in enumerate(task_ids):
+            collected = json.loads(collect_task(task_id=tid, parent_agent=parent))
+            self.assertEqual(collected["status"], "completed")
+            self.assertEqual(collected["summary"], f"result-{i}")
+
+    def test_cancel_one_others_still_running(self):
+        """Cancel one task, verify others are still running."""
+        parent = make_mock_parent()
+        hold_events = {}
+
+        def slow_run_factory(tid):
+            evt = threading.Event()
+            hold_events[tid] = evt
+
+            def slow_run(user_message):
+                evt.wait(timeout=10.0)
+                return {"completed": True, "final_response": f"done-{tid}"}
+            return slow_run
+
+        task_ids = []
+        for i in range(3):
+            mock_child = make_mock_child()
+            mock_child.run_conversation.side_effect = slow_run_factory(f"t{i}")
+            with _AsyncDelegatePatches(mock_child):
+                result = json.loads(
+                    delegate_task_async(goal=f"cancel test {i}", parent_agent=parent)
+                )
+                task_ids.append(result["task_id"])
+
+        # Cancel the first task
+        cancel_result = json.loads(cancel_task(task_id=task_ids[0], parent_agent=parent))
+        self.assertTrue(cancel_result["ok"])
+
+        # Verify the other two are still running
+        listed = json.loads(list_tasks(parent_agent=parent))
+        status_map = {t["task_id"]: t["status"] for t in listed["tasks"]}
+
+        self.assertEqual(status_map[task_ids[0]], "cancelled")
+        self.assertEqual(status_map[task_ids[1]], "running")
+        self.assertEqual(status_map[task_ids[2]], "running")
+
+        # Cleanup
+        for evt in hold_events.values():
+            evt.set()
+        tasks_dict = parent._async_tasks
+        for tid in task_ids[1:]:
+            tasks_dict[tid].done_event.wait(timeout=5.0)
+
+
+# =============================================================================
+# TestRegistryPersistence — Memory leak / retention behavior
+# =============================================================================
+
+class TestRegistryPersistence(unittest.TestCase):
+    """Tests documenting that completed/failed/cancelled tasks remain in registry."""
+
+    def test_completed_task_remains_in_registry(self):
+        """Completed tasks are NOT removed from registry (documented behavior)."""
+        parent = make_mock_parent()
+        mock_child = make_mock_child()
+        mock_child.run_conversation.return_value = {
+            "completed": True, "final_response": "done"
+        }
+
+        with _AsyncDelegatePatches(mock_child):
+            result = json.loads(delegate_task_async(goal="persist test", parent_agent=parent))
+            task_id = result["task_id"]
+            task = parent._async_tasks[task_id]
+            task.done_event.wait(timeout=5.0)
+
+        tasks_dict, _ = _get_task_registry(parent)
+        self.assertIn(task_id, tasks_dict)
+        self.assertEqual(tasks_dict[task_id].status, "completed")
+
+    def test_failed_task_remains_in_registry(self):
+        """Failed tasks are NOT removed from registry."""
+        parent = make_mock_parent()
+        mock_child = make_mock_child()
+        mock_child.run_conversation.side_effect = RuntimeError("fail")
+
+        with _AsyncDelegatePatches(mock_child):
+            result = json.loads(delegate_task_async(goal="fail persist", parent_agent=parent))
+            task_id = result["task_id"]
+            task = parent._async_tasks[task_id]
+            task.done_event.wait(timeout=5.0)
+
+        tasks_dict, _ = _get_task_registry(parent)
+        self.assertIn(task_id, tasks_dict)
+        self.assertEqual(tasks_dict[task_id].status, "failed")
+
+    def test_cancelled_task_remains_in_registry(self):
+        """Cancelled tasks are NOT removed from registry."""
+        parent = make_mock_parent()
+        mock_child = make_mock_child()
+
+        hold_event = threading.Event()
+        def slow_run(user_message):
+            hold_event.wait(timeout=5.0)
+            return {"completed": True, "final_response": "done"}
+        mock_child.run_conversation.side_effect = slow_run
+
+        with _AsyncDelegatePatches(mock_child):
+            result = json.loads(delegate_task_async(goal="cancel persist", parent_agent=parent))
+            task_id = result["task_id"]
+
+        cancel_result = json.loads(cancel_task(task_id=task_id, parent_agent=parent))
+        self.assertTrue(cancel_result["ok"])
+
+        tasks_dict, _ = _get_task_registry(parent)
+        self.assertIn(task_id, tasks_dict)
+        self.assertEqual(tasks_dict[task_id].status, "cancelled")
+
+        # Cleanup
+        hold_event.set()
+        tasks_dict[task_id].done_event.wait(timeout=5.0)
+
+    def test_list_tasks_shows_all_including_completed(self):
+        """list_tasks shows all tasks including completed, failed, cancelled ones."""
+        parent = make_mock_parent()
+        tasks, _ = _get_task_registry(parent)
+
+        # Manually add tasks of each status
+        for status in ["running", "completed", "failed", "cancelled"]:
+            t = AsyncTask(task_id=f"t-{status}", goal=f"goal {status}", status=status)
+            if status != "running":
+                t.completed_at = t.started_at + 1.0
+                t.done_event.set()
+            tasks[f"t-{status}"] = t
+
+        result = json.loads(list_tasks(parent_agent=parent))
+        reported = {t["task_id"]: t["status"] for t in result["tasks"]}
+
+        self.assertEqual(len(reported), 4)
+        self.assertEqual(reported["t-running"], "running")
+        self.assertEqual(reported["t-completed"], "completed")
+        self.assertEqual(reported["t-failed"], "failed")
+        self.assertEqual(reported["t-cancelled"], "cancelled")
+
+
 if __name__ == "__main__":
     unittest.main()

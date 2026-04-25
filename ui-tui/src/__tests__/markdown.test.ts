@@ -1,6 +1,13 @@
 import { describe, expect, it } from 'vitest'
 
-import { AUDIO_DIRECTIVE_RE, INLINE_RE, MEDIA_LINE_RE, stripInlineMarkup } from '../components/markdown.js'
+import {
+  AUDIO_DIRECTIVE_RE,
+  formatTableDivider,
+  getTableColumnWidths,
+  INLINE_RE,
+  MEDIA_LINE_RE,
+  stripInlineMarkup
+} from '../components/markdown.js'
 
 const matches = (text: string) => [...text.matchAll(INLINE_RE)].map(m => m[0])
 
@@ -60,6 +67,20 @@ describe('stripInlineMarkup', () => {
   it('leaves ~!/~? kaomoji alone and still handles real subscript', () => {
     expect(stripInlineMarkup('Yay ~! nice work ~!')).toBe('Yay ~! nice work ~!')
     expect(stripInlineMarkup('H~2~O and CO~2~')).toBe('H_2O and CO_2')
+  })
+})
+
+describe('table formatting helpers', () => {
+  it('computes widths from rendered plain-text cell content', () => {
+    expect(getTableColumnWidths([
+      ['Name', 'Status'],
+      ['**Ada**', '`ok`'],
+      ['Longer name', 'needs review']
+    ])).toEqual([11, 12])
+  })
+
+  it('builds visible pipe divider lines for each column', () => {
+    expect(formatTableDivider([4, 6])).toBe('|------|--------|')
   })
 })
 

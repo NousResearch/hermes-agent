@@ -1,5 +1,5 @@
-import { Box, Link, Text } from '@hermes/ink'
-import { memo, type ReactNode, useMemo } from 'react'
+import { Box, Link, stringWidth, Text } from '@hermes/ink'
+import { Fragment, memo, type ReactNode, useMemo } from 'react'
 
 import { ensureEmojiPresentation } from '../lib/emoji.js'
 import { highlightLine, isHighlightable } from '../lib/syntax.js'
@@ -94,21 +94,37 @@ export const stripInlineMarkup = (v: string) =>
     .replace(/\^([^^\s][^^]*?)\^/g, '^$1')
     .replace(/~([A-Za-z0-9]{1,8})~/g, '_$1')
 
+export const getTableColumnWidths = (rows: string[][]) =>
+  rows[0]!.map((_, ci) => Math.max(...rows.map(r => stringWidth(stripInlineMarkup(r[ci] ?? '')))))
+
+export const formatTableDivider = (widths: number[]) => `|${widths.map(w => '-'.repeat(w + 2)).join('|')}|`
+
+const tableCellPadding = (cell: string, width: number) => ' '.repeat(Math.max(0, width - stringWidth(stripInlineMarkup(cell))))
+
 const renderTable = (k: number, rows: string[][], t: Theme) => {
-  const widths = rows[0]!.map((_, ci) => Math.max(...rows.map(r => stripInlineMarkup(r[ci] ?? '').length)))
+  const widths = getTableColumnWidths(rows)
+  const divider = formatTableDivider(widths)
 
   return (
     <Box flexDirection="column" key={k} paddingLeft={2}>
       {rows.map((row, ri) => (
-        <Box key={ri}>
-          {widths.map((w, ci) => (
-            <Text color={ri === 0 ? t.color.amber : undefined} key={ci}>
-              <MdInline t={t} text={row[ci] ?? ''} />
-              {' '.repeat(Math.max(0, w - stripInlineMarkup(row[ci] ?? '').length))}
-              {ci < widths.length - 1 ? '  ' : ''}
-            </Text>
-          ))}
-        </Box>
+        <Fragment key={ri}>
+          <Box>
+            <Text color={t.color.dim}>|</Text>
+            {widths.map((w, ci) => (
+              <Box key={ci}>
+                <Text> </Text>
+                <Text color={ri === 0 ? t.color.amber : undefined}>
+                  <MdInline t={t} text={row[ci] ?? ''} />
+                  {tableCellPadding(row[ci] ?? '', w)}
+                </Text>
+                <Text> </Text>
+                <Text color={t.color.dim}>|</Text>
+              </Box>
+            ))}
+          </Box>
+          {ri === 0 ? <Text color={t.color.dim}>{divider}</Text> : null}
+        </Fragment>
       ))}
     </Box>
   )

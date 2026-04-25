@@ -19,6 +19,8 @@ const screenWithText = () => {
   return { screen, styles }
 }
 
+const styledSpace = (styles: StylePool) => styles.intern([{ code: '\x1b[4m', endCode: '\x1b[24m', type: 'ansi' }])
+
 describe('selection whitespace handling', () => {
   it('does not copy whitespace-only selections', () => {
     const { screen } = screenWithText()
@@ -38,6 +40,22 @@ describe('selection whitespace handling', () => {
     updateSelection(selection, 9, 1)
 
     expect(getSelectedText(selection, screen)).toBe('hi')
+  })
+
+  it('preserves selected indentation when spaces are rendered content', () => {
+    const styles = new StylePool()
+    const screen = createScreen(10, 1, styles, new CharPool(), new HyperlinkPool())
+    const indentStyle = styledSpace(styles)
+    const selection = createSelectionState()
+
+    setCellAt(screen, 0, 0, { char: ' ', hyperlink: undefined, styleId: indentStyle, width: CellWidth.Narrow })
+    setCellAt(screen, 1, 0, { char: ' ', hyperlink: undefined, styleId: indentStyle, width: CellWidth.Narrow })
+    setCellAt(screen, 2, 0, { char: 'x', hyperlink: undefined, styleId: screen.emptyStyleId, width: CellWidth.Narrow })
+
+    startSelection(selection, 0, 0)
+    updateSelection(selection, 9, 0)
+
+    expect(getSelectedText(selection, screen)).toBe('  x')
   })
 
   it('does not paint selection background on leading/trailing empty cells or empty rows', () => {

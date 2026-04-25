@@ -640,3 +640,24 @@ class TestUserMessagePreviewConfig:
         preview = DEFAULT_CONFIG["display"]["user_message_preview"]
         assert preview["first_lines"] == 2
         assert preview["last_lines"] == 2
+
+
+class TestWorktreeConfig:
+    def test_default_config_includes_worktree_section(self):
+        assert DEFAULT_CONFIG["worktree"] == {
+            "enabled": False,
+            "dir": ".worktrees",
+        }
+
+    def test_load_config_merges_partial_worktree_section(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump({"worktree": {"dir": ".agent-worktrees"}}),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            config = load_config()
+
+        assert config["worktree"]["enabled"] is False
+        assert config["worktree"]["dir"] == ".agent-worktrees"

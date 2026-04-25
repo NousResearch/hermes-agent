@@ -30,7 +30,7 @@ from urllib.parse import unquote, urlparse
 from contextlib import contextmanager
 from pathlib import Path
 from datetime import datetime
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Any, Optional, Union
 
 logger = logging.getLogger(__name__)
 
@@ -416,6 +416,10 @@ def load_cli_config() -> Dict[str, Any]:
             "base_url": "",    # Direct OpenAI-compatible endpoint for subagents
             "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
         },
+        "worktree": {
+            "enabled": False,
+            "dir": ".worktrees",
+        },
     }
     
     # Track whether the config file explicitly set terminal config.
@@ -791,7 +795,59 @@ def _path_is_within_root(path: Path, root: Path) -> bool:
         return False
 
 
-def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
+def _normalize_worktree_config(
+    config_value: Any,
+    cli_value: Union[bool, str] = False,
+    shorthand_value: Union[bool, str] = False,
+) -> Dict[str, Any]:
+    """Return normalized worktree activation and directory settings."""
+    enabled = False
+    directory = ".worktrees"
+
+    if isinstance(config_value, dict):
+        enabled = bool(config_value.get("enabled", False))
+        configured_dir = config_value.get("dir")
+        if configured_dir:
+            directory = str(configured_dir)
+    elif isinstance(config_value, bool):
+        enabled = config_value
+    elif config_value:
+        enabled = True
+
+    for override in (cli_value, shorthand_value):
+        if isinstance(override, str):
+            value = override.strip()
+            if value:
+                return {"enabled": True, "dir": value}
+        elif override:
+            enabled = True
+
+    return {"enabled": enabled, "dir": directory}
+
+
+def _resolve_worktrees_dir(repo_root: str, directory: str = ".worktrees") -> Path:
+    """Resolve the configured worktree base directory for a repository."""
+    raw = directory or ".worktrees"
+    path = Path(str(raw)).expanduser()
+    if path.is_absolute():
+        return path.resolve()
+    return (Path(repo_root) / path).resolve()
+
+
+def _gitignore_entry_for_worktrees_dir(repo_root: str, worktrees_dir: Path) -> Optional[str]:
+    """Return a repo-relative gitignore entry when the worktree dir is in-repo."""
+    try:
+        relative = worktrees_dir.resolve().relative_to(Path(repo_root).resolve())
+    except ValueError:
+        return None
+    entry = relative.as_posix().rstrip("/")
+    return f"{entry}/" if entry else None
+
+
+def _setup_worktree(
+    repo_root: str = None,
+    worktree_dir: str = ".worktrees",
+) -> Optional[Dict[str, str]]:
     """Create an isolated git worktree for this CLI session.
 
     Returns a dict with worktree metadata on success, None on failure.
@@ -809,21 +865,22 @@ def _setup_worktree(repo_root: str = None) -> Optional[Dict[str, str]]:
     wt_name = f"hermes-{short_id}"
     branch_name = f"hermes/{wt_name}"
 
-    worktrees_dir = Path(repo_root) / ".worktrees"
+    worktrees_dir = _resolve_worktrees_dir(repo_root, worktree_dir)
     worktrees_dir.mkdir(parents=True, exist_ok=True)
 
     wt_path = worktrees_dir / wt_name
 
-    # Ensure .worktrees/ is in .gitignore
+    # Ensure in-repo worktree directories are ignored.
     gitignore = Path(repo_root) / ".gitignore"
-    _ignore_entry = ".worktrees/"
+    _ignore_entry = _gitignore_entry_for_worktrees_dir(repo_root, worktrees_dir)
     try:
-        existing = gitignore.read_text() if gitignore.exists() else ""
-        if _ignore_entry not in existing.splitlines():
-            with open(gitignore, "a") as f:
-                if existing and not existing.endswith("\n"):
-                    f.write("\n")
-                f.write(f"{_ignore_entry}\n")
+        if _ignore_entry:
+            existing = gitignore.read_text() if gitignore.exists() else ""
+            if _ignore_entry not in existing.splitlines():
+                with open(gitignore, "a") as f:
+                    if existing and not existing.endswith("\n"):
+                        f.write("\n")
+                    f.write(f"{_ignore_entry}\n")
     except Exception as e:
         logger.debug("Could not update .gitignore: %s", e)
 
@@ -980,7 +1037,11 @@ def _run_state_db_auto_maintenance(session_db) -> None:
         logger.debug("state.db auto-maintenance skipped: %s", exc)
 
 
-def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
+def _prune_stale_worktrees(
+    repo_root: str,
+    max_age_hours: int = 24,
+    worktree_dir: str = ".worktrees",
+) -> None:
     """Remove stale worktrees and orphaned branches on startup.
 
     Age-based tiers:
@@ -994,7 +1055,7 @@ def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
     import subprocess
     import time
 
-    worktrees_dir = Path(repo_root) / ".worktrees"
+    worktrees_dir = _resolve_worktrees_dir(repo_root, worktree_dir)
     if not worktrees_dir.exists():
         _prune_orphaned_branches(repo_root)
         return
@@ -10850,8 +10911,8 @@ def main(
     list_toolsets: bool = False,
     gateway: bool = False,
     resume: str = None,
-    worktree: bool = False,
-    w: bool = False,
+    worktree: Union[bool, str] = False,
+    w: Union[bool, str] = False,
     checkpoints: bool = False,
     pass_session_id: bool = False,
     ignore_user_config: bool = False,
@@ -10876,8 +10937,8 @@ def main(
         list_tools: List available tools and exit
         list_toolsets: List available toolsets and exit
         resume: Resume a previous session by its ID (e.g., 20260225_143052_a1b2c3)
-        worktree: Run in an isolated git worktree (for parallel agents). Alias: -w
-        w: Shorthand for --worktree
+        worktree: Run in an isolated git worktree, optionally under this base dir. Alias: -w
+        w: Shorthand for --worktree, optionally with a base dir
     
     Examples:
         python cli.py                            # Start interactive mode
@@ -10888,6 +10949,7 @@ def main(
         python cli.py --list-tools               # List tools and exit
         python cli.py --resume 20260225_143052_a1b2c3  # Resume session
         python cli.py -w                         # Start in isolated git worktree
+        python cli.py -w .agent-worktrees        # Use custom worktree directory
         python cli.py -w -q "Fix issue #123"     # Single query in worktree
     """
     global _active_worktree
@@ -10909,14 +10971,19 @@ def main(
         # ── Git worktree isolation (#652) ──
         # Create an isolated worktree so this agent instance doesn't collide
         # with other agents working on the same repo.
-        use_worktree = worktree or w or CLI_CONFIG.get("worktree", False)
+        worktree_settings = _normalize_worktree_config(
+            CLI_CONFIG.get("worktree", False),
+            worktree,
+            w,
+        )
+        use_worktree = worktree_settings["enabled"]
         wt_info = None
         if use_worktree:
             # Prune stale worktrees from crashed/killed sessions
             _repo = _git_repo_root()
             if _repo:
-                _prune_stale_worktrees(_repo)
-            wt_info = _setup_worktree()
+                _prune_stale_worktrees(_repo, worktree_dir=worktree_settings["dir"])
+            wt_info = _setup_worktree(worktree_dir=worktree_settings["dir"])
             if wt_info:
                 _active_worktree = wt_info
                 os.environ["TERMINAL_CWD"] = wt_info["path"]

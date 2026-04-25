@@ -6884,6 +6884,7 @@ Examples:
     hermes gateway                Run messaging gateway
     hermes -s hermes-agent-dev,github-auth
     hermes -w                     Start in isolated git worktree
+    hermes -w .agent-worktrees    Use a custom worktree directory
     hermes gateway install        Install gateway background service
     hermes sessions list          List past sessions
     hermes sessions browse        Interactive session picker
@@ -6957,9 +6958,11 @@ For more help on a command:
     parser.add_argument(
         "--worktree",
         "-w",
-        action="store_true",
+        nargs="?",
+        const=True,
         default=False,
-        help="Run in an isolated git worktree (for parallel agents)",
+        metavar="DIR",
+        help="Run in an isolated git worktree, optionally under DIR",
     )
     parser.add_argument(
         "--accept-hooks",
@@ -7103,9 +7106,11 @@ For more help on a command:
     chat_parser.add_argument(
         "--worktree",
         "-w",
-        action="store_true",
+        nargs="?",
+        const=True,
         default=argparse.SUPPRESS,
-        help="Run in an isolated git worktree (for parallel agents on the same repo)",
+        metavar="DIR",
+        help="Run in an isolated git worktree, optionally under DIR",
     )
     chat_parser.add_argument(
         "--accept-hooks",
@@ -9150,6 +9155,18 @@ Examples:
     _known_cmds = (
         set(subparsers.choices.keys()) if hasattr(subparsers, "choices") else set()
     )
+    _WORKTREE_FLAG_SENTINEL = "__HERMES_WORKTREE_FLAG__"
+    _rewritten_argv = []
+    _i = 0
+    while _i < len(_processed_argv):
+        token = _processed_argv[_i]
+        next_token = _processed_argv[_i + 1] if _i + 1 < len(_processed_argv) else None
+        if token in ("-w", "--worktree") and next_token in _known_cmds:
+            _rewritten_argv.append(f"{token}={_WORKTREE_FLAG_SENTINEL}")
+        else:
+            _rewritten_argv.append(token)
+        _i += 1
+    _processed_argv = _rewritten_argv
     _has_cmd_token = any(
         t in _known_cmds for t in _processed_argv if not t.startswith("-")
     )
@@ -9175,6 +9192,9 @@ Examples:
     else:
         subparsers.required = False
         args = parser.parse_args(_processed_argv)
+
+    if getattr(args, "worktree", None) == _WORKTREE_FLAG_SENTINEL:
+        args.worktree = True
 
     # Handle --version flag
     if args.version:

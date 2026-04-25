@@ -32,7 +32,7 @@ def _build_parser():
         "--continue", "-c", dest="continue_last", nargs="?",
         const=True, default=None, metavar="SESSION_NAME",
     )
-    parser.add_argument("--worktree", "-w", action="store_true", default=False)
+    parser.add_argument("--worktree", "-w", nargs="?", const=True, default=False)
     parser.add_argument("--skills", "-s", action="append", default=None)
     parser.add_argument("--yolo", action="store_true", default=False)
     parser.add_argument("--pass-session-id", action="store_true", default=False)
@@ -42,7 +42,7 @@ def _build_parser():
     # These MUST use argparse.SUPPRESS to avoid overwriting parent values
     chat.add_argument("--yolo", action="store_true",
                       default=argparse.SUPPRESS)
-    chat.add_argument("--worktree", "-w", action="store_true",
+    chat.add_argument("--worktree", "-w", nargs="?", const=True,
                       default=argparse.SUPPRESS)
     chat.add_argument("--skills", "-s", action="append",
                       default=argparse.SUPPRESS)
@@ -55,6 +55,23 @@ def _build_parser():
         const=True, default=argparse.SUPPRESS, metavar="SESSION_NAME",
     )
     return parser
+
+
+def _parse_with_worktree_rewrite(parser, argv):
+    """Mirror main.py's rewrite so `-w chat` remains flag-before-subcommand."""
+    known = {"chat"}
+    sentinel = "__HERMES_WORKTREE_FLAG__"
+    rewritten = []
+    for index, token in enumerate(argv):
+        next_token = argv[index + 1] if index + 1 < len(argv) else None
+        if token in ("-w", "--worktree") and next_token in known:
+            rewritten.append(f"{token}={sentinel}")
+        else:
+            rewritten.append(token)
+    args = parser.parse_args(rewritten)
+    if getattr(args, "worktree", None) == sentinel:
+        args.worktree = True
+    return args
 
 
 class TestYoloEnvVar:
@@ -91,6 +108,36 @@ class TestYoloEnvVar:
         args = parser.parse_args(["chat"])
         self._simulate_cmd_chat_yolo_check(args)
         assert os.environ.get("HERMES_YOLO_MODE") is None
+
+
+class TestWorktreeOptionalPath:
+    """Verify -w remains a flag and can optionally carry a directory."""
+
+    def test_top_level_worktree_without_path_is_true(self):
+        parser = _build_parser()
+        args = parser.parse_args(["-w"])
+        assert args.worktree is True
+
+    def test_parent_worktree_before_chat_is_true(self):
+        parser = _build_parser()
+        args = _parse_with_worktree_rewrite(parser, ["-w", "chat"])
+        assert args.worktree is True
+        assert args.command == "chat"
+
+    def test_parent_worktree_with_path(self):
+        parser = _build_parser()
+        args = parser.parse_args(["-w", ".agent-worktrees"])
+        assert args.worktree == ".agent-worktrees"
+
+    def test_chat_worktree_without_path_is_true(self):
+        parser = _build_parser()
+        args = parser.parse_args(["chat", "-w"])
+        assert args.worktree is True
+
+    def test_chat_worktree_with_path(self):
+        parser = _build_parser()
+        args = parser.parse_args(["chat", "--worktree", "/tmp/hermes-worktrees"])
+        assert args.worktree == "/tmp/hermes-worktrees"
 
 
 class TestAcceptHooksOnAgentSubparsers:

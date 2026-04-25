@@ -24,7 +24,7 @@ hermes [global-options] <command> [subcommand/options]
 | `--profile <name>`, `-p <name>` | Select which Hermes profile to use for this invocation. Overrides the sticky default set by `hermes profile use`. |
 | `--resume <session>`, `-r <session>` | Resume a previous session by ID or title. |
 | `--continue [name]`, `-c [name]` | Resume the most recent session, or the most recent session matching a title. |
-| `--worktree`, `-w` | Start in an isolated git worktree for parallel-agent workflows. |
+| `--worktree [dir]`, `-w [dir]` | Start in an isolated git worktree, optionally under `dir`. |
 | `--yolo` | Bypass dangerous-command approval prompts. |
 | `--pass-session-id` | Include the session ID in the agent's system prompt. |
 | `--ignore-user-config` | Ignore `~/.hermes/config.yaml` and fall back to built-in defaults. Credentials in `.env` are still loaded. |
@@ -90,7 +90,7 @@ Common options:
 | `-Q`, `--quiet` | Programmatic mode: suppress banner/spinner/tool previews. |
 | `--image <path>` | Attach a local image to a single query. |
 | `--resume <session>` / `--continue [name]` | Resume a session directly from `chat`. |
-| `--worktree` | Create an isolated git worktree for this run. |
+| `--worktree [dir]`, `-w [dir]` | Create an isolated git worktree for this run, optionally under `dir`. |
 | `--checkpoints` | Enable filesystem checkpoints before destructive file changes. |
 | `--yolo` | Skip approval prompts. |
 | `--pass-session-id` | Pass the session ID into the system prompt. |
@@ -108,6 +108,7 @@ hermes chat --provider openrouter --model anthropic/claude-sonnet-4.6
 hermes chat --toolsets web,terminal,skills
 hermes chat --quiet -q "Return only JSON"
 hermes chat --worktree -q "Review this repo and open a PR"
+hermes chat --worktree .agent-worktrees -q "Review this repo and open a PR"
 hermes chat --ignore-user-config --ignore-rules -q "Repro without my personal setup"
 ```
 

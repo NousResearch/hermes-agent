@@ -465,11 +465,22 @@ tool_output:
 Enable isolated git worktrees for running multiple agents in parallel on the same repo:
 
 ```yaml
-worktree: true    # Always create a worktree (same as hermes -w)
-# worktree: false # Default — only when -w flag is passed
+worktree:
+  enabled: true
+  dir: ".worktrees"
 ```
 
-When enabled, each CLI session creates a fresh worktree under `.worktrees/` with its own branch. Agents can edit files, commit, push, and create PRs without interfering with each other. Clean worktrees are removed on exit; dirty ones are kept for manual recovery.
+When enabled, each CLI session creates a fresh worktree under the configured directory with its own branch. Relative paths resolve from the git repo root, and absolute paths are allowed. The legacy boolean form (`worktree: true` / `worktree: false`) is still supported.
+
+You can also override the directory for a single run:
+
+```bash
+hermes -w
+hermes -w .agent-worktrees
+hermes --worktree /tmp/hermes-worktrees
+```
+
+Agents can edit files, commit, push, and create PRs without interfering with each other. Worktrees without unpushed commits are removed on exit; worktrees with unpushed commits are kept for manual recovery.
 
 You can also list gitignored files to copy into worktrees via `.worktreeinclude` in your repo root:
 

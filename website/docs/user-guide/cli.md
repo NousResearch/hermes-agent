@@ -44,6 +44,7 @@ hermes chat --verbose
 
 # Isolated git worktree (for running multiple agents in parallel)
 hermes -w                         # Interactive mode in worktree
+hermes -w .agent-worktrees        # Use a custom worktree directory
 hermes -w -q "Fix issue #123"     # Single query in worktree
 ```
 

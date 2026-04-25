@@ -368,6 +368,94 @@ class TestGitignoreManagement:
         assert ".worktrees/" in existing.splitlines()
 
 
+class TestConfigurableWorktreeDirectory:
+    """Test the real configurable worktree directory helpers."""
+
+    def test_normalizes_legacy_boolean_config(self):
+        import cli as cli_mod
+
+        assert cli_mod._normalize_worktree_config(True) == {
+            "enabled": True,
+            "dir": ".worktrees",
+        }
+        assert cli_mod._normalize_worktree_config(False) == {
+            "enabled": False,
+            "dir": ".worktrees",
+        }
+
+    def test_normalizes_nested_config_and_cli_override(self):
+        import cli as cli_mod
+
+        settings = cli_mod._normalize_worktree_config(
+            {"enabled": True, "dir": ".configured-worktrees"},
+            ".cli-worktrees",
+        )
+        assert settings == {"enabled": True, "dir": ".cli-worktrees"}
+
+    def test_w_flag_enables_configured_dir_without_overriding_it(self):
+        import cli as cli_mod
+
+        settings = cli_mod._normalize_worktree_config(
+            {"enabled": False, "dir": ".configured-worktrees"},
+            True,
+        )
+        assert settings == {"enabled": True, "dir": ".configured-worktrees"}
+
+    def test_resolves_relative_dir_under_repo_root(self, git_repo):
+        import cli as cli_mod
+
+        resolved = cli_mod._resolve_worktrees_dir(str(git_repo), ".agent-worktrees")
+        assert resolved == (git_repo / ".agent-worktrees").resolve()
+
+    def test_resolves_absolute_dir_as_is(self, git_repo, tmp_path):
+        import cli as cli_mod
+
+        external = tmp_path / "external-worktrees"
+        resolved = cli_mod._resolve_worktrees_dir(str(git_repo), str(external))
+        assert resolved == external.resolve()
+
+    def test_setup_uses_custom_relative_dir_and_gitignore_entry(self, git_repo):
+        import cli as cli_mod
+
+        info = cli_mod._setup_worktree(str(git_repo), worktree_dir=".agent-worktrees")
+        try:
+            assert info is not None
+            assert Path(info["path"]).parent == (git_repo / ".agent-worktrees").resolve()
+            assert ".agent-worktrees/" in (git_repo / ".gitignore").read_text().splitlines()
+        finally:
+            cli_mod._cleanup_worktree(info)
+
+    def test_setup_uses_absolute_dir_without_gitignore_entry(self, git_repo, tmp_path):
+        import cli as cli_mod
+
+        external = tmp_path / "external-worktrees"
+        info = cli_mod._setup_worktree(str(git_repo), worktree_dir=str(external))
+        try:
+            assert info is not None
+            assert Path(info["path"]).parent == external.resolve()
+            gitignore = git_repo / ".gitignore"
+            assert not gitignore.exists() or str(external) not in gitignore.read_text()
+        finally:
+            cli_mod._cleanup_worktree(info)
+
+    def test_prune_scans_custom_worktree_dir(self, git_repo):
+        import cli as cli_mod
+        import time
+
+        info = cli_mod._setup_worktree(str(git_repo), worktree_dir=".agent-worktrees")
+        assert info is not None
+
+        old_time = time.time() - (25 * 3600)
+        os.utime(info["path"], (old_time, old_time))
+
+        cli_mod._prune_stale_worktrees(
+            str(git_repo),
+            worktree_dir=".agent-worktrees",
+        )
+
+        assert not Path(info["path"]).exists()
+
+
 class TestMultipleWorktrees:
     """Test running multiple worktrees concurrently (the core use case)."""
 
@@ -632,35 +720,42 @@ class TestCLIFlagLogic:
 
     def test_worktree_flag_triggers(self):
         """--worktree flag should trigger worktree creation."""
-        worktree = True
-        w = False
-        config_worktree = False
-        use_worktree = worktree or w or config_worktree
-        assert use_worktree
+        import cli as cli_mod
+
+        settings = cli_mod._normalize_worktree_config(False, True, False)
+        assert settings["enabled"] is True
 
     def test_w_flag_triggers(self):
         """-w flag should trigger worktree creation."""
-        worktree = False
-        w = True
-        config_worktree = False
-        use_worktree = worktree or w or config_worktree
-        assert use_worktree
+        import cli as cli_mod
+
+        settings = cli_mod._normalize_worktree_config(False, False, True)
+        assert settings["enabled"] is True
 
     def test_config_triggers(self):
         """worktree: true in config should trigger worktree creation."""
-        worktree = False
-        w = False
-        config_worktree = True
-        use_worktree = worktree or w or config_worktree
-        assert use_worktree
+        import cli as cli_mod
+
+        settings = cli_mod._normalize_worktree_config(True, False, False)
+        assert settings["enabled"] is True
+
+    def test_nested_config_triggers(self):
+        """worktree.enabled: true in config should trigger worktree creation."""
+        import cli as cli_mod
+
+        settings = cli_mod._normalize_worktree_config(
+            {"enabled": True, "dir": ".agent-worktrees"},
+            False,
+            False,
+        )
+        assert settings == {"enabled": True, "dir": ".agent-worktrees"}
 
     def test_none_set_no_trigger(self):
         """No flags and no config should not trigger."""
-        worktree = False
-        w = False
-        config_worktree = False
-        use_worktree = worktree or w or config_worktree
-        assert not use_worktree
+        import cli as cli_mod
+
+        settings = cli_mod._normalize_worktree_config(False, False, False)
+        assert settings["enabled"] is False
 
 
 class TestTerminalCWDIntegration:

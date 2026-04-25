@@ -128,8 +128,13 @@ model:
 # When enabled, each CLI session creates an isolated git worktree so multiple
 # agents can work on the same repo concurrently without file collisions.
 # Equivalent to always passing --worktree / -w on the command line.
+# Relative dirs resolve from the git repo root; absolute dirs are allowed.
 #
-# worktree: true    # Always create a worktree when in a git repo
+# worktree:
+#   enabled: true
+#   dir: ".worktrees"
+#
+# Legacy boolean form is still supported:
 # worktree: false   # Default — only create when -w flag is passed
 
 # =============================================================================

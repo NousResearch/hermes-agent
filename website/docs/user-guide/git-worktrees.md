@@ -152,7 +152,14 @@ Hermes will:
 - Check out an isolated branch (e.g. `hermes/hermes-<hash>`).
 - Run the full CLI session inside that worktree.
 
-This is the easiest way to get worktree isolation. You can also combine it with a single query:
+This is the easiest way to get worktree isolation. You can also provide a custom worktree directory for one run:
+
+```bash
+hermes -w .agent-worktrees
+hermes --worktree /tmp/hermes-worktrees
+```
+
+Relative paths resolve from the git repo root; absolute paths are used as-is. You can also combine worktree isolation with a single query:
 
 ```bash
 hermes -w -q "Fix issue #123"
@@ -171,4 +178,3 @@ This combination gives you:
 - Strong guarantees that different agents and experiments do not step on each other.
 - Fast iteration cycles with easy recovery from bad edits.
 - Clean, reviewable pull requests.
-

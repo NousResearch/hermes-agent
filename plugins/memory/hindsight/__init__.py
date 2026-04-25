@@ -589,13 +589,22 @@ class HindsightMemoryProvider(MemoryProvider):
             val = input(f"  LLM model [{default_model}]: ").strip()
             provider_config["llm_model"] = val or default_model
 
-            sys.stdout.write("  LLM API key: ")
+            existing_llm_key = (
+                _load_simple_env(Path(hermes_home) / ".env").get("HINDSIGHT_LLM_API_KEY", "")
+                or os.environ.get("HINDSIGHT_LLM_API_KEY", "")
+            )
+            if existing_llm_key:
+                masked = f"...{existing_llm_key[-4:]}" if len(existing_llm_key) > 4 else "set"
+                sys.stdout.write(f"  LLM API key (current: {masked}, blank to keep): ")
+            else:
+                sys.stdout.write("  LLM API key: ")
             sys.stdout.flush()
             llm_key = getpass.getpass(prompt="") if sys.stdin.isatty() else sys.stdin.readline().strip()
-            # Always write explicitly (including empty) so the provider sees ""
-            # rather than a missing variable.  The daemon reads from .env at
-            # startup and fails when HINDSIGHT_LLM_API_KEY is unset.
-            env_writes["HINDSIGHT_LLM_API_KEY"] = llm_key
+            if llm_key or not existing_llm_key:
+                # Always write explicitly on first setup (including empty) so
+                # the provider sees "" rather than a missing variable. On
+                # reconfiguration, blank preserves the existing key.
+                env_writes["HINDSIGHT_LLM_API_KEY"] = llm_key
 
         # Step 4: Save everything
         provider_config["bank_id"] = "hermes"

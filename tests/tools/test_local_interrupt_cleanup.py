@@ -29,12 +29,34 @@ def _isolate_hermes_home(tmp_path, monkeypatch):
 
 
 def _pgid_still_alive(pgid: int) -> bool:
-    """Return True if any process in the given process group is still alive."""
+    """Return True if any non-zombie process in the group is still alive."""
     try:
-        os.killpg(pgid, 0)  # signal 0 = existence check
-        return True
-    except ProcessLookupError:
+        ps = subprocess.run(
+            ["ps", "-axo", "pgid=,stat=,pid=,command="],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        for line in ps.stdout.splitlines():
+            parts = line.strip().split(None, 3)
+            if len(parts) < 2:
+                continue
+            try:
+                line_pgid = int(parts[0])
+            except ValueError:
+                continue
+            if line_pgid != pgid:
+                continue
+            stat = parts[1]
+            if not stat.startswith("Z"):
+                return True
         return False
+    except Exception:
+        try:
+            os.killpg(pgid, 0)  # signal 0 = existence check
+            return True
+        except ProcessLookupError:
+            return False
 
 
 def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
@@ -46,6 +68,19 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
         proc_holder = {}
         started = threading.Event()
         raise_at = [None]  # set by the main thread to tell worker when
+
+        # Record the actual process handle instead of depending on ps/psutil
+        # command-line formatting, which differs across macOS/Linux shells.
+        original_run_bash = env._run_bash
+
+        def recording_run_bash(cmd_string, *args, **kwargs):
+            proc = original_run_bash(cmd_string, *args, **kwargs)
+            if "sleep 30" in cmd_string:
+                proc_holder["proc"] = proc
+                started.set()
+            return proc
+
+        env._run_bash = recording_run_bash
 
         # Drive execute() on a separate thread so we can SIGNAL-interrupt it
         # via a thread-targeted exception without killing our test process.
@@ -60,42 +95,12 @@ def test_wait_for_process_kills_subprocess_on_keyboardinterrupt():
 
         t = threading.Thread(target=worker, daemon=True)
         t.start()
-        # Wait until the subprocess actually exists.  LocalEnvironment.execute
-        # does init_session() (one spawn) before the real command, so we need
-        # to wait until a sleep 30 is visible.  Use pgrep-style lookup via
-        # /proc to find the bash process running our sleep.
-        deadline = time.monotonic() + 5.0
-        target_pid = None
-        while time.monotonic() < deadline:
-            # Walk our children and grand-children to find one running 'sleep 30'
-            try:
-                import psutil  # optional — fall back if absent
-                for p in psutil.Process(os.getpid()).children(recursive=True):
-                    try:
-                        if "sleep 30" in " ".join(p.cmdline()):
-                            target_pid = p.pid
-                            break
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        continue
-            except ImportError:
-                # Fall back to ps
-                ps = subprocess.run(
-                    ["ps", "-eo", "pid,ppid,pgid,cmd"], capture_output=True, text=True,
-                )
-                for line in ps.stdout.splitlines():
-                    if "sleep 30" in line and "grep" not in line:
-                        parts = line.split()
-                        if parts and parts[0].isdigit():
-                            target_pid = int(parts[0])
-                            break
-            if target_pid:
-                break
-            time.sleep(0.1)
-
-        assert target_pid is not None, (
-            "test setup: couldn't find 'sleep 30' subprocess after 5 s"
+        assert started.wait(timeout=5.0), (
+            "test setup: command subprocess was not spawned after 5 s"
         )
-        pgid = os.getpgid(target_pid)
+        target_proc = proc_holder.get("proc")
+        assert target_proc is not None
+        pgid = os.getpgid(target_proc.pid)
         assert _pgid_still_alive(pgid), "sanity: subprocess should be alive"
 
         # Now inject a KeyboardInterrupt into the worker thread the same

@@ -214,6 +214,8 @@ class TestTickWorkdirPartition:
 
         monkeypatch.setattr(sched, "get_due_jobs", lambda: [workdir_job, parallel_job])
         monkeypatch.setattr(sched, "advance_next_run", lambda *_a, **_kw: None)
+        monkeypatch.setattr(sched, "_LOCK_DIR", tmp_path / "cron-lock")
+        monkeypatch.setattr(sched, "_LOCK_FILE", tmp_path / "cron-lock" / ".tick.lock")
 
         # Record call order / thread context.
         import threading

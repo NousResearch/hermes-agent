@@ -7,6 +7,20 @@ handler validation, and availability gating.
 import json
 from unittest.mock import patch
 
+
+def _consume_coro_and_return(value):
+    """Return a mock side effect that closes the coroutine passed to _run_async.
+
+    Handler tests patch _run_async to avoid network calls, but the handler creates
+    the coroutine before handing it to _run_async. Closing it keeps the tests from
+    leaking unawaited coroutine RuntimeWarnings.
+    """
+    def _side_effect(coro):
+        coro.close()
+        return value
+
+    return _side_effect
+
 import pytest
 
 from tools.homeassistant_tool import (
@@ -313,7 +327,7 @@ class TestEntityIdValidation:
 class TestCallServiceStringData:
     """data param may arrive as a JSON string (XML tool calling mode)."""
 
-    @patch("tools.homeassistant_tool._run_async", return_value={"success": True})
+    @patch("tools.homeassistant_tool._run_async", side_effect=_consume_coro_and_return({"success": True}))
     def test_string_data_deserialized(self, mock_run):
         """JSON string data is parsed into a dict before dispatch."""
         _handle_call_service({
@@ -325,7 +339,7 @@ class TestCallServiceStringData:
         call_args = mock_run.call_args[0][0]  # the coroutine arg
         # _run_async was called, meaning we got past validation
 
-    @patch("tools.homeassistant_tool._run_async", return_value={"success": True})
+    @patch("tools.homeassistant_tool._run_async", side_effect=_consume_coro_and_return({"success": True}))
     def test_dict_data_passthrough(self, mock_run):
         """Dict data (JSON tool calling mode) still works unchanged."""
         _handle_call_service({
@@ -347,7 +361,7 @@ class TestCallServiceStringData:
         assert "error" in result
         assert "Invalid JSON" in result["error"]
 
-    @patch("tools.homeassistant_tool._run_async", return_value={"success": True})
+    @patch("tools.homeassistant_tool._run_async", side_effect=_consume_coro_and_return({"success": True}))
     def test_empty_string_data_becomes_none(self, mock_run):
         """Empty/whitespace string data is treated as None."""
         _handle_call_service({

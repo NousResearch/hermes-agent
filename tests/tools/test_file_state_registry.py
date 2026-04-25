@@ -215,6 +215,8 @@ class FileToolsIntegrationTests(unittest.TestCase):
     """
 
     def setUp(self) -> None:
+        self._old_terminal_env = os.environ.get("TERMINAL_ENV")
+        os.environ["TERMINAL_ENV"] = "local"
         file_state.get_registry().clear()
         self._tmpdir = tempfile.mkdtemp(prefix="hermes_file_state_int_")
 
@@ -222,6 +224,10 @@ class FileToolsIntegrationTests(unittest.TestCase):
         import shutil
         shutil.rmtree(self._tmpdir, ignore_errors=True)
         file_state.get_registry().clear()
+        if self._old_terminal_env is None:
+            os.environ.pop("TERMINAL_ENV", None)
+        else:
+            os.environ["TERMINAL_ENV"] = self._old_terminal_env
 
     def _write_seed(self, name: str, content: str = "seed\n") -> str:
         p = os.path.join(self._tmpdir, name)

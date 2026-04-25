@@ -29,8 +29,14 @@ REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 VENV=""
 for candidate in "$REPO_ROOT/.venv" "$REPO_ROOT/venv" "$HOME/.hermes/hermes-agent/venv"; do
   if [ -f "$candidate/bin/activate" ]; then
-    VENV="$candidate"
-    break
+    # Prefer .venv, but do not select a venv that cannot install the
+    # canonical test-runner dependency when it is missing. Some local
+    # bootstrap paths leave a pip-less .venv next to the fully provisioned
+    # venv; falling back keeps scripts/run_tests.sh usable.
+    if "$candidate/bin/python" -c "import pytest_split" 2>/dev/null || "$candidate/bin/python" -m pip --version >/dev/null 2>&1; then
+      VENV="$candidate"
+      break
+    fi
   fi
 done
 

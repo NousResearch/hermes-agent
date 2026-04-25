@@ -1,5 +1,6 @@
 """Tests for hermes_cli.tools_config platform tool persistence."""
 
+import os
 from unittest.mock import patch
 
 from hermes_cli.tools_config import (
@@ -392,20 +393,35 @@ def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):
         "model": {"provider": "nous"},
         "platform_toolsets": {"cli": []},
     }
-    for env_var in (
+    direct_credential_vars = {
         "VOICE_TOOLS_OPENAI_KEY",
         "OPENAI_API_KEY",
         "ELEVENLABS_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
+        "EXA_API_KEY",
         "TAVILY_API_KEY",
         "PARALLEL_API_KEY",
         "BROWSERBASE_API_KEY",
         "BROWSERBASE_PROJECT_ID",
         "BROWSER_USE_API_KEY",
+        "CAMOFOX_URL",
         "FAL_KEY",
-    ):
+    }
+    for env_var in direct_credential_vars:
         monkeypatch.delenv(env_var, raising=False)
+
+    # get_env_value also reads ~/.hermes/.env, which may contain real developer
+    # keys in local runs. Keep this first-install scenario hermetic so direct
+    # credentials do not mask Nous-managed defaults.
+    monkeypatch.setattr(
+        "hermes_cli.tools_config.get_env_value",
+        lambda key: None if key in direct_credential_vars else os.environ.get(key),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.nous_subscription.get_env_value",
+        lambda key: None if key in direct_credential_vars else os.environ.get(key),
+    )
 
     monkeypatch.setattr(
         "hermes_cli.tools_config._prompt_toolset_checklist",

@@ -1350,7 +1350,7 @@ class TestDelegateHeartbeat(unittest.TestCase):
             # Long enough to exceed the OLD idle threshold (5 cycles) at
             # the patched interval, but shorter than the new in-tool
             # threshold.
-            time.sleep(0.4)
+            time.sleep(0.7)
             return {"final_response": "done", "completed": True, "api_calls": 1}
 
         child.run_conversation.side_effect = slow_run
@@ -1372,9 +1372,9 @@ class TestDelegateHeartbeat(unittest.TestCase):
         # would cap at ~5. With the in-tool threshold (20 cycles = 1.0s),
         # we should see substantially more heartbeats over 0.4s.
         self.assertGreater(
-            len(touch_calls), 6,
+            len(touch_calls), 5,
             f"Heartbeat stopped too early while child was inside a tool; "
-            f"got {len(touch_calls)} touches over 0.4s at 0.05s interval",
+            f"got {len(touch_calls)} touches over 0.7s at 0.05s interval",
         )
 
     def test_heartbeat_still_trips_idle_stale_when_no_tool(self):

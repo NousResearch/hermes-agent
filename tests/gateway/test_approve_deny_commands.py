@@ -22,6 +22,19 @@ from gateway.platforms.base import MessageEvent
 from gateway.session import SessionEntry, SessionSource, build_session_key
 
 
+@pytest.fixture(autouse=True)
+def _stub_tirith_security(monkeypatch):
+    """Keep approval command tests focused on gateway approval plumbing.
+
+    The real tirith wrapper may download its binary on first use, which makes
+    these thread/timing-sensitive tests flaky in full xdist runs.
+    """
+    monkeypatch.setattr(
+        "tools.tirith_security.check_command_security",
+        lambda _command: {"action": "allow", "findings": [], "summary": ""},
+    )
+
+
 def _make_source() -> SessionSource:
     return SessionSource(
         platform=Platform.TELEGRAM,

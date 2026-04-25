@@ -8010,17 +8010,20 @@ class AIAgent:
                 response = None
 
             if not _aux_available and self.api_mode == "codex_responses":
-                # No auxiliary client -- use the Codex Responses path directly
+                # No auxiliary client -- use the Codex Responses path directly.
+                # The Responses API does not accept `temperature` on any
+                # supported backend (chatgpt.com/backend-api/codex rejects it
+                # outright; api.openai.com + gpt-5/o-series reasoning models
+                # and Copilot Responses reject it on reasoning models). The
+                # transport intentionally never sets it — strip any leftover
+                # here so the flush fallback matches the main-loop behavior.
                 codex_kwargs = self._build_api_kwargs(api_messages)
                 _ct_flush = self._get_transport()
                 if _ct_flush is not None:
                     codex_kwargs["tools"] = _ct_flush.convert_tools([memory_tool_def])
                 elif not codex_kwargs.get("tools"):
                     codex_kwargs["tools"] = [memory_tool_def]
-                if _flush_temperature is not None:
-                    codex_kwargs["temperature"] = _flush_temperature
-                else:
-                    codex_kwargs.pop("temperature", None)
+                codex_kwargs.pop("temperature", None)
                 if "max_output_tokens" in codex_kwargs:
                     codex_kwargs["max_output_tokens"] = 5120
                 response = self._run_codex_stream(codex_kwargs)

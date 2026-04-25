@@ -8,7 +8,7 @@ Covers:
 import pytest
 from unittest.mock import MagicMock, patch
 
-from tools.file_operations import ShellFileOperations
+from tools.file_operations import ShellFileOperations, _parse_search_context_line
 
 
 # =========================================================================
@@ -204,3 +204,67 @@ class TestPaginationBounds:
         rg_commands = [cmd for cmd in commands if cmd.startswith("rg --files")]
         assert rg_commands
         assert "| head -n 1" in rg_commands[0]
+
+
+# =========================================================================
+# Search context parsing
+# =========================================================================
+
+
+class TestSearchContextParsing:
+    def test_parse_search_context_line_prefers_rightmost_numeric_separator(self):
+        parsed = _parse_search_context_line("dir/file-12-name.py-8-context here")
+
+        assert parsed == ("dir/file-12-name.py", 8, "context here")
+
+    def test_search_with_rg_context_handles_filename_with_dash_digits(self):
+        env = MagicMock()
+        env.cwd = "/tmp"
+        ops = ShellFileOperations(env)
+
+        with patch.object(ops, "_exec") as mock_exec:
+            mock_exec.return_value = MagicMock(
+                exit_code=0,
+                stdout="dir/file-12-name.py-8-context here\n",
+            )
+            result = ops._search_with_rg(
+                "needle",
+                path=".",
+                file_glob=None,
+                limit=10,
+                offset=0,
+                output_mode="content",
+                context=1,
+            )
+
+        assert result.error is None
+        assert result.total_count == 1
+        assert result.matches[0].path == "dir/file-12-name.py"
+        assert result.matches[0].line_number == 8
+        assert result.matches[0].content == "context here"
+
+    def test_search_with_grep_context_handles_filename_with_dash_digits(self):
+        env = MagicMock()
+        env.cwd = "/tmp"
+        ops = ShellFileOperations(env)
+
+        with patch.object(ops, "_exec") as mock_exec:
+            mock_exec.return_value = MagicMock(
+                exit_code=0,
+                stdout="dir/file-12-name.py-8-context here\n",
+            )
+            result = ops._search_with_grep(
+                "needle",
+                path=".",
+                file_glob=None,
+                limit=10,
+                offset=0,
+                output_mode="content",
+                context=1,
+            )
+
+        assert result.error is None
+        assert result.total_count == 1
+        assert result.matches[0].path == "dir/file-12-name.py"
+        assert result.matches[0].line_number == 8
+        assert result.matches[0].content == "context here"

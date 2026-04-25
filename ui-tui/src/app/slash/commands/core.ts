@@ -85,6 +85,27 @@ export const coreCommands: SlashCommand[] = [
   },
 
   {
+    aliases: ['scroll'],
+    help: 'toggle mouse/wheel tracking [on|off|toggle]',
+    name: 'mouse',
+    run: (arg, ctx) => {
+      const current = ctx.ui.mouseTracking
+      const next = flagFromArg(arg, current)
+
+      if (next === null) {
+        return ctx.transcript.sys('usage: /mouse [on|off|toggle]')
+      }
+
+      patchUiState({ mouseTracking: next })
+      ctx.gateway
+        .rpc<ConfigSetResponse>('config.set', { key: 'mouse', value: next ? 'on' : 'off' })
+        .catch(() => {})
+
+      queueMicrotask(() => ctx.transcript.sys(`mouse tracking ${next ? 'on' : 'off'}`))
+    }
+  },
+
+  {
     aliases: ['new'],
     help: 'start a new session',
     name: 'clear',

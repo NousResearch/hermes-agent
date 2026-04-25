@@ -46,6 +46,7 @@ export const applyDisplay = (cfg: ConfigFullResponse | null, setBell: (v: boolea
     compact: !!d.tui_compact,
     detailsMode: resolveDetailsMode(d),
     inlineDiffs: d.inline_diffs !== false,
+    mouseTracking: d.tui_mouse !== false,
     sections: resolveSections(d.sections),
     showCost: !!d.show_cost,
     showReasoning: !!d.show_reasoning,

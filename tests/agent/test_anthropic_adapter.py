@@ -1062,6 +1062,60 @@ class TestBuildAnthropicKwargs:
             max_tokens=4096,
             reasoning_config={"enabled": False},
         )
+        # Native Anthropic disables thinking by default — key should be absent.
+        assert "thinking" not in kwargs
+
+    def test_reasoning_disabled_third_party_sends_explicit_disabled(self):
+        """Third-party Anthropic-compat endpoints (e.g. DeepSeek /anthropic)
+        default to thinking mode when the parameter is absent, so Hermes must
+        send thinking={'type': 'disabled'} explicitly — see #15700."""
+        kwargs = build_anthropic_kwargs(
+            model="deepseek-v4",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": False},
+            base_url="https://api.deepseek.com/anthropic",
+        )
+        assert kwargs.get("thinking") == {"type": "disabled"}
+
+    def test_reasoning_disabled_third_party_any_provider(self):
+        """The explicit-disable behaviour applies to any non-Anthropic endpoint,
+        not just DeepSeek."""
+        kwargs = build_anthropic_kwargs(
+            model="some-model",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": False},
+            base_url="https://third-party.example.com/anthropic",
+        )
+        assert kwargs.get("thinking") == {"type": "disabled"}
+
+    def test_reasoning_disabled_kimi_coding_omits_thinking(self):
+        """Kimi /coding skips the thinking parameter entirely — neither enabled
+        nor disabled should be sent there."""
+        kwargs = build_anthropic_kwargs(
+            model="some-model",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": False},
+            base_url="https://api.kimi.com/coding",
+        )
+        assert "thinking" not in kwargs
+
+    def test_reasoning_none_third_party_omits_thinking(self):
+        """When reasoning_config is None on a third-party endpoint, the thinking
+        key must not be sent — only explicit enabled=False triggers the disable."""
+        kwargs = build_anthropic_kwargs(
+            model="deepseek-v4",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            base_url="https://api.deepseek.com/anthropic",
+        )
         assert "thinking" not in kwargs
 
     def test_default_max_tokens_uses_model_output_limit(self):

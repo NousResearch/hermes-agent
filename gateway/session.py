@@ -1232,6 +1232,7 @@ class SessionStore:
                     reasoning_content=message.get("reasoning_content") if message.get("role") == "assistant" else None,
                     reasoning_details=message.get("reasoning_details") if message.get("role") == "assistant" else None,
                     codex_reasoning_items=message.get("codex_reasoning_items") if message.get("role") == "assistant" else None,
+                    codex_message_items=message.get("codex_message_items") if message.get("role") == "assistant" else None,
                 )
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
@@ -1264,6 +1265,7 @@ class SessionStore:
                         reasoning_content=msg.get("reasoning_content") if role == "assistant" else None,
                         reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                         codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
+                        codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
                     )
             except Exception as e:
                 logger.debug("Failed to rewrite transcript in DB: %s", e)

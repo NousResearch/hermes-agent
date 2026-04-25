@@ -3313,6 +3313,7 @@ class AIAgent:
                     reasoning_content=msg.get("reasoning_content") if role == "assistant" else None,
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
+                    codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
                 )
             self._last_flushed_db_idx = len(messages)
         except Exception as e:
@@ -7669,6 +7670,13 @@ class AIAgent:
         if codex_items:
             msg["codex_reasoning_items"] = codex_items
 
+        # Codex Responses API: preserve exact assistant message items (with
+        # id/phase) so follow-up turns can replay structured items instead of
+        # flattening to plain text. This is required for prefix cache hits.
+        codex_message_items = getattr(assistant_message, "codex_message_items", None)
+        if codex_message_items:
+            msg["codex_message_items"] = codex_message_items
+
         if assistant_message.tool_calls:
             tool_calls = []
             for tool_call in assistant_message.tool_calls:
@@ -11549,16 +11557,26 @@ class AIAgent:
                     interim_has_content = bool((interim_msg.get("content") or "").strip())
                     interim_has_reasoning = bool(interim_msg.get("reasoning", "").strip()) if isinstance(interim_msg.get("reasoning"), str) else False
                     interim_has_codex_reasoning = bool(interim_msg.get("codex_reasoning_items"))
+                    interim_has_codex_message_items = bool(interim_msg.get("codex_message_items"))
 
-                    if interim_has_content or interim_has_reasoning or interim_has_codex_reasoning:
+                    if (
+                        interim_has_content
+                        or interim_has_reasoning
+                        or interim_has_codex_reasoning
+                        or interim_has_codex_message_items
+                    ):
                         last_msg = messages[-1] if messages else None
                         # Duplicate detection: two consecutive incomplete assistant
                         # messages with identical content AND reasoning are collapsed.
-                        # For reasoning-only messages (codex_reasoning_items differ but
-                        # visible content/reasoning are both empty), we also compare
-                        # the encrypted items to avoid silently dropping new state.
+                        # For provider-state-only changes (encrypted reasoning
+                        # items or replayable message ids/phases/statuses differ
+                        # while visible content/reasoning are unchanged), compare
+                        # those opaque payloads too so we don't silently drop the
+                        # newer continuation state.
                         last_codex_items = last_msg.get("codex_reasoning_items") if isinstance(last_msg, dict) else None
                         interim_codex_items = interim_msg.get("codex_reasoning_items")
+                        last_codex_message_items = last_msg.get("codex_message_items") if isinstance(last_msg, dict) else None
+                        interim_codex_message_items = interim_msg.get("codex_message_items")
                         duplicate_interim = (
                             isinstance(last_msg, dict)
                             and last_msg.get("role") == "assistant"
@@ -11566,6 +11584,7 @@ class AIAgent:
                             and (last_msg.get("content") or "") == (interim_msg.get("content") or "")
                             and (last_msg.get("reasoning") or "") == (interim_msg.get("reasoning") or "")
                             and last_codex_items == interim_codex_items
+                            and last_codex_message_items == interim_codex_message_items
                         )
                         if not duplicate_interim:
                             messages.append(interim_msg)

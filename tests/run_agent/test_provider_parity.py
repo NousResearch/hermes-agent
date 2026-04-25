@@ -716,6 +716,103 @@ class TestNormalizeCodexResponse:
         assert len(msg.tool_calls) == 1
         assert msg.tool_calls[0].function.name == "web_search"
 
+    def test_message_items_captured_with_id_and_phase(self, monkeypatch):
+        """Exact message items (with id/phase) must be captured for cache replay."""
+        agent = self._make_codex_agent(monkeypatch)
+        response = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message", status="completed", id="msg_abc",
+                    phase="commentary",
+                    content=[SimpleNamespace(type="output_text", text="Thinking...")],
+                ),
+                SimpleNamespace(
+                    type="message", status="completed", id="msg_def",
+                    phase="final_answer",
+                    content=[SimpleNamespace(type="output_text", text="Done!")],
+                ),
+            ],
+            status="completed",
+        )
+        msg, reason = _normalize_codex_response(response)
+        assert msg.codex_message_items is not None
+        assert len(msg.codex_message_items) == 2
+        assert msg.codex_message_items[0]["id"] == "msg_abc"
+        assert msg.codex_message_items[0]["phase"] == "commentary"
+        assert msg.codex_message_items[0]["content"][0]["text"] == "Thinking..."
+        assert msg.codex_message_items[1]["id"] == "msg_def"
+        assert msg.codex_message_items[1]["phase"] == "final_answer"
+        assert msg.codex_message_items[1]["content"][0]["text"] == "Done!"
+
+    def test_message_items_none_when_no_messages(self, monkeypatch):
+        """Only reasoning + tool calls should yield None codex_message_items."""
+        agent = self._make_codex_agent(monkeypatch)
+        response = SimpleNamespace(
+            output=[
+                SimpleNamespace(type="function_call", status="completed",
+                    call_id="call_1", name="web_search", arguments='{}', id="fc_1"),
+            ],
+            status="completed",
+        )
+        msg, reason = _normalize_codex_response(response)
+        assert msg.codex_message_items is None
+
+
+class TestChatMessagesToResponsesInputMessageItems:
+    """Verify codex_message_items are replayed verbatim instead of reconstructed."""
+
+    def test_replays_exact_message_items(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        messages = [
+            {
+                "role": "assistant",
+                "content": "Hello world",
+                "codex_message_items": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "id": "msg_123",
+                        "phase": "final_answer",
+                        "content": [{"type": "output_text", "text": "Hello world"}],
+                    },
+                ],
+            },
+            {"role": "user", "content": "follow up"},
+        ]
+        items = _chat_messages_to_responses_input(messages)
+        msg_items = [i for i in items if i.get("type") == "message"]
+        assert len(msg_items) == 1
+        assert msg_items[0]["id"] == "msg_123"
+        assert msg_items[0]["phase"] == "final_answer"
+        assert msg_items[0]["content"][0]["text"] == "Hello world"
+
+    def test_fallback_to_plain_when_no_message_items(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        messages = [{"role": "assistant", "content": "Hello world"}]
+        items = _chat_messages_to_responses_input(messages)
+        assert items == [{"role": "assistant", "content": "Hello world"}]
+
+    def test_skips_invalid_message_items(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        messages = [
+            {
+                "role": "assistant",
+                "content": "fallback text",
+                "codex_message_items": [
+                    {"type": "function_call", "role": "assistant"},  # wrong type
+                    {"type": "message", "role": "user"},  # wrong role
+                    {"type": "message", "role": "assistant", "content": "not a list"},
+                ],
+            },
+        ]
+        items = _chat_messages_to_responses_input(messages)
+        # All invalid — falls back to plain text reconstruction
+        assert items == [{"role": "assistant", "content": "fallback text"}]
+
 
 # ── Chat completions response handling (OpenRouter/Nous) ─────────────────────
 

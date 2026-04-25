@@ -227,6 +227,23 @@ def _responses_tools(tools: Optional[List[Dict[str, Any]]] = None) -> Optional[L
 # Message format conversion
 # ---------------------------------------------------------------------------
 
+_RESPONSE_MESSAGE_STATUSES = {"completed", "incomplete", "in_progress"}
+
+
+def _normalize_responses_message_status(value: Any, *, default: str = "completed") -> str:
+    """Normalize a Responses assistant message status for replay.
+
+    The API accepts completed/incomplete/in_progress on replayed assistant
+    output messages.  Preserve those exactly (modulo case/hyphen spelling) so
+    incomplete Codex continuation turns don't get falsely marked completed.
+    """
+    if isinstance(value, str):
+        status = value.strip().lower().replace("-", "_").replace(" ", "_")
+        if status in _RESPONSE_MESSAGE_STATUSES:
+            return status
+    return default
+
+
 def _chat_messages_to_responses_input(messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Convert internal chat-style messages to Responses input items."""
     items: List[Dict[str, Any]] = []
@@ -272,7 +289,57 @@ def _chat_messages_to_responses_input(messages: List[Dict[str, Any]]) -> List[Di
                                 seen_item_ids.add(item_id)
                             has_codex_reasoning = True
 
-                if content_parts:
+                # Replay exact assistant message items (with id/phase) from
+                # previous turns so the API can maintain prefix-cache hits.
+                # OpenAI docs: "preserve and resend phase on all assistant
+                # messages — dropping it can degrade performance."
+                codex_message_items = msg.get("codex_message_items")
+                replayed_message_items = 0
+                if isinstance(codex_message_items, list):
+                    for raw_item in codex_message_items:
+                        if not isinstance(raw_item, dict):
+                            continue
+                        if raw_item.get("type") != "message" or raw_item.get("role") != "assistant":
+                            continue
+                        raw_content_parts = raw_item.get("content")
+                        if not isinstance(raw_content_parts, list):
+                            continue
+
+                        normalized_content_parts = []
+                        for part in raw_content_parts:
+                            if not isinstance(part, dict):
+                                continue
+                            part_type = str(part.get("type") or "").strip()
+                            if part_type not in {"output_text", "text"}:
+                                continue
+                            text = part.get("text", "")
+                            if text is None:
+                                text = ""
+                            if not isinstance(text, str):
+                                text = str(text)
+                            normalized_content_parts.append({"type": "output_text", "text": text})
+
+                        if not normalized_content_parts:
+                            continue
+
+                        replay_item = {
+                            "type": "message",
+                            "role": "assistant",
+                            "status": _normalize_responses_message_status(raw_item.get("status")),
+                            "content": normalized_content_parts,
+                        }
+                        item_id = raw_item.get("id")
+                        if isinstance(item_id, str) and item_id.strip():
+                            replay_item["id"] = item_id.strip()
+                        phase = raw_item.get("phase")
+                        if isinstance(phase, str) and phase.strip():
+                            replay_item["phase"] = phase.strip()
+                        items.append(replay_item)
+                        replayed_message_items += 1
+
+                if replayed_message_items > 0:
+                    pass
+                elif content_parts:
                     items.append({"role": "assistant", "content": content_parts})
                 elif content_text.strip():
                     items.append({"role": "assistant", "content": content_text})
@@ -430,6 +497,47 @@ def _preflight_codex_input_items(raw_items: Any) -> List[Dict[str, Any]]:
                 else:
                     reasoning_item["summary"] = []
                 normalized.append(reasoning_item)
+            continue
+
+        if item_type == "message":
+            role = item.get("role")
+            if role != "assistant":
+                raise ValueError(f"Codex Responses input[{idx}] message items must have role='assistant'.")
+            content = item.get("content")
+            if not isinstance(content, list):
+                raise ValueError(f"Codex Responses input[{idx}] message item must have content list.")
+            normalized_content = []
+            for part_idx, part in enumerate(content):
+                if not isinstance(part, dict):
+                    raise ValueError(
+                        f"Codex Responses input[{idx}] message content[{part_idx}] must be an object."
+                    )
+                part_type = part.get("type")
+                if part_type not in {"output_text", "text"}:
+                    raise ValueError(
+                        f"Codex Responses input[{idx}] message content[{part_idx}] has unsupported type {part_type!r}."
+                    )
+                text = part.get("text", "")
+                if text is None:
+                    text = ""
+                if not isinstance(text, str):
+                    text = str(text)
+                normalized_content.append({"type": "output_text", "text": text})
+            if not normalized_content:
+                raise ValueError(f"Codex Responses input[{idx}] message item must contain at least one text part.")
+            normalized_item: Dict[str, Any] = {
+                "type": "message",
+                "role": "assistant",
+                "status": _normalize_responses_message_status(item.get("status")),
+                "content": normalized_content,
+            }
+            item_id = item.get("id")
+            if isinstance(item_id, str) and item_id.strip():
+                normalized_item["id"] = item_id.strip()
+            phase = item.get("phase")
+            if isinstance(phase, str) and phase.strip():
+                normalized_item["phase"] = phase.strip()
+            normalized.append(normalized_item)
             continue
 
         role = item.get("role")
@@ -716,6 +824,7 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
     content_parts: List[str] = []
     reasoning_parts: List[str] = []
     reasoning_items_raw: List[Dict[str, Any]] = []
+    message_items_raw: List[Dict[str, Any]] = []
     tool_calls: List[Any] = []
     has_incomplete_items = response_status in {"queued", "in_progress", "incomplete"}
     saw_commentary_phase = False
@@ -734,6 +843,7 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
 
         if item_type == "message":
             item_phase = getattr(item, "phase", None)
+            normalized_phase = None
             if isinstance(item_phase, str):
                 normalized_phase = item_phase.strip().lower()
                 if normalized_phase in {"commentary", "analysis"}:
@@ -743,6 +853,18 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
             message_text = _extract_responses_message_text(item)
             if message_text:
                 content_parts.append(message_text)
+                raw_message_item: Dict[str, Any] = {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": _normalize_responses_message_status(item_status),
+                    "content": [{"type": "output_text", "text": message_text}],
+                }
+                item_id = getattr(item, "id", None)
+                if isinstance(item_id, str) and item_id:
+                    raw_message_item["id"] = item_id
+                if normalized_phase:
+                    raw_message_item["phase"] = normalized_phase
+                message_items_raw.append(raw_message_item)
         elif item_type == "reasoning":
             reasoning_text = _extract_responses_reasoning_text(item)
             if reasoning_text:
@@ -855,6 +977,7 @@ def _normalize_codex_response(response: Any) -> tuple[Any, str]:
         reasoning_content=None,
         reasoning_details=None,
         codex_reasoning_items=reasoning_items_raw or None,
+        codex_message_items=message_items_raw or None,
     )
 
     if tool_calls:

@@ -20,7 +20,7 @@ from typing import Any, Literal
 from fastapi import APIRouter, HTTPException
 from pydantic import BaseModel, Field, field_validator
 
-from hermes_cli.config import get_hermes_home
+from hermes_cli.config import get_compatible_custom_providers, get_hermes_home, load_config
 
 ColumnId = Literal["backlog", "running", "review", "done", "trash"]
 TaskStatus = Literal["idle", "running", "review", "done", "failed", "stopped"]
@@ -80,6 +80,7 @@ class KanbanCard(BaseModel):
     id: str = Field(default_factory=_new_id)
     title: str
     prompt: str
+    model: str | None = None
     column: ColumnId = "backlog"
     status: TaskStatus = "idle"
     workspace_path: str | None = None
@@ -100,6 +101,13 @@ class KanbanCard(BaseModel):
             raise ValueError("value must not be blank")
         return trimmed
 
+    @field_validator("model")
+    @classmethod
+    def _empty_model_to_none(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
+
 
 class KanbanBoard(BaseModel):
     version: int = 1
@@ -111,11 +119,15 @@ class BoardResponse(BaseModel):
     board: KanbanBoard
     columns: list[dict[str, str]]
     default_workspace_path: str
+    active_model: str
+    active_provider: str
+    model_options: list[str]
 
 
 class CardCreateRequest(BaseModel):
     title: str = Field(min_length=1)
     prompt: str = Field(min_length=1)
+    model: str | None = None
     workspace_path: str | None = None
 
     @field_validator("title", "prompt")
@@ -126,10 +138,18 @@ class CardCreateRequest(BaseModel):
             raise ValueError("value must not be blank")
         return trimmed
 
+    @field_validator("model")
+    @classmethod
+    def _empty_model_to_none(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
+
 
 class CardUpdateRequest(BaseModel):
     title: str | None = None
     prompt: str | None = None
+    model: str | None = None
     column: ColumnId | None = None
     workspace_path: str | None = None
 
@@ -143,9 +163,24 @@ class CardUpdateRequest(BaseModel):
             raise ValueError("value must not be blank")
         return trimmed
 
+    @field_validator("model")
+    @classmethod
+    def _empty_model_to_none(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
+
 
 class CardStartRequest(BaseModel):
     workspace_path: str | None = None
+    model: str | None = None
+
+    @field_validator("model")
+    @classmethod
+    def _empty_model_to_none(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        return value.strip() or None
 
 
 class CardLogResponse(BaseModel):
@@ -220,6 +255,45 @@ def _logs_dir() -> Path:
     return path
 
 
+def _configured_model_info() -> tuple[str, str]:
+    config = load_config()
+    model_config = config.get("model", "")
+    if isinstance(model_config, dict):
+        model = str(model_config.get("default") or model_config.get("model") or model_config.get("name") or "")
+        provider = str(model_config.get("provider") or "")
+    else:
+        model = str(model_config or "")
+        provider = ""
+    provider = provider or os.getenv("HERMES_INFERENCE_PROVIDER", "auto")
+    return model, provider
+
+
+def _model_options(active_model: str, active_provider: str) -> list[str]:
+    options: list[str] = []
+
+    def add(model: Any) -> None:
+        value = str(model or "").strip()
+        if value and value not in options:
+            options.append(value)
+
+    add(active_model)
+    try:
+        from hermes_cli.models import _PROVIDER_MODELS
+        for model in _PROVIDER_MODELS.get(active_provider, [])[:40]:
+            add(model)
+    except Exception:
+        pass
+
+    try:
+        config = load_config()
+        for entry in get_compatible_custom_providers(config):
+            add(entry.get("model"))
+    except Exception:
+        pass
+
+    return options
+
+
 def _finish_card(card_id: str, return_code: int) -> None:
     with _RUNNING_LOCK:
         _RUNNING.pop(card_id, None)
@@ -280,10 +354,14 @@ def _terminate_process(card: KanbanCard) -> None:
 
 @router.get("/board", response_model=BoardResponse)
 async def get_board() -> BoardResponse:
+    active_model, active_provider = _configured_model_info()
     return BoardResponse(
         board=store.load(),
         columns=COLUMNS,
         default_workspace_path=_default_workspace(),
+        active_model=active_model,
+        active_provider=active_provider,
+        model_options=_model_options(active_model, active_provider),
     )
 
 
@@ -292,7 +370,12 @@ async def create_card(body: CardCreateRequest) -> KanbanCard:
     workspace = body.workspace_path.strip() if body.workspace_path else None
     if workspace:
         _workspace_path(workspace)
-    card = KanbanCard(title=body.title, prompt=body.prompt, workspace_path=workspace)
+    card = KanbanCard(
+        title=body.title,
+        prompt=body.prompt,
+        model=body.model,
+        workspace_path=workspace,
+    )
     return store.upsert_card(card)
 
 
@@ -305,6 +388,8 @@ async def update_card(card_id: str, body: CardUpdateRequest) -> KanbanCard:
         card.title = body.title
     if body.prompt is not None:
         card.prompt = body.prompt
+    if "model" in body.model_fields_set:
+        card.model = body.model
     if body.column is not None:
         card.column = body.column
         if body.column == "done":
@@ -335,6 +420,7 @@ async def start_card(card_id: str, body: CardStartRequest) -> KanbanCard:
 
     workspace_raw = body.workspace_path or card.workspace_path or _default_workspace()
     workspace = _workspace_path(workspace_raw)
+    model = body.model or card.model
     log_path = _logs_dir() / f"{card.id}-{int(_now())}.log"
     command = [
         sys.executable,
@@ -344,9 +430,13 @@ async def start_card(card_id: str, body: CardStartRequest) -> KanbanCard:
         "-Q",
         "--source",
         "kanban",
+    ]
+    if model:
+        command.extend(["--model", model])
+    command.extend([
         "-q",
         card.prompt,
-    ]
+    ])
     env = os.environ.copy()
     env.setdefault("HERMES_ACCEPT_HOOKS", "1")
 
@@ -375,6 +465,7 @@ async def start_card(card_id: str, body: CardStartRequest) -> KanbanCard:
     card.status = "running"
     card.column = "running"
     card.workspace_path = str(workspace)
+    card.model = model
     card.pid = process.pid
     card.log_path = str(log_path)
     card.started_at = _now()

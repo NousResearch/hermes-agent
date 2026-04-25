@@ -45,6 +45,40 @@ def test_create_card_validates_workspace(monkeypatch: pytest.MonkeyPatch, tmp_pa
     assert kanban.store.load().cards[0].id == card.id
 
 
+def test_create_card_stores_trimmed_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.setattr(kanban, "store", KanbanStore(tmp_path / "board.json"))
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+
+    card = asyncio.run(kanban.create_card(
+        CardCreateRequest(
+            title="Model task",
+            prompt="Run on a specific model",
+            model=" anthropic/claude-sonnet-4.6 ",
+            workspace_path=str(workspace),
+        )
+    ))
+
+    assert card.model == "anthropic/claude-sonnet-4.6"
+    assert kanban.store.load().cards[0].model == "anthropic/claude-sonnet-4.6"
+
+
+def test_update_card_clears_model(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.setattr(kanban, "store", KanbanStore(tmp_path / "board.json"))
+    card = kanban.store.upsert_card(
+        KanbanCard(
+            title="Switch back",
+            prompt="Use the dashboard default again",
+            model="anthropic/claude-sonnet-4.6",
+        )
+    )
+
+    updated = asyncio.run(kanban.update_card(card.id, CardUpdateRequest(model="")))
+
+    assert updated.model is None
+    assert kanban.store.load().cards[0].model is None
+
+
 def test_create_card_rejects_missing_workspace(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
     monkeypatch.setattr(kanban, "store", KanbanStore(tmp_path / "board.json"))
 
@@ -117,6 +151,81 @@ def test_start_card_records_start_failure(monkeypatch: pytest.MonkeyPatch, tmp_p
     assert updated.status == "failed"
     assert updated.column == "review"
     assert updated.error == "boom"
+
+
+def test_start_card_passes_model_to_chat_command(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.setattr(kanban, "store", KanbanStore(tmp_path / "board.json"))
+    monkeypatch.setattr(kanban, "get_hermes_home", lambda: tmp_path / "hermes-home")
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    card = kanban.store.upsert_card(
+        KanbanCard(
+            title="Launch with model",
+            prompt="Use the selected model",
+            model="anthropic/claude-sonnet-4.6",
+            workspace_path=str(workspace),
+        )
+    )
+    captured: dict[str, object] = {}
+
+    class FakeProcess:
+        pid = 4321
+
+        def poll(self):
+            return None
+
+        def wait(self):
+            return 0
+
+    class NoopThread:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def start(self):
+            pass
+
+    def fake_popen(command, **kwargs):
+        captured["command"] = command
+        captured["cwd"] = kwargs["cwd"]
+        return FakeProcess()
+
+    monkeypatch.setattr(kanban.subprocess, "Popen", fake_popen)
+    monkeypatch.setattr(kanban.threading, "Thread", NoopThread)
+
+    updated = asyncio.run(kanban.start_card(card.id, CardStartRequest()))
+
+    command = captured["command"]
+    assert isinstance(command, list)
+    assert command[command.index("--model") + 1] == "anthropic/claude-sonnet-4.6"
+    assert command[command.index("-q") + 1] == "Use the selected model"
+    assert captured["cwd"] == str(workspace)
+    assert updated.status == "running"
+    assert updated.model == "anthropic/claude-sonnet-4.6"
+
+
+def test_board_exposes_configured_model_options(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):
+    monkeypatch.setattr(kanban, "store", KanbanStore(tmp_path / "board.json"))
+
+    def fake_load_config():
+        return {
+            "model": {"provider": "nous", "default": "nous/deephermes-3-mistral-24b-preview"},
+            "providers": {
+                "local": {
+                    "name": "Local",
+                    "base_url": "http://localhost:1234/v1",
+                    "model": "local/hermes",
+                }
+            },
+        }
+
+    monkeypatch.setattr(kanban, "load_config", fake_load_config)
+
+    response = asyncio.run(kanban.get_board())
+
+    assert response.active_provider == "nous"
+    assert response.active_model == "nous/deephermes-3-mistral-24b-preview"
+    assert "nous/deephermes-3-mistral-24b-preview" in response.model_options
+    assert "local/hermes" in response.model_options
 
 
 def test_finish_does_not_overwrite_stopped_card(monkeypatch: pytest.MonkeyPatch, tmp_path: Path):

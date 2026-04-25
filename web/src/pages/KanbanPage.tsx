@@ -16,6 +16,7 @@ import type {
   KanbanCard,
   KanbanCardDiffResponse,
   KanbanCardLogResponse,
+  KanbanBoardResponse,
   KanbanColumn,
   KanbanColumnId,
   KanbanTaskStatus,
@@ -25,6 +26,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Select, SelectOption } from "@/components/ui/select";
 
 const STATUS_LABEL: Record<KanbanTaskStatus, string> = {
   idle: "Idle",
@@ -64,6 +66,40 @@ function StatusBadge({ status }: { status: KanbanTaskStatus }) {
   );
 }
 
+function ModelSelect({
+  value,
+  onValueChange,
+  options,
+  activeModel,
+  disabled,
+  className,
+}: {
+  value: string;
+  onValueChange: (value: string) => void;
+  options: string[];
+  activeModel: string;
+  disabled?: boolean;
+  className?: string;
+}) {
+  const fallbackLabel = activeModel ? `Dashboard default (${activeModel})` : "Dashboard default";
+
+  return (
+    <Select
+      value={value}
+      onValueChange={onValueChange}
+      disabled={disabled}
+      className={className}
+    >
+      <SelectOption value="">{fallbackLabel}</SelectOption>
+      {options.map((option) => (
+        <SelectOption key={option} value={option}>
+          {option}
+        </SelectOption>
+      ))}
+    </Select>
+  );
+}
+
 function BoardCard({
   card,
   selected,
@@ -97,9 +133,10 @@ function BoardCard({
         {card.prompt}
       </p>
       <div className="mt-3 flex items-center justify-between gap-2 text-[0.65rem] text-muted-foreground">
-        <span className="min-w-0 truncate font-mono-ui">
-          {card.workspace_path ?? "workspace unset"}
-        </span>
+        <div className="min-w-0 space-y-1">
+          <div className="truncate font-mono-ui">{card.workspace_path ?? "workspace unset"}</div>
+          <div className="truncate font-mono-ui">{card.model ?? "dashboard default model"}</div>
+        </div>
         <span className="shrink-0">{timeAgo(card.updated_at)}</span>
       </div>
       {card.last_activity && (
@@ -152,6 +189,8 @@ function DetailPanel({
   onSave,
   onMove,
   onDelete,
+  activeModel,
+  modelOptions,
 }: {
   card: KanbanCard | null;
   diff: KanbanCardDiffResponse | null;
@@ -160,19 +199,16 @@ function DetailPanel({
   onRefresh: () => void;
   onStart: () => void;
   onStop: () => void;
-  onSave: (values: { title: string; prompt: string; workspace_path: string }) => void;
+  onSave: (values: { title: string; prompt: string; model: string; workspace_path: string }) => void;
   onMove: (column: KanbanColumnId) => void;
   onDelete: () => void;
+  activeModel: string;
+  modelOptions: string[];
 }) {
-  const [editTitle, setEditTitle] = useState("");
-  const [editPrompt, setEditPrompt] = useState("");
-  const [editWorkspace, setEditWorkspace] = useState("");
-
-  useEffect(() => {
-    setEditTitle(card?.title ?? "");
-    setEditPrompt(card?.prompt ?? "");
-    setEditWorkspace(card?.workspace_path ?? "");
-  }, [card?.id, card?.prompt, card?.title, card?.workspace_path]);
+  const [editTitle, setEditTitle] = useState(card?.title ?? "");
+  const [editPrompt, setEditPrompt] = useState(card?.prompt ?? "");
+  const [editModel, setEditModel] = useState(card?.model ?? "");
+  const [editWorkspace, setEditWorkspace] = useState(card?.workspace_path ?? "");
 
   if (!card) {
     return (
@@ -196,6 +232,7 @@ function DetailPanel({
             <div className="mt-2 flex flex-wrap items-center gap-2">
               <StatusBadge status={card.status} />
               {card.pid && <Badge variant="outline">PID {card.pid}</Badge>}
+              {card.model && <Badge variant="outline">{card.model}</Badge>}
             </div>
           </div>
           <Button size="icon" variant="ghost" onClick={onRefresh} disabled={busy} aria-label="Refresh card">
@@ -225,6 +262,13 @@ function DetailPanel({
               "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
             )}
           />
+          <ModelSelect
+            value={editModel}
+            onValueChange={setEditModel}
+            options={modelOptions}
+            activeModel={activeModel}
+            disabled={card.status === "running"}
+          />
           <Input
             value={editWorkspace}
             onChange={(event) => setEditWorkspace(event.target.value)}
@@ -243,6 +287,7 @@ function DetailPanel({
               onSave({
                 title: editTitle,
                 prompt: editPrompt,
+                model: editModel,
                 workspace_path: editWorkspace,
               })
             }
@@ -313,7 +358,11 @@ export default function KanbanPage() {
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [title, setTitle] = useState("");
   const [prompt, setPrompt] = useState("");
+  const [model, setModel] = useState("");
   const [workspace, setWorkspace] = useState("");
+  const [activeModel, setActiveModel] = useState("");
+  const [activeProvider, setActiveProvider] = useState("");
+  const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   const [log, setLog] = useState<KanbanCardLogResponse | null>(null);
@@ -323,6 +372,8 @@ export default function KanbanPage() {
     () => cards.find((card) => card.id === selectedId) ?? null,
     [cards, selectedId],
   );
+  const selectedLog = selectedCard && log?.card_id === selectedCard.id ? log : null;
+  const selectedDiff = selectedCard && diff?.card_id === selectedCard.id ? diff : null;
 
   const groupedCards = useMemo(() => {
     const groups = new Map<KanbanColumnId, KanbanCard[]>();
@@ -334,16 +385,23 @@ export default function KanbanPage() {
     return groups;
   }, [cards, columns]);
 
-  const refreshBoard = useCallback(async () => {
-    const response = await api.getKanbanBoard();
+  const applyBoardResponse = useCallback((response: KanbanBoardResponse) => {
     setColumns(response.columns);
     setCards(response.board.cards);
     setDefaultWorkspace(response.default_workspace_path);
+    setActiveModel(response.active_model);
+    setActiveProvider(response.active_provider);
+    setModelOptions(response.model_options);
     setWorkspace((current) => current || response.default_workspace_path);
     if (!selectedId && response.board.cards.length > 0) {
       setSelectedId(response.board.cards[0].id);
     }
   }, [selectedId]);
+
+  const refreshBoard = useCallback(async () => {
+    const response = await api.getKanbanBoard();
+    applyBoardResponse(response);
+  }, [applyBoardResponse]);
 
   const refreshDetail = useCallback(async (cardId: string) => {
     const [nextLog, nextDiff] = await Promise.all([
@@ -367,17 +425,39 @@ export default function KanbanPage() {
   }, []);
 
   useEffect(() => {
-    runAction(refreshBoard);
-  }, [refreshBoard, runAction]);
+    let cancelled = false;
+    api
+      .getKanbanBoard()
+      .then((response) => {
+        if (!cancelled) applyBoardResponse(response);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [applyBoardResponse]);
 
   useEffect(() => {
-    if (!selectedCard) {
-      setLog(null);
-      setDiff(null);
-      return;
-    }
-    runAction(() => refreshDetail(selectedCard.id));
-  }, [selectedCard?.id, refreshDetail, runAction]);
+    if (!selectedId) return;
+    let cancelled = false;
+    Promise.all([
+      api.getKanbanCardLog(selectedId),
+      api.getKanbanCardDiff(selectedId),
+    ])
+      .then(([nextLog, nextDiff]) => {
+        if (cancelled) return;
+        setLog(nextLog);
+        setDiff(nextDiff);
+      })
+      .catch((err) => {
+        if (!cancelled) setError(err instanceof Error ? err.message : String(err));
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [selectedId]);
 
   useEffect(() => {
     if (!cards.some((card) => card.status === "running")) return;
@@ -400,6 +480,7 @@ export default function KanbanPage() {
           <H2 className="blend-lighter">Kanban</H2>
           <div className="mt-1 text-xs normal-case tracking-normal text-muted-foreground">
             {cards.length} cards · {cards.filter((card) => card.status === "running").length} running
+            {activeModel && <> · {activeProvider}/{activeModel}</>}
           </div>
         </div>
         <Button variant="outline" onClick={() => runAction(refreshBoard)} disabled={busy}>
@@ -418,7 +499,7 @@ export default function KanbanPage() {
         <CardHeader>
           <CardTitle>New Card</CardTitle>
         </CardHeader>
-        <CardContent className="grid gap-3 lg:grid-cols-[1fr_1.6fr_1fr_auto]">
+        <CardContent className="grid gap-3 lg:grid-cols-[1fr_1.6fr_1fr_1fr_auto]">
           <Input
             value={title}
             onChange={(event) => setTitle(event.target.value)}
@@ -435,6 +516,12 @@ export default function KanbanPage() {
               "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
             )}
           />
+          <ModelSelect
+            value={model}
+            onValueChange={setModel}
+            options={modelOptions}
+            activeModel={activeModel}
+          />
           <Input
             value={workspace}
             onChange={(event) => setWorkspace(event.target.value)}
@@ -448,12 +535,14 @@ export default function KanbanPage() {
                 const card = await api.createKanbanCard({
                   title,
                   prompt,
+                  model: model || undefined,
                   workspace_path: workspace || defaultWorkspace,
                 });
                 setCards((current) => [card, ...current]);
                 setSelectedId(card.id);
                 setTitle("");
                 setPrompt("");
+                setModel("");
               })
             }
           >
@@ -483,7 +572,11 @@ export default function KanbanPage() {
                       onSelect={() => setSelectedId(card.id)}
                       onStart={() =>
                         runAction(async () => {
-                          const updated = await api.startKanbanCard(card.id, card.workspace_path ?? workspace);
+                          const updated = await api.startKanbanCard(
+                            card.id,
+                            card.workspace_path ?? workspace,
+                            card.model,
+                          );
                           replaceCard(updated);
                           await refreshDetail(updated.id);
                         })
@@ -504,9 +597,10 @@ export default function KanbanPage() {
         </div>
 
         <DetailPanel
+          key={selectedCard?.id ?? "empty"}
           card={selectedCard}
-          log={log}
-          diff={diff}
+          log={selectedLog}
+          diff={selectedDiff}
           busy={busy}
           onRefresh={() =>
             selectedCard &&
@@ -521,6 +615,7 @@ export default function KanbanPage() {
               const updated = await api.startKanbanCard(
                 selectedCard.id,
                 selectedCard.workspace_path ?? workspace,
+                selectedCard.model,
               );
               replaceCard(updated);
               await refreshDetail(updated.id);
@@ -558,6 +653,8 @@ export default function KanbanPage() {
               setSelectedId(null);
             })
           }
+          activeModel={activeModel}
+          modelOptions={modelOptions}
         />
       </div>
     </div>

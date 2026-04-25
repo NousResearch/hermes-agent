@@ -8,7 +8,9 @@ The Kanban dashboard tab lets you queue and monitor Hermes work from the web UI.
 hermes dashboard
 ```
 
-Open the **Kanban** tab, enter a title, prompt, and workspace path, then click **Add**. The workspace path must point to an existing directory.
+Open the **Kanban** tab, enter a title, prompt, optional model override, and workspace path, then click **Add**. The workspace path must point to an existing directory.
+
+The model selector defaults to the dashboard's active Hermes model. Choosing a model on a card stores that override with the card and passes it to `hermes chat --model` whenever the card starts.
 
 ## Card Lifecycle
 

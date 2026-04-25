@@ -138,7 +138,7 @@ export const api = {
 
   // Kanban
   getKanbanBoard: () => fetchJSON<KanbanBoardResponse>("/api/kanban/board"),
-  createKanbanCard: (card: { title: string; prompt: string; workspace_path?: string }) =>
+  createKanbanCard: (card: { title: string; prompt: string; model?: string; workspace_path?: string }) =>
     fetchJSON<KanbanCard>("/api/kanban/cards", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -146,7 +146,7 @@ export const api = {
     }),
   updateKanbanCard: (
     id: string,
-    card: Partial<Pick<KanbanCard, "title" | "prompt" | "column" | "workspace_path">>,
+    card: Partial<Pick<KanbanCard, "title" | "prompt" | "model" | "column" | "workspace_path">>,
   ) =>
     fetchJSON<KanbanCard>(`/api/kanban/cards/${encodeURIComponent(id)}`, {
       method: "PUT",
@@ -157,11 +157,11 @@ export const api = {
     fetchJSON<{ ok: boolean }>(`/api/kanban/cards/${encodeURIComponent(id)}`, {
       method: "DELETE",
     }),
-  startKanbanCard: (id: string, workspace_path?: string) =>
+  startKanbanCard: (id: string, workspace_path?: string, model?: string | null) =>
     fetchJSON<KanbanCard>(`/api/kanban/cards/${encodeURIComponent(id)}/start`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ workspace_path }),
+      body: JSON.stringify({ workspace_path, model }),
     }),
   stopKanbanCard: (id: string) =>
     fetchJSON<KanbanCard>(`/api/kanban/cards/${encodeURIComponent(id)}/stop`, {
@@ -310,6 +310,7 @@ export interface KanbanCard {
   id: string;
   title: string;
   prompt: string;
+  model: string | null;
   column: KanbanColumnId;
   status: KanbanTaskStatus;
   workspace_path: string | null;
@@ -333,6 +334,9 @@ export interface KanbanBoardResponse {
   board: KanbanBoard;
   columns: KanbanColumn[];
   default_workspace_path: string;
+  active_model: string;
+  active_provider: string;
+  model_options: string[];
 }
 
 export interface KanbanCardLogResponse {

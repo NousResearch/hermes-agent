@@ -439,7 +439,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                     # Dedup hit: still update the consecutive counter so the
                     # loop-detection hard block fires for pathological re-reads
                     # of unchanged files (the full-read path below is skipped).
-                    read_key = ("read", path, offset, limit)
+                    read_key = ("read", resolved_str, offset, limit)
                     with _read_tracker_lock:
                         if task_data["last_key"] == read_key:
                             task_data["consecutive"] += 1
@@ -525,7 +525,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             ))
 
         # ── Track for consecutive-loop detection ──────────────────────
-        read_key = ("read", path, offset, limit)
+        read_key = ("read", resolved_str, offset, limit)
         with _read_tracker_lock:
             # Ensure "dedup" key exists (backward compat with old tracker state)
             if "dedup" not in task_data:

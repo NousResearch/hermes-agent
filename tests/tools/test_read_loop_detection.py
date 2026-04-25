@@ -195,7 +195,7 @@ class TestDedupLoopDetection(unittest.TestCase):
     """Dedup hits must flow through the consecutive counter and trigger the hard block.
 
     Without this fix, the dedup path returned early and the loop-detection guard
-    at line 538 was never reached — the agent could loop forever on a dedup stub.
+    was never reached — the agent could loop forever on a dedup stub.
     """
 
     def setUp(self):
@@ -210,9 +210,9 @@ class TestDedupLoopDetection(unittest.TestCase):
         """2nd read (dedup hit) returns the stub but no warning yet."""
         read_file_tool("/tmp/test.py", task_id="td1")
         result = json.loads(read_file_tool("/tmp/test.py", task_id="td1"))
-        assert result.get("dedup") is True
-        assert "_warning" not in result
-        assert "error" not in result
+        self.assertTrue(result.get("dedup"))
+        self.assertNotIn("_warning", result)
+        self.assertNotIn("error", result)
 
     @patch("tools.file_tools.os.path.getmtime", return_value=1000.0)
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
@@ -221,9 +221,9 @@ class TestDedupLoopDetection(unittest.TestCase):
         for _ in range(2):
             read_file_tool("/tmp/test.py", task_id="td2")
         result = json.loads(read_file_tool("/tmp/test.py", task_id="td2"))
-        assert result.get("dedup") is True
-        assert "_warning" in result
-        assert "3 times" in result["_warning"]
+        self.assertTrue(result.get("dedup"))
+        self.assertIn("_warning", result)
+        self.assertIn("3 times", result["_warning"])
 
     @patch("tools.file_tools.os.path.getmtime", return_value=1000.0)
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
@@ -232,10 +232,10 @@ class TestDedupLoopDetection(unittest.TestCase):
         for _ in range(3):
             read_file_tool("/tmp/test.py", task_id="td3")
         result = json.loads(read_file_tool("/tmp/test.py", task_id="td3"))
-        assert "error" in result
-        assert "BLOCKED" in result["error"]
-        assert "4 times" in result["error"]
-        assert "content" not in result
+        self.assertIn("error", result)
+        self.assertIn("BLOCKED", result["error"])
+        self.assertIn("4 times", result["error"])
+        self.assertNotIn("content", result)
 
     @patch("tools.file_tools.os.path.getmtime", return_value=1000.0)
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
@@ -246,9 +246,9 @@ class TestDedupLoopDetection(unittest.TestCase):
         notify_other_tool_call("td4")
         result = json.loads(read_file_tool("/tmp/test.py", task_id="td4"))
         # After reset a dedup hit is fine — no block and no warning
-        assert result.get("dedup") is True
-        assert "_warning" not in result
-        assert "error" not in result
+        self.assertTrue(result.get("dedup"))
+        self.assertNotIn("_warning", result)
+        self.assertNotIn("error", result)
 
     @patch("tools.file_tools.os.path.getmtime", return_value=1000.0)
     @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
@@ -257,7 +257,30 @@ class TestDedupLoopDetection(unittest.TestCase):
         for _ in range(3):
             read_file_tool("/tmp/test.py", task_id="td5")
         result = json.loads(read_file_tool("/tmp/test.py", task_id="td6"))
-        assert "error" not in result
+        self.assertNotIn("error", result)
+
+    @patch(
+        "tools.file_tools._resolve_path_for_task",
+        return_value=__import__("pathlib").Path("/resolved/file.py"),
+    )
+    @patch("tools.file_tools.os.path.getmtime", return_value=1000.0)
+    @patch("tools.file_tools._get_file_ops", return_value=_make_fake_file_ops())
+    def test_dedup_path_normalization_shares_counter(
+        self, _mock_ops, _mock_mtime, _mock_resolve
+    ):
+        """Different path strings that resolve to the same file share the loop counter.
+
+        The loop-detection key must use the resolved path so that alternating
+        between e.g. './foo.py' and '/abs/foo.py' cannot bypass the block.
+        """
+        # Both paths resolve to /resolved/file.py via the mock.
+        read_file_tool("/resolved/file.py", task_id="td7")
+        read_file_tool("/resolved/file.py", task_id="td7")
+        read_file_tool("./resolved/file.py", task_id="td7")   # different raw string
+        result = json.loads(read_file_tool("../resolved/file.py", task_id="td7"))
+        # 4th consecutive hit against the same resolved path → BLOCKED
+        self.assertIn("error", result)
+        self.assertIn("BLOCKED", result["error"])
 
 
 

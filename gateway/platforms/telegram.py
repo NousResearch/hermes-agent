@@ -2267,6 +2267,23 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
+            error_str = str(e)
+            # Check for dimension-related errors - fallback to document mode
+            if "Photo_invalid_dimensions" in error_str or "PHOTO_INVALID_DIMENSIONS" in error_str:
+                logger.info(
+                    "[%s] Image dimensions exceed Telegram photo limits, sending as document: %s",
+                    self.name,
+                    image_path,
+                )
+                # Fallback to sending as document (file) - no dimension limits, only 50MB size limit
+                return await self.send_document(
+                    chat_id=chat_id,
+                    file_path=image_path,
+                    caption=caption,
+                    file_name=os.path.basename(image_path),
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
             logger.error(
                 "[%s] Failed to send Telegram local image, falling back to base adapter: %s",
                 self.name,

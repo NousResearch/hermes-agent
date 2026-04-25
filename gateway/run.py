@@ -6107,6 +6107,29 @@ class GatewayRunner:
 
         await adapter.handle_message(event)
 
+    async def _sync_discord_thread_title(
+        self,
+        session_id: str,
+        thread_id: str,
+        max_wait: float = 15.0,
+    ) -> None:
+        """Poll for an auto-generated session title and sync it to the Discord thread name."""
+        if not self._session_db:
+            return
+        adapter = self.adapters.get(Platform.DISCORD)
+        if not adapter or not getattr(adapter, "rename_thread", None):
+            return
+        deadline = time.monotonic() + max_wait
+        while time.monotonic() < deadline:
+            try:
+                title = self._session_db.get_session_title(session_id)
+                if title:
+                    await adapter.rename_thread(thread_id, title)
+                    return
+            except Exception:
+                pass
+            await asyncio.sleep(1.0)
+
     def _should_send_voice_reply(
         self,
         event: MessageEvent,
@@ -7052,6 +7075,13 @@ class GatewayRunner:
             # Set the title
             try:
                 if self._session_db.set_session_title(session_id, sanitized):
+                    # Sync Discord thread name if applicable
+                    if source.platform == Platform.DISCORD and source.thread_id:
+                        adapter = self.adapters.get(Platform.DISCORD)
+                        if adapter and getattr(adapter, "rename_thread", None):
+                            asyncio.create_task(
+                                adapter.rename_thread(source.thread_id, sanitized)
+                            )
                     return f"✏️ Session title set: **{sanitized}**"
                 else:
                     return "Session not found in database."
@@ -9014,6 +9044,7 @@ class GatewayRunner:
                         chat_id=source.chat_id,
                         config=_consumer_cfg,
                         metadata=_thread_metadata,
+                        reply_to=event_message_id,
                     )
             except Exception as _sc_err:
                 logger.debug("Proxy: could not set up stream consumer: %s", _sc_err)
@@ -9637,6 +9668,7 @@ class GatewayRunner:
                             chat_id=source.chat_id,
                             config=_consumer_cfg,
                             metadata={"thread_id": _progress_thread_id} if _progress_thread_id else None,
+                            reply_to=event_message_id,
                         )
                         if _want_stream_deltas:
                             def _stream_delta_cb(text: str) -> None:
@@ -10125,6 +10157,15 @@ class GatewayRunner:
                         final_response,
                         all_msgs,
                     )
+                    # Sync Discord thread name with the auto-generated title.
+                    # Title generation runs in a background thread; we poll
+                    # briefly and fire a non-blocking rename when it appears.
+                    if source.platform == Platform.DISCORD and source.thread_id:
+                        asyncio.create_task(
+                            self._sync_discord_thread_title(
+                                effective_session_id, source.thread_id
+                            )
+                        )
                 except Exception:
                     pass
 

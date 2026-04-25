@@ -1299,6 +1299,21 @@ class DiscordAdapter(BasePlatformAdapter):
             logger.error("[%s] Failed to edit Discord message %s: %s", self.name, message_id, e, exc_info=True)
             return SendResult(success=False, error=str(e))
 
+    async def rename_thread(self, thread_id: str, name: str) -> bool:
+        """Rename a Discord thread to match the session title."""
+        if not self._client:
+            return False
+        try:
+            thread = self._client.get_channel(int(thread_id))
+            if not thread:
+                thread = await self._client.fetch_channel(int(thread_id))
+            if thread and hasattr(thread, "edit"):
+                await thread.edit(name=name[:100])
+                return True
+        except Exception as e:
+            logger.debug("[%s] Failed to rename thread %s: %s", self.name, thread_id, e)
+        return False
+
     async def _send_file_attachment(
         self,
         chat_id: str,

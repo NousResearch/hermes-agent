@@ -526,6 +526,31 @@ _LEGACY_EVENT_MAP: Dict[str, DelegateEvent] = {
 }
 
 
+def _load_skill_for_subagent(skill_identifier: str) -> Optional[dict]:
+    """Load a skill by name and return a dict with content, model, provider.
+
+    Returns None if the skill cannot be loaded or does not exist.
+    Uses agent.skill_commands._load_skill_payload for robust path resolution.
+    """
+    if not skill_identifier or not skill_identifier.strip():
+        return None
+    try:
+        from agent.skill_commands import _load_skill_payload
+        result = _load_skill_payload(skill_identifier.strip())
+        if result is None:
+            return None
+        loaded, _skill_dir, display_name = result
+        return {
+            "content": loaded.get("content", ""),
+            "model": loaded.get("model"),
+            "provider": loaded.get("provider"),
+            "name": display_name,
+        }
+    except Exception:
+        logger.debug("Failed to load skill '%s' for subagent", skill_identifier, exc_info=True)
+        return None
+
+
 def check_delegate_requirements() -> bool:
     """Delegation has no external requirements -- always available."""
     return True

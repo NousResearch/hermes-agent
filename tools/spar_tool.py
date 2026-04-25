@@ -67,9 +67,9 @@ DEFAULT_REVIEWER_ROUTE = {
 }
 
 DEFAULT_JUDGE_ROUTE = {
-    "provider": "openrouter",
-    "model": "deepseek/deepseek-v4-flash",
-    "label": "deepseek/deepseek-v4-flash",
+    "provider": "xiaomi",
+    "model": "mimo-v2.5-pro",
+    "label": "xiaomi/mimo-v2.5-pro",
 }
 
 
@@ -546,7 +546,7 @@ SPAR_SCHEMA = {
             },
             "judge_model": {
                 "type": "string",
-                "description": "Optional judge model route. Defaults to deepseek/deepseek-v4-flash.",
+                "description": "Optional judge model route. Defaults to xiaomi/mimo-v2.5-pro.",
             },
             "judge_enabled": {
                 "type": "boolean",

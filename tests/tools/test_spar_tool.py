@@ -147,7 +147,6 @@ def test_check_spar_requirements_uses_builder_and_reviewer_routes(monkeypatch):
     available = {
         "xiaomi/mimo-v2.5-pro",
         "nvidia/nemotron-3-super-120b-a12b",
-        "deepseek/deepseek-v4-flash",
     }
     monkeypatch.setattr(spar, "_default_builder_route", lambda: {"provider": "xiaomi", "model": "mimo-v2.5-pro", "label": "xiaomi/mimo-v2.5-pro"})
     monkeypatch.setattr(spar, "_route_is_available", lambda route: spar._route_label(route) in available)

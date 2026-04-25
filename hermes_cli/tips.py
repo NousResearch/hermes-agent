@@ -143,7 +143,7 @@ TIPS = [
     "session_search performs full-text search across ALL past conversations.",
     "The agent automatically saves preferences, corrections, and environment facts to memory.",
     "mixture_of_agents routes hard problems through Xiaomi MiMo V2.5 Pro plus OpenRouter DeepSeek and Nemotron collaborators.",
-    "spar uses MiMo V2.5 Pro as builder, OpenRouter Nemotron as reviewer, and OpenRouter DeepSeek V4 Flash as judge.",
+    "spar uses MiMo V2.5 Pro as builder and judge, with OpenRouter Nemotron as reviewer.",
     "Terminal commands support background mode with notify_on_complete for long-running tasks.",
     "Terminal background processes support watch_patterns to alert on specific output lines.",
     "The terminal tool supports 6 backends: local, Docker, SSH, Modal, Daytona, and Singularity.",

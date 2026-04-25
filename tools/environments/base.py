@@ -405,7 +405,8 @@ class BaseEnvironment(ABC):
         # Preserve bare ``~`` expansion, but rewrite ``~/...`` through
         # ``$HOME`` so suffixes with spaces remain a single shell word.
         quoted_cwd = self._quote_cwd_for_cd(cwd)
-        parts.append(f"builtin cd {quoted_cwd} || exit 126")
+        # ``--`` keeps hyphen-prefixed directory names from being parsed as options.
+        parts.append(f"builtin cd -- {quoted_cwd} || exit 126")
 
         # Run the actual command
         parts.append(f"eval '{escaped}'")

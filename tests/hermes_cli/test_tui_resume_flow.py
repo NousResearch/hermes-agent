@@ -1,4 +1,5 @@
 from argparse import Namespace
+from pathlib import Path
 import sys
 import types
 
@@ -8,8 +9,11 @@ import pytest
 def _args(**overrides):
     base = {
         "continue_last": None,
+        "model": None,
+        "provider": None,
         "resume": None,
         "tui": True,
+        "tui_dev": False,
     }
     base.update(overrides)
     return Namespace(**base)
@@ -31,7 +35,7 @@ def test_cmd_chat_tui_continue_uses_latest_tui_session(monkeypatch, main_mod):
         calls.append(source)
         return "20260408_235959_a1b2c3" if source == "tui" else None
 
-    def fake_launch(resume_session_id=None, tui_dev=False):
+    def fake_launch(resume_session_id=None, tui_dev=False, model=None, provider=None):
         captured["resume"] = resume_session_id
         raise SystemExit(0)
 
@@ -58,7 +62,7 @@ def test_cmd_chat_tui_continue_falls_back_to_latest_cli_session(monkeypatch, mai
             return "20260408_235959_d4e5f6"
         return None
 
-    def fake_launch(resume_session_id=None, tui_dev=False):
+    def fake_launch(resume_session_id=None, tui_dev=False, model=None, provider=None):
         captured["resume"] = resume_session_id
         raise SystemExit(0)
 
@@ -76,7 +80,7 @@ def test_cmd_chat_tui_continue_falls_back_to_latest_cli_session(monkeypatch, mai
 def test_cmd_chat_tui_resume_resolves_title_before_launch(monkeypatch, main_mod):
     captured = {}
 
-    def fake_launch(resume_session_id=None, tui_dev=False):
+    def fake_launch(resume_session_id=None, tui_dev=False, model=None, provider=None):
         captured["resume"] = resume_session_id
         raise SystemExit(0)
 
@@ -87,6 +91,60 @@ def test_cmd_chat_tui_resume_resolves_title_before_launch(monkeypatch, main_mod)
         main_mod.cmd_chat(_args(resume="my t0p session"))
 
     assert captured["resume"] == "20260409_000000_aa11bb"
+
+
+def test_cmd_chat_tui_passes_model_and_provider(monkeypatch, main_mod):
+    captured = {}
+
+    def fake_launch(resume_session_id=None, tui_dev=False, model=None, provider=None):
+        captured.update(
+            {
+                "model": model,
+                "provider": provider,
+                "resume": resume_session_id,
+                "tui_dev": tui_dev,
+            }
+        )
+        raise SystemExit(0)
+
+    monkeypatch.setattr(main_mod, "_launch_tui", fake_launch)
+
+    with pytest.raises(SystemExit):
+        main_mod.cmd_chat(
+            _args(model="anthropic/claude-sonnet-4.6", provider="anthropic")
+        )
+
+    assert captured == {
+        "model": "anthropic/claude-sonnet-4.6",
+        "provider": "anthropic",
+        "resume": None,
+        "tui_dev": False,
+    }
+
+
+def test_launch_tui_exports_model_and_provider(monkeypatch, main_mod):
+    captured = {}
+
+    monkeypatch.setattr(
+        main_mod,
+        "_make_tui_argv",
+        lambda tui_dir, tui_dev: (["node", "dist/entry.js"], Path(".")),
+    )
+
+    def fake_call(argv, cwd=None, env=None):
+        captured.update({"argv": argv, "cwd": cwd, "env": env})
+        return 1
+
+    monkeypatch.setattr(main_mod.subprocess, "call", fake_call)
+
+    with pytest.raises(SystemExit):
+        main_mod._launch_tui(model="nous/hermes-test", provider="nous")
+
+    env = captured["env"]
+    assert env["HERMES_MODEL"] == "nous/hermes-test"
+    assert env["HERMES_INFERENCE_MODEL"] == "nous/hermes-test"
+    assert env["HERMES_TUI_PROVIDER"] == "nous"
+    assert env["HERMES_INFERENCE_PROVIDER"] == "nous"
 
 
 def test_print_tui_exit_summary_includes_resume_and_token_totals(monkeypatch, capsys):

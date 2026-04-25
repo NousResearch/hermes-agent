@@ -640,14 +640,14 @@ export function useMainApp(gw: GatewayClient) {
   const showProgressArea = anyPanelVisible
     ? Boolean(
         ui.busy ||
-          turn.outcome ||
-          turn.streamPendingTools.length ||
-          turn.streamSegments.length ||
-          turn.subagents.length ||
-          turn.tools.length ||
-          turn.turnTrail.length ||
-          hasReasoning ||
-          turn.activity.length
+        turn.outcome ||
+        turn.streamPendingTools.length ||
+        turn.streamSegments.length ||
+        turn.subagents.length ||
+        turn.tools.length ||
+        turn.turnTrail.length ||
+        hasReasoning ||
+        turn.activity.length
       )
     : turn.activity.some(item => item.tone !== 'info')
 

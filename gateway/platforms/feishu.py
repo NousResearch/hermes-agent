@@ -3626,9 +3626,14 @@ class FeishuAdapter(BasePlatformAdapter):
         return bool(sender_ids and (sender_ids & self._allowed_group_users))
 
     def _should_accept_group_message(self, message: Any, sender_id: Any, chat_id: str = "") -> bool:
-        """Require an explicit @mention before group messages enter the agent."""
+        """Gate group messages based on policy and optional @mention requirement."""
         if not self._allow_group_message(sender_id, chat_id):
             return False
+        # Bypass mention check when require_mention is disabled or chat is in free_response list
+        if not self._feishu_require_mention() or (
+            chat_id and chat_id in self._feishu_free_response_chats()
+        ):
+            return True
         # @_all is Feishu's @everyone placeholder — always route to the bot.
         raw_content = getattr(message, "content", "") or ""
         if "@_all" in raw_content:
@@ -3643,6 +3648,24 @@ class FeishuAdapter(BasePlatformAdapter):
             bot=self._bot_identity(),
         )
         return self._post_mentions_bot(normalized.mentions)
+
+    def _feishu_require_mention(self) -> bool:
+        """Return whether group chats should require an explicit bot mention."""
+        configured = self.config.extra.get("require_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() in ("true", "1", "yes", "on")
+            return bool(configured)
+        return True  # default: require mention (backward compatible)
+
+    def _feishu_free_response_chats(self) -> set:
+        """Return chat IDs where no @mention is required."""
+        raw = self.config.extra.get("free_response_channels")
+        if raw is None:
+            raw = os.getenv("FEISHU_FREE_RESPONSE_CHATS", "")
+        if isinstance(raw, list):
+            return {str(part).strip() for part in raw if str(part).strip()}
+        return {part.strip() for part in str(raw).split(",") if part.strip()}
 
     def _is_self_sent_bot_message(self, event: Any) -> bool:
         """Return True only for Feishu events emitted by this Hermes bot."""

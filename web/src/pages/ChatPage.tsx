@@ -139,6 +139,7 @@ export default function ChatPage() {
   const clientRef = useRef<GatewayClient | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const pendingSendRef = useRef(false);
 
   // Scroll to bottom on new messages
   useEffect(() => {
@@ -256,7 +257,11 @@ export default function ChatPage() {
             }
             return prev;
           });
-          setRunning(false);
+          if (pendingSendRef.current) {
+            pendingSendRef.current = false;
+          } else {
+            setRunning(false);
+          }
           break;
 
         case "tool.started":
@@ -297,7 +302,11 @@ export default function ChatPage() {
 
         case "error":
           setErrorMsg(ev.params.message);
-          setRunning(false);
+          if (pendingSendRef.current) {
+            pendingSendRef.current = false;
+          } else {
+            setRunning(false);
+          }
           break;
       }
     });
@@ -338,11 +347,10 @@ export default function ChatPage() {
 
   const send = useCallback(() => {
     const text = input.trim();
-    if (!text || running || status !== "ready") return;
+    if (!text || status !== "ready") return;
 
     setInput("");
     setShowPicker(false);
-    setRunning(true);
     setErrorMsg(null);
 
     setMessages((prev) => [
@@ -350,6 +358,12 @@ export default function ChatPage() {
       { id: nextId(), role: "user", text, tools: [] },
     ]);
 
+    if (running) {
+      pendingSendRef.current = true;
+      clientRef.current!.interrupt().catch(() => {});
+    }
+
+    setRunning(true);
     try {
       clientRef.current!.sendMessage(text);
     } catch (err) {
@@ -394,7 +408,6 @@ export default function ChatPage() {
           size="sm"
           className="ml-auto h-7 gap-1.5 text-xs"
           onClick={startNewSession}
-          disabled={running}
         >
           <Plus className="h-3.5 w-3.5" />
           New session
@@ -522,7 +535,16 @@ export default function ChatPage() {
             }}
             autoComplete="off"
           />
-          {running ? (
+          <Button
+            size="icon"
+            className="h-9 w-9 shrink-0"
+            disabled={!input.trim() || status !== "ready"}
+            onClick={send}
+            aria-label="Send"
+          >
+            <Send className="h-4 w-4" />
+          </Button>
+          {running && (
             <Button
               variant="outline"
               size="icon"
@@ -531,16 +553,6 @@ export default function ChatPage() {
               aria-label="Interrupt"
             >
               <Square className="h-4 w-4" />
-            </Button>
-          ) : (
-            <Button
-              size="icon"
-              className="h-9 w-9 shrink-0"
-              disabled={!input.trim() || status !== "ready"}
-              onClick={send}
-              aria-label="Send"
-            >
-              <Send className="h-4 w-4" />
             </Button>
           )}
         </div>

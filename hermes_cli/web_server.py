@@ -2919,12 +2919,11 @@ def _persist_interrupted_streaming_response(agent: Any, session_id: str) -> bool
     )
 
 
-def _normalize_colon_syntax(raw_args: str) -> str:
-    """Convert provider:model syntax to --provider flag syntax.
+def _normalize_provider_model_syntax(raw_args: str) -> str:
+    """Convert provider/model syntax to --provider flag syntax.
 
-    Handles "zai:glm-5.1" → "glm-5.1 --provider zai" etc., while
-    preserving OpenRouter variant suffixes (:free, :extended, :fast)
-    and leaving existing --provider flags untouched.
+    Handles "zai/glm-5.1" → "glm-5.1 --provider zai" etc.
+    while leaving existing --provider flags untouched.
     """
     if "--provider" in raw_args:
         return raw_args
@@ -2941,19 +2940,18 @@ def _normalize_colon_syntax(raw_args: str) -> str:
         "xiaomi", "mimo",
         "arcee", "trinity",
     }
-    variant_suffixes = {"free", "extended", "fast"}
 
     parts = raw_args.split()
     if not parts:
         return raw_args
 
     first = parts[0]
-    if ":" in first:
-        colon_pos = first.index(":")
-        left = first[:colon_pos].lower()
-        right = first[colon_pos + 1:]
+    if "/" in first:
+        slash_pos = first.index("/")
+        left = first[:slash_pos].lower()
+        right = first[slash_pos + 1:]
 
-        if left in known_prefixes and right.lower() not in variant_suffixes:
+        if left in known_prefixes and right:
             parts[0] = right
             parts.extend(["--provider", left])
             return " ".join(parts)
@@ -2978,7 +2976,7 @@ def _handle_web_model_command(
     from hermes_cli.providers import get_label
     from gateway.run import _load_gateway_config
 
-    cmd_args = _normalize_colon_syntax(cmd_args)
+    cmd_args = _normalize_provider_model_syntax(cmd_args)
     model_input, explicit_provider, persist_global = parse_model_flags(cmd_args)
 
     cfg = _load_gateway_config()
@@ -3134,6 +3132,7 @@ async def tui_gateway_ws(websocket: WebSocket):
     loop = asyncio.get_running_loop()
     session_id: Optional[str] = None
     agent_ref: List[Any] = [None]   # mutable container so interrupt() can reach the agent
+    agent_future = None              # track running executor future for cancellation
     session_model_override: dict = {}  # per-connection model override from /model command
 
     def _notify(method: str, params: dict) -> None:
@@ -3242,6 +3241,18 @@ async def tui_gateway_ws(websocket: WebSocket):
 
                 sid_for_run = session_id
 
+                # ── Interrupt any previous agent before starting a new one ──
+                if agent_future is not None:
+                    ag = agent_ref[0]
+                    if ag is not None:
+                        _persist_interrupted_streaming_response(ag, session_id)
+                        ag.interrupt()
+                    try:
+                        await asyncio.wait_for(agent_future, timeout=5.0)
+                    except (asyncio.TimeoutError, Exception):
+                        pass
+                    agent_future = None
+
                 # Ensure the session row exists immediately so the dashboard
                 # can detect the active session even if the agent is interrupted
                 # before its first DB flush.
@@ -3256,6 +3267,7 @@ async def tui_gateway_ws(websocket: WebSocket):
                     pass
 
                 def _run_agent_thread():
+                    agent = None
                     try:
                         from run_agent import AIAgent
                         from gateway.run import (
@@ -3321,9 +3333,10 @@ async def tui_gateway_ws(websocket: WebSocket):
                         _notify("error", {"message": str(exc)})
                         _reply(rpc_id, error={"code": -32603, "message": str(exc)})
                     finally:
-                        agent_ref[0] = None
+                        if agent_ref[0] is agent:
+                            agent_ref[0] = None
 
-                await loop.run_in_executor(None, _run_agent_thread)
+                agent_future = loop.run_in_executor(None, _run_agent_thread)
 
             elif method == "chat.interrupt":
                 ag = agent_ref[0]

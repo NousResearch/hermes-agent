@@ -2578,21 +2578,39 @@ class APIServerAdapter(BasePlatformAdapter):
                     return r, u
 
                 result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
-                final_response = result.get("final_response", "") if isinstance(result, dict) else ""
-                q.put_nowait({
-                    "event": "run.completed",
-                    "run_id": run_id,
-                    "timestamp": time.time(),
-                    "output": final_response,
-                    "usage": usage,
-                })
-                self._set_run_status(
-                    run_id,
-                    "completed",
-                    output=final_response,
-                    usage=usage,
-                    last_event="run.completed",
-                )
+                # Check for structured failure (non-retryable client errors like
+                # 401/400 return failed=True instead of raising, so the except
+                # block below never fires — issue #15561).
+                if isinstance(result, dict) and result.get("failed"):
+                    error_msg = result.get("error") or "agent run failed"
+                    q.put_nowait({
+                        "event": "run.failed",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                        "error": error_msg,
+                    })
+                    self._set_run_status(
+                        run_id,
+                        "failed",
+                        error=error_msg,
+                        last_event="run.failed",
+                    )
+                else:
+                    final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+                    q.put_nowait({
+                        "event": "run.completed",
+                        "run_id": run_id,
+                        "timestamp": time.time(),
+                        "output": final_response,
+                        "usage": usage,
+                    })
+                    self._set_run_status(
+                        run_id,
+                        "completed",
+                        output=final_response,
+                        usage=usage,
+                        last_event="run.completed",
+                    )
             except asyncio.CancelledError:
                 self._set_run_status(
                     run_id,

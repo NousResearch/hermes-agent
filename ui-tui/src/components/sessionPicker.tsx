@@ -6,6 +6,8 @@ import type { SessionListItem, SessionListResponse } from '../gatewayTypes.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
+import { OverlayControls, useOverlayKeys } from './overlayControls.js'
+
 const VISIBLE = 15
 const MIN_WIDTH = 60
 const MAX_WIDTH = 120
@@ -33,6 +35,8 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
   const { stdout } = useStdout()
   const width = Math.max(MIN_WIDTH, Math.min(MAX_WIDTH, (stdout?.columns ?? 80) - 6))
 
+  useOverlayKeys({ onClose: onCancel })
+
   useEffect(() => {
     gw.request<SessionListResponse>('session.list', { limit: 20 })
       .then(raw => {
@@ -56,10 +60,6 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
   }, [gw])
 
   useInput((ch, key) => {
-    if (key.escape) {
-      return onCancel()
-    }
-
     if (key.upArrow && sel > 0) {
       setSel(s => s - 1)
     }
@@ -87,7 +87,7 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
     return (
       <Box flexDirection="column">
         <Text color={t.color.label}>error: {err}</Text>
-        <Text color={t.color.dim}>Esc to cancel</Text>
+        <OverlayControls t={t}>Esc/q cancel</OverlayControls>
       </Box>
     )
   }
@@ -96,7 +96,7 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
     return (
       <Box flexDirection="column">
         <Text color={t.color.dim}>no previous sessions</Text>
-        <Text color={t.color.dim}>Esc to cancel</Text>
+        <OverlayControls t={t}>Esc/q cancel</OverlayControls>
       </Box>
     )
   }
@@ -141,7 +141,7 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
       })}
 
       {off + VISIBLE < items.length && <Text color={t.color.dim}> ↓ {items.length - off - VISIBLE} more</Text>}
-      <Text color={t.color.dim}>↑/↓ select · Enter resume · 1-9 quick · Esc cancel</Text>
+      <OverlayControls t={t}>↑/↓ select · Enter resume · 1-9 quick · Esc/q cancel</OverlayControls>
     </Box>
   )
 }

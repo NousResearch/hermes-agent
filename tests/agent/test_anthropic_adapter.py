@@ -1092,6 +1092,20 @@ class TestBuildAnthropicKwargs:
         )
         assert kwargs.get("thinking") == {"type": "disabled"}
 
+    def test_reasoning_disabled_proxy_hostname_containing_anthropic_com(self):
+        """A proxy whose hostname contains 'anthropic.com' as a substring
+        (e.g. anthropic.com.proxy.company.com) must still be classified as
+        a third-party endpoint and receive thinking=disabled."""
+        kwargs = build_anthropic_kwargs(
+            model="some-model",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config={"enabled": False},
+            base_url="https://anthropic.com.proxy.company.com/anthropic",
+        )
+        assert kwargs.get("thinking") == {"type": "disabled"}
+
     def test_reasoning_disabled_kimi_coding_omits_thinking(self):
         """Kimi /coding skips the thinking parameter entirely — neither enabled
         nor disabled should be sent there."""

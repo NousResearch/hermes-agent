@@ -17,6 +17,7 @@ import os
 import platform
 import subprocess
 from pathlib import Path
+from urllib.parse import urlparse
 
 from hermes_constants import get_hermes_home
 from typing import Any, Dict, List, Optional, Tuple
@@ -351,8 +352,11 @@ def _is_third_party_anthropic_endpoint(base_url: str | None) -> bool:
     normalized = _normalize_base_url_text(base_url)
     if not normalized:
         return False  # No base_url = direct Anthropic API
-    normalized = normalized.rstrip("/").lower()
-    if "anthropic.com" in normalized:
+    try:
+        host = urlparse(normalized).hostname or ""
+    except Exception:
+        host = ""
+    if host == "anthropic.com" or host.endswith(".anthropic.com"):
         return False  # Direct Anthropic API — OAuth applies
     return True  # Any other endpoint is a third-party proxy
 

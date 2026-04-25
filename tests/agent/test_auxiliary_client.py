@@ -22,7 +22,6 @@ from agent.auxiliary_client import (
     _normalize_aux_provider,
     _try_payment_fallback,
     _resolve_auto,
-    _build_call_kwargs,
 )
 
 
@@ -65,32 +64,6 @@ class TestNormalizeAuxProvider:
     def test_maps_github_copilot_acp_aliases(self):
         assert _normalize_aux_provider("github-copilot-acp") == "copilot-acp"
         assert _normalize_aux_provider("copilot-acp-agent") == "copilot-acp"
-
-
-class TestTemperatureOmission:
-    def test_codex_backend_omits_temperature_even_when_caller_sets_it(self):
-        kwargs = _build_call_kwargs(
-            provider="auto",
-            model="gpt-5.5",
-            messages=[{"role": "user", "content": "remember useful facts"}],
-            temperature=0.3,
-            max_tokens=512,
-            base_url="https://chatgpt.com/backend-api/codex/",
-        )
-
-        assert "temperature" not in kwargs
-
-    def test_non_codex_chatgpt_path_keeps_temperature(self):
-        kwargs = _build_call_kwargs(
-            provider="auto",
-            model="gpt-5.5",
-            messages=[{"role": "user", "content": "remember useful facts"}],
-            temperature=0.3,
-            max_tokens=512,
-            base_url="https://chatgpt.com/not-codex?next=/backend-api/codex",
-        )
-
-        assert kwargs["temperature"] == 0.3
 
 
 class TestReadCodexAccessToken:
@@ -669,6 +642,70 @@ class TestNousAuxiliaryRefresh:
         assert result == {"ok": True}
         assert stale_client.chat.completions.create.await_count == 1
         assert fresh_async_client.chat.completions.create.await_count == 1
+
+
+class TestUnsupportedTemperatureRetry:
+    def test_call_llm_retries_once_without_temperature(self):
+        client = MagicMock()
+        client.base_url = "https://api.openai.com/v1"
+        client.chat.completions.create.side_effect = [
+            RuntimeError(
+                "HTTP 400: Error code: 400 - {'detail': 'Unsupported parameter: temperature'}"
+            ),
+            {"ok": True},
+        ]
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("openai-codex", "gpt-5.5", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", return_value=(client, "gpt-5.5")),
+            patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task: resp),
+        ):
+            result = call_llm(
+                task="flush_memories",
+                messages=[{"role": "user", "content": "remember this"}],
+                temperature=0.3,
+                max_tokens=500,
+            )
+
+        assert result == {"ok": True}
+        assert client.chat.completions.create.call_count == 2
+        first_kwargs = client.chat.completions.create.call_args_list[0].kwargs
+        retry_kwargs = client.chat.completions.create.call_args_list[1].kwargs
+        assert first_kwargs["temperature"] == 0.3
+        assert "temperature" not in retry_kwargs
+        assert retry_kwargs["max_tokens"] == 500
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_retries_once_without_temperature(self):
+        client = MagicMock()
+        client.base_url = "https://api.openai.com/v1"
+        client.chat.completions.create = AsyncMock(side_effect=[
+            RuntimeError(
+                "HTTP 400: Error code: 400 - {'detail': 'Unsupported parameter: temperature'}"
+            ),
+            {"ok": True},
+        ])
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("openai-codex", "gpt-5.5", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", return_value=(client, "gpt-5.5")),
+            patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task: resp),
+        ):
+            result = await async_call_llm(
+                task="flush_memories",
+                messages=[{"role": "user", "content": "remember this"}],
+                temperature=0.3,
+                max_tokens=500,
+            )
+
+        assert result == {"ok": True}
+        assert client.chat.completions.create.await_count == 2
+        first_kwargs = client.chat.completions.create.call_args_list[0].kwargs
+        retry_kwargs = client.chat.completions.create.call_args_list[1].kwargs
+        assert first_kwargs["temperature"] == 0.3
+        assert "temperature" not in retry_kwargs
+        assert retry_kwargs["max_tokens"] == 500
+
 
 # ── Payment / credit exhaustion fallback ─────────────────────────────────
 

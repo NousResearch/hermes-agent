@@ -565,7 +565,9 @@ def camofox_vision(question: str, annotate: bool = False,
             task="vision",
             timeout=_vision_timeout,
         )
-        analysis = (response.choices[0].message.content or "").strip() if response.choices else ""
+        analysis = ""
+        if response.choices and response.choices[0].message:
+            analysis = (response.choices[0].message.content or "").strip()
 
         # Redact secrets the vision LLM may have read from the screenshot.
         from agent.redact import redact_sensitive_text

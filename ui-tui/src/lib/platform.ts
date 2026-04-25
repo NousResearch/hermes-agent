@@ -34,7 +34,7 @@ export const isMacActionFallback = (
 export const isAction = (key: { ctrl: boolean; meta: boolean; super?: boolean }, ch: string, target: string): boolean =>
   isActionMod(key) && ch.toLowerCase() === target
 
-const isRemoteShell = (env: NodeJS.ProcessEnv = process.env): boolean =>
+export const isRemoteShell = (env: NodeJS.ProcessEnv = process.env): boolean =>
   Boolean(env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY)
 
 export const isCopyShortcut = (

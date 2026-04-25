@@ -44,6 +44,7 @@ Usage:
 """
 
 import argparse
+import json
 import os
 import shutil
 import subprocess
@@ -1168,6 +1169,7 @@ def cmd_chat(args):
         "quiet": getattr(args, "quiet", False),
         "query": args.query,
         "image": getattr(args, "image", None),
+        "launch_metadata": getattr(args, "launch_metadata", None),
         "resume": getattr(args, "resume", None),
         "worktree": getattr(args, "worktree", False),
         "checkpoints": getattr(args, "checkpoints", False),
@@ -4412,6 +4414,32 @@ def cmd_version(args):
         pass
 
 
+def build_capabilities_payload() -> dict:
+    """Return stable machine-readable Hermes CLI capability metadata."""
+    return {
+        "schemaVersion": 1,
+        "cliName": "Hermes Agent",
+        "cliVersion": __version__,
+        "releaseDate": __release_date__,
+        "capabilities": {
+            "supportsLaunchMetadataArg": True,
+            "supportsLaunchMetadataEnv": True,
+            "supportsResume": True,
+        },
+    }
+
+
+def cmd_capabilities(args):
+    """Show machine-readable CLI capabilities."""
+    payload = build_capabilities_payload()
+    if getattr(args, "json", False):
+        print(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+        return
+    print(f"Hermes Agent v{payload['cliVersion']} capabilities")
+    for key, value in payload["capabilities"].items():
+        print(f"{key}: {value}")
+
+
 def cmd_uninstall(args):
     """Uninstall Hermes Agent."""
     _require_tty("uninstall")
@@ -6762,6 +6790,11 @@ For more help on a command:
         "--image", help="Optional local image path to attach to a single query"
     )
     chat_parser.add_argument(
+        "--launch-metadata",
+        default=argparse.SUPPRESS,
+        help="Optional JSON launch metadata sidecar for tool integrations (runtime metadata, not conversation history)",
+    )
+    chat_parser.add_argument(
         "-m", "--model", help="Model to use (e.g., anthropic/claude-sonnet-4)"
     )
     chat_parser.add_argument(
@@ -8567,6 +8600,13 @@ Examples:
     version_parser.set_defaults(func=cmd_version)
 
     # =========================================================================
+    # capabilities command
+    # =========================================================================
+    capabilities_parser = subparsers.add_parser("capabilities", help="Show machine-readable CLI capabilities")
+    capabilities_parser.add_argument("--json", action="store_true", help="Output capabilities as JSON")
+    capabilities_parser.set_defaults(func=cmd_capabilities)
+
+    # =========================================================================
     # update command
     # =========================================================================
     update_parser = subparsers.add_parser(
@@ -8928,6 +8968,7 @@ Examples:
             ("toolsets", None),
             ("verbose", False),
             ("worktree", False),
+            ("launch_metadata", None),
         ]:
             if not hasattr(args, attr):
                 setattr(args, attr, default)
@@ -8945,6 +8986,7 @@ Examples:
             ("resume", None),
             ("continue_last", None),
             ("worktree", False),
+            ("launch_metadata", None),
         ]:
             if not hasattr(args, attr):
                 setattr(args, attr, default)

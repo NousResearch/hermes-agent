@@ -217,6 +217,96 @@ def _load_prefill_messages(file_path: str) -> List[Dict[str, Any]]:
         return []
 
 
+_LAUNCH_METADATA_ENV = "HERMES_FORGE_LAUNCH_METADATA"
+_LAUNCH_METADATA_DIAGNOSTICS_ENV = "HERMES_FORGE_LAUNCH_METADATA_DIAGNOSTICS"
+_LAUNCH_METADATA_FIELDS = (
+    "forgeSessionId",
+    "taskRunId",
+    "workspace",
+    "selectedFilePaths",
+    "attachmentPaths",
+    "imagePaths",
+    "windowsDesktopPathAlias",
+    "bridgeAvailability",
+    "cliSession",
+)
+
+
+def _emit_launch_metadata_diagnostic(payload: Dict[str, Any]) -> None:
+    if os.getenv(_LAUNCH_METADATA_DIAGNOSTICS_ENV) == "1":
+        print(
+            "launch_metadata: " + json.dumps(payload, ensure_ascii=False, sort_keys=True),
+            file=sys.stderr,
+        )
+
+
+def _load_launch_metadata(file_path: str | None = None) -> tuple[Optional[Dict[str, Any]], Dict[str, Any]]:
+    """Load integration launch metadata as runtime metadata, never as chat history."""
+    source = "arg" if file_path else "env"
+    raw_path = (file_path or os.getenv(_LAUNCH_METADATA_ENV, "")).strip()
+    if not raw_path:
+        diagnostic = {
+            "supported": True,
+            "status": "absent",
+            "source": "none",
+            "fields": [],
+        }
+        _emit_launch_metadata_diagnostic(diagnostic)
+        return None, diagnostic
+
+    path_obj = Path(raw_path).expanduser()
+    try:
+        with open(path_obj, "r", encoding="utf-8") as f:
+            raw = json.load(f)
+    except FileNotFoundError:
+        diagnostic = {
+            "supported": True,
+            "status": "error",
+            "source": source,
+            "path": str(path_obj),
+            "error": "metadata file not found",
+            "fields": [],
+        }
+        _emit_launch_metadata_diagnostic(diagnostic)
+        return None, diagnostic
+    except Exception as exc:
+        diagnostic = {
+            "supported": True,
+            "status": "error",
+            "source": source,
+            "path": str(path_obj),
+            "error": f"failed to read metadata: {exc}",
+            "fields": [],
+        }
+        _emit_launch_metadata_diagnostic(diagnostic)
+        return None, diagnostic
+
+    if not isinstance(raw, dict) or raw.get("version") != 1:
+        diagnostic = {
+            "supported": True,
+            "status": "error",
+            "source": source,
+            "path": str(path_obj),
+            "error": "unsupported launch metadata schema",
+            "fields": [],
+        }
+        _emit_launch_metadata_diagnostic(diagnostic)
+        return None, diagnostic
+
+    metadata = {field: raw.get(field) for field in _LAUNCH_METADATA_FIELDS if field in raw}
+    metadata["version"] = raw.get("version")
+    metadata["createdAt"] = raw.get("createdAt")
+    diagnostic = {
+        "supported": True,
+        "status": "loaded",
+        "source": source,
+        "path": str(path_obj),
+        "fields": [field for field in _LAUNCH_METADATA_FIELDS if field in raw],
+    }
+    _emit_launch_metadata_diagnostic(diagnostic)
+    return metadata, diagnostic
+
+
 def _parse_reasoning_config(effort: str) -> dict | None:
     """Parse a reasoning effort level into an OpenRouter reasoning config dict."""
     from hermes_constants import parse_reasoning_effort
@@ -1812,6 +1902,7 @@ class HermesCLI:
         resume: str = None,
         checkpoints: bool = False,
         pass_session_id: bool = False,
+        launch_metadata: str = None,
         ignore_rules: bool = False,
     ):
         """
@@ -1832,6 +1923,7 @@ class HermesCLI:
         # Initialize Rich console
         self.console = Console()
         self.config = CLI_CONFIG
+        self.launch_metadata, self.launch_metadata_diagnostic = _load_launch_metadata(launch_metadata)
         self.compact = compact if compact is not None else CLI_CONFIG["display"].get("compact", False)
         # tool_progress: "off", "new", "all", "verbose" (from config.yaml display section)
         # YAML 1.1 parses bare `off` as boolean False — normalise to string.
@@ -10816,6 +10908,7 @@ def main(
     query: str = None,
     q: str = None,
     image: str = None,
+    launch_metadata: str = None,
     toolsets: str = None,
     skills: str | list[str] | tuple[str, ...] = None,
     model: str = None,
@@ -10844,6 +10937,7 @@ def main(
         query: Single query to execute (then exit). Alias: -q
         q: Shorthand for --query
         image: Optional local image path to attach to a single query
+        launch_metadata: Optional JSON launch metadata sidecar (runtime metadata, not conversation history)
         toolsets: Comma-separated list of toolsets to enable (e.g., "web,terminal")
         skills: Comma-separated or repeated list of skills to preload for the session
         model: Model to use (default: anthropic/claude-opus-4-20250514)
@@ -10945,6 +11039,7 @@ def main(
         resume=resume,
         checkpoints=checkpoints,
         pass_session_id=pass_session_id,
+        launch_metadata=launch_metadata,
         ignore_rules=ignore_rules,
     )
 

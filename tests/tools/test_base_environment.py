@@ -179,6 +179,179 @@ class TestInitSessionFailure:
         assert calls[0]["login"] is True
 
 
+class TestStripStateSyncLeak:
+    """Test that _strip_state_sync_leak removes leaked declare -x / export
+    lines from command output (defense-in-depth for bug #15459).
+    
+    When the persistent-shell snapshot redirect ('export -p > file') fails
+    (permissions, deleted temp dir, race condition, etc.), the full env
+    dump leaks into stdout.  The method should strip these lines while
+    preserving legitimate command output.
+    """
+
+    def test_strips_declare_x_lines(self):
+        env = _TestableEnv()
+        result = {
+            "output": (
+                'declare -x PATH="/usr/bin:/bin"\n'
+                'declare -x HOME="/Users/test"\n'
+                'declare -x SHELL="/bin/zsh"\n'
+                "Hello World\n"
+            ),
+        }
+        env._strip_state_sync_leak(result)
+        assert result["output"] == "Hello World\n"
+
+    def test_strips_export_lines(self):
+        """export VAR=value format (zsh, POSIX sh) should also be stripped."""
+        env = _TestableEnv()
+        result = {
+            "output": (
+                'export PATH="/usr/bin:/bin"\n'
+                'export HOME="/Users/test"\n'
+                "actual output\n"
+            ),
+        }
+        env._strip_state_sync_leak(result)
+        assert result["output"] == "actual output\n"
+
+    def test_preserves_normal_output(self):
+        """Lines that don't match declare -x or export patterns are kept."""
+        env = _TestableEnv()
+        result = {
+            "output": "Hello World\nexport DATA=good\nsecond line\n",
+        }
+        env._strip_state_sync_leak(result)
+        # "export DATA=good" looks like an env export line — stripped.
+        # In practice, legitimate output rarely starts with "declare -x " or
+        # "export " at column zero, and defense-in-depth means we err on
+        # the side of stripping.
+        assert "Hello World" in result["output"]
+        assert "second line" in result["output"]
+
+    def test_mixed_leak_and_real_output(self):
+        """Leaked lines interspersed with real output."""
+        env = _TestableEnv()
+        result = {
+            "output": (
+                'declare -x BROWSER_INACTIVITY_TIMEOUT="120"\n'
+                "real line 1\n"
+                'declare -x COLORTERM="truecolor"\n'
+                "real line 2\n"
+            ),
+        }
+        env._strip_state_sync_leak(result)
+        assert result["output"] == "real line 1\nreal line 2\n"
+
+    def test_mixed_export_formats(self):
+        """Mix of declare -x and export lines."""
+        env = _TestableEnv()
+        result = {
+            "output": (
+                'declare -x PATH="/usr/bin"\n'
+                'export HOME="/Users/test"\n'
+                "actual output\n"
+            ),
+        }
+        env._strip_state_sync_leak(result)
+        assert result["output"] == "actual output\n"
+
+    def test_no_leak_passes_through(self):
+        """Output with no leaked lines passes through unchanged."""
+        env = _TestableEnv()
+        original = "Hello World\nsecond line\n"
+        result = {"output": original}
+        env._strip_state_sync_leak(result)
+        assert result["output"] == original
+
+    def test_empty_output(self):
+        env = _TestableEnv()
+        result = {"output": ""}
+        env._strip_state_sync_leak(result)
+        assert result["output"] == ""
+
+    def test_missing_output_key(self):
+        env = _TestableEnv()
+        result = {}
+        env._strip_state_sync_leak(result)
+        # Should not crash, should default to empty
+        assert result.get("output", "") == ""
+
+    def test_declare_x_with_multiline_value(self):
+        """declare -x values can span multiple lines with escaped newlines."""
+        env = _TestableEnv()
+        result = {
+            "output": (
+                "declare -x MULTILINE=\"line1\\nline2\"\n"
+                "real output here\n"
+            ),
+        }
+        env._strip_state_sync_leak(result)
+        # The declare line is stripped; real output preserved.
+        # Note: declare -x multiline values use \\n within the same line,
+        # so each declare line is still a single physical line.
+        assert result["output"] == "real output here\n"
+
+    def test_declare_x_without_value(self):
+        """Some declare -x lines have no = (e.g., declare -x OLDPWD)."""
+        env = _TestableEnv()
+        result = {
+            "output": (
+                "declare -x OLDPWD\n"
+                "declare -x PATH=\"/usr/bin\"\n"
+                "real output\n"
+            ),
+        }
+        env._strip_state_sync_leak(result)
+        assert result["output"] == "real output\n"
+
+    def test_declare_fn_stripped(self):
+        """declare -f (function definitions) can also leak."""
+        env = _TestableEnv()
+        result = {
+            "output": (
+                "my_func ()\n"
+                "{\n"
+                "    echo hello\n"
+                "}\n"
+                "declare -f _my_helper\n"
+                "real output\n"
+            ),
+        }
+        # Function definitions are trickier — they span multiple lines.
+        # The simple line-based stripper handles only single-line patterns.
+        # Multi-line function definitions would need more advanced parsing.
+        # For now, just verify single-line declare -f is stripped.
+        env._strip_state_sync_leak(result)
+        assert "real output" in result["output"]
+        # declare -f lines are single-line and should be stripped
+        assert "declare -f" not in result["output"]
+
+    def test_alias_p_stripped(self):
+        """alias -p output (alias lines) can also leak."""
+        env = _TestableEnv()
+        result = {
+            "output": (
+                "alias ll='ls -la'\n"
+                "alias gs='git status'\n"
+                "real command output\n"
+            ),
+        }
+        env._strip_state_sync_leak(result)
+        # Aliases are stripped
+        assert result["output"] == "real command output\n"
+
+    def test_preserves_echo_with_declare_in_it(self):
+        """A real command output like 'declare -x' in a string is preserved
+        if it doesn't start at column zero."""
+        env = _TestableEnv()
+        result = {
+            "output": "The variable is declare -x formatted\n",
+        }
+        env._strip_state_sync_leak(result)
+        assert result["output"] == "The variable is declare -x formatted\n"
+
+
 class TestCwdMarker:
     def test_marker_contains_session_id(self):
         env = _TestableEnv()

@@ -644,11 +644,51 @@ class BaseEnvironment(ABC):
             pass
 
     # ------------------------------------------------------------------
+    # State-sync leak stripping (defense-in-depth for bug #15459)
+    # ------------------------------------------------------------------
+
+    # Patterns that indicate a leaked env/alias/function line.  These are
+    # only stripped when they appear at column 0 (start of line) so that
+    # legitimate command output mentioning "declare" or "export" mid-line
+    # is preserved.
+    _STATE_SYNC_LEAK_PATTERNS: tuple[str, ...] = (
+        "declare -x ",   # bash env var with value
+        "declare -f ",   # bash function definition
+        "export ",        # POSIX/zsh env var export
+        "alias ",         # alias -p output
+    )
+
+    @classmethod
+    def _strip_state_sync_leak(cls, result: dict) -> None:
+        """Remove leaked state-sync lines from command output in-place.
+
+        When ``export -p > file`` fails (permissions, missing dir, race
+        condition), the full environment dump leaks into stdout.  This
+        method strips those lines while preserving legitimate output.
+
+        Operates on ``result["output"]`` in-place; returns ``None``.
+        """
+        output = result.get("output")
+        if not output:
+            # Ensure the key exists even when empty/None
+            if "output" not in result:
+                result["output"] = ""
+            return
+
+        lines = output.split("\n")
+        stripped = [
+            line for line in lines
+            if not any(line.startswith(p) for p in cls._STATE_SYNC_LEAK_PATTERNS)
+        ]
+        result["output"] = "\n".join(stripped)
+
+    # ------------------------------------------------------------------
     # CWD extraction
     # ------------------------------------------------------------------
 
     def _update_cwd(self, result: dict):
         """Extract CWD from command output. Override for local file-based read."""
+        self._strip_state_sync_leak(result)
         self._extract_cwd_from_output(result)
 
     def _extract_cwd_from_output(self, result: dict):

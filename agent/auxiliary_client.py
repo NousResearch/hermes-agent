@@ -1481,9 +1481,7 @@ def _try_anthropic() -> Tuple[Optional[Any], Optional[str]]:
         return None, None
 
     pool_present, entry = _select_pool_entry("anthropic")
-    if pool_present:
-        if entry is None:
-            return None, None
+    if pool_present and entry is not None:
         token = _pool_runtime_api_key(entry)
     else:
         entry = None

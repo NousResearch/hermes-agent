@@ -683,6 +683,67 @@ class TestIsPaymentError:
         exc = Exception("connection reset")
         assert _is_payment_error(exc) is False
 
+    def test_zai_1311_subscription_plan_is_payment(self):
+        """z.ai returns HTTP 429 code 1311 when the plan lacks the model
+        (e.g. GLM-5V-Turbo on the coding plan).  Permanent — must route to
+        payment fallback, not transient rate-limit handling."""
+        exc = Exception(
+            "{'error': {'code': '1311', 'message': "
+            "'Your current subscription plan does not yet include access to GLM-5V-Turbo'}}"
+        )
+        exc.status_code = 429
+        assert _is_payment_error(exc) is True
+
+    def test_zai_1305_overloaded_is_not_payment(self):
+        """Transient overload must NOT be classified as payment — it will
+        recover, and misclassifying it skips retry/cooldown paths."""
+        exc = Exception(
+            "{'error': {'code': '1305', 'message': "
+            "'The service may be temporarily overloaded, please try again later'}}"
+        )
+        exc.status_code = 429
+        assert _is_payment_error(exc) is False
+
+
+class TestLog400Diag:
+    """_log_400_diag emits actionable diagnostics on HTTP 400 without ever
+    logging message content (image data URLs would bloat the log)."""
+
+    def test_ignored_on_non_400(self, caplog):
+        from agent.auxiliary_client import _log_400_diag
+        exc = Exception("bad request")
+        exc.status_code = 500
+        with caplog.at_level("WARNING"):
+            _log_400_diag(exc, "vision", "zai", "glm-5v-turbo", {"model": "x"})
+        assert not any("400 from" in r.message for r in caplog.records)
+
+    def test_logs_kwargs_keys_and_msg_shape_on_400(self, caplog):
+        from agent.auxiliary_client import _log_400_diag
+        exc = Exception("invalid parameter")
+        exc.status_code = 400
+        kwargs = {
+            "model": "glm-5v-turbo",
+            "messages": [{"role": "user", "content": [
+                {"type": "text", "text": "hi"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+            ]}],
+            "max_tokens": 2000,
+            "temperature": 0.1,
+            "timeout": 120,
+        }
+        with caplog.at_level("WARNING"):
+            _log_400_diag(exc, "vision", "zai", "glm-5v-turbo", kwargs)
+        msg = " ".join(r.message for r in caplog.records)
+        assert "400 from" in msg
+        assert "task=vision" in msg
+        assert "provider=zai" in msg
+        assert "model=glm-5v-turbo" in msg
+        assert "max_tokens" in msg and "messages" in msg
+        assert "user:[text,image_url]" in msg
+        # Must NOT log the data URL
+        assert "data:image" not in msg
+        assert "AAAA" not in msg
+
 
 class TestGetProviderChain:
     """_get_provider_chain() resolves functions at call time (testable)."""

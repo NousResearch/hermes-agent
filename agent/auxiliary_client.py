@@ -1309,9 +1309,69 @@ def _is_payment_error(exc: Exception) -> bool:
     if status in (402, 429, None):
         if any(kw in err_lower for kw in ("credits", "insufficient funds",
                                            "can only afford", "billing",
-                                           "payment required")):
+                                           "payment required",
+                                           # z.ai returns 429 code 1311 when
+                                           # the plan lacks access to the
+                                           # requested model (e.g. GLM-5V-Turbo
+                                           # on the coding plan).  Permanent,
+                                           # not transient — treat as billing
+                                           # so the payment-fallback chain
+                                           # picks a different backend instead
+                                           # of a useless cooldown.
+                                           "subscription plan",
+                                           "does not yet include",
+                                           "plan does not include")):
             return True
     return False
+
+
+def _message_content_shape(messages: list) -> str:
+    """Summarise message shape for 400-diagnostics without logging image bytes."""
+    if not messages:
+        return "empty"
+    parts = []
+    for m in messages:
+        role = m.get("role", "?") if isinstance(m, dict) else "?"
+        content = m.get("content") if isinstance(m, dict) else None
+        if isinstance(content, list):
+            block_types = [
+                b.get("type", "?") if isinstance(b, dict) else "?"
+                for b in content
+            ]
+            parts.append(f"{role}:[{','.join(block_types)}]")
+        elif isinstance(content, str):
+            parts.append(f"{role}:str({len(content)})")
+        else:
+            parts.append(f"{role}:{type(content).__name__}")
+    return " ".join(parts)
+
+
+def _log_400_diag(
+    exc: Exception,
+    task: Optional[str],
+    provider: Optional[str],
+    model: Optional[str],
+    kwargs: dict,
+) -> None:
+    """On HTTP 400, log request shape so the next regression is diagnosable.
+
+    Logs key names only — never message content (image data URLs would bloat
+    the log).  Quiet on non-400 errors.
+    """
+    status = getattr(exc, "status_code", None)
+    if status != 400:
+        return
+    try:
+        key_list = sorted(kwargs.keys())
+        shape = _message_content_shape(kwargs.get("messages") or [])
+        logger.warning(
+            "400 from %s task=%s provider=%s model=%s kwargs=%s msgs=%s err=%s",
+            getattr(exc, "__class__", type(exc)).__name__,
+            task or "call", provider, model, key_list, shape,
+            str(exc)[:300],
+        )
+    except Exception:
+        pass
 
 
 def _is_connection_error(exc: Exception) -> bool:
@@ -2957,6 +3017,7 @@ def call_llm(
         return _validate_llm_response(
             client.chat.completions.create(**kwargs), task)
     except Exception as first_err:
+        _log_400_diag(first_err, task, resolved_provider, final_model, kwargs)
         err_str = str(first_err)
         if "max_tokens" in err_str or "unsupported_parameter" in err_str:
             kwargs.pop("max_tokens", None)
@@ -3221,6 +3282,7 @@ async def async_call_llm(
         return _validate_llm_response(
             await client.chat.completions.create(**kwargs), task)
     except Exception as first_err:
+        _log_400_diag(first_err, task, resolved_provider, final_model, kwargs)
         err_str = str(first_err)
         if "max_tokens" in err_str or "unsupported_parameter" in err_str:
             kwargs.pop("max_tokens", None)

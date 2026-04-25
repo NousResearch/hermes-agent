@@ -1,3 +1,5 @@
+import { writeFileSync } from 'node:fs'
+
 import { NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { HOTKEYS } from '../../../content/hotkeys.js'
@@ -45,6 +47,24 @@ const DETAILS_USAGE =
   'usage: /details [hidden|collapsed|expanded|cycle]  or  /details <section> [hidden|collapsed|expanded|reset]'
 
 const DETAILS_SECTION_USAGE = 'usage: /details <section> [hidden|collapsed|expanded|reset]'
+
+const pad2 = (n: number): string => String(n).padStart(2, '0')
+
+const saveTimestamp = (d = new Date()): string =>
+  `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}_${pad2(d.getHours())}${pad2(
+    d.getMinutes()
+  )}${pad2(d.getSeconds())}`
+
+const serializableTranscript = (items: Msg[]) =>
+  items
+    .filter(m => m.role === 'user' || m.role === 'assistant' || m.role === 'tool')
+    .filter(m => m.text.trim() || m.thinking?.trim() || m.tools?.length)
+    .map(m => ({
+      role: m.role,
+      text: m.text,
+      ...(m.thinking ? { thinking: m.thinking } : {}),
+      ...(m.tools?.length ? { tools: m.tools } : {})
+    }))
 
 export const coreCommands: SlashCommand[] = [
   {
@@ -348,6 +368,40 @@ export const coreCommands: SlashCommand[] = [
       })
 
       ctx.transcript.page(lines.join('\n\n'), 'History')
+    }
+  },
+
+  {
+    help: 'save the current transcript to JSON',
+    name: 'save',
+    run: (_arg, ctx) => {
+      const messages = serializableTranscript(ctx.local.getHistoryItems())
+
+      if (!messages.length) {
+        return ctx.transcript.sys('no conversation yet')
+      }
+
+      const filename = `hermes_conversation_${saveTimestamp()}.json`
+
+      try {
+        writeFileSync(
+          filename,
+          `${JSON.stringify(
+            {
+              model: ctx.ui.info?.model ?? null,
+              saved_at: new Date().toISOString(),
+              session_id: ctx.sid,
+              messages
+            },
+            null,
+            2
+          )}\n`,
+          'utf8'
+        )
+        ctx.transcript.sys(`conversation saved to: ${filename}`)
+      } catch (error) {
+        ctx.transcript.sys(`failed to save: ${String(error)}`)
+      }
     }
   },
 

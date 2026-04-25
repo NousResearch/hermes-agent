@@ -1,3 +1,5 @@
+import { existsSync, readFileSync, unlinkSync } from 'node:fs'
+
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
@@ -285,6 +287,58 @@ describe('createSlashHandler', () => {
 
     createSlashHandler(ctx)('/history')
     expect(ctx.transcript.page).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('no conversation yet')
+  })
+
+  it('/save writes the current TUI transcript without using the slash worker', () => {
+    vi.useFakeTimers()
+    vi.setSystemTime(new Date(2026, 3, 25, 15, 4, 5))
+    const filename = 'hermes_conversation_20260425_150405.json'
+
+    try {
+      if (existsSync(filename)) {
+        unlinkSync(filename)
+      }
+
+      const ctx = buildCtx({
+        local: {
+          ...buildLocal(),
+          getHistoryItems: vi.fn(() => [
+            { role: 'system', text: 'intro' },
+            { role: 'user', text: 'hello' },
+            { role: 'assistant', text: 'hi there', tools: ['read_file'] },
+            { role: 'tool', text: 'tool output' }
+          ])
+        }
+      })
+
+      createSlashHandler(ctx)('/save')
+
+      expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(`conversation saved to: ${filename}`)
+
+      const saved = JSON.parse(readFileSync(filename, 'utf8'))
+
+      expect(saved.messages).toEqual([
+        { role: 'user', text: 'hello' },
+        { role: 'assistant', text: 'hi there', tools: ['read_file'] },
+        { role: 'tool', text: 'tool output' }
+      ])
+    } finally {
+      if (existsSync(filename)) {
+        unlinkSync(filename)
+      }
+
+      vi.useRealTimers()
+    }
+  })
+
+  it('/save reports empty state without touching the slash worker', () => {
+    const ctx = buildCtx()
+
+    createSlashHandler(ctx)('/save')
+
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
     expect(ctx.transcript.sys).toHaveBeenCalledWith('no conversation yet')
   })
 })

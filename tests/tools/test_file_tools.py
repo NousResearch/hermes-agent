@@ -361,4 +361,49 @@ class TestSearchHints:
         assert "offset=100" in raw
 
 
+# ---------------------------------------------------------------------------
+# PATCH_SCHEMA shape tests (issue #15524)
+# ---------------------------------------------------------------------------
 
+class TestPatchSchemaShape:
+    """PATCH_SCHEMA must advertise per-mode required params so strict models
+    (e.g. kimi-k2.x) don't silently omit old_string / new_string for replace
+    mode, or patch content for patch mode."""
+
+    def test_required_only_contains_mode(self):
+        # anyOf is incompatible with several providers (Anthropic, Fireworks,
+        # Kimi/Moonshot). The only safe approach is description-level guidance.
+        assert PATCH_SCHEMA["parameters"]["required"] == ["mode"]
+
+    def test_top_level_description_documents_replace_mode_required_params(self):
+        desc = PATCH_SCHEMA["description"]
+        assert "REQUIRED PARAMETERS: mode, path, old_string, new_string" in desc
+
+    def test_top_level_description_documents_patch_mode_required_params(self):
+        desc = PATCH_SCHEMA["description"]
+        assert "REQUIRED PARAMETERS: mode, patch" in desc
+
+    def test_path_property_advertises_required_for_replace(self):
+        desc = PATCH_SCHEMA["parameters"]["properties"]["path"]["description"]
+        assert "REQUIRED when mode='replace'" in desc
+
+    def test_old_string_property_advertises_required_for_replace(self):
+        desc = PATCH_SCHEMA["parameters"]["properties"]["old_string"]["description"]
+        assert "REQUIRED when mode='replace'" in desc
+
+    def test_new_string_property_advertises_required_for_replace(self):
+        desc = PATCH_SCHEMA["parameters"]["properties"]["new_string"]["description"]
+        assert "REQUIRED when mode='replace'" in desc
+
+    def test_patch_property_advertises_required_for_patch_mode(self):
+        desc = PATCH_SCHEMA["parameters"]["properties"]["patch"]["description"]
+        assert "REQUIRED when mode='patch'" in desc
+
+    def test_no_anyof_at_parameters_level(self):
+        assert "anyOf" not in PATCH_SCHEMA["parameters"]
+        assert "oneOf" not in PATCH_SCHEMA["parameters"]
+
+    def test_schema_is_provider_compatible_object(self):
+        params = PATCH_SCHEMA["parameters"]
+        assert params["type"] == "object"
+        assert isinstance(params["properties"], dict)

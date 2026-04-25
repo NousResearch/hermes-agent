@@ -344,7 +344,7 @@ def run_doctor(args):
                     )
 
             # Warn if model is set to a provider-prefixed name on a provider that doesn't use them
-            if default_model and "/" in default_model and canonical_provider and canonical_provider not in ("openrouter", "custom", "auto", "ai-gateway", "kilocode", "opencode-zen", "huggingface", "nous"):
+            if default_model and "/" in default_model and canonical_provider and canonical_provider not in ("openrouter", "custom", "auto", "ai-gateway", "kilocode", "opencode-zen", "huggingface", "nous", "lmstudio"):
                 check_warn(
                     f"model.default '{default_model}' uses a vendor/model slug but provider is '{provider_raw}'",
                     "(vendor-prefixed slugs belong to aggregators like openrouter)",

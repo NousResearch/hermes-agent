@@ -1245,14 +1245,20 @@ def resolve_runtime_provider(
     if pconfig and pconfig.auth_type == "api_key":
         creds = resolve_api_key_provider_credentials(provider)
         # Honour model.base_url from config.yaml when the configured provider
-        # matches this provider — mirrors the Anthropic path above.  Without
-        # this, users who set model.base_url to e.g. api.minimaxi.com/anthropic
-        # (China endpoint) still get the hardcoded api.minimax.io default (#6039).
+        # matches this provider, unless the provider-specific BASE_URL env var
+        # is set. That keeps temporary env overrides (e.g. LM_BASE_URL) in sync
+        # with picker-time probing while still preserving saved config URLs when
+        # no override is present.
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
         cfg_base_url = ""
         if cfg_provider == provider:
             cfg_base_url = (model_cfg.get("base_url") or "").strip().rstrip("/")
-        base_url = cfg_base_url or creds.get("base_url", "").rstrip("/")
+        env_base_url = ""
+        if pconfig.base_url_env_var:
+            env_base_url = os.getenv(pconfig.base_url_env_var, "").strip().rstrip("/")
+        base_url = creds.get("base_url", "").rstrip("/")
+        if cfg_base_url and not env_base_url:
+            base_url = cfg_base_url
         api_mode = "chat_completions"
         if provider == "copilot":
             api_mode = _copilot_runtime_api_mode(model_cfg, creds.get("api_key", ""))

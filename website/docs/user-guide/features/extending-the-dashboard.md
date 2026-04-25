@@ -1,7 +1,7 @@
 ---
 sidebar_position: 17
 title: "Extending the Dashboard"
-description: "Build themes and plugins for the Hermes web dashboard — palettes, typography, layouts, custom tabs, shell slots, and backend API routes"
+description: "Build themes and plugins for the Hermes web dashboard — palettes, typography, layouts, custom tabs, shell slots, page-scoped slots, and backend API routes"
 ---
 
 # Extending the Dashboard
@@ -9,7 +9,7 @@ description: "Build themes and plugins for the Hermes web dashboard — palettes
 The Hermes web dashboard (`hermes dashboard`) is built to be reskinned and extended without forking the codebase. Three layers are exposed:
 
 1. **Themes** — YAML files that repaint the dashboard's palette, typography, layout, and per-component chrome. Drop a file in `~/.hermes/dashboard-themes/`; it appears in the theme switcher.
-2. **UI plugins** — a directory with `manifest.json` + a JavaScript bundle that registers a tab, replaces a built-in page, or injects components into named shell slots.
+2. **UI plugins** — a directory with `manifest.json` + a JavaScript bundle that registers a tab, replaces a built-in page, augments one via page-scoped slots, or injects components into named shell slots.
 3. **Backend plugins** — a Python file inside that plugin directory that exposes a FastAPI `router`; routes are mounted under `/api/plugins/<name>/` and called from the plugin's UI.
 
 All three are **drop-in at runtime**: no repo clone, no `npm run build`, no patching the dashboard source. This page is the canonical reference for all three.
@@ -41,6 +41,7 @@ Themes and plugins are independent but synergistic. A theme can stand alone (jus
   - [The Plugin SDK](#the-plugin-sdk)
   - [Shell slots](#shell-slots)
   - [Replacing built-in pages (`tab.override`)](#replacing-built-in-pages-taboverride)
+  - [Augmenting built-in pages (page-scoped slots)](#augmenting-built-in-pages-page-scoped-slots)
   - [Slot-only plugins (`tab.hidden`)](#slot-only-plugins-tabhidden)
   - [Backend API routes](#backend-api-routes)
   - [Custom CSS per plugin](#custom-css-per-plugin)
@@ -626,6 +627,60 @@ With `override` set:
 - No nav tab is added for `tab.path` (the override is the point).
 
 Only one plugin can override a given path. If two plugins claim the same override, the first wins and the second is ignored with a dev-mode warning.
+
+If you only need to add a card or toolbar to an existing page without taking it over, use [page-scoped slots](#augmenting-built-in-pages-page-scoped-slots) instead.
+
+### Augmenting built-in pages (page-scoped slots)
+
+Full replacement via `tab.override` is heavy — your plugin now owns the entire page, including any future updates we ship to it. Most of the time you just want to add a banner, card, or toolbar to an existing page. That's what **page-scoped slots** are for.
+
+Every built-in page exposes `<page>:top` and `<page>:bottom` slots rendered at the top and bottom of its content area. Your plugin populates one by calling `registerSlot()` — the built-in page keeps working normally, and your component renders alongside it.
+
+Available slots: `sessions:*`, `analytics:*`, `logs:*`, `cron:*`, `skills:*`, `config:*`, `env:*`, `docs:*`, `chat:*` (each with `:top` and `:bottom`). See the full catalogue in [Shell slots → Slot catalogue](#slot-catalogue).
+
+Minimal example — pin a banner to the top of the Sessions page:
+
+```json
+// ~/.hermes/plugins/session-notes/dashboard/manifest.json
+{
+  "name": "session-notes",
+  "label": "Session Notes",
+  "tab": { "path": "/session-notes", "hidden": true },
+  "slots": ["sessions:top"],
+  "entry": "dist/index.js"
+}
+```
+
+```javascript
+// ~/.hermes/plugins/session-notes/dashboard/dist/index.js
+(function () {
+  const SDK = window.__HERMES_PLUGIN_SDK__;
+  const { React } = SDK;
+  const { Card, CardContent } = SDK.components;
+
+  function Banner() {
+    return React.createElement(Card, null,
+      React.createElement(CardContent, { className: "py-2 text-xs" },
+        "Remember to label important sessions before archiving."),
+    );
+  }
+
+  // Placeholder for the hidden tab.
+  window.__HERMES_PLUGINS__.register("session-notes", function () { return null; });
+
+  // The real work.
+  window.__HERMES_PLUGINS__.registerSlot("session-notes", "sessions:top", Banner);
+})();
+```
+
+Key points:
+
+- `tab.hidden: true` keeps the plugin out of the sidebar — it has no standalone page.
+- The `slots` manifest field is documentation only. The actual binding happens in the JS bundle via `registerSlot()`.
+- Multiple plugins can claim the same page-scoped slot. They render stacked in registration order.
+- Zero footprint when no plugin registers: the built-in page renders exactly as before.
+
+The bundled `example-dashboard` plugin ships a live demo that injects a banner into `sessions:top` — install it to see the pattern end-to-end.
 
 ### Slot-only plugins (`tab.hidden`)
 

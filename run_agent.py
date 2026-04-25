@@ -7249,6 +7249,8 @@ class AIAgent:
         MiniMax keeps dots (e.g. MiniMax-M2.7).
         OpenCode Go/Zen keeps dots for non-Claude models (e.g. minimax-m2.5-free).
         ZAI/Zhipu keeps dots (e.g. glm-4.7, glm-5.1).
+        Xiaomi/MiMo keeps dots in version strings (e.g. mimo-v2.5-pro); the
+        API rejects the hyphenated form with HTTP 400 (#15619).
         AWS Bedrock uses dotted inference-profile IDs
         (e.g. ``global.anthropic.claude-opus-4-7``,
         ``us.anthropic.claude-sonnet-4-5-20250929-v1:0``) and rejects
@@ -7259,7 +7261,7 @@ class AIAgent:
         if (getattr(self, "provider", "") or "").lower() in {
             "alibaba", "minimax", "minimax-cn",
             "opencode-go", "opencode-zen",
-            "zai", "bedrock",
+            "zai", "bedrock", "xiaomi",
         }:
             return True
         base = (getattr(self, "base_url", "") or "").lower()
@@ -7272,6 +7274,9 @@ class AIAgent:
             # AWS Bedrock runtime endpoints — defense-in-depth when
             # ``provider`` is unset but ``base_url`` still names Bedrock.
             or "bedrock-runtime." in base
+            # Xiaomi MiMo models use dots in version strings (mimo-v2.5-pro)
+            # and reject the hyphenated form with HTTP 400.
+            or "xiaomimimo.com" in base
         )
 
     def _is_qwen_portal(self) -> bool:

@@ -157,16 +157,19 @@ class TestChannelSessionScopeShared:
 
     @pytest.mark.asyncio
     async def test_top_level_reply_to_id_stays_none_when_shared(self, adapter):
-        """The outbound-side ``reply_to_message_id`` check already
-        uses ``thread_ts != ts`` to decide whether to thread the
-        response.  When ``thread_ts`` is None, the check evaluates
-        ``None != ts`` → True → reply_to_message_id IS set.  That would
-        thread the reply, which is the opposite of what
-        reply_in_thread=false means for top-level messages.
+        """In shared-session mode (``reply_in_thread=false``), top-level
+        channel messages are normalised to ``thread_ts = None``.  The
+        outbound check on the ``MessageEvent`` is:
 
-        The fix ensures reply_to_message_id is None for top-level
-        messages in shared-session mode so the bot posts a fresh
-        channel message (not a threaded reply).
+            reply_to_message_id = thread_ts if thread_ts != ts else None
+
+        With ``thread_ts = None``, ``None != ts`` is True, so the
+        expression evaluates to ``thread_ts`` itself — which IS
+        ``None``.  That leaves ``reply_to_message_id`` as ``None`` and
+        the bot posts a fresh un-threaded channel reply, matching what
+        ``reply_in_thread=false`` means end-to-end.  This regression
+        test locks in that invariant (Copilot noted the pre-fix
+        docstring had the logic reversed).
         """
         adapter.config.extra["reply_in_thread"] = False
         event = _channel_event(

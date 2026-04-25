@@ -33,6 +33,7 @@ from typing import Any, Dict, List, Optional
 
 from toolsets import TOOLSETS
 from tools import file_state
+from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import base_url_hostname, is_truthy_value
 
 
@@ -46,6 +47,64 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
         "execute_code",  # children should reason step-by-step, not write scripts
     ]
 )
+
+
+# ---------------------------------------------------------------------------
+# Subagent approval callbacks
+# ---------------------------------------------------------------------------
+# Subagents run inside a ThreadPoolExecutor worker. The CLI's interactive
+# approval callback is stored in tools/terminal_tool.py's threading.local(),
+# so worker threads do NOT inherit it. Without a callback,
+# prompt_dangerous_approval() falls back to input() from the worker thread,
+# which deadlocks against the parent's prompt_toolkit TUI that owns stdin.
+#
+# Fix: install a non-interactive callback into every subagent worker thread
+# via ThreadPoolExecutor(initializer=_set_subagent_approval_cb, initargs=(cb,)).
+# The callback is chosen by the `delegation.subagent_auto_approve` config:
+#   false (default) → _subagent_auto_deny (safe; matches leaf tool blocklist)
+#   true            → _subagent_auto_approve (opt-in YOLO for cron/batch)
+# Both emit a logger.warning for audit; gateway sessions are unaffected
+# because they resolve approvals via tools/approval.py's per-session queue,
+# not through these TLS callbacks.
+def _subagent_auto_deny(command: str, description: str, **kwargs) -> str:
+    """Auto-deny dangerous commands in subagent threads (safe default).
+
+    Returns 'deny' so the subagent sees a refusal it can recover from, and
+    never calls input() (which would deadlock the parent TUI).
+    """
+    logger.warning(
+        "Subagent auto-denied dangerous command: %s (%s). "
+        "Set delegation.subagent_auto_approve: true to allow.",
+        command, description,
+    )
+    return "deny"
+
+
+def _subagent_auto_approve(command: str, description: str, **kwargs) -> str:
+    """Auto-approve dangerous commands in subagent threads (opt-in YOLO).
+
+    Only installed when delegation.subagent_auto_approve=true. Returns 'once'
+    so the subagent proceeds without blocking the parent UI.
+    """
+    logger.warning(
+        "Subagent auto-approved dangerous command: %s (%s)",
+        command, description,
+    )
+    return "once"
+
+
+def _get_subagent_approval_callback():
+    """Return the callback to install into subagent worker threads.
+
+    Config key: delegation.subagent_auto_approve (bool, default False).
+    Reads via the same _load_config() path as the rest of delegate_task so
+    priority is config.yaml > (no env override for this knob) > default.
+    """
+    cfg = _load_config()
+    val = cfg.get("subagent_auto_approve", False)
+    if is_truthy_value(val):
+        return _subagent_auto_approve
+    return _subagent_auto_deny
 
 # Build a description fragment listing toolsets available for subagents.
 # Excludes toolsets where ALL tools are blocked, composite/platform toolsets
@@ -1344,7 +1403,15 @@ def _run_single_child(
         # Run child with a hard timeout to prevent indefinite blocking
         # when the child's API call or tool-level HTTP request hangs.
         child_timeout = _get_child_timeout()
-        _timeout_executor = ThreadPoolExecutor(max_workers=1)
+        _timeout_executor = ThreadPoolExecutor(
+            max_workers=1,
+            # Install a non-interactive approval callback in the worker thread
+            # so dangerous-command prompts from the subagent don't fall back to
+            # input() and deadlock the parent's prompt_toolkit TUI.
+            # Callback (deny vs approve) is governed by delegation.subagent_auto_approve.
+            initializer=_set_subagent_approval_cb,
+            initargs=(_get_subagent_approval_callback(),),
+        )
         # Capture the worker thread so the timeout diagnostic can dump its
         # Python stack (see #14726 — 0-API-call hangs are opaque without it).
         _worker_thread_holder: Dict[str, Optional[threading.Thread]] = {"t": None}

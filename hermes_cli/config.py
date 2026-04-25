@@ -783,6 +783,15 @@ DEFAULT_CONFIG = {
         # warning log if out of range.
         "max_spawn_depth": 1,        # depth cap (1 = flat [default], 2 = orchestrator→leaf, 3 = three-level)
         "orchestrator_enabled": True,  # kill switch for role="orchestrator"
+        # When a subagent hits a dangerous-command approval prompt, the parent's
+        # prompt_toolkit TUI owns stdin — a thread-local input() call from the
+        # subagent worker would deadlock the parent UI. To avoid the deadlock,
+        # subagent threads ALWAYS resolve approvals non-interactively:
+        #   false (default) → auto-deny with a logger.warning audit line (safe)
+        #   true             → auto-approve "once" with a logger.warning audit line
+        # Flip to true only if you trust delegated work to run dangerous cmds
+        # without human review (cron pipelines, batch automation, etc.).
+        "subagent_auto_approve": False,
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts

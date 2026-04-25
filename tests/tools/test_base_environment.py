@@ -30,7 +30,7 @@ class TestWrapCommand:
         wrapped = env._wrap_command("echo hello", "/tmp")
 
         assert "source" in wrapped
-        assert "cd /tmp" in wrapped or "cd '/tmp'" in wrapped
+        assert "cd -- /tmp" in wrapped or "cd -- '/tmp'" in wrapped
         assert "eval 'echo hello'" in wrapped
         assert "__hermes_ec=$?" in wrapped
         assert "export -p >" in wrapped
@@ -57,24 +57,31 @@ class TestWrapCommand:
         env._snapshot_ready = True
         wrapped = env._wrap_command("ls", "~")
 
-        assert "cd ~" in wrapped
-        assert "cd '~'" not in wrapped
+        assert "cd -- ~" in wrapped
+        assert "cd -- '~'" not in wrapped
 
     def test_tilde_subpath_with_spaces_uses_home_and_quotes_suffix(self):
         env = _TestableEnv()
         env._snapshot_ready = True
         wrapped = env._wrap_command("ls", "~/my repo")
 
-        assert "cd $HOME/'my repo'" in wrapped
-        assert "cd ~/my repo" not in wrapped
+        assert "cd -- $HOME/'my repo'" in wrapped
+        assert "cd -- ~/my repo" not in wrapped
 
     def test_tilde_slash_maps_to_home(self):
         env = _TestableEnv()
         env._snapshot_ready = True
         wrapped = env._wrap_command("ls", "~/")
 
-        assert "cd $HOME" in wrapped
-        assert "cd ~/" not in wrapped
+        assert "cd -- $HOME" in wrapped
+        assert "cd -- ~/" not in wrapped
+
+    def test_hyphen_prefixed_workdir_is_passed_after_double_dash(self):
+        env = _TestableEnv()
+        env._snapshot_ready = True
+        wrapped = env._wrap_command("pwd", "-demo")
+
+        assert "builtin cd -- -demo || exit 126" in wrapped
 
     def test_cd_failure_exit_126(self):
         env = _TestableEnv()

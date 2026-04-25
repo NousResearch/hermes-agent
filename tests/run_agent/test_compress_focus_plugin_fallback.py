@@ -31,7 +31,6 @@ def _make_agent_with_engine(engine):
     agent._vprint = lambda *a, **kw: None
     agent._last_flushed_db_idx = 0
     # Stub the few AIAgent methods _compress_context uses.
-    agent.flush_memories = lambda *a, **kw: None
     agent._invalidate_system_prompt = lambda *a, **kw: None
     agent._build_system_prompt = lambda *a, **kw: "new-system-prompt"
     agent.commit_memory_session = lambda *a, **kw: None

@@ -1,7 +1,7 @@
 """Regression tests for the universal "unsupported temperature" retry in
 ``agent.auxiliary_client``.
 
-Auxiliary callers (``flush_memories``, context compression, session search,
+Auxiliary callers (context compression, session search,
 web extract summarisation, etc.) hardcode ``temperature=0.3`` for historical
 reasons. Several provider/model combinations reject ``temperature`` with a
 400:
@@ -100,7 +100,7 @@ class TestCallLlmUnsupportedTemperatureRetry:
                   side_effect=lambda resp, _task: resp),
         ):
             result = call_llm(
-                task="flush_memories",
+                task="compression",
                 messages=[{"role": "user", "content": "remember this"}],
                 temperature=0.3,
                 max_tokens=500,
@@ -136,7 +136,7 @@ class TestCallLlmUnsupportedTemperatureRetry:
         ):
             with pytest.raises(RuntimeError, match="Invalid value"):
                 call_llm(
-                    task="flush_memories",
+                    task="compression",
                     messages=[{"role": "user", "content": "x"}],
                     temperature=0.3,
                     max_tokens=500,
@@ -166,7 +166,7 @@ class TestCallLlmUnsupportedTemperatureRetry:
         ):
             with pytest.raises(RuntimeError):
                 call_llm(
-                    task="flush_memories",
+                    task="compression",
                     messages=[{"role": "user", "content": "x"}],
                     temperature=None,  # explicit: no temperature sent
                     max_tokens=500,

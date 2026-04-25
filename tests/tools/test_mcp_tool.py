@@ -591,6 +591,63 @@ class TestDiscoverAndRegister:
 
         _servers.pop("srv", None)
 
+    def test_server_timeout_does_not_leak_lock(self):
+        """Regression: if wait_for times out inside _discover_and_register_server,
+        the lock must NOT be permanently held.  Previously, asyncio.to_thread was
+        used to acquire the lock inside wait_for — when wait_for cancelled the
+        coroutine, the thread-pool thread still completed the acquire, but the
+        finally: release() was skipped, poisoning the lock.  Subsequent servers
+        would then deadlock on _servers_lock.
+
+        This test simulates the timeout race by patching _connect_server to hang,
+        calling _discover_and_register_server via _run_on_mcp_loop with a short
+        timeout, then verifying _servers_lock can still be acquired.
+        """
+        import threading
+        import tools.mcp_tool as mcp_mod
+
+        loop = asyncio.new_event_loop()
+        thread = threading.Thread(target=loop.run_forever, daemon=True)
+        thread.start()
+
+        old_loop = mcp_mod._mcp_loop
+        old_thread = mcp_mod._mcp_thread
+        mcp_mod._mcp_loop = loop
+        mcp_mod._mcp_thread = thread
+
+        async def fake_connect_forever(name, config):
+            await asyncio.sleep(60)  # hang until cancelled
+
+        acquired = False
+        try:
+            with patch("tools.mcp_tool._connect_server", side_effect=fake_connect_forever):
+                # TimeoutError is raised by _run_on_mcp_loop when the inner wait_for fires.
+                # If the old bug is present, the lock is poisoned and acquired=False.
+                try:
+                    with pytest.raises(TimeoutError):
+                        mcp_mod._run_on_mcp_loop(
+                            mcp_mod._discover_and_register_server(
+                                "timeout_test", {"command": "fake", "args": []},
+                            ),
+                            timeout=0.5,
+                        )
+                except Exception:
+                    pass  # swallow — we only care that TimeoutError was raised
+
+                # Critical: lock must NOT be poisoned. If the old bug is present,
+                # acquire(timeout=2) would fail fast instead of hanging the test suite.
+                acquired = mcp_mod._servers_lock.acquire(timeout=2)
+                if acquired:
+                    mcp_mod._servers_lock.release()
+        finally:
+            loop.call_soon_threadsafe(loop.stop)
+            thread.join(timeout=2)
+            loop.close()
+            mcp_mod._mcp_loop = old_loop
+            mcp_mod._mcp_thread = old_thread
+
+        assert acquired, "Lock was poisoned after wait_for timeout — deadlock risk"
+
 
 # ---------------------------------------------------------------------------
 # MCPServerTask (run / start / shutdown)

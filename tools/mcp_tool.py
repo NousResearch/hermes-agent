@@ -68,8 +68,10 @@ Thread safety:
     _run_on_mcp_loop releases _lock before scheduling the coroutine, so the
     event loop thread never races for _lock — only for _servers_lock.
     All sync-reader paths use `with _servers_lock:` (blocking, on caller thread).
-    Both async-writer paths use `await asyncio.to_thread(_servers_lock.acquire)`
-    (non-blocking on event loop) then `try/finally` to release.
+    _discover_and_register_server uses synchronous _servers_lock.acquire() directly
+    (safe: no await between acquire and release — wait_for cancellation cannot interrupt it).
+    _shutdown uses `await asyncio.to_thread(_servers_lock.acquire)` (non-blocking on event
+    loop, and safe there: no wait_for inside _shutdown to inject CancelledError).
     _stdio_pids is protected by _lock (brief sync writes in _run_stdio and
     _kill_orphaned_mcp_children, which runs after the event loop has stopped).
 """
@@ -2683,10 +2685,13 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
         _connect_server(name, config),
         timeout=connect_timeout,
     )
-    # Use asyncio.to_thread so the threading.Lock acquisition does not
-    # block the event loop.  The lock is held only for the dict write —
-    # no await points between acquire and release.
-    await asyncio.to_thread(_servers_lock.acquire)
+    # Synchronous acquire is safe here: there are no await points between
+    # acquire and release (only a dict write), so the event loop cannot be
+    # cancelled mid-lock.  Using asyncio.to_thread with a concurrent
+    # asyncio.wait_for(timeout) creates a race where the wait_for timeout
+    # cancels the coroutine but the thread-pool thread still completes the
+    # lock acquisition, causing release() to be skipped and poisoning the lock.
+    _servers_lock.acquire()
     try:
         _servers[name] = server
     finally:

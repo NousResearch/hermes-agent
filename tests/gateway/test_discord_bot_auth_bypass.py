@@ -224,3 +224,26 @@ def test_discord_role_bypass_does_not_leak_to_other_platforms(monkeypatch):
         user_id="999888777",
     )
     assert runner._is_user_authorized(telegram_user) is False
+
+
+def test_discord_role_bypass_does_not_authorize_DMs(monkeypatch):
+    """DISCORD_ALLOWED_ROLES is a guild/channel concept — roles are observed
+    on guild members, not on direct messages. A role-only setup must NOT
+    silently authorize DMs from any role-bearing server member; DMs should
+    fall through to explicit user allowlist / pairing store.
+    """
+    runner = _make_bare_runner()
+
+    monkeypatch.setenv("DISCORD_ALLOWED_ROLES", "1493705176387948674")
+    monkeypatch.delenv("DISCORD_ALLOWED_USERS", raising=False)
+    monkeypatch.delenv("DISCORD_ALLOW_BOTS", raising=False)
+
+    dm_source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="123",
+        chat_type="dm",
+        user_id="999888777",
+        user_name="SomeHuman",
+        is_bot=False,
+    )
+    assert runner._is_user_authorized(dm_source) is False

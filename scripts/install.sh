@@ -29,9 +29,24 @@ BOLD='\033[1m'
 REPO_URL_SSH="git@github.com:NousResearch/hermes-agent.git"
 REPO_URL_HTTPS="https://github.com/NousResearch/hermes-agent.git"
 HERMES_HOME="${HERMES_HOME:-$HOME/.hermes}"
-INSTALL_DIR="${HERMES_INSTALL_DIR:-$HERMES_HOME/hermes-agent}"
+# INSTALL_DIR is resolved AFTER arg parsing and OS detection so we can pick an
+# FHS-style layout for root installs.  Track whether the user gave us an
+# explicit directory — if so we never override it.
+if [ -n "${HERMES_INSTALL_DIR:-}" ]; then
+    INSTALL_DIR="$HERMES_INSTALL_DIR"
+    INSTALL_DIR_EXPLICIT=true
+else
+    INSTALL_DIR=""
+    INSTALL_DIR_EXPLICIT=false
+fi
 PYTHON_VERSION="3.11"
 NODE_VERSION="22"
+
+# FHS-style root install layout (set by resolve_install_layout when applicable):
+#   code at /usr/local/lib/hermes-agent, command at /usr/local/bin/hermes,
+#   data still at /root/.hermes (HERMES_HOME).  Matches Claude Code / Codex CLI
+#   and keeps Docker bind-mounted /root/ volumes lean.
+ROOT_FHS_LAYOUT=false
 
 # Options
 USE_VENV=true
@@ -64,6 +79,7 @@ while [[ $# -gt 0 ]]; do
             ;;
         --dir)
             INSTALL_DIR="$2"
+            INSTALL_DIR_EXPLICIT=true
             shift 2
             ;;
         --hermes-home)
@@ -79,9 +95,20 @@ while [[ $# -gt 0 ]]; do
             echo "  --no-venv      Don't create virtual environment"
             echo "  --skip-setup   Skip interactive setup wizard"
             echo "  --branch NAME  Git branch to install (default: main)"
-            echo "  --dir PATH     Installation directory (default: ~/.hermes/hermes-agent)"
+            echo "  --dir PATH     Installation directory"
+            echo "                   default (non-root):  ~/.hermes/hermes-agent"
+            echo "                   default (root, Linux): /usr/local/lib/hermes-agent"
             echo "  --hermes-home PATH  Data directory (default: ~/.hermes, or \$HERMES_HOME)"
             echo "  -h, --help     Show this help"
+            echo ""
+            echo "Notes:"
+            echo "  When running as root on Linux, Hermes installs the code under"
+            echo "  /usr/local/lib/hermes-agent and links the command into"
+            echo "  /usr/local/bin/hermes (FHS layout — matches Claude Code / Codex CLI)."
+            echo "  Data, config, sessions, and logs still live in \$HERMES_HOME"
+            echo "  (default /root/.hermes).  This keeps Docker bind-mounted volumes"
+            echo "  small and ensures the command is on PATH for all shells."
+            echo "  Existing installs at \$HERMES_HOME/hermes-agent are preserved in-place."
             exit 0
             ;;
         *)
@@ -163,9 +190,60 @@ is_termux() {
     [ -n "${TERMUX_VERSION:-}" ] || [[ "${PREFIX:-}" == *"com.termux/files/usr"* ]]
 }
 
+# Decide where the repo checkout + venv live, and where the `hermes` command
+# symlink goes.  Called after detect_os so $OS/$DISTRO are known.
+#
+# Defaults:
+#   - Non-root, any OS:       INSTALL_DIR = $HERMES_HOME/hermes-agent
+#                             command link in $HOME/.local/bin
+#   - Termux (any uid):       INSTALL_DIR = $HERMES_HOME/hermes-agent
+#                             command link in $PREFIX/bin (already on PATH)
+#   - Root on Linux (new):    INSTALL_DIR = /usr/local/lib/hermes-agent
+#                             command link in /usr/local/bin
+#                             (unless a legacy install already exists at
+#                              $HERMES_HOME/hermes-agent — then preserve it)
+#
+# Always no-op when the user set --dir or $HERMES_INSTALL_DIR.
+resolve_install_layout() {
+    if [ "$INSTALL_DIR_EXPLICIT" = true ]; then
+        log_info "Install directory: $INSTALL_DIR (explicit)"
+        return 0
+    fi
+
+    # Termux: package manager manages /data/data/..., keep code in HERMES_HOME.
+    if is_termux; then
+        INSTALL_DIR="$HERMES_HOME/hermes-agent"
+        return 0
+    fi
+
+    # Root on Linux: prefer FHS layout unless a legacy install already exists.
+    # macOS root installs keep the legacy layout because /usr/local/ on macOS
+    # is Homebrew territory and we don't want to fight that.
+    if [ "$OS" = "linux" ] && [ "$(id -u)" -eq 0 ]; then
+        if [ -d "$HERMES_HOME/hermes-agent/.git" ]; then
+            INSTALL_DIR="$HERMES_HOME/hermes-agent"
+            log_info "Existing install detected at $INSTALL_DIR — keeping legacy layout"
+            log_info "  (new root installs use /usr/local/lib/hermes-agent)"
+            return 0
+        fi
+        INSTALL_DIR="/usr/local/lib/hermes-agent"
+        ROOT_FHS_LAYOUT=true
+        log_info "Root install on Linux — using FHS layout"
+        log_info "  Code:    $INSTALL_DIR"
+        log_info "  Command: /usr/local/bin/hermes"
+        log_info "  Data:    $HERMES_HOME (unchanged)"
+        return 0
+    fi
+
+    # Default: non-root, non-Termux → legacy user-scoped layout.
+    INSTALL_DIR="$HERMES_HOME/hermes-agent"
+}
+
 get_command_link_dir() {
     if is_termux && [ -n "${PREFIX:-}" ]; then
         echo "$PREFIX/bin"
+    elif [ "$ROOT_FHS_LAYOUT" = true ]; then
+        echo "/usr/local/bin"
     else
         echo "$HOME/.local/bin"
     fi
@@ -174,6 +252,8 @@ get_command_link_dir() {
 get_command_link_display_dir() {
     if is_termux && [ -n "${PREFIX:-}" ]; then
         echo '$PREFIX/bin'
+    elif [ "$ROOT_FHS_LAYOUT" = true ]; then
+        echo '/usr/local/bin'
     else
         echo '~/.local/bin'
     fi
@@ -975,6 +1055,14 @@ setup_path() {
         return 0
     fi
 
+    # FHS layout: /usr/local/bin is on PATH for every standard shell, nothing to inject.
+    if [ "$ROOT_FHS_LAYOUT" = true ]; then
+        export PATH="$command_link_dir:$PATH"
+        log_info "/usr/local/bin is already on PATH for all shells"
+        log_success "hermes command ready"
+        return 0
+    fi
+
     # Check if ~/.local/bin is on PATH; if not, add it to shell config.
     # Detect the user's actual login shell (not the shell running this script,
     # which is always bash when piped from curl).
@@ -1339,12 +1427,12 @@ print_success() {
     echo ""
 
     # Show file locations
-    echo -e "${CYAN}${BOLD}📁 Your files (all in ~/.hermes/):${NC}"
+    echo -e "${CYAN}${BOLD}📁 Your files:${NC}"
     echo ""
-    echo -e "   ${YELLOW}Config:${NC}    ~/.hermes/config.yaml"
-    echo -e "   ${YELLOW}API Keys:${NC}  ~/.hermes/.env"
-    echo -e "   ${YELLOW}Data:${NC}      ~/.hermes/cron/, sessions/, logs/"
-    echo -e "   ${YELLOW}Code:${NC}      ~/.hermes/hermes-agent/"
+    echo -e "   ${YELLOW}Config:${NC}    $HERMES_HOME/config.yaml"
+    echo -e "   ${YELLOW}API Keys:${NC}  $HERMES_HOME/.env"
+    echo -e "   ${YELLOW}Data:${NC}      $HERMES_HOME/cron/, sessions/, logs/"
+    echo -e "   ${YELLOW}Code:${NC}      $INSTALL_DIR"
     echo ""
 
     echo -e "${CYAN}─────────────────────────────────────────────────────────${NC}"
@@ -1363,6 +1451,9 @@ print_success() {
     echo ""
     if [ "$DISTRO" = "termux" ]; then
         echo -e "${YELLOW}⚡ 'hermes' was linked into $(get_command_link_display_dir), which is already on PATH in Termux.${NC}"
+        echo ""
+    elif [ "$ROOT_FHS_LAYOUT" = true ]; then
+        echo -e "${YELLOW}⚡ 'hermes' was linked into /usr/local/bin and is ready to use — no shell reload needed.${NC}"
         echo ""
     else
         echo -e "${YELLOW}⚡ Reload your shell to use 'hermes' command:${NC}"
@@ -1415,6 +1506,7 @@ main() {
     print_banner
 
     detect_os
+    resolve_install_layout
     install_uv
     check_python
     check_git

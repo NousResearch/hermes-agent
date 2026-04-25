@@ -934,8 +934,12 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     slack_token = os.getenv("SLACK_BOT_TOKEN")
     if slack_token:
         if Platform.SLACK not in config.platforms:
+            # No yaml config for Slack — env-only setup, enable it
             config.platforms[Platform.SLACK] = PlatformConfig()
-        config.platforms[Platform.SLACK].enabled = True
+            config.platforms[Platform.SLACK].enabled = True
+        # If yaml config exists, respect its enabled flag (don't override
+        # explicit enabled: false). Token is still stored so skills that
+        # send Slack messages can use it without activating the gateway adapter.
         config.platforms[Platform.SLACK].token = slack_token
     slack_home = os.getenv("SLACK_HOME_CHANNEL")
     if slack_home and Platform.SLACK in config.platforms:

@@ -13438,9 +13438,22 @@ class AIAgent:
                             m.get("role") == "tool"
                             for m in messages[-5:]  # check recent messages
                         )
+                        # Detect Qwen3/Ollama-style in-content thinking blocks.
+                        # Ollama puts <think> in the content field (not in
+                        # reasoning_content), so _has_structured below would
+                        # miss it.  We check here so thinking-only responses
+                        # after tool calls route to prefill instead of nudge.
+                        _has_inline_thinking = bool(
+                            re.search(
+                                r'<think>|<thinking>|<reasoning>',
+                                final_response or "",
+                                re.IGNORECASE,
+                            )
+                        )
                         if (
                             _prior_was_tool
                             and not getattr(self, "_post_tool_empty_retried", False)
+                            and not _has_inline_thinking  # thinking model still working — let prefill handle
                         ):
                             self._post_tool_empty_retried = True
                             # Clear stale narration so it doesn't resurface
@@ -13480,10 +13493,13 @@ class AIAgent:
                         # continue — the model will see its own reasoning
                         # on the next turn and produce the text portion.
                         # Inspired by clawdbot's "incomplete-text" recovery.
+                        # Also covers Qwen3/Ollama in-content <think> blocks
+                        # (detected above as _has_inline_thinking).
                         _has_structured = bool(
                             getattr(assistant_message, "reasoning", None)
                             or getattr(assistant_message, "reasoning_content", None)
                             or getattr(assistant_message, "reasoning_details", None)
+                            or _has_inline_thinking
                         )
                         if _has_structured and self._thinking_prefill_retries < 2:
                             self._thinking_prefill_retries += 1

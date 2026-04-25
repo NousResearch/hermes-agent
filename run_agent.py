@@ -10528,6 +10528,28 @@ class AIAgent:
                 elif hasattr(self, "_codex_incomplete_retries"):
                     self._codex_incomplete_retries = 0
                 
+                # Fallback: extract tool calls from content text when the API
+                # provider didn't parse them into structured tool_calls.
+                # This handles DeepSeek-V4 DSML format (issue #15453) where
+                # tool calls appear as raw DSML tags in the response content.
+                if not assistant_message.tool_calls:
+                    _content_text = getattr(assistant_message, "content", None) or ""
+                    if _content_text and ("<｜DSML｜" in _content_text or "< | DSML |" in _content_text):
+                        try:
+                            from environments.tool_call_parsers import get_parser as _get_tc_parser
+                            _dsml_parser = _get_tc_parser("deepseek_v4")
+                            _parsed_content, _parsed_tc = _dsml_parser.parse(_content_text)
+                            if _parsed_tc:
+                                assistant_message.tool_calls = _parsed_tc
+                                if _parsed_content:
+                                    assistant_message.content = _parsed_content
+                                logger.info(
+                                    "Extracted %d DSML tool call(s) from content text",
+                                    len(_parsed_tc),
+                                )
+                        except Exception as _dsml_err:
+                            logger.debug("DSML content-based tool call extraction failed: %s", _dsml_err)
+
                 # Check for tool calls
                 if assistant_message.tool_calls:
                     if not self.quiet_mode:

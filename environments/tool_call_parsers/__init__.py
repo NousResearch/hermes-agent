@@ -114,6 +114,7 @@ from environments.tool_call_parsers.llama_parser import LlamaToolCallParser  # n
 from environments.tool_call_parsers.qwen_parser import QwenToolCallParser  # noqa: E402, F401
 from environments.tool_call_parsers.deepseek_v3_parser import DeepSeekV3ToolCallParser  # noqa: E402, F401
 from environments.tool_call_parsers.deepseek_v3_1_parser import DeepSeekV31ToolCallParser  # noqa: E402, F401
+from environments.tool_call_parsers.deepseek_v4_parser import DeepSeekV4ToolCallParser  # noqa: E402, F401
 from environments.tool_call_parsers.kimi_k2_parser import KimiK2ToolCallParser  # noqa: E402, F401
 from environments.tool_call_parsers.glm45_parser import Glm45ToolCallParser  # noqa: E402, F401
 from environments.tool_call_parsers.glm47_parser import Glm47ToolCallParser  # noqa: E402, F401

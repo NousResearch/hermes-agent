@@ -316,11 +316,18 @@ def run_doctor(args):
                 from hermes_cli.providers import (
                     normalize_provider as _normalize_catalog_provider,
                     resolve_provider_full as _resolve_provider_full,
+                    ALIASES as _PROVIDER_ALIASES,
                 )
+                # ALIASES values include virtual canonicals like "local" and
+                # "lmstudio" that aren't in PROVIDER_REGISTRY but are valid
+                # configuration values (the config docstring documents
+                # `provider: "lmstudio"` as the LM Studio example).
+                known_providers |= set(_PROVIDER_ALIASES.values())
             except Exception:
                 _compatible_custom_providers = None
                 _normalize_catalog_provider = None
                 _resolve_provider_full = None
+                _PROVIDER_ALIASES = None
 
             custom_providers = []
             if _compatible_custom_providers is not None:
@@ -367,7 +374,16 @@ def run_doctor(args):
                 and provider not in ("auto", "custom")
             ):
                 provider_def = _resolve_provider_full(provider, user_providers, custom_providers)
-                catalog_provider = provider_def.id if provider_def is not None else None
+                if provider_def is not None:
+                    catalog_provider = provider_def.id
+                elif _normalize_catalog_provider is not None:
+                    # Honor providers.py ALIASES even when resolve_provider_full
+                    # returns None for virtual canonicals (e.g. "ollama" →
+                    # "custom", "vllm" → "local"). Without this fallback, the
+                    # ALIASES table is shadowed by doctor's stricter check.
+                    catalog_provider = _normalize_catalog_provider(provider)
+                else:
+                    catalog_provider = None
                 if catalog_provider is not None:
                     provider_ids_to_accept.add(catalog_provider)
 

@@ -289,6 +289,55 @@ def test_run_doctor_termux_treats_docker_and_browser_warnings_as_expected(monkey
     assert "docker not found (optional)" not in out
 
 
+@pytest.mark.parametrize("alias,canonical", [
+    ("ollama", "custom"),
+    ("lmstudio", "lmstudio"),
+    ("vllm", "local"),
+    ("llamacpp", "local"),
+])
+def test_run_doctor_accepts_local_provider_aliases(monkeypatch, tmp_path, alias, canonical):
+    """providers.py ALIASES maps bare local-server names to virtual canonicals
+    ("ollama" → "custom", etc.). The config docstring documents these aliases as
+    user-facing (`provider: "lmstudio"` is shown as the LM Studio example).
+    Doctor must accept them — `_resolve_provider_full` returns None for virtual
+    canonicals like "custom"/"local", so the fallback uses `normalize_provider`.
+    """
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+
+    import yaml
+
+    (home / "config.yaml").write_text(
+        yaml.dump({"model": {"provider": alias, "base_url": "http://localhost:11434/v1"}})
+    )
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", tmp_path / "project")
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+    (tmp_path / "project").mkdir(exist_ok=True)
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+
+    out = buf.getvalue()
+    assert f"model.provider '{alias}' is not a recognised provider" not in out
+    assert f"model.provider '{alias}' is unknown" not in out
+
+
 def test_run_doctor_accepts_named_provider_from_providers_section(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)

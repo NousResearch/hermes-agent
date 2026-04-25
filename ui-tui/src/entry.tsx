@@ -1,5 +1,4 @@
 #!/usr/bin/env -S node --max-old-space-size=8192 --expose-gc
-import { bootBanner } from './bootBanner.js'
 import { GatewayClient } from './gatewayClient.js'
 import { setupGracefulExit } from './lib/gracefulExit.js'
 import { formatBytes, type HeapDumpResult, performHeapDump } from './lib/memory.js'
@@ -9,8 +8,6 @@ if (!process.stdin.isTTY) {
   console.log('hermes-tui: no TTY')
   process.exit(0)
 }
-
-process.stdout.write(bootBanner())
 
 const gw = new GatewayClient()
 

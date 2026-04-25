@@ -19,6 +19,7 @@ from agent.auxiliary_client import (
     _read_codex_access_token,
     _get_provider_chain,
     _is_payment_error,
+    _normalize_aux_provider,
     _try_payment_fallback,
     _resolve_auto,
 )
@@ -52,6 +53,17 @@ def codex_auth_dir(tmp_path, monkeypatch):
         lambda: "codex-test-token-abc123",
     )
     return codex_dir
+
+
+class TestNormalizeAuxProvider:
+    def test_maps_github_copilot_aliases(self):
+        assert _normalize_aux_provider("github") == "copilot"
+        assert _normalize_aux_provider("github-copilot") == "copilot"
+        assert _normalize_aux_provider("github-models") == "copilot"
+
+    def test_maps_github_copilot_acp_aliases(self):
+        assert _normalize_aux_provider("github-copilot-acp") == "copilot-acp"
+        assert _normalize_aux_provider("copilot-acp-agent") == "copilot-acp"
 
 
 class TestReadCodexAccessToken:
@@ -447,6 +459,34 @@ class TestExplicitProviderRouting:
             adapter = client.chat.completions
             assert adapter._is_oauth is False
 
+    def test_explicit_openrouter_pool_exhausted_logs_precise_warning(self, monkeypatch, caplog):
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)):
+            with caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+                client, model = resolve_provider_client("openrouter")
+        assert client is None
+        assert model is None
+        assert any(
+            "credential pool has no usable entries" in record.message
+            for record in caplog.records
+        )
+        assert not any(
+            "OPENROUTER_API_KEY not set" in record.message
+            for record in caplog.records
+        )
+
+    def test_explicit_openrouter_missing_env_keeps_not_set_warning(self, monkeypatch, caplog):
+        monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+        with patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)):
+            with caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+                client, model = resolve_provider_client("openrouter")
+        assert client is None
+        assert model is None
+        assert any(
+            "OPENROUTER_API_KEY not set" in record.message
+            for record in caplog.records
+        )
+
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""
 
@@ -475,6 +515,133 @@ class TestGetTextAuxiliaryClient:
 
         assert isinstance(client, CodexAuxiliaryClient)
         assert model == "gpt-5.2-codex"
+
+
+class TestNousAuxiliaryRefresh:
+    def test_try_nous_prefers_runtime_credentials(self):
+        fresh_base = "https://inference-api.nousresearch.com/v1"
+        with (
+            patch("agent.auxiliary_client._read_nous_auth", return_value={"access_token": "stale-token"}),
+            patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=("fresh-agent-key", fresh_base)),
+            patch("hermes_cli.models.get_nous_recommended_aux_model", return_value=None),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            from agent.auxiliary_client import _try_nous
+
+            mock_openai.return_value = MagicMock()
+            client, model = _try_nous()
+
+        assert client is not None
+        # No Portal recommendation → falls back to the hardcoded default.
+        assert model == "google/gemini-3-flash-preview"
+        assert mock_openai.call_args.kwargs["api_key"] == "fresh-agent-key"
+        assert mock_openai.call_args.kwargs["base_url"] == fresh_base
+
+    def test_try_nous_uses_portal_recommendation_for_text(self):
+        """When the Portal recommends a compaction model, _try_nous honors it."""
+        fresh_base = "https://inference-api.nousresearch.com/v1"
+        with (
+            patch("agent.auxiliary_client._read_nous_auth", return_value={"access_token": "***"}),
+            patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=("fresh-agent-key", fresh_base)),
+            patch("hermes_cli.models.get_nous_recommended_aux_model", return_value="minimax/minimax-m2.7") as mock_rec,
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            from agent.auxiliary_client import _try_nous
+
+            mock_openai.return_value = MagicMock()
+            client, model = _try_nous(vision=False)
+
+        assert client is not None
+        assert model == "minimax/minimax-m2.7"
+        assert mock_rec.call_args.kwargs["vision"] is False
+
+    def test_try_nous_uses_portal_recommendation_for_vision(self):
+        """Vision tasks should ask for the vision-specific recommendation."""
+        fresh_base = "https://inference-api.nousresearch.com/v1"
+        with (
+            patch("agent.auxiliary_client._read_nous_auth", return_value={"access_token": "***"}),
+            patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=("fresh-agent-key", fresh_base)),
+            patch("hermes_cli.models.get_nous_recommended_aux_model", return_value="google/gemini-3-flash-preview") as mock_rec,
+            patch("agent.auxiliary_client.OpenAI"),
+        ):
+            from agent.auxiliary_client import _try_nous
+            client, model = _try_nous(vision=True)
+
+        assert client is not None
+        assert model == "google/gemini-3-flash-preview"
+        assert mock_rec.call_args.kwargs["vision"] is True
+
+    def test_try_nous_falls_back_when_recommendation_lookup_raises(self):
+        """If the Portal lookup throws, we must still return a usable model."""
+        fresh_base = "https://inference-api.nousresearch.com/v1"
+        with (
+            patch("agent.auxiliary_client._read_nous_auth", return_value={"access_token": "***"}),
+            patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=("fresh-agent-key", fresh_base)),
+            patch("hermes_cli.models.get_nous_recommended_aux_model", side_effect=RuntimeError("portal down")),
+            patch("agent.auxiliary_client.OpenAI"),
+        ):
+            from agent.auxiliary_client import _try_nous
+            client, model = _try_nous()
+
+        assert client is not None
+        assert model == "google/gemini-3-flash-preview"
+
+    def test_call_llm_retries_nous_after_401(self):
+        class _Auth401(Exception):
+            status_code = 401
+
+        stale_client = MagicMock()
+        stale_client.base_url = "https://inference-api.nousresearch.com/v1"
+        stale_client.chat.completions.create.side_effect = _Auth401("stale nous key")
+
+        fresh_client = MagicMock()
+        fresh_client.base_url = "https://inference-api.nousresearch.com/v1"
+        fresh_client.chat.completions.create.return_value = {"ok": True}
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("nous", "nous-model", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", return_value=(stale_client, "nous-model")),
+            patch("agent.auxiliary_client.OpenAI", return_value=fresh_client),
+            patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task: resp),
+            patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=("fresh-agent-key", "https://inference-api.nousresearch.com/v1")),
+        ):
+            result = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert result == {"ok": True}
+        assert stale_client.chat.completions.create.call_count == 1
+        assert fresh_client.chat.completions.create.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_retries_nous_after_401(self):
+        class _Auth401(Exception):
+            status_code = 401
+
+        stale_client = MagicMock()
+        stale_client.base_url = "https://inference-api.nousresearch.com/v1"
+        stale_client.chat.completions.create = AsyncMock(side_effect=_Auth401("stale nous key"))
+
+        fresh_async_client = MagicMock()
+        fresh_async_client.base_url = "https://inference-api.nousresearch.com/v1"
+        fresh_async_client.chat.completions.create = AsyncMock(return_value={"ok": True})
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("nous", "nous-model", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", return_value=(stale_client, "nous-model")),
+            patch("agent.auxiliary_client._to_async_client", return_value=(fresh_async_client, "nous-model")),
+            patch("agent.auxiliary_client._validate_llm_response", side_effect=lambda resp, _task: resp),
+            patch("agent.auxiliary_client._resolve_nous_runtime_api", return_value=("fresh-agent-key", "https://inference-api.nousresearch.com/v1")),
+        ):
+            result = await async_call_llm(
+                task="session_search",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert result == {"ok": True}
+        assert stale_client.chat.completions.create.await_count == 1
+        assert fresh_async_client.chat.completions.create.await_count == 1
 
 # ── Payment / credit exhaustion fallback ─────────────────────────────────
 
@@ -1048,3 +1215,201 @@ class TestAnthropicCompatImageConversion:
         }]
         result = _convert_openai_images_to_anthropic(messages)
         assert result[0]["content"][0]["source"]["media_type"] == "image/jpeg"
+
+
+class _AuxAuth401(Exception):
+    status_code = 401
+
+    def __init__(self, message="Provided authentication token is expired"):
+        super().__init__(message)
+
+
+class _DummyResponse:
+    def __init__(self, text="ok"):
+        self.choices = [MagicMock(message=MagicMock(content=text))]
+
+
+class _FailingThenSuccessCompletions:
+    def __init__(self):
+        self.calls = 0
+
+    def create(self, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            raise _AuxAuth401()
+        return _DummyResponse("sync-ok")
+
+
+class _AsyncFailingThenSuccessCompletions:
+    def __init__(self):
+        self.calls = 0
+
+    async def create(self, **kwargs):
+        self.calls += 1
+        if self.calls == 1:
+            raise _AuxAuth401()
+        return _DummyResponse("async-ok")
+
+
+class TestAuxiliaryAuthRefreshRetry:
+    def test_call_llm_refreshes_codex_on_401_for_vision(self):
+        failing_client = MagicMock()
+        failing_client.base_url = "https://chatgpt.com/backend-api/codex"
+        failing_client.chat.completions = _FailingThenSuccessCompletions()
+
+        fresh_client = MagicMock()
+        fresh_client.base_url = "https://chatgpt.com/backend-api/codex"
+        fresh_client.chat.completions.create.return_value = _DummyResponse("fresh-sync")
+
+        with (
+            patch(
+                "agent.auxiliary_client.resolve_vision_provider_client",
+                side_effect=[("openai-codex", failing_client, "gpt-5.2-codex"), ("openai-codex", fresh_client, "gpt-5.2-codex")],
+            ),
+            patch("agent.auxiliary_client._refresh_provider_credentials", return_value=True) as mock_refresh,
+        ):
+            resp = call_llm(
+                task="vision",
+                provider="openai-codex",
+                model="gpt-5.2-codex",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert resp.choices[0].message.content == "fresh-sync"
+        mock_refresh.assert_called_once_with("openai-codex")
+
+    def test_call_llm_refreshes_codex_on_401_for_non_vision(self):
+        stale_client = MagicMock()
+        stale_client.base_url = "https://chatgpt.com/backend-api/codex"
+        stale_client.chat.completions.create.side_effect = _AuxAuth401("stale codex token")
+
+        fresh_client = MagicMock()
+        fresh_client.base_url = "https://chatgpt.com/backend-api/codex"
+        fresh_client.chat.completions.create.return_value = _DummyResponse("fresh-non-vision")
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("openai-codex", "gpt-5.2-codex", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", side_effect=[(stale_client, "gpt-5.2-codex"), (fresh_client, "gpt-5.2-codex")]),
+            patch("agent.auxiliary_client._refresh_provider_credentials", return_value=True) as mock_refresh,
+        ):
+            resp = call_llm(
+                task="compression",
+                provider="openai-codex",
+                model="gpt-5.2-codex",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert resp.choices[0].message.content == "fresh-non-vision"
+        mock_refresh.assert_called_once_with("openai-codex")
+        assert stale_client.chat.completions.create.call_count == 1
+        assert fresh_client.chat.completions.create.call_count == 1
+
+    def test_call_llm_refreshes_anthropic_on_401_for_non_vision(self):
+        stale_client = MagicMock()
+        stale_client.base_url = "https://api.anthropic.com"
+        stale_client.chat.completions.create.side_effect = _AuxAuth401("anthropic token expired")
+
+        fresh_client = MagicMock()
+        fresh_client.base_url = "https://api.anthropic.com"
+        fresh_client.chat.completions.create.return_value = _DummyResponse("fresh-anthropic")
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("anthropic", "claude-haiku-4-5-20251001", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", side_effect=[(stale_client, "claude-haiku-4-5-20251001"), (fresh_client, "claude-haiku-4-5-20251001")]),
+            patch("agent.auxiliary_client._refresh_provider_credentials", return_value=True) as mock_refresh,
+        ):
+            resp = call_llm(
+                task="compression",
+                provider="anthropic",
+                model="claude-haiku-4-5-20251001",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert resp.choices[0].message.content == "fresh-anthropic"
+        mock_refresh.assert_called_once_with("anthropic")
+        assert stale_client.chat.completions.create.call_count == 1
+        assert fresh_client.chat.completions.create.call_count == 1
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_refreshes_codex_on_401_for_vision(self):
+        failing_client = MagicMock()
+        failing_client.base_url = "https://chatgpt.com/backend-api/codex"
+        failing_client.chat.completions = _AsyncFailingThenSuccessCompletions()
+
+        fresh_client = MagicMock()
+        fresh_client.base_url = "https://chatgpt.com/backend-api/codex"
+        fresh_client.chat.completions.create = AsyncMock(return_value=_DummyResponse("fresh-async"))
+
+        with (
+            patch(
+                "agent.auxiliary_client.resolve_vision_provider_client",
+                side_effect=[("openai-codex", failing_client, "gpt-5.2-codex"), ("openai-codex", fresh_client, "gpt-5.2-codex")],
+            ),
+            patch("agent.auxiliary_client._refresh_provider_credentials", return_value=True) as mock_refresh,
+        ):
+            resp = await async_call_llm(
+                task="vision",
+                provider="openai-codex",
+                model="gpt-5.2-codex",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert resp.choices[0].message.content == "fresh-async"
+        mock_refresh.assert_called_once_with("openai-codex")
+
+    def test_refresh_provider_credentials_force_refreshes_anthropic_oauth_and_evicts_cache(self, monkeypatch):
+        stale_client = MagicMock()
+        cache_key = ("anthropic", False, None, None, None)
+
+        monkeypatch.setenv("ANTHROPIC_TOKEN", "")
+        monkeypatch.setenv("CLAUDE_CODE_OAUTH_TOKEN", "")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "")
+
+        with (
+            patch("agent.auxiliary_client._client_cache", {cache_key: (stale_client, "claude-haiku-4-5-20251001", None)}),
+            patch("agent.anthropic_adapter.read_claude_code_credentials", return_value={
+                "accessToken": "expired-token",
+                "refreshToken": "refresh-token",
+                "expiresAt": 0,
+            }),
+            patch("agent.anthropic_adapter.refresh_anthropic_oauth_pure", return_value={
+                "access_token": "fresh-token",
+                "refresh_token": "refresh-token-2",
+                "expires_at_ms": 9999999999999,
+            }) as mock_refresh_oauth,
+            patch("agent.anthropic_adapter._write_claude_code_credentials") as mock_write,
+        ):
+            from agent.auxiliary_client import _refresh_provider_credentials
+
+            assert _refresh_provider_credentials("anthropic") is True
+
+        mock_refresh_oauth.assert_called_once_with("refresh-token", use_json=False)
+        mock_write.assert_called_once_with("fresh-token", "refresh-token-2", 9999999999999)
+        stale_client.close.assert_called_once()
+
+    @pytest.mark.asyncio
+    async def test_async_call_llm_refreshes_anthropic_on_401_for_non_vision(self):
+        stale_client = MagicMock()
+        stale_client.base_url = "https://api.anthropic.com"
+        stale_client.chat.completions.create = AsyncMock(side_effect=_AuxAuth401("anthropic token expired"))
+
+        fresh_client = MagicMock()
+        fresh_client.base_url = "https://api.anthropic.com"
+        fresh_client.chat.completions.create = AsyncMock(return_value=_DummyResponse("fresh-async-anthropic"))
+
+        with (
+            patch("agent.auxiliary_client._resolve_task_provider_model", return_value=("anthropic", "claude-haiku-4-5-20251001", None, None, None)),
+            patch("agent.auxiliary_client._get_cached_client", side_effect=[(stale_client, "claude-haiku-4-5-20251001"), (fresh_client, "claude-haiku-4-5-20251001")]),
+            patch("agent.auxiliary_client._refresh_provider_credentials", return_value=True) as mock_refresh,
+        ):
+            resp = await async_call_llm(
+                task="compression",
+                provider="anthropic",
+                model="claude-haiku-4-5-20251001",
+                messages=[{"role": "user", "content": "hi"}],
+            )
+
+        assert resp.choices[0].message.content == "fresh-async-anthropic"
+        mock_refresh.assert_called_once_with("anthropic")
+        assert stale_client.chat.completions.create.await_count == 1
+        assert fresh_client.chat.completions.create.await_count == 1

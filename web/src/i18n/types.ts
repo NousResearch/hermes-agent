@@ -7,6 +7,7 @@ export interface Translations {
     saving: string;
     cancel: string;
     close: string;
+    confirm: string;
     delete: string;
     refresh: string;
     retry: string;
@@ -43,52 +44,82 @@ export interface Translations {
     expand: string;
     general: string;
     messaging: string;
+    pluginLoadFailed: string;
+    pluginNotRegistered: string;
   };
 
   // ── App shell ──
   app: {
     brand: string;
     brandShort: string;
-    webUi: string;
+    closeNavigation: string;
+    closeModelTools: string;
     footer: {
-      name: string;
       org: string;
     };
-    nav: {
-      status: string;
-      sessions: string;
-      analytics: string;
-      logs: string;
-      cron: string;
-      skills: string;
-      config: string;
-      keys: string;
+    activeSessionsLabel: string;
+    gatewayStatusLabel: string;
+    gatewayStrip: {
+      failed: string;
+      off: string;
+      running: string;
+      starting: string;
+      stopped: string;
     };
+    nav: {
+      analytics: string;
+      chat: string;
+      config: string;
+      cron: string;
+      documentation: string;
+      keys: string;
+      logs: string;
+      sessions: string;
+      skills: string;
+    };
+    modelToolsSheetSubtitle: string;
+    modelToolsSheetTitle: string;
+    navigation: string;
+    openDocumentation: string;
+    openNavigation: string;
+    sessionsActiveCount: string;
+    statusOverview: string;
+    system: string;
+    webUi: string;
   };
 
   // ── Status page ──
   status: {
+    actionFailed: string;
+    actionFinished: string;
+    actions: string;
     agent: string;
-    gateway: string;
-    activeSessions: string;
-    recentSessions: string;
-    connectedPlatforms: string;
-    running: string;
-    starting: string;
-    failed: string;
-    stopped: string;
     connected: string;
+    connectedPlatforms: string;
     disconnected: string;
     error: string;
-    notRunning: string;
-    startFailed: string;
-    pid: string;
-    runningRemote: string;
-    noneRunning: string;
+    failed: string;
+    gateway: string;
     gatewayFailedToStart: string;
     lastUpdate: string;
-    platformError: string;
+    noneRunning: string;
+    notRunning: string;
+    pid: string;
     platformDisconnected: string;
+    platformError: string;
+    activeSessions: string;
+    recentSessions: string;
+    restartGateway: string;
+    restartingGateway: string;
+    running: string;
+    runningRemote: string;
+    startFailed: string;
+    starting: string;
+    startedInBackground: string;
+    stopped: string;
+    updateHermes: string;
+    updatingHermes: string;
+    waitingForOutput: string;
   };
 
   // ── Sessions page ──
@@ -101,6 +132,11 @@ export interface Translations {
     noMessages: string;
     untitledSession: string;
     deleteSession: string;
+    confirmDeleteTitle: string;
+    confirmDeleteMessage: string;
+    sessionDeleted: string;
+    failedToDelete: string;
+    resumeInChat: string;
     previousPage: string;
     nextPage: string;
     roles: {
@@ -151,6 +187,8 @@ export interface Translations {
 
   // ── Cron page ──
   cron: {
+    confirmDeleteMessage: string;
+    confirmDeleteTitle: string;
     newJob: string;
     nameOptional: string;
     namePlaceholder: string;
@@ -181,6 +219,8 @@ export interface Translations {
     searchPlaceholder: string;
     enabledOf: string;
     all: string;
+    categories: string;
+    filters: string;
     noSkills: string;
     noSkillsMatch: string;
     skillCount: string;
@@ -197,6 +237,8 @@ export interface Translations {
   // ── Config page ──
   config: {
     configPath: string;
+    filters: string;
+    sections: string;
     exportConfig: string;
     importConfig: string;
     resetDefaults: string;
@@ -232,20 +274,22 @@ export interface Translations {
 
   // ── Env / Keys page ──
   env: {
-    description: string;
     changesNote: string;
-    hideAdvanced: string;
-    showAdvanced: string;
-    llmProviders: string;
-    providersConfigured: string;
+    confirmClearMessage: string;
+    confirmClearTitle: string;
+    description: string;
+    enterValue: string;
     getKey: string;
+    hideAdvanced: string;
+    hideValue: string;
+    keysCount: string;
+    llmProviders: string;
     notConfigured: string;
     notSet: string;
-    keysCount: string;
-    enterValue: string;
+    providersConfigured: string;
     replaceCurrentValue: string;
+    showAdvanced: string;
     showValue: string;
-    hideValue: string;
   };
 
   // ── OAuth ──

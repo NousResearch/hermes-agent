@@ -4,8 +4,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { STARTUP_RESUME_ID } from '../config/env.js'
 import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
-import { imageTokenMeta } from '../domain/messages.js'
-import { fmtCwdBranch } from '../domain/paths.js'
+import { SECTION_NAMES, sectionMode } from '../domain/details.js'
+import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
+import { fmtCwdBranch, shortCwd } from '../domain/paths.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type {
   ClarifyRespondResponse,
@@ -16,6 +17,7 @@ import type {
 import { useGitBranch } from '../hooks/useGitBranch.js'
 import { useVirtualHistory } from '../hooks/useVirtualHistory.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
+import { terminalParityHints } from '../lib/terminalParity.js'
 import { buildToolTrailLine, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
@@ -117,6 +119,7 @@ export function useMainApp(gw: GatewayClient) {
   const onEventRef = useRef<(ev: GatewayEvent) => void>(() => {})
   const clipboardPasteRef = useRef<(quiet?: boolean) => Promise<void> | void>(() => {})
   const submitRef = useRef<(value: string) => void>(() => {})
+  const terminalHintsShownRef = useRef(new Set<string>())
   const historyItemsRef = useRef(historyItems)
   const lastUserMsgRef = useRef(lastUserMsg)
   const msgIdsRef = useRef(new WeakMap<Msg, string>())
@@ -136,11 +139,29 @@ export function useMainApp(gw: GatewayClient) {
   const composer = useComposerState({
     gw,
     onClipboardPaste: quiet => clipboardPasteRef.current(quiet),
+    onImageAttached: info => {
+      sys(attachedImageNotice(info))
+    },
     submitRef
   })
 
   const { actions: composerActions, refs: composerRefs, state: composerState } = composer
   const empty = !historyItems.some(msg => msg.kind !== 'intro')
+
+  useEffect(() => {
+    void terminalParityHints()
+      .then(hints => {
+        for (const hint of hints) {
+          if (terminalHintsShownRef.current.has(hint.key)) {
+            continue
+          }
+
+          terminalHintsShownRef.current.add(hint.key)
+          turnController.pushActivity(hint.message, hint.tone)
+        }
+      })
+      .catch(() => {})
+  }, [])
 
   const messageId = useCallback((msg: Msg) => {
     const hit = msgIdsRef.current.get(msg)
@@ -294,12 +315,14 @@ export function useMainApp(gw: GatewayClient) {
 
   useConfigSync({ gw, setBellOnComplete, setVoiceEnabled, sid: ui.sid })
 
-  // ── Terminal tab title ─────────────────────────────────────────────
-  // Show model name + status so users can identify the Hermes tab.
-  const shortModel = ui.info?.model?.replace(/^.*\//, '') ?? ''
-  const titleStatus = ui.busy ? '⏳' : '✓'
-  const terminalTitle = shortModel ? `${titleStatus} ${shortModel} — Hermes` : 'Hermes'
-  useTerminalTitle(terminalTitle)
+  // Tab title: `⚠` waiting on approval/sudo/secret/clarify, `⏳` busy, `✓` idle.
+  const model = ui.info?.model?.replace(/^.*\//, '') ?? ''
+
+  const marker = overlay.approval || overlay.sudo || overlay.secret || overlay.clarify ? '⚠' : ui.busy ? '⏳' : '✓'
+
+  const tabCwd = ui.info?.cwd
+
+  useTerminalTitle(model ? `${marker} ${model}${tabCwd ? ` · ${shortCwd(tabCwd, 24)}` : ''}` : 'Hermes')
 
   useEffect(() => {
     if (!ui.sid || !stdout) {
@@ -432,13 +455,20 @@ export function useMainApp(gw: GatewayClient) {
     composer: { actions: composerActions, refs: composerRefs, state: composerState },
     gateway,
     terminal: { hasSelection, scrollRef, scrollWithSelection, selection, stdout },
-    voice: { recording: voiceRecording, setProcessing: setVoiceProcessing, setRecording: setVoiceRecording },
+    voice: {
+      enabled: voiceEnabled,
+      recording: voiceRecording,
+      setProcessing: setVoiceProcessing,
+      setRecording: setVoiceRecording,
+      setVoiceEnabled
+    },
     wheelStep: WHEEL_SCROLL_STEP
   })
 
   const onEvent = useMemo(
     () =>
       createGatewayEventHandler({
+        composer: { setInput: composerActions.setInput },
         gateway,
         session: {
           STARTUP_RESUME_ID,
@@ -448,18 +478,29 @@ export function useMainApp(gw: GatewayClient) {
           resumeById: session.resumeById,
           setCatalog
         },
+        submission: { submitRef },
         system: { bellOnComplete, stdout, sys },
-        transcript: { appendMessage, panel, setHistoryItems }
+        transcript: { appendMessage, panel, setHistoryItems },
+        voice: {
+          setProcessing: setVoiceProcessing,
+          setRecording: setVoiceRecording,
+          setVoiceEnabled
+        }
       }),
     [
       appendMessage,
       bellOnComplete,
+      composerActions.setInput,
       gateway,
       panel,
       session.newSession,
       session.resetSession,
       session.resumeById,
+      setVoiceEnabled,
+      setVoiceProcessing,
+      setVoiceRecording,
       stdout,
+      submitRef,
       sys
     ]
   )
@@ -590,11 +631,15 @@ export function useMainApp(gw: GatewayClient) {
 
   const hasReasoning = Boolean(turn.reasoning.trim())
 
-  const showProgressArea =
-    ui.detailsMode === 'hidden'
-      ? turn.activity.some(item => item.tone !== 'info')
-      : Boolean(
-          ui.busy ||
+  // Per-section overrides win over the global mode — when every section is
+  // resolved to hidden, the only thing ToolTrail will surface is the
+  // floating-alert backstop (errors/warnings).  Mirror that so we don't
+  // render an empty wrapper Box above the streaming area in quiet mode.
+  const anyPanelVisible = SECTION_NAMES.some(s => sectionMode(s, ui.detailsMode, ui.sections) !== 'hidden')
+
+  const showProgressArea = anyPanelVisible
+    ? Boolean(
+        ui.busy ||
           turn.outcome ||
           turn.streamPendingTools.length ||
           turn.streamSegments.length ||
@@ -603,7 +648,8 @@ export function useMainApp(gw: GatewayClient) {
           turn.turnTrail.length ||
           hasReasoning ||
           turn.activity.length
-        )
+      )
+    : turn.activity.some(item => item.tone !== 'info')
 
   const appActions = useMemo(
     () => ({
@@ -636,10 +682,33 @@ export function useMainApp(gw: GatewayClient) {
     [cols, composerActions, composerState, empty, pagerPageSize, submit]
   )
 
-  const appProgress = useMemo(
+  const liveTailVisible = (() => {
+    const s = scrollRef.current
+
+    if (!s) {
+      return true
+    }
+
+    const top = Math.max(0, s.getScrollTop() + s.getPendingDelta())
+    const vp = Math.max(0, s.getViewportHeight())
+    const total = Math.max(vp, s.getScrollHeight())
+
+    return top + vp >= total - 3
+  })()
+
+  const liveProgress = useMemo(
     () => ({ ...turn, showProgressArea, showStreamingArea: Boolean(turn.streaming) }),
     [turn, showProgressArea]
   )
+
+  const frozenProgressRef = useRef(liveProgress)
+
+  // Freeze the offscreen live tail so scroll doesn't rebuild unseen streaming UI.
+  if (liveTailVisible || !ui.busy) {
+    frozenProgressRef.current = liveProgress
+  }
+
+  const appProgress = liveTailVisible || !ui.busy ? liveProgress : frozenProgressRef.current
 
   const cwd = ui.info?.cwd || process.env.HERMES_CWD || process.cwd()
   const gitBranch = useGitBranch(cwd)
@@ -653,7 +722,9 @@ export function useMainApp(gw: GatewayClient) {
       statusColor: statusColorOf(ui.status, ui.theme.color),
       stickyPrompt,
       turnStartedAt: ui.sid ? turnStartedAt : null,
-      voiceLabel: voiceRecording ? 'REC' : voiceProcessing ? 'STT' : `voice ${voiceEnabled ? 'on' : 'off'}`
+      // CLI parity: the classic prompt_toolkit status bar shows a red dot
+      // on REC (cli.py:_get_voice_status_fragments line 2344).
+      voiceLabel: voiceRecording ? '● REC' : voiceProcessing ? '◉ STT' : `voice ${voiceEnabled ? 'on' : 'off'}`
     }),
     [
       cwd,

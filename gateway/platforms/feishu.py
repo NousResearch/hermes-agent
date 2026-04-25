@@ -14,6 +14,35 @@ Supports:
 - Interactive card button-click events routed as synthetic COMMAND events
 - Webhook anomaly tracking (matches openclaw createWebhookAnomalyTracker)
 - Verification token validation as second auth layer (matches openclaw)
+
+Feishu identity model
+---------------------
+Feishu uses three user-ID tiers (official docs:
+https://open.feishu.cn/document/home/user-identity-introduction/introduction):
+
+  open_id  (ou_xxx)  — **App-scoped**.  The same person gets a different
+                        open_id under each Feishu app.  Always available in
+                        event payloads without extra permissions.
+  user_id  (u_xxx)   — **Tenant-scoped**.  Stable within a company but
+                        requires the ``contact:user.employee_id:readonly``
+                        scope.  May not be present.
+  union_id (on_xxx)  — **Developer-scoped**.  Same across all apps owned by
+                        one developer/ISV.  Best cross-app stable ID.
+
+For bots specifically:
+
+  app_id              — The application's canonical credential identifier.
+  bot open_id         — Returned by ``/bot/v3/info``.  This is the bot's own
+                        open_id *within its app context* and is what Feishu
+                        puts in ``mentions[].id.open_id`` when someone
+                        @-mentions the bot.  Used for mention gating only.
+
+In single-bot mode (what Hermes currently supports), open_id works as a
+de-facto unique user identifier since there is only one app context.
+
+Session-key participant isolation prefers ``union_id`` (via user_id_alt)
+over ``open_id`` (via user_id) so that sessions stay stable if the same
+user is seen through different apps in the future.
 """
 
 from __future__ import annotations
@@ -35,7 +64,7 @@ from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Sequence
 from urllib.error import HTTPError, URLError
 from urllib.parse import urlencode
 from urllib.request import Request, urlopen
@@ -73,7 +102,9 @@ try:
         UpdateMessageRequest,
         UpdateMessageRequestBody,
     )
+    from lark_oapi.core import AccessTokenType, HttpMethod
     from lark_oapi.core.const import FEISHU_DOMAIN, LARK_DOMAIN
+    from lark_oapi.core.model import BaseRequest
     from lark_oapi.event.callback.model.p2_card_action_trigger import (
         CallBackCard,
         P2CardActionTriggerResponse,
@@ -234,6 +265,8 @@ FALLBACK_ATTACHMENT_TEXT = "[Attachment]"
 _PREFERRED_LOCALES = ("zh_cn", "en_us")
 _MARKDOWN_SPECIAL_CHARS_RE = re.compile(r"([\\`*_{}\[\]()#+\-!|>~])")
 _MENTION_PLACEHOLDER_RE = re.compile(r"@_user_\d+")
+_MENTION_BOUNDARY_CHARS = frozenset(" \t\n\r.,;:!?、，。；：！？()[]{}<>\"'`")
+_TRAILING_TERMINAL_PUNCT = frozenset(" \t\n\r.!?。！？")
 _WHITESPACE_RE = re.compile(r"\s+")
 _SUPPORTED_CARD_TEXT_KEYS = (
     "title",
@@ -278,11 +311,35 @@ class FeishuPostMediaRef:
 
 
 @dataclass(frozen=True)
+class FeishuMentionRef:
+    name: str = ""
+    open_id: str = ""
+    is_all: bool = False
+    is_self: bool = False
+
+
+@dataclass(frozen=True)
+class _FeishuBotIdentity:
+    open_id: str = ""
+    user_id: str = ""
+    name: str = ""
+
+    def matches(self, *, open_id: str, user_id: str, name: str) -> bool:
+        # Precedence: open_id > user_id > name. IDs are authoritative when both
+        # sides have them; the next tier is only considered when either side
+        # lacks the current one.
+        if open_id and self.open_id:
+            return open_id == self.open_id
+        if user_id and self.user_id:
+            return user_id == self.user_id
+        return bool(self.name) and name == self.name
+
+
+@dataclass(frozen=True)
 class FeishuPostParseResult:
     text_content: str
     image_keys: List[str] = field(default_factory=list)
     media_refs: List[FeishuPostMediaRef] = field(default_factory=list)
-    mentioned_ids: List[str] = field(default_factory=list)
 
 
 @dataclass(frozen=True)
@@ -292,14 +349,14 @@ class FeishuNormalizedMessage:
     preferred_message_type: str = "text"
     image_keys: List[str] = field(default_factory=list)
     media_refs: List[FeishuPostMediaRef] = field(default_factory=list)
-    mentioned_ids: List[str] = field(default_factory=list)
+    mentions: List[FeishuMentionRef] = field(default_factory=list)
     relation_kind: str = "plain"
     metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
 class FeishuAdapterSettings:
-    app_id: str
+    app_id: str  # Canonical bot/app identifier (credential, not from event payloads)
     app_secret: str
     domain_name: str
     connection_mode: str
@@ -307,7 +364,11 @@ class FeishuAdapterSettings:
     verification_token: str
     group_policy: str
     allowed_group_users: frozenset[str]
+    # Bot's own open_id (app-scoped) — returned by /bot/v3/info.  Used only for
+    # @mention matching: Feishu puts this value in mentions[].id.open_id when
+    # a user @-mentions the bot in a group chat.
     bot_open_id: str
+    # Bot's user_id (tenant-scoped) — optional, used as fallback mention match.
     bot_user_id: str
     bot_name: str
     dedup_cache_size: int
@@ -505,14 +566,17 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
     return rows or [[{"tag": "md", "text": content}]]
 
 
-def parse_feishu_post_payload(payload: Any) -> FeishuPostParseResult:
+def parse_feishu_post_payload(
+    payload: Any,
+    *,
+    mentions_map: Optional[Dict[str, FeishuMentionRef]] = None,
+) -> FeishuPostParseResult:
     resolved = _resolve_post_payload(payload)
     if not resolved:
         return FeishuPostParseResult(text_content=FALLBACK_POST_TEXT)
 
     image_keys: List[str] = []
     media_refs: List[FeishuPostMediaRef] = []
-    mentioned_ids: List[str] = []
     parts: List[str] = []
 
     title = _normalize_feishu_text(str(resolved.get("title", "")).strip())
@@ -523,7 +587,10 @@ def parse_feishu_post_payload(payload: Any) -> FeishuPostParseResult:
         if not isinstance(row, list):
             continue
         row_text = _normalize_feishu_text(
-            "".join(_render_post_element(item, image_keys, media_refs, mentioned_ids) for item in row)
+            "".join(
+                _render_post_element(item, image_keys, media_refs, mentions_map)
+                for item in row
+            )
         )
         if row_text:
             parts.append(row_text)
@@ -532,7 +599,6 @@ def parse_feishu_post_payload(payload: Any) -> FeishuPostParseResult:
         text_content="\n".join(parts).strip() or FALLBACK_POST_TEXT,
         image_keys=image_keys,
         media_refs=media_refs,
-        mentioned_ids=mentioned_ids,
     )
 
 
@@ -584,7 +650,7 @@ def _render_post_element(
     element: Any,
     image_keys: List[str],
     media_refs: List[FeishuPostMediaRef],
-    mentioned_ids: List[str],
+    mentions_map: Optional[Dict[str, FeishuMentionRef]] = None,
 ) -> str:
     if isinstance(element, str):
         return element
@@ -602,19 +668,21 @@ def _render_post_element(
         escaped_label = _escape_markdown_text(label)
         return f"[{escaped_label}]({href})" if href else escaped_label
     if tag == "at":
-        mentioned_id = (
-            str(element.get("open_id", "")).strip()
-            or str(element.get("user_id", "")).strip()
-        )
-        if mentioned_id and mentioned_id not in mentioned_ids:
-            mentioned_ids.append(mentioned_id)
-        display_name = (
-            str(element.get("user_name", "")).strip()
-            or str(element.get("name", "")).strip()
-            or str(element.get("text", "")).strip()
-            or mentioned_id
-        )
-        return f"@{_escape_markdown_text(display_name)}" if display_name else "@"
+        # Post <at>.user_id is a placeholder ("@_user_N" or "@_all"); look up
+        # the real ref in mentions_map for the display name.
+        placeholder = str(element.get("user_id", "")).strip()
+        if placeholder == "@_all":
+            # Feishu SDK sometimes omits @_all from the top-level mentions
+            # payload; record it here so the caller's mention list stays complete.
+            if mentions_map is not None and "@_all" not in mentions_map:
+                mentions_map["@_all"] = FeishuMentionRef(is_all=True)
+            return "@all"
+        ref = (mentions_map or {}).get(placeholder)
+        if ref is not None:
+            display_name = ref.name or ref.open_id or "user"
+        else:
+            display_name = str(element.get("user_name", "")).strip() or "user"
+        return f"@{_escape_markdown_text(display_name)}"
     if tag in {"img", "image"}:
         image_key = str(element.get("image_key", "")).strip()
         if image_key and image_key not in image_keys:
@@ -652,8 +720,7 @@ def _render_post_element(
 
     nested_parts: List[str] = []
     for key in ("text", "title", "content", "children", "elements"):
-        value = element.get(key)
-        extracted = _render_nested_post(value, image_keys, media_refs, mentioned_ids)
+        extracted = _render_nested_post(element.get(key), image_keys, media_refs, mentions_map)
         if extracted:
             nested_parts.append(extracted)
     return " ".join(part for part in nested_parts if part)
@@ -663,7 +730,7 @@ def _render_nested_post(
     value: Any,
     image_keys: List[str],
     media_refs: List[FeishuPostMediaRef],
-    mentioned_ids: List[str],
+    mentions_map: Optional[Dict[str, FeishuMentionRef]] = None,
 ) -> str:
     if isinstance(value, str):
         return _escape_markdown_text(value)
@@ -671,17 +738,17 @@ def _render_nested_post(
         return " ".join(
             part
             for item in value
-            for part in [_render_nested_post(item, image_keys, media_refs, mentioned_ids)]
+            for part in [_render_nested_post(item, image_keys, media_refs, mentions_map)]
             if part
         )
     if isinstance(value, dict):
-        direct = _render_post_element(value, image_keys, media_refs, mentioned_ids)
+        direct = _render_post_element(value, image_keys, media_refs, mentions_map)
         if direct:
             return direct
         return " ".join(
             part
             for item in value.values()
-            for part in [_render_nested_post(item, image_keys, media_refs, mentioned_ids)]
+            for part in [_render_nested_post(item, image_keys, media_refs, mentions_map)]
             if part
         )
     return ""
@@ -692,31 +759,48 @@ def _render_nested_post(
 # ---------------------------------------------------------------------------
 
 
-def normalize_feishu_message(*, message_type: str, raw_content: str) -> FeishuNormalizedMessage:
+def normalize_feishu_message(
+    *,
+    message_type: str,
+    raw_content: str,
+    mentions: Optional[Sequence[Any]] = None,
+    bot: _FeishuBotIdentity = _FeishuBotIdentity(),
+) -> FeishuNormalizedMessage:
     normalized_type = str(message_type or "").strip().lower()
     payload = _load_feishu_payload(raw_content)
+    mentions_map = _build_mentions_map(mentions, bot)
 
     if normalized_type == "text":
+        text = str(payload.get("text", "") or "")
+        # Feishu SDK sometimes omits @_all from the mentions payload even when
+        # the text literal contains it (confirmed via im.v1.message.get).
+        if "@_all" in text and "@_all" not in mentions_map:
+            mentions_map["@_all"] = FeishuMentionRef(is_all=True)
         return FeishuNormalizedMessage(
             raw_type=normalized_type,
-            text_content=_normalize_feishu_text(str(payload.get("text", "") or "")),
+            text_content=_normalize_feishu_text(text, mentions_map),
+            mentions=list(mentions_map.values()),
         )
     if normalized_type == "post":
-        parsed_post = parse_feishu_post_payload(payload)
+        # The walker writes back to mentions_map if it encounters
+        # <at user_id="@_all">, so reading .values() after parsing is enough.
+        parsed_post = parse_feishu_post_payload(payload, mentions_map=mentions_map)
         return FeishuNormalizedMessage(
             raw_type=normalized_type,
             text_content=parsed_post.text_content,
             image_keys=list(parsed_post.image_keys),
             media_refs=list(parsed_post.media_refs),
-            mentioned_ids=list(parsed_post.mentioned_ids),
+            mentions=list(mentions_map.values()),
             relation_kind="post",
         )
+    mention_refs = list(mentions_map.values())
     if normalized_type == "image":
         image_key = str(payload.get("image_key", "") or "").strip()
         alt_text = _normalize_feishu_text(
             str(payload.get("text", "") or "")
             or str(payload.get("alt", "") or "")
-            or FALLBACK_IMAGE_TEXT
+            or FALLBACK_IMAGE_TEXT,
+            mentions_map,
         )
         return FeishuNormalizedMessage(
             raw_type=normalized_type,
@@ -724,6 +808,7 @@ def normalize_feishu_message(*, message_type: str, raw_content: str) -> FeishuNo
             preferred_message_type="photo",
             image_keys=[image_key] if image_key else [],
             relation_kind="image",
+            mentions=mention_refs,
         )
     if normalized_type in {"file", "audio", "media"}:
         media_ref = _build_media_ref_from_payload(payload, resource_type=normalized_type)
@@ -735,6 +820,7 @@ def normalize_feishu_message(*, message_type: str, raw_content: str) -> FeishuNo
             media_refs=[media_ref] if media_ref.file_key else [],
             relation_kind=normalized_type,
             metadata={"placeholder_text": placeholder},
+            mentions=mention_refs,
         )
     if normalized_type == "merge_forward":
         return _normalize_merge_forward_message(payload)
@@ -1009,8 +1095,20 @@ def _first_non_empty_text(*values: Any) -> str:
 # ---------------------------------------------------------------------------
 
 
-def _normalize_feishu_text(text: str) -> str:
-    cleaned = _MENTION_PLACEHOLDER_RE.sub(" ", text or "")
+def _normalize_feishu_text(
+    text: str,
+    mentions_map: Optional[Dict[str, FeishuMentionRef]] = None,
+) -> str:
+    def _sub(match: "re.Match[str]") -> str:
+        key = match.group(0)
+        ref = (mentions_map or {}).get(key)
+        if ref is None:
+            return " "
+        name = ref.name or ref.open_id or "user"
+        return f"@{name}"
+
+    cleaned = _MENTION_PLACEHOLDER_RE.sub(_sub, text or "")
+    cleaned = cleaned.replace("@_all", "@all")
     cleaned = cleaned.replace("\r\n", "\n").replace("\r", "\n")
     cleaned = "\n".join(_WHITESPACE_RE.sub(" ", line).strip() for line in cleaned.split("\n"))
     cleaned = "\n".join(line for line in cleaned.split("\n") if line)
@@ -1027,6 +1125,117 @@ def _unique_lines(lines: List[str]) -> List[str]:
         seen.add(line)
         unique.append(line)
     return unique
+
+
+# ---------------------------------------------------------------------------
+# Mention helpers
+# ---------------------------------------------------------------------------
+
+
+def _extract_mention_ids(mention: Any) -> tuple[str, str]:
+    # Returns (open_id, user_id). im.v1.message.get hands back id as a string
+    # plus id_type discriminator; event payloads hand back a nested UserId
+    # object carrying both fields.
+    mention_id = getattr(mention, "id", None)
+    if isinstance(mention_id, str):
+        id_type = str(getattr(mention, "id_type", "") or "").lower()
+        if id_type == "open_id":
+            return mention_id, ""
+        if id_type == "user_id":
+            return "", mention_id
+        return "", ""
+    if mention_id is None:
+        return "", ""
+    return (
+        str(getattr(mention_id, "open_id", "") or ""),
+        str(getattr(mention_id, "user_id", "") or ""),
+    )
+
+
+def _build_mentions_map(
+    mentions: Optional[Sequence[Any]],
+    bot: _FeishuBotIdentity,
+) -> Dict[str, FeishuMentionRef]:
+    result: Dict[str, FeishuMentionRef] = {}
+    for mention in mentions or []:
+        key = str(getattr(mention, "key", "") or "")
+        if not key:
+            continue
+        if key == "@_all":
+            result[key] = FeishuMentionRef(is_all=True)
+            continue
+        open_id, user_id = _extract_mention_ids(mention)
+        name = str(getattr(mention, "name", "") or "").strip()
+        result[key] = FeishuMentionRef(
+            name=name,
+            open_id=open_id,
+            is_self=bot.matches(open_id=open_id, user_id=user_id, name=name),
+        )
+    return result
+
+
+def _build_mention_hint(mentions: Sequence[FeishuMentionRef]) -> str:
+    parts: List[str] = []
+    seen: set = set()
+    for ref in mentions:
+        if ref.is_self:
+            continue
+        signature = (ref.is_all, ref.open_id, ref.name)
+        if signature in seen:
+            continue
+        seen.add(signature)
+        if ref.is_all:
+            parts.append("@all")
+        elif ref.open_id:
+            parts.append(f"{ref.name or 'unknown'} (open_id={ref.open_id})")
+        else:
+            parts.append(ref.name or "unknown")
+    return f"[Mentioned: {', '.join(parts)}]" if parts else ""
+
+
+def _strip_edge_self_mentions(
+    text: str,
+    mentions: Sequence[FeishuMentionRef],
+) -> str:
+    # Leading: strip consecutive self-mentions unconditionally.
+    # Trailing: strip only when followed by whitespace/terminal punct, so
+    # mid-sentence references ("don't @Bot again") stay intact.
+    # Leading word-boundary prevents @Al from eating @Alice.
+    if not text:
+        return text
+    self_names = [
+        f"@{ref.name or ref.open_id or 'user'}"
+        for ref in mentions
+        if ref.is_self
+    ]
+    if not self_names:
+        return text
+
+    remaining = text.lstrip()
+    while True:
+        for nm in self_names:
+            if not remaining.startswith(nm):
+                continue
+            after = remaining[len(nm):]
+            if after and after[0] not in _MENTION_BOUNDARY_CHARS:
+                continue
+            remaining = after.lstrip()
+            break
+        else:
+            break
+
+    while True:
+        i = len(remaining)
+        while i > 0 and remaining[i - 1] in _TRAILING_TERMINAL_PUNCT:
+            i -= 1
+        body = remaining[:i]
+        tail = remaining[i:]
+        for nm in self_names:
+            if body.endswith(nm):
+                remaining = body[: -len(nm)].rstrip() + tail
+                break
+        else:
+            return remaining
 
 
 def _run_official_feishu_ws_client(ws_client: Any, adapter: Any) -> None:
@@ -1491,6 +1700,7 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._client:
             return SendResult(success=False, error="Not connected")
 
+        content = self.format_message(content)
         try:
             msg_type, payload = self._build_outbound_payload(content)
             body = self._build_update_message_body(msg_type=msg_type, content=payload)
@@ -2470,13 +2680,22 @@ class FeishuAdapter(BasePlatformAdapter):
         chat_type: str,
         message_id: str,
     ) -> None:
-        text, inbound_type, media_urls, media_types = await self._extract_message_content(message)
+        text, inbound_type, media_urls, media_types, mentions = await self._extract_message_content(message)
+
+        if inbound_type == MessageType.TEXT:
+            text = _strip_edge_self_mentions(text, mentions)
+            if text.startswith("/"):
+                inbound_type = MessageType.COMMAND
+
+        # Guard runs post-strip so a pure "@Bot" message (stripped to "") is dropped.
         if inbound_type == MessageType.TEXT and not text and not media_urls:
-            logger.debug("[Feishu] Ignoring unsupported or empty message type: %s", getattr(message, "message_type", ""))
+            logger.debug("[Feishu] Ignoring empty text message id=%s", message_id)
             return
 
-        if inbound_type == MessageType.TEXT and text.startswith("/"):
-            inbound_type = MessageType.COMMAND
+        if inbound_type != MessageType.COMMAND:
+            hint = _build_mention_hint(mentions)
+            if hint:
+                text = f"{hint}\n\n{text}" if text else hint
 
         reply_to_message_id = (
             getattr(message, "parent_id", None)
@@ -2935,14 +3154,20 @@ class FeishuAdapter(BasePlatformAdapter):
     # Message content extraction and resource download
     # =========================================================================
 
-    async def _extract_message_content(self, message: Any) -> tuple[str, MessageType, List[str], List[str]]:
-        """Extract text and cached media from a normalized Feishu message."""
+    async def _extract_message_content(
+        self, message: Any
+    ) -> tuple[str, MessageType, List[str], List[str], List[FeishuMentionRef]]:
         raw_content = getattr(message, "content", "") or ""
         raw_type = getattr(message, "message_type", "") or ""
         message_id = str(getattr(message, "message_id", "") or "")
         logger.info("[Feishu] Received raw message type=%s message_id=%s", raw_type, message_id)
 
-        normalized = normalize_feishu_message(message_type=raw_type, raw_content=raw_content)
+        normalized = normalize_feishu_message(
+            message_type=raw_type,
+            raw_content=raw_content,
+            mentions=getattr(message, "mentions", None),
+            bot=self._bot_identity(),
+        )
         media_urls, media_types = await self._download_feishu_message_resources(
             message_id=message_id,
             normalized=normalized,
@@ -2959,7 +3184,7 @@ class FeishuAdapter(BasePlatformAdapter):
             if injected:
                 text = injected
 
-        return text, inbound_type, media_urls, media_types
+        return text, inbound_type, media_urls, media_types, list(normalized.mentions)
 
     async def _download_feishu_message_resources(
         self,
@@ -3223,10 +3448,22 @@ class FeishuAdapter(BasePlatformAdapter):
         return "group"
 
     async def _resolve_sender_profile(self, sender_id: Any) -> Dict[str, Optional[str]]:
+        """Map Feishu's three-tier user IDs onto Hermes' SessionSource fields.
+
+        Preference order for the primary ``user_id`` field:
+          1. user_id  (tenant-scoped, most stable — requires permission scope)
+          2. open_id  (app-scoped, always available — different per bot app)
+
+        ``user_id_alt`` carries the union_id (developer-scoped, stable across
+        all apps by the same developer).  Session-key generation prefers
+        user_id_alt when present, so participant isolation stays stable even
+        if the primary ID is the app-scoped open_id.
+        """
         open_id = getattr(sender_id, "open_id", None) or None
         user_id = getattr(sender_id, "user_id", None) or None
         union_id = getattr(sender_id, "union_id", None) or None
-        primary_id = open_id or user_id
+        # Prefer tenant-scoped user_id; fall back to app-scoped open_id.
+        primary_id = user_id or open_id
         display_name = await self._resolve_sender_name_from_api(primary_id or union_id)
         return {
             "user_id": primary_id,
@@ -3308,15 +3545,31 @@ class FeishuAdapter(BasePlatformAdapter):
             body = getattr(parent, "body", None)
             msg_type = getattr(parent, "msg_type", "") or ""
             raw_content = getattr(body, "content", "") or ""
-            text = self._extract_text_from_raw_content(msg_type=msg_type, raw_content=raw_content)
+            parent_mentions = getattr(parent, "mentions", None) if parent else None
+            text = self._extract_text_from_raw_content(
+                msg_type=msg_type,
+                raw_content=raw_content,
+                mentions=parent_mentions,
+            )
             self._message_text_cache[message_id] = text
             return text
         except Exception:
             logger.warning("[Feishu] Failed to fetch parent message %s", message_id, exc_info=True)
             return None
 
-    def _extract_text_from_raw_content(self, *, msg_type: str, raw_content: str) -> Optional[str]:
-        normalized = normalize_feishu_message(message_type=msg_type, raw_content=raw_content)
+    def _extract_text_from_raw_content(
+        self,
+        *,
+        msg_type: str,
+        raw_content: str,
+        mentions: Optional[Sequence[Any]] = None,
+    ) -> Optional[str]:
+        normalized = normalize_feishu_message(
+            message_type=msg_type,
+            raw_content=raw_content,
+            mentions=mentions,
+            bot=self._bot_identity(),
+        )
         if normalized.text_content:
             return normalized.text_content
         placeholder = normalized.metadata.get("placeholder_text") if isinstance(normalized.metadata, dict) else None
@@ -3386,10 +3639,10 @@ class FeishuAdapter(BasePlatformAdapter):
         normalized = normalize_feishu_message(
             message_type=getattr(message, "message_type", "") or "",
             raw_content=raw_content,
+            mentions=getattr(message, "mentions", None),
+            bot=self._bot_identity(),
         )
-        if normalized.mentioned_ids:
-            return self._post_mentions_bot(normalized.mentioned_ids)
-        return False
+        return self._post_mentions_bot(normalized.mentions)
 
     def _is_self_sent_bot_message(self, event: Any) -> bool:
         """Return True only for Feishu events emitted by this Hermes bot."""
@@ -3409,30 +3662,37 @@ class FeishuAdapter(BasePlatformAdapter):
         return False
 
     def _message_mentions_bot(self, mentions: List[Any]) -> bool:
-        """Check whether any mention targets the configured or inferred bot identity."""
+        # IDs trump names: when both sides have open_id (or both user_id),
+        # match requires equal IDs. Name fallback only when either side
+        # lacks an ID.
         for mention in mentions:
             mention_id = getattr(mention, "id", None)
-            mention_open_id = getattr(mention_id, "open_id", None)
-            mention_user_id = getattr(mention_id, "user_id", None)
+            mention_open_id = (getattr(mention_id, "open_id", None) or "").strip()
+            mention_user_id = (getattr(mention_id, "user_id", None) or "").strip()
             mention_name = (getattr(mention, "name", None) or "").strip()
 
-            if self._bot_open_id and mention_open_id == self._bot_open_id:
-                return True
-            if self._bot_user_id and mention_user_id == self._bot_user_id:
-                return True
+            if mention_open_id and self._bot_open_id:
+                if mention_open_id == self._bot_open_id:
+                    return True
+                continue  # IDs differ — not the bot; skip name fallback.
+            if mention_user_id and self._bot_user_id:
+                if mention_user_id == self._bot_user_id:
+                    return True
+                continue
             if self._bot_name and mention_name == self._bot_name:
                 return True
 
         return False
 
-    def _post_mentions_bot(self, mentioned_ids: List[str]) -> bool:
-        if not mentioned_ids:
-            return False
-        if self._bot_open_id and self._bot_open_id in mentioned_ids:
-            return True
-        if self._bot_user_id and self._bot_user_id in mentioned_ids:
-            return True
-        return False
+    def _post_mentions_bot(self, mentions: List[FeishuMentionRef]) -> bool:
+        return any(m.is_self for m in mentions)
+
+    def _bot_identity(self) -> _FeishuBotIdentity:
+        return _FeishuBotIdentity(
+            open_id=self._bot_open_id,
+            user_id=self._bot_user_id,
+            name=self._bot_name,
+        )
 
     async def _hydrate_bot_identity(self) -> None:
         """Best-effort discovery of bot identity for precise group mention gating
@@ -3457,14 +3717,15 @@ class FeishuAdapter(BasePlatformAdapter):
         # uses via probe_bot().
         if not self._bot_open_id or not self._bot_name:
             try:
-                resp = await asyncio.to_thread(
-                    self._client.request,
-                    method="GET",
-                    url="/open-apis/bot/v3/info",
-                    body=None,
-                    raw_response=True,
+                req = (
+                    BaseRequest.builder()
+                    .http_method(HttpMethod.GET)
+                    .uri("/open-apis/bot/v3/info")
+                    .token_types({AccessTokenType.TENANT})
+                    .build()
                 )
-                content = getattr(resp, "content", None)
+                resp = await asyncio.to_thread(self._client.request, req)
+                content = getattr(getattr(resp, "raw", None), "content", None)
                 if content:
                     payload = json.loads(content)
                     parsed = _parse_bot_response(payload) or {}
@@ -4212,6 +4473,9 @@ def probe_bot(app_id: str, app_secret: str, domain: str) -> Optional[dict]:
 
     Uses lark_oapi SDK when available, falls back to raw HTTP otherwise.
     Returns {"bot_name": ..., "bot_open_id": ...} on success, None on failure.
+
+    Note: ``bot_open_id`` here is the bot's app-scoped open_id — the same ID
+    that Feishu puts in @mention payloads.  It is NOT the app_id.
     """
     if FEISHU_AVAILABLE:
         return _probe_bot_sdk(app_id, app_secret, domain)
@@ -4232,12 +4496,12 @@ def _build_onboard_client(app_id: str, app_secret: str, domain: str) -> Any:
 
 
 def _parse_bot_response(data: dict) -> Optional[dict]:
-    """Extract bot_name and bot_open_id from a /bot/v3/info response."""
+    # /bot/v3/info returns bot.app_name; legacy paths used bot_name — accept both.
     if data.get("code") != 0:
         return None
     bot = data.get("bot") or data.get("data", {}).get("bot") or {}
     return {
-        "bot_name": bot.get("bot_name"),
+        "bot_name": bot.get("app_name") or bot.get("bot_name"),
         "bot_open_id": bot.get("open_id"),
     }
 
@@ -4246,13 +4510,18 @@ def _probe_bot_sdk(app_id: str, app_secret: str, domain: str) -> Optional[dict]:
     """Probe bot info using lark_oapi SDK."""
     try:
         client = _build_onboard_client(app_id, app_secret, domain)
-        resp = client.request(
-            method="GET",
-            url="/open-apis/bot/v3/info",
-            body=None,
-            raw_response=True,
+        req = (
+            BaseRequest.builder()
+            .http_method(HttpMethod.GET)
+            .uri("/open-apis/bot/v3/info")
+            .token_types({AccessTokenType.TENANT})
+            .build()
         )
-        return _parse_bot_response(json.loads(resp.content))
+        resp = client.request(req)
+        content = getattr(getattr(resp, "raw", None), "content", None)
+        if content is None:
+            return None
+        return _parse_bot_response(json.loads(content))
     except Exception as exc:
         logger.debug("[Feishu onboard] SDK probe failed: %s", exc)
         return None

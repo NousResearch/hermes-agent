@@ -195,6 +195,26 @@ class TestXiaomiNormalization:
         from hermes_cli.model_normalize import _MATCHING_PREFIX_STRIP_PROVIDERS
         assert "xiaomi" in _MATCHING_PREFIX_STRIP_PROVIDERS
 
+    def test_lowercase_model_provider(self):
+        """Xiaomi must be in _LOWERCASE_MODEL_PROVIDERS."""
+        from hermes_cli.model_normalize import _LOWERCASE_MODEL_PROVIDERS
+        assert "xiaomi" in _LOWERCASE_MODEL_PROVIDERS
+
+    def test_lowercase_subset_of_matching_prefix(self):
+        """_LOWERCASE_MODEL_PROVIDERS must be a subset of _MATCHING_PREFIX_STRIP_PROVIDERS.
+
+        Otherwise the .lower() code path is unreachable dead code — the
+        provider check at line 422 gates entry to the block.
+        """
+        from hermes_cli.model_normalize import (
+            _LOWERCASE_MODEL_PROVIDERS,
+            _MATCHING_PREFIX_STRIP_PROVIDERS,
+        )
+        assert _LOWERCASE_MODEL_PROVIDERS.issubset(_MATCHING_PREFIX_STRIP_PROVIDERS), (
+            f"_LOWERCASE_MODEL_PROVIDERS has entries not in _MATCHING_PREFIX_STRIP_PROVIDERS: "
+            f"{_LOWERCASE_MODEL_PROVIDERS - _MATCHING_PREFIX_STRIP_PROVIDERS}"
+        )
+
     def test_normalize_strips_provider_prefix(self):
         from hermes_cli.model_normalize import normalize_model_for_provider
         result = normalize_model_for_provider("xiaomi/mimo-v2-pro", "xiaomi")
@@ -204,6 +224,40 @@ class TestXiaomiNormalization:
         from hermes_cli.model_normalize import normalize_model_for_provider
         result = normalize_model_for_provider("mimo-v2-pro", "xiaomi")
         assert result == "mimo-v2-pro"
+
+    @pytest.mark.parametrize("empty_input", ["", None, "   "])
+    def test_normalize_empty_and_none(self, empty_input):
+        """None, empty, and whitespace-only inputs return empty string."""
+        from hermes_cli.model_normalize import normalize_model_for_provider
+        result = normalize_model_for_provider(empty_input, "xiaomi")
+        assert result == ""
+
+    @pytest.mark.parametrize("input_name,expected", [
+        ("MiMo-V2.5-Pro", "mimo-v2.5-pro"),
+        ("MIMO-V2.5-PRO", "mimo-v2.5-pro"),
+        ("MiMo-v2.5-pro", "mimo-v2.5-pro"),
+        ("mimo-v2.5-pro", "mimo-v2.5-pro"),     # already lowercase
+        ("MiMo-V2-Pro", "mimo-v2-pro"),
+        ("MiMo-V2-Omni", "mimo-v2-omni"),
+        ("MiMo-V2-Flash", "mimo-v2-flash"),
+        ("MiMo-V2.5", "mimo-v2.5"),
+    ])
+    def test_normalize_lowercases_mixed_case(self, input_name, expected):
+        """Xiaomi's API requires lowercase model IDs — mixed case from docs must be lowered."""
+        from hermes_cli.model_normalize import normalize_model_for_provider
+        result = normalize_model_for_provider(input_name, "xiaomi")
+        assert result == expected
+
+    @pytest.mark.parametrize("input_name,expected", [
+        ("xiaomi/MiMo-V2.5-Pro", "mimo-v2.5-pro"),
+        ("xiaomi/MIMO-V2.5-PRO", "mimo-v2.5-pro"),
+        ("xiaomi/mimo-v2.5-pro", "mimo-v2.5-pro"),
+    ])
+    def test_normalize_strips_prefix_and_lowercases(self, input_name, expected):
+        """Provider prefix stripping AND lowercasing must both work together."""
+        from hermes_cli.model_normalize import normalize_model_for_provider
+        result = normalize_model_for_provider(input_name, "xiaomi")
+        assert result == expected
 
 
 # =============================================================================
@@ -287,10 +341,10 @@ class TestXiaomiAuxiliary:
         assert "xiaomi" not in _API_KEY_PROVIDER_AUX_MODELS
 
     def test_vision_model_override(self):
-        """Xiaomi vision tasks should use mimo-v2-omni (multimodal), not the main model."""
+        """Xiaomi vision tasks should use mimo-v2.5 (multimodal), not the main model."""
         from agent.auxiliary_client import _PROVIDER_VISION_MODELS
         assert "xiaomi" in _PROVIDER_VISION_MODELS
-        assert _PROVIDER_VISION_MODELS["xiaomi"] == "mimo-v2-omni"
+        assert _PROVIDER_VISION_MODELS["xiaomi"] == "mimo-v2.5"
 
 
 # =============================================================================

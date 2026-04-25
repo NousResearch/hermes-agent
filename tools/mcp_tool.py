@@ -78,11 +78,85 @@ import math
 import os
 import re
 import shutil
+import sys
 import threading
 import time
+from datetime import datetime
 from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
+
+
+# ---------------------------------------------------------------------------
+# Stdio subprocess stderr redirection
+# ---------------------------------------------------------------------------
+#
+# The MCP SDK's ``stdio_client(server, errlog=sys.stderr)`` defaults the
+# subprocess stderr stream to the parent process's real stderr, i.e. the
+# user's TTY.  That means any MCP server we spawn at startup (FastMCP
+# banners, slack-mcp-server JSON startup logs, etc.) writes directly onto
+# the terminal while prompt_toolkit / Rich is rendering the TUI — which
+# corrupts the display and can hang the session.
+#
+# Instead we redirect every stdio MCP subprocess's stderr into a shared
+# per-profile log file (~/.hermes/logs/mcp-stderr.log), tagged with the
+# server name so individual servers remain debuggable.
+#
+# Fallback is os.devnull if opening the log file fails for any reason.
+
+_mcp_stderr_log_fh: Optional[Any] = None
+_mcp_stderr_log_lock = threading.Lock()
+
+
+def _get_mcp_stderr_log() -> Any:
+    """Return a shared append-mode file handle for MCP subprocess stderr.
+
+    Opened once per process and reused for every stdio server.  Must have a
+    real OS-level file descriptor (``fileno()``) because asyncio's subprocess
+    machinery wires the child's stderr directly to that fd.  Falls back to
+    ``/dev/null`` if opening the log file fails.
+    """
+    global _mcp_stderr_log_fh
+    with _mcp_stderr_log_lock:
+        if _mcp_stderr_log_fh is not None:
+            return _mcp_stderr_log_fh
+        try:
+            from hermes_constants import get_hermes_home
+            log_dir = get_hermes_home() / "logs"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_path = log_dir / "mcp-stderr.log"
+            # Line-buffered so server output lands on disk promptly; errors=
+            # "replace" tolerates garbled binary output from misbehaving
+            # servers.
+            fh = open(log_path, "a", encoding="utf-8", errors="replace", buffering=1)
+            # Sanity-check: confirm a real fd is available before we commit.
+            fh.fileno()
+            _mcp_stderr_log_fh = fh
+        except Exception as exc:  # pragma: no cover — best-effort fallback
+            logger.debug("Failed to open MCP stderr log, using devnull: %s", exc)
+            try:
+                _mcp_stderr_log_fh = open(os.devnull, "w", encoding="utf-8")
+            except Exception:
+                # Last resort: the real stderr.  Not ideal for TUI users but
+                # it matches pre-fix behavior.
+                _mcp_stderr_log_fh = sys.stderr
+        return _mcp_stderr_log_fh
+
+
+def _write_stderr_log_header(server_name: str) -> None:
+    """Write a human-readable session marker before launching a server.
+
+    Gives operators a way to find each server's output in the shared
+    ``mcp-stderr.log`` file without needing per-line prefixes (which would
+    require a pipe + reader thread and complicate shutdown).
+    """
+    fh = _get_mcp_stderr_log()
+    try:
+        ts = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        fh.write(f"\n===== [{ts}] starting MCP server '{server_name}' =====\n")
+        fh.flush()
+    except Exception:
+        pass
 
 # ---------------------------------------------------------------------------
 # Graceful import -- MCP SDK is an optional dependency
@@ -93,6 +167,10 @@ _MCP_HTTP_AVAILABLE = False
 _MCP_SAMPLING_TYPES = False
 _MCP_NOTIFICATION_TYPES = False
 _MCP_MESSAGE_HANDLER_SUPPORTED = False
+# Conservative fallback for SDK builds that don't export LATEST_PROTOCOL_VERSION.
+# Streamable HTTP was introduced by 2025-03-26, so this remains valid for the
+# HTTP transport path even on older-but-supported SDK versions.
+LATEST_PROTOCOL_VERSION = "2025-03-26"
 try:
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
@@ -109,6 +187,10 @@ try:
         _MCP_NEW_HTTP = True
     except ImportError:
         _MCP_NEW_HTTP = False
+    try:
+        from mcp.types import LATEST_PROTOCOL_VERSION
+    except ImportError:
+        logger.debug("mcp.types.LATEST_PROTOCOL_VERSION not available -- using fallback protocol version")
     # Sampling types -- separated so older SDK versions don't break MCP support
     try:
         from mcp.types import (
@@ -962,12 +1044,19 @@ class MCPServerTask:
 
         # Snapshot child PIDs before spawning so we can track the new one.
         pids_before = _snapshot_child_pids()
-        async with stdio_client(server_params) as (read_stream, write_stream):
+        # Redirect subprocess stderr into a shared log file so MCP servers
+        # (FastMCP banners, slack-mcp startup JSON, etc.) don't dump onto
+        # the user's TTY and corrupt the TUI.  Preserves debuggability via
+        # ~/.hermes/logs/mcp-stderr.log.
+        _write_stderr_log_header(self.name)
+        _errlog = _get_mcp_stderr_log()
+        async with stdio_client(server_params, errlog=_errlog) as (read_stream, write_stream):
             # Capture the newly spawned subprocess PID for force-kill cleanup.
             new_pids = _snapshot_child_pids() - pids_before
             if new_pids:
                 with _lock:
-                    _stdio_pids.update(new_pids)
+                    for _pid in new_pids:
+                        _stdio_pids[_pid] = self.name
             async with ClientSession(read_stream, write_stream, **sampling_kwargs) as session:
                 await session.initialize()
                 self.session = session
@@ -980,7 +1069,8 @@ class MCPServerTask:
         # Context exited cleanly — subprocess was terminated by the SDK.
         if new_pids:
             with _lock:
-                _stdio_pids.difference_update(new_pids)
+                for _pid in new_pids:
+                    _stdio_pids.pop(_pid, None)
 
     async def _run_http(self, config: dict):
         """Run the server using HTTP/StreamableHTTP transport."""
@@ -993,7 +1083,14 @@ class MCPServerTask:
 
         url = config["url"]
         headers = dict(config.get("headers") or {})
+        # Some MCP servers require MCP-Protocol-Version on the initial
+        # initialize request and reject session-less POSTs otherwise.
+        # Seed it as a client-level default, but treat user overrides as
+        # case-insensitive so conventional casing is preserved.
+        if not any(key.lower() == "mcp-protocol-version" for key in headers):
+            headers["mcp-protocol-version"] = LATEST_PROTOCOL_VERSION
         connect_timeout = config.get("connect_timeout", _DEFAULT_CONNECT_TIMEOUT)
+        ssl_verify = config.get("ssl_verify", True)
 
         # OAuth 2.1 PKCE: route through the central MCPOAuthManager so the
         # same provider instance is reused across reconnects, pre-flow
@@ -1021,9 +1118,23 @@ class MCPServerTask:
             # matching the SDK's own create_mcp_http_client defaults.
             import httpx
 
+            _original_url = httpx.URL(url)
+
+            async def _strip_auth_on_cross_origin_redirect(response):
+                """Strip Authorization headers when redirected to a different origin."""
+                if response.is_redirect and response.next_request:
+                    target = response.next_request.url
+                    if (target.scheme, target.host, target.port) != (
+                        _original_url.scheme, _original_url.host, _original_url.port,
+                    ):
+                        response.next_request.headers.pop("authorization", None)
+                        response.next_request.headers.pop("Authorization", None)
+
             client_kwargs: dict = {
                 "follow_redirects": True,
                 "timeout": httpx.Timeout(float(connect_timeout), read=300.0),
+                "verify": ssl_verify,
+                "event_hooks": {"response": [_strip_auth_on_cross_origin_redirect]},
             }
             if headers:
                 client_kwargs["headers"] = headers
@@ -1052,6 +1163,7 @@ class MCPServerTask:
             _http_kwargs: dict = {
                 "headers": headers,
                 "timeout": float(connect_timeout),
+                "verify": ssl_verify,
             }
             if _oauth_auth is not None:
                 _http_kwargs["auth"] = _oauth_auth
@@ -1470,6 +1582,129 @@ def _handle_auth_error_and_retry(
         "server": server_name,
     }, ensure_ascii=False)
 
+
+# Substrings (lower-cased match) that indicate the MCP server rejected
+# the request because its server-side transport session expired /
+# was garbage-collected.  The caller's OAuth token is still valid —
+# only the transport-layer session state needs rebuilding.  See #13383.
+_SESSION_EXPIRED_MARKERS: tuple = (
+    "invalid or expired session",
+    "expired session",
+    "session expired",
+    "session not found",
+    "unknown session",
+)
+
+
+def _is_session_expired_error(exc: BaseException) -> bool:
+    """Return True if ``exc`` looks like an MCP transport session expiry.
+
+    Streamable HTTP MCP servers may garbage-collect server-side session
+    state while the OAuth token remains valid — idle TTL, server
+    restart, horizontal-scaling pod rotation, etc.  The SDK surfaces
+    this as a JSON-RPC error whose message contains phrases like
+    ``"Invalid or expired session"``.  This class of failure is
+    distinct from :func:`_is_auth_error`: re-running the OAuth refresh
+    flow would be pointless because the access token is fine.  What's
+    needed is a transport reconnect — tear down and rebuild the
+    ``streamablehttp_client`` + ``ClientSession`` pair, which is
+    exactly what ``MCPServerTask._reconnect_event`` triggers.
+    """
+    if isinstance(exc, InterruptedError):
+        return False
+    # Exception messages vary across SDK versions + server
+    # implementations, so match on a small allow-list of stable
+    # substrings rather than exception type.  Kept narrow to avoid
+    # false positives on unrelated server errors.
+    msg = str(exc).lower()
+    if not msg:
+        return False
+    return any(marker in msg for marker in _SESSION_EXPIRED_MARKERS)
+
+
+def _handle_session_expired_and_retry(
+    server_name: str,
+    exc: BaseException,
+    retry_call,
+    op_description: str,
+):
+    """Trigger a transport reconnect and retry once on session expiry.
+
+    Unlike :func:`_handle_auth_error_and_retry`, this does **not** call
+    the OAuth manager's ``handle_401`` — the access token is still
+    valid, only the server-side session state is stale.  Setting
+    ``_reconnect_event`` causes the server task's lifecycle loop to
+    tear down the current ``streamablehttp_client`` + ``ClientSession``
+    and rebuild them, reusing the existing OAuth provider instance.
+    See #13383.
+
+    Args:
+        server_name: Name of the MCP server that raised.
+        exc: The exception from the failed call.
+        retry_call: Zero-arg callable that re-runs the operation,
+            returning the same JSON string format as the handler.
+        op_description: Human-readable name of the operation (logs).
+
+    Returns:
+        A JSON string if reconnect + retry was attempted and produced
+        a response, or ``None`` to fall through to the caller's
+        generic error path (not a session-expired error, no server
+        record, reconnect didn't ready in time, or retry also failed).
+    """
+    if not _is_session_expired_error(exc):
+        return None
+
+    with _lock:
+        srv = _servers.get(server_name)
+    if srv is None or not hasattr(srv, "_reconnect_event"):
+        return None
+
+    loop = _mcp_loop
+    if loop is None or not loop.is_running():
+        return None
+
+    logger.info(
+        "MCP server '%s': %s failed with session-expired error (%s); "
+        "signalling transport reconnect and retrying once.",
+        server_name, op_description, exc,
+    )
+
+    # Trigger the same reconnect mechanism the OAuth recovery path
+    # uses, then wait briefly for the new session to come back ready.
+    loop.call_soon_threadsafe(srv._reconnect_event.set)
+    deadline = time.monotonic() + 15
+    ready = False
+    while time.monotonic() < deadline:
+        if srv.session is not None and srv._ready.is_set():
+            ready = True
+            break
+        time.sleep(0.25)
+    if not ready:
+        logger.warning(
+            "MCP server '%s': reconnect did not ready within 15s after "
+            "session-expired error; falling through to error response.",
+            server_name,
+        )
+        return None
+
+    try:
+        result = retry_call()
+        try:
+            parsed = json.loads(result)
+            if "error" not in parsed:
+                _server_error_counts[server_name] = 0
+                return result
+        except (json.JSONDecodeError, TypeError):
+            _server_error_counts[server_name] = 0
+            return result
+    except Exception as retry_exc:
+        logger.warning(
+            "MCP %s/%s retry after session reconnect failed: %s",
+            server_name, op_description, retry_exc,
+        )
+    return None
+
+
 # Dedicated event loop running in a background daemon thread.
 _mcp_loop: Optional[asyncio.AbstractEventLoop] = None
 _mcp_thread: Optional[threading.Thread] = None
@@ -1481,7 +1716,7 @@ _lock = threading.Lock()
 # them on shutdown if the graceful cleanup (SDK context-manager teardown)
 # fails or times out.  PIDs are added after connection and removed on
 # normal server shutdown.
-_stdio_pids: set = set()
+_stdio_pids: Dict[int, str] = {}  # pid -> server_name
 
 
 def _snapshot_child_pids() -> set:
@@ -1756,6 +1991,16 @@ def _make_tool_handler(server_name: str, tool_name: str, tool_timeout: float):
             if recovered is not None:
                 return recovered
 
+            # Transport session expiry (#13383): same reconnect flow
+            # but skips OAuth recovery because the access token is
+            # still valid — only the server-side session is stale.
+            recovered = _handle_session_expired_and_retry(
+                server_name, exc, _call_once,
+                f"tools/call {tool_name}",
+            )
+            if recovered is not None:
+                return recovered
+
             _bump_server_error(server_name)
             logger.error(
                 "MCP tool %s/%s call failed: %s",
@@ -1806,6 +2051,11 @@ def _make_list_resources_handler(server_name: str, tool_timeout: float):
             return _interrupted_call_result()
         except Exception as exc:
             recovered = _handle_auth_error_and_retry(
+                server_name, exc, _call_once, "resources/list",
+            )
+            if recovered is not None:
+                return recovered
+            recovered = _handle_session_expired_and_retry(
                 server_name, exc, _call_once, "resources/list",
             )
             if recovered is not None:
@@ -1864,6 +2114,11 @@ def _make_read_resource_handler(server_name: str, tool_timeout: float):
             )
             if recovered is not None:
                 return recovered
+            recovered = _handle_session_expired_and_retry(
+                server_name, exc, _call_once, "resources/read",
+            )
+            if recovered is not None:
+                return recovered
             logger.error(
                 "MCP %s/read_resource failed: %s", server_name, exc,
             )
@@ -1917,6 +2172,11 @@ def _make_list_prompts_handler(server_name: str, tool_timeout: float):
             return _interrupted_call_result()
         except Exception as exc:
             recovered = _handle_auth_error_and_retry(
+                server_name, exc, _call_once, "prompts/list",
+            )
+            if recovered is not None:
+                return recovered
+            recovered = _handle_session_expired_and_retry(
                 server_name, exc, _call_once, "prompts/list",
             )
             if recovered is not None:
@@ -1986,6 +2246,11 @@ def _make_get_prompt_handler(server_name: str, tool_timeout: float):
             )
             if recovered is not None:
                 return recovered
+            recovered = _handle_session_expired_and_retry(
+                server_name, exc, _call_once, "prompts/get",
+            )
+            if recovered is not None:
+                return recovered
             logger.error(
                 "MCP %s/get_prompt failed: %s", server_name, exc,
             )
@@ -2014,14 +2279,92 @@ def _make_check_fn(server_name: str):
 # ---------------------------------------------------------------------------
 
 def _normalize_mcp_input_schema(schema: dict | None) -> dict:
-    """Normalize MCP input schemas for LLM tool-calling compatibility."""
+    """Normalize MCP input schemas for LLM tool-calling compatibility.
+
+    MCP servers can emit plain JSON Schema with ``definitions`` /
+    ``#/definitions/...`` references.  Kimi / Moonshot rejects that form and
+    requires local refs to point into ``#/$defs/...`` instead.  Normalize the
+    common draft-07 shape here so MCP tool schemas remain portable across
+    OpenAI-compatible providers.
+
+    Additional MCP-server robustness repairs applied recursively:
+
+    * Missing or ``null`` ``type`` on an object-shaped node is coerced to
+      ``"object"`` (some servers omit it).  See PR #4897.
+    * When an ``object`` node lacks ``properties``, an empty ``properties``
+      dict is added so ``required`` entries don't dangle.
+    * ``required`` arrays are pruned to only names that exist in
+      ``properties``; otherwise Google AI Studio / Gemini 400s with
+      ``property is not defined``.  See PR #4651.
+
+    All repairs are provider-agnostic and ideally produce a schema valid on
+    OpenAI, Anthropic, Gemini, and Moonshot in one pass.
+    """
     if not schema:
         return {"type": "object", "properties": {}}
 
-    if schema.get("type") == "object" and "properties" not in schema:
-        return {**schema, "properties": {}}
+    def _rewrite_local_refs(node):
+        if isinstance(node, dict):
+            normalized = {}
+            for key, value in node.items():
+                out_key = "$defs" if key == "definitions" else key
+                normalized[out_key] = _rewrite_local_refs(value)
+            ref = normalized.get("$ref")
+            if isinstance(ref, str) and ref.startswith("#/definitions/"):
+                normalized["$ref"] = "#/$defs/" + ref[len("#/definitions/"):]
+            return normalized
+        if isinstance(node, list):
+            return [_rewrite_local_refs(item) for item in node]
+        return node
 
-    return schema
+    def _repair_object_shape(node):
+        """Recursively repair object-shaped nodes: fill type, prune required."""
+        if isinstance(node, list):
+            return [_repair_object_shape(item) for item in node]
+        if not isinstance(node, dict):
+            return node
+
+        repaired = {k: _repair_object_shape(v) for k, v in node.items()}
+
+        # Coerce missing / null type when the shape is clearly an object
+        # (has properties or required but no type).
+        if not repaired.get("type") and (
+            "properties" in repaired or "required" in repaired
+        ):
+            repaired["type"] = "object"
+
+        if repaired.get("type") == "object":
+            # Ensure properties exists so required can reference it safely
+            if "properties" not in repaired or not isinstance(
+                repaired.get("properties"), dict
+            ):
+                repaired["properties"] = {} if "properties" not in repaired else repaired["properties"]
+                if not isinstance(repaired.get("properties"), dict):
+                    repaired["properties"] = {}
+
+            # Prune required to only include names that exist in properties
+            required = repaired.get("required")
+            if isinstance(required, list):
+                props = repaired.get("properties") or {}
+                valid = [r for r in required if isinstance(r, str) and r in props]
+                if len(valid) != len(required):
+                    if valid:
+                        repaired["required"] = valid
+                    else:
+                        repaired.pop("required", None)
+
+        return repaired
+
+    normalized = _rewrite_local_refs(schema)
+    normalized = _repair_object_shape(normalized)
+
+    # Ensure top-level is a well-formed object schema
+    if not isinstance(normalized, dict):
+        return {"type": "object", "properties": {}}
+    if normalized.get("type") == "object" and "properties" not in normalized:
+        normalized = {**normalized, "properties": {}}
+
+    return normalized
 
 
 def sanitize_mcp_name_component(value: str) -> str:
@@ -2052,7 +2395,7 @@ def _convert_mcp_schema(server_name: str, mcp_tool) -> dict:
     return {
         "name": prefixed_name,
         "description": mcp_tool.description or f"MCP tool {mcp_tool.name} from {server_name}",
-        "parameters": _normalize_mcp_input_schema(mcp_tool.inputSchema),
+        "parameters": _normalize_mcp_input_schema(getattr(mcp_tool, "inputSchema", None)),
     }
 
 
@@ -2117,6 +2460,8 @@ def _build_utility_schemas(server_name: str) -> List[dict]:
                         "arguments": {
                             "type": "object",
                             "description": "Optional arguments to pass to the prompt",
+                            "properties": {},
+                            "additionalProperties": True,
                         },
                     },
                     "required": ["name"],
@@ -2615,27 +2960,49 @@ def shutdown_mcp_servers():
 
 
 def _kill_orphaned_mcp_children() -> None:
-    """Best-effort kill of MCP stdio subprocesses that survived loop shutdown.
+    """Graceful shutdown of MCP stdio subprocesses that survived loop cleanup.
 
-    After the MCP event loop is stopped, stdio server subprocesses *should*
-    have been terminated by the SDK's context-manager cleanup.  If the loop
-    was stuck or the shutdown timed out, orphaned children may remain.
+    Sends SIGTERM first, waits 2 seconds, then escalates to SIGKILL.
+    This prevents shared-resource collisions when multiple hermes processes
+    run on the same host (each has its own _stdio_pids dict).
 
     Only kills PIDs tracked in ``_stdio_pids`` — never arbitrary children.
     """
     import signal as _signal
-    kill_signal = getattr(_signal, "SIGKILL", _signal.SIGTERM)
+    import time as _time
 
     with _lock:
-        pids = list(_stdio_pids)
+        pids = dict(_stdio_pids)
         _stdio_pids.clear()
 
-    for pid in pids:
+    # Fast path: no tracked stdio PIDs to reap. Skip the SIGTERM/sleep/SIGKILL
+    # dance entirely — otherwise every MCP-free shutdown pays a 2s sleep tax.
+    if not pids:
+        return
+
+    # Phase 1: SIGTERM (graceful)
+    for pid, server_name in pids.items():
         try:
-            os.kill(pid, kill_signal)
-            logger.debug("Force-killed orphaned MCP stdio process %d", pid)
+            os.kill(pid, _signal.SIGTERM)
+            logger.debug("Sent SIGTERM to orphaned MCP process %d (%s)", pid, server_name)
         except (ProcessLookupError, PermissionError, OSError):
-            pass  # Already exited or inaccessible
+            pass
+
+    # Phase 2: Wait for graceful exit
+    _time.sleep(2)
+
+    # Phase 3: SIGKILL any survivors
+    _sigkill = getattr(_signal, "SIGKILL", _signal.SIGTERM)
+    for pid, server_name in pids.items():
+        try:
+            os.kill(pid, 0)  # Check if still alive
+            os.kill(pid, _sigkill)
+            logger.warning(
+                "Force-killed MCP process %d (%s) after SIGTERM timeout",
+                pid, server_name,
+            )
+        except (ProcessLookupError, PermissionError, OSError):
+            pass  # Good — exited after SIGTERM
 
 
 def _stop_mcp_loop():

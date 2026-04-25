@@ -1031,7 +1031,7 @@ class TestReactions:
 
     @pytest.mark.asyncio
     async def test_reactions_in_message_flow(self, adapter):
-        """Reactions should be added on receipt and swapped on completion."""
+        """Reactions should be bracketed around actual processing via hooks."""
         adapter._app.client.reactions_add = AsyncMock()
         adapter._app.client.reactions_remove = AsyncMock()
         adapter._app.client.users_info = AsyncMock(return_value={
@@ -1047,14 +1047,146 @@ class TestReactions:
         }
         await adapter._handle_slack_message(event)
 
-        # Should have added 👀, then removed 👀, then added ✅
+        # _handle_slack_message should register the message for reactions
+        assert "1234567890.000001" in adapter._reacting_message_ids
+
+        # Simulate the base class calling on_processing_start
+        from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+        from gateway.config import Platform
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="dm",
+            user_id="U_USER",
+        )
+        msg_event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="1234567890.000001",
+        )
+        await adapter.on_processing_start(msg_event)
+
+        add_calls = adapter._app.client.reactions_add.call_args_list
+        assert len(add_calls) == 1
+        assert add_calls[0].kwargs["name"] == "eyes"
+
+        # Simulate the base class calling on_processing_complete
+        from gateway.platforms.base import ProcessingOutcome
+        await adapter.on_processing_complete(msg_event, ProcessingOutcome.SUCCESS)
+
         add_calls = adapter._app.client.reactions_add.call_args_list
         remove_calls = adapter._app.client.reactions_remove.call_args_list
         assert len(add_calls) == 2
-        assert add_calls[0].kwargs["name"] == "eyes"
         assert add_calls[1].kwargs["name"] == "white_check_mark"
         assert len(remove_calls) == 1
         assert remove_calls[0].kwargs["name"] == "eyes"
+
+        # Message ID should be cleaned up
+        assert "1234567890.000001" not in adapter._reacting_message_ids
+
+    @pytest.mark.asyncio
+    async def test_reactions_failure_outcome(self, adapter):
+        """Failed processing should add :x: instead of :white_check_mark:."""
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+
+        from gateway.platforms.base import MessageEvent, MessageType, SessionSource, ProcessingOutcome
+        from gateway.config import Platform
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="dm",
+            user_id="U_USER",
+        )
+        adapter._reacting_message_ids.add("1234567890.000002")
+        msg_event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="1234567890.000002",
+        )
+        await adapter.on_processing_complete(msg_event, ProcessingOutcome.FAILURE)
+
+        add_calls = adapter._app.client.reactions_add.call_args_list
+        remove_calls = adapter._app.client.reactions_remove.call_args_list
+        assert len(add_calls) == 1
+        assert add_calls[0].kwargs["name"] == "x"
+        assert len(remove_calls) == 1
+        assert remove_calls[0].kwargs["name"] == "eyes"
+
+    @pytest.mark.asyncio
+    async def test_reactions_skipped_for_non_dm_non_mention(self, adapter):
+        """Non-DM, non-mention messages should not get reactions."""
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+        adapter._app.client.users_info = AsyncMock(return_value={
+            "user": {"profile": {"display_name": "Tyler"}}
+        })
+
+        event = {
+            "text": "hello",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000003",
+        }
+        await adapter._handle_slack_message(event)
+
+        # Should NOT register for reactions when not mentioned in a channel
+        assert "1234567890.000003" not in adapter._reacting_message_ids
+        adapter._app.client.reactions_add.assert_not_called()
+        adapter._app.client.reactions_remove.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reactions_disabled_via_env(self, adapter, monkeypatch):
+        """SLACK_REACTIONS=false should suppress all reaction lifecycle."""
+        monkeypatch.setenv("SLACK_REACTIONS", "false")
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+        adapter._app.client.users_info = AsyncMock(return_value={
+            "user": {"profile": {"display_name": "Tyler"}}
+        })
+
+        event = {
+            "text": "hello",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "im",
+            "ts": "1234567890.000004",
+        }
+        await adapter._handle_slack_message(event)
+
+        # Should NOT register for reactions when toggle is off
+        assert "1234567890.000004" not in adapter._reacting_message_ids
+
+        # Hooks should also be no-ops when disabled
+        from gateway.platforms.base import MessageEvent, MessageType, SessionSource, ProcessingOutcome
+        from gateway.config import Platform
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="dm",
+            user_id="U_USER",
+        )
+        msg_event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="1234567890.000004",
+        )
+        # Force-add to verify hooks respect the toggle independently
+        adapter._reacting_message_ids.add("1234567890.000004")
+        await adapter.on_processing_start(msg_event)
+        await adapter.on_processing_complete(msg_event, ProcessingOutcome.SUCCESS)
+
+        adapter._app.client.reactions_add.assert_not_called()
+        adapter._app.client.reactions_remove.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reactions_enabled_by_default(self, adapter):
+        """SLACK_REACTIONS defaults to true (matches existing behavior)."""
+        assert adapter._reactions_enabled() is True
 
 
 # ---------------------------------------------------------------------------

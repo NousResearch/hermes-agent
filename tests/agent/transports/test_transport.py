@@ -114,6 +114,14 @@ class TestAnthropicTransport:
         r = SimpleNamespace(content=[])
         assert transport.validate_response(r) is False
 
+    def test_validate_response_empty_content_with_end_turn_is_valid(self, transport):
+        r = SimpleNamespace(content=[], stop_reason="end_turn")
+        assert transport.validate_response(r) is True
+
+    def test_validate_response_empty_content_with_tool_use_is_invalid(self, transport):
+        r = SimpleNamespace(content=[], stop_reason="tool_use")
+        assert transport.validate_response(r) is False
+
     def test_validate_response_valid(self, transport):
         r = SimpleNamespace(content=[SimpleNamespace(type="text", text="hello")])
         assert transport.validate_response(r) is True

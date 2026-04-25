@@ -31,11 +31,13 @@ logger = logging.getLogger(__name__)
 import os
 import random
 import re
+import ssl
 import sys
 import tempfile
 import time
 import threading
 from types import SimpleNamespace
+import urllib.request
 import uuid
 from typing import List, Dict, Any, Optional
 from openai import OpenAI
@@ -76,8 +78,6 @@ from tools.interrupt import set_interrupt as _set_interrupt
 from tools.browser_tool import cleanup_browser
 
 
-from hermes_constants import OPENROUTER_BASE_URL
-
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import build_memory_context_block, sanitize_context
 from agent.retry_utils import jittered_backoff
@@ -98,19 +98,11 @@ from agent.model_metadata import (
 from agent.context_compressor import ContextCompressor
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.prompt_caching import apply_anthropic_cache_control
-from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, DEVELOPER_ROLE_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
+from agent.prompt_builder import build_skills_system_prompt, build_context_files_prompt, build_environment_hints, load_soul_md, TOOL_USE_ENFORCEMENT_GUIDANCE, TOOL_USE_ENFORCEMENT_MODELS, GOOGLE_MODEL_OPERATIONAL_GUIDANCE, OPENAI_MODEL_EXECUTION_GUIDANCE
 from agent.usage_pricing import estimate_usage_cost, normalize_usage
 from agent.codex_responses_adapter import (
-    _chat_content_to_responses_parts,
-    _chat_messages_to_responses_input as _codex_chat_messages_to_responses_input,
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
     _deterministic_call_id as _codex_deterministic_call_id,
-    _extract_responses_message_text as _codex_extract_responses_message_text,
-    _extract_responses_reasoning_text as _codex_extract_responses_reasoning_text,
-    _normalize_codex_response as _codex_normalize_codex_response,
-    _preflight_codex_api_kwargs as _codex_preflight_codex_api_kwargs,
-    _preflight_codex_input_items as _codex_preflight_codex_input_items,
-    _responses_tools as _codex_responses_tools,
     _split_responses_tool_id as _codex_split_responses_tool_id,
     _summarize_user_message_for_log,
 )
@@ -189,6 +181,25 @@ def _get_proxy_from_env() -> Optional[str]:
         if value:
             return normalize_proxy_url(value)
     return None
+
+
+def _get_proxy_for_base_url(base_url: Optional[str]) -> Optional[str]:
+    """Return an env-configured proxy unless NO_PROXY excludes this base URL."""
+    proxy = _get_proxy_from_env()
+    if not proxy or not base_url:
+        return proxy
+
+    host = base_url_hostname(base_url)
+    if not host:
+        return proxy
+
+    try:
+        if urllib.request.proxy_bypass_environment(host):
+            return None
+    except Exception:
+        pass
+
+    return proxy
 
 
 def _install_safe_stdio() -> None:
@@ -272,6 +283,7 @@ _MAX_TOOL_WORKERS = 8
 _DESTRUCTIVE_PATTERNS = re.compile(
     r"""(?:^|\s|&&|\|\||;|`)(?:
         rm\s|rmdir\s|
+        cp\s|install\s|
         mv\s|
         sed\s+-i|
         truncate\s|
@@ -385,9 +397,8 @@ def _sanitize_surrogates(text: str) -> str:
     return text
 
 
-# _chat_content_to_responses_parts and _summarize_user_message_for_log are
-# imported from agent.codex_responses_adapter (see import block above).
-# They remain importable from run_agent for backward compatibility.
+# _summarize_user_message_for_log is imported from agent.codex_responses_adapter
+# (see import block above). Remains importable from run_agent for backward compat.
 
 
 def _sanitize_structure_surrogates(payload: Any) -> bool:
@@ -491,6 +502,48 @@ def _sanitize_messages_surrogates(messages: list) -> bool:
     return found
 
 
+def _escape_invalid_chars_in_json_strings(raw: str) -> str:
+    """Escape unescaped control chars inside JSON string values.
+
+    Walks the raw JSON character-by-character, tracking whether we are
+    inside a double-quoted string. Inside strings, replaces literal
+    control characters (0x00-0x1F) that aren't already part of an escape
+    sequence with their ``\\uXXXX`` equivalents. Pass-through for everything
+    else.
+
+    Ported from #12093 — complements the other repair passes in
+    ``_repair_tool_call_arguments`` when ``json.loads(strict=False)`` is
+    not enough (e.g. llama.cpp backends that emit literal apostrophes or
+    tabs alongside other malformations).
+    """
+    out: list[str] = []
+    in_string = False
+    i = 0
+    n = len(raw)
+    while i < n:
+        ch = raw[i]
+        if in_string:
+            if ch == "\\" and i + 1 < n:
+                # Already-escaped char — pass through as-is
+                out.append(ch)
+                out.append(raw[i + 1])
+                i += 2
+                continue
+            if ch == '"':
+                in_string = False
+                out.append(ch)
+            elif ord(ch) < 0x20:
+                out.append(f"\\u{ord(ch):04x}")
+            else:
+                out.append(ch)
+        else:
+            if ch == '"':
+                in_string = True
+            out.append(ch)
+        i += 1
+    return "".join(out)
+
+
 def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     """Attempt to repair malformed tool_call argument JSON.
 
@@ -511,6 +564,23 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
     if raw_stripped == "None":
         logger.warning("Sanitized Python-None tool_call arguments for %s", tool_name)
         return "{}"
+
+    # Repair pass 0: llama.cpp backends sometimes emit literal control
+    # characters (tabs, newlines) inside JSON string values. json.loads
+    # with strict=False accepts these and lets us re-serialise the
+    # result into wire-valid JSON without any string surgery. This is
+    # the most common local-model repair case (#12068).
+    try:
+        parsed = json.loads(raw_stripped, strict=False)
+        reserialised = json.dumps(parsed, separators=(",", ":"))
+        if reserialised != raw_stripped:
+            logger.warning(
+                "Repaired unescaped control chars in tool_call arguments for %s",
+                tool_name,
+            )
+        return reserialised
+    except (json.JSONDecodeError, TypeError, ValueError):
+        pass
 
     # Attempt common JSON repairs
     fixed = raw_stripped
@@ -544,6 +614,21 @@ def _repair_tool_call_arguments(raw_args: str, tool_name: str = "?") -> str:
         )
         return fixed
     except json.JSONDecodeError:
+        pass
+
+    # Repair pass 4: escape unescaped control chars inside JSON strings,
+    # then retry. Catches cases where strict=False alone fails because
+    # other malformations are present too.
+    try:
+        escaped = _escape_invalid_chars_in_json_strings(fixed)
+        if escaped != fixed:
+            json.loads(escaped)
+            logger.warning(
+                "Repaired control-char-laced tool_call arguments for %s: %s → %s",
+                tool_name, raw_stripped[:80], escaped[:80],
+            )
+            return escaped
+    except (json.JSONDecodeError, TypeError, ValueError):
         pass
 
     # Last resort: replace with empty object so the API request doesn't
@@ -674,6 +759,40 @@ def _sanitize_structure_non_ascii(payload: Any) -> bool:
 _QWEN_CODE_VERSION = "0.14.1"
 
 
+def _routermint_headers() -> dict:
+    """Return the User-Agent RouterMint needs to avoid Cloudflare 1010 blocks."""
+    from hermes_cli import __version__ as _HERMES_VERSION
+
+    return {
+        "User-Agent": f"HermesAgent/{_HERMES_VERSION}",
+    }
+
+
+def _pool_may_recover_from_rate_limit(pool) -> bool:
+    """Decide whether to wait for credential-pool rotation instead of falling back.
+
+    The existing pool-rotation path requires the pool to (1) exist and (2) have
+    at least one entry not currently in exhaustion cooldown.  But rotation is
+    only meaningful when the pool has more than one entry.
+
+    With a single-credential pool (common for Gemini OAuth, Vertex service
+    accounts, and any "one personal key" configuration), the primary entry
+    just 429'd and there is nothing to rotate to.  Waiting for the pool
+    cooldown to expire means retrying against the same exhausted quota — the
+    daily-quota 429 will recur immediately, and the retry budget is burned.
+
+    In that case we must fall back to the configured ``fallback_model``
+    instead.  Returns True only when rotation has somewhere to go.
+
+    See issue #11314.
+    """
+    if pool is None:
+        return False
+    if not pool.has_available():
+        return False
+    return len(pool.entries()) > 1
+
+
 def _qwen_portal_headers() -> dict:
     """Return default HTTP headers required by Qwen Portal API."""
     import platform as _plat
@@ -694,6 +813,11 @@ class AIAgent:
     This class manages the conversation flow, tool execution, and response handling
     for AI models that support function calling.
     """
+
+    _TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER = (
+        "[hermes-agent: tool call arguments were corrupted in this session and "
+        "have been dropped to keep the conversation alive. See issue #15236.]"
+    )
 
     @property
     def base_url(self) -> str:
@@ -751,6 +875,11 @@ class AIAgent:
         prefill_messages: List[Dict[str, Any]] = None,
         platform: str = None,
         user_id: str = None,
+        user_name: str = None,
+        chat_id: str = None,
+        chat_name: str = None,
+        chat_type: str = None,
+        thread_id: str = None,
         gateway_session_key: str = None,
         skip_context_files: bool = False,
         skip_memory: bool = False,
@@ -820,6 +949,11 @@ class AIAgent:
         self.ephemeral_system_prompt = ephemeral_system_prompt
         self.platform = platform  # "cli", "telegram", "discord", "whatsapp", etc.
         self._user_id = user_id  # Platform user identifier (gateway sessions)
+        self._user_name = user_name
+        self._chat_id = chat_id
+        self._chat_name = chat_name
+        self._chat_type = chat_type
+        self._thread_id = thread_id
         self._gateway_session_key = gateway_session_key  # Stable per-chat key (e.g. agent:main:telegram:dm:123)
         # Pluggable print function — CLI replaces this with _cprint so that
         # raw ANSI status lines are routed through prompt_toolkit's renderer
@@ -872,6 +1006,13 @@ class AIAgent:
         else:
             self.api_mode = "chat_completions"
 
+        # Eagerly warm the transport cache so import errors surface at init,
+        # not mid-conversation.  Also validates the api_mode is registered.
+        try:
+            self._get_transport()
+        except Exception:
+            pass  # Non-fatal — transport may not exist for all modes yet
+
         try:
             from hermes_cli.model_normalize import (
                 _AGGREGATOR_PROVIDERS,
@@ -907,6 +1048,10 @@ class AIAgent:
             )
         ):
             self.api_mode = "codex_responses"
+            # Invalidate the eager-warmed transport cache — api_mode changed
+            # from chat_completions to codex_responses after the warm at __init__.
+            if hasattr(self, "_transport_cache"):
+                self._transport_cache.clear()
 
         # Pre-warm OpenRouter model metadata cache in a background thread.
         # fetch_model_metadata() is cached for 1 hour; this avoids a blocking
@@ -996,8 +1141,21 @@ class AIAgent:
         self._use_prompt_caching, self._use_native_cache_layout = (
             self._anthropic_prompt_cache_policy()
         )
-        self._cache_ttl = "5m"  # Default 5-minute TTL (1.25x write cost)
-        
+        # Anthropic supports "5m" (default) and "1h" cache TTL tiers. Read from
+        # config.yaml under prompt_caching.cache_ttl; unknown values keep "5m".
+        # 1h tier costs 2x on write vs 1.25x for 5m, but amortizes across long
+        # sessions with >5-minute pauses between turns (#14971).
+        self._cache_ttl = "5m"
+        try:
+            from hermes_cli.config import load_config as _load_pc_cfg
+
+            _pc_cfg = _load_pc_cfg().get("prompt_caching", {}) or {}
+            _ttl = _pc_cfg.get("cache_ttl", "5m")
+            if _ttl in ("5m", "1h"):
+                self._cache_ttl = _ttl
+        except Exception:
+            pass
+
         # Iteration budget: the LLM is only notified when it actually exhausts
         # the iteration budget (api_call_count >= max_iterations).  At that
         # point we inject ONE message, allow one final API call, and if the
@@ -1169,13 +1327,15 @@ class AIAgent:
                         "X-OpenRouter-Title": "Hermes Agent",
                         "X-OpenRouter-Categories": "productivity,cli-agent",
                     }
+                elif base_url_host_matches(effective_base, "api.routermint.com"):
+                    client_kwargs["default_headers"] = _routermint_headers()
                 elif base_url_host_matches(effective_base, "api.githubcopilot.com"):
                     from hermes_cli.models import copilot_default_headers
 
                     client_kwargs["default_headers"] = copilot_default_headers()
                 elif base_url_host_matches(effective_base, "api.kimi.com"):
                     client_kwargs["default_headers"] = {
-                        "User-Agent": "KimiCLI/1.30.0",
+                        "User-Agent": "claude-code/0.1.0",
                     }
                 elif base_url_host_matches(effective_base, "portal.qwen.ai"):
                     client_kwargs["default_headers"] = _qwen_portal_headers()
@@ -1356,6 +1516,8 @@ class AIAgent:
         
         # Track conversation messages for session logging
         self._session_messages: List[Dict[str, Any]] = []
+        self._memory_write_origin = "assistant_tool"
+        self._memory_write_context = "foreground"
         
         # Cached system prompt -- built once per session, only rebuilt on compression
         self._cached_system_prompt: Optional[str] = None
@@ -1471,6 +1633,16 @@ class AIAgent:
                         # Thread gateway user identity for per-user memory scoping
                         if self._user_id:
                             _init_kwargs["user_id"] = self._user_id
+                        if self._user_name:
+                            _init_kwargs["user_name"] = self._user_name
+                        if self._chat_id:
+                            _init_kwargs["chat_id"] = self._chat_id
+                        if self._chat_name:
+                            _init_kwargs["chat_name"] = self._chat_name
+                        if self._chat_type:
+                            _init_kwargs["chat_type"] = self._chat_type
+                        if self._thread_id:
+                            _init_kwargs["thread_id"] = self._thread_id
                         # Thread gateway session key for stable per-chat Honcho session isolation
                         if self._gateway_session_key:
                             _init_kwargs["gateway_session_key"] = self._gateway_session_key
@@ -1527,6 +1699,17 @@ class AIAgent:
         if not isinstance(_agent_section, dict):
             _agent_section = {}
         self._tool_use_enforcement = _agent_section.get("tool_use_enforcement", "auto")
+
+        # App-level API retry count (wraps each model API call).  Default 3,
+        # overridable via agent.api_max_retries in config.yaml.  See #11616.
+        try:
+            _raw_api_retries = _agent_section.get("api_max_retries", 3)
+            _api_retries = int(_raw_api_retries)
+            if _api_retries < 1:
+                _api_retries = 1  # 1 = no retry (single attempt)
+        except (TypeError, ValueError):
+            _api_retries = 3
+        self._api_max_retries = _api_retries
 
         # Initialize context compressor for automatic context management
         # Compresses conversation when approaching model's context limit
@@ -1903,6 +2086,9 @@ class AIAgent:
         self.provider = new_provider
         self.base_url = base_url or self.base_url
         self.api_mode = api_mode
+        # Invalidate transport cache — new api_mode may need a different transport
+        if hasattr(self, "_transport_cache"):
+            self._transport_cache.clear()
         if api_key:
             self.api_key = api_key
 
@@ -2004,6 +2190,24 @@ class AIAgent:
         # ── Reset fallback state ──
         self._fallback_activated = False
         self._fallback_index = 0
+
+        # When the user deliberately swaps primary providers (e.g. openrouter
+        # → anthropic), drop any fallback entries that target the OLD primary
+        # or the NEW one.  The chain was seeded from config at agent init for
+        # the original provider — without pruning, a failed turn on the new
+        # primary silently re-activates the provider the user just rejected,
+        # which is exactly what was reported during TUI v2 blitz testing
+        # ("switched to anthropic, tui keeps trying openrouter").
+        old_norm = (old_provider or "").strip().lower()
+        new_norm = (new_provider or "").strip().lower()
+        fallback_chain = list(getattr(self, "_fallback_chain", []) or [])
+        if old_norm and new_norm and old_norm != new_norm:
+            fallback_chain = [
+                entry for entry in fallback_chain
+                if (entry.get("provider") or "").strip().lower() not in {old_norm, new_norm}
+            ]
+        self._fallback_chain = fallback_chain
+        self._fallback_model = fallback_chain[0] if fallback_chain else None
 
         logging.info(
             "Model switched in-place: %s (%s) -> %s (%s)",
@@ -2107,6 +2311,34 @@ class AIAgent:
                 self.status_callback("lifecycle", message)
             except Exception:
                 logger.debug("status_callback error in _emit_status", exc_info=True)
+
+    def _emit_warning(self, message: str) -> None:
+        """Emit a user-visible warning through the same status plumbing.
+
+        Unlike debug logs, these warnings are meant for degraded side paths
+        such as auxiliary compression or memory flushes where the main turn can
+        continue but the user needs to know something important failed.
+        """
+        try:
+            self._vprint(f"{self.log_prefix}{message}", force=True)
+        except Exception:
+            pass
+        if self.status_callback:
+            try:
+                self.status_callback("warn", message)
+            except Exception:
+                logger.debug("status_callback error in _emit_warning", exc_info=True)
+
+    def _emit_auxiliary_failure(self, task: str, exc: BaseException) -> None:
+        """Surface a compact warning for failed auxiliary work."""
+        try:
+            detail = self._summarize_api_error(exc)
+        except Exception:
+            detail = str(exc)
+        detail = (detail or exc.__class__.__name__).strip()
+        if len(detail) > 220:
+            detail = detail[:217].rstrip() + "..."
+        self._emit_warning(f"⚠ Auxiliary {task} failed: {detail}")
 
     def _current_main_runtime(self) -> Dict[str, str]:
         """Return the live main runtime for session-scoped auxiliary routing."""
@@ -2355,6 +2587,13 @@ class AIAgent:
         cost reduction as direct Anthropic callers, provided their
         gateway implements the Anthropic cache_control contract
         (MiniMax, Zhipu GLM, LiteLLM's Anthropic proxy mode all do).
+
+        Qwen / Alibaba-family models on OpenCode, OpenCode Go, and direct
+        Alibaba (DashScope) also honour Anthropic-style ``cache_control``
+        markers on OpenAI-wire chat completions. Upstream pi-mono #3392 /
+        pi #3393 documented this for opencode-go Qwen. Without markers
+        these providers serve zero cache hits, re-billing the full prompt
+        on every turn.
         """
         eff_provider = (provider if provider is not None else self.provider) or ""
         eff_base_url = base_url if base_url is not None else (self.base_url or "")
@@ -2362,7 +2601,9 @@ class AIAgent:
         eff_model = (model if model is not None else self.model) or ""
 
         base_lower = eff_base_url.lower()
-        is_claude = "claude" in eff_model.lower()
+        model_lower = eff_model.lower()
+        provider_lower = eff_provider.lower()
+        is_claude = "claude" in model_lower
         is_openrouter = base_url_host_matches(eff_base_url, "openrouter.ai")
         is_anthropic_wire = eff_api_mode == "anthropic_messages"
         is_native_anthropic = (
@@ -2377,6 +2618,22 @@ class AIAgent:
         if is_anthropic_wire and is_claude:
             # Third-party Anthropic-compatible gateway.
             return True, True
+
+        # Qwen/Alibaba on OpenCode (Zen/Go) and native DashScope: OpenAI-wire
+        # transport that accepts Anthropic-style cache_control markers and
+        # rewards them with real cache hits.  Without this branch
+        # qwen3.6-plus on opencode-go reports 0% cached tokens and burns
+        # through the subscription on every turn.
+        model_is_qwen = "qwen" in model_lower
+        provider_is_alibaba_family = provider_lower in {
+            "opencode", "opencode-zen", "opencode-go", "alibaba",
+        }
+        if provider_is_alibaba_family and model_is_qwen:
+            # Envelope layout (native_anthropic=False): markers on inner
+            # content parts, not top-level tool messages.  Matches
+            # pi-mono's "alibaba" cacheControlFormat.
+            return True, False
+
         return False, False
 
     @staticmethod
@@ -2462,6 +2719,20 @@ class AIAgent:
           4. Tag variants: ``<think>``, ``<thinking>``, ``<reasoning>``,
              ``<REASONING_SCRATCHPAD>``, ``<thought>`` (Gemma 4), all
              case-insensitive.
+
+        Additionally strips standalone tool-call XML blocks that some open
+        models (notably Gemma variants on OpenRouter) emit inside assistant
+        content instead of via the structured ``tool_calls`` field:
+          * ``<tool_call>…</tool_call>``
+          * ``<tool_calls>…</tool_calls>``
+          * ``<tool_result>…</tool_result>``
+          * ``<function_call>…</function_call>``
+          * ``<function_calls>…</function_calls>``
+          * ``<function name="…">…</function>`` (Gemma style)
+        Ported from openclaw/openclaw#67318. The ``<function>`` variant is
+        boundary-gated (only strips when the tag sits at start-of-line or
+        after punctuation and carries a ``name="..."`` attribute) so prose
+        mentions like "Use <function> in JavaScript" are preserved.
         """
         if not content:
             return ""
@@ -2473,6 +2744,30 @@ class AIAgent:
         content = re.sub(r'<reasoning>.*?</reasoning>', '', content, flags=re.DOTALL | re.IGNORECASE)
         content = re.sub(r'<REASONING_SCRATCHPAD>.*?</REASONING_SCRATCHPAD>', '', content, flags=re.DOTALL | re.IGNORECASE)
         content = re.sub(r'<thought>.*?</thought>', '', content, flags=re.DOTALL | re.IGNORECASE)
+        # 1b. Tool-call XML blocks (openclaw/openclaw#67318). Handle the
+        #     generic tag names first — they have no attribute gating since
+        #     a literal <tool_call> in prose is already vanishingly rare.
+        for _tc_name in ("tool_call", "tool_calls", "tool_result",
+                          "function_call", "function_calls"):
+            content = re.sub(
+                rf'<{_tc_name}\b[^>]*>.*?</{_tc_name}>',
+                '',
+                content,
+                flags=re.DOTALL | re.IGNORECASE,
+            )
+        # 1c. <function name="...">...</function> — Gemma-style standalone
+        #     tool call. Only strip when the tag sits at a block boundary
+        #     (start of text, after a newline, or after sentence-ending
+        #     punctuation) AND carries a name="..." attribute. This keeps
+        #     prose mentions like "Use <function> to declare" safe.
+        content = re.sub(
+            r'(?:(?<=^)|(?<=[\n\r.!?:]))[ \t]*'
+            r'<function\b[^>]*\bname\s*=[^>]*>'
+            r'(?:(?:(?!</function>).)*)</function>',
+            '',
+            content,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
         # 2. Unterminated reasoning block — open tag at a block boundary
         #    (start of text, or after a newline) with no matching close.
         #    Strip from the tag to end of string.  Fixes #8878 / #9568
@@ -2486,6 +2781,16 @@ class AIAgent:
         # 3. Stray orphan open/close tags that slipped through.
         content = re.sub(
             r'</?(?:think|thinking|reasoning|thought|REASONING_SCRATCHPAD)>\s*',
+            '',
+            content,
+            flags=re.IGNORECASE,
+        )
+        # 3b. Stray tool-call closers. (We do NOT strip bare <function> or
+        #     unterminated <function name="..."> because a truncated tail
+        #     during streaming may still be valuable to the user; matches
+        #     OpenClaw's intentional asymmetry.)
+        content = re.sub(
+            r'</(?:tool_call|tool_calls|tool_result|function_call|function_calls|function)>\s*',
             '',
             content,
             flags=re.IGNORECASE,
@@ -2752,6 +3057,69 @@ class AIAgent:
         "If nothing stands out, just say 'Nothing to save.' and stop."
     )
 
+    @staticmethod
+    def _summarize_background_review_actions(
+        review_messages: List[Dict],
+        prior_snapshot: List[Dict],
+    ) -> List[str]:
+        """Build the human-facing action summary for a background review pass.
+
+        Walks the review agent's session messages and collects "successful tool
+        action" descriptions to surface to the user (e.g. "Memory updated").
+        Tool messages already present in ``prior_snapshot`` are skipped so we
+        don't re-surface stale results from the prior conversation that the
+        review agent inherited via ``conversation_history`` (issue #14944).
+
+        Matching is by ``tool_call_id`` when available, with a content-equality
+        fallback for tool messages that lack one.
+        """
+        existing_tool_call_ids = set()
+        existing_tool_contents = set()
+        for prior in prior_snapshot or []:
+            if not isinstance(prior, dict) or prior.get("role") != "tool":
+                continue
+            tcid = prior.get("tool_call_id")
+            if tcid:
+                existing_tool_call_ids.add(tcid)
+            else:
+                content = prior.get("content")
+                if isinstance(content, str):
+                    existing_tool_contents.add(content)
+
+        actions: List[str] = []
+        for msg in review_messages or []:
+            if not isinstance(msg, dict) or msg.get("role") != "tool":
+                continue
+            tcid = msg.get("tool_call_id")
+            if tcid and tcid in existing_tool_call_ids:
+                continue
+            if not tcid:
+                content_str = msg.get("content")
+                if isinstance(content_str, str) and content_str in existing_tool_contents:
+                    continue
+            try:
+                data = json.loads(msg.get("content", "{}"))
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(data, dict) or not data.get("success"):
+                continue
+            message = data.get("message", "")
+            target = data.get("target", "")
+            if "created" in message.lower():
+                actions.append(message)
+            elif "updated" in message.lower():
+                actions.append(message)
+            elif "added" in message.lower() or (target and "add" in message.lower()):
+                label = "Memory" if target == "memory" else "User profile" if target == "user" else target
+                actions.append(f"{label} updated")
+            elif "Entry added" in message:
+                label = "Memory" if target == "memory" else "User profile" if target == "user" else target
+                actions.append(f"{label} updated")
+            elif "removed" in message.lower() or "replaced" in message.lower():
+                label = "Memory" if target == "memory" else "User profile" if target == "user" else target
+                actions.append(f"{label} updated")
+        return actions
+
     def _spawn_background_review(
         self,
         messages_snapshot: List[Dict],
@@ -2788,7 +3156,10 @@ class AIAgent:
                         quiet_mode=True,
                         platform=self.platform,
                         provider=self.provider,
+                        parent_session_id=self.session_id,
                     )
+                    review_agent._memory_write_origin = "background_review"
+                    review_agent._memory_write_context = "background_review"
                     review_agent._memory_store = self._memory_store
                     review_agent._memory_enabled = self._memory_enabled
                     review_agent._user_profile_enabled = self._user_profile_enabled
@@ -2801,32 +3172,15 @@ class AIAgent:
                     )
 
                 # Scan the review agent's messages for successful tool actions
-                # and surface a compact summary to the user.
-                actions = []
-                for msg in getattr(review_agent, "_session_messages", []):
-                    if not isinstance(msg, dict) or msg.get("role") != "tool":
-                        continue
-                    try:
-                        data = json.loads(msg.get("content", "{}"))
-                    except (json.JSONDecodeError, TypeError):
-                        continue
-                    if not data.get("success"):
-                        continue
-                    message = data.get("message", "")
-                    target = data.get("target", "")
-                    if "created" in message.lower():
-                        actions.append(message)
-                    elif "updated" in message.lower():
-                        actions.append(message)
-                    elif "added" in message.lower() or (target and "add" in message.lower()):
-                        label = "Memory" if target == "memory" else "User profile" if target == "user" else target
-                        actions.append(f"{label} updated")
-                    elif "Entry added" in message:
-                        label = "Memory" if target == "memory" else "User profile" if target == "user" else target
-                        actions.append(f"{label} updated")
-                    elif "removed" in message.lower() or "replaced" in message.lower():
-                        label = "Memory" if target == "memory" else "User profile" if target == "user" else target
-                        actions.append(f"{label} updated")
+                # and surface a compact summary to the user. Tool messages
+                # already present in messages_snapshot must be skipped, since
+                # the review agent inherits that history and would otherwise
+                # re-surface stale "created"/"updated" messages from the prior
+                # conversation as if they just happened (issue #14944).
+                actions = self._summarize_background_review_actions(
+                    getattr(review_agent, "_session_messages", []),
+                    messages_snapshot,
+                )
 
                 if actions:
                     summary = " · ".join(dict.fromkeys(actions))
@@ -2839,7 +3193,8 @@ class AIAgent:
                             pass
 
             except Exception as e:
-                logger.debug("Background memory/skill review failed: %s", e)
+                logger.warning("Background memory/skill review failed: %s", e)
+                self._emit_auxiliary_failure("background review", e)
             finally:
                 # Close all resources (httpx client, subprocesses, etc.) so
                 # GC doesn't try to clean them up on a dead asyncio event
@@ -2852,6 +3207,32 @@ class AIAgent:
 
         t = threading.Thread(target=_run_review, daemon=True, name="bg-review")
         t.start()
+
+    def _build_memory_write_metadata(
+        self,
+        *,
+        write_origin: Optional[str] = None,
+        execution_context: Optional[str] = None,
+        task_id: Optional[str] = None,
+        tool_call_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Build provenance metadata for external memory-provider mirrors."""
+        metadata: Dict[str, Any] = {
+            "write_origin": write_origin or getattr(self, "_memory_write_origin", "assistant_tool"),
+            "execution_context": (
+                execution_context
+                or getattr(self, "_memory_write_context", "foreground")
+            ),
+            "session_id": self.session_id or "",
+            "parent_session_id": self._parent_session_id or "",
+            "platform": self.platform or os.environ.get("HERMES_SESSION_SOURCE", "cli"),
+            "tool_name": "memory",
+        }
+        if task_id:
+            metadata["task_id"] = task_id
+        if tool_call_id:
+            metadata["tool_call_id"] = tool_call_id
+        return {k: v for k, v in metadata.items() if v not in (None, "")}
 
     def _apply_persist_user_message_override(self, messages: List[Dict]) -> None:
         """Rewrite the current-turn user message before persistence/return.
@@ -2925,6 +3306,7 @@ class AIAgent:
                     tool_call_id=msg.get("tool_call_id"),
                     finish_reason=msg.get("finish_reason"),
                     reasoning=msg.get("reasoning") if role == "assistant" else None,
+                    reasoning_content=msg.get("reasoning_content") if role == "assistant" else None,
                     reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                     codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                 )
@@ -3780,6 +4162,49 @@ class AIAgent:
         except Exception:
             pass
 
+    def _sync_external_memory_for_turn(
+        self,
+        *,
+        original_user_message: Any,
+        final_response: Any,
+        interrupted: bool,
+    ) -> None:
+        """Mirror a completed turn into external memory providers.
+
+        Called at the end of ``run_conversation`` with the cleaned user
+        message (``original_user_message``) and the finalised assistant
+        response.  The external memory backend gets both ``sync_all`` (to
+        persist the exchange) and ``queue_prefetch_all`` (to start
+        warming context for the next turn) in one shot.
+
+        Uses ``original_user_message`` rather than ``user_message``
+        because the latter may carry injected skill content that bloats
+        or breaks provider queries.
+
+        Interrupted turns are skipped entirely (#15218).  A partial
+        assistant output, an aborted tool chain, or a mid-stream reset
+        is not durable conversational truth — mirroring it into an
+        external memory backend pollutes future recall with state the
+        user never saw completed.  The prefetch is gated on the same
+        flag: the user's next message is almost certainly a retry of
+        the same intent, and a prefetch keyed on the interrupted turn
+        would fire against stale context.
+
+        Normal completed turns still sync as before.  The whole body is
+        wrapped in ``try/except Exception`` because external memory
+        providers are strictly best-effort — a misconfigured or offline
+        backend must not block the user from seeing their response.
+        """
+        if interrupted:
+            return
+        if not (self._memory_manager and final_response and original_user_message):
+            return
+        try:
+            self._memory_manager.sync_all(original_user_message, final_response)
+            self._memory_manager.queue_prefetch_all(original_user_message)
+        except Exception:
+            pass
+
     def release_clients(self) -> None:
         """Release LLM client resources WITHOUT tearing down session tool state.
 
@@ -4231,25 +4656,69 @@ class AIAgent:
     def _repair_tool_call(self, tool_name: str) -> str | None:
         """Attempt to repair a mismatched tool name before aborting.
 
-        1. Try lowercase
-        2. Try normalized (lowercase + hyphens/spaces -> underscores)
-        3. Try fuzzy match (difflib, cutoff=0.7)
+        Models sometimes emit variants of a tool name that differ only
+        in casing, separators, or class-like suffixes. Normalize
+        aggressively before falling back to fuzzy match:
+
+        1. Lowercase direct match.
+        2. Lowercase + hyphens/spaces -> underscores.
+        3. CamelCase -> snake_case (TodoTool -> todo_tool).
+        4. Strip trailing ``_tool`` / ``-tool`` / ``tool`` suffix that
+           Claude-style models sometimes tack on (TodoTool_tool ->
+           TodoTool -> Todo -> todo). Applied twice so double-tacked
+           suffixes like ``TodoTool_tool`` reduce all the way.
+        5. Fuzzy match (difflib, cutoff=0.7).
+
+        See #14784 for the original reports (TodoTool_tool, Patch_tool,
+        BrowserClick_tool were all returning "Unknown tool" before).
 
         Returns the repaired name if found in valid_tool_names, else None.
         """
+        import re
         from difflib import get_close_matches
 
-        # 1. Lowercase
+        if not tool_name:
+            return None
+
+        def _norm(s: str) -> str:
+            return s.lower().replace("-", "_").replace(" ", "_")
+
+        def _camel_snake(s: str) -> str:
+            return re.sub(r"(?<!^)(?=[A-Z])", "_", s).lower()
+
+        def _strip_tool_suffix(s: str) -> str | None:
+            lc = s.lower()
+            for suffix in ("_tool", "-tool", "tool"):
+                if lc.endswith(suffix):
+                    return s[: -len(suffix)].rstrip("_-")
+            return None
+
+        # Cheap fast-paths first — these cover the common case.
         lowered = tool_name.lower()
         if lowered in self.valid_tool_names:
             return lowered
-
-        # 2. Normalize
-        normalized = lowered.replace("-", "_").replace(" ", "_")
+        normalized = _norm(tool_name)
         if normalized in self.valid_tool_names:
             return normalized
 
-        # 3. Fuzzy match
+        # Build the full candidate set for class-like emissions.
+        cands: set[str] = {tool_name, lowered, normalized, _camel_snake(tool_name)}
+        # Strip trailing tool-suffix up to twice — TodoTool_tool needs it.
+        for _ in range(2):
+            extra: set[str] = set()
+            for c in cands:
+                stripped = _strip_tool_suffix(c)
+                if stripped:
+                    extra.add(stripped)
+                    extra.add(_norm(stripped))
+                    extra.add(_camel_snake(stripped))
+            cands |= extra
+
+        for c in cands:
+            if c and c in self.valid_tool_names:
+                return c
+
+        # Fuzzy match as last resort.
         matches = get_close_matches(lowered, self.valid_tool_names, n=1, cutoff=0.7)
         if matches:
             return matches[0]
@@ -4266,10 +4735,6 @@ class AIAgent:
         self._cached_system_prompt = None
         if self._memory_store:
             self._memory_store.load_from_disk()
-
-    def _responses_tools(self, tools: Optional[List[Dict[str, Any]]] = None) -> Optional[List[Dict[str, Any]]]:
-        """Convert chat-completions tool schemas to Responses function-tool schemas."""
-        return _codex_responses_tools(tools if tools is not None else self.tools)
 
     @staticmethod
     def _deterministic_call_id(fn_name: str, arguments: str, index: int = 0) -> str:
@@ -4293,33 +4758,6 @@ class AIAgent:
     ) -> str:
         """Build a valid Responses `function_call.id` (must start with `fc_`)."""
         return _codex_derive_responses_function_call_id(call_id, response_item_id)
-
-    def _chat_messages_to_responses_input(self, messages: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
-        """Convert internal chat-style messages to Responses input items."""
-        return _codex_chat_messages_to_responses_input(messages)
-
-    def _preflight_codex_input_items(self, raw_items: Any) -> List[Dict[str, Any]]:
-        return _codex_preflight_codex_input_items(raw_items)
-
-    def _preflight_codex_api_kwargs(
-        self,
-        api_kwargs: Any,
-        *,
-        allow_stream: bool = False,
-    ) -> Dict[str, Any]:
-        return _codex_preflight_codex_api_kwargs(api_kwargs, allow_stream=allow_stream)
-
-    def _extract_responses_message_text(self, item: Any) -> str:
-        """Extract assistant text from a Responses message output item."""
-        return _codex_extract_responses_message_text(item)
-
-    def _extract_responses_reasoning_text(self, item: Any) -> str:
-        """Extract a compact reasoning text from a Responses reasoning item."""
-        return _codex_extract_responses_reasoning_text(item)
-
-    def _normalize_codex_response(self, response: Any) -> tuple[Any, str]:
-        """Normalize a Responses API object to an assistant_message-like object."""
-        return _codex_normalize_codex_response(response)
 
     def _thread_identity(self) -> str:
         thread = threading.current_thread()
@@ -4372,7 +4810,7 @@ class AIAgent:
         return False
 
     @staticmethod
-    def _build_keepalive_http_client() -> Any:
+    def _build_keepalive_http_client(base_url: str = "") -> Any:
         try:
             import httpx as _httpx
             import socket as _socket
@@ -4386,8 +4824,9 @@ class AIAgent:
                 _sock_opts.append((_socket.IPPROTO_TCP, _socket.TCP_KEEPALIVE, 30))
             # When a custom transport is provided, httpx won't auto-read proxy
             # from env vars (allow_env_proxies = trust_env and transport is None).
-            # Explicitly read proxy settings to ensure HTTP_PROXY/HTTPS_PROXY work.
-            _proxy = _get_proxy_from_env()
+            # Explicitly read proxy settings while still honoring NO_PROXY for
+            # loopback / local endpoints such as a locally hosted sub2api.
+            _proxy = _get_proxy_for_base_url(base_url)
             return _httpx.Client(
                 transport=_httpx.HTTPTransport(socket_options=_sock_opts),
                 proxy=_proxy,
@@ -4445,7 +4884,7 @@ class AIAgent:
                     if k in {"api_key", "base_url", "default_headers", "timeout", "http_client"}
                 }
                 if "http_client" not in safe_kwargs:
-                    keepalive_http = self._build_keepalive_http_client()
+                    keepalive_http = self._build_keepalive_http_client(base_url)
                     if keepalive_http is not None:
                         safe_kwargs["http_client"] = keepalive_http
                 client = GeminiNativeClient(**safe_kwargs)
@@ -4474,7 +4913,7 @@ class AIAgent:
         # Tests in ``tests/run_agent/test_create_openai_client_reuse.py`` and
         # ``tests/run_agent/test_sequential_chats_live.py`` pin this invariant.
         if "http_client" not in client_kwargs:
-            keepalive_http = self._build_keepalive_http_client()
+            keepalive_http = self._build_keepalive_http_client(client_kwargs.get("base_url", ""))
             if keepalive_http is not None:
                 client_kwargs["http_client"] = keepalive_http
         client = OpenAI(**client_kwargs)
@@ -4813,7 +5252,7 @@ class AIAgent:
         active_client = client or self._ensure_primary_openai_client(reason="codex_create_stream_fallback")
         fallback_kwargs = dict(api_kwargs)
         fallback_kwargs["stream"] = True
-        fallback_kwargs = self._preflight_codex_api_kwargs(fallback_kwargs, allow_stream=True)
+        fallback_kwargs = self._get_transport().preflight_kwargs(fallback_kwargs, allow_stream=True)
         stream_or_response = active_client.responses.create(**fallback_kwargs)
 
         # Compatibility shim for mocks or providers that still return a concrete response.
@@ -4950,6 +5389,41 @@ class AIAgent:
 
         return True
 
+    def _try_refresh_copilot_client_credentials(self) -> bool:
+        """Refresh Copilot credentials and rebuild the shared OpenAI client.
+
+        Copilot tokens may remain the same string across refreshes (`gh auth token`
+        returns a stable OAuth token in many setups). We still rebuild the client
+        on 401 so retries recover from stale auth/client state without requiring
+        a session restart.
+        """
+        if self.provider != "copilot":
+            return False
+
+        try:
+            from hermes_cli.copilot_auth import resolve_copilot_token
+
+            new_token, token_source = resolve_copilot_token()
+        except Exception as exc:
+            logger.debug("Copilot credential refresh failed: %s", exc)
+            return False
+
+        if not isinstance(new_token, str) or not new_token.strip():
+            return False
+
+        new_token = new_token.strip()
+
+        self.api_key = new_token
+        self._client_kwargs["api_key"] = self.api_key
+        self._client_kwargs["base_url"] = self.base_url
+        self._apply_client_headers_for_base_url(str(self.base_url or ""))
+
+        if not self._replace_primary_openai_client(reason="copilot_credential_refresh"):
+            return False
+
+        logger.info("Copilot credentials refreshed from %s", token_source)
+        return True
+
     def _try_refresh_anthropic_client_credentials(self) -> bool:
         if self.api_mode != "anthropic_messages" or not hasattr(self, "_anthropic_api_key"):
             return False
@@ -5003,12 +5477,14 @@ class AIAgent:
             self._client_kwargs["default_headers"] = dict(_OR_HEADERS)
         elif base_url_host_matches(base_url, "ai-gateway.vercel.sh"):
             self._client_kwargs["default_headers"] = dict(_AI_GATEWAY_HEADERS)
+        elif base_url_host_matches(base_url, "api.routermint.com"):
+            self._client_kwargs["default_headers"] = _routermint_headers()
         elif base_url_host_matches(base_url, "api.githubcopilot.com"):
             from hermes_cli.models import copilot_default_headers
 
             self._client_kwargs["default_headers"] = copilot_default_headers()
         elif base_url_host_matches(base_url, "api.kimi.com"):
-            self._client_kwargs["default_headers"] = {"User-Agent": "KimiCLI/1.30.0"}
+            self._client_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
         elif base_url_host_matches(base_url, "portal.qwen.ai"):
             self._client_kwargs["default_headers"] = _qwen_portal_headers()
         elif base_url_host_matches(base_url, "chatgpt.com"):
@@ -5081,7 +5557,7 @@ class AIAgent:
                 effective_reason = FailoverReason.billing
             elif status_code == 429:
                 effective_reason = FailoverReason.rate_limit
-            elif status_code == 401:
+            elif status_code in (401, 403):
                 effective_reason = FailoverReason.auth
 
         if effective_reason == FailoverReason.billing:
@@ -5138,6 +5614,26 @@ class AIAgent:
             self._try_refresh_anthropic_client_credentials()
         return self._anthropic_client.messages.create(**api_kwargs)
 
+    def _rebuild_anthropic_client(self) -> None:
+        """Rebuild the Anthropic client after an interrupt or stale call.
+
+        Handles both direct Anthropic and Bedrock-hosted Anthropic models
+        correctly — rebuilding with the Bedrock SDK when provider is bedrock,
+        rather than always falling back to build_anthropic_client() which
+        requires a direct Anthropic API key.
+        """
+        if getattr(self, "provider", None) == "bedrock":
+            from agent.anthropic_adapter import build_anthropic_bedrock_client
+            region = getattr(self, "_bedrock_region", "us-east-1") or "us-east-1"
+            self._anthropic_client = build_anthropic_bedrock_client(region)
+        else:
+            from agent.anthropic_adapter import build_anthropic_client
+            self._anthropic_client = build_anthropic_client(
+                self._anthropic_api_key,
+                getattr(self, "_anthropic_base_url", None),
+                timeout=get_provider_request_timeout(self.provider, self.model),
+            )
+
     def _interruptible_api_call(self, api_kwargs: dict):
         """
         Run the API call in a background thread so the main conversation loop
@@ -5168,14 +5664,26 @@ class AIAgent:
                     result["response"] = self._anthropic_messages_create(api_kwargs)
                 elif self.api_mode == "bedrock_converse":
                     # Bedrock uses boto3 directly — no OpenAI client needed.
+                    # normalize_converse_response produces an OpenAI-compatible
+                    # SimpleNamespace so the rest of the agent loop can treat
+                    # bedrock responses like chat_completions responses.
                     from agent.bedrock_adapter import (
                         _get_bedrock_runtime_client,
+                        invalidate_runtime_client,
+                        is_stale_connection_error,
                         normalize_converse_response,
                     )
                     region = api_kwargs.pop("__bedrock_region__", "us-east-1")
                     api_kwargs.pop("__bedrock_converse__", None)
                     client = _get_bedrock_runtime_client(region)
-                    raw_response = client.converse(**api_kwargs)
+                    try:
+                        raw_response = client.converse(**api_kwargs)
+                    except Exception as _bedrock_exc:
+                        # Evict the cached client on stale-connection failures
+                        # so the outer retry loop builds a fresh client/pool.
+                        if is_stale_connection_error(_bedrock_exc):
+                            invalidate_runtime_client(region)
+                        raise
                     result["response"] = normalize_converse_response(raw_response)
                 else:
                     request_client_holder["client"] = self._create_request_openai_client(reason="chat_completion_request")
@@ -5233,14 +5741,8 @@ class AIAgent:
                 )
                 try:
                     if self.api_mode == "anthropic_messages":
-                        from agent.anthropic_adapter import build_anthropic_client
-
                         self._anthropic_client.close()
-                        self._anthropic_client = build_anthropic_client(
-                            self._anthropic_api_key,
-                            getattr(self, "_anthropic_base_url", None),
-                            timeout=get_provider_request_timeout(self.provider, self.model),
-                        )
+                        self._rebuild_anthropic_client()
                     else:
                         rc = request_client_holder.get("client")
                         if rc is not None:
@@ -5265,14 +5767,8 @@ class AIAgent:
                 # seed future retries.
                 try:
                     if self.api_mode == "anthropic_messages":
-                        from agent.anthropic_adapter import build_anthropic_client
-
                         self._anthropic_client.close()
-                        self._anthropic_client = build_anthropic_client(
-                            self._anthropic_api_key,
-                            getattr(self, "_anthropic_base_url", None),
-                            timeout=get_provider_request_timeout(self.provider, self.model),
-                        )
+                        self._rebuild_anthropic_client()
                     else:
                         request_client = request_client_holder.get("client")
                         if request_client is not None:
@@ -5428,12 +5924,21 @@ class AIAgent:
                 try:
                     from agent.bedrock_adapter import (
                         _get_bedrock_runtime_client,
+                        invalidate_runtime_client,
+                        is_stale_connection_error,
                         stream_converse_with_callbacks,
                     )
                     region = api_kwargs.pop("__bedrock_region__", "us-east-1")
                     api_kwargs.pop("__bedrock_converse__", None)
                     client = _get_bedrock_runtime_client(region)
-                    raw_response = client.converse_stream(**api_kwargs)
+                    try:
+                        raw_response = client.converse_stream(**api_kwargs)
+                    except Exception as _bedrock_exc:
+                        # Evict the cached client on stale-connection failures
+                        # so the outer retry loop builds a fresh client/pool.
+                        if is_stale_connection_error(_bedrock_exc):
+                            invalidate_runtime_client(region)
+                        raise
 
                     def _on_text(text):
                         _fire_first()
@@ -5685,11 +6190,25 @@ class AIAgent:
                 for idx in sorted(tool_calls_acc):
                     tc = tool_calls_acc[idx]
                     arguments = tc["function"]["arguments"]
+                    tool_name = tc["function"]["name"] or "?"
                     if arguments and arguments.strip():
                         try:
                             json.loads(arguments)
                         except json.JSONDecodeError:
-                            has_truncated_tool_args = True
+                            # Attempt repair before flagging as truncated.
+                            # Models like GLM-5.1 via Ollama produce trailing
+                            # commas, unclosed brackets, Python None, etc.
+                            # Without repair, these hit the truncation handler
+                            # and kill the session.  _repair_tool_call_arguments
+                            # returns "{}" for unrepairable args, which is far
+                            # better than a crashed session.
+                            repaired = _repair_tool_call_arguments(arguments, tool_name)
+                            if repaired != "{}":
+                                # Successfully repaired — use the fixed args
+                                arguments = repaired
+                            else:
+                                # Unrepairable — flag for truncation handling
+                                has_truncated_tool_args = True
                     mock_tool_calls.append(SimpleNamespace(
                         id=tc["id"],
                         type=tc["type"],
@@ -5795,22 +6314,129 @@ class AIAgent:
                             result["response"] = _call_chat_completions()
                         return  # success
                     except Exception as e:
-                        if deltas_were_sent["yes"]:
-                            # Streaming failed AFTER some tokens were already
-                            # delivered.  Don't retry or fall back — partial
-                            # content already reached the user.
-                            logger.warning(
-                                "Streaming failed after partial delivery, not retrying: %s", e
-                            )
-                            result["error"] = e
-                            return
-
                         _is_timeout = isinstance(
                             e, (_httpx.ReadTimeout, _httpx.ConnectTimeout, _httpx.PoolTimeout)
                         )
                         _is_conn_err = isinstance(
                             e, (_httpx.ConnectError, _httpx.RemoteProtocolError, ConnectionError)
                         )
+
+                        # If the stream died AFTER some tokens were delivered:
+                        # normally we don't retry (the user already saw text,
+                        # retrying would duplicate it).  BUT: if a tool call
+                        # was in-flight when the stream died, silently aborting
+                        # discards the tool call entirely.  In that case we
+                        # prefer to retry — the user sees a brief
+                        # "reconnecting" marker + duplicated preamble text,
+                        # which is strictly better than a failed action with
+                        # a "retry manually" message.  Limit this to transient
+                        # connection errors (Clawdbot-style narrow gate): no
+                        # tool has executed yet within this API call, so
+                        # silent retry is safe wrt side-effects.
+                        if deltas_were_sent["yes"]:
+                            _partial_tool_in_flight = bool(
+                                result.get("partial_tool_names")
+                            )
+                            _is_sse_conn_err_preview = False
+                            if not _is_timeout and not _is_conn_err:
+                                from openai import APIError as _APIError
+                                if isinstance(e, _APIError) and not getattr(e, "status_code", None):
+                                    _err_lower_preview = str(e).lower()
+                                    _SSE_PREVIEW_PHRASES = (
+                                        "connection lost",
+                                        "connection reset",
+                                        "connection closed",
+                                        "connection terminated",
+                                        "network error",
+                                        "network connection",
+                                        "terminated",
+                                        "peer closed",
+                                        "broken pipe",
+                                        "upstream connect error",
+                                    )
+                                    _is_sse_conn_err_preview = any(
+                                        phrase in _err_lower_preview
+                                        for phrase in _SSE_PREVIEW_PHRASES
+                                    )
+                            _is_transient = (
+                                _is_timeout or _is_conn_err or _is_sse_conn_err_preview
+                            )
+                            _can_silent_retry = (
+                                _partial_tool_in_flight
+                                and _is_transient
+                                and _stream_attempt < _max_stream_retries
+                            )
+                            if not _can_silent_retry:
+                                # Either no tool call was in-flight (so the
+                                # turn was a pure text response — current
+                                # stub-with-recovered-text behaviour is
+                                # correct), or retries are exhausted, or the
+                                # error isn't transient.  Fall through to the
+                                # stub path.
+                                logger.warning(
+                                    "Streaming failed after partial delivery, not retrying: %s", e
+                                )
+                                result["error"] = e
+                                return
+                            # Tool call was in-flight AND error is transient:
+                            # retry silently.  Clear per-attempt state so the
+                            # next stream starts clean.  Fire a "reconnecting"
+                            # marker so the user sees why the preamble is
+                            # about to be re-streamed.
+                            logger.info(
+                                "Streaming attempt %s/%s died mid tool-call "
+                                "(%s: %s) after user-visible text; retrying "
+                                "silently to avoid losing the action. "
+                                "Preamble will re-stream.",
+                                _stream_attempt + 1,
+                                _max_stream_retries + 1,
+                                type(e).__name__,
+                                e,
+                            )
+                            try:
+                                self._fire_stream_delta(
+                                    "\n\n⚠ Connection dropped mid tool-call; "
+                                    "reconnecting…\n\n"
+                                )
+                            except Exception:
+                                pass
+                            # Reset the streamed-text buffer so the retry's
+                            # fresh preamble doesn't get double-recorded in
+                            # _current_streamed_assistant_text (which would
+                            # pollute the interim-visible-text comparison).
+                            try:
+                                self._reset_stream_delivery_tracking()
+                            except Exception:
+                                pass
+                            # Reset in-memory accumulators so the next
+                            # attempt's chunks don't concat onto the dead
+                            # stream's partial JSON.
+                            result["partial_tool_names"] = []
+                            deltas_were_sent["yes"] = False
+                            first_delta_fired["done"] = False
+                            self._emit_status(
+                                f"⚠️ Connection dropped mid tool-call "
+                                f"({type(e).__name__}). Reconnecting… "
+                                f"(attempt {_stream_attempt + 2}/{_max_stream_retries + 1})"
+                            )
+                            self._touch_activity(
+                                f"stream retry {_stream_attempt + 2}/{_max_stream_retries + 1} "
+                                f"mid tool-call after {type(e).__name__}"
+                            )
+                            stale = request_client_holder.get("client")
+                            if stale is not None:
+                                self._close_request_openai_client(
+                                    stale, reason="stream_mid_tool_retry_cleanup"
+                                )
+                                request_client_holder["client"] = None
+                            try:
+                                self._replace_primary_openai_client(
+                                    reason="stream_mid_tool_retry_pool_cleanup"
+                                )
+                            except Exception:
+                                pass
+                            self._emit_status("🔄 Reconnected — resuming…")
+                            continue
 
                         # SSE error events from proxies (e.g. OpenRouter sends
                         # {"error":{"message":"Network connection lost."}}) are
@@ -6006,14 +6632,8 @@ class AIAgent:
             if self._interrupt_requested:
                 try:
                     if self.api_mode == "anthropic_messages":
-                        from agent.anthropic_adapter import build_anthropic_client
-
                         self._anthropic_client.close()
-                        self._anthropic_client = build_anthropic_client(
-                            self._anthropic_api_key,
-                            getattr(self, "_anthropic_base_url", None),
-                            timeout=get_provider_request_timeout(self.provider, self.model),
-                        )
+                        self._rebuild_anthropic_client()
                     else:
                         request_client = request_client_holder.get("client")
                         if request_client is not None:
@@ -6090,7 +6710,7 @@ class AIAgent:
 
     # ── Provider fallback ──────────────────────────────────────────────────
 
-    def _try_activate_fallback(self) -> bool:
+    def _try_activate_fallback(self, reason: "FailoverReason | None" = None) -> bool:
         """Switch to the next fallback model/provider in the chain.
 
         Called when the current model is failing after retries.  Swaps the
@@ -6102,6 +6722,15 @@ class AIAgent:
         auth resolution and client construction — no duplicated provider→key
         mappings.
         """
+        if reason in (FailoverReason.rate_limit, FailoverReason.billing):
+            # Only start cooldown when leaving the primary provider.  If we're
+            # already on a fallback and chain-switching, the primary wasn't the
+            # source of the 429 so the cooldown should not be reset/extended.
+            fallback_already_active = bool(getattr(self, "_fallback_activated", False))
+            current_provider = (getattr(self, "provider", "") or "").strip().lower()
+            primary_provider = ((self._primary_runtime or {}).get("provider") or "").strip().lower()
+            if (not fallback_already_active) or (primary_provider and current_provider == primary_provider):
+                self._rate_limited_until = time.monotonic() + 60
         if self._fallback_index >= len(self._fallback_chain):
             return False
 
@@ -6122,6 +6751,10 @@ class AIAgent:
             # falling through to OpenRouter defaults.
             fb_base_url_hint = (fb.get("base_url") or "").strip() or None
             fb_api_key_hint = (fb.get("api_key") or "").strip() or None
+            if not fb_api_key_hint:
+                fb_key_env = (fb.get("key_env") or "").strip()
+                if fb_key_env:
+                    fb_api_key_hint = os.getenv(fb_key_env, "").strip() or None
             # For Ollama Cloud endpoints, pull OLLAMA_API_KEY from env
             # when no explicit key is in the fallback config. Host match
             # (not substring) — see GHSA-76xc-57q6-vm5m.
@@ -6171,6 +6804,8 @@ class AIAgent:
             self.provider = fb_provider
             self.base_url = fb_base_url
             self.api_mode = fb_api_mode
+            if hasattr(self, "_transport_cache"):
+                self._transport_cache.clear()
             self._fallback_activated = True
 
             # Honor per-provider / per-model request_timeout_seconds for the
@@ -6232,11 +6867,15 @@ class AIAgent:
             # Without this, compression decisions use the primary model's
             # context window (e.g. 200K) instead of the fallback's (e.g. 32K),
             # causing oversized sessions to overflow the fallback.
+            # Also pass _config_context_length so the explicit config override
+            # (model.context_length in config.yaml) is respected — without this,
+            # the fallback activation drops to 128K even when config says 204800.
             if hasattr(self, 'context_compressor') and self.context_compressor:
                 from agent.model_metadata import get_model_context_length
                 fb_context_length = get_model_context_length(
                     self.model, base_url=self.base_url,
                     api_key=self.api_key, provider=self.provider,
+                    config_context_length=getattr(self, "_config_context_length", None),
                 )
                 self.context_compressor.update_model(
                     model=self.model,
@@ -6275,6 +6914,9 @@ class AIAgent:
         if not self._fallback_activated:
             return False
 
+        if getattr(self, "_rate_limited_until", 0) > time.monotonic():
+            return False  # primary still in rate-limit cooldown, stay on fallback
+
         rt = self._primary_runtime
         try:
             # ── Core runtime state ──
@@ -6282,6 +6924,8 @@ class AIAgent:
             self.provider = rt["provider"]
             self.base_url = rt["base_url"]           # setter updates _base_url_lower
             self.api_mode = rt["api_mode"]
+            if hasattr(self, "_transport_cache"):
+                self._transport_cache.clear()
             self.api_key = rt["api_key"]
             self._client_kwargs = dict(rt["client_kwargs"])
             self._use_prompt_caching = rt["use_prompt_caching"]
@@ -6388,6 +7032,8 @@ class AIAgent:
             self.provider = rt["provider"]
             self.base_url = rt["base_url"]
             self.api_mode = rt["api_mode"]
+            if hasattr(self, "_transport_cache"):
+                self._transport_cache.clear()
             self.api_key = rt["api_key"]
 
             if self.api_mode == "anthropic_messages":
@@ -6546,13 +7192,22 @@ class AIAgent:
             return suffix
         return "[A multimodal message was converted to text for Anthropic compatibility.]"
 
-    def _get_anthropic_transport(self):
-        """Return the cached AnthropicTransport instance (lazy singleton)."""
-        t = getattr(self, "_anthropic_transport", None)
+    def _get_transport(self, api_mode: str = None):
+        """Return the cached transport for the given (or current) api_mode.
+
+        Lazy-initializes on first call per api_mode. Returns None if no
+        transport is registered for the mode.
+        """
+        mode = api_mode or self.api_mode
+        cache = getattr(self, "_transport_cache", None)
+        if cache is None:
+            cache = {}
+            self._transport_cache = cache
+        t = cache.get(mode)
         if t is None:
             from agent.transports import get_transport
-            t = get_transport("anthropic_messages")
-            self._anthropic_transport = t
+            t = get_transport(mode)
+            cache[mode] = t
         return t
 
     def _prepare_anthropic_messages_for_api(self, api_messages: list) -> list:
@@ -6671,7 +7326,7 @@ class AIAgent:
     def _build_api_kwargs(self, api_messages: list) -> dict:
         """Build the keyword arguments dict for the active API mode."""
         if self.api_mode == "anthropic_messages":
-            _transport = self._get_anthropic_transport()
+            _transport = self._get_transport()
             anthropic_messages = self._prepare_anthropic_messages_for_api(api_messages)
             ctx_len = getattr(self, "context_compressor", None)
             ctx_len = ctx_len.context_length if ctx_len else None
@@ -6694,31 +7349,20 @@ class AIAgent:
         # AWS Bedrock native Converse API — bypasses the OpenAI client entirely.
         # The adapter handles message/tool conversion and boto3 calls directly.
         if self.api_mode == "bedrock_converse":
-            from agent.bedrock_adapter import build_converse_kwargs
+            _bt = self._get_transport()
             region = getattr(self, "_bedrock_region", None) or "us-east-1"
             guardrail = getattr(self, "_bedrock_guardrail_config", None)
-            return {
-                "__bedrock_converse__": True,
-                "__bedrock_region__": region,
-                **build_converse_kwargs(
-                    model=self.model,
-                    messages=api_messages,
-                    tools=self.tools,
-                    max_tokens=self.max_tokens or 4096,
-                    temperature=None,  # Let the model use its default
-                    guardrail_config=guardrail,
-                ),
-            }
+            return _bt.build_kwargs(
+                model=self.model,
+                messages=api_messages,
+                tools=self.tools,
+                max_tokens=self.max_tokens or 4096,
+                region=region,
+                guardrail_config=guardrail,
+            )
 
         if self.api_mode == "codex_responses":
-            instructions = ""
-            payload_messages = api_messages
-            if api_messages and api_messages[0].get("role") == "system":
-                instructions = str(api_messages[0].get("content") or "").strip()
-                payload_messages = api_messages[1:]
-            if not instructions:
-                instructions = DEFAULT_AGENT_IDENTITY
-
+            _ct = self._get_transport()
             is_github_responses = (
                 base_url_host_matches(self.base_url, "models.github.ai")
                 or base_url_host_matches(self.base_url, "api.githubcopilot.com")
@@ -6730,320 +7374,118 @@ class AIAgent:
                     and "/backend-api/codex" in self._base_url_lower
                 )
             )
-
-            # Resolve reasoning effort: config > default (medium)
-            reasoning_effort = "medium"
-            reasoning_enabled = True
-            if self.reasoning_config and isinstance(self.reasoning_config, dict):
-                if self.reasoning_config.get("enabled") is False:
-                    reasoning_enabled = False
-                elif self.reasoning_config.get("effort"):
-                    reasoning_effort = self.reasoning_config["effort"]
-
-            # Clamp effort levels not supported by the Responses API model.
-            # GPT-5.4 supports none/low/medium/high/xhigh but not "minimal".
-            # "minimal" is valid on OpenRouter and GPT-5 but fails on 5.2/5.4.
-            _effort_clamp = {"minimal": "low"}
-            reasoning_effort = _effort_clamp.get(reasoning_effort, reasoning_effort)
-
-            kwargs = {
-                "model": self.model,
-                "instructions": instructions,
-                "input": self._chat_messages_to_responses_input(payload_messages),
-                "tools": self._responses_tools(),
-                "tool_choice": "auto",
-                "parallel_tool_calls": True,
-                "store": False,
-            }
-
-            if not is_github_responses:
-                kwargs["prompt_cache_key"] = self.session_id
-
             is_xai_responses = self.provider == "xai" or self._base_url_hostname == "api.x.ai"
-
-            if reasoning_enabled and is_xai_responses:
-                # xAI reasons automatically — no effort param, just include encrypted content
-                kwargs["include"] = ["reasoning.encrypted_content"]
-            elif reasoning_enabled:
-                if is_github_responses:
-                    # Copilot's Responses route advertises reasoning-effort support,
-                    # but not OpenAI-specific prompt cache or encrypted reasoning
-                    # fields. Keep the payload to the documented subset.
-                    github_reasoning = self._github_models_reasoning_extra_body()
-                    if github_reasoning is not None:
-                        kwargs["reasoning"] = github_reasoning
-                else:
-                    kwargs["reasoning"] = {"effort": reasoning_effort, "summary": "auto"}
-                    kwargs["include"] = ["reasoning.encrypted_content"]
-            elif not is_github_responses and not is_xai_responses:
-                kwargs["include"] = []
-
-            if self.request_overrides:
-                kwargs.update(self.request_overrides)
-
-            if self.max_tokens is not None and not is_codex_backend:
-                kwargs["max_output_tokens"] = self.max_tokens
-
-            if is_xai_responses and getattr(self, "session_id", None):
-                kwargs["extra_headers"] = {"x-grok-conv-id": self.session_id}
-
-            return kwargs
-
-        sanitized_messages = api_messages
-        needs_sanitization = False
-        for msg in api_messages:
-            if not isinstance(msg, dict):
-                continue
-            if "codex_reasoning_items" in msg:
-                needs_sanitization = True
-                break
-
-            tool_calls = msg.get("tool_calls")
-            if isinstance(tool_calls, list):
-                for tool_call in tool_calls:
-                    if not isinstance(tool_call, dict):
-                        continue
-                    if "call_id" in tool_call or "response_item_id" in tool_call:
-                        needs_sanitization = True
-                        break
-                if needs_sanitization:
-                    break
-
-        if needs_sanitization:
-            sanitized_messages = copy.deepcopy(api_messages)
-            for msg in sanitized_messages:
-                if not isinstance(msg, dict):
-                    continue
-
-                # Codex-only replay state must not leak into strict chat-completions APIs.
-                msg.pop("codex_reasoning_items", None)
-
-                tool_calls = msg.get("tool_calls")
-                if isinstance(tool_calls, list):
-                    for tool_call in tool_calls:
-                        if isinstance(tool_call, dict):
-                            tool_call.pop("call_id", None)
-                            tool_call.pop("response_item_id", None)
-
-        # Qwen portal: normalize content to list-of-dicts, inject cache_control.
-        # Must run AFTER codex sanitization so we transform the final messages.
-        # If sanitization already deepcopied, reuse that copy (in-place).
-        if self._is_qwen_portal():
-            if sanitized_messages is api_messages:
-                # No sanitization was done — we need our own copy.
-                sanitized_messages = self._qwen_prepare_chat_messages(sanitized_messages)
-            else:
-                # Already a deepcopy — transform in place to avoid a second deepcopy.
-                self._qwen_prepare_chat_messages_inplace(sanitized_messages)
-
-        # GPT-5 and Codex models respond better to 'developer' than 'system'
-        # for instruction-following.  Swap the role at the API boundary so
-        # internal message representation stays uniform ("system").
-        _model_lower = (self.model or "").lower()
-        if (
-            sanitized_messages
-            and sanitized_messages[0].get("role") == "system"
-            and any(p in _model_lower for p in DEVELOPER_ROLE_MODELS)
-        ):
-            # Shallow-copy the list + first message only — rest stays shared.
-            sanitized_messages = list(sanitized_messages)
-            sanitized_messages[0] = {**sanitized_messages[0], "role": "developer"}
-
-        provider_preferences = {}
-        if self.providers_allowed:
-            provider_preferences["only"] = self.providers_allowed
-        if self.providers_ignored:
-            provider_preferences["ignore"] = self.providers_ignored
-        if self.providers_order:
-            provider_preferences["order"] = self.providers_order
-        if self.provider_sort:
-            provider_preferences["sort"] = self.provider_sort
-        if self.provider_require_parameters:
-            provider_preferences["require_parameters"] = True
-        if self.provider_data_collection:
-            provider_preferences["data_collection"] = self.provider_data_collection
-
-        api_kwargs = {
-            "model": self.model,
-            "messages": sanitized_messages,
-            "timeout": self._resolved_api_call_timeout(),
-        }
-        try:
-            from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE
-        except Exception:
-            _fixed_temperature_for_model = None
-            OMIT_TEMPERATURE = None
-        if _fixed_temperature_for_model is not None:
-            fixed_temperature = _fixed_temperature_for_model(self.model, self.base_url)
-            if fixed_temperature is OMIT_TEMPERATURE:
-                api_kwargs.pop("temperature", None)
-            elif fixed_temperature is not None:
-                api_kwargs["temperature"] = fixed_temperature
-        if self._is_qwen_portal():
-            api_kwargs["metadata"] = {
-                "sessionId": self.session_id or "hermes",
-                "promptId": str(uuid.uuid4()),
-            }
-        if self.tools:
-            api_kwargs["tools"] = self.tools
-
-        # ── max_tokens for chat_completions ──────────────────────────────
-        # Priority: ephemeral override (error recovery / length-continuation
-        # boost) > user-configured max_tokens > provider-specific defaults.
-        _ephemeral_out = getattr(self, "_ephemeral_max_output_tokens", None)
-        if _ephemeral_out is not None:
-            self._ephemeral_max_output_tokens = None  # consume immediately
-            api_kwargs.update(self._max_tokens_param(_ephemeral_out))
-        elif self.max_tokens is not None:
-            api_kwargs.update(self._max_tokens_param(self.max_tokens))
-        elif "integrate.api.nvidia.com" in self._base_url_lower:
-            # NVIDIA NIM defaults to a very low max_tokens when omitted,
-            # causing models like GLM-4.7 to truncate immediately (thinking
-            # tokens alone exhaust the budget).  16384 provides adequate room.
-            api_kwargs.update(self._max_tokens_param(16384))
-        elif self._is_qwen_portal():
-            # Qwen Portal defaults to a very low max_tokens when omitted.
-            # Reasoning models (qwen3-coder-plus) exhaust that budget on
-            # thinking tokens alone, causing the portal to return
-            # finish_reason="stop" with truncated output — the agent sees
-            # this as an intentional stop and exits the loop.  Send 65536
-            # (the documented max output for qwen3-coder models) so the
-            # model has adequate output budget for tool calls.
-            api_kwargs.update(self._max_tokens_param(65536))
-        elif (
-            base_url_host_matches(self.base_url, "api.kimi.com")
-            or base_url_host_matches(self.base_url, "moonshot.ai")
-            or base_url_host_matches(self.base_url, "moonshot.cn")
-        ):
-            # Kimi/Moonshot defaults to a low max_tokens when omitted.
-            # Reasoning tokens share the output budget — without an explicit
-            # value the model can exhaust it on thinking alone, causing
-            # "Response truncated due to output length limit".  32000 matches
-            # Kimi CLI's default (see MoonshotAI/kimi-cli kimi.py generate()).
-            api_kwargs.update(self._max_tokens_param(32000))
-            # Kimi requires reasoning_effort as a top-level chat completions
-            # parameter (not inside extra_body).  Mirror Kimi CLI's
-            # with_generation_kwargs(reasoning_effort=...) / with_thinking():
-            # when thinking is disabled, Kimi CLI omits reasoning_effort
-            # entirely (maps to None).
-            _kimi_thinking_off = bool(
-                self.reasoning_config
-                and isinstance(self.reasoning_config, dict)
-                and self.reasoning_config.get("enabled") is False
+            return _ct.build_kwargs(
+                model=self.model,
+                messages=api_messages,
+                tools=self.tools,
+                reasoning_config=self.reasoning_config,
+                session_id=getattr(self, "session_id", None),
+                max_tokens=self.max_tokens,
+                request_overrides=self.request_overrides,
+                is_github_responses=is_github_responses,
+                is_codex_backend=is_codex_backend,
+                is_xai_responses=is_xai_responses,
+                github_reasoning_extra=self._github_models_reasoning_extra_body() if is_github_responses else None,
             )
-            if not _kimi_thinking_off:
-                _kimi_effort = "medium"
-                if self.reasoning_config and isinstance(self.reasoning_config, dict):
-                    _e = (self.reasoning_config.get("effort") or "").strip().lower()
-                    if _e in ("low", "medium", "high"):
-                        _kimi_effort = _e
-                api_kwargs["reasoning_effort"] = _kimi_effort
-        elif (self._is_openrouter_url() or "nousresearch" in self._base_url_lower) and "claude" in (self.model or "").lower():
-            # OpenRouter and Nous Portal translate requests to Anthropic's
-            # Messages API, which requires max_tokens as a mandatory field.
-            # When we omit it, the proxy picks a default that can be too
-            # low — the model spends its output budget on thinking and has
-            # almost nothing left for the actual response (especially large
-            # tool calls like write_file).  Sending the model's real output
-            # limit ensures full capacity.
-            try:
-                from agent.anthropic_adapter import _get_anthropic_max_output
-                _model_output_limit = _get_anthropic_max_output(self.model)
-                api_kwargs["max_tokens"] = _model_output_limit
-            except Exception:
-                pass  # fail open — let the proxy pick its default
 
-        extra_body = {}
+        # ── chat_completions (default) ─────────────────────────────────────
+        _ct = self._get_transport()
 
-        _is_openrouter = self._is_openrouter_url()
-        _is_github_models = (
+        # Provider detection flags
+        _is_qwen = self._is_qwen_portal()
+        _is_or = self._is_openrouter_url()
+        _is_gh = (
             base_url_host_matches(self._base_url_lower, "models.github.ai")
             or base_url_host_matches(self._base_url_lower, "api.githubcopilot.com")
         )
-
-        # Provider preferences (only, ignore, order, sort) are OpenRouter-
-        # specific.  Only send to OpenRouter-compatible endpoints.
-        # TODO: Nous Portal will add transparent proxy support — re-enable
-        # for _is_nous when their backend is updated.
-        if provider_preferences and _is_openrouter:
-            extra_body["provider"] = provider_preferences
         _is_nous = "nousresearch" in self._base_url_lower
-
-        # Kimi/Moonshot API uses extra_body.thinking (separate from the
-        # top-level reasoning_effort) to enable/disable reasoning mode.
-        # Mirror Kimi CLI's with_thinking() behavior exactly — see
-        # MoonshotAI/kimi-cli packages/kosong/src/kosong/chat_provider/kimi.py
+        _is_nvidia = "integrate.api.nvidia.com" in self._base_url_lower
         _is_kimi = (
             base_url_host_matches(self.base_url, "api.kimi.com")
             or base_url_host_matches(self.base_url, "moonshot.ai")
             or base_url_host_matches(self.base_url, "moonshot.cn")
         )
-        if _is_kimi:
-            _kimi_thinking_enabled = True
-            if self.reasoning_config and isinstance(self.reasoning_config, dict):
-                if self.reasoning_config.get("enabled") is False:
-                    _kimi_thinking_enabled = False
-            extra_body["thinking"] = {
-                "type": "enabled" if _kimi_thinking_enabled else "disabled",
+
+        # Temperature: _fixed_temperature_for_model may return OMIT_TEMPERATURE
+        # sentinel (temperature omitted entirely), a numeric override, or None.
+        try:
+            from agent.auxiliary_client import _fixed_temperature_for_model, OMIT_TEMPERATURE
+            _ft = _fixed_temperature_for_model(self.model, self.base_url)
+            _omit_temp = _ft is OMIT_TEMPERATURE
+            _fixed_temp = _ft if not _omit_temp else None
+        except Exception:
+            _omit_temp = False
+            _fixed_temp = None
+
+        # Provider preferences (OpenRouter-specific)
+        _prefs: Dict[str, Any] = {}
+        if self.providers_allowed:
+            _prefs["only"] = self.providers_allowed
+        if self.providers_ignored:
+            _prefs["ignore"] = self.providers_ignored
+        if self.providers_order:
+            _prefs["order"] = self.providers_order
+        if self.provider_sort:
+            _prefs["sort"] = self.provider_sort
+        if self.provider_require_parameters:
+            _prefs["require_parameters"] = True
+        if self.provider_data_collection:
+            _prefs["data_collection"] = self.provider_data_collection
+
+        # Anthropic max output for Claude on OpenRouter/Nous
+        _ant_max = None
+        if (_is_or or _is_nous) and "claude" in (self.model or "").lower():
+            try:
+                from agent.anthropic_adapter import _get_anthropic_max_output
+                _ant_max = _get_anthropic_max_output(self.model)
+            except Exception:
+                pass  # fail open — let the proxy pick its default
+
+        # Qwen session metadata precomputed here (promptId is per-call random)
+        _qwen_meta = None
+        if _is_qwen:
+            _qwen_meta = {
+                "sessionId": self.session_id or "hermes",
+                "promptId": str(uuid.uuid4()),
             }
 
-        if self._supports_reasoning_extra_body():
-            if _is_github_models:
-                github_reasoning = self._github_models_reasoning_extra_body()
-                if github_reasoning is not None:
-                    extra_body["reasoning"] = github_reasoning
-            else:
-                if self.reasoning_config is not None:
-                    rc = dict(self.reasoning_config)
-                    # Nous Portal requires reasoning enabled — don't send
-                    # enabled=false to it (would cause 400).
-                    if _is_nous and rc.get("enabled") is False:
-                        pass  # omit reasoning entirely for Nous when disabled
-                    else:
-                        extra_body["reasoning"] = rc
-                else:
-                    extra_body["reasoning"] = {
-                        "enabled": True,
-                        "effort": "medium"
-                    }
+        # Ephemeral max output override — consume immediately so the next
+        # turn doesn't inherit it.
+        _ephemeral_out = getattr(self, "_ephemeral_max_output_tokens", None)
+        if _ephemeral_out is not None:
+            self._ephemeral_max_output_tokens = None
 
-        # Nous Portal product attribution
-        if _is_nous:
-            extra_body["tags"] = ["product=hermes-agent"]
-
-        # Ollama num_ctx: override the 2048 default so the model actually
-        # uses the context window it was trained for.  Passed via the OpenAI
-        # SDK's extra_body → options.num_ctx, which Ollama's OpenAI-compat
-        # endpoint forwards to the runner as --ctx-size.
-        if self._ollama_num_ctx:
-            options = extra_body.get("options", {})
-            options["num_ctx"] = self._ollama_num_ctx
-            extra_body["options"] = options
-
-        # Ollama / custom provider: pass think=false when reasoning is disabled.
-        # Ollama does not recognise the OpenRouter-style `reasoning` extra_body
-        # field, so we use its native `think` parameter instead.
-        # This prevents thinking-capable models (Qwen3, etc.) from generating
-        # <think> blocks and producing empty-response errors when the user has
-        # set reasoning_effort: none.
-        if self.provider == "custom" and self.reasoning_config and isinstance(self.reasoning_config, dict):
-            _effort = (self.reasoning_config.get("effort") or "").strip().lower()
-            _enabled = self.reasoning_config.get("enabled", True)
-            if _effort == "none" or _enabled is False:
-                extra_body["think"] = False
-
-        if self._is_qwen_portal():
-            extra_body["vl_high_resolution_images"] = True
-
-        if extra_body:
-            api_kwargs["extra_body"] = extra_body
-
-        # Priority Processing / generic request overrides (e.g. service_tier).
-        # Applied last so overrides win over any defaults set above.
-        if self.request_overrides:
-            api_kwargs.update(self.request_overrides)
-
-        return api_kwargs
+        return _ct.build_kwargs(
+            model=self.model,
+            messages=api_messages,
+            tools=self.tools,
+            timeout=self._resolved_api_call_timeout(),
+            max_tokens=self.max_tokens,
+            ephemeral_max_output_tokens=_ephemeral_out,
+            max_tokens_param_fn=self._max_tokens_param,
+            reasoning_config=self.reasoning_config,
+            request_overrides=self.request_overrides,
+            session_id=getattr(self, "session_id", None),
+            model_lower=(self.model or "").lower(),
+            is_openrouter=_is_or,
+            is_nous=_is_nous,
+            is_qwen_portal=_is_qwen,
+            is_github_models=_is_gh,
+            is_nvidia_nim=_is_nvidia,
+            is_kimi=_is_kimi,
+            is_custom_provider=self.provider == "custom",
+            ollama_num_ctx=self._ollama_num_ctx,
+            provider_preferences=_prefs or None,
+            qwen_prepare_fn=self._qwen_prepare_chat_messages if _is_qwen else None,
+            qwen_prepare_inplace_fn=self._qwen_prepare_chat_messages_inplace if _is_qwen else None,
+            qwen_session_metadata=_qwen_meta,
+            fixed_temperature=_fixed_temp,
+            omit_temperature=_omit_temp,
+            supports_reasoning=self._supports_reasoning_extra_body(),
+            github_reasoning_extra=self._github_models_reasoning_extra_body() if _is_gh else None,
+            anthropic_max_output=_ant_max,
+        )
 
     def _supports_reasoning_extra_body(self) -> bool:
         """Return True when reasoning extra_body is safe to send for this route/model.
@@ -7179,6 +7621,17 @@ class AIAgent:
             "finish_reason": finish_reason,
         }
 
+        if hasattr(assistant_message, "reasoning_content"):
+            raw_reasoning_content = getattr(assistant_message, "reasoning_content", None)
+            if raw_reasoning_content is not None:
+                msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
+            elif msg.get("tool_calls") and self._needs_deepseek_tool_reasoning():
+                # DeepSeek thinking mode requires reasoning_content on every
+                # assistant tool-call message. Without it, replaying the
+                # persisted message causes HTTP 400. Include empty string
+                # as a defensive compatibility fallback (refs #15250).
+                msg["reasoning_content"] = ""
+
         if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
             # Pass reasoning_details back unmodified so providers (OpenRouter,
             # Anthropic, OpenAI) can maintain reasoning continuity across turns.
@@ -7253,6 +7706,60 @@ class AIAgent:
 
         return msg
 
+    def _needs_kimi_tool_reasoning(self) -> bool:
+        """Return True when the current provider is Kimi / Moonshot thinking mode.
+
+        Kimi ``/coding`` and Moonshot thinking mode both require
+        ``reasoning_content`` on every assistant tool-call message; omitting
+        it causes the next replay to fail with HTTP 400.
+        """
+        return (
+            self.provider in {"kimi-coding", "kimi-coding-cn"}
+            or base_url_host_matches(self.base_url, "api.kimi.com")
+            or base_url_host_matches(self.base_url, "moonshot.ai")
+            or base_url_host_matches(self.base_url, "moonshot.cn")
+        )
+
+    def _needs_deepseek_tool_reasoning(self) -> bool:
+        """Return True when the current provider is DeepSeek thinking mode.
+
+        DeepSeek V4 thinking mode requires ``reasoning_content`` on every
+        assistant tool-call turn; omitting it causes HTTP 400 when the
+        message is replayed in a subsequent API request (#15250).
+        """
+        provider = (self.provider or "").lower()
+        model = (self.model or "").lower()
+        return (
+            provider == "deepseek"
+            or "deepseek" in model
+            or base_url_host_matches(self.base_url, "api.deepseek.com")
+        )
+
+    def _copy_reasoning_content_for_api(self, source_msg: dict, api_msg: dict) -> None:
+        """Copy provider-facing reasoning fields onto an API replay message."""
+        if source_msg.get("role") != "assistant":
+            return
+
+        explicit_reasoning = source_msg.get("reasoning_content")
+        if isinstance(explicit_reasoning, str):
+            api_msg["reasoning_content"] = explicit_reasoning
+            return
+
+        normalized_reasoning = source_msg.get("reasoning")
+        if isinstance(normalized_reasoning, str) and normalized_reasoning:
+            api_msg["reasoning_content"] = normalized_reasoning
+            return
+
+        # Providers that require an echoed reasoning_content on every
+        # assistant tool-call turn. Detection logic lives in the per-provider
+        # helpers so both the creation path (_build_assistant_message) and
+        # this replay path stay in sync.
+        if source_msg.get("tool_calls") and (
+            self._needs_kimi_tool_reasoning()
+            or self._needs_deepseek_tool_reasoning()
+        ):
+            api_msg["reasoning_content"] = ""
+
     @staticmethod
     def _sanitize_tool_calls_for_strict_api(api_msg: dict) -> dict:
         """Strip Codex Responses API fields from tool_calls for strict providers.
@@ -7280,6 +7787,115 @@ class AIAgent:
             for tc in tool_calls
         ]
         return api_msg
+
+    @staticmethod
+    def _sanitize_tool_call_arguments(
+        messages: list,
+        *,
+        logger=None,
+        session_id: str = None,
+    ) -> int:
+        """Repair corrupted assistant tool-call argument JSON in-place."""
+        log = logger or logging.getLogger(__name__)
+        if not isinstance(messages, list):
+            return 0
+
+        repaired = 0
+        marker = AIAgent._TOOL_CALL_ARGUMENTS_CORRUPTION_MARKER
+
+        def _prepend_marker(tool_msg: dict) -> None:
+            existing = tool_msg.get("content")
+            if isinstance(existing, str):
+                if not existing:
+                    tool_msg["content"] = marker
+                elif not existing.startswith(marker):
+                    tool_msg["content"] = f"{marker}\n{existing}"
+                return
+            if existing is None:
+                tool_msg["content"] = marker
+                return
+            try:
+                existing_text = json.dumps(existing)
+            except TypeError:
+                existing_text = str(existing)
+            tool_msg["content"] = f"{marker}\n{existing_text}"
+
+        message_index = 0
+        while message_index < len(messages):
+            msg = messages[message_index]
+            if not isinstance(msg, dict) or msg.get("role") != "assistant":
+                message_index += 1
+                continue
+
+            tool_calls = msg.get("tool_calls")
+            if not isinstance(tool_calls, list) or not tool_calls:
+                message_index += 1
+                continue
+
+            insert_at = message_index + 1
+            for tool_call in tool_calls:
+                if not isinstance(tool_call, dict):
+                    continue
+                function = tool_call.get("function")
+                if not isinstance(function, dict):
+                    continue
+
+                arguments = function.get("arguments")
+                if arguments is None or arguments == "":
+                    function["arguments"] = "{}"
+                    continue
+                if isinstance(arguments, str) and not arguments.strip():
+                    function["arguments"] = "{}"
+                    continue
+                if not isinstance(arguments, str):
+                    continue
+
+                try:
+                    json.loads(arguments)
+                except json.JSONDecodeError:
+                    tool_call_id = tool_call.get("id")
+                    function_name = function.get("name", "?")
+                    preview = arguments[:80]
+                    log.warning(
+                        "Corrupted tool_call arguments repaired before request "
+                        "(session=%s, message_index=%s, tool_call_id=%s, function=%s, preview=%r)",
+                        session_id or "-",
+                        message_index,
+                        tool_call_id or "-",
+                        function_name,
+                        preview,
+                    )
+                    function["arguments"] = "{}"
+
+                    existing_tool_msg = None
+                    scan_index = message_index + 1
+                    while scan_index < len(messages):
+                        candidate = messages[scan_index]
+                        if not isinstance(candidate, dict) or candidate.get("role") != "tool":
+                            break
+                        if candidate.get("tool_call_id") == tool_call_id:
+                            existing_tool_msg = candidate
+                            break
+                        scan_index += 1
+
+                    if existing_tool_msg is None:
+                        messages.insert(
+                            insert_at,
+                            {
+                                "role": "tool",
+                                "tool_call_id": tool_call_id,
+                                "content": marker,
+                            },
+                        )
+                        insert_at += 1
+                    else:
+                        _prepend_marker(existing_tool_msg)
+
+                    repaired += 1
+
+            message_index += 1
+
+        return repaired
 
     def _should_sanitize_tool_calls(self) -> bool:
         """Determine if tool_calls need sanitization for strict APIs.
@@ -7336,10 +7952,7 @@ class AIAgent:
             api_messages = []
             for msg in messages:
                 api_msg = msg.copy()
-                if msg.get("role") == "assistant":
-                    reasoning = msg.get("reasoning")
-                    if reasoning:
-                        api_msg["reasoning_content"] = reasoning
+                self._copy_reasoning_content_for_api(msg, api_msg)
                 api_msg.pop("reasoning", None)
                 api_msg.pop("finish_reason", None)
                 api_msg.pop("_flush_sentinel", None)
@@ -7381,6 +7994,7 @@ class AIAgent:
                 _flush_temperature = _fixed_temp
             else:
                 _flush_temperature = 0.3
+            aux_error = None
             try:
                 response = _call_llm(
                     task="flush_memories",
@@ -7390,14 +8004,19 @@ class AIAgent:
                     max_tokens=5120,
                     # timeout resolved from auxiliary.flush_memories.timeout config
                 )
-            except RuntimeError:
+            except Exception as e:
+                aux_error = e
                 _aux_available = False
                 response = None
 
             if not _aux_available and self.api_mode == "codex_responses":
                 # No auxiliary client -- use the Codex Responses path directly
                 codex_kwargs = self._build_api_kwargs(api_messages)
-                codex_kwargs["tools"] = self._responses_tools([memory_tool_def])
+                _ct_flush = self._get_transport()
+                if _ct_flush is not None:
+                    codex_kwargs["tools"] = _ct_flush.convert_tools([memory_tool_def])
+                elif not codex_kwargs.get("tools"):
+                    codex_kwargs["tools"] = [memory_tool_def]
                 if _flush_temperature is not None:
                     codex_kwargs["temperature"] = _flush_temperature
                 else:
@@ -7407,7 +8026,7 @@ class AIAgent:
                 response = self._run_codex_stream(codex_kwargs)
             elif not _aux_available and self.api_mode == "anthropic_messages":
                 # Native Anthropic — use the transport for kwargs
-                _tflush = self._get_anthropic_transport()
+                _tflush = self._get_transport()
                 ant_kwargs = _tflush.build_kwargs(
                     model=self.model, messages=api_messages,
                     tools=[memory_tool_def], max_tokens=5120,
@@ -7429,26 +8048,68 @@ class AIAgent:
                     **api_kwargs, timeout=_get_task_timeout("flush_memories")
                 )
 
+            if aux_error is not None:
+                logger.warning("Auxiliary memory flush failed; used fallback path: %s", aux_error)
+                self._emit_auxiliary_failure("memory flush", aux_error)
+
+            def _openai_tool_calls(resp):
+                if resp is not None and hasattr(resp, "choices") and resp.choices:
+                    msg = getattr(resp.choices[0], "message", None)
+                    calls = getattr(msg, "tool_calls", None)
+                    if calls:
+                        return calls
+                return []
+
+            def _codex_output_tool_calls(resp):
+                calls = []
+                for item in getattr(resp, "output", []) or []:
+                    if getattr(item, "type", None) == "function_call":
+                        calls.append(SimpleNamespace(
+                            id=getattr(item, "call_id", None),
+                            type="function",
+                            function=SimpleNamespace(
+                                name=getattr(item, "name", ""),
+                                arguments=getattr(item, "arguments", "{}"),
+                            ),
+                        ))
+                return calls
+
             # Extract tool calls from the response, handling all API formats
             tool_calls = []
             if self.api_mode == "codex_responses" and not _aux_available:
-                assistant_msg, _ = self._normalize_codex_response(response)
-                if assistant_msg and assistant_msg.tool_calls:
-                    tool_calls = assistant_msg.tool_calls
-            elif self.api_mode == "anthropic_messages" and not _aux_available:
-                _tfn = self._get_anthropic_transport()
-                _flush_nr = _tfn.normalize_response(response, strip_tool_prefix=self._is_anthropic_oauth)
-                if _flush_nr and _flush_nr.tool_calls:
+                _ct_flush = self._get_transport()
+                _cnr_flush = _ct_flush.normalize_response(response) if _ct_flush is not None else None
+                if _cnr_flush and _cnr_flush.tool_calls:
                     tool_calls = [
                         SimpleNamespace(
                             id=tc.id, type="function",
                             function=SimpleNamespace(name=tc.name, arguments=tc.arguments),
-                        ) for tc in _flush_nr.tool_calls
+                        ) for tc in _cnr_flush.tool_calls
                     ]
-            elif hasattr(response, "choices") and response.choices:
-                assistant_message = response.choices[0].message
-                if assistant_message.tool_calls:
-                    tool_calls = assistant_message.tool_calls
+                else:
+                    tool_calls = _codex_output_tool_calls(response)
+            elif self.api_mode == "anthropic_messages" and not _aux_available:
+                _tfn = self._get_transport()
+                _flush_result = _tfn.normalize_response(response, strip_tool_prefix=self._is_anthropic_oauth)
+                if _flush_result and _flush_result.tool_calls:
+                    tool_calls = [
+                        SimpleNamespace(
+                            id=tc.id, type="function",
+                            function=SimpleNamespace(name=tc.name, arguments=tc.arguments),
+                        ) for tc in _flush_result.tool_calls
+                    ]
+            elif self.api_mode in ("chat_completions", "bedrock_converse"):
+                # chat_completions / bedrock — normalize through transport
+                _tfn = self._get_transport()
+                _flush_result = _tfn.normalize_response(response) if _tfn is not None else None
+                if _flush_result and _flush_result.tool_calls:
+                    tool_calls = _flush_result.tool_calls
+                else:
+                    tool_calls = _openai_tool_calls(response)
+            elif _aux_available and hasattr(response, "choices") and response.choices:
+                # Auxiliary client returned OpenAI-shaped response while main
+                # api_mode is codex/anthropic — extract tool_calls from .choices
+                tool_calls = _openai_tool_calls(response)
 
             for tc in tool_calls:
                 if tc.function.name == "memory":
@@ -7463,12 +8124,27 @@ class AIAgent:
                             old_text=args.get("old_text"),
                             store=self._memory_store,
                         )
+                        if self._memory_manager and args.get("action") in ("add", "replace"):
+                            try:
+                                self._memory_manager.on_memory_write(
+                                    args.get("action", ""),
+                                    flush_target,
+                                    args.get("content", ""),
+                                    metadata=self._build_memory_write_metadata(
+                                        write_origin="memory_flush",
+                                        execution_context="flush_memories",
+                                    ),
+                                )
+                            except Exception:
+                                pass
                         if not self.quiet_mode:
                             print(f"  🧠 Memory flush: saved to {args.get('target', 'memory')}")
                     except Exception as e:
-                        logger.debug("Memory flush tool call failed: %s", e)
+                        logger.warning("Memory flush tool call failed: %s", e)
+                        self._emit_auxiliary_failure("memory flush tool", e)
         except Exception as e:
-            logger.debug("Memory flush API call failed: %s", e)
+            logger.warning("Memory flush API call failed: %s", e)
+            self._emit_auxiliary_failure("memory flush", e)
         finally:
             # Strip flush artifacts: remove everything from the flush message onward.
             # Use sentinel marker instead of identity check for robustness.
@@ -7507,7 +8183,21 @@ class AIAgent:
             except Exception:
                 pass
 
-        compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
+        try:
+            compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
+        except TypeError:
+            # Plugin context engine with strict signature that doesn't accept
+            # focus_topic — fall back to calling without it.
+            compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens)
+
+        summary_error = getattr(self.context_compressor, "_last_summary_error", None)
+        if summary_error:
+            if getattr(self, "_last_compression_summary_warning", None) != summary_error:
+                self._last_compression_summary_warning = summary_error
+                self._emit_warning(
+                    f"⚠ Compression summary failed: {summary_error}. "
+                    "Inserted a fallback context marker."
+                )
 
         todo_snapshot = self._todo_store.format_for_injection()
         if todo_snapshot:
@@ -7604,8 +8294,27 @@ class AIAgent:
         finally:
             self._executing_tools = False
 
+    def _dispatch_delegate_task(self, function_args: dict) -> str:
+        """Single call site for delegate_task dispatch.
+
+        New DELEGATE_TASK_SCHEMA fields only need to be added here to reach all
+        invocation paths (concurrent, sequential, inline).
+        """
+        from tools.delegate_tool import delegate_task as _delegate_task
+        return _delegate_task(
+            goal=function_args.get("goal"),
+            context=function_args.get("context"),
+            toolsets=function_args.get("toolsets"),
+            tasks=function_args.get("tasks"),
+            max_iterations=function_args.get("max_iterations"),
+            acp_command=function_args.get("acp_command"),
+            acp_args=function_args.get("acp_args"),
+            role=function_args.get("role"),
+            parent_agent=self,
+        )
+
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
-                     tool_call_id: Optional[str] = None) -> str:
+                     tool_call_id: Optional[str] = None, messages: list = None) -> str:
         """Invoke a single tool and return the result string. No display logic.
 
         Handles both agent-level tools (todo, memory, etc.) and registry-dispatched
@@ -7659,6 +8368,10 @@ class AIAgent:
                         function_args.get("action", ""),
                         target,
                         function_args.get("content", ""),
+                        metadata=self._build_memory_write_metadata(
+                            task_id=effective_task_id,
+                            tool_call_id=tool_call_id,
+                        ),
                     )
                 except Exception:
                     pass
@@ -7673,15 +8386,7 @@ class AIAgent:
                 callback=self.clarify_callback,
             )
         elif function_name == "delegate_task":
-            from tools.delegate_tool import delegate_task as _delegate_task
-            return _delegate_task(
-                goal=function_args.get("goal"),
-                context=function_args.get("context"),
-                toolsets=function_args.get("toolsets"),
-                tasks=function_args.get("tasks"),
-                max_iterations=function_args.get("max_iterations"),
-                parent_agent=self,
-            )
+            return self._dispatch_delegate_task(function_args)
         else:
             return handle_function_call(
                 function_name, function_args, effective_task_id,
@@ -7843,7 +8548,7 @@ class AIAgent:
                 pass
             start = time.time()
             try:
-                result = self._invoke_tool(function_name, function_args, effective_task_id, tool_call.id)
+                result = self._invoke_tool(function_name, function_args, effective_task_id, tool_call.id, messages=messages)
             except Exception as tool_error:
                 result = f"Error executing tool '{function_name}': {tool_error}"
                 logger.error("_invoke_tool raised for %s: %s", function_name, tool_error, exc_info=True)
@@ -8178,6 +8883,10 @@ class AIAgent:
                             function_args.get("action", ""),
                             target,
                             function_args.get("content", ""),
+                            metadata=self._build_memory_write_metadata(
+                                task_id=effective_task_id,
+                                tool_call_id=getattr(tool_call, "id", None),
+                            ),
                         )
                     except Exception:
                         pass
@@ -8195,7 +8904,6 @@ class AIAgent:
                 if self._should_emit_quiet_tool_messages():
                     self._vprint(f"  {_get_cute_tool_message_impl('clarify', function_args, tool_duration, result=function_result)}")
             elif function_name == "delegate_task":
-                from tools.delegate_tool import delegate_task as _delegate_task
                 tasks_arg = function_args.get("tasks")
                 if tasks_arg and isinstance(tasks_arg, list):
                     spinner_label = f"🔀 delegating {len(tasks_arg)} tasks"
@@ -8210,14 +8918,7 @@ class AIAgent:
                 self._delegate_spinner = spinner
                 _delegate_result = None
                 try:
-                    function_result = _delegate_task(
-                        goal=function_args.get("goal"),
-                        context=function_args.get("context"),
-                        toolsets=function_args.get("toolsets"),
-                        tasks=tasks_arg,
-                        max_iterations=function_args.get("max_iterations"),
-                        parent_agent=self,
-                    )
+                    function_result = self._dispatch_delegate_task(function_args)
                     _delegate_result = function_result
                 finally:
                     self._delegate_spinner = None
@@ -8430,6 +9131,7 @@ class AIAgent:
             api_messages = []
             for msg in messages:
                 api_msg = msg.copy()
+                self._copy_reasoning_content_for_api(msg, api_msg)
                 for internal_field in ("reasoning", "finish_reason", "_thinking_prefill"):
                     api_msg.pop(internal_field, None)
                 if _needs_sanitize:
@@ -8475,8 +9177,9 @@ class AIAgent:
                 codex_kwargs = self._build_api_kwargs(api_messages)
                 codex_kwargs.pop("tools", None)
                 summary_response = self._run_codex_stream(codex_kwargs)
-                assistant_message, _ = self._normalize_codex_response(summary_response)
-                final_response = (assistant_message.content or "").strip() if assistant_message else ""
+                _ct_sum = self._get_transport()
+                _cnr_sum = _ct_sum.normalize_response(summary_response)
+                final_response = (_cnr_sum.content or "").strip()
             else:
                 summary_kwargs = {
                     "model": self.model,
@@ -8504,21 +9207,18 @@ class AIAgent:
                     summary_kwargs["extra_body"] = summary_extra_body
 
                 if self.api_mode == "anthropic_messages":
-                    _tsum = self._get_anthropic_transport()
+                    _tsum = self._get_transport()
                     _ant_kw = _tsum.build_kwargs(model=self.model, messages=api_messages, tools=None,
                                    max_tokens=self.max_tokens, reasoning_config=self.reasoning_config,
                                    is_oauth=self._is_anthropic_oauth,
                                    preserve_dots=self._anthropic_preserve_dots())
                     summary_response = self._anthropic_messages_create(_ant_kw)
-                    _sum_nr = _tsum.normalize_response(summary_response, strip_tool_prefix=self._is_anthropic_oauth)
-                    final_response = (_sum_nr.content or "").strip()
+                    _summary_result = _tsum.normalize_response(summary_response, strip_tool_prefix=self._is_anthropic_oauth)
+                    final_response = (_summary_result.content or "").strip()
                 else:
                     summary_response = self._ensure_primary_openai_client(reason="iteration_limit_summary").chat.completions.create(**summary_kwargs)
-
-                    if summary_response.choices and summary_response.choices[0].message.content:
-                        final_response = summary_response.choices[0].message.content
-                    else:
-                        final_response = ""
+                    _summary_result = self._get_transport().normalize_response(summary_response)
+                    final_response = (_summary_result.content or "").strip()
 
             if final_response:
                 if "<think>" in final_response:
@@ -8533,17 +9233,18 @@ class AIAgent:
                     codex_kwargs = self._build_api_kwargs(api_messages)
                     codex_kwargs.pop("tools", None)
                     retry_response = self._run_codex_stream(codex_kwargs)
-                    retry_msg, _ = self._normalize_codex_response(retry_response)
-                    final_response = (retry_msg.content or "").strip() if retry_msg else ""
+                    _ct_retry = self._get_transport()
+                    _cnr_retry = _ct_retry.normalize_response(retry_response)
+                    final_response = (_cnr_retry.content or "").strip()
                 elif self.api_mode == "anthropic_messages":
-                    _tretry = self._get_anthropic_transport()
+                    _tretry = self._get_transport()
                     _ant_kw2 = _tretry.build_kwargs(model=self.model, messages=api_messages, tools=None,
                                     is_oauth=self._is_anthropic_oauth,
                                     max_tokens=self.max_tokens, reasoning_config=self.reasoning_config,
                                     preserve_dots=self._anthropic_preserve_dots())
                     retry_response = self._anthropic_messages_create(_ant_kw2)
-                    _retry_nr = _tretry.normalize_response(retry_response, strip_tool_prefix=self._is_anthropic_oauth)
-                    final_response = (_retry_nr.content or "").strip()
+                    _retry_result = _tretry.normalize_response(retry_response, strip_tool_prefix=self._is_anthropic_oauth)
+                    final_response = (_retry_result.content or "").strip()
                 else:
                     summary_kwargs = {
                         "model": self.model,
@@ -8557,11 +9258,8 @@ class AIAgent:
                         summary_kwargs["extra_body"] = summary_extra_body
 
                     summary_response = self._ensure_primary_openai_client(reason="iteration_limit_summary_retry").chat.completions.create(**summary_kwargs)
-
-                    if summary_response.choices and summary_response.choices[0].message.content:
-                        final_response = summary_response.choices[0].message.content
-                    else:
-                        final_response = ""
+                    _retry_result = self._get_transport().normalize_response(summary_response)
+                    final_response = (_retry_result.content or "").strip()
 
                 if final_response:
                     if "<think>" in final_response:
@@ -8645,6 +9343,11 @@ class AIAgent:
         self._persist_user_message_override = persist_user_message
         # Generate unique task_id if not provided to isolate VMs between concurrent tasks
         effective_task_id = task_id or str(uuid.uuid4())
+        # Expose the active task_id so tools running mid-turn (e.g. delegate_task
+        # in delegate_tool.py) can identify this agent for the cross-agent file
+        # state registry.  Set BEFORE any tool dispatch so snapshots taken at
+        # child-launch time see the parent's real id, not None.
+        self._current_task_id = effective_task_id
         
         # Reset retry counters and iteration budget at the start of each turn
         # so subagent usage from a previous turn doesn't eat into the next one.
@@ -9059,6 +9762,19 @@ class AIAgent:
             # Note: Reasoning is embedded in content via <think> tags for trajectory storage.
             # However, providers like Moonshot AI require a separate 'reasoning_content' field
             # on assistant messages with tool_calls. We handle both cases here.
+            request_logger = getattr(self, "logger", None) or logging.getLogger(__name__)
+            repaired_tool_calls = self._sanitize_tool_call_arguments(
+                messages,
+                logger=request_logger,
+                session_id=self.session_id,
+            )
+            if repaired_tool_calls > 0:
+                request_logger.info(
+                    "Sanitized %s corrupted tool_call arguments before request (session=%s)",
+                    repaired_tool_calls,
+                    self.session_id or "-",
+                )
+
             api_messages = []
             for idx, msg in enumerate(messages):
                 api_msg = msg.copy()
@@ -9083,11 +9799,7 @@ class AIAgent:
 
                 # For ALL assistant messages, pass reasoning back to the API
                 # This ensures multi-turn reasoning context is preserved
-                if msg.get("role") == "assistant":
-                    reasoning_text = msg.get("reasoning")
-                    if reasoning_text:
-                        # Add reasoning_content for API compatibility (Moonshot AI, Novita, OpenRouter)
-                        api_msg["reasoning_content"] = reasoning_text
+                self._copy_reasoning_content_for_api(msg, api_msg)
 
                 # Remove 'reasoning' field - it's for trajectory storage only
                 # We've copied it to 'reasoning_content' for the API above
@@ -9222,12 +9934,13 @@ class AIAgent:
             
             api_start_time = time.time()
             retry_count = 0
-            max_retries = 3
+            max_retries = self._api_max_retries
             primary_recovery_attempted = False
             max_compression_attempts = 3
             codex_auth_retry_attempted=False
             anthropic_auth_retry_attempted=False
             nous_auth_retry_attempted=False
+            copilot_auth_retry_attempted=False
             thinking_sig_retry_attempted = False
             has_retried_429 = False
             restart_with_compressed_messages = False
@@ -9291,7 +10004,7 @@ class AIAgent:
                     if self._force_ascii_payload:
                         _sanitize_structure_non_ascii(api_kwargs)
                     if self.api_mode == "codex_responses":
-                        api_kwargs = self._preflight_codex_api_kwargs(api_kwargs, allow_stream=False)
+                        api_kwargs = self._get_transport().preflight_kwargs(api_kwargs, allow_stream=False)
 
                     try:
                         from hermes_cli.plugins import invoke_hook as _invoke_hook
@@ -9379,48 +10092,72 @@ class AIAgent:
                     response_invalid = False
                     error_details = []
                     if self.api_mode == "codex_responses":
-                        output_items = getattr(response, "output", None) if response is not None else None
-                        if response is None:
-                            response_invalid = True
-                            error_details.append("response is None")
-                        elif not isinstance(output_items, list):
-                            response_invalid = True
-                            error_details.append("response.output is not a list")
-                        elif not output_items:
-                            # Stream backfill may have failed, but
-                            # _normalize_codex_response can still recover
-                            # from response.output_text. Only mark invalid
-                            # when that fallback is also absent.
-                            _out_text = getattr(response, "output_text", None)
-                            _out_text_stripped = _out_text.strip() if isinstance(_out_text, str) else ""
-                            if _out_text_stripped:
-                                logger.debug(
-                                    "Codex response.output is empty but output_text is present "
-                                    "(%d chars); deferring to normalization.",
-                                    len(_out_text_stripped),
-                                )
-                            else:
-                                _resp_status = getattr(response, "status", None)
-                                _resp_incomplete = getattr(response, "incomplete_details", None)
-                                logger.warning(
-                                    "Codex response.output is empty after stream backfill "
-                                    "(status=%s, incomplete_details=%s, model=%s). %s",
-                                    _resp_status, _resp_incomplete,
-                                    getattr(response, "model", None),
-                                    f"api_mode={self.api_mode} provider={self.provider}",
-                                )
+                        _ct_v = self._get_transport()
+                        if not _ct_v.validate_response(response):
+                            if response is None:
                                 response_invalid = True
-                                error_details.append("response.output is empty")
+                                error_details.append("response is None")
+                            else:
+                                # Provider returned a terminal failure (e.g. quota exhaustion).
+                                # Treat as invalid so the fallback chain is triggered instead of
+                                # letting the error bubble up outside the retry/fallback loop.
+                                _codex_resp_status = str(getattr(response, "status", "") or "").strip().lower()
+                                if _codex_resp_status in {"failed", "cancelled"}:
+                                    _codex_error_obj = getattr(response, "error", None)
+                                    _codex_error_msg = (
+                                        _codex_error_obj.get("message") if isinstance(_codex_error_obj, dict)
+                                        else str(_codex_error_obj) if _codex_error_obj
+                                        else f"Responses API returned status '{_codex_resp_status}'"
+                                    )
+                                    logging.warning(
+                                        "Codex response status='%s' (error=%s). Routing to fallback. %s",
+                                        _codex_resp_status, _codex_error_msg,
+                                        self._client_log_context(),
+                                    )
+                                    response_invalid = True
+                                    error_details.append(f"response.status={_codex_resp_status}: {_codex_error_msg}")
+                                else:
+                                    # output_text fallback: stream backfill may have failed
+                                    # but normalize can still recover from output_text
+                                    _out_text = getattr(response, "output_text", None)
+                                    _out_text_stripped = _out_text.strip() if isinstance(_out_text, str) else ""
+                                    if _out_text_stripped:
+                                        logger.debug(
+                                            "Codex response.output is empty but output_text is present "
+                                            "(%d chars); deferring to normalization.",
+                                            len(_out_text_stripped),
+                                        )
+                                    else:
+                                        _resp_status = getattr(response, "status", None)
+                                        _resp_incomplete = getattr(response, "incomplete_details", None)
+                                        logger.warning(
+                                            "Codex response.output is empty after stream backfill "
+                                            "(status=%s, incomplete_details=%s, model=%s). %s",
+                                            _resp_status, _resp_incomplete,
+                                            getattr(response, "model", None),
+                                            f"api_mode={self.api_mode} provider={self.provider}",
+                                        )
+                                        response_invalid = True
+                                        error_details.append("response.output is empty")
                     elif self.api_mode == "anthropic_messages":
-                        _tv = self._get_anthropic_transport()
+                        _tv = self._get_transport()
                         if not _tv.validate_response(response):
                             response_invalid = True
                             if response is None:
                                 error_details.append("response is None")
                             else:
                                 error_details.append("response.content invalid (not a non-empty list)")
+                    elif self.api_mode == "bedrock_converse":
+                        _btv = self._get_transport()
+                        if not _btv.validate_response(response):
+                            response_invalid = True
+                            if response is None:
+                                error_details.append("response is None")
+                            else:
+                                error_details.append("Bedrock response invalid (no output or choices)")
                     else:
-                        if response is None or not hasattr(response, 'choices') or response.choices is None or not response.choices:
+                        _ctv = self._get_transport()
+                        if not _ctv.validate_response(response):
                             response_invalid = True
                             if response is None:
                                 error_details.append("response is None")
@@ -9579,11 +10316,18 @@ class AIAgent:
                         else:
                             finish_reason = "stop"
                     elif self.api_mode == "anthropic_messages":
-                        _tfr = self._get_anthropic_transport()
+                        _tfr = self._get_transport()
                         finish_reason = _tfr.map_finish_reason(response.stop_reason)
+                    elif self.api_mode == "bedrock_converse":
+                        # Bedrock response already normalized at dispatch — use transport
+                        _bt_fr = self._get_transport()
+                        _bedrock_result = _bt_fr.normalize_response(response)
+                        finish_reason = _bedrock_result.finish_reason
                     else:
-                        finish_reason = response.choices[0].finish_reason
-                        assistant_message = response.choices[0].message
+                        _cc_fr = self._get_transport()
+                        _finish_result = _cc_fr.normalize_response(response)
+                        finish_reason = _finish_result.finish_reason
+                        assistant_message = _finish_result
                         if self._should_treat_stop_as_truncated(
                             finish_reason,
                             assistant_message,
@@ -9606,27 +10350,14 @@ class AIAgent:
                         # interim assistant message is byte-identical to what
                         # would have been appended in the non-truncated path.
                         _trunc_msg = None
-                        if self.api_mode in ("chat_completions", "bedrock_converse"):
-                            _trunc_msg = response.choices[0].message if (hasattr(response, "choices") and response.choices) else None
-                        elif self.api_mode == "anthropic_messages":
-                            _trunc_nr = self._get_anthropic_transport().normalize_response(
+                        _trunc_transport = self._get_transport()
+                        if self.api_mode == "anthropic_messages":
+                            _trunc_result = _trunc_transport.normalize_response(
                                 response, strip_tool_prefix=self._is_anthropic_oauth
                             )
-                            _trunc_msg = SimpleNamespace(
-                                content=_trunc_nr.content,
-                                tool_calls=[
-                                    SimpleNamespace(
-                                        id=tc.id, type="function",
-                                        function=SimpleNamespace(name=tc.name, arguments=tc.arguments),
-                                    ) for tc in (_trunc_nr.tool_calls or [])
-                                ] or None,
-                                reasoning=_trunc_nr.reasoning,
-                                reasoning_content=None,
-                                reasoning_details=(
-                                    _trunc_nr.provider_data.get("reasoning_details")
-                                    if _trunc_nr.provider_data else None
-                                ),
-                            )
+                        else:
+                            _trunc_result = _trunc_transport.normalize_response(response)
+                        _trunc_msg = _trunc_result
 
                         _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
                         _trunc_has_tool_calls = bool(getattr(_trunc_msg, "tool_calls", None)) if _trunc_msg else False
@@ -9875,6 +10606,7 @@ class AIAgent:
                                     billing_mode="subscription_included"
                                     if cost_result.status == "included" else None,
                                     model=self.model,
+                                    api_call_count=1,
                                 )
                             except Exception:
                                 pass  # never block the agent loop
@@ -9882,22 +10614,27 @@ class AIAgent:
                         if self.verbose_logging:
                             logging.debug(f"Token usage: prompt={usage_dict['prompt_tokens']:,}, completion={usage_dict['completion_tokens']:,}, total={usage_dict['total_tokens']:,}")
                         
-                        # Log cache hit stats when prompt caching is active
-                        if self._use_prompt_caching:
-                            if self.api_mode == "anthropic_messages":
-                                _tcs = self._get_anthropic_transport()
-                                _cache = _tcs.extract_cache_stats(response)
-                                cached = _cache["cached_tokens"] if _cache else 0
-                                written = _cache["creation_tokens"] if _cache else 0
-                            else:
-                                # OpenRouter uses prompt_tokens_details.cached_tokens
-                                details = getattr(response.usage, 'prompt_tokens_details', None)
-                                cached = getattr(details, 'cached_tokens', 0) or 0 if details else 0
-                                written = getattr(details, 'cache_write_tokens', 0) or 0 if details else 0
-                            prompt = usage_dict["prompt_tokens"]
+                        # Surface cache hit stats for any provider that reports
+                        # them — not just those where we inject cache_control
+                        # markers.  OpenAI/Kimi/DeepSeek/Qwen all do automatic
+                        # server-side prefix caching and return
+                        # ``prompt_tokens_details.cached_tokens``; users
+                        # previously could not see their cache % because this
+                        # line was gated on ``_use_prompt_caching``, which is
+                        # only True for Anthropic-style marker injection.
+                        # ``canonical_usage`` is already normalised from all
+                        # three API shapes (Anthropic / Codex / OpenAI-chat)
+                        # so we can rely on its values directly.
+                        cached = canonical_usage.cache_read_tokens
+                        written = canonical_usage.cache_write_tokens
+                        prompt = usage_dict["prompt_tokens"]
+                        if (cached or written) and not self.quiet_mode:
                             hit_pct = (cached / prompt * 100) if prompt > 0 else 0
-                            if not self.quiet_mode:
-                                self._vprint(f"{self.log_prefix}   💾 Cache: {cached:,}/{prompt:,} tokens ({hit_pct:.0f}% hit, {written:,} written)")
+                            self._vprint(
+                                f"{self.log_prefix}   💾 Cache: "
+                                f"{cached:,}/{prompt:,} tokens "
+                                f"({hit_pct:.0f}% hit, {written:,} written)"
+                            )
                     
                     has_retried_429 = False  # Reset on success
                     # Clear Nous rate limit state on successful request —
@@ -10146,6 +10883,36 @@ class AIAgent:
                         if self._try_refresh_nous_client_credentials(force=True):
                             print(f"{self.log_prefix}🔐 Nous agent key refreshed after 401. Retrying request...")
                             continue
+                        # Credential refresh didn't help — show diagnostic info.
+                        # Most common causes: Portal OAuth expired/revoked,
+                        # account out of credits, or agent key blocked.
+                        from hermes_constants import display_hermes_home as _dhh_fn
+                        _dhh = _dhh_fn()
+                        _body_text = ""
+                        try:
+                            _body = getattr(api_error, "body", None) or getattr(api_error, "response", None)
+                            if _body is not None:
+                                _body_text = str(_body)[:200]
+                        except Exception:
+                            pass
+                        print(f"{self.log_prefix}🔐 Nous 401 — Portal authentication failed.")
+                        if _body_text:
+                            print(f"{self.log_prefix}   Response: {_body_text}")
+                        print(f"{self.log_prefix}   Most likely: Portal OAuth expired, account out of credits, or agent key revoked.")
+                        print(f"{self.log_prefix}   Troubleshooting:")
+                        print(f"{self.log_prefix}     • Re-authenticate: hermes login --provider nous")
+                        print(f"{self.log_prefix}     • Check credits / billing: https://portal.nousresearch.com")
+                        print(f"{self.log_prefix}     • Verify stored credentials: {_dhh}/auth.json")
+                        print(f"{self.log_prefix}     • Switch providers temporarily: /model <model> --provider openrouter")
+                    if (
+                        self.provider == "copilot"
+                        and status_code == 401
+                        and not copilot_auth_retry_attempted
+                    ):
+                        copilot_auth_retry_attempted = True
+                        if self._try_refresh_copilot_client_credentials():
+                            self._vprint(f"{self.log_prefix}🔐 Copilot credentials refreshed after 401. Retrying request...")
+                            continue
                     if (
                         self.api_mode == "anthropic_messages"
                         and status_code == 401
@@ -10345,14 +11112,14 @@ class AIAgent:
                     )
                     if is_rate_limited and self._fallback_index < len(self._fallback_chain):
                         # Don't eagerly fallback if credential pool rotation may
-                        # still recover.  The pool's retry-then-rotate cycle needs
-                        # at least one more attempt to fire — jumping to a fallback
-                        # provider here short-circuits it.
-                        pool = self._credential_pool
-                        pool_may_recover = pool is not None and pool.has_available()
+                        # still recover.  See _pool_may_recover_from_rate_limit
+                        # for the single-credential-pool exception.  Fixes #11314.
+                        pool_may_recover = _pool_may_recover_from_rate_limit(
+                            self._credential_pool
+                        )
                         if not pool_may_recover:
                             self._emit_status("⚠️ Rate limited — switching to fallback provider...")
-                            if self._try_activate_fallback():
+                            if self._try_activate_fallback(reason=classified.reason):
                                 retry_count = 0
                                 compression_attempts = 0
                                 primary_recovery_attempted = False
@@ -10500,9 +11267,30 @@ class AIAgent:
                         # Error is about the INPUT being too large — reduce context_length.
                         # Try to parse the actual limit from the error message
                         parsed_limit = parse_context_limit_from_error(error_msg)
+                        _provider_lower = (getattr(self, "provider", "") or "").lower()
+                        _base_lower = (getattr(self, "base_url", "") or "").rstrip("/").lower()
+                        is_minimax_provider = (
+                            _provider_lower in {"minimax", "minimax-cn"}
+                            or _base_lower.startswith((
+                                "https://api.minimax.io/anthropic",
+                                "https://api.minimaxi.com/anthropic",
+                            ))
+                        )
+                        minimax_delta_only_overflow = (
+                            is_minimax_provider
+                            and parsed_limit is None
+                            and "context window exceeds limit (" in error_msg
+                        )
                         if parsed_limit and parsed_limit < old_ctx:
                             new_ctx = parsed_limit
-                            self._vprint(f"{self.log_prefix}⚠️  Context limit detected from API: {new_ctx:,} tokens (was {old_ctx:,})", force=True)
+                            self._vprint(f"{self.log_prefix}Context limit detected from API: {new_ctx:,} tokens (was {old_ctx:,})", force=True)
+                        elif minimax_delta_only_overflow:
+                            new_ctx = old_ctx
+                            self._vprint(
+                                f"{self.log_prefix}Provider reported overflow amount only; "
+                                f"keeping context_length at {old_ctx:,} tokens and compressing.",
+                                force=True,
+                            )
                         else:
                             # Step down to the next probe tier
                             new_ctx = get_next_probe_tier(old_ctx)
@@ -10584,9 +11372,26 @@ class AIAgent:
                     # already accounts for 413, 429, 529 (transient), context
                     # overflow, and generic-400 heuristics.  Local validation
                     # errors (ValueError, TypeError) are programming bugs.
+                    # Exclude UnicodeEncodeError — it's a ValueError subclass
+                    # but is handled separately by the surrogate sanitization
+                    # path above.  Exclude json.JSONDecodeError — also a
+                    # ValueError subclass, but it indicates a transient
+                    # provider/network failure (malformed response body,
+                    # truncated stream, routing layer corruption), not a
+                    # local programming bug, and should be retried (#14782).
                     is_local_validation_error = (
                         isinstance(api_error, (ValueError, TypeError))
-                        and not isinstance(api_error, UnicodeEncodeError)
+                        and not isinstance(
+                            api_error, (UnicodeEncodeError, json.JSONDecodeError)
+                        )
+                        # ssl.SSLError (and its subclass SSLCertVerificationError)
+                        # inherits from OSError *and* ValueError via Python MRO,
+                        # so the isinstance(ValueError) check above would
+                        # misclassify a TLS transport failure as a local
+                        # programming bug and abort without retrying.  Exclude
+                        # ssl.SSLError explicitly so the error classifier's
+                        # retryable=True mapping takes effect instead.
+                        and not isinstance(api_error, ssl.SSLError)
                     )
                     is_client_error = (
                         is_local_validation_error
@@ -10830,36 +11635,13 @@ class AIAgent:
                 break
 
             try:
-                if self.api_mode == "codex_responses":
-                    assistant_message, finish_reason = self._normalize_codex_response(response)
-                elif self.api_mode == "anthropic_messages":
-                    _transport = self._get_anthropic_transport()
-                    _nr = _transport.normalize_response(
-                        response, strip_tool_prefix=self._is_anthropic_oauth
-                    )
-                    # Back-compat shim: downstream code expects SimpleNamespace with
-                    # .content, .tool_calls, .reasoning, .reasoning_content,
-                    # .reasoning_details attributes.
-                    assistant_message = SimpleNamespace(
-                        content=_nr.content,
-                        tool_calls=[
-                            SimpleNamespace(
-                                id=tc.id,
-                                type="function",
-                                function=SimpleNamespace(name=tc.name, arguments=tc.arguments),
-                            )
-                            for tc in (_nr.tool_calls or [])
-                        ] or None,
-                        reasoning=_nr.reasoning,
-                        reasoning_content=None,
-                        reasoning_details=(
-                            _nr.provider_data.get("reasoning_details")
-                            if _nr.provider_data else None
-                        ),
-                    )
-                    finish_reason = _nr.finish_reason
-                else:
-                    assistant_message = response.choices[0].message
+                _transport = self._get_transport()
+                _normalize_kwargs = {}
+                if self.api_mode == "anthropic_messages":
+                    _normalize_kwargs["strip_tool_prefix"] = self._is_anthropic_oauth
+                normalized = _transport.normalize_response(response, **_normalize_kwargs)
+                assistant_message = normalized
+                finish_reason = normalized.finish_reason
                 
                 # Normalize content to string — some OpenAI-compatible servers
                 # (llama-server, etc.) return content as a dict or list instead
@@ -11822,14 +12604,11 @@ class AIAgent:
             self._iters_since_skill = 0
 
         # External memory provider: sync the completed turn + queue next prefetch.
-        # Use original_user_message (clean input) — user_message may contain
-        # injected skill content that bloats / breaks provider queries.
-        if self._memory_manager and final_response and original_user_message:
-            try:
-                self._memory_manager.sync_all(original_user_message, final_response)
-                self._memory_manager.queue_prefetch_all(original_user_message)
-            except Exception:
-                pass
+        self._sync_external_memory_for_turn(
+            original_user_message=original_user_message,
+            final_response=final_response,
+            interrupted=interrupted,
+        )
 
         # Background memory/skill review — runs AFTER the response is delivered
         # so it never competes with the user's task for model attention.

@@ -63,6 +63,11 @@ class TestParseModelInput:
         assert provider == "zai"
         assert model == "glm-5"
 
+    def test_stepfun_alias_resolved(self):
+        provider, model = parse_model_input("step:step-3.5-flash", "openrouter")
+        assert provider == "stepfun"
+        assert model == "step-3.5-flash"
+
     def test_no_slash_no_colon_keeps_provider(self):
         provider, model = parse_model_input("gpt-5.4", "openrouter")
         assert provider == "openrouter"
@@ -154,6 +159,7 @@ class TestNormalizeProvider:
         assert normalize_provider("glm") == "zai"
         assert normalize_provider("kimi") == "kimi-coding"
         assert normalize_provider("moonshot") == "kimi-coding"
+        assert normalize_provider("step") == "stepfun"
         assert normalize_provider("github-copilot") == "copilot"
 
     def test_case_insensitive(self):
@@ -164,6 +170,7 @@ class TestProviderLabel:
     def test_known_labels_and_auto(self):
         assert provider_label("anthropic") == "Anthropic"
         assert provider_label("kimi") == "Kimi / Kimi Coding Plan"
+        assert provider_label("stepfun") == "StepFun Step Plan"
         assert provider_label("copilot") == "GitHub Copilot"
         assert provider_label("copilot-acp") == "GitHub Copilot ACP"
         assert provider_label("auto") == "Auto"
@@ -193,6 +200,16 @@ class TestProviderModelIds:
     def test_zai_returns_glm_models(self):
         assert "glm-5" in provider_model_ids("zai")
 
+    def test_stepfun_prefers_live_catalog(self):
+        with patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            return_value={"api_key": "***", "base_url": "https://api.stepfun.com/step_plan/v1"},
+        ), patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=["step-3.5-flash", "step-3-agent-lite"],
+        ):
+            assert provider_model_ids("stepfun") == ["step-3.5-flash", "step-3-agent-lite"]
+
     def test_copilot_prefers_live_catalog(self):
         with patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "gh-token"}), \
              patch("hermes_cli.models._fetch_github_models", return_value=["gpt-5.4", "claude-sonnet-4.6"]):
@@ -203,13 +220,30 @@ class TestProviderModelIds:
              patch("hermes_cli.models._fetch_github_models", return_value=["gpt-5.4", "claude-sonnet-4.6"]):
             assert provider_model_ids("copilot-acp") == ["gpt-5.4", "claude-sonnet-4.6"]
 
+    def test_copilot_falls_back_to_curated_defaults_without_stale_opus(self):
+        with patch("hermes_cli.models._resolve_copilot_catalog_api_key", return_value="gh-token"), \
+             patch("hermes_cli.models._fetch_github_models", return_value=None):
+            ids = provider_model_ids("copilot")
+
+        assert "gpt-5.4" in ids
+        assert "claude-sonnet-4.6" in ids
+        assert "claude-sonnet-4" in ids
+        assert "claude-sonnet-4.5" in ids
+        assert "claude-haiku-4.5" in ids
+        assert "gemini-3.1-pro-preview" in ids
+        assert "claude-opus-4.6" not in ids
+
     def test_copilot_acp_falls_back_to_copilot_defaults(self):
-        with patch("hermes_cli.auth.resolve_api_key_provider_credentials", side_effect=Exception("no token")), \
+        with patch("hermes_cli.models._resolve_copilot_catalog_api_key", return_value="gh-token"), \
              patch("hermes_cli.models._fetch_github_models", return_value=None):
             ids = provider_model_ids("copilot-acp")
 
         assert "gpt-5.4" in ids
+        assert "claude-sonnet-4.6" in ids
+        assert "claude-sonnet-4" in ids
+        assert "gemini-3.1-pro-preview" in ids
         assert "copilot-acp" not in ids
+        assert "claude-opus-4.6" not in ids
 
 
 # -- fetch_api_models --------------------------------------------------------
@@ -532,8 +566,11 @@ class TestValidateApiFallback:
                 base_url="http://localhost:8000",
             )
 
+        # Unreachable /models on a custom endpoint no longer hard-rejects —
+        # the model is persisted with a warning so Cloudflare-protected /
+        # proxy endpoints that don't expose /models still work. See #12950.
         assert result["accepted"] is False
-        assert result["persist"] is False
+        assert result["persist"] is True
         assert "http://localhost:8000/v1/models" in result["message"]
         assert "http://localhost:8000/v1" in result["message"]
 

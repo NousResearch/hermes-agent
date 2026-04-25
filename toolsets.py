@@ -43,7 +43,7 @@ _HERMES_CORE_TOOLS = [
     "browser_navigate", "browser_snapshot", "browser_click",
     "browser_type", "browser_scroll", "browser_back",
     "browser_press", "browser_get_images",
-    "browser_vision", "browser_console", "browser_cdp",
+    "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
     "browser_import_cookies",
     # Text-to-speech
     "text_to_speech",
@@ -117,7 +117,7 @@ TOOLSETS = {
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
             "browser_vision", "browser_console", "browser_cdp",
-            "browser_import_cookies", "web_search"
+            "browser_dialog", "browser_import_cookies", "web_search"
         ],
         "includes": []
     },
@@ -218,6 +218,15 @@ TOOLSETS = {
         "includes": []
     },
 
+    "spotify": {
+        "description": "Native Spotify playback, search, playlist, album, and library tools",
+        "tools": [
+            "spotify_playback", "spotify_devices", "spotify_queue", "spotify_search",
+            "spotify_playlists", "spotify_albums", "spotify_library",
+        ],
+        "includes": []
+    },
+
 
     # Scenario-specific toolsets
     
@@ -251,7 +260,7 @@ TOOLSETS = {
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
-            "browser_vision", "browser_console", "browser_cdp",
+            "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             "browser_import_cookies",
             "todo", "memory",
             "session_search",
@@ -277,7 +286,7 @@ TOOLSETS = {
             "browser_navigate", "browser_snapshot", "browser_click",
             "browser_type", "browser_scroll", "browser_back",
             "browser_press", "browser_get_images",
-            "browser_vision", "browser_console", "browser_cdp",
+            "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             "browser_import_cookies",
             # Planning & memory
             "todo", "memory",
@@ -299,7 +308,18 @@ TOOLSETS = {
         "tools": _HERMES_CORE_TOOLS,
         "includes": []
     },
-    
+
+    "hermes-cron": {
+        # Mirrors hermes-cli so cron's "default" toolset is the same set of
+        # core tools users see interactively — then `hermes tools` filters
+        # them down per the platform config. _DEFAULT_OFF_TOOLSETS (moa,
+        # homeassistant, rl) are excluded by _get_platform_tools() unless
+        # the user explicitly enables them.
+        "description": "Default cron toolset - same core tools as hermes-cli; gated by `hermes tools`",
+        "tools": _HERMES_CORE_TOOLS,
+        "includes": []
+    },
+
     "hermes-telegram": {
         "description": "Telegram bot toolset - full access for personal use (terminal has safety checks)",
         "tools": _HERMES_CORE_TOOLS,

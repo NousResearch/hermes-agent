@@ -247,10 +247,22 @@ def _resolve_shell_init_files() -> list[str]:
     if explicit:
         candidates.extend(explicit)
     elif auto_bashrc and not _IS_WINDOWS:
-        # Bash's login-shell invocation does NOT source ~/.bashrc by default,
-        # so tools like nvm / asdf / pyenv that self-install there stay
-        # invisible to the snapshot without this nudge.
-        candidates.append("~/.bashrc")
+        # Build a login-shell-ish source list so tools like n / nvm / asdf /
+        # pyenv that self-install into the user's shell rc land on PATH in
+        # the captured snapshot.
+        #
+        # ~/.profile and ~/.bash_profile run first because they have no
+        # interactivity guard — installers like ``n`` and ``nvm`` append
+        # their PATH export there on most distros, and a non-interactive
+        # ``. ~/.profile`` picks that up.
+        #
+        # ~/.bashrc runs last. On Debian/Ubuntu the default bashrc starts
+        # with ``case $- in *i*) ;; *) return;; esac`` and exits early
+        # when sourced non-interactively, which is why sourcing bashrc
+        # alone misses nvm/n PATH additions placed below that guard. We
+        # still include it so users who put PATH logic in bashrc (and
+        # stripped the guard, or never had one) keep working.
+        candidates.extend(["~/.profile", "~/.bash_profile", "~/.bashrc"])
 
     resolved: list[str] = []
     for raw in candidates:
@@ -349,6 +361,7 @@ class LocalEnvironment(BaseEnvironment):
             stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,
             preexec_fn=None if _IS_WINDOWS else os.setsid,
+            cwd=self.cwd,
         )
 
         if stdin_data is not None:

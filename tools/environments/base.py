@@ -368,6 +368,17 @@ class BaseEnvironment(ABC):
     # Command wrapping
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _quote_cwd_for_cd(cwd: str) -> str:
+        """Quote a ``cd`` target while preserving ``~`` expansion."""
+        if cwd == "~":
+            return cwd
+        if cwd == "~/":
+            return "$HOME"
+        if cwd.startswith("~/"):
+            return f"$HOME/{shlex.quote(cwd[2:])}"
+        return shlex.quote(cwd)
+
     def _wrap_command(self, command: str, cwd: str) -> str:
         """Build the full bash script that sources snapshot, cd's, runs command,
         re-dumps env vars, and emits CWD markers."""
@@ -379,11 +390,10 @@ class BaseEnvironment(ABC):
         if self._snapshot_ready:
             parts.append(f"source {self._snapshot_path} 2>/dev/null || true")
 
-        # cd to working directory — let bash expand ~ natively
-        quoted_cwd = (
-            shlex.quote(cwd) if cwd != "~" and not cwd.startswith("~/") else cwd
-        )
-        parts.append(f"cd {quoted_cwd} || exit 126")
+        # Preserve bare ``~`` expansion, but rewrite ``~/...`` through
+        # ``$HOME`` so suffixes with spaces remain a single shell word.
+        quoted_cwd = self._quote_cwd_for_cd(cwd)
+        parts.append(f"builtin cd {quoted_cwd} || exit 126")
 
         # Run the actual command
         parts.append(f"eval '{escaped}'")

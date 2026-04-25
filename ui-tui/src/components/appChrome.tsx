@@ -1,10 +1,14 @@
 import { Box, type ScrollBoxHandle, Text } from '@hermes/ink'
-import { type ReactNode, type RefObject, useCallback, useEffect, useState, useSyncExternalStore } from 'react'
+import { useStore } from '@nanostores/react'
+import { type ReactNode, type RefObject, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
 
+import { $delegationState } from '../app/delegationStore.js'
+import { $turnState } from '../app/turnStore.js'
 import { FACES } from '../content/faces.js'
 import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
+import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
 import { fmtK } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { Msg, Usage } from '../types.js'
@@ -28,8 +32,7 @@ function FaceTicker({ color, startedAt }: { color: string; startedAt?: null | nu
 
   return (
     <Text color={color}>
-      {FACES[tick % FACES.length]} {VERBS[tick % VERBS.length]}…
-      {startedAt ? ` · ${fmtDuration(now - startedAt)}` : ''}
+      {FACES[tick % FACES.length]} {VERBS[tick % VERBS.length]}…{startedAt ? ` · ${fmtDuration(now - startedAt)}` : ''}
     </Text>
   )
 }
@@ -59,6 +62,67 @@ function ctxBar(pct: number | undefined, w = 10) {
   const filled = Math.round((p / 100) * w)
 
   return '█'.repeat(filled) + '░'.repeat(w - filled)
+}
+
+function SpawnHud({ t }: { t: Theme }) {
+  // Tight HUD that only appears when the session is actually fanning out.
+  // Colour escalates to warn/error as depth or concurrency approaches the cap.
+  const delegation = useStore($delegationState)
+  const turn = useStore($turnState)
+
+  const tree = useMemo(() => buildSubagentTree(turn.subagents), [turn.subagents])
+  const totals = useMemo(() => treeTotals(tree), [tree])
+
+  if (!totals.descendantCount && !delegation.paused) {
+    return null
+  }
+
+  const maxDepth = delegation.maxSpawnDepth
+  const maxConc = delegation.maxConcurrentChildren
+  const depth = Math.max(0, totals.maxDepthFromHere)
+  const active = totals.activeCount
+
+  // `max_concurrent_children` is a per-parent cap, not a global one.
+  // `activeCount` sums every running agent across the tree and would
+  // over-warn for multi-orchestrator runs.  The widest level of the tree
+  // is a closer proxy to "most concurrent spawns that could be hitting a
+  // single parent's slot budget".
+  const widestLevel = widthByDepth(tree).reduce((a, b) => Math.max(a, b), 0)
+  const depthRatio = maxDepth ? depth / maxDepth : 0
+  const concRatio = maxConc ? widestLevel / maxConc : 0
+  const ratio = Math.max(depthRatio, concRatio)
+
+  const color = delegation.paused || ratio >= 1 ? t.color.error : ratio >= 0.66 ? t.color.warn : t.color.dim
+
+  const pieces: string[] = []
+
+  if (delegation.paused) {
+    pieces.push('⏸ paused')
+  }
+
+  if (totals.descendantCount > 0) {
+    const depthLabel = maxDepth ? `${depth}/${maxDepth}` : `${depth}`
+    pieces.push(`d${depthLabel}`)
+
+    if (active > 0) {
+      // Label pairs the widest-level count (drives concRatio above) with
+      // the total active count for context.  `W/cap` triggers the warn,
+      // `+N` is everything else currently running across the tree.
+      const extra = Math.max(0, active - widestLevel)
+      const widthLabel = maxConc ? `${widestLevel}/${maxConc}` : `${widestLevel}`
+      const suffix = extra > 0 ? `+${extra}` : ''
+      pieces.push(`⚡${widthLabel}${suffix}`)
+    }
+  }
+
+  const atCap = depthRatio >= 1 || concRatio >= 1
+
+  return (
+    <Text color={color}>
+      {atCap ? ' │ ⚠ ' : ' │ '}
+      {pieces.join(' ')}
+    </Text>
+  )
 }
 
 function SessionDuration({ startedAt }: { startedAt: number }) {
@@ -92,7 +156,11 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
     return () => clearTimeout(id)
   }, [t.color.amber, tick])
 
-  return <Text color={color}>{active ? '♥' : ' '}</Text>
+  if (!active) {
+    return null
+  }
+
+  return <Text color={color}>♥</Text>
 }
 
 export function StatusRule({
@@ -123,11 +191,15 @@ export function StatusRule({
   const leftWidth = Math.max(12, cols - cwdLabel.length - 3)
 
   return (
-    <Box>
+    <Box height={1}>
       <Box flexShrink={1} width={leftWidth}>
         <Text color={t.color.bronze} wrap="truncate-end">
           {'─ '}
-          {busy ? <FaceTicker color={statusColor} startedAt={turnStartedAt} /> : <Text color={statusColor}>{status}</Text>}
+          {busy ? (
+            <FaceTicker color={statusColor} startedAt={turnStartedAt} />
+          ) : (
+            <Text color={statusColor}>{status}</Text>
+          )}
           <Text color={t.color.dim}> │ {model}</Text>
           {ctxLabel ? <Text color={t.color.dim}> │ {ctxLabel}</Text> : null}
           {bar ? (
@@ -142,7 +214,21 @@ export function StatusRule({
               <SessionDuration startedAt={sessionStartedAt} />
             </Text>
           ) : null}
-          {voiceLabel ? <Text color={t.color.dim}> │ {voiceLabel}</Text> : null}
+          <SpawnHud t={t} />
+          {voiceLabel ? (
+            <Text
+              color={
+                voiceLabel.startsWith('●')
+                  ? t.color.error
+                  : voiceLabel.startsWith('◉')
+                    ? t.color.warn
+                    : t.color.dim
+              }
+            >
+              {' │ '}
+              {voiceLabel}
+            </Text>
+          ) : null}
           {bgCount > 0 ? <Text color={t.color.dim}> │ {bgCount} bg</Text> : null}
           {showCost && typeof usage.cost_usd === 'number' ? (
             <Text color={t.color.dim}> │ ${usage.cost_usd.toFixed(4)}</Text>
@@ -176,22 +262,15 @@ export function StickyPromptTracker({ messages, offsets, scrollRef, onChange }: 
   useSyncExternalStore(
     useCallback((cb: () => void) => scrollRef.current?.subscribe(cb) ?? (() => {}), [scrollRef]),
     () => {
-      const s = scrollRef.current
+      const { atBottom, top } = getStickyViewport(scrollRef.current)
 
-      if (!s) {
-        return NaN
-      }
-
-      const top = Math.max(0, s.getScrollTop() + s.getPendingDelta())
-
-      return s.isSticky() ? -1 - top : top
+      return atBottom ? -1 - top : top
     },
     () => NaN
   )
 
-  const s = scrollRef.current
-  const top = Math.max(0, (s?.getScrollTop() ?? 0) + (s?.getPendingDelta() ?? 0))
-  const text = stickyPromptFromViewport(messages, offsets, top, s?.isSticky() ?? true)
+  const { atBottom, bottom, top } = getStickyViewport(scrollRef.current)
+  const text = stickyPromptFromViewport(messages, offsets, top, bottom, atBottom)
 
   useEffect(() => onChange(text), [onChange, text])
 
@@ -315,4 +394,16 @@ interface StickyPromptTrackerProps {
 interface TranscriptScrollbarProps {
   scrollRef: RefObject<ScrollBoxHandle | null>
   t: Theme
+}
+
+function getStickyViewport(s?: ScrollBoxHandle | null) {
+  const top = Math.max(0, (s?.getScrollTop() ?? 0) + (s?.getPendingDelta() ?? 0))
+  const vp = Math.max(0, s?.getViewportHeight() ?? 0)
+  const total = Math.max(vp, s?.getScrollHeight() ?? vp)
+
+  return {
+    atBottom: (s?.isSticky() ?? true) || top + vp >= total - 2,
+    bottom: top + vp,
+    top
+  }
 }

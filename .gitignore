@@ -1,3 +1,4 @@
+.DS_Store
 /venv/
 /_pycache/
 *.pyc*

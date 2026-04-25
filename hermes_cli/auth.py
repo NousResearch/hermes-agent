@@ -22,6 +22,7 @@ import shutil
 import shlex
 import ssl
 import stat
+import sys
 import base64
 import hashlib
 import subprocess
@@ -32,8 +33,10 @@ import webbrowser
 from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import parse_qs, urlencode, urlparse
 
 import httpx
 import yaml
@@ -72,12 +75,35 @@ DEFAULT_QWEN_BASE_URL = "https://portal.qwen.ai/v1"
 DEFAULT_GITHUB_MODELS_BASE_URL = "https://api.githubcopilot.com"
 DEFAULT_COPILOT_ACP_BASE_URL = "acp://copilot"
 DEFAULT_OLLAMA_CLOUD_BASE_URL = "https://ollama.com/v1"
+STEPFUN_STEP_PLAN_INTL_BASE_URL = "https://api.stepfun.ai/step_plan/v1"
+STEPFUN_STEP_PLAN_CN_BASE_URL = "https://api.stepfun.com/step_plan/v1"
 CODEX_OAUTH_CLIENT_ID = "app_EMoamEEZ73f0CkXaXp7hrann"
 CODEX_OAUTH_TOKEN_URL = "https://auth.openai.com/oauth/token"
 CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
 QWEN_OAUTH_CLIENT_ID = "f0304373b74a44d2b584a3fb70ca9e56"
 QWEN_OAUTH_TOKEN_URL = "https://chat.qwen.ai/api/v1/oauth2/token"
 QWEN_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+DEFAULT_SPOTIFY_ACCOUNTS_BASE_URL = "https://accounts.spotify.com"
+DEFAULT_SPOTIFY_API_BASE_URL = "https://api.spotify.com/v1"
+DEFAULT_SPOTIFY_REDIRECT_URI = "http://127.0.0.1:43827/spotify/callback"
+SPOTIFY_DOCS_URL = "https://hermes-agent.nousresearch.com/docs/user-guide/features/spotify"
+SPOTIFY_DASHBOARD_URL = "https://developer.spotify.com/dashboard"
+SPOTIFY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS = 120
+DEFAULT_SPOTIFY_SCOPE = " ".join((
+    "user-modify-playback-state",
+    "user-read-playback-state",
+    "user-read-currently-playing",
+    "user-read-recently-played",
+    "playlist-read-private",
+    "playlist-read-collaborative",
+    "playlist-modify-public",
+    "playlist-modify-private",
+    "user-library-read",
+    "user-library-modify",
+))
+SERVICE_PROVIDER_NAMES: Dict[str, str] = {
+    "spotify": "Spotify",
+}
 
 # Google Gemini OAuth (google-gemini-cli provider, Cloud Code Assist backend)
 DEFAULT_GEMINI_CLOUDCODE_BASE_URL = "cloudcode-pa://google"
@@ -168,8 +194,11 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         id="kimi-coding",
         name="Kimi / Moonshot",
         auth_type="api_key",
+        # Legacy platform.moonshot.ai keys use this endpoint (OpenAI-compat).
+        # sk-kimi- (Kimi Code) keys are auto-redirected to api.kimi.com/coding
+        # by _resolve_kimi_base_url() below.
         inference_base_url="https://api.moonshot.ai/v1",
-        api_key_env_vars=("KIMI_API_KEY",),
+        api_key_env_vars=("KIMI_API_KEY", "KIMI_CODING_API_KEY"),
         base_url_env_var="KIMI_BASE_URL",
     ),
     "kimi-coding-cn": ProviderConfig(
@@ -178,6 +207,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="api_key",
         inference_base_url="https://api.moonshot.cn/v1",
         api_key_env_vars=("KIMI_CN_API_KEY",),
+    ),
+    "stepfun": ProviderConfig(
+        id="stepfun",
+        name="StepFun Step Plan",
+        auth_type="api_key",
+        inference_base_url=STEPFUN_STEP_PLAN_INTL_BASE_URL,
+        api_key_env_vars=("STEPFUN_API_KEY",),
+        base_url_env_var="STEPFUN_BASE_URL",
     ),
     "arcee": ProviderConfig(
         id="arcee",
@@ -201,6 +238,7 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         auth_type="api_key",
         inference_base_url="https://api.anthropic.com",
         api_key_env_vars=("ANTHROPIC_API_KEY", "ANTHROPIC_TOKEN", "CLAUDE_CODE_OAUTH_TOKEN"),
+        base_url_env_var="ANTHROPIC_BASE_URL",
     ),
     "alibaba": ProviderConfig(
         id="alibaba",
@@ -209,6 +247,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         inference_base_url="https://dashscope-intl.aliyuncs.com/compatible-mode/v1",
         api_key_env_vars=("DASHSCOPE_API_KEY",),
         base_url_env_var="DASHSCOPE_BASE_URL",
+    ),
+    "alibaba-coding-plan": ProviderConfig(
+        id="alibaba-coding-plan",
+        name="Alibaba Cloud (Coding Plan)",
+        auth_type="api_key",
+        inference_base_url="https://coding-intl.dashscope.aliyuncs.com/v1",
+        api_key_env_vars=("ALIBABA_CODING_PLAN_API_KEY", "DASHSCOPE_API_KEY"),
+        base_url_env_var="ALIBABA_CODING_PLAN_BASE_URL",
     ),
     "minimax-cn": ProviderConfig(
         id="minimax-cn",
@@ -340,10 +386,16 @@ def get_anthropic_key() -> str:
 # =============================================================================
 
 # Kimi Code (kimi.com/code) issues keys prefixed "sk-kimi-" that only work
-# on api.kimi.com/coding/v1.  Legacy keys from platform.moonshot.ai work on
-# api.moonshot.ai/v1 (the default).  Auto-detect when user hasn't set
+# on api.kimi.com/coding.  Legacy keys from platform.moonshot.ai work on
+# api.moonshot.ai/v1 (the old default).  Auto-detect when user hasn't set
 # KIMI_BASE_URL explicitly.
-KIMI_CODE_BASE_URL = "https://api.kimi.com/coding/v1"
+#
+# Note: the base URL intentionally has NO /v1 suffix.  The /coding endpoint
+# speaks the Anthropic Messages protocol, and the anthropic SDK appends
+# "/v1/messages" internally — so "/coding" + SDK suffix → "/coding/v1/messages"
+# (the correct target). Using "/coding/v1" here would produce
+# "/coding/v1/v1/messages" (a 404).
+KIMI_CODE_BASE_URL = "https://api.kimi.com/coding"
 
 
 def _resolve_kimi_base_url(api_key: str, default_url: str, env_override: str) -> str:
@@ -397,10 +449,10 @@ def _resolve_api_key_provider_secret(
     if provider_id == "copilot":
         # Use the dedicated copilot auth module for proper token validation
         try:
-            from hermes_cli.copilot_auth import resolve_copilot_token
+            from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token
             token, source = resolve_copilot_token()
             if token:
-                return token, source
+                return get_copilot_api_token(token), source
         except ValueError as exc:
             logger.warning("Copilot token validation failed: %s", exc)
         except Exception:
@@ -599,7 +651,25 @@ def _oauth_trace(event: str, *, sequence_id: Optional[str] = None, **fields: Any
 # =============================================================================
 
 def _auth_file_path() -> Path:
-    return get_hermes_home() / "auth.json"
+    path = get_hermes_home() / "auth.json"
+    # Seat belt: if pytest is running and HERMES_HOME resolves to the real
+    # user's auth store, refuse rather than silently corrupt it. This catches
+    # tests that forgot to monkeypatch HERMES_HOME, tests invoked without the
+    # hermetic conftest, or sandbox escapes via threads/subprocesses. In
+    # production (no PYTEST_CURRENT_TEST) this is a single dict lookup.
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        real_home_auth = (Path.home() / ".hermes" / "auth.json").resolve(strict=False)
+        try:
+            resolved = path.resolve(strict=False)
+        except Exception:
+            resolved = path
+        if resolved == real_home_auth:
+            raise RuntimeError(
+                f"Refusing to touch real user auth store during test run: {path}. "
+                "Set HERMES_HOME to a tmp_path in your test fixture, or run "
+                "via scripts/run_tests.sh for hermetic CI-parity env."
+            )
+    return path
 
 
 def _auth_lock_path() -> Path:
@@ -673,7 +743,18 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
 
     try:
         raw = json.loads(auth_file.read_text())
-    except Exception:
+    except Exception as exc:
+        corrupt_path = auth_file.with_suffix(".json.corrupt")
+        try:
+            import shutil
+            shutil.copy2(auth_file, corrupt_path)
+        except Exception:
+            pass
+        logger.warning(
+            "auth: failed to parse %s (%s) — starting with empty store. "
+            "Corrupt file preserved at %s",
+            auth_file, exc, corrupt_path,
+        )
         return {"version": AUTH_STORE_VERSION, "providers": {}}
 
     if isinstance(raw, dict) and (
@@ -746,6 +827,34 @@ def _save_provider_state(auth_store: Dict[str, Any], provider_id: str, state: Di
         providers = auth_store["providers"]
     providers[provider_id] = state
     auth_store["active_provider"] = provider_id
+
+
+def _store_provider_state(
+    auth_store: Dict[str, Any],
+    provider_id: str,
+    state: Dict[str, Any],
+    *,
+    set_active: bool = True,
+) -> None:
+    providers = auth_store.setdefault("providers", {})
+    if not isinstance(providers, dict):
+        auth_store["providers"] = {}
+        providers = auth_store["providers"]
+    providers[provider_id] = state
+    if set_active:
+        auth_store["active_provider"] = provider_id
+
+
+def is_known_auth_provider(provider_id: str) -> bool:
+    normalized = (provider_id or "").strip().lower()
+    return normalized in PROVIDER_REGISTRY or normalized in SERVICE_PROVIDER_NAMES
+
+
+def get_auth_provider_display_name(provider_id: str) -> str:
+    normalized = (provider_id or "").strip().lower()
+    if normalized in PROVIDER_REGISTRY:
+        return PROVIDER_REGISTRY[normalized].name
+    return SERVICE_PROVIDER_NAMES.get(normalized, provider_id)
 
 
 def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
@@ -908,10 +1017,12 @@ def clear_provider_auth(provider_id: Optional[str] = None) -> bool:
             del pool[target]
             cleared = True
 
-        if not cleared:
-            return False
         if auth_store.get("active_provider") == target:
             auth_store["active_provider"] = None
+            cleared = True
+
+        if not cleared:
+            return False
         _save_auth_store(auth_store)
     return True
 
@@ -983,8 +1094,11 @@ def resolve_provider(
         "x-ai": "xai", "x.ai": "xai", "grok": "xai",
         "kimi": "kimi-coding", "kimi-for-coding": "kimi-coding", "moonshot": "kimi-coding",
         "kimi-cn": "kimi-coding-cn", "moonshot-cn": "kimi-coding-cn",
+        "step": "stepfun", "stepfun-coding-plan": "stepfun",
         "arcee-ai": "arcee", "arceeai": "arcee",
         "minimax-china": "minimax-cn", "minimax_cn": "minimax-cn",
+        "alibaba_coding": "alibaba-coding-plan", "alibaba-coding": "alibaba-coding-plan",
+        "alibaba_coding_plan": "alibaba-coding-plan",
         "claude": "anthropic", "claude-code": "anthropic",
         "github": "copilot", "github-copilot": "copilot",
         "github-models": "copilot", "github-model": "copilot",
@@ -1377,8 +1491,597 @@ def get_gemini_oauth_auth_status() -> Dict[str, Any]:
         "email": creds.email,
         "project_id": creds.project_id,
     }
+# Spotify auth — PKCE tokens stored in ~/.hermes/auth.json
+# =============================================================================
 
 
+def _spotify_scope_list(raw_scope: Optional[str] = None) -> List[str]:
+    scope_text = (raw_scope or DEFAULT_SPOTIFY_SCOPE).strip()
+    scopes = [part for part in scope_text.split() if part]
+    seen: set[str] = set()
+    ordered: List[str] = []
+    for scope in scopes:
+        if scope not in seen:
+            seen.add(scope)
+            ordered.append(scope)
+    return ordered
+
+
+def _spotify_scope_string(raw_scope: Optional[str] = None) -> str:
+    return " ".join(_spotify_scope_list(raw_scope))
+
+
+def _spotify_client_id(
+    explicit: Optional[str] = None,
+    state: Optional[Dict[str, Any]] = None,
+) -> str:
+    from hermes_cli.config import get_env_value
+
+    candidates = (
+        explicit,
+        get_env_value("HERMES_SPOTIFY_CLIENT_ID"),
+        get_env_value("SPOTIFY_CLIENT_ID"),
+        state.get("client_id") if isinstance(state, dict) else None,
+    )
+    for candidate in candidates:
+        cleaned = str(candidate or "").strip()
+        if cleaned:
+            return cleaned
+    raise AuthError(
+        "Spotify client_id is required. Set HERMES_SPOTIFY_CLIENT_ID or pass --client-id.",
+        provider="spotify",
+        code="spotify_client_id_missing",
+    )
+
+
+def _spotify_redirect_uri(
+    explicit: Optional[str] = None,
+    state: Optional[Dict[str, Any]] = None,
+) -> str:
+    from hermes_cli.config import get_env_value
+
+    candidates = (
+        explicit,
+        get_env_value("HERMES_SPOTIFY_REDIRECT_URI"),
+        get_env_value("SPOTIFY_REDIRECT_URI"),
+        state.get("redirect_uri") if isinstance(state, dict) else None,
+        DEFAULT_SPOTIFY_REDIRECT_URI,
+    )
+    for candidate in candidates:
+        cleaned = str(candidate or "").strip()
+        if cleaned:
+            return cleaned
+    return DEFAULT_SPOTIFY_REDIRECT_URI
+
+
+def _spotify_api_base_url(state: Optional[Dict[str, Any]] = None) -> str:
+    from hermes_cli.config import get_env_value
+
+    candidates = (
+        get_env_value("HERMES_SPOTIFY_API_BASE_URL"),
+        state.get("api_base_url") if isinstance(state, dict) else None,
+        DEFAULT_SPOTIFY_API_BASE_URL,
+    )
+    for candidate in candidates:
+        cleaned = str(candidate or "").strip().rstrip("/")
+        if cleaned:
+            return cleaned
+    return DEFAULT_SPOTIFY_API_BASE_URL
+
+
+def _spotify_accounts_base_url(state: Optional[Dict[str, Any]] = None) -> str:
+    from hermes_cli.config import get_env_value
+
+    candidates = (
+        get_env_value("HERMES_SPOTIFY_ACCOUNTS_BASE_URL"),
+        state.get("accounts_base_url") if isinstance(state, dict) else None,
+        DEFAULT_SPOTIFY_ACCOUNTS_BASE_URL,
+    )
+    for candidate in candidates:
+        cleaned = str(candidate or "").strip().rstrip("/")
+        if cleaned:
+            return cleaned
+    return DEFAULT_SPOTIFY_ACCOUNTS_BASE_URL
+
+
+def _spotify_code_verifier(length: int = 64) -> str:
+    raw = base64.urlsafe_b64encode(os.urandom(length)).decode("ascii")
+    return raw.rstrip("=")[:128]
+
+
+def _spotify_code_challenge(code_verifier: str) -> str:
+    digest = hashlib.sha256(code_verifier.encode("utf-8")).digest()
+    return base64.urlsafe_b64encode(digest).decode("ascii").rstrip("=")
+
+
+def _spotify_build_authorize_url(
+    *,
+    client_id: str,
+    redirect_uri: str,
+    scope: str,
+    state: str,
+    code_challenge: str,
+    accounts_base_url: str,
+) -> str:
+    query = urlencode({
+        "client_id": client_id,
+        "response_type": "code",
+        "redirect_uri": redirect_uri,
+        "scope": scope,
+        "state": state,
+        "code_challenge_method": "S256",
+        "code_challenge": code_challenge,
+    })
+    return f"{accounts_base_url}/authorize?{query}"
+
+
+def _spotify_validate_redirect_uri(redirect_uri: str) -> tuple[str, int, str]:
+    parsed = urlparse(redirect_uri)
+    if parsed.scheme != "http":
+        raise AuthError(
+            "Spotify PKCE redirect_uri must use http://localhost or http://127.0.0.1.",
+            provider="spotify",
+            code="spotify_redirect_invalid",
+        )
+    host = parsed.hostname or ""
+    if host not in {"127.0.0.1", "localhost"}:
+        raise AuthError(
+            "Spotify PKCE redirect_uri must point to localhost or 127.0.0.1.",
+            provider="spotify",
+            code="spotify_redirect_invalid",
+        )
+    if not parsed.port:
+        raise AuthError(
+            "Spotify PKCE redirect_uri must include an explicit localhost port.",
+            provider="spotify",
+            code="spotify_redirect_invalid",
+        )
+    return host, parsed.port, parsed.path or "/"
+
+
+def _make_spotify_callback_handler(expected_path: str) -> tuple[type[BaseHTTPRequestHandler], dict[str, Any]]:
+    result: dict[str, Any] = {
+        "code": None,
+        "state": None,
+        "error": None,
+        "error_description": None,
+    }
+
+    class _SpotifyCallbackHandler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            parsed = urlparse(self.path)
+            if parsed.path != expected_path:
+                self.send_response(404)
+                self.end_headers()
+                self.wfile.write(b"Not found.")
+                return
+
+            params = parse_qs(parsed.query)
+            result["code"] = params.get("code", [None])[0]
+            result["state"] = params.get("state", [None])[0]
+            result["error"] = params.get("error", [None])[0]
+            result["error_description"] = params.get("error_description", [None])[0]
+
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html; charset=utf-8")
+            self.end_headers()
+            if result["error"]:
+                body = "<html><body><h1>Spotify authorization failed.</h1>You can close this tab.</body></html>"
+            else:
+                body = "<html><body><h1>Spotify authorization received.</h1>You can close this tab.</body></html>"
+            self.wfile.write(body.encode("utf-8"))
+
+        def log_message(self, format: str, *args: Any) -> None:  # noqa: A003
+            return
+
+    return _SpotifyCallbackHandler, result
+
+
+def _spotify_wait_for_callback(
+    redirect_uri: str,
+    *,
+    timeout_seconds: float = 180.0,
+) -> dict[str, Any]:
+    host, port, path = _spotify_validate_redirect_uri(redirect_uri)
+    handler_cls, result = _make_spotify_callback_handler(path)
+
+    class _ReuseHTTPServer(HTTPServer):
+        allow_reuse_address = True
+
+    try:
+        server = _ReuseHTTPServer((host, port), handler_cls)
+    except OSError as exc:
+        raise AuthError(
+            f"Could not bind Spotify callback server on {host}:{port}: {exc}",
+            provider="spotify",
+            code="spotify_callback_bind_failed",
+        ) from exc
+
+    thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.1}, daemon=True)
+    thread.start()
+    deadline = time.time() + max(5.0, timeout_seconds)
+    try:
+        while time.time() < deadline:
+            if result["code"] or result["error"]:
+                return result
+            time.sleep(0.1)
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join(timeout=1.0)
+    raise AuthError(
+        "Spotify authorization timed out waiting for the local callback.",
+        provider="spotify",
+        code="spotify_callback_timeout",
+    )
+
+
+def _spotify_token_payload_to_state(
+    token_payload: Dict[str, Any],
+    *,
+    client_id: str,
+    redirect_uri: str,
+    requested_scope: str,
+    accounts_base_url: str,
+    api_base_url: str,
+    previous_state: Optional[Dict[str, Any]] = None,
+) -> Dict[str, Any]:
+    now = datetime.now(timezone.utc)
+    expires_in = _coerce_ttl_seconds(token_payload.get("expires_in", 0))
+    expires_at = datetime.fromtimestamp(now.timestamp() + expires_in, tz=timezone.utc)
+    state = dict(previous_state or {})
+    state.update({
+        "client_id": client_id,
+        "redirect_uri": redirect_uri,
+        "accounts_base_url": accounts_base_url,
+        "api_base_url": api_base_url,
+        "scope": requested_scope,
+        "granted_scope": str(token_payload.get("scope") or requested_scope).strip(),
+        "token_type": str(token_payload.get("token_type", "Bearer") or "Bearer").strip() or "Bearer",
+        "access_token": str(token_payload.get("access_token", "") or "").strip(),
+        "refresh_token": str(
+            token_payload.get("refresh_token")
+            or state.get("refresh_token")
+            or ""
+        ).strip(),
+        "obtained_at": now.isoformat(),
+        "expires_at": expires_at.isoformat(),
+        "expires_in": expires_in,
+        "auth_type": "oauth_pkce",
+    })
+    return state
+
+
+def _spotify_exchange_code_for_tokens(
+    *,
+    client_id: str,
+    code: str,
+    redirect_uri: str,
+    code_verifier: str,
+    accounts_base_url: str,
+    timeout_seconds: float = 20.0,
+) -> Dict[str, Any]:
+    try:
+        response = httpx.post(
+            f"{accounts_base_url}/api/token",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            data={
+                "client_id": client_id,
+                "grant_type": "authorization_code",
+                "code": code,
+                "redirect_uri": redirect_uri,
+                "code_verifier": code_verifier,
+            },
+            timeout=timeout_seconds,
+        )
+    except Exception as exc:
+        raise AuthError(
+            f"Spotify token exchange failed: {exc}",
+            provider="spotify",
+            code="spotify_token_exchange_failed",
+        ) from exc
+
+    if response.status_code >= 400:
+        detail = response.text.strip()
+        raise AuthError(
+            "Spotify token exchange failed."
+            + (f" Response: {detail}" if detail else ""),
+            provider="spotify",
+            code="spotify_token_exchange_failed",
+        )
+    payload = response.json()
+    if not isinstance(payload, dict) or not str(payload.get("access_token", "") or "").strip():
+        raise AuthError(
+            "Spotify token response did not include an access_token.",
+            provider="spotify",
+            code="spotify_token_exchange_invalid",
+        )
+    return payload
+
+
+def _refresh_spotify_oauth_state(
+    state: Dict[str, Any],
+    *,
+    timeout_seconds: float = 20.0,
+) -> Dict[str, Any]:
+    refresh_token = str(state.get("refresh_token", "") or "").strip()
+    if not refresh_token:
+        raise AuthError(
+            "Spotify refresh token missing. Run `hermes auth spotify` again.",
+            provider="spotify",
+            code="spotify_refresh_token_missing",
+            relogin_required=True,
+        )
+
+    client_id = _spotify_client_id(state=state)
+    accounts_base_url = _spotify_accounts_base_url(state)
+    try:
+        response = httpx.post(
+            f"{accounts_base_url}/api/token",
+            headers={"Content-Type": "application/x-www-form-urlencoded"},
+            data={
+                "grant_type": "refresh_token",
+                "refresh_token": refresh_token,
+                "client_id": client_id,
+            },
+            timeout=timeout_seconds,
+        )
+    except Exception as exc:
+        raise AuthError(
+            f"Spotify token refresh failed: {exc}",
+            provider="spotify",
+            code="spotify_refresh_failed",
+        ) from exc
+
+    if response.status_code >= 400:
+        detail = response.text.strip()
+        raise AuthError(
+            "Spotify token refresh failed. Run `hermes auth spotify` again."
+            + (f" Response: {detail}" if detail else ""),
+            provider="spotify",
+            code="spotify_refresh_failed",
+            relogin_required=True,
+        )
+
+    payload = response.json()
+    if not isinstance(payload, dict) or not str(payload.get("access_token", "") or "").strip():
+        raise AuthError(
+            "Spotify refresh response did not include an access_token.",
+            provider="spotify",
+            code="spotify_refresh_invalid",
+            relogin_required=True,
+        )
+
+    return _spotify_token_payload_to_state(
+        payload,
+        client_id=client_id,
+        redirect_uri=_spotify_redirect_uri(state=state),
+        requested_scope=str(state.get("scope") or DEFAULT_SPOTIFY_SCOPE),
+        accounts_base_url=accounts_base_url,
+        api_base_url=_spotify_api_base_url(state),
+        previous_state=state,
+    )
+
+
+def resolve_spotify_runtime_credentials(
+    *,
+    force_refresh: bool = False,
+    refresh_if_expiring: bool = True,
+    refresh_skew_seconds: int = SPOTIFY_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
+) -> Dict[str, Any]:
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        state = _load_provider_state(auth_store, "spotify")
+        if not state:
+            raise AuthError(
+                "Spotify is not authenticated. Run `hermes auth spotify` first.",
+                provider="spotify",
+                code="spotify_auth_missing",
+                relogin_required=True,
+            )
+
+        should_refresh = bool(force_refresh)
+        if not should_refresh and refresh_if_expiring:
+            should_refresh = _is_expiring(state.get("expires_at"), refresh_skew_seconds)
+        if should_refresh:
+            state = _refresh_spotify_oauth_state(state)
+            _store_provider_state(auth_store, "spotify", state, set_active=False)
+            _save_auth_store(auth_store)
+
+    access_token = str(state.get("access_token", "") or "").strip()
+    if not access_token:
+        raise AuthError(
+            "Spotify access token missing. Run `hermes auth spotify` again.",
+            provider="spotify",
+            code="spotify_access_token_missing",
+            relogin_required=True,
+        )
+
+    return {
+        "provider": "spotify",
+        "access_token": access_token,
+        "api_key": access_token,
+        "token_type": str(state.get("token_type", "Bearer") or "Bearer"),
+        "base_url": _spotify_api_base_url(state),
+        "scope": str(state.get("granted_scope") or state.get("scope") or "").strip(),
+        "client_id": _spotify_client_id(state=state),
+        "redirect_uri": _spotify_redirect_uri(state=state),
+        "expires_at": state.get("expires_at"),
+        "refresh_token": str(state.get("refresh_token", "") or "").strip(),
+    }
+
+
+def get_spotify_auth_status() -> Dict[str, Any]:
+    state = get_provider_auth_state("spotify")
+    if not state:
+        return {"logged_in": False}
+
+    expires_at = state.get("expires_at")
+    refresh_token = str(state.get("refresh_token", "") or "").strip()
+    return {
+        "logged_in": bool(refresh_token or not _is_expiring(expires_at, 0)),
+        "auth_type": state.get("auth_type", "oauth_pkce"),
+        "client_id": state.get("client_id"),
+        "redirect_uri": state.get("redirect_uri"),
+        "scope": state.get("granted_scope") or state.get("scope"),
+        "expires_at": expires_at,
+        "api_base_url": state.get("api_base_url"),
+        "has_refresh_token": bool(refresh_token),
+    }
+
+
+def _spotify_interactive_setup(redirect_uri_hint: str) -> str:
+    """Walk the user through creating a Spotify developer app, persist the
+    resulting client_id to ~/.hermes/.env, and return it.
+
+    Raises SystemExit if the user aborts or submits an empty value.
+    """
+    from hermes_cli.config import save_env_value
+
+    print()
+    print("=" * 70)
+    print("Spotify first-time setup")
+    print("=" * 70)
+    print()
+    print("Spotify requires every user to register their own lightweight")
+    print("developer app. This takes about two minutes and only has to be")
+    print("done once per machine.")
+    print()
+    print(f"Full guide: {SPOTIFY_DOCS_URL}")
+    print()
+    print("Steps:")
+    print(f"  1. Opening {SPOTIFY_DASHBOARD_URL} in your browser...")
+    print("  2. Click 'Create app' and fill in:")
+    print("       App name:     anything (e.g. hermes-agent)")
+    print("       Description:  anything")
+    print(f"       Redirect URI: {redirect_uri_hint}")
+    print("       API/SDK:      Web API")
+    print("  3. Agree to the terms, click Save.")
+    print("  4. Open the app's Settings page and copy the Client ID.")
+    print("  5. Paste it below.")
+    print()
+
+    if not _is_remote_session():
+        try:
+            webbrowser.open(SPOTIFY_DASHBOARD_URL)
+        except Exception:
+            pass
+
+    try:
+        raw = input("Spotify Client ID: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        print()
+        raise SystemExit("Spotify setup cancelled.")
+
+    if not raw:
+        print()
+        print(f"No Client ID entered. See {SPOTIFY_DOCS_URL} for the full guide.")
+        raise SystemExit("Spotify setup cancelled: empty Client ID.")
+
+    # Persist so subsequent `hermes auth spotify` runs skip the wizard.
+    save_env_value("HERMES_SPOTIFY_CLIENT_ID", raw)
+    # Only persist the redirect URI if it's non-default, to avoid pinning
+    # users to a value the default might later change to.
+    if redirect_uri_hint and redirect_uri_hint != DEFAULT_SPOTIFY_REDIRECT_URI:
+        save_env_value("HERMES_SPOTIFY_REDIRECT_URI", redirect_uri_hint)
+
+    print()
+    print("Saved HERMES_SPOTIFY_CLIENT_ID to ~/.hermes/.env")
+    print()
+    return raw
+
+
+def login_spotify_command(args) -> None:
+    existing_state = get_provider_auth_state("spotify") or {}
+
+    # Interactive wizard: if no client_id is configured anywhere, walk the
+    # user through creating the Spotify developer app instead of crashing
+    # with "HERMES_SPOTIFY_CLIENT_ID is required".
+    explicit_client_id = getattr(args, "client_id", None)
+    try:
+        client_id = _spotify_client_id(explicit_client_id, existing_state)
+    except AuthError as exc:
+        if getattr(exc, "code", "") != "spotify_client_id_missing":
+            raise
+        client_id = _spotify_interactive_setup(
+            redirect_uri_hint=getattr(args, "redirect_uri", None) or DEFAULT_SPOTIFY_REDIRECT_URI,
+        )
+
+    redirect_uri = _spotify_redirect_uri(getattr(args, "redirect_uri", None), existing_state)
+    scope = _spotify_scope_string(getattr(args, "scope", None) or existing_state.get("scope"))
+    accounts_base_url = _spotify_accounts_base_url(existing_state)
+    api_base_url = _spotify_api_base_url(existing_state)
+    open_browser = not getattr(args, "no_browser", False)
+
+    code_verifier = _spotify_code_verifier()
+    code_challenge = _spotify_code_challenge(code_verifier)
+    state_nonce = uuid.uuid4().hex
+    authorize_url = _spotify_build_authorize_url(
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        scope=scope,
+        state=state_nonce,
+        code_challenge=code_challenge,
+        accounts_base_url=accounts_base_url,
+    )
+
+    print("Starting Spotify PKCE login...")
+    print(f"Client ID: {client_id}")
+    print(f"Redirect URI: {redirect_uri}")
+    print("Make sure this redirect URI is allow-listed in your Spotify app settings.")
+    print()
+    print("Open this URL to authorize Hermes:")
+    print(authorize_url)
+    print()
+    print(f"Full setup guide: {SPOTIFY_DOCS_URL}")
+    print()
+
+    if open_browser and not _is_remote_session():
+        try:
+            opened = webbrowser.open(authorize_url)
+        except Exception:
+            opened = False
+        if opened:
+            print("Browser opened for Spotify authorization.")
+        else:
+            print("Could not open the browser automatically; use the URL above.")
+
+    callback = _spotify_wait_for_callback(
+        redirect_uri,
+        timeout_seconds=float(getattr(args, "timeout", None) or 180.0),
+    )
+    if callback.get("error"):
+        detail = callback.get("error_description") or callback["error"]
+        raise SystemExit(f"Spotify authorization failed: {detail}")
+    if callback.get("state") != state_nonce:
+        raise SystemExit("Spotify authorization failed: state mismatch.")
+
+    token_payload = _spotify_exchange_code_for_tokens(
+        client_id=client_id,
+        code=str(callback.get("code") or ""),
+        redirect_uri=redirect_uri,
+        code_verifier=code_verifier,
+        accounts_base_url=accounts_base_url,
+        timeout_seconds=float(getattr(args, "timeout", None) or 20.0),
+    )
+    spotify_state = _spotify_token_payload_to_state(
+        token_payload,
+        client_id=client_id,
+        redirect_uri=redirect_uri,
+        requested_scope=scope,
+        accounts_base_url=accounts_base_url,
+        api_base_url=api_base_url,
+    )
+
+    with _auth_store_lock():
+        auth_store = _load_auth_store()
+        _store_provider_state(auth_store, "spotify", spotify_state, set_active=False)
+        saved_to = _save_auth_store(auth_store)
+
+    print("Spotify login successful!")
+    print(f"  Auth state: {saved_to}")
+    print("  Provider state saved under providers.spotify")
+    print(f"  Docs: {SPOTIFY_DOCS_URL}")
 
 # =============================================================================
 # SSH / remote session detection
@@ -1495,12 +2198,21 @@ def refresh_codex_oauth_pure(
         try:
             err = response.json()
             if isinstance(err, dict):
-                err_code = err.get("error")
-                if isinstance(err_code, str) and err_code.strip():
-                    code = err_code.strip()
-                err_desc = err.get("error_description") or err.get("message")
-                if isinstance(err_desc, str) and err_desc.strip():
-                    message = f"Codex token refresh failed: {err_desc.strip()}"
+                err_obj = err.get("error")
+                # OpenAI shape: {"error": {"code": "...", "message": "...", "type": "..."}}
+                if isinstance(err_obj, dict):
+                    nested_code = err_obj.get("code") or err_obj.get("type")
+                    if isinstance(nested_code, str) and nested_code.strip():
+                        code = nested_code.strip()
+                    nested_msg = err_obj.get("message")
+                    if isinstance(nested_msg, str) and nested_msg.strip():
+                        message = f"Codex token refresh failed: {nested_msg.strip()}"
+                # OAuth spec shape: {"error": "code_str", "error_description": "..."}
+                elif isinstance(err_obj, str) and err_obj.strip():
+                    code = err_obj.strip()
+                    err_desc = err.get("error_description") or err.get("message")
+                    if isinstance(err_desc, str) and err_desc.strip():
+                        message = f"Codex token refresh failed: {err_desc.strip()}"
         except Exception:
             pass
         if code in {"invalid_grant", "invalid_token", "invalid_request"}:
@@ -1659,6 +2371,24 @@ def resolve_codex_runtime_credentials(
 # TLS verification helper
 # =============================================================================
 
+def _default_verify() -> bool | ssl.SSLContext:
+    """Platform-aware default SSL verify for httpx clients.
+
+    On macOS with Homebrew Python, the system OpenSSL cannot locate the
+    system trust store and valid public certs fail verification. When
+    certifi is importable we pin its bundle explicitly; elsewhere we
+    defer to httpx's built-in default (certifi via its own dependency).
+    Mirrors the weixin fix in 3a0ec1d93.
+    """
+    if sys.platform == "darwin":
+        try:
+            import certifi
+            return ssl.create_default_context(cafile=certifi.where())
+        except ImportError:
+            pass
+    return True
+
+
 def _resolve_verify(
     *,
     insecure: Optional[bool] = None,
@@ -1677,6 +2407,7 @@ def _resolve_verify(
         or tls_state.get("ca_bundle")
         or os.getenv("HERMES_CA_BUNDLE")
         or os.getenv("SSL_CERT_FILE")
+        or os.getenv("REQUESTS_CA_BUNDLE")
     )
 
     if effective_insecure:
@@ -1688,9 +2419,9 @@ def _resolve_verify(
                 "CA bundle path does not exist: %s — falling back to default certificates",
                 ca_path,
             )
-            return True
+            return _default_verify()
         return ssl.create_default_context(cafile=ca_path)
-    return True
+    return _default_verify()
 
 
 # =============================================================================
@@ -1809,6 +2540,28 @@ def _refresh_access_token(
     code = str(error_payload.get("error", "invalid_grant"))
     description = str(error_payload.get("error_description") or "Refresh token exchange failed")
     relogin = code in {"invalid_grant", "invalid_token"}
+
+    # Detect the OAuth 2.1 "refresh token reuse" signal from the Nous portal
+    # server and surface an actionable message.  This fires when an external
+    # process (health-check script, monitoring tool, custom self-heal hook)
+    # called POST /api/oauth/token with Hermes's refresh_token without
+    # persisting the rotated token back to auth.json — the server then
+    # retires the original RT, Hermes's next refresh uses it, and the whole
+    # session chain gets revoked as a token-theft signal (#15099).
+    lowered = description.lower()
+    if "reuse" in lowered or "reuse detected" in lowered:
+        description = (
+            "Nous Portal detected refresh-token reuse and revoked this session.\n"
+            "This usually means an external process (monitoring script, "
+            "custom self-heal hook, or another Hermes install sharing "
+            "~/.hermes/auth.json) called POST /api/oauth/token with Hermes's "
+            "refresh token without persisting the rotated token back.\n"
+            "Nous refresh tokens are single-use — only Hermes may call the "
+            "refresh endpoint. For health checks, use `hermes auth status` "
+            "instead.\n"
+            "Re-authenticate with: hermes auth add nous"
+        )
+
     raise AuthError(description, provider="nous", code=code, relogin_required=relogin)
 
 
@@ -2417,59 +3170,116 @@ def resolve_nous_runtime_credentials(
 # Status helpers
 # =============================================================================
 
-def get_nous_auth_status() -> Dict[str, Any]:
-    """Status snapshot for `hermes status` output.
+def _empty_nous_auth_status() -> Dict[str, Any]:
+    return {
+        "logged_in": False,
+        "portal_base_url": None,
+        "inference_base_url": None,
+        "access_expires_at": None,
+        "agent_key_expires_at": None,
+        "has_refresh_token": False,
+    }
 
-    Checks the credential pool first (where the dashboard device-code flow
-    and ``hermes auth`` store credentials), then falls back to the legacy
-    auth-store provider state.
+
+def _snapshot_nous_pool_status() -> Dict[str, Any]:
+    """Best-effort status from the credential pool.
+
+    This is a fallback only. The auth-store provider state is the runtime source
+    of truth because it is what ``resolve_nous_runtime_credentials()`` refreshes
+    and mints against.
     """
-    # Check credential pool first — the dashboard device-code flow saves
-    # here but may not have written to the auth store yet.
     try:
         from agent.credential_pool import load_pool
-        pool = load_pool("nous")
-        if pool and pool.has_credentials():
-            entry = pool.select()
-            if entry is not None:
-                access_token = (
-                    getattr(entry, "access_token", None)
-                    or getattr(entry, "runtime_api_key", "")
-                )
-                if access_token:
-                    return {
-                        "logged_in": True,
-                        "portal_base_url": getattr(entry, "portal_base_url", None)
-                            or getattr(entry, "base_url", None),
-                        "inference_base_url": getattr(entry, "inference_base_url", None)
-                            or getattr(entry, "base_url", None),
-                        "access_token": access_token,
-                        "access_expires_at": getattr(entry, "expires_at", None),
-                        "agent_key_expires_at": getattr(entry, "agent_key_expires_at", None),
-                        "has_refresh_token": bool(getattr(entry, "refresh_token", None)),
-                    }
-    except Exception:
-        pass
 
-    # Fall back to auth-store provider state
-    state = get_provider_auth_state("nous")
-    if not state:
+        pool = load_pool("nous")
+        if not pool or not pool.has_credentials():
+            return _empty_nous_auth_status()
+
+        entries = list(pool.entries())
+        if not entries:
+            return _empty_nous_auth_status()
+
+        def _entry_sort_key(entry: Any) -> tuple[float, float, int]:
+            agent_exp = _parse_iso_timestamp(getattr(entry, "agent_key_expires_at", None)) or 0.0
+            access_exp = _parse_iso_timestamp(getattr(entry, "expires_at", None)) or 0.0
+            priority = int(getattr(entry, "priority", 0) or 0)
+            return (agent_exp, access_exp, -priority)
+
+        entry = max(entries, key=_entry_sort_key)
+        access_token = (
+            getattr(entry, "access_token", None)
+            or getattr(entry, "runtime_api_key", "")
+        )
+        if not access_token:
+            return _empty_nous_auth_status()
+
         return {
-            "logged_in": False,
-            "portal_base_url": None,
-            "inference_base_url": None,
-            "access_expires_at": None,
-            "agent_key_expires_at": None,
-            "has_refresh_token": False,
+            "logged_in": True,
+            "portal_base_url": getattr(entry, "portal_base_url", None)
+            or getattr(entry, "base_url", None),
+            "inference_base_url": getattr(entry, "inference_base_url", None)
+            or getattr(entry, "base_url", None),
+            "access_token": access_token,
+            "access_expires_at": getattr(entry, "expires_at", None),
+            "agent_key_expires_at": getattr(entry, "agent_key_expires_at", None),
+            "has_refresh_token": bool(getattr(entry, "refresh_token", None)),
+            "source": f"pool:{getattr(entry, 'label', 'unknown')}",
         }
-    return {
-        "logged_in": bool(state.get("access_token")),
-        "portal_base_url": state.get("portal_base_url"),
-        "inference_base_url": state.get("inference_base_url"),
-        "access_expires_at": state.get("expires_at"),
-        "agent_key_expires_at": state.get("agent_key_expires_at"),
-        "has_refresh_token": bool(state.get("refresh_token")),
-    }
+    except Exception:
+        return _empty_nous_auth_status()
+
+
+def get_nous_auth_status() -> Dict[str, Any]:
+    """Status snapshot for Nous auth.
+
+    Prefer the auth-store provider state, because that is the live source of
+    truth for refresh + mint operations. When provider state exists, validate it
+    by resolving runtime credentials so revoked refresh sessions do not show up
+    as a healthy login. If provider state is absent, fall back to the credential
+    pool for the just-logged-in / not-yet-promoted case.
+    """
+    state = get_provider_auth_state("nous")
+    if state:
+        base_status = {
+            "logged_in": bool(state.get("access_token")),
+            "portal_base_url": state.get("portal_base_url"),
+            "inference_base_url": state.get("inference_base_url"),
+            "access_expires_at": state.get("expires_at"),
+            "agent_key_expires_at": state.get("agent_key_expires_at"),
+            "has_refresh_token": bool(state.get("refresh_token")),
+            "access_token": state.get("access_token"),
+            "source": "auth_store",
+        }
+        try:
+            creds = resolve_nous_runtime_credentials(min_key_ttl_seconds=60)
+            refreshed_state = get_provider_auth_state("nous") or state
+            base_status.update(
+                {
+                    "logged_in": True,
+                    "portal_base_url": refreshed_state.get("portal_base_url") or base_status.get("portal_base_url"),
+                    "inference_base_url": creds.get("base_url")
+                    or refreshed_state.get("inference_base_url")
+                    or base_status.get("inference_base_url"),
+                    "access_expires_at": refreshed_state.get("expires_at") or base_status.get("access_expires_at"),
+                    "agent_key_expires_at": creds.get("expires_at")
+                    or refreshed_state.get("agent_key_expires_at")
+                    or base_status.get("agent_key_expires_at"),
+                    "has_refresh_token": bool(refreshed_state.get("refresh_token")),
+                    "source": f"runtime:{creds.get('source', 'portal')}",
+                    "key_id": creds.get("key_id"),
+                }
+            )
+            return base_status
+        except AuthError as exc:
+            base_status.update({
+                "logged_in": False,
+                "error": str(exc),
+                "relogin_required": bool(getattr(exc, "relogin_required", False)),
+                "error_code": getattr(exc, "code", None),
+            })
+            return base_status
+
+    return _snapshot_nous_pool_status()
 
 
 def get_codex_auth_status() -> Dict[str, Any]:
@@ -2585,6 +3395,8 @@ def get_external_process_provider_status(provider_id: str) -> Dict[str, Any]:
 def get_auth_status(provider_id: Optional[str] = None) -> Dict[str, Any]:
     """Generic auth status dispatcher."""
     target = provider_id or get_active_provider()
+    if target == "spotify":
+        return get_spotify_auth_status()
     if target == "nous":
         return get_nous_auth_status()
     if target == "openai-codex":
@@ -2755,6 +3567,46 @@ def _update_config_for_provider(
 
     config_path.write_text(yaml.safe_dump(config, sort_keys=False))
     return config_path
+
+
+def _get_config_provider() -> Optional[str]:
+    """Return model.provider from config.yaml, normalized, if present."""
+    try:
+        config = read_raw_config()
+    except Exception:
+        return None
+    if not config:
+        return None
+    model = config.get("model")
+    if not isinstance(model, dict):
+        return None
+    provider = model.get("provider")
+    if not isinstance(provider, str):
+        return None
+    provider = provider.strip().lower()
+    return provider or None
+
+
+def _config_provider_matches(provider_id: Optional[str]) -> bool:
+    """Return True when config.yaml currently selects *provider_id*."""
+    if not provider_id:
+        return False
+    return _get_config_provider() == provider_id.strip().lower()
+
+
+def _logout_default_provider_from_config() -> Optional[str]:
+    """Fallback logout target when auth.json has no active provider.
+
+    `hermes logout` historically keyed off auth.json.active_provider only.
+    That left users stuck when auth state had already been cleared but
+    config.yaml still selected an OAuth provider such as openai-codex for the
+    agent model: there was no active auth provider to target, so logout printed
+    "No provider is currently logged in" and never reset model.provider.
+    """
+    provider = _get_config_provider()
+    if provider in {"nous", "openai-codex"}:
+        return provider
+    return None
 
 
 def _reset_config_provider() -> Path:
@@ -2977,52 +3829,61 @@ def login_command(args) -> None:
     raise SystemExit(0)
 
 
-def _login_openai_codex(args, pconfig: ProviderConfig) -> None:
+def _login_openai_codex(
+    args,
+    pconfig: ProviderConfig,
+    *,
+    force_new_login: bool = False,
+) -> None:
     """OpenAI Codex login via device code flow. Tokens stored in ~/.hermes/auth.json."""
 
+    del args, pconfig  # kept for parity with other provider login helpers
+
     # Check for existing Hermes-owned credentials
-    try:
-        existing = resolve_codex_runtime_credentials()
-        # Verify the resolved token is actually usable (not expired).
-        # resolve_codex_runtime_credentials attempts refresh, so if we get
-        # here the token should be valid — but double-check before telling
-        # the user "Login successful!".
-        _resolved_key = existing.get("api_key", "")
-        if isinstance(_resolved_key, str) and _resolved_key and not _codex_access_token_is_expiring(_resolved_key, 60):
-            print("Existing Codex credentials found in Hermes auth store.")
-            try:
-                reuse = input("Use existing credentials? [Y/n]: ").strip().lower()
-            except (EOFError, KeyboardInterrupt):
-                reuse = "y"
-            if reuse in ("", "y", "yes"):
-                config_path = _update_config_for_provider("openai-codex", existing.get("base_url", DEFAULT_CODEX_BASE_URL))
-                print()
-                print("Login successful!")
-                print(f"  Config updated: {config_path} (model.provider=openai-codex)")
-                return
-        else:
-            print("Existing Codex credentials are expired. Starting fresh login...")
-    except AuthError:
-        pass
+    if not force_new_login:
+        try:
+            existing = resolve_codex_runtime_credentials()
+            # Verify the resolved token is actually usable (not expired).
+            # resolve_codex_runtime_credentials attempts refresh, so if we get
+            # here the token should be valid — but double-check before telling
+            # the user "Login successful!".
+            _resolved_key = existing.get("api_key", "")
+            if isinstance(_resolved_key, str) and _resolved_key and not _codex_access_token_is_expiring(_resolved_key, 60):
+                print("Existing Codex credentials found in Hermes auth store.")
+                try:
+                    reuse = input("Use existing credentials? [Y/n]: ").strip().lower()
+                except (EOFError, KeyboardInterrupt):
+                    reuse = "y"
+                if reuse in ("", "y", "yes"):
+                    config_path = _update_config_for_provider("openai-codex", existing.get("base_url", DEFAULT_CODEX_BASE_URL))
+                    print()
+                    print("Login successful!")
+                    print(f"  Config updated: {config_path} (model.provider=openai-codex)")
+                    return
+            else:
+                print("Existing Codex credentials are expired. Starting fresh login...")
+        except AuthError:
+            pass
 
     # Check for existing Codex CLI tokens we can import
-    cli_tokens = _import_codex_cli_tokens()
-    if cli_tokens:
-        print("Found existing Codex CLI credentials at ~/.codex/auth.json")
-        print("Hermes will create its own session to avoid conflicts with Codex CLI / VS Code.")
-        try:
-            do_import = input("Import these credentials? (a separate login is recommended) [y/N]: ").strip().lower()
-        except (EOFError, KeyboardInterrupt):
-            do_import = "n"
-        if do_import in ("y", "yes"):
-            _save_codex_tokens(cli_tokens)
-            base_url = os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or DEFAULT_CODEX_BASE_URL
-            config_path = _update_config_for_provider("openai-codex", base_url)
-            print()
-            print("Credentials imported. Note: if Codex CLI refreshes its token,")
-            print("Hermes will keep working independently with its own session.")
-            print(f"  Config updated: {config_path} (model.provider=openai-codex)")
-            return
+    if not force_new_login:
+        cli_tokens = _import_codex_cli_tokens()
+        if cli_tokens:
+            print("Found existing Codex CLI credentials at ~/.codex/auth.json")
+            print("Hermes will create its own session to avoid conflicts with Codex CLI / VS Code.")
+            try:
+                do_import = input("Import these credentials? (a separate login is recommended) [y/N]: ").strip().lower()
+            except (EOFError, KeyboardInterrupt):
+                do_import = "n"
+            if do_import in ("y", "yes"):
+                _save_codex_tokens(cli_tokens)
+                base_url = os.getenv("HERMES_CODEX_BASE_URL", "").strip().rstrip("/") or DEFAULT_CODEX_BASE_URL
+                config_path = _update_config_for_provider("openai-codex", base_url)
+                print()
+                print("Credentials imported. Note: if Codex CLI refreshes its token,")
+                print("Hermes will keep working independently with its own session.")
+                print(f"  Config updated: {config_path} (model.provider=openai-codex)")
+                return
 
     # Run a fresh device code flow — Hermes gets its own OAuth session
     print()
@@ -3375,7 +4236,7 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                 )
 
             from hermes_cli.models import (
-                _PROVIDER_MODELS, get_pricing_for_provider, filter_nous_free_models,
+                _PROVIDER_MODELS, get_pricing_for_provider,
                 check_nous_free_tier, partition_nous_models_by_tier,
             )
             model_ids = _PROVIDER_MODELS.get("nous", [])
@@ -3384,7 +4245,6 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
             unavailable_models: list = []
             if model_ids:
                 pricing = get_pricing_for_provider("nous")
-                model_ids = filter_nous_free_models(model_ids, pricing)
                 free_tier = check_nous_free_tier()
                 if free_tier:
                     model_ids, unavailable_models = partition_nous_models_by_tier(
@@ -3451,20 +4311,21 @@ def logout_command(args) -> None:
     """Clear auth state for a provider."""
     provider_id = getattr(args, "provider", None)
 
-    if provider_id and provider_id not in PROVIDER_REGISTRY:
+    if provider_id and not is_known_auth_provider(provider_id):
         print(f"Unknown provider: {provider_id}")
         raise SystemExit(1)
 
     active = get_active_provider()
-    target = provider_id or active
+    target = provider_id or active or _logout_default_provider_from_config()
 
     if not target:
         print("No provider is currently logged in.")
         return
 
-    provider_name = PROVIDER_REGISTRY[target].name if target in PROVIDER_REGISTRY else target
+    config_matches = _config_provider_matches(target)
+    provider_name = get_auth_provider_display_name(target)
 
-    if clear_provider_auth(target):
+    if clear_provider_auth(target) or config_matches:
         _reset_config_provider()
         print(f"Logged out of {provider_name}.")
         if os.getenv("OPENROUTER_API_KEY"):

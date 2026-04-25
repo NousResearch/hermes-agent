@@ -1,4 +1,4 @@
-import { imageTokenMeta, introMsg, toTranscriptMessages } from '../../../domain/messages.js'
+import { attachedImageNotice, introMsg, toTranscriptMessages } from '../../../domain/messages.js'
 import type {
   BackgroundStartResponse,
   BtwStartResponse,
@@ -92,9 +92,7 @@ export const sessionCommands: SlashCommand[] = [
     run: (arg, ctx) => {
       ctx.gateway.rpc<ImageAttachResponse>('image.attach', { path: arg, session_id: ctx.sid }).then(
         ctx.guarded<ImageAttachResponse>(r => {
-          const meta = imageTokenMeta(r)
-
-          ctx.transcript.sys(`attached image: ${r.name ?? ''}${meta ? ` · ${meta}` : ''}`)
+          ctx.transcript.sys(attachedImageNotice(r))
 
           if (r.remainder) {
             ctx.composer.setInput(r.remainder)
@@ -186,15 +184,64 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'toggle voice input',
+    help: 'voice mode: [on|off|tts|status]',
     name: 'voice',
     run: (arg, ctx) => {
-      const action = arg === 'on' || arg === 'off' ? arg : 'status'
+      const normalized = (arg ?? '').trim().toLowerCase()
+
+      const action =
+        normalized === 'on' || normalized === 'off' || normalized === 'tts' || normalized === 'status'
+          ? normalized
+          : 'status'
 
       ctx.gateway.rpc<VoiceToggleResponse>('voice.toggle', { action }).then(
         ctx.guarded<VoiceToggleResponse>(r => {
           ctx.voice.setVoiceEnabled(!!r.enabled)
-          ctx.transcript.sys(`voice: ${r.enabled ? 'on' : 'off'}`)
+
+          // Match CLI's _show_voice_status / _enable_voice_mode /
+          // _toggle_voice_tts output shape so users don't have to learn
+          // two vocabularies.
+          if (action === 'status') {
+            const mode = r.enabled ? 'ON' : 'OFF'
+            const tts = r.tts ? 'ON' : 'OFF'
+            ctx.transcript.sys('Voice Mode Status')
+            ctx.transcript.sys(`  Mode:       ${mode}`)
+            ctx.transcript.sys(`  TTS:        ${tts}`)
+            ctx.transcript.sys('  Record key: Ctrl+B')
+
+            // CLI's "Requirements:" block — surfaces STT/audio setup issues
+            // so the user sees "STT provider: MISSING ..." instead of
+            // silently failing on every Ctrl+B press.
+            if (r.details) {
+              ctx.transcript.sys('')
+              ctx.transcript.sys('  Requirements:')
+
+              for (const line of r.details.split('\n')) {
+                if (line.trim()) {
+                  ctx.transcript.sys(`    ${line}`)
+                }
+              }
+            }
+
+            return
+          }
+
+          if (action === 'tts') {
+            ctx.transcript.sys(`Voice TTS ${r.tts ? 'enabled' : 'disabled'}.`)
+
+            return
+          }
+
+          // on/off — mirror cli.py:_enable_voice_mode's 3-line output
+          if (r.enabled) {
+            const tts = r.tts ? ' (TTS enabled)' : ''
+            ctx.transcript.sys(`Voice mode enabled${tts}`)
+            ctx.transcript.sys('  Ctrl+B to start/stop recording')
+            ctx.transcript.sys('  /voice tts  to toggle speech output')
+            ctx.transcript.sys('  /voice off  to disable voice mode')
+          } else {
+            ctx.transcript.sys('Voice mode disabled.')
+          }
         })
       )
     }

@@ -350,7 +350,13 @@ PLATFORM_HINTS = {
     ),
     "cli": (
         "You are a CLI AI Agent. Try not to use markdown but simple text "
-        "renderable inside a terminal."
+        "renderable inside a terminal. "
+        "File delivery: there is no attachment channel — the user reads your "
+        "response directly in their terminal. Do NOT emit MEDIA:/path tags "
+        "(those are only intercepted on messaging platforms like Telegram, "
+        "Discord, Slack, etc.; on the CLI they render as literal text). "
+        "When referring to a file you created or changed, just state its "
+        "absolute path in plain text; the user can open it from there."
     ),
     "sms": (
         "You are communicating via SMS. Keep responses concise and use plain text "
@@ -363,6 +369,32 @@ PLATFORM_HINTS = {
         "appear as text messages. You can send media files natively: include "
         "MEDIA:/absolute/path/to/file in your response. Images (.jpg, .png, "
         ".heic) appear as photos and other files arrive as attachments."
+    ),
+    "mattermost": (
+        "You are in a Mattermost workspace communicating with your user. "
+        "Mattermost renders standard Markdown — headings, bold, italic, code "
+        "blocks, and tables all work. "
+        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "in your response. Images (.jpg, .png, .webp) are uploaded as photo "
+        "attachments, audio and video as file attachments. "
+        "Image URLs in markdown format ![alt](url) are rendered as inline previews automatically."
+    ),
+    "matrix": (
+        "You are in a Matrix room communicating with your user. "
+        "Matrix renders Markdown — bold, italic, code blocks, and links work; "
+        "the adapter converts your Markdown to HTML for rich display. "
+        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "in your response. Images (.jpg, .png, .webp) are sent as inline photos, "
+        "audio (.ogg, .mp3) as voice/audio messages, video (.mp4) inline, "
+        "and other files as downloadable attachments."
+    ),
+    "feishu": (
+        "You are in a Feishu (Lark) workspace communicating with your user. "
+        "Feishu renders Markdown in messages — bold, italic, code blocks, and "
+        "links are supported. "
+        "You can send media files natively: include MEDIA:/absolute/path/to/file "
+        "in your response. Images (.jpg, .png, .webp) are uploaded and displayed "
+        "inline, audio files as voice messages, and other files as attachments."
     ),
     "weixin": (
         "You are on Weixin/WeChat. Markdown formatting is supported, so you may use it when "

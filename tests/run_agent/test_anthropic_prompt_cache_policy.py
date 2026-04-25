@@ -118,6 +118,86 @@ class TestOpenAIWireFormatOnCustomProvider:
         assert agent._anthropic_prompt_cache_policy() == (False, False)
 
 
+class TestQwenAlibabaFamily:
+    """Qwen on OpenCode/OpenCode-Go/Alibaba — needs cache_control even on OpenAI-wire.
+
+    Upstream pi-mono #3392 / #3393 documented that these providers serve
+    zero cache hits without Anthropic-style markers. Regression reported
+    by community user (Qwen3.6 on opencode-go burning through
+    subscription with no cache). Envelope layout, not native, because the
+    wire format is OpenAI chat.completions.
+    """
+
+    def test_qwen_on_opencode_go_caches_with_envelope_layout(self):
+        agent = _make_agent(
+            provider="opencode-go",
+            base_url="https://opencode.ai/v1",
+            api_mode="chat_completions",
+            model="qwen3.6-plus",
+        )
+        should, native = agent._anthropic_prompt_cache_policy()
+        assert should is True, "Qwen on opencode-go must cache"
+        assert native is False, "opencode-go is OpenAI-wire; envelope layout"
+
+    def test_qwen35_plus_on_opencode_go(self):
+        agent = _make_agent(
+            provider="opencode-go",
+            base_url="https://opencode.ai/v1",
+            api_mode="chat_completions",
+            model="qwen3.5-plus",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_qwen_on_opencode_zen_caches(self):
+        agent = _make_agent(
+            provider="opencode",
+            base_url="https://opencode.ai/v1",
+            api_mode="chat_completions",
+            model="qwen3-coder-plus",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_qwen_on_direct_alibaba_caches(self):
+        agent = _make_agent(
+            provider="alibaba",
+            base_url="https://dashscope.aliyuncs.com/compatible-mode/v1",
+            api_mode="chat_completions",
+            model="qwen3-coder",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (True, False)
+
+    def test_non_qwen_on_opencode_go_does_not_cache(self):
+        # GLM / Kimi on opencode-go don't need markers (they have automatic
+        # server-side caching or none at all).
+        agent = _make_agent(
+            provider="opencode-go",
+            base_url="https://opencode.ai/v1",
+            api_mode="chat_completions",
+            model="glm-5",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_kimi_on_opencode_go_does_not_cache(self):
+        agent = _make_agent(
+            provider="opencode-go",
+            base_url="https://opencode.ai/v1",
+            api_mode="chat_completions",
+            model="kimi-k2.5",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+    def test_qwen_on_openrouter_not_affected(self):
+        # Qwen via OpenRouter falls through — OpenRouter has its own
+        # upstream caching arrangement for Qwen (provider-dependent).
+        agent = _make_agent(
+            provider="openrouter",
+            base_url="https://openrouter.ai/api/v1",
+            api_mode="chat_completions",
+            model="qwen/qwen3-coder",
+        )
+        assert agent._anthropic_prompt_cache_policy() == (False, False)
+
+
 class TestExplicitOverrides:
     """Policy accepts keyword overrides for switch_model / fallback activation."""
 

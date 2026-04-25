@@ -60,6 +60,10 @@ from .config import (
     SessionResetPolicy,  # noqa: F401 — re-exported via gateway/__init__.py
     HomeChannel,
 )
+from .whatsapp_identity import (
+    canonical_whatsapp_identifier,
+    normalize_whatsapp_identifier,
+)
 
 
 @dataclass
@@ -80,7 +84,7 @@ class SessionSource:
     user_name: Optional[str] = None
     thread_id: Optional[str] = None  # For forum topics, Discord threads, etc.
     chat_topic: Optional[str] = None  # Channel topic/description (Discord, Slack)
-    user_id_alt: Optional[str] = None  # Signal UUID (alternative to phone number)
+    user_id_alt: Optional[str] = None  # Platform-specific stable alt ID (Signal UUID, Feishu union_id)
     chat_id_alt: Optional[str] = None  # Signal group internal ID
     is_bot: bool = False  # True when the message author is a bot/webhook (Discord)
     
@@ -280,6 +284,18 @@ def build_session_context_prompt(
             "channel history, pin messages, manage roles, or list server members. "
             "Do not promise to perform these actions. If the user asks, explain "
             "that you can only read messages sent directly to you and respond."
+        )
+    elif context.source.platform == Platform.BLUEBUBBLES:
+        lines.append("")
+        lines.append(
+            "**Platform notes:** You are responding via iMessage. "
+            "Keep responses short and conversational — think texts, not essays. "
+            "Structure longer replies as separate short thoughts, each separated "
+            "by a blank line (double newline). Each block between blank lines "
+            "will be delivered as its own iMessage bubble, so write accordingly: "
+            "one idea per bubble, 1–3 sentences each. "
+            "If the user needs a detailed answer, give the short version first "
+            "and offer to elaborate."
         )
 
     # Connected platforms
@@ -518,15 +534,24 @@ def build_session_key(
     """
     platform = source.platform.value
     if source.chat_type == "dm":
-        if source.chat_id:
+        dm_chat_id = source.chat_id
+        if source.platform == Platform.WHATSAPP:
+            dm_chat_id = canonical_whatsapp_identifier(source.chat_id)
+
+        if dm_chat_id:
             if source.thread_id:
-                return f"agent:main:{platform}:dm:{source.chat_id}:{source.thread_id}"
-            return f"agent:main:{platform}:dm:{source.chat_id}"
+                return f"agent:main:{platform}:dm:{dm_chat_id}:{source.thread_id}"
+            return f"agent:main:{platform}:dm:{dm_chat_id}"
         if source.thread_id:
             return f"agent:main:{platform}:dm:{source.thread_id}"
         return f"agent:main:{platform}:dm"
 
     participant_id = source.user_id_alt or source.user_id
+    if participant_id and source.platform == Platform.WHATSAPP:
+        # Same JID/LID-flip bug as the DM case: without canonicalisation, a
+        # single group member gets two isolated per-user sessions when the
+        # bridge reshuffles alias forms.
+        participant_id = canonical_whatsapp_identifier(str(participant_id)) or participant_id
     key_parts = ["agent:main", platform, source.chat_type]
 
     if source.chat_id:
@@ -1147,6 +1172,10 @@ class SessionStore:
                     tool_name=message.get("tool_name"),
                     tool_calls=message.get("tool_calls"),
                     tool_call_id=message.get("tool_call_id"),
+                    reasoning=message.get("reasoning") if message.get("role") == "assistant" else None,
+                    reasoning_content=message.get("reasoning_content") if message.get("role") == "assistant" else None,
+                    reasoning_details=message.get("reasoning_details") if message.get("role") == "assistant" else None,
+                    codex_reasoning_items=message.get("codex_reasoning_items") if message.get("role") == "assistant" else None,
                 )
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
@@ -1176,6 +1205,7 @@ class SessionStore:
                         tool_calls=msg.get("tool_calls"),
                         tool_call_id=msg.get("tool_call_id"),
                         reasoning=msg.get("reasoning") if role == "assistant" else None,
+                        reasoning_content=msg.get("reasoning_content") if role == "assistant" else None,
                         reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                         codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
                     )

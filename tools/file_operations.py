@@ -215,6 +215,31 @@ class ExecuteResult:
     exit_code: int = 0
 
 
+def _parse_search_context_line(line: str) -> tuple[str, int, str] | None:
+    """Parse grep/rg context output in ``path-line-content`` format.
+
+    Context lines are ambiguous because filenames may legitimately contain
+    ``-<digits>-`` segments. Prefer the rightmost numeric separator so a path
+    like ``dir/file-12-name.py-8-context`` resolves to
+    ``dir/file-12-name.py`` line ``8`` instead of truncating at ``file``.
+    """
+    if not line or line == "--":
+        return None
+
+    match = None
+    for candidate in re.finditer(r'-(\d+)-', line):
+        match = candidate
+
+    if match is None:
+        return None
+
+    path = line[:match.start()]
+    if not path:
+        return None
+
+    return path, int(match.group(1)), line[match.end():]
+
+
 # =============================================================================
 # Abstract Interface
 # =============================================================================
@@ -1185,7 +1210,6 @@ class ShellFileOperations(FileOperations):
             # Note: on Windows, paths contain drive letters (e.g. C:\path),
             # so naive split(":") breaks. Use regex to handle both platforms.
             _match_re = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
-            _ctx_re = re.compile(r'^([A-Za-z]:)?(.*?)-(\d+)-(.*)$')
             matches = []
             for line in result.stdout.strip().split('\n'):
                 if not line or line == "--":
@@ -1204,12 +1228,12 @@ class ShellFileOperations(FileOperations):
                 # Try context line (dash-separated: file-line-content)
                 # Only attempt if context was requested to avoid false positives
                 if context > 0:
-                    m = _ctx_re.match(line)
-                    if m:
+                    parsed = _parse_search_context_line(line)
+                    if parsed:
                         matches.append(SearchMatch(
-                            path=(m.group(1) or '') + m.group(2),
-                            line_number=int(m.group(3)),
-                            content=m.group(4)[:500]
+                            path=parsed[0],
+                            line_number=parsed[1],
+                            content=parsed[2][:500]
                         ))
             
             total = len(matches)
@@ -1284,7 +1308,6 @@ class ShellFileOperations(FileOperations):
             # Note: on Windows, paths contain drive letters (e.g. C:\path),
             # so naive split(":") breaks. Use regex to handle both platforms.
             _match_re = re.compile(r'^([A-Za-z]:)?(.*?):(\d+):(.*)$')
-            _ctx_re = re.compile(r'^([A-Za-z]:)?(.*?)-(\d+)-(.*)$')
             matches = []
             for line in result.stdout.strip().split('\n'):
                 if not line or line == "--":
@@ -1300,12 +1323,12 @@ class ShellFileOperations(FileOperations):
                     continue
                 
                 if context > 0:
-                    m = _ctx_re.match(line)
-                    if m:
+                    parsed = _parse_search_context_line(line)
+                    if parsed:
                         matches.append(SearchMatch(
-                            path=(m.group(1) or '') + m.group(2),
-                            line_number=int(m.group(3)),
-                            content=m.group(4)[:500]
+                            path=parsed[0],
+                            line_number=parsed[1],
+                            content=parsed[2][:500]
                         ))
 
             

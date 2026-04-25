@@ -132,9 +132,11 @@ class TestBuildJobPromptContextFrom:
             prompt="Summarize", schedule="every 2h", context_from=job_a["id"]
         )
 
-        # job_a ещё не запускался — output dir не существует
+        # job_a never ran — output dir does not exist
+        # expect silent skip: no placeholder injected, base prompt intact
         prompt = _build_job_prompt(job_b)
-        assert "no output yet" in prompt.lower() or "not found" in prompt.lower()
+        assert "no output" not in prompt.lower()
+        assert "not found" not in prompt.lower()
         assert "Summarize" in prompt
 
     def test_injects_multiple_context_jobs(self, cron_env):

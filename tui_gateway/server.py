@@ -573,10 +573,7 @@ def _resolve_model() -> str:
 
 def _resolve_startup_runtime() -> tuple[str, str | None]:
     model = _resolve_model()
-    explicit_provider = (
-        os.environ.get("HERMES_TUI_PROVIDER", "")
-        or os.environ.get("HERMES_INFERENCE_PROVIDER", "")
-    ).strip()
+    explicit_provider = os.environ.get("HERMES_TUI_PROVIDER", "").strip()
     if explicit_provider:
         return model, explicit_provider
 
@@ -595,7 +592,7 @@ def _resolve_startup_runtime() -> tuple[str, str | None]:
             str(cfg.get("provider") or "").strip().lower()
             if isinstance(cfg, dict)
             else ""
-        ) or "auto"
+        ) or os.environ.get("HERMES_INFERENCE_PROVIDER", "").strip().lower() or "auto"
         detected = detect_provider_for_model(explicit_model, current_provider)
         if detected:
             provider, detected_model = detected

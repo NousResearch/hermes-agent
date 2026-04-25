@@ -2266,28 +2266,50 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
 
 def _load_config() -> dict:
-    """Load delegation config from CLI_CONFIG or persistent config.
+    """Load delegation config — ALWAYS reads from disk so live updates to
+    ``~/.hermes/config.yaml`` take effect without a gateway / CLI restart.
 
-    Checks the runtime config (cli.py CLI_CONFIG) first, then falls back
-    to the persistent config (hermes_cli/config.py load_config()) so that
-    ``delegation.model`` / ``delegation.provider`` are picked up regardless
-    of the entry point (CLI, gateway, cron).
+    Previous behaviour read ``cli.CLI_CONFIG`` first, which is populated ONCE
+    at cli.py module import and never refreshed. In long-running gateway
+    processes (Discord/Telegram/Slack) that meant ``delegation.model`` /
+    ``delegation.provider`` changes made to the config file were invisible to
+    running subagents — users would edit the file, restart nothing, and
+    subagent dispatches would silently inherit the parent's model instead of
+    the configured cheaper one. The result was a quiet, expensive fall-back
+    to the session default (typically Opus) for what the user thought were
+    Sonnet/Haiku-routed tasks.
+
+    The YAML file is small (<10 KB) and this function is on the delegation
+    cold path (fired once per delegate_task call, not per token/API hit), so
+    the extra ~5 ms disk read is worth the correctness guarantee. The CLI
+    path still works identically — ``load_config()`` reads the same file
+    ``load_cli_config`` did.
+
+    Fallback order:
+      1. Live ``~/.hermes/config.yaml`` via ``hermes_cli.config.load_config``
+      2. Whatever is frozen in ``cli.CLI_CONFIG`` (if cli was imported — CLI
+         path only; gateway does not import cli.py)
+      3. Empty dict (config file absent/unreadable — children inherit from
+         parent, which is the pre-fix default)
     """
     try:
-        from cli import CLI_CONFIG
+        from hermes_cli.config import load_config
 
-        cfg = CLI_CONFIG.get("delegation", {})
+        full = load_config()
+        cfg = full.get("delegation", {}) or {}
         if cfg:
             return cfg
     except Exception:
         pass
     try:
-        from hermes_cli.config import load_config
+        from cli import CLI_CONFIG
 
-        full = load_config()
-        return full.get("delegation", {})
+        cfg = CLI_CONFIG.get("delegation", {}) or {}
+        if cfg:
+            return cfg
     except Exception:
-        return {}
+        pass
+    return {}
 
 
 # ---------------------------------------------------------------------------

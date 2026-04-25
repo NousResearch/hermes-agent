@@ -58,6 +58,7 @@ export const sessionCommands: SlashCommand[] = [
 
   {
     help: 'change or show model',
+    aliases: ['provider'],
     name: 'model',
     run: (arg, ctx) => {
       if (ctx.session.guardBusySessionSwitch('change models')) {

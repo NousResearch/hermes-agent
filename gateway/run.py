@@ -9274,19 +9274,17 @@ class GatewayRunner:
                 _dur = f" {duration:.1f}s" if duration else ""
                 _suffix = f" {_status}{_dur}"
 
-                # If we have a short result, append it for context
+                # If we have a short result, append it for context.
+                # Errors already carry ✗ in the suffix; skip the snippet to
+                # keep the line tight (full error text lives in the reply).
                 _result_snippet = ""
                 if result_preview and not is_error:
                     # Try to extract a meaningful one-liner from JSON results
                     try:
-                        import json as _json_mod
-                        _data = _json_mod.loads(result_preview)
-                        if isinstance(_data, dict):
-                            if _data.get("success") is False and _data.get("error"):
-                                _result_snippet = f": {_collapse(str(_data['error']))[:50]}"
-                            elif _data.get("output"):
-                                _output = _collapse(str(_data["output"]))
-                                _result_snippet = f": {_output[:50]}" if len(_output) <= 50 else f": {_output[:47]}..."
+                        _data = json.loads(result_preview)
+                        if isinstance(_data, dict) and _data.get("output"):
+                            _output = _collapse(str(_data["output"]))
+                            _result_snippet = f": {_output[:50]}" if len(_output) <= 50 else f": {_output[:47]}..."
                     except (ValueError, TypeError):
                         # Non-JSON result — use first line if short
                         _first = _collapse(result_preview)
@@ -9394,6 +9392,28 @@ class GatewayRunner:
             _last_edit_ts = 0.0      # Throttle edits to avoid Telegram flood control
             _PROGRESS_EDIT_INTERVAL = 1.5  # Minimum seconds between edits
 
+            def _apply_completed(lines, completed_tool, completion_suffix):
+                # Match the started-line for `completed_tool` precisely so a
+                # short tool name (e.g. "ls") doesn't collide with substrings
+                # in other lines (e.g. "tools"). Started lines always render
+                # as "{emoji} {tool_name}" followed by "(", ":", "." or EOL.
+                pattern = re.compile(
+                    r"(?:^|\s)" + re.escape(completed_tool) + r"(?=[({:.\s]|$)"
+                )
+                for idx in range(len(lines) - 1, -1, -1):
+                    line = lines[idx]
+                    if "✓" in line or "✗" in line:
+                        continue
+                    if pattern.search(line):
+                        lines[idx] = line + completion_suffix
+                        return
+                # No matching started line; append a standalone completion.
+                from agent.display import get_tool_emoji
+                lines.append(
+                    f"{get_tool_emoji(completed_tool, default='⚙️')} "
+                    f"{completed_tool}{completion_suffix}"
+                )
+
             while True:
                 try:
                     if not _run_still_current():
@@ -9413,21 +9433,8 @@ class GatewayRunner:
                             progress_lines[-1] = f"{base_msg} (×{count + 1})"
                         msg = progress_lines[-1] if progress_lines else base_msg
                     elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__completed__":
-                        # Handle tool.completed: find and update last line for this tool
                         _, completed_tool, completion_suffix = raw
-                        _updated = False
-                        for _idx in range(len(progress_lines) - 1, -1, -1):
-                            _line = progress_lines[_idx]
-                            # Match line containing the tool name (emoji + tool_name pattern)
-                            if completed_tool in _line and "✓" not in _line and "✗" not in _line:
-                                progress_lines[_idx] = _line + completion_suffix
-                                _updated = True
-                                break
-                        if not _updated:
-                            # No matching started line; append a standalone completion
-                            from agent.display import get_tool_emoji
-                            _emoji = get_tool_emoji(completed_tool, default="⚙️")
-                            progress_lines.append(f"{_emoji} {completed_tool}{completion_suffix}")
+                        _apply_completed(progress_lines, completed_tool, completion_suffix)
                         msg = progress_lines[-1] if progress_lines else str(raw)
                     else:
                         msg = raw
@@ -9500,15 +9507,7 @@ class GatewayRunner:
                                     progress_lines[-1] = f"{base_msg} (×{count + 1})"
                             elif isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__completed__":
                                 _, completed_tool, completion_suffix = raw
-                                _updated = False
-                                for _idx in range(len(progress_lines) - 1, -1, -1):
-                                    _line = progress_lines[_idx]
-                                    if completed_tool in _line and "✓" not in _line and "✗" not in _line:
-                                        progress_lines[_idx] = _line + completion_suffix
-                                        _updated = True
-                                        break
-                                if not _updated:
-                                    progress_lines.append(f"⚙️ {completed_tool}{completion_suffix}")
+                                _apply_completed(progress_lines, completed_tool, completion_suffix)
                             else:
                                 progress_lines.append(raw)
                         except Exception:

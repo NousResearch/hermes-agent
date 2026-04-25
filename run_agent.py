@@ -8425,9 +8425,7 @@ class AIAgent:
                     try:
                         # Pass a short result preview so the gateway can
                         # update progress lines with completion status.
-                        _result_preview = None
-                        if function_result:
-                            _result_preview = function_result[:200] if len(function_result) > 200 else function_result
+                        _result_preview = function_result[:200] if function_result else None
                         self.tool_progress_callback(
                             "tool.completed", function_name, _result_preview, None,
                             duration=tool_duration, is_error=is_error,
@@ -8803,9 +8801,7 @@ class AIAgent:
 
             if self.tool_progress_callback:
                 try:
-                    _result_preview = None
-                    if function_result:
-                        _result_preview = function_result[:200] if len(function_result) > 200 else function_result
+                    _result_preview = function_result[:200] if function_result else None
                     self.tool_progress_callback(
                         "tool.completed", function_name, _result_preview, None,
                         duration=tool_duration, is_error=_is_error_result,

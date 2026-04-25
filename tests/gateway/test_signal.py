@@ -1,6 +1,5 @@
 """Tests for Signal messenger platform adapter."""
 import base64
-import json
 import pytest
 from pathlib import Path
 from unittest.mock import MagicMock, patch, AsyncMock
@@ -16,7 +15,15 @@ from gateway.config import Platform, PlatformConfig
 def _make_signal_adapter(monkeypatch, account="+15551234567", **extra):
     """Create a SignalAdapter with sensible test defaults."""
     monkeypatch.setenv("SIGNAL_GROUP_ALLOWED_USERS", extra.pop("group_allowed", ""))
+    default_shared_attachment_dir = extra.pop(
+        "default_shared_attachment_dir",
+        "/tmp/hermes-test-no-default-signal-attachments",
+    )
     from gateway.platforms.signal import SignalAdapter
+    monkeypatch.setattr(
+        "gateway.platforms.signal.SIGNAL_DEFAULT_SHARED_ATTACHMENT_DIR",
+        default_shared_attachment_dir,
+    )
     config = PlatformConfig()
     config.enabled = True
     config.extra = {
@@ -117,7 +124,7 @@ class TestSignalConnectCleanup:
 class TestSignalHelpers:
     def test_redact_phone_long(self):
         from gateway.platforms.helpers import redact_phone
-        assert redact_phone("+155****4567") == "+155****4567"
+        assert redact_phone("+15551234567") == "+155****4567"
 
     def test_redact_phone_short(self):
         from gateway.platforms.helpers import redact_phone
@@ -238,7 +245,7 @@ class TestSignalAttachmentFetch:
         assert call["method"] == "getAttachment"
         assert call["params"]["id"] == "attachment-123"
         assert "attachmentId" not in call["params"], "Must NOT use 'attachmentId' — causes NullPointerException in signal-cli"
-        assert call["params"]["account"] == "+15551234567"
+        assert call["params"]["account"] == adapter.account
 
     @pytest.mark.asyncio
     async def test_fetch_attachment_returns_none_on_empty(self, monkeypatch):
@@ -262,6 +269,90 @@ class TestSignalAttachmentFetch:
 
         assert path == "/tmp/test.pdf"
         assert ext == ".pdf"
+
+
+# ---------------------------------------------------------------------------
+# Inbound attachment classification
+# ---------------------------------------------------------------------------
+
+class TestSignalInboundAttachmentClassification:
+    @pytest.mark.asyncio
+    async def test_csv_attachment_sets_document_type(self, monkeypatch):
+        from gateway.platforms.base import MessageType
+
+        adapter = _make_signal_adapter(monkeypatch)
+        captured_events = []
+
+        async def capture_handle(event):
+            captured_events.append(event)
+
+        adapter.handle_message = capture_handle
+        adapter._fetch_attachment = AsyncMock(return_value=("/tmp/portfolio.csv", ".csv"))
+
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+15550001111",
+                "sourceName": "Nicole",
+                "timestamp": 1712676975441,
+                "dataMessage": {
+                    "message": "",
+                    "attachments": [
+                        {
+                            "id": "csv-1",
+                            "size": 128,
+                            "contentType": "text/csv",
+                        }
+                    ],
+                },
+            }
+        }
+
+        await adapter._handle_envelope(envelope)
+
+        assert len(captured_events) == 1
+        assert captured_events[0].message_type == MessageType.DOCUMENT
+        assert captured_events[0].media_urls == ["/tmp/portfolio.csv"]
+        assert captured_events[0].media_types == ["text/csv"]
+        adapter._fetch_attachment.assert_awaited_once_with("csv-1")
+
+    @pytest.mark.asyncio
+    async def test_video_attachment_sets_video_type(self, monkeypatch):
+        from gateway.platforms.base import MessageType
+
+        adapter = _make_signal_adapter(monkeypatch)
+        captured_events = []
+
+        async def capture_handle(event):
+            captured_events.append(event)
+
+        adapter.handle_message = capture_handle
+        adapter._fetch_attachment = AsyncMock(return_value=("/tmp/clip.mp4", ".mp4"))
+
+        envelope = {
+            "envelope": {
+                "sourceNumber": "+15550001111",
+                "sourceName": "Nicole",
+                "timestamp": 1712676975441,
+                "dataMessage": {
+                    "message": "",
+                    "attachments": [
+                        {
+                            "id": "video-1",
+                            "size": 128,
+                            "contentType": "video/mp4",
+                        }
+                    ],
+                },
+            }
+        }
+
+        await adapter._handle_envelope(envelope)
+
+        assert len(captured_events) == 1
+        assert captured_events[0].message_type == MessageType.VIDEO
+        assert captured_events[0].media_urls == ["/tmp/clip.mp4"]
+        assert captured_events[0].media_types == ["video/mp4"]
+        adapter._fetch_attachment.assert_awaited_once_with("video-1")
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +484,8 @@ class TestSignalSendImageFile:
         assert captured[0]["method"] == "send"
         assert captured[0]["params"]["account"] == adapter.account
         assert captured[0]["params"]["recipient"] == ["+155****4567"]
-        assert captured[0]["params"]["attachments"] == [str(img_path)]
+        sent_path = captured[0]["params"]["attachments"][0]
+        assert Path(sent_path).read_bytes() == img_path.read_bytes()
         assert captured[0]["params"]["message"] == ""  # caption=None → ""
         # Typing indicator must be stopped before sending
         adapter._stop_typing_indicator.assert_awaited_once_with("+155****4567")
@@ -578,7 +670,8 @@ class TestSignalSendVoice:
 
         assert result.success is True
         assert captured[0]["method"] == "send"
-        assert captured[0]["params"]["attachments"] == [str(audio_path)]
+        sent_path = captured[0]["params"]["attachments"][0]
+        assert Path(sent_path).read_bytes() == audio_path.read_bytes()
         assert captured[0]["params"]["message"] == ""  # caption=None → ""
         adapter._stop_typing_indicator.assert_awaited_once_with("+155****4567")
         assert 1234567890 in adapter._recent_sent_timestamps
@@ -667,7 +760,8 @@ class TestSignalSendVideo:
 
         assert result.success is True
         assert captured[0]["method"] == "send"
-        assert captured[0]["params"]["attachments"] == [str(vid_path)]
+        sent_path = captured[0]["params"]["attachments"][0]
+        assert Path(sent_path).read_bytes() == vid_path.read_bytes()
         assert captured[0]["params"]["message"] == ""  # caption=None → ""
         adapter._stop_typing_indicator.assert_awaited_once_with("+155****4567")
         assert 1234567890 in adapter._recent_sent_timestamps
@@ -797,6 +891,85 @@ class TestSignalSendDocumentViaHelper:
 
         assert result.success is False
         assert "/nonexistent.pdf" in result.error
+
+    @pytest.mark.asyncio
+    async def test_send_document_stages_into_shared_attachment_dir(self, monkeypatch, tmp_path):
+        shared_dir = tmp_path / "shared"
+        monkeypatch.setenv("SIGNAL_SHARED_ATTACHMENT_DIR", str(shared_dir))
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._stop_typing_indicator = AsyncMock()
+        captured = []
+        seen = {}
+
+        async def mock_rpc(method, params, rpc_id=None):
+            captured.append({"method": method, "params": dict(params)})
+            send_path = params["attachments"][0]
+            seen["content"] = Path(send_path).read_text()
+            return {"timestamp": 1712345678000}
+
+        adapter._rpc = mock_rpc
+
+        doc_path = tmp_path / "report with spaces.txt"
+        doc_path.write_text("hello")
+
+        result = await adapter.send_document(chat_id="+155****4567", file_path=str(doc_path))
+
+        assert result.success is True
+        send_path = captured[0]["params"]["attachments"][0]
+        assert send_path.startswith(str(shared_dir))
+        assert seen["content"] == "hello"
+        assert send_path != str(doc_path)
+        assert not Path(send_path).exists()
+
+    @pytest.mark.asyncio
+    async def test_send_document_uses_default_shared_dir_when_present(self, monkeypatch, tmp_path):
+        default_shared_dir = tmp_path / "signal-attachments"
+        default_shared_dir.mkdir()
+        monkeypatch.delenv("SIGNAL_SHARED_ATTACHMENT_DIR", raising=False)
+        adapter = _make_signal_adapter(
+            monkeypatch,
+            default_shared_attachment_dir=str(default_shared_dir),
+        )
+        adapter._stop_typing_indicator = AsyncMock()
+        captured = []
+        seen = {}
+
+        async def mock_rpc(method, params, rpc_id=None):
+            captured.append({"method": method, "params": dict(params)})
+            send_path = params["attachments"][0]
+            seen["content"] = Path(send_path).read_text()
+            return {"timestamp": 1712345678000}
+
+        adapter._rpc = mock_rpc
+
+        doc_path = tmp_path / "report.txt"
+        doc_path.write_text("hello")
+
+        result = await adapter.send_document(chat_id="+155****4567", file_path=str(doc_path))
+
+        assert result.success is True
+        send_path = captured[0]["params"]["attachments"][0]
+        assert send_path.startswith(str(default_shared_dir))
+        assert seen["content"] == "hello"
+        assert not Path(send_path).exists()
+
+    @pytest.mark.asyncio
+    async def test_send_document_keeps_original_path_when_already_in_shared_dir(self, monkeypatch, tmp_path):
+        shared_dir = tmp_path / "shared"
+        shared_dir.mkdir()
+        monkeypatch.setenv("SIGNAL_SHARED_ATTACHMENT_DIR", str(shared_dir))
+        adapter = _make_signal_adapter(monkeypatch)
+        adapter._stop_typing_indicator = AsyncMock()
+        mock_rpc, captured = _stub_rpc({"timestamp": 1712345678000})
+        adapter._rpc = mock_rpc
+
+        doc_path = shared_dir / "report.txt"
+        doc_path.write_text("hello")
+
+        result = await adapter.send_document(chat_id="+155****4567", file_path=str(doc_path))
+
+        assert result.success is True
+        assert captured[0]["params"]["attachments"][0] == str(doc_path)
 
 
 # ---------------------------------------------------------------------------

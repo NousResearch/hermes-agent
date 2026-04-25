@@ -17,6 +17,9 @@ import json
 import logging
 import os
 import random
+import re
+import shutil
+import tempfile
 import time
 import uuid
 from datetime import datetime, timezone
@@ -45,6 +48,7 @@ logger = logging.getLogger(__name__)
 # Constants
 # ---------------------------------------------------------------------------
 SIGNAL_MAX_ATTACHMENT_SIZE = 100 * 1024 * 1024  # 100 MB
+SIGNAL_DEFAULT_SHARED_ATTACHMENT_DIR = "/tmp/signal-attachments"
 MAX_MESSAGE_LENGTH = 8000  # Signal message size limit
 TYPING_INTERVAL = 8.0  # seconds between typing indicator refreshes
 SSE_RETRY_DELAY_INITIAL = 2.0
@@ -170,6 +174,9 @@ class SignalAdapter(BasePlatformAdapter):
         self.http_url = extra.get("http_url", "http://127.0.0.1:8080").rstrip("/")
         self.account = extra.get("account", "")
         self.ignore_stories = extra.get("ignore_stories", True)
+        self.shared_attachment_dir = self._resolve_shared_attachment_dir(
+            extra.get("shared_attachment_dir")
+        )
 
         # Parse allowlists — group policy is derived from presence of group allowlist
         group_allowed_str = os.getenv("SIGNAL_GROUP_ALLOWED_USERS", "")
@@ -208,9 +215,85 @@ class SignalAdapter(BasePlatformAdapter):
         self._recipient_number_by_uuid: Dict[str, str] = {}
         self._recipient_cache_lock = asyncio.Lock()
 
-        logger.info("Signal adapter initialized: url=%s account=%s groups=%s",
-                     self.http_url, redact_phone(self.account),
-                     "enabled" if self.group_allow_from else "disabled")
+        self._phone_lock_identity: Optional[str] = None
+        self._platform_lock_identity: Optional[str] = None
+
+        logger.info(
+            "Signal adapter initialized: url=%s account=%s groups=%s shared_attachments=%s",
+            self.http_url,
+            redact_phone(self.account),
+            "enabled" if self.group_allow_from else "disabled",
+            self.shared_attachment_dir or "off",
+        )
+
+    def _resolve_shared_attachment_dir(self, configured: Optional[str]) -> Optional[str]:
+        """Return a host path that should be mirrored into the signal-cli container."""
+        candidate = (
+            configured
+            or os.getenv("SIGNAL_SHARED_ATTACHMENT_DIR", "").strip()
+            or SIGNAL_DEFAULT_SHARED_ATTACHMENT_DIR
+        )
+        if not candidate:
+            return None
+
+        path = Path(candidate).expanduser()
+        if candidate == SIGNAL_DEFAULT_SHARED_ATTACHMENT_DIR and not path.exists():
+            return None
+
+        try:
+            path.mkdir(parents=True, exist_ok=True)
+        except Exception as exc:
+            logger.warning("Signal: cannot prepare shared attachment dir %s: %s", path, exc)
+            return None
+        return str(path)
+
+    def _prepare_attachment_path(self, file_path: str) -> tuple[str, Optional[str]]:
+        """Stage attachments into a container-visible shared directory when configured.
+
+        Returns a tuple of (path_to_send, staged_copy_path). When no staging is
+        needed, staged_copy_path is None.
+        """
+        if not self.shared_attachment_dir:
+            return file_path, None
+
+        source = Path(file_path).expanduser()
+        if not source.exists():
+            return file_path, None
+
+        shared_dir = Path(self.shared_attachment_dir)
+        try:
+            source_resolved = source.resolve()
+            shared_resolved = shared_dir.resolve()
+            if source_resolved == shared_resolved or shared_resolved in source_resolved.parents:
+                return str(source_resolved), None
+        except Exception:
+            pass
+
+        safe_name = re.sub(r"[^A-Za-z0-9._-]", "_", source.name) or "attachment"
+        staged_path: Optional[Path] = None
+        try:
+            shared_dir.mkdir(parents=True, exist_ok=True)
+            with tempfile.NamedTemporaryFile(
+                prefix="signal-",
+                suffix=f"_{safe_name}",
+                dir=shared_dir,
+                delete=False,
+            ) as tmp:
+                staged_path = Path(tmp.name)
+            shutil.copy2(source, staged_path)
+            staged_path.chmod(0o600)
+        except Exception as exc:
+            if staged_path is not None:
+                try:
+                    staged_path.unlink(missing_ok=True)
+                except Exception:
+                    pass
+            logger.warning(
+                "Signal: failed to stage attachment %s into %s: %s", source, shared_dir, exc
+            )
+            return file_path, None
+        logger.debug("Signal: staged attachment %s -> %s", source, staged_path)
+        return str(staged_path), str(staged_path)
 
     # ------------------------------------------------------------------
     # Lifecycle
@@ -223,11 +306,26 @@ class SignalAdapter(BasePlatformAdapter):
             return False
 
         # Acquire scoped lock to prevent duplicate Signal listeners for the same phone
-        lock_acquired = False
         try:
-            if not self._acquire_platform_lock('signal-phone', self.account, 'Signal account'):
+            from gateway.status import acquire_scoped_lock
+
+            self._phone_lock_identity = self.account
+            self._platform_lock_identity = self._phone_lock_identity
+            acquired, existing = acquire_scoped_lock(
+                "signal-phone",
+                self._phone_lock_identity,
+                metadata={"platform": self.platform.value},
+            )
+            if not acquired:
+                owner_pid = existing.get("pid") if isinstance(existing, dict) else None
+                message = (
+                    "Another local Hermes gateway is already using this Signal account"
+                    + (f" (PID {owner_pid})." if owner_pid else ".")
+                    + " Stop the other gateway before starting a second Signal listener."
+                )
+                logger.error("Signal: %s", message)
+                self._set_fatal_error("signal_phone_lock", message, retryable=False)
                 return False
-            lock_acquired = True
         except Exception as e:
             logger.warning("Signal: Could not acquire phone lock (non-fatal): %s", e)
 
@@ -255,8 +353,14 @@ class SignalAdapter(BasePlatformAdapter):
                 if self.client:
                     await self.client.aclose()
                     self.client = None
-                if lock_acquired:
-                    self._release_platform_lock()
+                if self._phone_lock_identity:
+                    try:
+                        from gateway.status import release_scoped_lock
+                        release_scoped_lock("signal-phone", self._phone_lock_identity)
+                    except Exception as e:
+                        logger.warning("Signal: Error releasing phone lock: %s", e, exc_info=True)
+                    self._phone_lock_identity = None
+                    self._platform_lock_identity = None
 
     async def disconnect(self) -> None:
         """Stop SSE listener and clean up."""
@@ -285,7 +389,14 @@ class SignalAdapter(BasePlatformAdapter):
             await self.client.aclose()
             self.client = None
 
-        self._release_platform_lock()
+        if self._phone_lock_identity:
+            try:
+                from gateway.status import release_scoped_lock
+                release_scoped_lock("signal-phone", self._phone_lock_identity)
+            except Exception as e:
+                logger.warning("Signal: Error releasing phone lock: %s", e, exc_info=True)
+            self._phone_lock_identity = None
+            self._platform_lock_identity = None
 
         logger.info("Signal: disconnected")
 
@@ -530,6 +641,10 @@ class SignalAdapter(BasePlatformAdapter):
                 msg_type = MessageType.VOICE
             elif any(mt.startswith("image/") for mt in media_types):
                 msg_type = MessageType.PHOTO
+            elif any(mt.startswith("video/") for mt in media_types):
+                msg_type = MessageType.VIDEO
+            else:
+                msg_type = MessageType.DOCUMENT
 
         # Parse timestamp from envelope data (milliseconds since epoch)
         ts_ms = envelope_data.get("timestamp", 0)
@@ -832,10 +947,12 @@ class SignalAdapter(BasePlatformAdapter):
         if file_size > SIGNAL_MAX_ATTACHMENT_SIZE:
             return SendResult(success=False, error=f"Image too large ({file_size} bytes)")
 
+        send_path, staged_path = self._prepare_attachment_path(file_path)
+
         params: Dict[str, Any] = {
             "account": self.account,
             "message": caption or "",
-            "attachments": [file_path],
+            "attachments": [send_path],
         }
 
         if chat_id.startswith("group:"):
@@ -843,11 +960,18 @@ class SignalAdapter(BasePlatformAdapter):
         else:
             params["recipient"] = [await self._resolve_recipient(chat_id)]
 
-        result = await self._rpc("send", params)
-        if result is not None:
-            self._track_sent_timestamp(result)
-            return SendResult(success=True)
-        return SendResult(success=False, error="RPC send with attachment failed")
+        try:
+            result = await self._rpc("send", params)
+            if result is not None:
+                self._track_sent_timestamp(result)
+                return SendResult(success=True)
+            return SendResult(success=False, error="RPC send with attachment failed")
+        finally:
+            if staged_path:
+                try:
+                    Path(staged_path).unlink(missing_ok=True)
+                except Exception as exc:
+                    logger.warning("Signal: failed to clean up staged attachment %s: %s", staged_path, exc)
 
     async def _send_attachment(
         self,
@@ -871,10 +995,12 @@ class SignalAdapter(BasePlatformAdapter):
         if file_size > SIGNAL_MAX_ATTACHMENT_SIZE:
             return SendResult(success=False, error=f"{media_label} too large ({file_size} bytes)")
 
+        send_path, staged_path = self._prepare_attachment_path(file_path)
+
         params: Dict[str, Any] = {
             "account": self.account,
             "message": caption or "",
-            "attachments": [file_path],
+            "attachments": [send_path],
         }
 
         if chat_id.startswith("group:"):
@@ -882,11 +1008,18 @@ class SignalAdapter(BasePlatformAdapter):
         else:
             params["recipient"] = [await self._resolve_recipient(chat_id)]
 
-        result = await self._rpc("send", params)
-        if result is not None:
-            self._track_sent_timestamp(result)
-            return SendResult(success=True)
-        return SendResult(success=False, error=f"RPC send {media_label.lower()} failed")
+        try:
+            result = await self._rpc("send", params)
+            if result is not None:
+                self._track_sent_timestamp(result)
+                return SendResult(success=True)
+            return SendResult(success=False, error=f"RPC send {media_label.lower()} failed")
+        finally:
+            if staged_path:
+                try:
+                    Path(staged_path).unlink(missing_ok=True)
+                except Exception as exc:
+                    logger.warning("Signal: failed to clean up staged attachment %s: %s", staged_path, exc)
 
     async def send_document(
         self,

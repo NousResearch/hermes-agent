@@ -3284,6 +3284,19 @@ class TestCompressionChainProjection:
         assert db.get_compression_tip("mid1") == "tip1"
         assert db.get_compression_tip("tip1") == "tip1"
 
+    def test_resolve_resume_session_id_returns_compression_tip_even_when_parent_has_messages(self, db):
+        import time as _time
+        self._build_compression_chain(db, _time.time() - 3600)
+
+        assert db.get_messages_as_conversation("root1")
+        assert db.resolve_resume_session_id("root1") == "tip1"
+
+    def test_resolve_resume_session_id_returns_self_for_uncompressed_session_with_messages(self, db):
+        db.create_session("solo", "cli")
+        db.append_message("solo", "user", "standalone")
+
+        assert db.resolve_resume_session_id("solo") == "solo"
+
     def test_get_compression_tip_returns_self_for_uncompressed(self, db):
         db.create_session("solo", "cli")
         assert db.get_compression_tip("solo") == "solo"

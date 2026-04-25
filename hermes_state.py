@@ -2915,22 +2915,19 @@ class SessionDB:
         }
 
     def resolve_resume_session_id(self, session_id: str) -> str:
-        """Redirect a resume target to the descendant session that holds the messages.
+        """Redirect a resume target to the live continuation session.
 
-        Context compression ends the current session and forks a new child session
-        (linked via ``parent_session_id``). The flush cursor is reset, so the
-        child is where new messages actually land — the parent ends up with
-        ``message_count = 0`` rows unless messages had already been flushed to
-        it before compression. See #15000.
+        Context compression ends the current session and forks a child session
+        linked via ``parent_session_id``. Users often resume the original root
+        ID they saw before compression, but post-compression turns are written
+        to the continuation child. Resume must therefore follow the compression
+        chain to its tip even when the root already has pre-compression message
+        rows.
 
-        This helper walks ``parent_session_id`` forward from ``session_id`` and
-        returns the first descendant in the chain that has at least one message
-        row. If the original session already has messages, or no descendant
-        has any, the original ``session_id`` is returned unchanged.
-
-        The chain is always walked via the child whose ``started_at`` is
-        latest; that matches the single-chain shape that compression creates.
-        A depth cap (32) guards against accidental loops in malformed data.
+        If the target is not part of a compression chain, preserve the legacy
+        fallback: for an empty placeholder session, walk descendants until the
+        first child with message rows is found. If nothing suitable exists, the
+        original ``session_id`` is returned unchanged.
         """
         if not session_id:
             return session_id
@@ -2954,7 +2951,7 @@ class SessionDB:
             session_id = tip
 
         with self._lock:
-            # If this session already has messages, nothing to redirect.
+            # If this non-compression session already has messages, nothing to redirect.
             try:
                 row = self._conn.execute(
                     "SELECT 1 FROM messages WHERE session_id = ? LIMIT 1",
@@ -2966,7 +2963,7 @@ class SessionDB:
                 return session_id
 
             # Walk descendants: at each step, pick the most-recently-started
-                # child session; stop once we find one with messages.
+            # child session; stop once we find one with messages.
             current = session_id
             seen = {current}
             for _ in range(32):

@@ -661,6 +661,24 @@ class WhatsAppAdapter(BasePlatformAdapter):
 
         return result
 
+    @staticmethod
+    def _normalize_chat_jid(chat_id: str) -> str:
+        """Ensure chat_id has a WhatsApp JID suffix the bridge can decode.
+
+        Baileys' jidDecode() returns undefined for bare numeric IDs, which
+        crashes sock.sendMessage when the bridge tries to destructure
+        ``.user`` from the result. Groups need ``@g.us``, DMs need
+        ``@s.whatsapp.net``. Pass-through anything that already has a ``@``.
+        """
+        if not chat_id:
+            return chat_id
+        if '@' in chat_id:
+            return chat_id
+        # Group JIDs: newer ``120363...`` format, or legacy ``<phone>-<ts>``.
+        if chat_id.startswith('120363') or '-' in chat_id:
+            return f'{chat_id}@g.us'
+        return f'{chat_id}@s.whatsapp.net'
+
     async def send(
         self,
         chat_id: str,
@@ -692,7 +710,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             last_message_id = None
             for chunk in chunks:
                 payload: Dict[str, Any] = {
-                    "chatId": chat_id,
+                    "chatId": self._normalize_chat_jid(chat_id),
                     "message": chunk,
                 }
                 if reply_to and last_message_id is None:
@@ -741,7 +759,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             async with self._http_session.post(
                 f"http://127.0.0.1:{self._bridge_port}/edit",
                 json={
-                    "chatId": chat_id,
+                    "chatId": self._normalize_chat_jid(chat_id),
                     "messageId": message_id,
                     "message": content,
                 },
@@ -776,7 +794,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 return SendResult(success=False, error=f"File not found: {file_path}")
 
             payload: Dict[str, Any] = {
-                "chatId": chat_id,
+                "chatId": self._normalize_chat_jid(chat_id),
                 "filePath": file_path,
                 "mediaType": media_type,
             }
@@ -878,7 +896,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
 
             await self._http_session.post(
                 f"http://127.0.0.1:{self._bridge_port}/typing",
-                json={"chatId": chat_id},
+                json={"chatId": self._normalize_chat_jid(chat_id)},
                 timeout=aiohttp.ClientTimeout(total=5)
             )
         except Exception:
@@ -895,7 +913,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             import aiohttp
 
             async with self._http_session.get(
-                f"http://127.0.0.1:{self._bridge_port}/chat/{chat_id}",
+                f"http://127.0.0.1:{self._bridge_port}/chat/{self._normalize_chat_jid(chat_id)}",
                 timeout=aiohttp.ClientTimeout(total=10)
             ) as resp:
                 if resp.status == 200:

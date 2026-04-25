@@ -7735,6 +7735,22 @@ class AIAgent:
             or base_url_host_matches(self.base_url, "api.deepseek.com")
         )
 
+    def _needs_reasoning_backfill(self, messages: list) -> bool:
+        """DeepSeek V4 requires all assistant messages to have reasoning_content
+        once any assistant message in the history has produced reasoning.
+
+        Mixing assistant messages with and without reasoning_content triggers
+        HTTP 400 on DeepSeek reasoning models.
+        """
+        if self.provider != "deepseek":
+            return False
+        if self.model == "deepseek-reasoner":
+            return False  # Legacy model rejects reasoning_content entirely
+        return any(
+            m.get("role") == "assistant" and m.get("reasoning")
+            for m in messages
+        )
+
     def _copy_reasoning_content_for_api(self, source_msg: dict, api_msg: dict) -> None:
         """Copy provider-facing reasoning fields onto an API replay message."""
         if source_msg.get("role") != "assistant":
@@ -7949,10 +7965,16 @@ class AIAgent:
         try:
             # Build API messages for the flush call
             _needs_sanitize = self._should_sanitize_tool_calls()
+            _needs_backfill = self._needs_reasoning_backfill(messages)
             api_messages = []
             for msg in messages:
                 api_msg = msg.copy()
                 self._copy_reasoning_content_for_api(msg, api_msg)
+                if _needs_backfill and msg.get("role") == "assistant" and "reasoning_content" not in api_msg:
+                    # DeepSeek V4: once any assistant message has reasoning,
+                    # all assistant messages must have reasoning_content for
+                    # consistency (not just tool-call turns).
+                    api_msg["reasoning_content"] = ""
                 api_msg.pop("reasoning", None)
                 api_msg.pop("finish_reason", None)
                 api_msg.pop("_flush_sentinel", None)
@@ -9128,10 +9150,13 @@ class AIAgent:
             # Build API messages, stripping internal-only fields
             # (finish_reason, reasoning) that strict APIs like Mistral reject with 422
             _needs_sanitize = self._should_sanitize_tool_calls()
+            _needs_backfill = self._needs_reasoning_backfill(messages)
             api_messages = []
             for msg in messages:
                 api_msg = msg.copy()
                 self._copy_reasoning_content_for_api(msg, api_msg)
+                if _needs_backfill and msg.get("role") == "assistant" and "reasoning_content" not in api_msg:
+                    api_msg["reasoning_content"] = ""
                 for internal_field in ("reasoning", "finish_reason", "_thinking_prefill"):
                     api_msg.pop(internal_field, None)
                 if _needs_sanitize:
@@ -9775,6 +9800,7 @@ class AIAgent:
                     self.session_id or "-",
                 )
 
+            _needs_backfill = self._needs_reasoning_backfill(messages)
             api_messages = []
             for idx, msg in enumerate(messages):
                 api_msg = msg.copy()
@@ -9800,6 +9826,11 @@ class AIAgent:
                 # For ALL assistant messages, pass reasoning back to the API
                 # This ensures multi-turn reasoning context is preserved
                 self._copy_reasoning_content_for_api(msg, api_msg)
+                if _needs_backfill and msg.get("role") == "assistant" and "reasoning_content" not in api_msg:
+                    # DeepSeek V4: once any assistant message has reasoning,
+                    # all assistant messages must have reasoning_content for
+                    # consistency (not just tool-call turns).
+                    api_msg["reasoning_content"] = ""
 
                 # Remove 'reasoning' field - it's for trajectory storage only
                 # We've copied it to 'reasoning_content' for the API above

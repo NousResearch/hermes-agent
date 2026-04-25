@@ -35,6 +35,41 @@ function nextId() {
   return `m-${Date.now()}-${++_msgCounter}`;
 }
 
+const ACTIVE_CHAT_SESSION_KEY = "hermes.chat.activeSessionId";
+
+function rememberedChatSession() {
+  try {
+    return window.localStorage.getItem(ACTIVE_CHAT_SESSION_KEY);
+  } catch {
+    return null;
+  }
+}
+
+function rememberChatSession(sessionId: string) {
+  try {
+    window.localStorage.setItem(ACTIVE_CHAT_SESSION_KEY, sessionId);
+    const url = new URL(window.location.href);
+    if (url.pathname.endsWith("/chat")) {
+      url.searchParams.set("resume", sessionId);
+      window.history.replaceState(
+        window.history.state,
+        "",
+        `${url.pathname}${url.search}${url.hash}`,
+      );
+    }
+  } catch {
+    // Persistence is best-effort; the live websocket session still works.
+  }
+}
+
+function forgetChatSession() {
+  try {
+    window.localStorage.removeItem(ACTIVE_CHAT_SESSION_KEY);
+  } catch {
+    // ignore
+  }
+}
+
 // ── Slash command picker ────────────────────────────────────────────────────
 
 function CommandPicker({
@@ -122,10 +157,11 @@ export default function ChatPage() {
   const initSession = useCallback(
     async (client: GatewayClient, resume: string | null, fresh: boolean) => {
       try {
-        if (resume && !fresh) {
+        const resumeTarget = !fresh ? resume || rememberedChatSession() : null;
+        if (resumeTarget) {
           try {
             const resp = await fetchJSON<SessionMessagesResponse>(
-              `/api/sessions/${encodeURIComponent(resume)}/messages`,
+              `/api/sessions/${encodeURIComponent(resumeTarget)}/messages`,
             );
             const historical: ChatMessage[] = resp.messages
               .filter((m) => m.role === "user" || m.role === "assistant")
@@ -140,13 +176,20 @@ export default function ChatPage() {
                   status: "done" as const,
                 })),
               }));
-            if (historical.length > 0) setMessages(historical);
+            setMessages(historical);
           } catch {
             // 拉取失败不影响继续对话
           }
-          await client.resumeSession(resume);
+          await client.resumeSession(resumeTarget);
+          setSessionId(resumeTarget);
+          rememberChatSession(resumeTarget);
         } else {
-          await client.createSession();
+          const created = await client.createSession();
+          if (created.session_id) {
+            setSessionId(created.session_id);
+            rememberChatSession(created.session_id);
+          }
+          if (fresh) setForceNew(false);
         }
         setStatus("ready");
       } catch (err) {
@@ -165,6 +208,7 @@ export default function ChatPage() {
       switch (ev.method) {
         case "session.created":
           setSessionId(ev.params.session_id);
+          rememberChatSession(ev.params.session_id);
           break;
 
         case "assistant.delta":
@@ -323,6 +367,7 @@ export default function ChatPage() {
   }, []);
 
   const startNewSession = useCallback(() => {
+    forgetChatSession();
     setForceNew(true);
     setMessages([]);
     setSessionId(null);

@@ -1019,6 +1019,94 @@ class SessionDB:
 
         return self._execute_write(_do)
 
+    def replace_interrupted_assistant_message(
+        self,
+        session_id: str,
+        content: str,
+        tool_name: str = None,
+        tool_calls: Any = None,
+        tool_call_id: str = None,
+        token_count: int = None,
+        finish_reason: str = None,
+        reasoning: str = None,
+        reasoning_content: str = None,
+        reasoning_details: Any = None,
+        codex_reasoning_items: Any = None,
+    ) -> bool:
+        """Replace the last interrupted assistant partial, if it matches.
+
+        Dashboard WebSocket disconnects persist the streamed assistant text
+        before interrupting the agent. If the agent later reaches its normal
+        flush path, this method lets that final assistant message replace the
+        partial row instead of creating a duplicate transcript entry.
+        """
+        if not content:
+            return False
+
+        with self._lock:
+            cursor = self._conn.execute(
+                """SELECT id, role, content, finish_reason
+                   FROM messages WHERE session_id = ?
+                   ORDER BY timestamp DESC, id DESC LIMIT 1""",
+                (session_id,),
+            )
+            row = cursor.fetchone()
+
+        if not row or row["role"] != "assistant" or row["finish_reason"] != "interrupted":
+            return False
+
+        existing = row["content"] or ""
+        if not existing or not (content.startswith(existing) or existing.startswith(content)):
+            return False
+
+        replacement = content if len(content) >= len(existing) else existing
+        reasoning_details_json = (
+            json.dumps(reasoning_details)
+            if reasoning_details else None
+        )
+        codex_items_json = (
+            json.dumps(codex_reasoning_items)
+            if codex_reasoning_items else None
+        )
+        tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+
+        num_tool_calls = 0
+        if tool_calls is not None:
+            num_tool_calls = len(tool_calls) if isinstance(tool_calls, list) else 1
+
+        def _do(conn):
+            conn.execute(
+                """UPDATE messages
+                   SET content = ?, tool_call_id = ?, tool_calls = ?,
+                       tool_name = ?, timestamp = ?, token_count = ?,
+                       finish_reason = ?,
+                       reasoning = ?, reasoning_content = ?,
+                       reasoning_details = ?, codex_reasoning_items = ?
+                   WHERE id = ?""",
+                (
+                    replacement,
+                    tool_call_id,
+                    tool_calls_json,
+                    tool_name,
+                    time.time(),
+                    token_count,
+                    finish_reason,
+                    reasoning,
+                    reasoning_content,
+                    reasoning_details_json,
+                    codex_items_json,
+                    row["id"],
+                ),
+            )
+            if num_tool_calls > 0:
+                conn.execute(
+                    "UPDATE sessions SET tool_call_count = tool_call_count + ? WHERE id = ?",
+                    (num_tool_calls, session_id),
+                )
+            return True
+
+        return self._execute_write(_do)
+
     def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages for a session, ordered by timestamp."""
         with self._lock:

@@ -97,6 +97,141 @@ class TestRedactKey:
 # ---------------------------------------------------------------------------
 
 
+class TestInterruptedStreamingPersistence:
+    """Tests for preserving dashboard partial responses on disconnect."""
+
+    def test_persists_streamed_partial_response(self, tmp_path):
+        from types import SimpleNamespace
+        from hermes_state import SessionDB
+        from hermes_cli.web_server import _persist_interrupted_streaming_response
+
+        db = SessionDB(tmp_path / "state.db")
+        try:
+            db.ensure_session("s1", source="api_server")
+            db.append_message("s1", role="user", content="hello")
+            agent = SimpleNamespace(
+                _session_db=db,
+                _current_streamed_assistant_text="partial answer",
+                platform="api_server",
+                model="test-model",
+            )
+
+            assert _persist_interrupted_streaming_response(agent, "s1") is True
+
+            messages = db.get_messages("s1")
+            assert [m["role"] for m in messages] == ["user", "assistant"]
+            assert messages[-1]["content"] == "partial answer"
+            assert messages[-1]["finish_reason"] == "interrupted"
+        finally:
+            db.close()
+
+    def test_persist_partial_updates_existing_interrupted_row(self, tmp_path):
+        from types import SimpleNamespace
+        from hermes_state import SessionDB
+        from hermes_cli.web_server import _persist_interrupted_streaming_response
+
+        db = SessionDB(tmp_path / "state.db")
+        try:
+            db.ensure_session("s1", source="api_server")
+            db.append_message("s1", role="user", content="hello")
+            agent = SimpleNamespace(
+                _session_db=db,
+                _current_streamed_assistant_text="partial",
+                platform="api_server",
+                model="test-model",
+            )
+
+            assert _persist_interrupted_streaming_response(agent, "s1") is True
+            agent._current_streamed_assistant_text = "partial answer"
+            assert _persist_interrupted_streaming_response(agent, "s1") is True
+
+            messages = db.get_messages("s1")
+            assert [m["role"] for m in messages] == ["user", "assistant"]
+            assert messages[-1]["content"] == "partial answer"
+            assert messages[-1]["finish_reason"] == "interrupted"
+        finally:
+            db.close()
+
+    def test_streaming_delta_persistence_updates_partial_text(self, tmp_path):
+        from hermes_state import SessionDB
+        from hermes_cli.web_server import _persist_interrupted_streaming_text
+
+        db = SessionDB(tmp_path / "state.db")
+        try:
+            db.ensure_session("s1", source="api_server")
+            db.append_message("s1", role="user", content="hello")
+
+            assert _persist_interrupted_streaming_text(db, "s1", "partial") is True
+            assert _persist_interrupted_streaming_text(db, "s1", "partial answer") is True
+
+            messages = db.get_messages("s1")
+            assert [m["role"] for m in messages] == ["user", "assistant"]
+            assert messages[-1]["content"] == "partial answer"
+            assert messages[-1]["finish_reason"] == "interrupted"
+        finally:
+            db.close()
+
+    def test_final_flush_replaces_interrupted_partial(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(tmp_path / "state.db")
+        try:
+            db.ensure_session("s1", source="api_server")
+            db.append_message("s1", role="user", content="hello")
+            db.append_message(
+                "s1",
+                role="assistant",
+                content="partial",
+                finish_reason="interrupted",
+            )
+
+            assert db.replace_interrupted_assistant_message(
+                "s1",
+                content="partial answer",
+                finish_reason="stop",
+            ) is True
+
+            messages = db.get_messages("s1")
+            assert [m["role"] for m in messages] == ["user", "assistant"]
+            assert messages[-1]["content"] == "partial answer"
+            assert messages[-1]["finish_reason"] == "stop"
+        finally:
+            db.close()
+
+    def test_final_tool_call_flush_replaces_interrupted_partial(self, tmp_path):
+        from hermes_state import SessionDB
+
+        db = SessionDB(tmp_path / "state.db")
+        try:
+            db.ensure_session("s1", source="api_server")
+            db.append_message("s1", role="user", content="hello")
+            db.append_message(
+                "s1",
+                role="assistant",
+                content="I'll check",
+                finish_reason="interrupted",
+            )
+
+            tool_calls = [{"name": "search", "arguments": "{\"q\":\"x\"}"}]
+            assert db.replace_interrupted_assistant_message(
+                "s1",
+                content="I'll check",
+                tool_calls=tool_calls,
+                finish_reason="tool_calls",
+            ) is True
+
+            messages = db.get_messages("s1")
+            session = db.get_session("s1")
+            assert [m["role"] for m in messages] == ["user", "assistant"]
+            assert messages[-1]["content"] == "I'll check"
+            assert messages[-1]["tool_calls"] == tool_calls
+            assert messages[-1]["finish_reason"] == "tool_calls"
+            assert session["message_count"] == 2
+            assert session["tool_call_count"] == 1
+        finally:
+            db.close()
+
+
 class TestWebServerEndpoints:
     """Test the FastAPI REST endpoints using Starlette TestClient."""
 

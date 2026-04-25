@@ -2837,6 +2837,88 @@ def _ws_send_sync(loop, ws, msg: dict) -> None:
     asyncio.run_coroutine_threadsafe(ws.send_json(msg), loop)
 
 
+def _persist_interrupted_streaming_text(
+    db: Any,
+    session_id: str,
+    partial_text: str,
+    *,
+    source: str = "api_server",
+    model: str = None,
+) -> bool:
+    """Persist the assistant text already streamed to the dashboard."""
+    if not session_id:
+        return False
+
+    partial_text = partial_text or ""
+    if not partial_text.strip():
+        return False
+
+    close_db = False
+    if db is None:
+        from hermes_state import SessionDB
+        db = SessionDB()
+        close_db = True
+
+    try:
+        try:
+            db.ensure_session(
+                session_id,
+                source=source or "api_server",
+                model=model,
+            )
+        except Exception:
+            pass
+
+        if hasattr(db, "replace_interrupted_assistant_message") and db.replace_interrupted_assistant_message(
+            session_id=session_id,
+            content=partial_text,
+            finish_reason="interrupted",
+        ):
+            return True
+
+        existing_messages = db.get_messages(session_id)
+        if existing_messages:
+            last = existing_messages[-1]
+            last_content = last.get("content") or ""
+            if (
+                last.get("role") == "assistant"
+                and last_content
+                and (partial_text.startswith(last_content) or last_content.startswith(partial_text))
+            ):
+                return False
+
+        db.append_message(
+            session_id=session_id,
+            role="assistant",
+            content=partial_text,
+            finish_reason="interrupted",
+        )
+        return True
+    except Exception as exc:
+        _log.warning("Failed to persist interrupted streaming response: %s", exc)
+        return False
+    finally:
+        if close_db:
+            try:
+                db.close()
+            except Exception:
+                pass
+
+
+def _persist_interrupted_streaming_response(agent: Any, session_id: str) -> bool:
+    """Persist the assistant text accumulated by a running agent."""
+    if agent is None:
+        return False
+
+    return _persist_interrupted_streaming_text(
+        getattr(agent, "_session_db", None),
+        session_id,
+        getattr(agent, "_current_streamed_assistant_text", "") or "",
+        source=getattr(agent, "platform", None) or "api_server",
+        model=getattr(agent, "model", None),
+    )
+
+
 def _normalize_colon_syntax(raw_args: str) -> str:
     """Convert provider:model syntax to --provider flag syntax.
 
@@ -3116,9 +3198,39 @@ async def tui_gateway_ws(websocket: WebSocket):
                         _reply(rpc_id, {"ok": True})
                         continue
 
+                stream_partial_text = ""
+                stream_last_flush_len = 0
+                stream_last_flush_time = 0.0
+
+                def _flush_stream_partial(force: bool = False) -> None:
+                    nonlocal stream_last_flush_len, stream_last_flush_time
+                    if not stream_partial_text.strip():
+                        return
+                    now = time.monotonic()
+                    if (
+                        not force
+                        and stream_last_flush_len > 0
+                        and len(stream_partial_text) - stream_last_flush_len < 80
+                        and now - stream_last_flush_time < 0.5
+                    ):
+                        return
+                    ag = agent_ref[0]
+                    if _persist_interrupted_streaming_text(
+                        getattr(ag, "_session_db", None) if ag is not None else None,
+                        sid_for_run,
+                        stream_partial_text,
+                        source=getattr(ag, "platform", None) if ag is not None else "api_server",
+                        model=getattr(ag, "model", None) if ag is not None else None,
+                    ):
+                        stream_last_flush_len = len(stream_partial_text)
+                        stream_last_flush_time = now
+
                 def _on_delta(delta):
+                    nonlocal stream_partial_text
                     if delta is None:
                         return
+                    stream_partial_text += delta
+                    _flush_stream_partial()
                     _notify("assistant.delta", {"text": delta})
 
                 def _on_tool_event(event_type: str, tool_name: str = None,
@@ -3216,6 +3328,7 @@ async def tui_gateway_ws(websocket: WebSocket):
             elif method == "chat.interrupt":
                 ag = agent_ref[0]
                 if ag is not None:
+                    _persist_interrupted_streaming_response(ag, session_id)
                     ag.interrupt()
                 _reply(rpc_id, {"ok": True})
 
@@ -3223,10 +3336,20 @@ async def tui_gateway_ws(websocket: WebSocket):
                 if rpc_id is not None:
                     _reply(rpc_id, error={"code": -32601, "message": f"Unknown method: {method}"})
 
+    except asyncio.CancelledError:
+        ag = agent_ref[0]
+        if ag is not None:
+            try:
+                _persist_interrupted_streaming_response(ag, session_id)
+                ag.interrupt()
+            except Exception:
+                pass
+        raise
     except WebSocketDisconnect:
         ag = agent_ref[0]
         if ag is not None:
             try:
+                _persist_interrupted_streaming_response(ag, session_id)
                 ag.interrupt()
             except Exception:
                 pass

@@ -2399,6 +2399,7 @@ class AIAgent:
                 base_url=aux_base_url,
                 api_key=aux_api_key,
                 config_context_length=getattr(self, "_aux_compression_context_length_config", None),
+                provider=getattr(self, "provider", ""),
             )
 
             # Hard floor: the auxiliary compression model must have at least

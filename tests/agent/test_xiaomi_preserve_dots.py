@@ -9,8 +9,6 @@ Issue: #15619
 """
 from types import SimpleNamespace
 
-import pytest
-
 
 # ---------------------------------------------------------------------------
 # _anthropic_preserve_dots — flag tests

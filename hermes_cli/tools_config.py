@@ -103,13 +103,23 @@ def _get_effective_configurable_toolsets():
     """Return CONFIGURABLE_TOOLSETS + any plugin-provided toolsets.
 
     Plugin toolsets are appended at the end so they appear after the
-    built-in toolsets in the TUI checklist.
+    built-in toolsets in the TUI checklist. A plugin whose toolset key
+    already appears in ``CONFIGURABLE_TOOLSETS`` is skipped — bundled
+    plugins (e.g. ``plugins/spotify``) share their toolset key with the
+    built-in entry, and we want the built-in label/description to win.
+    Without the dedupe, ``hermes tools`` → "reconfigure existing" would
+    list the same toolset twice.
     """
     result = list(CONFIGURABLE_TOOLSETS)
+    seen = {ts_key for ts_key, _, _ in result}
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
         discover_plugins()  # idempotent — ensures plugins are loaded
-        result.extend(get_plugin_toolsets())
+        for entry in get_plugin_toolsets():
+            if entry[0] in seen:
+                continue
+            seen.add(entry[0])
+            result.append(entry)
     except Exception:
         pass
     return result

@@ -766,3 +766,24 @@ def test_get_platform_tools_feishu_tools_not_on_other_platforms():
         enabled = _get_platform_tools({}, plat)
         assert "feishu_doc" not in enabled, f"feishu_doc leaked onto {plat}"
         assert "feishu_drive" not in enabled, f"feishu_drive leaked onto {plat}"
+
+
+def test_get_effective_configurable_toolsets_dedupes_bundled_plugins():
+    """Bundled plugins (plugins/spotify) share their toolset key with the
+    built-in CONFIGURABLE_TOOLSETS entry. The effective list must not list
+    them twice — otherwise `hermes tools` → "reconfigure existing" shows
+    the same toolset two rows in a row.
+    """
+    from hermes_cli.tools_config import _get_effective_configurable_toolsets
+
+    all_ts = _get_effective_configurable_toolsets()
+    keys = [ts_key for ts_key, _, _ in all_ts]
+    assert len(keys) == len(set(keys)), (
+        f"duplicate toolset keys in effective list: "
+        f"{[k for k in keys if keys.count(k) > 1]}"
+    )
+    # Spotify specifically — the bug that motivated the dedupe.
+    spotify_rows = [t for t in all_ts if t[0] == "spotify"]
+    assert len(spotify_rows) == 1, spotify_rows
+    # Built-in label wins over the plugin label.
+    assert spotify_rows[0][1] == "🎵 Spotify"

@@ -7,6 +7,16 @@ Toolsets = whatever the user has configured for "cli" in `hermes tools`.
 Rules / memory / AGENTS.md / preloaded skills = same as a normal chat turn.
 Approvals = auto-bypassed (HERMES_YOLO_MODE=1 is set for the call).
 Working directory = the user's CWD (AGENTS.md etc. resolve from there as usual).
+
+Model / provider selection mirrors `hermes chat`:
+    - Both optional. If omitted, use the user's configured default.
+    - If both given, pair them exactly as given.
+    - If only --model given, auto-detect the provider that serves it.
+    - If only --provider given, error out (ambiguous — caller must pick a model).
+
+Env var fallbacks (used when the corresponding arg is not passed):
+    - HERMES_INFERENCE_MODEL
+    - HERMES_INFERENCE_PROVIDER  (already read by resolve_runtime_provider)
 """
 
 from __future__ import annotations
@@ -15,10 +25,23 @@ import logging
 import os
 import sys
 from contextlib import redirect_stderr, redirect_stdout
+from typing import Optional
 
 
-def run_oneshot(prompt: str) -> int:
+def run_oneshot(
+    prompt: str,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+) -> int:
     """Execute a single prompt and print only the final content block.
+
+    Args:
+        prompt: The user message to send.
+        model: Optional model override. Falls back to HERMES_INFERENCE_MODEL
+            env var, then config.yaml's model.default / model.model.
+        provider: Optional provider override. Falls back to
+            HERMES_INFERENCE_PROVIDER env var, then config.yaml's model.provider,
+            then "auto".
 
     Returns the exit code.  Caller should sys.exit() with the return.
     """
@@ -28,6 +51,19 @@ def run_oneshot(prompt: str) -> int:
     # the root logger's handler list, not affected by level), but no
     # bytes reach the terminal.
     logging.disable(logging.CRITICAL)
+
+    # --provider without --model is ambiguous: carrying the user's configured
+    # model across to a different provider is usually wrong (that provider may
+    # not host it), and silently picking the provider's catalog default hides
+    # the mismatch.  Require the caller to be explicit.  Validate BEFORE the
+    # stderr redirect so the message actually reaches the terminal.
+    env_model_early = os.getenv("HERMES_INFERENCE_MODEL", "").strip()
+    if provider and not ((model or "").strip() or env_model_early):
+        sys.stderr.write(
+            "hermes -z: --provider requires --model (or HERMES_INFERENCE_MODEL). "
+            "Pass both explicitly, or neither to use your configured defaults.\n"
+        )
+        return 2
 
     # Auto-approve any shell / tool approvals.  Non-interactive by
     # definition — a prompt would hang forever.
@@ -41,7 +77,7 @@ def run_oneshot(prompt: str) -> int:
 
     try:
         with redirect_stdout(devnull), redirect_stderr(devnull):
-            response = _run_agent(prompt)
+            response = _run_agent(prompt, model=model, provider=provider)
     finally:
         try:
             devnull.close()
@@ -56,25 +92,64 @@ def run_oneshot(prompt: str) -> int:
     return 0
 
 
-def _run_agent(prompt: str) -> str:
+def _run_agent(
+    prompt: str,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+) -> str:
     """Build an AIAgent exactly like a normal CLI chat turn would, then
     run a single conversation.  Returns the final response string."""
     # Imports are local so they don't run when hermes is invoked for
     # other commands (keeps top-level CLI startup cheap).
     from hermes_cli.config import load_config
+    from hermes_cli.models import detect_provider_for_model
     from hermes_cli.runtime_provider import resolve_runtime_provider
     from hermes_cli.tools_config import _get_platform_tools
     from run_agent import AIAgent
 
     cfg = load_config()
-    runtime = resolve_runtime_provider()
 
-    # Resolve the model the user has configured for normal chat use.
+    # Resolve effective model: explicit arg → env var → config.
     model_cfg = cfg.get("model") or {}
     if isinstance(model_cfg, str):
-        model = model_cfg
+        cfg_model = model_cfg
     else:
-        model = model_cfg.get("default") or model_cfg.get("model") or ""
+        cfg_model = model_cfg.get("default") or model_cfg.get("model") or ""
+
+    env_model = os.getenv("HERMES_INFERENCE_MODEL", "").strip()
+    effective_model = (model or "").strip() or env_model or cfg_model
+
+    # Resolve effective provider: explicit arg → (auto-detect from model if
+    # model was explicit) → env / config (handled inside resolve_runtime_provider).
+    #
+    # When --model is given without --provider, auto-detect the provider that
+    # serves that model — same semantic as `/model <name>` in an interactive
+    # session.  Without this, resolve_runtime_provider() would fall back to
+    # the user's configured default provider, which may not host the model
+    # the caller just asked for.
+    effective_provider = (provider or "").strip() or None
+    if effective_provider is None and (model or env_model):
+        # Only auto-detect when the model was explicitly requested via arg or
+        # env var (not when it came from config — that's the "use my defaults"
+        # path and the configured provider is already correct).
+        explicit_model = (model or "").strip() or env_model
+        if explicit_model:
+            cfg_provider = ""
+            if isinstance(model_cfg, dict):
+                cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+            current_provider = (
+                cfg_provider
+                or os.getenv("HERMES_INFERENCE_PROVIDER", "").strip().lower()
+                or "auto"
+            )
+            detected = detect_provider_for_model(explicit_model, current_provider)
+            if detected:
+                effective_provider, effective_model = detected
+
+    runtime = resolve_runtime_provider(
+        requested=effective_provider,
+        target_model=effective_model or None,
+    )
 
     # Pull in whatever toolsets the user has enabled for "cli".
     # sorted() gives stable ordering; set→list for AIAgent's signature.
@@ -85,7 +160,7 @@ def _run_agent(prompt: str) -> str:
         base_url=runtime.get("base_url"),
         provider=runtime.get("provider"),
         api_mode=runtime.get("api_mode"),
-        model=model,
+        model=effective_model,
         enabled_toolsets=toolsets_list,
         quiet_mode=True,
         platform="cli",

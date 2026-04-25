@@ -126,11 +126,17 @@ def _fixed_temperature_for_model(
     Returns:
         ``OMIT_TEMPERATURE`` — caller must remove the ``temperature`` key so the
             provider chooses its own default.  Used for all Kimi / Moonshot
-            models whose gateway selects temperature server-side.
+            models whose gateway selects temperature server-side, and Codex
+            Responses endpoints that reject sampling parameters.
         ``float`` — a specific value the caller must use (reserved for future
             models with fixed-temperature contracts).
         ``None`` — no override; caller should use its own default.
     """
+    if base_url_host_matches(base_url or "", "chatgpt.com"):
+        path = (base_url or "").strip().lower()
+        if "/backend-api/codex" in path:
+            logger.debug("Omitting temperature for Codex Responses endpoint %r", base_url)
+            return OMIT_TEMPERATURE
     if _is_kimi_model(model):
         logger.debug("Omitting temperature for Kimi model %r (server-managed)", model)
         return OMIT_TEMPERATURE

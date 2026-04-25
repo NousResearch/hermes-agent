@@ -1,15 +1,21 @@
 import { isMac } from '../lib/platform.js'
 
+const isRemoteShell = Boolean(process.env.SSH_CONNECTION || process.env.SSH_CLIENT || process.env.SSH_TTY)
 const action = isMac ? 'Cmd' : 'Ctrl'
 const paste = isMac ? 'Cmd' : 'Alt'
 
+const copyHotkeys: [string, string][] = isMac
+  ? [
+      ['Cmd+C', 'copy selection'],
+      ['Ctrl+C', 'interrupt / clear draft / exit']
+    ]
+  : [
+      ...(isRemoteShell ? ([['Cmd+C', 'copy selection when forwarded by the terminal']] as [string, string][]) : []),
+      ['Ctrl+C', 'copy selection / interrupt / clear draft / exit']
+    ]
+
 export const HOTKEYS: [string, string][] = [
-  ...(isMac
-    ? ([
-        ['Cmd+C', 'copy selection'],
-        ['Ctrl+C', 'interrupt / clear draft / exit']
-      ] as [string, string][])
-    : ([['Ctrl+C', 'copy selection / interrupt / clear draft / exit']] as [string, string][])),
+  ...copyHotkeys,
   [action + '+D', 'exit'],
   [action + '+G', 'open $EDITOR for prompt'],
   [action + '+L', 'new session (clear)'],

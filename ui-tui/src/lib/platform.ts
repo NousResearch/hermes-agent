@@ -5,8 +5,8 @@
  * as `key.meta`. Some macOS terminals also translate Cmd+Left/Right/Backspace
  * into readline-style Ctrl+A/Ctrl+E/Ctrl+U before the app sees them.
  * On other platforms the action modifier is Ctrl.
- * Ctrl+C is ALWAYS the interrupt key regardless of platform — it must never be
- * remapped to copy.
+ * Ctrl+C stays the interrupt key on macOS. On non-mac terminals it can also
+ * copy an active TUI selection, matching common terminal selection behavior.
  */
 
 export const isMac = process.platform === 'darwin'
@@ -33,6 +33,16 @@ export const isMacActionFallback = (
 /** Match action-modifier + a single character (case-insensitive). */
 export const isAction = (key: { ctrl: boolean; meta: boolean; super?: boolean }, ch: string, target: string): boolean =>
   isActionMod(key) && ch.toLowerCase() === target
+
+const isRemoteShell = (env: NodeJS.ProcessEnv = process.env): boolean =>
+  Boolean(env.SSH_CONNECTION || env.SSH_CLIENT || env.SSH_TTY)
+
+export const isCopyShortcut = (
+  key: { ctrl: boolean; meta: boolean; super?: boolean },
+  ch: string,
+  env: NodeJS.ProcessEnv = process.env
+): boolean =>
+  isAction(key, ch, 'c') || (isRemoteShell(env) && (key.meta || key.super === true) && ch.toLowerCase() === 'c')
 
 /**
  * Voice recording toggle key (Ctrl+B).

@@ -2814,14 +2814,31 @@ class AIAgent:
         return stripped[-1] in '.!?:)"\']}。！？：）】」』》'
 
     def _is_ollama_glm_backend(self) -> bool:
-        """Detect the narrow backend family affected by Ollama/GLM stop misreports."""
+        """Detect the narrow backend family affected by Ollama/GLM stop misreports.
+        
+        Only returns True for genuine Ollama endpoints (port 11434 or 'ollama' in URL)
+        or z.ai provider. Other GLM models accessed via API gateways (New API, etc.)
+        should NOT be treated as Ollama backends even if on private IPs.
+        """
         model_lower = (self.model or "").lower()
         provider_lower = (self.provider or "").lower()
+        
+        # Must be a GLM model or z.ai provider
         if "glm" not in model_lower and provider_lower != "zai":
             return False
-        if "ollama" in self._base_url_lower or ":11434" in self._base_url_lower:
+        
+        # z.ai provider is always affected
+        if provider_lower == "zai":
             return True
-        return bool(self.base_url and is_local_endpoint(self.base_url))
+        
+        # For GLM models, only treat as Ollama backend if:
+        # 1. URL contains 'ollama', OR
+        # 2. Uses Ollama's default port 11434
+        # Note: We intentionally do NOT use is_local_endpoint() here because
+        # private IPs (192.168.x.x, etc.) may be API gateways like New API,
+        # not actual Ollama instances. These gateways properly report finish_reason
+        # and should not trigger the Ollama/GLM stop misreport workaround.
+        return "ollama" in self._base_url_lower or ":11434" in self._base_url_lower
 
     def _should_treat_stop_as_truncated(
         self,

@@ -1162,8 +1162,7 @@ class TestAgentCacheIdleResume:
     def test_release_clients_does_not_touch_terminal_or_browser(self, monkeypatch):
         """release_clients must not call cleanup_vm or cleanup_browser."""
         from run_agent import AIAgent
-        from tools import terminal_tool as _tt
-        from tools import browser_tool as _bt
+        import run_agent as _ra
 
         agent = AIAgent(
             model="anthropic/claude-sonnet-4", api_key="test",
@@ -1175,15 +1174,18 @@ class TestAgentCacheIdleResume:
 
         vm_calls: list = []
         browser_calls: list = []
-        original_vm = _tt.cleanup_vm
-        original_browser = _bt.cleanup_browser
-        _tt.cleanup_vm = lambda tid: vm_calls.append(tid)
-        _bt.cleanup_browser = lambda tid: browser_calls.append(tid)
+        # AIAgent calls the ``cleanup_vm`` / ``cleanup_browser`` names bound
+        # into the ``run_agent`` module at import time, so patch those
+        # references (not the original tools.terminal_tool / tools.browser_tool).
+        original_vm = _ra.cleanup_vm
+        original_browser = _ra.cleanup_browser
+        _ra.cleanup_vm = lambda tid: vm_calls.append(tid)
+        _ra.cleanup_browser = lambda tid: browser_calls.append(tid)
         try:
             agent.release_clients()
         finally:
-            _tt.cleanup_vm = original_vm
-            _bt.cleanup_browser = original_browser
+            _ra.cleanup_vm = original_vm
+            _ra.cleanup_browser = original_browser
             try:
                 agent.close()
             except Exception:

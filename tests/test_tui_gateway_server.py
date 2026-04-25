@@ -112,6 +112,9 @@ def test_startup_runtime_does_not_treat_inference_provider_as_explicit(monkeypat
     monkeypatch.setenv("HERMES_MODEL", "nous/hermes-test")
     monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
     monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "nous")
+    monkeypatch.setattr(
+        server, "_detect_static_provider_for_model", lambda model, provider: None
+    )
 
     assert server._resolve_startup_runtime() == ("nous/hermes-test", None)
 
@@ -127,12 +130,28 @@ def test_startup_runtime_detects_provider_for_model_env(monkeypatch):
         assert current_provider == "auto"
         return "anthropic", "anthropic/claude-sonnet-4.6"
 
-    monkeypatch.setattr("hermes_cli.models.detect_provider_for_model", fake_detect)
+    monkeypatch.setattr(server, "_detect_static_provider_for_model", fake_detect)
 
     assert server._resolve_startup_runtime() == (
         "anthropic/claude-sonnet-4.6",
         "anthropic",
     )
+
+
+def test_startup_runtime_does_not_call_network_detector(monkeypatch):
+    monkeypatch.setenv("HERMES_MODEL", "sonnet")
+    monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"model": {"provider": "auto"}})
+    monkeypatch.setattr(
+        "hermes_cli.models.detect_provider_for_model",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("network detector called")),
+    )
+
+    model, provider = server._resolve_startup_runtime()
+
+    assert model
+    assert provider in {None, "anthropic"}
 
 
 def _session(agent=None, **extra):

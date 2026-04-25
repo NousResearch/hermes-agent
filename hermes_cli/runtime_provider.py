@@ -349,6 +349,7 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
             # Fall back to inline api_key when key_env is absent or unresolvable
             if not resolved_api_key:
                 resolved_api_key = str(entry.get("api_key", "") or "").strip()
+            resolved_api_mode = _parse_api_mode(entry.get("api_mode") or entry.get("transport"))
 
             if requested_norm in {ep_name, name_norm, f"custom:{name_norm}"}:
                 # Found match by provider key
@@ -360,9 +361,8 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                         "api_key": resolved_api_key,
                         "model": entry.get("default_model", ""),
                     }
-                    api_mode = _parse_api_mode(entry.get("api_mode"))
-                    if api_mode:
-                        result["api_mode"] = api_mode
+                    if resolved_api_mode:
+                        result["api_mode"] = resolved_api_mode
                     return result
             # Also check the 'name' field if present
             display_name = entry.get("name", "")
@@ -378,9 +378,8 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
                             "api_key": resolved_api_key,
                             "model": entry.get("default_model", ""),
                         }
-                        api_mode = _parse_api_mode(entry.get("api_mode"))
-                        if api_mode:
-                            result["api_mode"] = api_mode
+                        if resolved_api_mode:
+                            result["api_mode"] = resolved_api_mode
                         return result
 
     # Fall back to custom_providers: list (legacy format)

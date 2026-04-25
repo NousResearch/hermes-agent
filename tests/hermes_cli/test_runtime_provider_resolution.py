@@ -719,6 +719,88 @@ def test_named_custom_provider_uses_key_env_from_providers_dict(monkeypatch):
     assert resolved["model"] == "acme-large"
 
 
+def test_named_custom_provider_uses_transport_from_providers_dict(monkeypatch):
+    """providers dict transport should propagate into runtime api_mode."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "dir-key")
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "anthropic-proxy": {
+                    "base_url": "https://proxy.example.com/messages",
+                    "api_key": "***",
+                    "default_model": "claude-proxy",
+                    "name": "Anthropic Proxy",
+                    "transport": "anthropic_messages",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="anthropic-proxy")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_mode"] == "anthropic_messages"
+    assert resolved["base_url"] == "https://proxy.example.com/messages"
+    assert resolved["api_key"] == "dir-key"
+    assert resolved["requested_provider"] == "anthropic-proxy"
+    assert resolved["source"] == "custom_provider:Anthropic Proxy"
+    assert resolved["model"] == "claude-proxy"
+
+
+def test_named_custom_provider_uses_api_mode_from_providers_dict(monkeypatch):
+    """providers dict api_mode should propagate into runtime api_mode."""
+    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
+    monkeypatch.setenv("OPENAI_API_KEY", "dir-key")
+    monkeypatch.setattr(
+        rp,
+        "load_config",
+        lambda: {
+            "providers": {
+                "responses-proxy": {
+                    "base_url": "https://proxy.example.com/v1",
+                    "api_key": "***",
+                    "default_model": "gpt-5-mini",
+                    "name": "Responses Proxy",
+                    "api_mode": "codex_responses",
+                }
+            }
+        },
+    )
+    monkeypatch.setattr(
+        rp,
+        "resolve_provider",
+        lambda *a, **k: (_ for _ in ()).throw(
+            AssertionError(
+                "resolve_provider should not be called for named custom providers"
+            )
+        ),
+    )
+
+    resolved = rp.resolve_runtime_provider(requested="responses-proxy")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["api_mode"] == "codex_responses"
+    assert resolved["base_url"] == "https://proxy.example.com/v1"
+    assert resolved["api_key"] == "dir-key"
+    assert resolved["requested_provider"] == "responses-proxy"
+    assert resolved["source"] == "custom_provider:Responses Proxy"
+    assert resolved["model"] == "gpt-5-mini"
+
+
 def test_named_custom_provider_falls_back_to_openai_api_key(monkeypatch):
     monkeypatch.setenv("OPENAI_API_KEY", "env-openai-key")
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)

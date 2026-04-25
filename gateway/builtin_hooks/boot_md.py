@@ -46,9 +46,29 @@ def _run_boot_agent(content: str) -> None:
     """Spawn a one-shot agent session to execute the boot instructions."""
     try:
         from run_agent import AIAgent
+        import yaml as _y
+
+        # Read model config so the boot agent uses the correct model/provider
+        cfg_path = HERMES_HOME / "config.yaml"
+        model_name = ""
+        provider_name = ""
+        base_url = ""
+        api_key = ""
+        if cfg_path.exists():
+            with open(cfg_path, encoding="utf-8") as _f:
+                cfg = _y.safe_load(_f) or {}
+            model_cfg = cfg.get("model", {})
+            model_name = model_cfg.get("default", "")
+            provider_name = model_cfg.get("provider", "")
+            base_url = model_cfg.get("base_url", "")
+            api_key = model_cfg.get("api_key", "")
 
         prompt = _build_boot_prompt(content)
         agent = AIAgent(
+            model=model_name,
+            provider=provider_name,
+            base_url=base_url or None,
+            api_key=api_key or None,
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,

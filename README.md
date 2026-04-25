@@ -49,6 +49,16 @@ hermes              # start chatting!
 
 ---
 
+## Local fork operator note
+
+This fork also carries a Kael-specific delegation doctrine for high-context orchestration:
+- router script: `scripts/kael_delegation_router.py`
+- repo doc: `KAEL-DELEGATION-ROUTING-V2.md`
+- live skill: `~/.hermes/skills/delegation-routing-v2/SKILL.md`
+- live spec: `/home/ubuntu/business/reports/delegation-system-hardcoded-2026-04-25.md`
+
+Use it when deciding between the Kael parent (`gpt-5.4`), `gpt-5.5` specialist leaves, Codex CLI long-context probes, and `gpt-5.4` orchestrator CLI children. Shared-state writes and irreversible actions stay in the parent.
+
 ## Getting Started
 
 ```bash

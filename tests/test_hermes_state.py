@@ -1781,6 +1781,45 @@ class TestListSessionsRich:
         ids = [s["id"] for s in sessions]
         assert "continuation" not in ids, "Compression continuation should stay hidden"
 
+    def test_include_children_surfaces_subagent_sessions(self, db):
+        """include_children=True exposes hidden sub-agent children for /api/status counting."""
+        db.create_session("root", "cli")
+        db.create_session("delegate", "cli", parent_session_id="root")
+        sessions = db.list_sessions_rich(include_children=True)
+        ids = [s["id"] for s in sessions]
+        assert "root" in ids
+        assert "delegate" in ids
+
+    def test_active_sessions_count_includes_subagent_when_include_children(self, db):
+        """Mirrors the /api/status counting logic with the dashboard fix applied."""
+        import time as _time
+        db.create_session("root", "cli")
+        db.create_session("delegate", "cli", parent_session_id="root")
+        db.append_message("delegate", "user", "working")
+        sessions = db.list_sessions_rich(limit=50, include_children=True)
+        now = _time.time()
+        count = sum(
+            1 for s in sessions
+            if s.get("ended_at") is None
+            and (now - s.get("last_active", s.get("started_at", 0))) < 300
+        )
+        assert count == 2
+
+    def test_active_sessions_count_without_include_children_misses_subagent(self, db):
+        """Regression guard for #15722: without include_children=True the subagent is invisible."""
+        import time as _time
+        db.create_session("root", "cli")
+        db.create_session("delegate", "cli", parent_session_id="root")
+        db.append_message("delegate", "user", "working")
+        sessions = db.list_sessions_rich(limit=50)
+        now = _time.time()
+        count = sum(
+            1 for s in sessions
+            if s.get("ended_at") is None
+            and (now - s.get("last_active", s.get("started_at", 0))) < 300
+        )
+        assert count == 1  # subagent missing — the bug
+
 
 class TestCompressionChainProjection:
     """Tests for lineage-aware list_sessions_rich — compressed conversations

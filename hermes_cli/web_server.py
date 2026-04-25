@@ -563,7 +563,7 @@ async def get_status():
         from hermes_state import SessionDB
         db = SessionDB()
         try:
-            sessions = db.list_sessions_rich(limit=50)
+            sessions = db.list_sessions_rich(limit=50, include_children=True)
             now = time.time()
             active_sessions = sum(
                 1 for s in sessions

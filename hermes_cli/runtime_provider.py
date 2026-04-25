@@ -251,7 +251,7 @@ def _resolve_runtime_from_pool_entry(
     # Anthropic SDK prepends its own /v1/messages to the base_url.  Strip the
     # trailing /v1 so the SDK constructs the correct path (e.g.
     # https://opencode.ai/zen/go/v1/messages instead of .../v1/v1/messages).
-    if api_mode == "anthropic_messages" and provider in ("opencode-zen", "opencode-go"):
+    if api_mode == "anthropic_messages" and provider in ("opencode-zen", "opencode-go", "kimi-coding"):
         base_url = re.sub(r"/v1/?$", "", base_url)
 
     return {
@@ -1057,7 +1057,7 @@ def resolve_runtime_provider(
                 if detected:
                     api_mode = detected
         # Strip trailing /v1 for OpenCode Anthropic models (see comment above).
-        if api_mode == "anthropic_messages" and provider in ("opencode-zen", "opencode-go"):
+        if api_mode == "anthropic_messages" and provider in ("opencode-zen", "opencode-go", "kimi-coding"):
             base_url = re.sub(r"/v1/?$", "", base_url)
         return {
             "provider": provider,

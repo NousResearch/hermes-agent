@@ -904,7 +904,7 @@ def switch_model(
     # on opencode-zen) hit a double /v1 and returned OpenCode's website 404 page.
     if (
         api_mode == "anthropic_messages"
-        and target_provider in {"opencode-zen", "opencode-go"}
+        and target_provider in {"opencode-zen", "opencode-go", "kimi-coding"}
         and isinstance(base_url, str)
         and base_url
     ):

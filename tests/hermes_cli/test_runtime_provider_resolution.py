@@ -1565,3 +1565,82 @@ class TestOllamaUrlSubstringLeak:
         resolved = rp.resolve_runtime_provider(requested="custom")
 
         assert resolved["api_key"] == "ol-legit-key"
+
+
+class TestKimiCodingV1Strip:
+    """Kimi /coding endpoints must have trailing /v1 stripped for anthropic_messages.
+
+    The Anthropic SDK appends its own /v1/messages path to the base_url.
+    If the base_url already ends in /v1 (e.g. from KIMI_BASE_URL env override),
+    the SDK requests /coding/v1/v1/messages — a double-/v1 404.
+    """
+
+    def test_kimi_coding_explicit_with_v1_suffix_strips_it(self, monkeypatch):
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "kimi-coding")
+        monkeypatch.setattr(
+            rp,
+            "_get_model_config",
+            lambda: {
+                "provider": "kimi-coding",
+                "default": "kimi-for-coding",
+                "base_url": "https://api.kimi.com/coding/v1",
+            },
+        )
+        monkeypatch.setenv("KIMI_API_KEY", "sk-kimi-test")
+        monkeypatch.delenv("KIMI_BASE_URL", raising=False)
+
+        resolved = rp.resolve_runtime_provider(requested="kimi-coding")
+
+        assert resolved["provider"] == "kimi-coding"
+        assert resolved["api_mode"] == "anthropic_messages"
+        assert resolved["base_url"] == "https://api.kimi.com/coding"
+
+    def test_kimi_coding_without_v1_suffix_unchanged(self, monkeypatch):
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "kimi-coding")
+        monkeypatch.setattr(
+            rp,
+            "_get_model_config",
+            lambda: {
+                "provider": "kimi-coding",
+                "default": "kimi-for-coding",
+                "base_url": "https://api.kimi.com/coding",
+            },
+        )
+        monkeypatch.setenv("KIMI_API_KEY", "sk-kimi-test")
+        monkeypatch.delenv("KIMI_BASE_URL", raising=False)
+
+        resolved = rp.resolve_runtime_provider(requested="kimi-coding")
+
+        assert resolved["base_url"] == "https://api.kimi.com/coding"
+
+    def test_kimi_coding_pool_entry_with_v1_suffix_strips_it(self, monkeypatch):
+        class _Entry:
+            access_token = "pool-kimi-token"
+            source = "manual"
+            base_url = "https://api.kimi.com/coding/v1"
+            runtime_api_key = "pool-kimi-token"
+            runtime_base_url = "https://api.kimi.com/coding/v1"
+
+        class _Pool:
+            def has_credentials(self):
+                return True
+
+            def select(self):
+                return _Entry()
+
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "kimi-coding")
+        monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+        monkeypatch.setattr(
+            rp,
+            "_get_model_config",
+            lambda: {
+                "provider": "kimi-coding",
+                "default": "kimi-for-coding",
+            },
+        )
+
+        resolved = rp.resolve_runtime_provider(requested="kimi-coding")
+
+        assert resolved["provider"] == "kimi-coding"
+        assert resolved["api_mode"] == "anthropic_messages"
+        assert resolved["base_url"] == "https://api.kimi.com/coding"

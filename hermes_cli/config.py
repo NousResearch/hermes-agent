@@ -548,8 +548,8 @@ DEFAULT_CONFIG = {
                 },
                 {
                     "provider": "openrouter",
-                    "model": "deepseek/deepseek-v4-flash",
-                    "label": "deepseek/deepseek-v4-flash",
+                    "model": "google/gemma-4-31b-it",
+                    "label": "google/gemma-4-31b-it",
                 },
             ],
             "aggregator_model": {

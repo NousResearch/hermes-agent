@@ -25,7 +25,7 @@ Architecture:
 3. Multiple layers can be used for iterative refinement (future enhancement)
 
 Default Models Used:
-- Reference Models: DeepSeek V4 Flash and NVIDIA Nemotron 3 Super via OpenRouter
+- Reference Models: Gemma 4 31B and NVIDIA Nemotron 3 Super via OpenRouter
 - Aggregator Model: Xiaomi MiMo V2.5 Pro
 
 Legacy OpenRouter-style model slugs still work when passed explicitly.
@@ -76,8 +76,8 @@ DEFAULT_REFERENCE_ROUTES: List[ModelRoute] = [
     },
     {
         "provider": "openrouter",
-        "model": "deepseek/deepseek-v4-flash",
-        "label": "deepseek/deepseek-v4-flash",
+        "model": "google/gemma-4-31b-it",
+        "label": "google/gemma-4-31b-it",
     },
 ]
 
@@ -105,6 +105,8 @@ _LEGACY_REFERENCE_LABEL_SETS = (
     frozenset({"nvidia/nemotron-3-super-120b-a12b:free", "google/gemma-4-31b-it:free"}),
 )
 _LEGACY_AGGREGATOR_LABELS = {"xiaomi/mimo-v2-pro"}
+MOA_CALL_TIMEOUT_SECONDS = 180.0
+MOA_AGGREGATOR_RETRIES = 3
 
 # System prompt for the aggregator model (from the research paper)
 AGGREGATOR_SYSTEM_PROMPT = """You have been provided with a set of responses from various open-source models to the latest user query. Your task is to synthesize these responses into a single, high-quality response. It is crucial to critically evaluate the information provided in these responses, recognizing that some of it may be biased or incorrect. Your response should not simply replicate the given answers but should offer a refined, accurate, and comprehensive reply to the instruction. Ensure your response is well-structured, coherent, and adheres to the highest standards of accuracy and reliability.
@@ -554,6 +556,7 @@ async def _run_reference_model_detailed(
                 messages=[{"role": "user", "content": user_prompt}],
                 temperature=temperature,
                 max_tokens=max_tokens,
+                timeout=MOA_CALL_TIMEOUT_SECONDS,
             )
 
             content = extract_content_or_reasoning(response)
@@ -677,42 +680,42 @@ async def _run_aggregator_model(
 
     logger.info("Running aggregator model: %s via %s", route_label, route["provider"])
 
-    response = await async_call_llm(
-        task="moa",
-        provider=route.get("provider"),
-        model=route.get("model"),
-        base_url=route.get("base_url"),
-        api_key=route.get("api_key"),
-        messages=[
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
-
-    content = extract_content_or_reasoning(response)
-
-    # Retry once on empty content (reasoning-only response)
-    if not content:
-        logger.warning("Aggregator returned empty content, retrying once")
-        response = await async_call_llm(
-            task="moa",
-            provider=route.get("provider"),
-            model=route.get("model"),
-            base_url=route.get("base_url"),
-            api_key=route.get("api_key"),
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt},
-            ],
-            temperature=temperature,
-            max_tokens=max_tokens,
+    messages = [
+        {"role": "system", "content": system_prompt},
+        {"role": "user", "content": user_prompt},
+    ]
+    last_error: Exception | None = None
+    for attempt in range(MOA_AGGREGATOR_RETRIES):
+        try:
+            response = await async_call_llm(
+                task="moa",
+                provider=route.get("provider"),
+                model=route.get("model"),
+                base_url=route.get("base_url"),
+                api_key=route.get("api_key"),
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=MOA_CALL_TIMEOUT_SECONDS,
+            )
+            content = extract_content_or_reasoning(response)
+            if content:
+                logger.info("Aggregation complete (%s characters)", len(content))
+                return content.strip()
+            last_error = RuntimeError(f"{route_label} returned empty content")
+        except Exception as exc:
+            last_error = exc
+        logger.warning(
+            "Aggregator %s failed attempt %s/%s: %s",
+            route_label,
+            attempt + 1,
+            MOA_AGGREGATOR_RETRIES,
+            last_error,
         )
-        content = extract_content_or_reasoning(response)
+        if attempt < MOA_AGGREGATOR_RETRIES - 1:
+            await asyncio.sleep(min(2 ** (attempt + 1), 15))
 
-    logger.info("Aggregation complete (%s characters)", len(content))
-    return content
+    raise RuntimeError(f"{route_label} failed after {MOA_AGGREGATOR_RETRIES} attempts: {last_error}")
 
 
 async def _run_moa_forensic_analysis(
@@ -750,16 +753,24 @@ async def _run_moa_forensic_analysis(
         content = ""
         last_exc: Exception | None = None
         for attempt in range(_MOA_FORENSIC_REPAIR_ATTEMPTS):
-            response = await async_call_llm(
-                task="moa",
-                provider=route.get("provider"),
-                model=route.get("model"),
-                base_url=route.get("base_url"),
-                api_key=route.get("api_key"),
-                messages=messages,
-                temperature=0.1,
-                max_tokens=max_tokens,
-            )
+            try:
+                response = await async_call_llm(
+                    task="moa",
+                    provider=route.get("provider"),
+                    model=route.get("model"),
+                    base_url=route.get("base_url"),
+                    api_key=route.get("api_key"),
+                    messages=messages,
+                    temperature=0.1,
+                    max_tokens=max_tokens,
+                    timeout=MOA_CALL_TIMEOUT_SECONDS,
+                )
+            except Exception as exc:
+                last_exc = exc
+                if attempt < _MOA_FORENSIC_REPAIR_ATTEMPTS - 1:
+                    await asyncio.sleep(min(2 ** (attempt + 1), 15))
+                    continue
+                raise
             content = extract_content_or_reasoning(response) or ""
             try:
                 parsed = _normalize_forensic_analysis(_extract_json_object(content))
@@ -1175,7 +1186,7 @@ from tools.registry import registry
 
 MOA_SCHEMA = {
     "name": "mixture_of_agents",
-    "description": "Route a hard problem through multiple LLMs collaboratively. By default Hermes uses Xiaomi MiMo V2.5 Pro as the aggregator with OpenRouter DeepSeek V4 Flash and Nemotron reference models. Requires Xiaomi plus OPENROUTER_API_KEY. Use sparingly for genuinely difficult problems: complex math, advanced algorithms, and multi-step analytical reasoning.",
+    "description": "Route a hard problem through multiple LLMs collaboratively. By default Hermes uses Xiaomi MiMo V2.5 Pro as the aggregator with OpenRouter Gemma 4 31B and Nemotron reference models. Requires Xiaomi plus OPENROUTER_API_KEY. Use sparingly for genuinely difficult problems: complex math, advanced algorithms, and multi-step analytical reasoning.",
     "parameters": {
         "type": "object",
         "properties": {

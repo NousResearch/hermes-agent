@@ -142,7 +142,7 @@ TIPS = [
     "The todo tool helps the agent track complex multi-step tasks during a session.",
     "session_search performs full-text search across ALL past conversations.",
     "The agent automatically saves preferences, corrections, and environment facts to memory.",
-    "mixture_of_agents routes hard problems through Xiaomi MiMo V2.5 Pro plus OpenRouter DeepSeek and Nemotron collaborators.",
+    "mixture_of_agents routes hard problems through Xiaomi MiMo V2.5 Pro plus OpenRouter Gemma 4 31B and Nemotron collaborators.",
     "spar uses MiMo V2.5 Pro as builder and judge, with OpenRouter Nemotron as reviewer.",
     "Terminal commands support background mode with notify_on_complete for long-running tasks.",
     "Terminal background processes support watch_patterns to alert on specific output lines.",

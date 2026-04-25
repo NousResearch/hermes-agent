@@ -74,6 +74,23 @@ def test_parse_spar_review_skips_invalid_prefix_and_extracts_fenced_json():
 
 
 @pytest.mark.asyncio
+async def test_spar_call_route_retries_transient_api_failure(monkeypatch):
+    monkeypatch.setattr(spar.asyncio, "sleep", AsyncMock())
+    call = AsyncMock(side_effect=[RuntimeError("upstream timeout"), _llm_text("ok")])
+    monkeypatch.setattr(spar, "async_call_llm", call)
+
+    result = await spar._call_route(
+        {"provider": "xiaomi", "model": "mimo-v2.5-pro"},
+        [{"role": "user", "content": "hello"}],
+        task="spar",
+        temperature=0.0,
+    )
+
+    assert result == "ok"
+    assert call.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_spar_tool_material_rejection_triggers_single_fix_round(monkeypatch):
     monkeypatch.setattr(
         spar,

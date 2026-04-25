@@ -72,6 +72,9 @@ DEFAULT_JUDGE_ROUTE = {
     "label": "xiaomi/mimo-v2.5-pro",
 }
 
+SPAR_CALL_TIMEOUT_SECONDS = 90.0
+SPAR_CALL_RETRIES = 3
+
 
 @dataclass
 class SparReview:
@@ -233,20 +236,37 @@ async def _call_route(
     temperature: float,
     max_tokens: int = 4096,
 ) -> str:
-    response = await async_call_llm(
-        task=task,
-        provider=route.get("provider"),
-        model=route.get("model"),
-        base_url=route.get("base_url"),
-        api_key=route.get("api_key"),
-        messages=messages,
-        temperature=temperature,
-        max_tokens=max_tokens,
-    )
-    content = extract_content_or_reasoning(response)
-    if not content:
-        raise RuntimeError(f"{_route_label(route)} returned empty content")
-    return content.strip()
+    route_label = _route_label(route)
+    last_error: Exception | None = None
+    for attempt in range(SPAR_CALL_RETRIES):
+        try:
+            response = await async_call_llm(
+                task=task,
+                provider=route.get("provider"),
+                model=route.get("model"),
+                base_url=route.get("base_url"),
+                api_key=route.get("api_key"),
+                messages=messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=SPAR_CALL_TIMEOUT_SECONDS,
+            )
+            content = extract_content_or_reasoning(response)
+            if content:
+                return content.strip()
+            last_error = RuntimeError(f"{route_label} returned empty content")
+        except Exception as exc:
+            last_error = exc
+        logger.warning(
+            "%s call failed attempt %s/%s: %s",
+            route_label,
+            attempt + 1,
+            SPAR_CALL_RETRIES,
+            last_error,
+        )
+        if attempt < SPAR_CALL_RETRIES - 1:
+            await asyncio.sleep(min(2 ** (attempt + 1), 15))
+    raise RuntimeError(f"{route_label} failed after {SPAR_CALL_RETRIES} attempts: {last_error}")
 
 
 async def _run_build(prompt: str, route: Dict[str, str]) -> str:

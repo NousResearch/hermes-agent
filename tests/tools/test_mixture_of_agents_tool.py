@@ -8,10 +8,21 @@ import pytest
 moa = importlib.import_module("tools.mixture_of_agents_tool")
 
 
+def _llm_text(text: str):
+    return SimpleNamespace(
+        choices=[SimpleNamespace(message=SimpleNamespace(
+            content=text,
+            reasoning=None,
+            reasoning_content=None,
+            reasoning_details=None,
+        ))]
+    )
+
+
 def test_moa_defaults_track_current_direct_provider_stack():
     assert moa.REFERENCE_MODELS == [
         "nvidia/nemotron-3-super-120b-a12b",
-        "deepseek/deepseek-v4-flash",
+        "google/gemma-4-31b-it",
     ]
     assert moa.AGGREGATOR_MODEL == "xiaomi/mimo-v2.5-pro"
 
@@ -76,6 +87,22 @@ async def test_reference_model_empty_final_attempt_is_failure(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_aggregator_retries_transient_api_failure(monkeypatch):
+    monkeypatch.setattr(moa.asyncio, "sleep", AsyncMock())
+    call = AsyncMock(side_effect=[RuntimeError("429 rate limit"), _llm_text("final answer")])
+    monkeypatch.setattr(moa, "async_call_llm", call)
+
+    result = await moa._run_aggregator_model(
+        {"provider": "xiaomi", "model": "mimo-v2.5-pro"},
+        "system",
+        "user",
+    )
+
+    assert result == "final answer"
+    assert call.await_count == 2
+
+
+@pytest.mark.asyncio
 async def test_moa_top_level_error_logs_single_traceback_on_aggregator_failure(monkeypatch):
     monkeypatch.setattr(
         moa,
@@ -123,6 +150,7 @@ def test_check_moa_requirements_accepts_direct_provider_stack(monkeypatch):
     available = {
         "xiaomi/mimo-v2.5-pro",
         "nvidia/nemotron-3-super-120b-a12b",
+        "google/gemma-4-31b-it",
     }
 
     monkeypatch.setattr(
@@ -181,7 +209,7 @@ def test_legacy_moa_reference_config_upgrades_to_current_defaults(monkeypatch, r
 
     assert config["reference_models"] == [
         "nvidia/nemotron-3-super-120b-a12b",
-        "deepseek/deepseek-v4-flash",
+        "google/gemma-4-31b-it",
     ]
 
 

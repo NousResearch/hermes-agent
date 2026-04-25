@@ -11144,6 +11144,21 @@ class AIAgent:
                                 primary_recovery_attempted = False
                                 continue
 
+                    # Eager fallback for provider overload (503/529).
+                    # Provider-side overload cannot be fixed by credential rotation,
+                    # so bypass the pool check and switch to a fallback immediately.
+                    # Fixes #11314 / #10210.
+                    if (
+                        classified.reason == FailoverReason.overloaded
+                        and self._fallback_index < len(self._fallback_chain)
+                    ):
+                        self._emit_status("⚠️ Provider overloaded — switching to fallback provider...")
+                        if self._try_activate_fallback(reason=classified.reason):
+                            retry_count = 0
+                            compression_attempts = 0
+                            primary_recovery_attempted = False
+                            continue
+
                     # ── Nous Portal: record rate limit & skip retries ─────
                     # When Nous returns a 429, record the reset time to a
                     # shared file so ALL sessions (cron, gateway, auxiliary)

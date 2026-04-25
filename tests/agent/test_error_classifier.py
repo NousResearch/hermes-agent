@@ -283,11 +283,15 @@ class TestClassifyApiError:
         e = MockAPIError("Service Unavailable", status_code=503)
         result = classify_api_error(e)
         assert result.reason == FailoverReason.overloaded
+        assert result.should_fallback is True
+        assert result.retryable is True
 
     def test_529_anthropic_overloaded(self):
         e = MockAPIError("Overloaded", status_code=529)
         result = classify_api_error(e)
         assert result.reason == FailoverReason.overloaded
+        assert result.should_fallback is True
+        assert result.retryable is True
 
     # ── Model not found ──
 

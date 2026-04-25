@@ -611,7 +611,7 @@ def _classify_by_status(
         return result_fn(FailoverReason.server_error, retryable=True)
 
     if status_code in (503, 529):
-        return result_fn(FailoverReason.overloaded, retryable=True)
+        return result_fn(FailoverReason.overloaded, retryable=True, should_fallback=True)
 
     # Other 4xx — non-retryable
     if 400 <= status_code < 500:

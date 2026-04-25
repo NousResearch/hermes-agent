@@ -5,6 +5,13 @@ the new list-based ``fallback_providers`` config format and chain
 advancement through multiple providers.
 """
 
+import sys
+import types
+
+# Prevent heavy imports from failing in lightweight test environments.
+sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
+sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
+
 from unittest.mock import MagicMock, patch
 
 from run_agent import AIAgent, _pool_may_recover_from_rate_limit

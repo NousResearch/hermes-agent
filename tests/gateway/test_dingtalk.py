@@ -788,11 +788,11 @@ def _install_dingtalk_sdk_mocks(monkeypatch):
         def __getattr__(self, name):
             return lambda *args, **kwargs: SimpleNamespace(**kwargs)
 
-    monkeypatch.setattr(_dt, "CARD_SDK_AVAILABLE", True, raising=False)
-    monkeypatch.setattr(_dt, "tea_util_models", _DataClassStub(), raising=False)
-    monkeypatch.setattr(_dt, "dingtalk_card_models", _DataClassStub(), raising=False)
-    monkeypatch.setattr(_dt, "dingtalk_robot_models", _DataClassStub(), raising=False)
-    monkeypatch.setattr(_dt, "open_api_models", _DataClassStub(), raising=False)
+    monkeypatch.setattr(_dt, "CARD_SDK_AVAILABLE", True)
+    monkeypatch.setattr(_dt, "tea_util_models", _DataClassStub())
+    monkeypatch.setattr(_dt, "dingtalk_card_models", _DataClassStub())
+    monkeypatch.setattr(_dt, "dingtalk_robot_models", _DataClassStub())
+    monkeypatch.setattr(_dt, "open_api_models", _DataClassStub())
 
 
 class TestCardLifecycle:

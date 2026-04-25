@@ -1,0 +1,5 @@
+name: hermes-memory
+version: 1.0.0
+description: "Hermes memory provider backed by a local hermes-memory HTTP service."
+pip_dependencies: []
+requires_env: []

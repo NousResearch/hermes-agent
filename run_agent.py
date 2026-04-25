@@ -2425,8 +2425,24 @@ class AIAgent:
                 # compression actually works this session.  The hard floor
                 # above guarantees aux_context >= MINIMUM_CONTEXT_LENGTH,
                 # so the new threshold is always >= 64K.
+                #
+                # Headroom: the threshold budgets RAW MESSAGES only, but the
+                # actual request auxiliary callers send also includes the
+                # system prompt and every tool schema.  With 50+ tools that
+                # overhead can be 25-30K tokens; setting new_threshold =
+                # aux_context directly would let messages grow right to the
+                # aux limit and the first compression/flush request would
+                # overflow with HTTP 400.  Subtract a dynamic headroom
+                # estimate so the full request still fits.
+                from agent.model_metadata import estimate_request_tokens_rough
+                tool_overhead = estimate_request_tokens_rough([], tools=self.tools)
+                # System prompt is not yet built at __init__ time; allow a
+                # conservative 10K budget (SOUL/AGENTS.md + memory snapshot +
+                # skills guidance) plus 2K for the flush instruction and a
+                # small safety margin.
+                headroom = tool_overhead + 12_000
                 old_threshold = threshold
-                new_threshold = aux_context
+                new_threshold = max(aux_context - headroom, MINIMUM_CONTEXT_LENGTH)
                 self.context_compressor.threshold_tokens = new_threshold
                 # Keep threshold_percent in sync so future main-model
                 # context_length changes (update_model) re-derive from a
@@ -8010,17 +8026,20 @@ class AIAgent:
                 response = None
 
             if not _aux_available and self.api_mode == "codex_responses":
-                # No auxiliary client -- use the Codex Responses path directly
+                # No auxiliary client -- use the Codex Responses path directly.
+                # The Responses API does not accept `temperature` on any
+                # supported backend (chatgpt.com/backend-api/codex rejects it
+                # outright; api.openai.com + gpt-5/o-series reasoning models
+                # and Copilot Responses reject it on reasoning models). The
+                # transport intentionally never sets it — strip any leftover
+                # here so the flush fallback matches the main-loop behavior.
                 codex_kwargs = self._build_api_kwargs(api_messages)
                 _ct_flush = self._get_transport()
                 if _ct_flush is not None:
                     codex_kwargs["tools"] = _ct_flush.convert_tools([memory_tool_def])
                 elif not codex_kwargs.get("tools"):
                     codex_kwargs["tools"] = [memory_tool_def]
-                if _flush_temperature is not None:
-                    codex_kwargs["temperature"] = _flush_temperature
-                else:
-                    codex_kwargs.pop("temperature", None)
+                codex_kwargs.pop("temperature", None)
                 if "max_output_tokens" in codex_kwargs:
                     codex_kwargs["max_output_tokens"] = 5120
                 response = self._run_codex_stream(codex_kwargs)

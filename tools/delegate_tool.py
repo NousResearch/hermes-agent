@@ -1457,6 +1457,17 @@ def _run_single_child(
 
         duration = round(time.monotonic() - child_start, 2)
 
+        # Guard: run_conversation may return any non-dict value (None, str,
+        # int, Future, mock object, etc.).  Treat all non-dicts as empty
+        # result so result.get() below doesn't raise AttributeError.
+        if not isinstance(result, dict):
+            logger.warning(
+                "Subagent %d run_conversation returned non-dict type %s — treating as empty result",
+                task_index,
+                type(result).__name__,
+            )
+            result = {}
+
         summary = result.get("final_response") or ""
         completed = result.get("completed", False)
         interrupted = result.get("interrupted", False)
@@ -1513,6 +1524,8 @@ def _run_single_child(
             exit_reason = "interrupted"
         elif completed:
             exit_reason = "completed"
+        elif not result:
+            exit_reason = "no_result"
         else:
             exit_reason = "max_iterations"
 

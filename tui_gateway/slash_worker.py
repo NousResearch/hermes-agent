@@ -10,6 +10,12 @@ import json
 import os
 import sys
 
+# Prevent model_tools from eagerly spawning MCP server subprocesses at
+# import time.  The slash worker only processes slash commands and never
+# needs MCP-backed tools.  Must be set *before* importing cli, which
+# transitively imports model_tools.  See #15275.
+os.environ["HERMES_SKIP_MCP_DISCOVERY"] = "1"
+
 import cli as cli_mod
 from cli import HermesCLI
 from rich.console import Console

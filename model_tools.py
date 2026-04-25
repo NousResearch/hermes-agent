@@ -132,11 +132,15 @@ def _run_async(coro):
 discover_builtin_tools()
 
 # MCP tool discovery (external MCP servers from config)
-try:
-    from tools.mcp_tool import discover_mcp_tools
-    discover_mcp_tools()
-except Exception as e:
-    logger.debug("MCP tool discovery failed: %s", e)
+# Gate behind HERMES_SKIP_MCP_DISCOVERY so lightweight consumers
+# (e.g. tui_gateway slash_worker) that never need MCP-backed tools
+# can avoid spawning duplicate subprocess children.  See #15275.
+if not os.environ.get("HERMES_SKIP_MCP_DISCOVERY"):
+    try:
+        from tools.mcp_tool import discover_mcp_tools
+        discover_mcp_tools()
+    except Exception as e:
+        logger.debug("MCP tool discovery failed: %s", e)
 
 # Plugin tool discovery (user/project/pip plugins)
 try:

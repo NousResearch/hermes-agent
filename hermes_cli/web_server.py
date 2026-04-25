@@ -77,6 +77,9 @@ _SESSION_HEADER_NAME = "X-Hermes-Session-Token"
 # or HERMES_DASHBOARD_TUI=1.  Set from :func:`start_server`.
 _DASHBOARD_EMBEDDED_CHAT_ENABLED = False
 
+# Allow WebSocket chat connections from any client IP when --insecure-chat is set.
+_DASHBOARD_INSECURE_CHAT_ENABLED = False
+
 # Simple rate limiter for the reveal endpoint
 _reveal_timestamps: List[float] = []
 _REVEAL_MAX_PER_WINDOW = 5
@@ -2390,7 +2393,7 @@ async def pty_ws(ws: WebSocket) -> None:
         return
 
     client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
+    if client_host and client_host not in _LOOPBACK_HOSTS and not _DASHBOARD_INSECURE_CHAT_ENABLED:
         await ws.close(code=4403)
         return
 
@@ -2498,7 +2501,7 @@ async def gateway_ws(ws: WebSocket) -> None:
         return
 
     client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
+    if client_host and client_host not in _LOOPBACK_HOSTS and not _DASHBOARD_INSECURE_CHAT_ENABLED:
         await ws.close(code=4403)
         return
 
@@ -2531,7 +2534,7 @@ async def pub_ws(ws: WebSocket) -> None:
         return
 
     client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
+    if client_host and client_host not in _LOOPBACK_HOSTS and not _DASHBOARD_INSECURE_CHAT_ENABLED:
         await ws.close(code=4403)
         return
 
@@ -2561,7 +2564,7 @@ async def events_ws(ws: WebSocket) -> None:
         return
 
     client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
+    if client_host and client_host not in _LOOPBACK_HOSTS and not _DASHBOARD_INSECURE_CHAT_ENABLED:
         await ws.close(code=4403)
         return
 
@@ -3133,12 +3136,16 @@ def start_server(
     allow_public: bool = False,
     *,
     embedded_chat: bool = False,
+    insecure_chat: bool = False,
 ):
     """Start the web UI server."""
     import uvicorn
 
     global _DASHBOARD_EMBEDDED_CHAT_ENABLED
     _DASHBOARD_EMBEDDED_CHAT_ENABLED = embedded_chat
+
+    global _DASHBOARD_INSECURE_CHAT_ENABLED
+    _DASHBOARD_INSECURE_CHAT_ENABLED = insecure_chat
 
     _LOCALHOST = ("127.0.0.1", "localhost", "::1")
     if host not in _LOCALHOST and not allow_public:

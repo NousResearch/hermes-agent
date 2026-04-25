@@ -23,6 +23,9 @@ This starts a local web server and opens `http://127.0.0.1:9119` in your browser
 | `--port` | `9119` | Port to run the web server on |
 | `--host` | `127.0.0.1` | Bind address |
 | `--no-open` | — | Don't auto-open the browser |
+| `--tui` | — | Enable the in-browser **Chat** tab (embedded TUI via PTY/WebSocket) |
+| `--insecure` | — | Allow binding to non-localhost (see [security warning](#security)) |
+| `--insecure-chat` | — | Allow WebSocket chat connections from any client IP (requires `--tui`) |
 
 ```bash
 # Custom port
@@ -62,7 +65,7 @@ The status page auto-refreshes every 5 seconds.
 
 ### Chat
 
-The **Chat** tab embeds the full Hermes TUI (the same interface you get from `hermes --tui`) directly in the browser. Everything you can do in the terminal TUI — slash commands, model picker, tool-call cards, markdown streaming, clarify/sudo/approval prompts, skin theming — works identically here, because the dashboard is running the real TUI binary and rendering its ANSI output through [xterm.js](https://xtermjs.org/) with its WebGL renderer for pixel-perfect cell layout.
+The **Chat** tab embeds the full Hermes TUI (the same interface you get from `hermes --tui`) directly in the browser. It is **only available when the dashboard is started with `--tui`**. Everything you can do in the terminal TUI — slash commands, model picker, tool-call cards, markdown streaming, clarify/sudo/approval prompts, skin theming — works identically here, because the dashboard is running the real TUI binary and rendering its ANSI output through [xterm.js](https://xtermjs.org/) with its WebGL renderer for pixel-perfect cell layout.
 
 **How it works:**
 
@@ -81,6 +84,15 @@ The **Chat** tab embeds the full Hermes TUI (the same interface you get from `he
 - POSIX kernel (Linux, macOS, or WSL). Native Windows Python is not supported — use WSL.
 
 Close the browser tab and the PTY is reaped cleanly on the server. Re-opening spawns a fresh session.
+
+**Non-localhost access:**
+
+By default, the chat WebSocket endpoints (`/api/pty`, `/api/ws`, `/api/pub`, `/api/events`) only accept connections from loopback addresses (`127.0.0.1`, `::1`, `localhost`). This prevents unauthorized remote clients from spawning a TUI session on your machine. If you bind the dashboard to a non-localhost address (e.g., a Tailscale IP or `0.0.0.0` with `--insecure`), pass `--insecure-chat` as well to allow WebSocket chat connections from any client IP:
+
+```bash
+# Bind to e.g. Tailscale IP and allow remote chat clients
+hermes dashboard --tui --insecure --insecure-chat --host 100.x.x.x
+```
 
 ### Config
 

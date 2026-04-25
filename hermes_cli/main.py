@@ -6754,6 +6754,7 @@ def cmd_dashboard(args):
         open_browser=not args.no_open,
         allow_public=getattr(args, "insecure", False),
         embedded_chat=embedded_chat,
+        insecure_chat=getattr(args, "insecure_chat", False),
     )
 
 
@@ -8938,6 +8939,14 @@ Examples:
         "--insecure",
         action="store_true",
         help="Allow binding to non-localhost (DANGEROUS: exposes API keys on the network)",
+    )
+    dashboard_parser.add_argument(
+        "--insecure-chat",
+        action="store_true",
+        help=(
+            "Allow WebSocket chat connections from any client IP when --tui is enabled. "
+            "By default chat WS only accepts loopback clients. Use with --host."
+        ),
     )
     dashboard_parser.add_argument(
         "--tui",

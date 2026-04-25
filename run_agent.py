@@ -7752,16 +7752,13 @@ class AIAgent:
             api_msg["reasoning_content"] = existing
             return
 
-        # 2. DeepSeek / Kimi thinking mode: tool-call turns with neither
-        # reasoning_content nor reasoning are "poisoned history" — a prior
-        # provider (MiniMax, etc.) left them empty. DeepSeek returns HTTP 400
-        # if reasoning_content is absent on replay. Inject "" to satisfy the
-        # provider's requirement without forwarding cross-provider content.
-        normalized_reasoning = source_msg.get("reasoning")
-        has_reasoning = isinstance(normalized_reasoning, str) and bool(normalized_reasoning.strip())
+        # 2. DeepSeek / Kimi thinking mode: tool-call turns that lack
+        # reasoning_content are "poisoned history" — a prior provider (MiniMax,
+        # etc.) left them empty. DeepSeek returns HTTP 400 if reasoning_content
+        # is absent on replay; inject "" to satisfy the provider's requirement
+        # without forwarding any cross-provider reasoning content.
         needs_empty_reasoning = (
-            not has_reasoning
-            and source_msg.get("tool_calls")
+            source_msg.get("tool_calls")
             and (
                 self._needs_kimi_tool_reasoning()
                 or self._needs_deepseek_tool_reasoning()

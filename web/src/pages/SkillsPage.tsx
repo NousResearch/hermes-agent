@@ -25,6 +25,7 @@ import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { PluginSlot } from "@/plugins";
 
 /* ------------------------------------------------------------------ */
 /*  Types & helpers                                                    */
@@ -251,6 +252,7 @@ export default function SkillsPage() {
 
   return (
     <div className="flex flex-col gap-4">
+      <PluginSlot name="skills:top" />
       <Toast toast={toast} />
 
       {/* ═══════════════ Filter panel + Content ═══════════════ */}
@@ -509,6 +511,7 @@ export default function SkillsPage() {
           )}
         </div>
       </div>
+      <PluginSlot name="skills:bottom" />
     </div>
   );
 }

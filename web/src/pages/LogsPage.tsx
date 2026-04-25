@@ -9,6 +9,7 @@ import { Label } from "@/components/ui/label";
 import { FilterGroup, Segmented } from "@/components/ui/segmented";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { PluginSlot } from "@/plugins";
 
 const FILES = ["agent", "errors", "gateway"] as const;
 const LEVELS = ["ALL", "DEBUG", "INFO", "WARNING", "ERROR"] as const;
@@ -141,6 +142,7 @@ export default function LogsPage() {
 
   return (
     <div className="flex flex-col gap-4">
+      <PluginSlot name="logs:top" />
       {/* ═══════════════ Filter toolbar ═══════════════ */}
       <div
         role="toolbar"
@@ -215,6 +217,7 @@ export default function LogsPage() {
           </div>
         </CardContent>
       </Card>
+      <PluginSlot name="logs:bottom" />
     </div>
   );
 }

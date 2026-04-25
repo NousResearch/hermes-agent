@@ -91,4 +91,29 @@
 
   // Register this plugin — the dashboard picks it up automatically.
   window.__HERMES_PLUGINS__.register("example", ExamplePage);
+
+  // ─────────────────────────────────────────────────────────────────────
+  // Page-scoped slot demo: inject a small banner at the top of /sessions.
+  //
+  // Built-in pages expose named slots (<page>:top, <page>:bottom) that
+  // plugins can populate without overriding the whole route. The
+  // manifest lists the slots we use in its `slots` array so the shell
+  // knows to render <PluginSlot name="sessions:top" /> there.
+  // ─────────────────────────────────────────────────────────────────────
+  function SessionsTopBanner() {
+    return React.createElement(Card, {
+      className: "border-dashed",
+    },
+      React.createElement(CardContent, { className: "flex items-center gap-3 py-2" },
+        React.createElement(Badge, { variant: "outline" }, "Example"),
+        React.createElement("span", {
+          className: "text-xs text-muted-foreground",
+        }, "This banner was injected into the Sessions page by the example plugin via the ",
+          React.createElement("code", { className: "font-courier" }, "sessions:top"),
+          " slot."),
+      ),
+    );
+  }
+
+  window.__HERMES_PLUGINS__.registerSlot("example", "sessions:top", SessionsTopBanner);
 })();

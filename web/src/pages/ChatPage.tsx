@@ -32,6 +32,7 @@ import { useSearchParams } from "react-router-dom";
 import { ChatSidebar } from "@/components/ChatSidebar";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
+import { PluginSlot } from "@/plugins";
 
 function buildWsUrl(
   token: string,
@@ -670,6 +671,7 @@ export default function ChatPage() {
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-2 normal-case">
+      <PluginSlot name="chat:top" />
       {mobileModelToolsPortal}
 
       {banner && (
@@ -732,6 +734,7 @@ export default function ChatPage() {
           </div>
         )}
       </div>
+      <PluginSlot name="chat:bottom" />
     </div>
   );
 }

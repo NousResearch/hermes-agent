@@ -27,6 +27,7 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useI18n } from "@/i18n";
+import { PluginSlot } from "@/plugins";
 
 /* ------------------------------------------------------------------ */
 /*  Provider grouping                                                  */
@@ -511,6 +512,7 @@ export default function EnvPage() {
 
   return (
     <div className="flex flex-col gap-6">
+      <PluginSlot name="env:top" />
       <Toast toast={toast} />
 
       <DeleteConfirmDialog
@@ -610,6 +612,7 @@ export default function EnvPage() {
           </Card>
         );
       })}
+      <PluginSlot name="env:bottom" />
     </div>
   );
 }

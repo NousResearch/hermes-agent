@@ -15,6 +15,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
+import { PluginSlot } from "@/plugins";
 
 const PERIODS = [
   { label: "7d", days: 7 },
@@ -350,6 +351,7 @@ export default function AnalyticsPage() {
 
   return (
     <div className="flex flex-col gap-6">
+      <PluginSlot name="analytics:top" />
       {loading && !data && (
         <div className="flex items-center justify-center py-24">
           <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
@@ -409,6 +411,7 @@ export default function AnalyticsPage() {
           </CardContent>
         </Card>
       )}
+      <PluginSlot name="analytics:bottom" />
     </div>
   );
 }

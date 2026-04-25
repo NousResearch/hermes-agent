@@ -46,6 +46,7 @@ import { useSystemActions } from "@/contexts/useSystemActions";
 import { useToast } from "@/hooks/useToast";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
+import { PluginSlot } from "@/plugins";
 import { isDashboardEmbeddedChatEnabled } from "@/lib/dashboard-flags";
 
 const SOURCE_CONFIG: Record<string, { icon: typeof Terminal; color: string }> =
@@ -612,6 +613,7 @@ export default function SessionsPage() {
 
   return (
     <div className="flex flex-col gap-4">
+      <PluginSlot name="sessions:top" />
       <Toast toast={toast} />
 
       <DeleteConfirmDialog
@@ -834,6 +836,7 @@ export default function SessionsPage() {
           )}
         </>
       )}
+      <PluginSlot name="sessions:bottom" />
     </div>
   );
 }

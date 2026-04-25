@@ -269,7 +269,6 @@ export const coreCommands: SlashCommand[] = [
       }
 
       writeOsc52Clipboard(target.text)
-      sys(`copied ${target.text.length} chars`)
     }
   },
 

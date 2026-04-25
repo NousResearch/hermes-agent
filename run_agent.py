@@ -3172,6 +3172,9 @@ class AIAgent:
                         quiet_mode=True,
                         platform=self.platform,
                         provider=self.provider,
+                        api_key=self.api_key,
+                        base_url=self.base_url,
+                        api_mode=self.api_mode,
                         parent_session_id=self.session_id,
                     )
                     review_agent._memory_write_origin = "background_review"

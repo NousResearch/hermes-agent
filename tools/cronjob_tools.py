@@ -382,6 +382,24 @@ def cronjob(
                     if script_error:
                         return tool_error(script_error, success=False)
                 updates["script"] = _normalize_optional_job_value(script) if script else None
+            if context_from is not None:
+                # Empty string / empty list clears the field; otherwise validate
+                # each referenced job exists before storing. Normalized to a list
+                # (or None) to match the shape stored by create_job().
+                if isinstance(context_from, str):
+                    refs = [context_from.strip()] if context_from.strip() else []
+                else:
+                    refs = [str(j).strip() for j in context_from if str(j).strip()]
+                if refs:
+                    from cron.jobs import get_job as _get_job
+                    for ref_id in refs:
+                        if not _get_job(ref_id):
+                            return tool_error(
+                                f"context_from job '{ref_id}' not found. "
+                                "Use cronjob(action='list') to see available jobs.",
+                                success=False,
+                            )
+                updates["context_from"] = refs or None
             if enabled_toolsets is not None:
                 updates["enabled_toolsets"] = enabled_toolsets or None
             if workdir is not None:
@@ -508,7 +526,6 @@ Important safety rule: cron-run sessions should not recursively schedule more cr
             "workdir": {
                 "type": "string",
                 "description": "Optional absolute path to run the job from. When set, AGENTS.md / CLAUDE.md / .cursorrules from that directory are injected into the system prompt, and the terminal/file/code_exec tools use it as their working directory — useful for running a job inside a specific project repo. Must be an absolute path that exists. When unset (default), preserves the original behaviour: no project context files, tools use the scheduler's cwd. On update, pass an empty string to clear. Jobs with workdir run sequentially (not parallel) to keep per-job directories isolated."
-
             },
         },
         "required": ["action"]

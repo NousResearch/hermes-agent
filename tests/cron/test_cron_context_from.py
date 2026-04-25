@@ -266,3 +266,125 @@ class TestBuildJobPromptContextFrom:
         # Should not crash and should not inject anything malicious
         assert "Process" in prompt
         assert "etc/passwd" not in prompt
+
+
+
+class TestUpdateContextFrom:
+    """Verify the cronjob tool's `update` action wires context_from through.
+
+    Without this, the create-path stores the field but users can never modify
+    or clear it via the tool (schema promises "pass an empty array to clear").
+    """
+
+    def test_update_adds_context_from_to_existing_job(self, cron_env):
+        from cron.jobs import create_job, get_job
+        from tools.cronjob_tools import cronjob
+        import json
+
+        job_a = create_job(prompt="Find news", schedule="every 1h")
+        job_b = create_job(prompt="Summarize", schedule="every 2h")
+        assert job_b.get("context_from") is None
+
+        result = json.loads(cronjob(
+            action="update",
+            job_id=job_b["id"],
+            context_from=job_a["id"],
+        ))
+        assert result["success"] is True
+
+        reloaded = get_job(job_b["id"])
+        assert reloaded["context_from"] == [job_a["id"]]
+
+    def test_update_changes_context_from_reference(self, cron_env):
+        from cron.jobs import create_job, get_job
+        from tools.cronjob_tools import cronjob
+        import json
+
+        job_a = create_job(prompt="Find news", schedule="every 1h")
+        job_a2 = create_job(prompt="Find weather", schedule="every 1h")
+        job_b = create_job(
+            prompt="Summarize", schedule="every 2h", context_from=job_a["id"],
+        )
+        assert job_b["context_from"] == [job_a["id"]]
+
+        result = json.loads(cronjob(
+            action="update",
+            job_id=job_b["id"],
+            context_from=[job_a2["id"]],
+        ))
+        assert result["success"] is True
+        assert get_job(job_b["id"])["context_from"] == [job_a2["id"]]
+
+    def test_update_clears_context_from_with_empty_list(self, cron_env):
+        from cron.jobs import create_job, get_job
+        from tools.cronjob_tools import cronjob
+        import json
+
+        job_a = create_job(prompt="Find news", schedule="every 1h")
+        job_b = create_job(
+            prompt="Summarize", schedule="every 2h", context_from=job_a["id"],
+        )
+        assert get_job(job_b["id"])["context_from"] == [job_a["id"]]
+
+        result = json.loads(cronjob(
+            action="update",
+            job_id=job_b["id"],
+            context_from=[],
+        ))
+        assert result["success"] is True
+        assert get_job(job_b["id"])["context_from"] is None
+
+    def test_update_clears_context_from_with_empty_string(self, cron_env):
+        from cron.jobs import create_job, get_job
+        from tools.cronjob_tools import cronjob
+        import json
+
+        job_a = create_job(prompt="Find news", schedule="every 1h")
+        job_b = create_job(
+            prompt="Summarize", schedule="every 2h", context_from=job_a["id"],
+        )
+
+        result = json.loads(cronjob(
+            action="update",
+            job_id=job_b["id"],
+            context_from="",
+        ))
+        assert result["success"] is True
+        assert get_job(job_b["id"])["context_from"] is None
+
+    def test_update_rejects_unknown_job_reference(self, cron_env):
+        from cron.jobs import create_job
+        from tools.cronjob_tools import cronjob
+        import json
+
+        job_b = create_job(prompt="Summarize", schedule="every 2h")
+
+        result = json.loads(cronjob(
+            action="update",
+            job_id=job_b["id"],
+            context_from=["deadbeef0000"],
+        ))
+        assert result["success"] is False
+        assert "not found" in result["error"]
+
+    def test_update_preserves_context_from_when_not_passed(self, cron_env):
+        """Updating other fields must not clobber context_from."""
+        from cron.jobs import create_job, get_job
+        from tools.cronjob_tools import cronjob
+        import json
+
+        job_a = create_job(prompt="Find news", schedule="every 1h")
+        job_b = create_job(
+            prompt="Summarize", schedule="every 2h", context_from=job_a["id"],
+        )
+
+        # Update an unrelated field
+        result = json.loads(cronjob(
+            action="update",
+            job_id=job_b["id"],
+            prompt="Summarize v2",
+        ))
+        assert result["success"] is True
+        reloaded = get_job(job_b["id"])
+        assert reloaded["prompt"] == "Summarize v2"
+        assert reloaded["context_from"] == [job_a["id"]]

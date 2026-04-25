@@ -825,7 +825,62 @@ def _serve_plugin_skill(
     )
 
 
-def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
+def _extract_section_toc(content: str) -> list[dict]:
+    """Extract section headings from markdown content for TOC."""
+    headings = []
+    for line in content.split("\n"):
+        m = re.match(r"^(#{2,6})\s+(.+)", line)
+        if m:
+            level = len(m.group(1))
+            title = m.group(2).strip()
+            headings.append({"level": level, "title": title})
+    return headings
+
+
+def _extract_section_content(content: str, section_query: str) -> tuple[str, list[str]]:
+    """Extract content under a heading matching section_query (case-insensitive partial match).
+    Returns (section_content, available_sections) — if not found, content is empty."""
+    # Strip frontmatter first
+    _, body = _parse_frontmatter(content)
+    lines = body.split("\n")
+
+    headings = []
+    for i, line in enumerate(lines):
+        m = re.match(r"^(#{2,6})\s+(.+)", line)
+        if m:
+            headings.append({"level": len(m.group(1)), "title": m.group(2).strip(), "line": i})
+
+    if not headings:
+        return ("", [])
+
+    available = [h["title"] for h in headings]
+    query_lower = section_query.lower()
+
+    # Find matching heading (partial, case-insensitive)
+    match_idx = None
+    for i, h in enumerate(headings):
+        if query_lower in h["title"].lower():
+            match_idx = i
+            break
+
+    if match_idx is None:
+        return ("", available)
+
+    start = headings[match_idx]["line"]
+    match_level = headings[match_idx]["level"]
+
+    # Collect lines until next same-or-higher-level heading
+    end = len(lines)
+    for j in range(match_idx + 1, len(headings)):
+        if headings[j]["level"] <= match_level:
+            end = headings[j]["line"]
+            break
+
+    section_content = "\n".join(lines[start:end]).strip()
+    return (section_content, available)
+
+
+def skill_view(name: str, file_path: str = None, content_mode: str = "summary", section: str = None, task_id: str = None) -> str:
     """
     View the content of a skill or a specific file within a skill directory.
 
@@ -1280,30 +1335,148 @@ def skill_view(name: str, file_path: str = None, task_id: str = None) -> str:
                     exc_info=True,
                 )
 
-        result = {
-            "success": True,
-            "name": skill_name,
-            "description": frontmatter.get("description", ""),
-            "tags": tags,
-            "related_skills": related_skills,
-            "content": content,
-            "path": rel_path,
-            "skill_dir": str(skill_dir) if skill_dir else None,
-            "linked_files": linked_files if linked_files else None,
-            "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'"
-            if linked_files
-            else None,
-            "required_environment_variables": required_env_vars,
-            "required_commands": [],
-            "missing_required_environment_variables": remaining_missing_required_envs,
-            "missing_credential_files": missing_cred_files,
-            "missing_required_commands": [],
-            "setup_needed": setup_needed,
-            "setup_skipped": capture_result["setup_skipped"],
-            "readiness_status": SkillReadinessStatus.SETUP_NEEDED.value
-            if setup_needed
-            else SkillReadinessStatus.AVAILABLE.value,
-        }
+        # Progressive disclosure: build result based on content_mode and section
+        # file_path always returns full content (already scoped)
+        # Default content_mode="summary" — metadata + preview + TOC only
+        # content_mode="section" + section="Pitfalls" — targeted section
+        # content_mode="full" — entire content (opt-in only)
+        if file_path:
+            # file_path mode: always return full content (already scoped)
+            result = {
+                "success": True,
+                "name": skill_name,
+                "description": frontmatter.get("description", ""),
+                "tags": tags,
+                "related_skills": related_skills,
+                "content": content,
+                "content_mode": "full",
+                "path": rel_path,
+                "skill_dir": str(skill_dir) if skill_dir else None,
+                "linked_files": linked_files if linked_files else None,
+                "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'"
+                if linked_files
+                else None,
+                "required_environment_variables": required_env_vars,
+                "required_commands": [],
+                "missing_required_environment_variables": remaining_missing_required_envs,
+                "missing_credential_files": missing_cred_files,
+                "missing_required_commands": [],
+                "setup_needed": setup_needed,
+                "setup_skipped": capture_result["setup_skipped"],
+                "readiness_status": SkillReadinessStatus.SETUP_NEEDED.value
+                if setup_needed
+                else SkillReadinessStatus.AVAILABLE.value,
+            }
+        elif content_mode == "section" and section:
+            # Section mode: extract specific heading content
+            section_content, available_sections = _extract_section_content(content, section)
+            if section_content:
+                result = {
+                    "success": True,
+                    "name": skill_name,
+                    "description": frontmatter.get("description", ""),
+                    "tags": tags,
+                    "related_skills": related_skills,
+                    "content": section_content,
+                    "content_mode": "section",
+                    "section": section,
+                    "path": rel_path,
+                    "skill_dir": str(skill_dir) if skill_dir else None,
+                    "linked_files": linked_files if linked_files else None,
+                    "usage_hint": f"Section '{section}' extracted. Use content_mode='full' for entire content, or section='AnotherHeading' for a different section.",
+                    "required_environment_variables": required_env_vars,
+                    "required_commands": [],
+                    "missing_required_environment_variables": remaining_missing_required_envs,
+                    "missing_credential_files": missing_cred_files,
+                    "missing_required_commands": [],
+                    "setup_needed": setup_needed,
+                    "setup_skipped": capture_result["setup_skipped"],
+                    "readiness_status": SkillReadinessStatus.SETUP_NEEDED.value
+                    if setup_needed
+                    else SkillReadinessStatus.AVAILABLE.value,
+                }
+            else:
+                result = {
+                    "success": False,
+                    "name": skill_name,
+                    "description": frontmatter.get("description", ""),
+                    "error": f"Section '{section}' not found in skill '{skill_name}'.",
+                    "available_sections": available_sections,
+                    "hint": "Try one of the available sections listed above, or use content_mode='full' for entire content.",
+                }
+                return json.dumps(result, ensure_ascii=False)
+        elif content_mode == "full":
+            # Full mode: entire content (opt-in only)
+            result = {
+                "success": True,
+                "name": skill_name,
+                "description": frontmatter.get("description", ""),
+                "tags": tags,
+                "related_skills": related_skills,
+                "content": content,
+                "content_mode": "full",
+                "path": rel_path,
+                "skill_dir": str(skill_dir) if skill_dir else None,
+                "linked_files": linked_files if linked_files else None,
+                "usage_hint": "To view linked files, call skill_view(name, file_path) where file_path is e.g. 'references/api.md' or 'assets/config.yaml'"
+                if linked_files
+                else None,
+                "required_environment_variables": required_env_vars,
+                "required_commands": [],
+                "missing_required_environment_variables": remaining_missing_required_envs,
+                "missing_credential_files": missing_cred_files,
+                "missing_required_commands": [],
+                "setup_needed": setup_needed,
+                "setup_skipped": capture_result["setup_skipped"],
+                "readiness_status": SkillReadinessStatus.SETUP_NEEDED.value
+                if setup_needed
+                else SkillReadinessStatus.AVAILABLE.value,
+            }
+        else:
+            # Summary mode (default) — no content, just metadata + preview + TOC
+            section_toc = _extract_section_toc(content)
+            _, body = _parse_frontmatter(content)
+            # Preview: first ~500 chars, skip blank lines and heading lines (already in TOC)
+            preview_lines = []
+            for line in body.split("\n"):
+                stripped = line.strip()
+                if stripped and not re.match(r"^#{1,6}\s+", stripped) and len(stripped) > 5:
+                    preview_lines.append(stripped)
+                    if sum(len(l) for l in preview_lines) >= 500:
+                        break
+            preview = " ".join(preview_lines)[:500]
+
+            total_chars = len(body)
+            total_lines = len(body.split("\n"))
+
+            result = {
+                "success": True,
+                "name": skill_name,
+                "description": frontmatter.get("description", ""),
+                "tags": tags,
+                "related_skills": related_skills,
+                "preview": preview,
+                "section_toc": section_toc,
+                "total_chars": total_chars,
+                "total_lines": total_lines,
+                "content_mode": "summary",
+                "path": rel_path,
+                "skill_dir": str(skill_dir) if skill_dir else None,
+                "linked_files": linked_files if linked_files else None,
+                "usage_hint": "Use skill_view(name, section='Pitfalls') for a specific section, or skill_view(name, content_mode='full') for entire content."
+                if linked_files
+                else "Use skill_view(name, section='Pitfalls') for a specific section, or content_mode='full' for entire content.",
+                "required_environment_variables": required_env_vars,
+                "required_commands": [],
+                "missing_required_environment_variables": remaining_missing_required_envs,
+                "missing_credential_files": missing_cred_files,
+                "missing_required_commands": [],
+                "setup_needed": setup_needed,
+                "setup_skipped": capture_result["setup_skipped"],
+                "readiness_status": SkillReadinessStatus.SETUP_NEEDED.value
+                if setup_needed
+                else SkillReadinessStatus.AVAILABLE.value,
+            }
 
         setup_help = next((e["help"] for e in required_env_vars if e.get("help")), None)
         if setup_help:
@@ -1406,7 +1579,7 @@ SKILLS_LIST_SCHEMA = {
 
 SKILL_VIEW_SCHEMA = {
     "name": "skill_view",
-    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Load a skill's full content or access its linked files (references, templates, scripts). First call returns SKILL.md content plus a 'linked_files' dict showing available references/templates/scripts. To access those, call again with file_path parameter.",
+    "description": "Skills allow for loading information about specific tasks and workflows, as well as scripts and templates. Progressive disclosure: default returns summary (preview + section TOC) to avoid context overflow. Use content_mode='full' for entire content, or section='Pitfalls' for a specific section. Access linked files with file_path parameter.",
     "parameters": {
         "type": "object",
         "properties": {
@@ -1416,7 +1589,16 @@ SKILL_VIEW_SCHEMA = {
             },
             "file_path": {
                 "type": "string",
-                "description": "OPTIONAL: Path to a linked file within the skill (e.g., 'references/api.md', 'templates/config.yaml', 'scripts/validate.py'). Omit to get the main SKILL.md content.",
+                "description": "OPTIONAL: Path to a linked file within the skill (e.g., 'references/api.md', 'templates/config.yaml', 'scripts/validate.py'). Omit to get the main SKILL.md content. When file_path is set, full content is always returned.",
+            },
+            "content_mode": {
+                "type": "string",
+                "enum": ["summary", "section", "full"],
+                "description": "Progressive disclosure mode. 'summary' (default): preview + section TOC only, no full content. 'section': returns content under a specific heading (requires section param). 'full': entire SKILL.md content (may be very large).",
+            },
+            "section": {
+                "type": "string",
+                "description": "Section heading to extract (case-insensitive partial match). Only used with content_mode='section'. E.g., 'Pitfalls', 'Implementation Checklist'.",
             },
         },
         "required": ["name"],
@@ -1438,7 +1620,11 @@ registry.register(
     toolset="skills",
     schema=SKILL_VIEW_SCHEMA,
     handler=lambda args, **kw: skill_view(
-        args.get("name", ""), file_path=args.get("file_path"), task_id=kw.get("task_id")
+        args.get("name", ""),
+        file_path=args.get("file_path"),
+        content_mode=args.get("content_mode", "summary"),
+        section=args.get("section"),
+        task_id=kw.get("task_id"),
     ),
     check_fn=check_skills_requirements,
     emoji="📚",

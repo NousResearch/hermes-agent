@@ -3028,7 +3028,7 @@ def _handle_web_model_command(
             pass
         lines.append("`/model <name>` - switch model")
         lines.append("`/model <name> --provider <slug>` - switch provider")
-        lines.append("`/model provider:model` - shorthand (e.g., `/model zai:glm-5.1`)")
+        lines.append("`/model provider/model` - shorthand (e.g., `/model zai/glm-5.1`)")
         lines.append("`/model <name> --global` - persist to config")
         return "\n".join(lines)
 
@@ -3328,6 +3328,20 @@ async def tui_gateway_ws(websocket: WebSocket):
                         final = result.get("final_response", "") or ""
                         _notify("assistant.done", {"text": final})
                         _reply(rpc_id, {"ok": True})
+
+                        # Auto-generate session title after first exchange
+                        if final and db:
+                            try:
+                                from agent.title_generator import maybe_auto_title
+                                maybe_auto_title(
+                                    db,
+                                    sid_for_run,
+                                    message,
+                                    final,
+                                    history,
+                                )
+                            except Exception:
+                                pass
                     except Exception as exc:
                         _log.exception("tui_gateway agent error: %s", exc)
                         _notify("error", {"message": str(exc)})

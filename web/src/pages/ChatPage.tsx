@@ -393,7 +393,7 @@ export default function ChatPage() {
   // ── Render ────────────────────────────────────────────────────────────────
 
   return (
-    <div className="flex flex-col h-chat-page">
+    <div className="flex flex-col h-chat-page w-full max-w-[50%] min-w-[720px] mx-auto">
       {/* Header */}
       <div className="flex items-center gap-3 mb-4">
         <MessageSquare className="h-5 w-5 text-muted-foreground shrink-0" />

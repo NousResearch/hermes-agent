@@ -541,9 +541,9 @@ class TestGetModelContextLengthLocalFallback:
 
         mock_save.assert_called_once_with("omnicoder-9b", "http://localhost:11434/v1", 131072)
 
-    def test_local_endpoint_server_returns_none_falls_back_to_2m(self):
-        """When local server returns None, still falls back to 2M probe tier."""
-        from agent.model_metadata import get_model_context_length, CONTEXT_PROBE_TIERS
+    def test_local_endpoint_server_returns_none_falls_back_to_default_context(self):
+        """When local server returns None, still falls back to conservative default."""
+        from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT, get_model_context_length
 
         with patch("agent.model_metadata.get_cached_context_length", return_value=None), \
              patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
@@ -552,7 +552,7 @@ class TestGetModelContextLengthLocalFallback:
              patch("agent.model_metadata._query_local_context_length", return_value=None):
             result = get_model_context_length("omnicoder-9b", "http://localhost:11434/v1")
 
-        assert result == CONTEXT_PROBE_TIERS[0]
+        assert result == DEFAULT_FALLBACK_CONTEXT
 
     def test_non_local_endpoint_does_not_query_local_server(self):
         """For non-local endpoints, _query_local_context_length is not called."""

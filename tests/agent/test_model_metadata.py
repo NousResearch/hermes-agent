@@ -430,9 +430,11 @@ class TestGetModelContextLength:
         assert get_model_context_length("anthropic/claude-sonnet-4") == 200000
 
     @patch("agent.model_metadata.fetch_model_metadata")
-    def test_unknown_model_returns_first_probe_tier(self, mock_fetch):
+    def test_unknown_model_returns_default_fallback_context(self, mock_fetch):
         mock_fetch.return_value = {}
-        assert get_model_context_length("unknown/never-heard-of-this") == CONTEXT_PROBE_TIERS[0]
+        from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT
+
+        assert get_model_context_length("unknown/never-heard-of-this") == DEFAULT_FALLBACK_CONTEXT
 
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_partial_match_in_defaults(self, mock_fetch):
@@ -480,9 +482,11 @@ class TestGetModelContextLength:
         cache_file = tmp_path / "cache.yaml"
         with patch("agent.model_metadata._get_context_cache_path", return_value=cache_file):
             save_context_length("custom/model", "http://local", 32768)
-            # No base_url → cache skipped → falls to probe tier
+            # No base_url -> cache skipped -> falls to conservative default
             result = get_model_context_length("custom/model")
-            assert result == CONTEXT_PROBE_TIERS[0]
+            from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT
+
+            assert result == DEFAULT_FALLBACK_CONTEXT
 
     @patch("agent.model_metadata.fetch_model_metadata")
     @patch("agent.model_metadata.fetch_endpoint_model_metadata")
@@ -512,7 +516,9 @@ class TestGetModelContextLength:
             api_key="test-key",
         )
 
-        assert result == CONTEXT_PROBE_TIERS[0]
+        from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT
+
+        assert result == DEFAULT_FALLBACK_CONTEXT
 
     @patch("agent.model_metadata.fetch_model_metadata")
     @patch("agent.model_metadata.fetch_endpoint_model_metadata")
@@ -814,8 +820,8 @@ class TestContextProbeTiers:
         for i in range(len(CONTEXT_PROBE_TIERS) - 1):
             assert CONTEXT_PROBE_TIERS[i] > CONTEXT_PROBE_TIERS[i + 1]
 
-    def test_first_tier_is_128k(self):
-        assert CONTEXT_PROBE_TIERS[0] == 128_000
+    def test_first_tier_is_large_context(self):
+        assert CONTEXT_PROBE_TIERS[0] == 1_050_000
 
     def test_last_tier_is_8k(self):
         assert CONTEXT_PROBE_TIERS[-1] == 8_000
@@ -841,8 +847,21 @@ class TestGetNextProbeTier:
         assert get_next_probe_tier(100_000) == 64_000
 
     def test_above_max_tier(self):
-        """Value above 128K should return 128K."""
-        assert get_next_probe_tier(500_000) == 128_000
+        """Value above known long-context tiers should step down gradually."""
+        assert get_next_probe_tier(1_100_000) == 1_050_000
+
+    def test_gpt54_context_steps_down_to_intermediate_tier(self):
+        """GPT-5.4 overflow should not collapse from 1.05M directly to 128K."""
+        assert get_next_probe_tier(1_050_000) == 400_000
+        assert get_next_probe_tier(400_000) == 272_000
+        assert get_next_probe_tier(272_000) == 200_000
+        assert get_next_probe_tier(200_000) == 128_000
+
+    def test_default_fallback_stays_safe_for_unknown_models(self):
+        """Unknown models should still begin at the conservative 128K fallback."""
+        from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT
+
+        assert DEFAULT_FALLBACK_CONTEXT == 128_000
 
     def test_zero_returns_none(self):
         assert get_next_probe_tier(0) is None

@@ -105,10 +105,15 @@ _endpoint_model_metadata_cache: Dict[str, Dict[str, Dict[str, Any]]] = {}
 _endpoint_model_metadata_cache_time: Dict[str, float] = {}
 _ENDPOINT_MODEL_CACHE_TTL = 300
 
-# Descending tiers for context length probing when the model is unknown.
-# We start at 128K (a safe default for most modern models) and step down
-# on context-length errors until one works.
+# Descending tiers for context length probing after a provider reports that the
+# current request is too large without giving a parseable limit. Keep long
+# context tiers here so known large-window models degrade gradually instead of
+# collapsing straight to the conservative unknown-model fallback.
 CONTEXT_PROBE_TIERS = [
+    1_050_000,
+    400_000,
+    272_000,
+    200_000,
     128_000,
     64_000,
     32_000,
@@ -116,8 +121,10 @@ CONTEXT_PROBE_TIERS = [
     8_000,
 ]
 
-# Default context length when no detection method succeeds.
-DEFAULT_FALLBACK_CONTEXT = CONTEXT_PROBE_TIERS[0]
+# Default context length when no detection method succeeds. Unknown models
+# should still start conservatively even though probe-down tiers include
+# larger windows for known long-context models.
+DEFAULT_FALLBACK_CONTEXT = 128_000
 
 # Minimum context length required to run Hermes Agent.  Models with fewer
 # tokens cannot maintain enough working memory for tool-calling workflows.

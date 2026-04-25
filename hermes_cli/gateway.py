@@ -1489,6 +1489,16 @@ def _remap_path_for_user(path: str, target_home_dir: str) -> str:
         return str(p)
 
 
+def _lexical_absolute_path(path: str | Path) -> Path:
+    """Return an absolute path without resolving symlinks.
+
+    Service definitions should preserve user-specified path spellings such as
+    ``/opt/hermes`` even on systems where that lexically maps to a symlinked
+    canonical location like ``/var/opt/hermes``.
+    """
+    return Path(os.path.abspath(os.path.expanduser(str(path))))
+
+
 def _hermes_home_for_target_user(target_home_dir: str) -> str:
     """Remap the current HERMES_HOME to the equivalent under a target user's home.
 
@@ -1498,8 +1508,8 @@ def _hermes_home_for_target_user(target_home_dir: str) -> str:
       /root/.hermes/profiles/coder     → /home/alice/.hermes/profiles/coder
       /opt/custom-hermes               → /opt/custom-hermes  (kept as-is)
     """
-    current_hermes = get_hermes_home().resolve()
-    current_default = (Path.home() / ".hermes").resolve()
+    current_hermes = _lexical_absolute_path(get_hermes_home())
+    current_default = _lexical_absolute_path(Path.home() / ".hermes")
     target_default = Path(target_home_dir) / ".hermes"
 
     # Default ~/.hermes → remap to target user's default
@@ -1589,7 +1599,7 @@ StandardError=journal
 WantedBy=multi-user.target
 """
 
-    hermes_home = str(get_hermes_home().resolve())
+    hermes_home = str(_lexical_absolute_path(get_hermes_home()))
     profile_arg = _profile_arg(hermes_home)
     path_entries.extend(_build_user_local_paths(Path.home(), path_entries))
     path_entries.extend(common_bin_paths)

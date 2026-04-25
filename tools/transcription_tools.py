@@ -161,6 +161,11 @@ def _has_local_command() -> bool:
     return _get_local_command_template() is not None
 
 
+def _has_explicit_local_command() -> bool:
+    """True when the user explicitly configured a local STT command."""
+    return bool(os.getenv(LOCAL_STT_COMMAND_ENV, "").strip())
+
+
 def _normalize_local_model(model_name: Optional[str]) -> str:
     """Return a valid faster-whisper model size, mapping cloud-only names to the default.
 
@@ -205,7 +210,7 @@ def _get_provider(stt_config: dict) -> str:
         if provider == "local":
             if _HAS_FASTER_WHISPER:
                 return "local"
-            if _has_local_command():
+            if _has_explicit_local_command():
                 return "local_command"
             logger.warning(
                 "STT provider 'local' configured but unavailable "

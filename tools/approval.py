@@ -765,17 +765,35 @@ def check_all_command_guards(command: str, env_type: str,
 
     # --- Phase 1: Gather findings from both checks ---
 
+    # Dangerous command check (detection only, no approval)
+    is_dangerous, pattern_key, description = detect_dangerous_command(command)
+
     # Tirith check — wrapper guarantees no raise for expected failures.
     # Only catch ImportError (module not installed).
     tirith_result = {"action": "allow", "findings": [], "summary": ""}
     try:
-        from tools.tirith_security import check_command_security
-        tirith_result = check_command_security(command)
+        from tools.tirith_security import check_command_security, ensure_installed
+
+        notify_cb = None
+        if is_gateway or is_ask:
+            with _lock:
+                notify_cb = _gateway_notify_cbs.get(get_current_session_key())
+
+        if (
+            (is_gateway or is_ask)
+            and notify_cb is not None
+            and is_dangerous
+            and ensure_installed(log_failures=False) is None
+        ):
+            # Only the blocking gateway/ask path can lose an immediate user
+            # response before the approval queue exists. Avoid a first-use
+            # synchronous tirith install in that narrow case so the approval
+            # prompt becomes resolvable right away.
+            pass
+        else:
+            tirith_result = check_command_security(command)
     except ImportError:
         pass  # tirith module not installed — allow
-
-    # Dangerous command check (detection only, no approval)
-    is_dangerous, pattern_key, description = detect_dangerous_command(command)
 
     # --- Phase 2: Decide ---
 

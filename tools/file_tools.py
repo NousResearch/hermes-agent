@@ -118,7 +118,7 @@ def _resolve_path_for_task(filepath: str, task_id: str = "default") -> Path:
             "TERMINAL_CWD", os.getcwd()
         )
         p = Path(base) / p
-    return p.resolve()
+    return Path(os.path.abspath(os.path.normpath(str(p))))
 
 
 def _is_blocked_device(filepath: str) -> bool:

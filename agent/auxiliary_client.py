@@ -1349,6 +1349,32 @@ def _is_auth_error(exc: Exception) -> bool:
     return "error code: 401" in err_lower or "authenticationerror" in type(exc).__name__.lower()
 
 
+def _is_unsupported_temperature_error(exc: Exception) -> bool:
+    """Detect API errors where the selected model rejects `temperature`.
+
+    Triggered by provider responses like:
+      * OpenAI / Codex Responses — ``Unsupported parameter: temperature``
+      * Copilot reasoning models — ``unsupported_parameter`` with temperature
+      * OpenRouter reasoning models — ``does not support temperature``
+      * Anthropic Opus 4.7+ via OpenAI-compat — ``temperature is not supported``
+
+    The same backend can accept temperature for some models and reject it for
+    others (e.g. gpt-5.4 accepts, gpt-5.5 rejects on the same endpoint), so we
+    react to the concrete error rather than maintaining a model allowlist.
+    """
+    err_lower = str(exc).lower()
+    if "temperature" not in err_lower:
+        return False
+    return any(marker in err_lower for marker in (
+        "unsupported parameter",
+        "unsupported_parameter",
+        "not supported",
+        "does not support",
+        "unknown parameter",
+        "unrecognized request argument",
+    ))
+
+
 def _evict_cached_clients(provider: str) -> None:
     """Drop cached auxiliary clients for a provider so fresh creds are used."""
     normalized = _normalize_aux_provider(provider)
@@ -2952,11 +2978,39 @@ def call_llm(
     if _is_anthropic_compat_endpoint(resolved_provider, _client_base):
         kwargs["messages"] = _convert_openai_images_to_anthropic(kwargs["messages"])
 
-    # Handle max_tokens vs max_completion_tokens retry, then payment fallback.
+    # Handle unsupported temperature, max_tokens vs max_completion_tokens retry,
+    # then payment fallback.
     try:
         return _validate_llm_response(
             client.chat.completions.create(**kwargs), task)
     except Exception as first_err:
+        if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
+            retry_kwargs = dict(kwargs)
+            retry_kwargs.pop("temperature", None)
+            logger.info(
+                "Auxiliary %s: provider rejected temperature; retrying once without it",
+                task or "call",
+            )
+            try:
+                return _validate_llm_response(
+                    client.chat.completions.create(**retry_kwargs), task)
+            except Exception as retry_err:
+                retry_err_str = str(retry_err)
+                # If retry still fails, fall through to the max_tokens /
+                # payment / auth chains below using the temperature-stripped
+                # kwargs.  Re-raise only if the retry hit something those
+                # chains won't handle.
+                if not (
+                    _is_payment_error(retry_err)
+                    or _is_connection_error(retry_err)
+                    or _is_auth_error(retry_err)
+                    or "max_tokens" in retry_err_str
+                    or "unsupported_parameter" in retry_err_str
+                ):
+                    raise
+                first_err = retry_err
+                kwargs = retry_kwargs
+
         err_str = str(first_err)
         if "max_tokens" in err_str or "unsupported_parameter" in err_str:
             kwargs.pop("max_tokens", None)
@@ -3221,6 +3275,29 @@ async def async_call_llm(
         return _validate_llm_response(
             await client.chat.completions.create(**kwargs), task)
     except Exception as first_err:
+        if "temperature" in kwargs and _is_unsupported_temperature_error(first_err):
+            retry_kwargs = dict(kwargs)
+            retry_kwargs.pop("temperature", None)
+            logger.info(
+                "Auxiliary %s (async): provider rejected temperature; retrying once without it",
+                task or "call",
+            )
+            try:
+                return _validate_llm_response(
+                    await client.chat.completions.create(**retry_kwargs), task)
+            except Exception as retry_err:
+                retry_err_str = str(retry_err)
+                if not (
+                    _is_payment_error(retry_err)
+                    or _is_connection_error(retry_err)
+                    or _is_auth_error(retry_err)
+                    or "max_tokens" in retry_err_str
+                    or "unsupported_parameter" in retry_err_str
+                ):
+                    raise
+                first_err = retry_err
+                kwargs = retry_kwargs
+
         err_str = str(first_err)
         if "max_tokens" in err_str or "unsupported_parameter" in err_str:
             kwargs.pop("max_tokens", None)

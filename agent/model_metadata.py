@@ -1287,12 +1287,32 @@ def get_model_context_length(
                 if local_ctx and local_ctx > 0:
                     save_context_length(model, base_url, local_ctx)
                     return local_ctx
+            # Custom/private endpoints are not in OpenRouter or models.dev, so
+            # falling through to network catalog lookups adds latency without
+            # benefit. Resolve against the hardcoded catalog first; use a
+            # conservative 8192 fallback rather than 128K if nothing matches.
+            model_lower_probe = model.lower()
+            ctx_hc = None
+            for _key, _val in sorted(
+                DEFAULT_CONTEXT_LENGTHS.items(), key=lambda x: len(x[0]), reverse=True
+            ):
+                if _key.lower() in model_lower_probe and isinstance(_val, int) and _val > 0:
+                    ctx_hc = _val
+                    break
+            if isinstance(ctx_hc, int) and ctx_hc > 0:
+                logger.debug(
+                    "Could not detect context length for model %r at %s via endpoint probe; "
+                    "using hardcoded catalog value %s. Set model.context_length in config.yaml to override.",
+                    model, base_url, ctx_hc,
+                )
+                return ctx_hc
             logger.debug(
-                "Could not detect context length for model %r at %s via endpoint probe — "
-                "falling through to catalog sources (models.dev, hardcoded defaults). "
+                "Could not detect context length for model %r at %s via endpoint probe and "
+                "no hardcoded catalog entry matched; using conservative fallback 8192. "
                 "Set model.context_length in config.yaml to override.",
                 model, base_url,
             )
+            return 8192
 
     # 4. Anthropic /v1/models API (only for regular API keys, not OAuth)
     if provider == "anthropic" or (

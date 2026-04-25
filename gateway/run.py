@@ -5404,6 +5404,7 @@ class GatewayRunner:
         user_provs = None
         custom_provs = None
         config_path = _hermes_home / "config.yaml"
+        current_config_context_length = None
         try:
             if config_path.exists():
                 with open(config_path, encoding="utf-8") as f:
@@ -5413,6 +5414,12 @@ class GatewayRunner:
                     current_model = model_cfg.get("default", "")
                     current_provider = model_cfg.get("provider", current_provider)
                     current_base_url = model_cfg.get("base_url", "")
+                    try:
+                        _raw_ctx = model_cfg.get("context_length")
+                        if _raw_ctx is not None:
+                            current_config_context_length = int(_raw_ctx)
+                    except (TypeError, ValueError):
+                        pass
                 user_provs = cfg.get("providers")
                 try:
                     from hermes_cli.config import get_compatible_custom_providers
@@ -5533,6 +5540,7 @@ class GatewayRunner:
                             base_url=result.base_url or current_base_url or "",
                             api_key=result.api_key or current_api_key or "",
                             model_info=mi,
+                            config_context_length=current_config_context_length,
                         )
                         if ctx:
                             lines.append(f"Context: {ctx:,} tokens")
@@ -5680,6 +5688,7 @@ class GatewayRunner:
             base_url=result.base_url or current_base_url or "",
             api_key=result.api_key or current_api_key or "",
             model_info=mi,
+            config_context_length=current_config_context_length,
         )
         if ctx:
             lines.append(f"Context: {ctx:,} tokens")

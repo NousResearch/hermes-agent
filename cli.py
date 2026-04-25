@@ -5390,6 +5390,11 @@ class HermesCLI:
         try:
             _cfg_ctx = int(_cfg_ctx) if _cfg_ctx is not None else None
         except (TypeError, ValueError):
+            logger.warning(
+                "model.context_length in config.yaml is not a valid integer (%r); "
+                "ignoring override — set it to a plain integer (e.g. 32768).",
+                _cfg_ctx,
+            )
             _cfg_ctx = None
         ctx = resolve_display_context_length(
             result.new_model,

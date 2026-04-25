@@ -503,10 +503,10 @@ class TestGetModelContextLength:
     @patch("agent.model_metadata.fetch_model_metadata")
     @patch("agent.model_metadata.fetch_endpoint_model_metadata")
     def test_custom_endpoint_without_metadata_falls_through_to_catalog(self, mock_endpoint_fetch, mock_fetch):
-        """When a custom endpoint returns no /models metadata, resolution falls through
-        to catalog sources (hardcoded defaults, models.dev).  For a model whose name
-        matches a hardcoded entry (zai-org/GLM-5 → 202752), that value should win
-        rather than the generic 128K fallback."""
+        """When a custom endpoint returns no /models metadata, resolution short-circuits
+        to the hardcoded catalog (avoiding unnecessary OpenRouter network calls).
+        For a model whose name matches a hardcoded entry (zai-org/GLM-5 → 202752),
+        that value should win rather than the generic 128K fallback."""
         mock_fetch.return_value = {}
         mock_endpoint_fetch.return_value = {}
 
@@ -517,7 +517,25 @@ class TestGetModelContextLength:
         )
 
         assert result == 202752, (
-            "Custom endpoint probe miss should fall through to hardcoded DEFAULT_CONTEXT_LENGTHS"
+            "Custom endpoint probe miss should short-circuit to hardcoded DEFAULT_CONTEXT_LENGTHS"
+        )
+
+    @patch("agent.model_metadata.fetch_model_metadata")
+    @patch("agent.model_metadata.fetch_endpoint_model_metadata")
+    def test_custom_endpoint_unknown_model_conservative_fallback(self, mock_endpoint_fetch, mock_fetch):
+        """When a custom endpoint probe misses and no catalog entry matches,
+        use a conservative 8192 fallback (not 128K) to avoid overcommitting."""
+        mock_fetch.return_value = {}
+        mock_endpoint_fetch.return_value = {}
+
+        result = get_model_context_length(
+            "totally-proprietary-internal-model-xyz",
+            base_url="https://internal.corp.example.com/v1",
+            api_key="test-key",
+        )
+
+        assert result == 8192, (
+            "Unknown custom endpoint model should fall back to conservative 8192, not 128K"
         )
 
     @patch("agent.model_metadata.fetch_model_metadata")

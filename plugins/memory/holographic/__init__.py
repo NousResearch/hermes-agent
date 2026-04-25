@@ -100,7 +100,7 @@ def _load_plugin_config() -> dict:
         return {}
     try:
         import yaml
-        with open(config_path) as f:
+        with open(config_path, encoding="utf-8") as f:
             all_config = yaml.safe_load(f) or {}
         return all_config.get("plugins", {}).get("hermes-memory-store", {}) or {}
     except Exception:
@@ -135,11 +135,11 @@ class HolographicMemoryProvider(MemoryProvider):
             import yaml
             existing = {}
             if config_path.exists():
-                with open(config_path) as f:
+                with open(config_path, encoding="utf-8") as f:
                     existing = yaml.safe_load(f) or {}
             existing.setdefault("plugins", {})
             existing["plugins"]["hermes-memory-store"] = values
-            with open(config_path, "w") as f:
+            with open(config_path, "w", encoding="utf-8") as f:
                 yaml.dump(existing, f, default_flow_style=False)
         except Exception:
             pass

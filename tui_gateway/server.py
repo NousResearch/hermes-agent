@@ -453,7 +453,7 @@ def _load_cfg() -> dict:
             if _cfg_cache is not None and _cfg_mtime == mtime:
                 return copy.deepcopy(_cfg_cache)
         if p.exists():
-            with open(p) as f:
+            with open(p, encoding="utf-8") as f:
                 data = yaml.safe_load(f) or {}
         else:
             data = {}
@@ -471,7 +471,7 @@ def _save_cfg(cfg: dict):
     import yaml
 
     path = _hermes_home / "config.yaml"
-    with open(path, "w") as f:
+    with open(path, "w", encoding="utf-8") as f:
         yaml.safe_dump(cfg, f)
     with _cfg_lock:
         _cfg_cache = copy.deepcopy(cfg)
@@ -1766,7 +1766,7 @@ def _(rid, params: dict) -> dict:
         f"hermes_conversation_{_time.strftime('%Y%m%d_%H%M%S')}.json"
     )
     try:
-        with open(filename, "w") as f:
+        with open(filename, "w", encoding="utf-8") as f:
             json.dump(
                 {
                     "model": getattr(session["agent"], "model", ""),

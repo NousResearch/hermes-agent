@@ -4,7 +4,7 @@ Covers the fallback logic in _get_session_info() when a cloud provider
 is configured but fails at runtime (issue #10883).
 """
 import logging
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 
 import pytest
 
@@ -164,3 +164,39 @@ class TestCloudProviderRuntimeFallback:
 
         assert session["fallback_from_cloud"] is True
         assert "invalid session" in session["fallback_reason"]
+
+    def test_browserbase_quota_failure_falls_back_to_managed_browser_use(self, monkeypatch):
+        """Browserbase quota failures should retry via Nous-backed Browser Use before local."""
+        _reset_session_state(monkeypatch)
+
+        browserbase = Mock()
+        browserbase.provider_name.return_value = "Browserbase"
+        browserbase.create_session.side_effect = RuntimeError(
+            "Failed to create Browserbase session: 429 quota exceeded"
+        )
+        browser_use = Mock()
+        browser_use.provider_name.return_value = "Browser Use"
+        browser_use.is_configured.return_value = True
+        browser_use.create_session.return_value = {
+            "session_name": "nous-sess",
+            "bb_session_id": "bu_123",
+            "cdp_url": None,
+            "features": {"browser_use": True},
+        }
+
+        monkeypatch.setattr(browser_tool, "_get_cloud_provider", lambda: browserbase)
+        monkeypatch.setattr(browser_tool, "_get_cdp_override", lambda: None)
+        monkeypatch.setattr(browser_tool, "BrowserbaseProvider", lambda: browserbase)
+        monkeypatch.setattr(browser_tool, "BrowserUseProvider", lambda: browser_use)
+        create_local = Mock(side_effect=AssertionError("should not fall back to local"))
+        monkeypatch.setattr(browser_tool, "_create_local_session", create_local)
+
+        session = browser_tool._get_session_info("task-8")
+
+        assert session["session_name"] == "nous-sess"
+        assert session["fallback_from_cloud"] is True
+        assert session["fallback_provider"] == "Browserbase"
+        assert session["fallback_to_provider"] == "Browser Use"
+        assert "quota exceeded" in session["fallback_reason"]
+        browser_use.create_session.assert_called_once_with("task-8")
+        create_local.assert_not_called()

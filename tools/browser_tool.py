@@ -495,6 +495,86 @@ def _termux_browser_install_error() -> str:
     )
 
 
+def _provider_display_name(provider: CloudBrowserProvider) -> str:
+    """Return a stable human-readable provider name for logs/metadata."""
+    provider_name = getattr(provider, "provider_name", None)
+    if callable(provider_name):
+        try:
+            name = provider_name()
+            if isinstance(name, str) and name:
+                return name
+        except Exception:
+            pass
+    return type(provider).__name__
+
+
+def _is_browserbase_provider(provider: CloudBrowserProvider) -> bool:
+    """Return True when provider represents the direct Browserbase backend."""
+    try:
+        if isinstance(provider, BrowserbaseProvider):
+            return True
+    except TypeError:
+        # Tests may monkeypatch BrowserbaseProvider with a factory function.
+        pass
+    return _provider_display_name(provider).lower() == "browserbase"
+
+
+def _is_quota_or_limit_error(error: Exception) -> bool:
+    """Return True for errors where paid/managed fallback is appropriate."""
+    message = str(error).lower()
+    limit_markers = (
+        "402",
+        "429",
+        "quota",
+        "rate limit",
+        "rate-limit",
+        "rate_limit",
+        "limit exceeded",
+        "usage limit",
+        "insufficient credits",
+        "payment required",
+        "too many requests",
+    )
+    return any(marker in message for marker in limit_markers)
+
+
+def _try_browser_use_fallback(
+    *,
+    failed_provider: CloudBrowserProvider,
+    error: Exception,
+    task_id: str,
+) -> Optional[Dict[str, object]]:
+    """Fallback from exhausted Browserbase credits to Browser Use/Nous when available."""
+    if not _is_browserbase_provider(failed_provider) or not _is_quota_or_limit_error(error):
+        return None
+
+    browser_use = BrowserUseProvider()
+    if not browser_use.is_configured():
+        return None
+
+    failed_name = _provider_display_name(failed_provider)
+    target_name = _provider_display_name(browser_use)
+    logger.warning(
+        "Cloud provider %s hit quota/limit error (%s); attempting fallback to %s for task %s",
+        failed_name,
+        error,
+        target_name,
+        task_id,
+        exc_info=True,
+    )
+    session_info = browser_use.create_session(task_id)
+    if not session_info or not isinstance(session_info, dict):
+        raise ValueError(f"Fallback provider {target_name} returned invalid session: {session_info!r}")
+    session_info = dict(session_info)
+    if session_info.get("cdp_url"):
+        session_info["cdp_url"] = _resolve_cdp_override(str(session_info["cdp_url"]))
+    session_info["fallback_from_cloud"] = True
+    session_info["fallback_reason"] = str(error)
+    session_info["fallback_provider"] = failed_name
+    session_info["fallback_to_provider"] = target_name
+    return session_info
+
+
 def _is_local_mode() -> bool:
     """Return True when the browser tool will use a local browser backend."""
     if _get_cdp_override():
@@ -1591,27 +1671,38 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
                     session_info = dict(session_info)
                     session_info["cdp_url"] = _resolve_cdp_override(str(session_info["cdp_url"]))
             except Exception as e:
-                provider_name = type(provider).__name__
-                logger.warning(
-                    "Cloud provider %s failed (%s); attempting fallback to local "
-                    "Chromium for task %s",
-                    provider_name, e, task_id,
-                    exc_info=True,
-                )
+                provider_name = _provider_display_name(provider)
                 try:
-                    session_info = _create_local_session(task_id)
-                except Exception as local_error:
+                    session_info = _try_browser_use_fallback(
+                        failed_provider=provider,
+                        error=e,
+                        task_id=task_id,
+                    )
+                except Exception as managed_error:
                     raise RuntimeError(
-                        f"Cloud provider {provider_name} failed ({e}) and local "
-                        f"fallback also failed ({local_error})"
+                        f"Cloud provider {provider_name} failed ({e}) and Browser Use "
+                        f"fallback also failed ({managed_error})"
                     ) from e
-                # Mark session as degraded for observability
-                if isinstance(session_info, dict):
-                    session_info = dict(session_info)
-                    session_info["fallback_from_cloud"] = True
-                    session_info["fallback_reason"] = str(e)
-                    session_info["fallback_provider"] = provider_name
-
+                if session_info is None:
+                    logger.warning(
+                        "Cloud provider %s failed (%s); attempting fallback to local "
+                        "Chromium for task %s",
+                        provider_name, e, task_id,
+                        exc_info=True,
+                    )
+                    try:
+                        session_info = _create_local_session(task_id)
+                    except Exception as local_error:
+                        raise RuntimeError(
+                            f"Cloud provider {provider_name} failed ({e}) and local "
+                            f"fallback also failed ({local_error})"
+                        ) from e
+                    # Mark local fallback session as degraded for observability.
+                    if isinstance(session_info, dict):
+                        session_info = dict(session_info)
+                        session_info["fallback_from_cloud"] = True
+                        session_info["fallback_reason"] = str(e)
+                        session_info["fallback_provider"] = provider_name
     with _cleanup_lock:
         # Double-check: another thread may have created a session while we
         # were doing the network call. Use the existing one to avoid leaking

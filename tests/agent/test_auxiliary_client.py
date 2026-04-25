@@ -863,6 +863,79 @@ class TestIsConnectionError:
         assert _is_connection_error(err) is False
 
 
+class TestUnsupportedTemperatureRetry:
+    """Auxiliary calls retry once without temperature when endpoints reject it."""
+
+    def test_sync_call_retries_without_temperature(self):
+        client = MagicMock()
+        client.base_url = "https://chatgpt.com/backend-api/codex"
+        response = MagicMock()
+        client.chat.completions.create.side_effect = [
+            Exception("HTTP 400: Error code: 400 - {'detail': 'Unsupported parameter: temperature'}"),
+            response,
+        ]
+
+        with patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "gpt-5.5"),
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", "gpt-5.5", None, None, None),
+        ), patch(
+            "agent.auxiliary_client._validate_llm_response",
+            side_effect=lambda resp, _task: resp,
+        ):
+            result = call_llm(
+                task="flush_memories",
+                messages=[{"role": "user", "content": "hello"}],
+                temperature=0.3,
+                max_tokens=5120,
+            )
+
+        assert result is response
+        assert client.chat.completions.create.call_count == 2
+        first_kwargs = client.chat.completions.create.call_args_list[0].kwargs
+        second_kwargs = client.chat.completions.create.call_args_list[1].kwargs
+        assert first_kwargs["temperature"] == 0.3
+        assert "temperature" not in second_kwargs
+        assert second_kwargs["max_tokens"] == 5120
+
+    @pytest.mark.asyncio
+    async def test_async_call_retries_without_temperature(self):
+        client = MagicMock()
+        client.base_url = "https://chatgpt.com/backend-api/codex"
+        response = MagicMock()
+        client.chat.completions.create = AsyncMock(side_effect=[
+            Exception("HTTP 400: Error code: 400 - {'detail': 'Unsupported parameter: temperature'}"),
+            response,
+        ])
+
+        with patch(
+            "agent.auxiliary_client._get_cached_client",
+            return_value=(client, "gpt-5.5"),
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", "gpt-5.5", None, None, None),
+        ), patch(
+            "agent.auxiliary_client._validate_llm_response",
+            side_effect=lambda resp, _task: resp,
+        ):
+            result = await async_call_llm(
+                task="session_search",
+                messages=[{"role": "user", "content": "hello"}],
+                temperature=0.3,
+                max_tokens=5120,
+            )
+
+        assert result is response
+        assert client.chat.completions.create.await_count == 2
+        first_kwargs = client.chat.completions.create.call_args_list[0].kwargs
+        second_kwargs = client.chat.completions.create.call_args_list[1].kwargs
+        assert first_kwargs["temperature"] == 0.3
+        assert "temperature" not in second_kwargs
+        assert second_kwargs["max_tokens"] == 5120
+
+
 class TestKimiTemperatureOmitted:
     """Kimi/Moonshot models should have temperature OMITTED from API kwargs.
 

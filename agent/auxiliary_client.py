@@ -2796,6 +2796,19 @@ def _build_call_kwargs(
     return kwargs
 
 
+def _is_unsupported_temperature_error(exc: Exception) -> bool:
+    """True when a provider rejects the temperature request parameter.
+
+    Some OpenAI-compatible endpoints (notably Codex Responses-compatible
+    gateways) reject ``temperature`` with messages like
+    ``Unsupported parameter: temperature`` instead of the newer
+    ``unsupported_parameter`` code.  Auxiliary callers frequently pass a
+    conservative temperature for generic models, so retry once without it.
+    """
+    msg = str(exc).lower()
+    return "temperature" in msg and ("unsupported" in msg or "not support" in msg)
+
+
 def _validate_llm_response(response: Any, task: str = None) -> Any:
     """Validate that an LLM response has the expected .choices[0].message shape.
 
@@ -2958,6 +2971,19 @@ def call_llm(
             client.chat.completions.create(**kwargs), task)
     except Exception as first_err:
         err_str = str(first_err)
+        if _is_unsupported_temperature_error(first_err) and "temperature" in kwargs:
+            kwargs.pop("temperature", None)
+            try:
+                return _validate_llm_response(
+                    client.chat.completions.create(**kwargs), task)
+            except Exception as retry_err:
+                # If the temperature retry also hits a payment or connection
+                # error, fall through to the fallback chain below.
+                if not (_is_payment_error(retry_err) or _is_connection_error(retry_err)):
+                    raise
+                first_err = retry_err
+                err_str = str(first_err)
+
         if "max_tokens" in err_str or "unsupported_parameter" in err_str:
             kwargs.pop("max_tokens", None)
             kwargs["max_completion_tokens"] = max_tokens
@@ -3222,6 +3248,19 @@ async def async_call_llm(
             await client.chat.completions.create(**kwargs), task)
     except Exception as first_err:
         err_str = str(first_err)
+        if _is_unsupported_temperature_error(first_err) and "temperature" in kwargs:
+            kwargs.pop("temperature", None)
+            try:
+                return _validate_llm_response(
+                    await client.chat.completions.create(**kwargs), task)
+            except Exception as retry_err:
+                # If the temperature retry also hits a payment or connection
+                # error, fall through to the fallback chain below.
+                if not (_is_payment_error(retry_err) or _is_connection_error(retry_err)):
+                    raise
+                first_err = retry_err
+                err_str = str(first_err)
+
         if "max_tokens" in err_str or "unsupported_parameter" in err_str:
             kwargs.pop("max_tokens", None)
             kwargs["max_completion_tokens"] = max_tokens

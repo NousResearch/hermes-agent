@@ -560,7 +560,7 @@ def resolve_skin() -> dict:
 
 
 def _resolve_model() -> str:
-    env = os.environ.get("HERMES_MODEL", "")
+    env = os.environ.get("HERMES_MODEL", "") or os.environ.get("HERMES_INFERENCE_MODEL", "")
     if env:
         return env
     m = _load_cfg().get("model", "")
@@ -569,6 +569,40 @@ def _resolve_model() -> str:
     if isinstance(m, str) and m:
         return m
     return "anthropic/claude-sonnet-4"
+
+
+def _resolve_startup_runtime() -> tuple[str, str | None]:
+    model = _resolve_model()
+    explicit_provider = (
+        os.environ.get("HERMES_TUI_PROVIDER", "")
+        or os.environ.get("HERMES_INFERENCE_PROVIDER", "")
+    ).strip()
+    if explicit_provider:
+        return model, explicit_provider
+
+    explicit_model = (
+        os.environ.get("HERMES_MODEL", "")
+        or os.environ.get("HERMES_INFERENCE_MODEL", "")
+    ).strip()
+    if not explicit_model:
+        return model, None
+
+    try:
+        from hermes_cli.models import detect_provider_for_model
+
+        cfg = _load_cfg().get("model") or {}
+        current_provider = (
+            str(cfg.get("provider") or "").strip().lower()
+            if isinstance(cfg, dict)
+            else ""
+        ) or "auto"
+        detected = detect_provider_for_model(explicit_model, current_provider)
+        if detected:
+            provider, detected_model = detected
+            return detected_model, provider
+    except Exception:
+        pass
+    return model, None
 
 
 def _write_config_key(key_path: str, value):
@@ -1277,9 +1311,13 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
 
     cfg = _load_cfg()
     system_prompt = ((cfg.get("agent") or {}).get("system_prompt", "") or "").strip()
-    runtime = resolve_runtime_provider(requested=None)
+    model, requested_provider = _resolve_startup_runtime()
+    runtime = resolve_runtime_provider(
+        requested=requested_provider,
+        target_model=model or None,
+    )
     return AIAgent(
-        model=_resolve_model(),
+        model=model,
         provider=runtime.get("provider"),
         base_url=runtime.get("base_url"),
         api_key=runtime.get("api_key"),

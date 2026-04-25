@@ -83,6 +83,40 @@ def test_status_callback_accepts_single_message_argument():
     )
 
 
+def test_resolve_model_uses_inference_model_env(monkeypatch):
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    monkeypatch.setenv("HERMES_INFERENCE_MODEL", "anthropic/claude-sonnet-4.6")
+
+    assert server._resolve_model() == "anthropic/claude-sonnet-4.6"
+
+
+def test_startup_runtime_uses_tui_provider_env(monkeypatch):
+    monkeypatch.setenv("HERMES_MODEL", "nous/hermes-test")
+    monkeypatch.setenv("HERMES_TUI_PROVIDER", "nous")
+    monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
+
+    assert server._resolve_startup_runtime() == ("nous/hermes-test", "nous")
+
+
+def test_startup_runtime_detects_provider_for_model_env(monkeypatch):
+    monkeypatch.setenv("HERMES_MODEL", "sonnet")
+    monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"model": {"provider": "auto"}})
+
+    def fake_detect(model, current_provider):
+        assert model == "sonnet"
+        assert current_provider == "auto"
+        return "anthropic", "anthropic/claude-sonnet-4.6"
+
+    monkeypatch.setattr("hermes_cli.models.detect_provider_for_model", fake_detect)
+
+    assert server._resolve_startup_runtime() == (
+        "anthropic/claude-sonnet-4.6",
+        "anthropic",
+    )
+
+
 def _session(agent=None, **extra):
     return {
         "agent": agent if agent is not None else types.SimpleNamespace(),

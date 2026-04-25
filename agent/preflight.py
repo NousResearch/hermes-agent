@@ -97,14 +97,29 @@ _RULES = (
         re.compile(r"\b(?:alter\s+table|migrate|migration|schema\s+change)\b", re.IGNORECASE),
     ),
     _Rule(
+        "credential_rotation",
+        3,
+        re.compile(r"\b(?:rotate|rotation|regenerate|reissue)\b[^\n]*(?:credential|secret|token|api[_-]?key|signing\s+secret)", re.IGNORECASE),
+    ),
+    _Rule(
+        "deployment_or_production",
+        2,
+        re.compile(r"\b(?:deploy|release|rollout|promote)\b[^\n]*(?:prod|production|live)|\bproduction\s+(?:deploy|release|rollout)\b", re.IGNORECASE),
+    ),
+    _Rule(
+        "dependency_change",
+        2,
+        re.compile(r"\b(?:upgrade|update|bump|install)\b[^\n]*(?:dependenc|package|pip|npm|pnpm|yarn|brew|requirements|pyproject)", re.IGNORECASE),
+    ),
+    _Rule(
         "external_side_effect",
         2,
         re.compile(r"\b(?:slack\s+send|email|post\s+to|publish)\b", re.IGNORECASE),
     ),
     _Rule(
         "mass_scope",
-        2,
-        re.compile(r"\b(?:all\s+users|every\s+file|--all)\b|\*\*/\*", re.IGNORECASE),
+        3,
+        re.compile(r"\b(?:all\s+users|every\s+(?:file|python\s+file)|all\s+files|entire\s+repository|whole\s+repo|--all)\b|\*\*/\*", re.IGNORECASE),
     ),
     _Rule(
         "hot_path_edit",

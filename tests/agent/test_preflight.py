@@ -97,7 +97,39 @@ def test_classifier_is_deterministic_and_handles_empty_input():
 
 
 def test_classifier_is_case_insensitive():
-    report = classify_request("DROP TABLE Users")
+    report = classify_request("RESTART HERMES GATEWAY")
 
     assert report.level == PreflightRiskLevel.HIGH
-    assert "destructive_command" in signal_names(report)
+    assert "runtime_process_control" in signal_names(report)
+
+
+def test_production_deploy_is_medium_risk_and_recommends_review():
+    report = classify_request("Deploy the new build to production after tests pass")
+
+    assert report.level == PreflightRiskLevel.MEDIUM
+    assert "deployment_or_production" in signal_names(report)
+    assert PreflightRecommendation.TDD in report.recommendations
+    assert PreflightRecommendation.CLAUDE_REVIEW in report.recommendations
+
+
+def test_dependency_update_is_medium_risk():
+    report = classify_request("Upgrade the requests package and update dependencies")
+
+    assert report.level == PreflightRiskLevel.MEDIUM
+    assert "dependency_change" in signal_names(report)
+
+
+def test_credential_rotation_requires_explicit_approval():
+    report = classify_request("Rotate the Slack signing secret and API token")
+
+    assert report.level == PreflightRiskLevel.HIGH
+    assert "credential_rotation" in signal_names(report)
+    assert PreflightRecommendation.EXPLICIT_APPROVAL in report.recommendations
+
+
+def test_mass_refactor_scope_combines_with_code_change_intent():
+    report = classify_request("Refactor every Python file in the repository")
+
+    assert report.level == PreflightRiskLevel.HIGH
+    assert "mass_scope" in signal_names(report)
+    assert PreflightRecommendation.EXPLICIT_APPROVAL in report.recommendations

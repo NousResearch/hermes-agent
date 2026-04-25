@@ -8255,15 +8255,16 @@ class AIAgent:
         if num_tools > 0:
             self._apply_pending_steer_to_tool_results(messages, num_tools)
 
-        verifier_records: list[ToolCallRecord] = []
-        for i, (_tc, name, args) in enumerate(parsed_calls):
-            r = results[i]
-            if r is None:
-                status = "skipped" if self._interrupt_requested else "error"
-            else:
-                status = "error" if r[4] else "ok"
-            verifier_records.append(ToolCallRecord(name=name, args=args, status=status))
-        self._run_safe_orchestration_verifier(verifier_records)
+        if env_var_enabled("HERMES_OMC_VERIFIER"):
+            verifier_records: list[ToolCallRecord] = []
+            for i, (_tc, name, args) in enumerate(parsed_calls):
+                r = results[i]
+                if r is None:
+                    status = "skipped" if self._interrupt_requested else "error"
+                else:
+                    status = "error" if r[4] else "ok"
+                verifier_records.append(ToolCallRecord(name=name, args=args, status=status))
+            self._run_safe_orchestration_verifier(verifier_records)
 
     def _execute_tool_calls_sequential(
         self,
@@ -8273,6 +8274,7 @@ class AIAgent:
         api_call_count: int = 0,
     ) -> None:
         """Execute tool calls sequentially (original behavior). Used for single calls or interactive tools."""
+        verifier_enabled = env_var_enabled("HERMES_OMC_VERIFIER")
         verifier_records: list[ToolCallRecord] = []
         for i, tool_call in enumerate(assistant_message.tool_calls, 1):
             # SAFETY: check interrupt BEFORE starting each tool.
@@ -8568,13 +8570,14 @@ class AIAgent:
             # Log tool errors to the persistent error log so [error] tags
             # in the UI always have a corresponding detailed entry on disk.
             _is_error_result, _ = _detect_tool_failure(function_name, function_result)
-            verifier_records.append(
-                ToolCallRecord(
-                    name=function_name,
-                    args=function_args,
-                    status="error" if _is_error_result else "ok",
+            if verifier_enabled:
+                verifier_records.append(
+                    ToolCallRecord(
+                        name=function_name,
+                        args=function_args,
+                        status="error" if _is_error_result else "ok",
+                    )
                 )
-            )
             if _is_error_result:
                 logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
             else:

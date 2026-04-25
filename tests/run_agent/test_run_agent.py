@@ -1396,6 +1396,7 @@ class TestSafeOrchestrationVerifierHook:
 
         with (
             patch("run_agent.handle_function_call", return_value="ok"),
+            patch("run_agent.ToolCallRecord", side_effect=AssertionError("should not build verifier records")),
             patch("run_agent.evaluate_turn", create=True) as mock_evaluate,
         ):
             agent._execute_tool_calls_sequential(
@@ -1495,6 +1496,89 @@ class TestSafeOrchestrationVerifierHook:
 
         assert messages[-1]["content"] == "ok"
         assert "safe orchestration verifier failed" in caplog.text
+
+    def test_concurrent_tool_execution_default_off_skips_verifier_record_assembly(
+        self,
+        agent,
+        monkeypatch,
+    ):
+        monkeypatch.delenv("HERMES_OMC_VERIFIER", raising=False)
+        assistant_message = _mock_assistant_msg(
+            content="",
+            tool_calls=[
+                _mock_tool_call(name="web_search", arguments='{"query":"one"}', call_id="c1"),
+                _mock_tool_call(name="read_file", arguments='{"path":"README.md"}', call_id="c2"),
+            ],
+        )
+        messages = []
+
+        with (
+            patch("run_agent.handle_function_call", return_value="ok"),
+            patch("run_agent.ToolCallRecord", side_effect=AssertionError("should not build verifier records")),
+            patch("run_agent.evaluate_turn", create=True) as mock_evaluate,
+        ):
+            agent._execute_tool_calls_concurrent(
+                assistant_message,
+                messages,
+                effective_task_id="test-task",
+            )
+
+        mock_evaluate.assert_not_called()
+        assert [message["content"] for message in messages] == ["ok", "ok"]
+
+    def test_concurrent_tool_execution_env_on_runs_report_only_verifier(
+        self,
+        agent,
+        monkeypatch,
+        caplog,
+    ):
+        from agent.verifier import VerifierFinding, VerifierReport
+
+        monkeypatch.setenv("HERMES_OMC_VERIFIER", "1")
+        assistant_message = _mock_assistant_msg(
+            content="",
+            tool_calls=[
+                _mock_tool_call(name="web_search", arguments='{"query":"one"}', call_id="c1"),
+                _mock_tool_call(name="read_file", arguments='{"path":"README.md"}', call_id="c2"),
+            ],
+        )
+        messages = []
+        report = VerifierReport(
+            enabled=True,
+            findings=(
+                VerifierFinding(
+                    severity="warning",
+                    code="test_code",
+                    message="report-only",
+                    tool_name="read_file",
+                ),
+            ),
+        )
+
+        with (
+            patch("run_agent.handle_function_call", return_value="ok"),
+            patch("run_agent.evaluate_turn", return_value=report) as mock_evaluate,
+            patch(
+                "run_agent.format_report_summary",
+                return_value="safe orchestration verifier summary: tools=2 findings=1",
+            ) as mock_summary,
+            caplog.at_level(logging.WARNING, logger="run_agent"),
+        ):
+            agent._execute_tool_calls_concurrent(
+                assistant_message,
+                messages,
+                effective_task_id="test-task",
+            )
+
+        mock_evaluate.assert_called_once()
+        records = mock_evaluate.call_args.args[0]
+        assert [(record.name, record.status) for record in records] == [
+            ("web_search", "ok"),
+            ("read_file", "ok"),
+        ]
+        mock_summary.assert_called_once_with(report, records)
+        assert [message["content"] for message in messages] == ["ok", "ok"]
+        assert "safe orchestration verifier summary" in caplog.text
 
 
 class TestBuildAssistantMessage:

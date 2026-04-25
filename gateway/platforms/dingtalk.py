@@ -39,7 +39,7 @@ from typing import Any, Dict, List, Optional, Set
 try:
     import dingtalk_stream
     from dingtalk_stream import ChatbotMessage
-    from dingtalk_stream.frames import CallbackMessage, AckMessage
+    from dingtalk_stream.frames import AckMessage, CallbackMessage
 
     DINGTALK_STREAM_AVAILABLE = True
 except ImportError:
@@ -68,10 +68,14 @@ except ImportError:
 try:
     from alibabacloud_dingtalk.card_1_0 import (
         client as dingtalk_card_client,
+    )
+    from alibabacloud_dingtalk.card_1_0 import (
         models as dingtalk_card_models,
     )
     from alibabacloud_dingtalk.robot_1_0 import (
         client as dingtalk_robot_client,
+    )
+    from alibabacloud_dingtalk.robot_1_0 import (
         models as dingtalk_robot_models,
     )
     from alibabacloud_tea_openapi import models as open_api_models
@@ -88,13 +92,13 @@ except ImportError:
     tea_util_models = None
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
     SendResult,
 )
+from gateway.platforms.helpers import MessageDeduplicator
 
 logger = logging.getLogger(__name__)
 

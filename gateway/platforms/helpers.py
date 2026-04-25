@@ -11,10 +11,10 @@ import logging
 import re
 import time
 from pathlib import Path
-from typing import TYPE_CHECKING, Dict, Optional
+from typing import TYPE_CHECKING, Dict
 
 if TYPE_CHECKING:
-    from gateway.platforms.base import BasePlatformAdapter, MessageEvent
+    from gateway.platforms.base import MessageEvent
 
 logger = logging.getLogger(__name__)
 

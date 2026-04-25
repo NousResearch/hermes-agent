@@ -24,14 +24,15 @@ import re
 import smtplib
 import ssl
 import uuid
+from email import encoders
 from email.header import decode_header
+from email.mime.base import MIMEBase
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from email.mime.base import MIMEBase
-from email import encoders
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -40,7 +41,6 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     cache_image_from_bytes,
 )
-from gateway.config import Platform, PlatformConfig
 
 logger = logging.getLogger(__name__)
 # Automated sender patterns — emails from these are silently ignored

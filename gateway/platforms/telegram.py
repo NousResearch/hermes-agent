@@ -8,31 +8,39 @@ Uses python-telegram-bot library for:
 """
 
 import asyncio
+import html as _html
 import json
 import logging
 import os
-import tempfile
-import html as _html
 import re
-from typing import Dict, List, Optional, Any
+import tempfile
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
 try:
-    from telegram import Update, Bot, Message, InlineKeyboardButton, InlineKeyboardMarkup
+    from telegram import (
+        Bot,
+        InlineKeyboardButton,
+        InlineKeyboardMarkup,
+        Message,
+        Update,
+    )
     try:
         from telegram import LinkPreviewOptions
     except ImportError:
         LinkPreviewOptions = None
+    from telegram.constants import ChatType, ParseMode
     from telegram.ext import (
         Application,
-        CommandHandler,
         CallbackQueryHandler,
-        MessageHandler as TelegramMessageHandler,
+        CommandHandler,
         ContextTypes,
         filters,
     )
-    from telegram.constants import ParseMode, ChatType
+    from telegram.ext import (
+        MessageHandler as TelegramMessageHandler,
+    )
     from telegram.request import HTTPXRequest
     TELEGRAM_AVAILABLE = True
 except ImportError:
@@ -60,24 +68,25 @@ except ImportError:
 
 import sys
 from pathlib import Path as _Path
+
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
+    SUPPORTED_DOCUMENT_TYPES,
+    SUPPORTED_VIDEO_TYPES,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
     ProcessingOutcome,
     SendResult,
-    cache_image_from_bytes,
-    cache_audio_from_bytes,
-    cache_video_from_bytes,
-    cache_document_from_bytes,
-    resolve_proxy_url,
-    SUPPORTED_VIDEO_TYPES,
-    SUPPORTED_DOCUMENT_TYPES,
-    utf16_len,
     _prefix_within_utf16_limit,
+    cache_audio_from_bytes,
+    cache_document_from_bytes,
+    cache_image_from_bytes,
+    cache_video_from_bytes,
+    resolve_proxy_url,
+    utf16_len,
 )
 from gateway.platforms.telegram_network import (
     TelegramFallbackTransport,
@@ -869,6 +878,7 @@ class TelegramAdapter(BasePlatformAdapter):
             # gateway command there automatically adds it to the Telegram menu.
             try:
                 from telegram import BotCommand
+
                 from hermes_cli.commands import telegram_menu_commands
                 # Telegram allows up to 100 commands but has an undocumented
                 # payload size limit.  Skill descriptions are truncated to 40
@@ -2813,11 +2823,11 @@ class TelegramAdapter(BasePlatformAdapter):
         a placeholder noting the emoji.
         """
         from gateway.sticker_cache import (
-            get_cached_description,
-            cache_sticker_description,
-            build_sticker_injection,
-            build_animated_sticker_injection,
             STICKER_VISION_PROMPT,
+            build_animated_sticker_injection,
+            build_sticker_injection,
+            cache_sticker_description,
+            get_cached_description,
         )
 
         sticker = msg.sticker

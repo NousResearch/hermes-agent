@@ -58,7 +58,6 @@ except ImportError:
     httpx = None  # type: ignore[assignment]
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -67,6 +66,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     cache_image_from_bytes,
 )
+from gateway.platforms.helpers import MessageDeduplicator
 
 logger = logging.getLogger(__name__)
 
@@ -1500,8 +1500,8 @@ def qr_scan_for_bot_info(
     The same pattern is used by the feishu/dingtalk QR setup wizards.
     """
     try:
-        import urllib.request
         import urllib.parse
+        import urllib.request
     except ImportError:  # pragma: no cover
         logger.error("urllib is required for WeCom QR scan")
         return None

@@ -93,31 +93,33 @@ class QQCloseError(Exception):
 
 from gateway.platforms.qqbot.constants import (
     API_BASE,
-    TOKEN_URL,
-    GATEWAY_URL_PATH,
+    CONNECT_TIMEOUT_SECONDS,
+    DEDUP_MAX_SIZE,
+    DEDUP_WINDOW_SECONDS,
     DEFAULT_API_TIMEOUT,
     FILE_UPLOAD_TIMEOUT,
-    CONNECT_TIMEOUT_SECONDS,
-    RECONNECT_BACKOFF,
-    MAX_RECONNECT_ATTEMPTS,
-    RATE_LIMIT_DELAY,
-    QUICK_DISCONNECT_THRESHOLD,
-    MAX_QUICK_DISCONNECT_COUNT,
+    GATEWAY_URL_PATH,
     MAX_MESSAGE_LENGTH,
-    DEDUP_WINDOW_SECONDS,
-    DEDUP_MAX_SIZE,
-    MSG_TYPE_TEXT,
-    MSG_TYPE_MARKDOWN,
-    MSG_TYPE_MEDIA,
-    MSG_TYPE_INPUT_NOTIFY,
+    MAX_QUICK_DISCONNECT_COUNT,
+    MAX_RECONNECT_ATTEMPTS,
+    MEDIA_TYPE_FILE,
     MEDIA_TYPE_IMAGE,
     MEDIA_TYPE_VIDEO,
     MEDIA_TYPE_VOICE,
-    MEDIA_TYPE_FILE,
+    MSG_TYPE_INPUT_NOTIFY,
+    MSG_TYPE_MARKDOWN,
+    MSG_TYPE_MEDIA,
+    MSG_TYPE_TEXT,
+    QUICK_DISCONNECT_THRESHOLD,
+    RATE_LIMIT_DELAY,
+    RECONNECT_BACKOFF,
+    TOKEN_URL,
+)
+from gateway.platforms.qqbot.utils import (
+    build_user_agent,
 )
 from gateway.platforms.qqbot.utils import (
     coerce_list as _coerce_list_impl,
-    build_user_agent,
 )
 
 

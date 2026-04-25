@@ -23,6 +23,7 @@ import threading
 logger = logging.getLogger("hooks.boot-md")
 
 from hermes_constants import get_hermes_home
+
 HERMES_HOME = get_hermes_home()
 BOOT_FILE = HERMES_HOME / "BOOT.md"
 

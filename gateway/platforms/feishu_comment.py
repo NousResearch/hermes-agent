@@ -974,7 +974,6 @@ def build_whole_comment_prompt(
 
 def _resolve_model_and_runtime() -> Tuple[str, dict]:
     """Resolve model and provider credentials, same as gateway message handling."""
-    import os
     from gateway.run import _load_gateway_config, _resolve_gateway_model
 
     user_config = _load_gateway_config()
@@ -1165,7 +1164,12 @@ async def handle_drive_comment_event(
     )
 
     # Access control
-    from gateway.platforms.feishu_comment_rules import load_config, resolve_rule, is_user_allowed, has_wiki_keys
+    from gateway.platforms.feishu_comment_rules import (
+        has_wiki_keys,
+        is_user_allowed,
+        load_config,
+        resolve_rule,
+    )
 
     comments_cfg = load_config()
     rule = resolve_rule(comments_cfg, file_type, file_token)

@@ -338,17 +338,16 @@ def proxy_kwargs_for_aiohttp(proxy_url: str | None) -> tuple[dict, dict]:
 
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
-from typing import Dict, List, Optional, Any, Callable, Awaitable, Tuple
 from enum import Enum
-
+from pathlib import Path
 from pathlib import Path as _Path
+from typing import Any, Awaitable, Callable, Dict, List, Optional, Tuple
+
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
 from gateway.config import Platform, PlatformConfig
 from gateway.session import SessionSource, build_session_key
 from hermes_constants import get_hermes_dir
-
 
 GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE = (
     "Secure secret entry is not supported over messaging. "
@@ -2221,7 +2220,10 @@ class BasePlatformAdapter(ABC):
                         and not media_files
                         and event.source.chat_id not in self._auto_tts_disabled_chats):
                     try:
-                        from tools.tts_tool import text_to_speech_tool, check_tts_requirements
+                        from tools.tts_tool import (
+                            check_tts_requirements,
+                            text_to_speech_tool,
+                        )
                         if check_tts_requirements():
                             import json as _json
                             speech_text = re.sub(r'[*_`#\[\]()]', '', text_content)[:4000].strip()

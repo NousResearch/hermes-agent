@@ -53,7 +53,6 @@ except ImportError:  # pragma: no cover - dependency gate
     CRYPTO_AVAILABLE = False
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.helpers import MessageDeduplicator
 from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
@@ -63,6 +62,7 @@ from gateway.platforms.base import (
     cache_document_from_bytes,
     cache_image_from_bytes,
 )
+from gateway.platforms.helpers import MessageDeduplicator
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 
@@ -110,6 +110,7 @@ def _make_ssl_connector() -> Optional["aiohttp.TCPConnector"]:
     """
     try:
         import ssl
+
         import certifi
     except ImportError:
         return None

@@ -9,15 +9,15 @@ Handles:
 """
 
 import hashlib
+import json
 import logging
 import os
-import json
 import threading
 import uuid
-from pathlib import Path
-from datetime import datetime, timedelta
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Any
+from datetime import datetime, timedelta
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -55,14 +55,14 @@ def _hash_chat_id(value: str) -> str:
 
 
 from .config import (
-    Platform,
     GatewayConfig,
-    SessionResetPolicy,  # noqa: F401 — re-exported via gateway/__init__.py
     HomeChannel,
+    Platform,
+    SessionResetPolicy,  # noqa: F401 — re-exported via gateway/__init__.py
 )
 from .whatsapp_identity import (
     canonical_whatsapp_identifier,
-    normalize_whatsapp_identifier,
+    normalize_whatsapp_identifier,  # noqa: F401 — re-exported via gateway.session public API
 )
 
 

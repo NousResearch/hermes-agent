@@ -9,10 +9,10 @@ Routes messages to the appropriate destination based on:
 """
 
 import logging
-from pathlib import Path
-from datetime import datetime
 from dataclasses import dataclass
-from typing import Dict, List, Optional, Any
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import get_hermes_home
 
@@ -21,7 +21,7 @@ logger = logging.getLogger(__name__)
 MAX_PLATFORM_OUTPUT = 4000
 TRUNCATED_VISIBLE = 3800
 
-from .config import Platform, GatewayConfig
+from .config import GatewayConfig, Platform
 from .session import SessionSource
 
 

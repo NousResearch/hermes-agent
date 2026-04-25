@@ -19,8 +19,9 @@ import subprocess
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
-from hermes_constants import get_hermes_home
 from typing import Any, Optional
+
+from hermes_constants import get_hermes_home
 
 if sys.platform == "win32":
     import msvcrt

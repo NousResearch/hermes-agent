@@ -18,7 +18,7 @@ import tempfile
 import threading
 import time
 from collections import defaultdict
-from typing import Callable, Dict, Optional, Any
+from typing import Any, Callable, Dict, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -27,7 +27,8 @@ _DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
 
 try:
     import discord
-    from discord import Message as DiscordMessage, Intents
+    from discord import Intents
+    from discord import Message as DiscordMessage
     from discord.ext import commands
     DISCORD_AVAILABLE = True
 except ImportError:
@@ -39,25 +40,26 @@ except ImportError:
 
 import sys
 from pathlib import Path as _Path
+
 sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 
-from gateway.config import Platform, PlatformConfig
 import re
 
-from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
+from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
+    SUPPORTED_DOCUMENT_TYPES,
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
     ProcessingOutcome,
     SendResult,
-    cache_image_from_url,
-    cache_image_from_bytes,
-    cache_audio_from_url,
     cache_audio_from_bytes,
+    cache_audio_from_url,
     cache_document_from_bytes,
-    SUPPORTED_DOCUMENT_TYPES,
+    cache_image_from_bytes,
+    cache_image_from_url,
 )
+from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
 from tools.url_safety import is_safe_url
 
 
@@ -603,7 +605,7 @@ class DiscordAdapter(BasePlatformAdapter):
             intents.voice_states = True
 
             # Resolve proxy (DISCORD_PROXY > generic env vars > macOS system proxy)
-            from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_bot
+            from gateway.platforms.base import proxy_kwargs_for_bot, resolve_proxy_url
             proxy_url = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
             if proxy_url:
                 logger.info("[%s] Using proxy for Discord: %s", self.name, proxy_url)
@@ -1819,7 +1821,10 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Download the image and send as a Discord file attachment
             # (Discord renders attachments inline, unlike plain URLs)
-            from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+            from gateway.platforms.base import (
+                proxy_kwargs_for_aiohttp,
+                resolve_proxy_url,
+            )
             _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
             _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
             async with aiohttp.ClientSession(**_sess_kw) as session:
@@ -1898,7 +1903,10 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Download the GIF and send as a Discord file attachment
             # (Discord renders .gif attachments as auto-playing animations inline)
-            from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+            from gateway.platforms.base import (
+                proxy_kwargs_for_aiohttp,
+                resolve_proxy_url,
+            )
             _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
             _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
             async with aiohttp.ClientSession(**_sess_kw) as session:
@@ -2358,7 +2366,11 @@ class DiscordAdapter(BasePlatformAdapter):
 
         already_registered: set[str] = set()
         try:
-            from hermes_cli.commands import COMMAND_REGISTRY, _is_gateway_available, _resolve_config_gates
+            from hermes_cli.commands import (
+                COMMAND_REGISTRY,
+                _is_gateway_available,
+                _resolve_config_gates,
+            )
 
             try:
                 already_registered = {cmd.name for cmd in tree.get_commands()}
@@ -3158,7 +3170,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 f"Blocked unsafe attachment URL (SSRF protection): {att.url}"
             )
         import aiohttp
-        from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp
+
+        from gateway.platforms.base import proxy_kwargs_for_aiohttp, resolve_proxy_url
         _proxy = resolve_proxy_url(platform_env_var="DISCORD_PROXY")
         _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(_proxy)
         async with aiohttp.ClientSession(**_sess_kw) as session:

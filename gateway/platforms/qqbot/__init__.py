@@ -18,10 +18,11 @@ New modules:
 from .adapter import (  # noqa: F401
     QQAdapter,
     QQCloseError,
-    check_qq_requirements,
     _coerce_list,
     _ssrf_redirect_guard,
+    check_qq_requirements,
 )
+from .crypto import decrypt_secret, generate_bind_key  # noqa: F401
 
 # -- Onboard (QR-code scan-to-configure) -----------------------------------
 from .onboard import (  # noqa: F401
@@ -29,10 +30,9 @@ from .onboard import (  # noqa: F401
     build_connect_url,
     qr_register,
 )
-from .crypto import decrypt_secret, generate_bind_key  # noqa: F401
 
 # -- Utils -----------------------------------------------------------------
-from .utils import build_user_agent, get_api_headers, coerce_list  # noqa: F401
+from .utils import build_user_agent, coerce_list, get_api_headers  # noqa: F401
 
 __all__ = [
     # adapter

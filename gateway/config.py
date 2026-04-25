@@ -8,13 +8,13 @@ Handles loading and validating configuration for:
 - Delivery preferences
 """
 
+import json
 import logging
 import os
-import json
-from pathlib import Path
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any
 from enum import Enum
+from pathlib import Path
+from typing import Any, Dict, List, Optional
 
 from hermes_cli.config import get_hermes_home
 from utils import is_truthy_value

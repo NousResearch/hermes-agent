@@ -685,22 +685,14 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
             try:
                 job_output_dir = OUTPUT_DIR / source_job_id
                 if not job_output_dir.exists():
-                    prompt = (
-                        f"[Context job '{source_job_id}' has no output yet.]\n\n"
-                        f"{prompt}"
-                    )
-                    continue
+                    continue  # silent skip — no output yet
                 output_files = sorted(
                     job_output_dir.glob("*.md"),
                     key=lambda f: f.stat().st_mtime,
                     reverse=True,
                 )
                 if not output_files:
-                    prompt = (
-                        f"[Context job '{source_job_id}' has no output yet.]\n\n"
-                        f"{prompt}"
-                    )
-                    continue
+                    continue  # silent skip — no output yet
                 latest_output = output_files[0].read_text(encoding="utf-8").strip()
                 # Truncate to 8K characters to avoid prompt bloat
                 _MAX_CONTEXT_CHARS = 8000
@@ -715,16 +707,10 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
                         f"{prompt}"
                     )
                 else:
-                    prompt = (
-                        f"[Context job '{source_job_id}' has no output yet.]\n\n"
-                        f"{prompt}"
-                    )
+                    continue  # silent skip — empty output
             except (OSError, PermissionError) as e:
                 logger.warning("context_from: failed to read output for job %r: %s", source_job_id, e)
-                prompt = (
-                    f"[Context job '{source_job_id}' output could not be read.]\n\n"
-                    f"{prompt}"
-                )
+                # silent skip — do not pollute the prompt with error messages
 
     # Always prepend cron execution guidance so the agent knows how
     # delivery works and can suppress delivery when appropriate.

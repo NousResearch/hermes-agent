@@ -969,8 +969,8 @@ export function getSelectedText(s: SelectionState, screen: Screen): string {
   }
 
   for (let row = start.row; row <= end.row; row++) {
-    const rowStart = row === start.row ? start.col : 0
-    const rowEnd = row === end.row ? end.col : screen.width - 1
+    const rowStart = Math.max(0, row === start.row ? start.col : 0)
+    const rowEnd = Math.min(row === end.row ? end.col : screen.width - 1, screen.width - 1)
     const bounds = selectionContentBounds(screen, row, rowStart, rowEnd)
 
     joinRows(lines, bounds ? extractRowText(screen, row, bounds.first, bounds.last) : '', sw[row]! > 0)

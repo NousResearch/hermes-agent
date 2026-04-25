@@ -55,6 +55,16 @@ describe('selection whitespace handling', () => {
     expect(getSelectedText(selection, screen)).toBe('  x')
   })
 
+  it('clamps copied selection bounds to screen width', () => {
+    const { screen } = screenWithText()
+    const selection = createSelectionState()
+
+    startSelection(selection, 0, 1)
+    updateSelection(selection, 99, 1)
+
+    expect(getSelectedText(selection, screen)).toBe('hi')
+  })
+
   it('does not paint selection background on leading/trailing empty cells or empty rows', () => {
     const { screen, styles } = screenWithText()
     const selection = createSelectionState()

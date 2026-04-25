@@ -89,6 +89,8 @@ class CompressionConfig:
     # Compression targets
     target_max_tokens: int = 15250
     summary_target_tokens: int = 750
+    toon_encode_tool_results: bool = False
+    toon_min_rows: int = 2
     
     # Protected turns
     protect_first_system: bool = True
@@ -139,6 +141,11 @@ class CompressionConfig:
         if 'compression' in data:
             config.target_max_tokens = data['compression'].get('target_max_tokens', config.target_max_tokens)
             config.summary_target_tokens = data['compression'].get('summary_target_tokens', config.summary_target_tokens)
+            config.toon_encode_tool_results = data['compression'].get(
+                'toon_encode_tool_results',
+                config.toon_encode_tool_results,
+            )
+            config.toon_min_rows = data['compression'].get('toon_min_rows', config.toon_min_rows)
         
         # Protected turns
         if 'protected_turns' in data:
@@ -201,6 +208,7 @@ class TrajectoryMetrics:
     
     summarization_api_calls: int = 0
     summarization_errors: int = 0
+    toon_encoded_tool_results: int = 0
     
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -221,6 +229,7 @@ class TrajectoryMetrics:
             "skipped_under_target": self.skipped_under_target,
             "summarization_api_calls": self.summarization_api_calls,
             "summarization_errors": self.summarization_errors,
+            "toon_encoded_tool_results": self.toon_encoded_tool_results,
         }
 
 
@@ -243,6 +252,7 @@ class AggregateMetrics:
     
     total_summarization_calls: int = 0
     total_summarization_errors: int = 0
+    total_toon_encoded_tool_results: int = 0
     
     # Distribution stats
     compression_ratios: List[float] = field(default_factory=list)
@@ -264,6 +274,7 @@ class AggregateMetrics:
         self.total_turns_removed += metrics.turns_removed
         self.total_summarization_calls += metrics.summarization_api_calls
         self.total_summarization_errors += metrics.summarization_errors
+        self.total_toon_encoded_tool_results += metrics.toon_encoded_tool_results
         
         if metrics.was_compressed:
             self.trajectories_compressed += 1
@@ -320,6 +331,9 @@ class AggregateMetrics:
                 "total_api_calls": self.total_summarization_calls,
                 "total_errors": self.total_summarization_errors,
                 "success_rate": round(1 - (self.total_summarization_errors / max(self.total_summarization_calls, 1)), 4),
+            },
+            "tool_result_encoding": {
+                "toon_encoded_tool_results": self.total_toon_encoded_tool_results,
             },
             "processing": {
                 "start_time": self.processing_start_time,
@@ -478,6 +492,110 @@ class TrajectoryCompressor:
     def count_turn_tokens(self, trajectory: List[Dict[str, str]]) -> List[int]:
         """Count tokens for each turn in a trajectory."""
         return [self.count_tokens(turn.get("value", "")) for turn in trajectory]
+
+    @staticmethod
+    def _is_tool_turn(turn: Dict[str, Any]) -> bool:
+        """Return whether a turn is a tool response in supported trajectory shapes."""
+        return turn.get("from") == "tool" or turn.get("role") == "tool"
+
+    @staticmethod
+    def _tool_result_text_key(turn: Dict[str, Any]) -> Optional[str]:
+        """Find the text field used by a tool response."""
+        if "value" in turn:
+            return "value"
+        if "content" in turn:
+            return "content"
+        return None
+
+    @staticmethod
+    def _is_toon_field_name(value: Any) -> bool:
+        """Reject field names that would make the compact table ambiguous."""
+        return (
+            isinstance(value, str)
+            and value != ""
+            and not any(char in value for char in "{}|,\n\r")
+        )
+
+    @staticmethod
+    def _toon_cell(value: Any) -> str:
+        """Render one scalar-ish value for a compact TOON-style table cell."""
+        if value is None:
+            text = ""
+        elif isinstance(value, bool):
+            text = "true" if value else "false"
+        elif isinstance(value, (int, float)):
+            text = str(value)
+        elif isinstance(value, str):
+            text = value
+        else:
+            text = json.dumps(value, ensure_ascii=False, separators=(",", ":"))
+        return (
+            text
+            .replace("\\", "\\\\")
+            .replace("\r", "\\r")
+            .replace("\n", "\\n")
+            .replace("|", "\\|")
+        )
+
+    def _toon_encode_json_array(self, value: str) -> Optional[str]:
+        """Encode a JSON array of uniform objects as a compact TOON-style table."""
+        if not isinstance(value, str):
+            return None
+
+        try:
+            rows = json.loads(value)
+        except json.JSONDecodeError:
+            return None
+
+        if not isinstance(rows, list) or len(rows) < self.config.toon_min_rows:
+            return None
+        if not rows or not all(isinstance(row, dict) for row in rows):
+            return None
+
+        fields = list(rows[0].keys())
+        if not fields or not all(self._is_toon_field_name(field) for field in fields):
+            return None
+
+        field_set = set(fields)
+        if any(set(row.keys()) != field_set for row in rows):
+            return None
+
+        encoded_lines = [
+            "[TOON_ENCODED_TOOL_RESULT]",
+            f"rows[{len(rows)}]{{{','.join(fields)}}}",
+        ]
+        encoded_lines.extend(
+            "|".join(self._toon_cell(row[field]) for field in fields)
+            for row in rows
+        )
+        encoded_lines.append("[/TOON_ENCODED_TOOL_RESULT]")
+        encoded = "\n".join(encoded_lines)
+
+        if len(encoded) >= len(value):
+            return None
+        return encoded
+
+    def _preprocess_tool_results(
+        self,
+        trajectory: List[Dict[str, str]],
+        metrics: TrajectoryMetrics,
+    ) -> List[Dict[str, str]]:
+        """Optionally compact JSON-array tool results before token budgeting."""
+        if not self.config.toon_encode_tool_results:
+            return trajectory
+
+        processed = []
+        for turn in trajectory:
+            updated_turn = turn.copy()
+            key = self._tool_result_text_key(updated_turn)
+            if self._is_tool_turn(updated_turn) and key:
+                encoded = self._toon_encode_json_array(updated_turn.get(key, ""))
+                if encoded:
+                    updated_turn[key] = encoded
+                    metrics.toon_encoded_tool_results += 1
+            processed.append(updated_turn)
+
+        return processed
     
     def _find_protected_indices(self, trajectory: List[Dict[str, str]]) -> Tuple[set, int, int]:
         """
@@ -731,17 +849,20 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         metrics = TrajectoryMetrics()
         metrics.original_turns = len(trajectory)
         
-        # Count tokens per turn
+        metrics.original_tokens = self.count_trajectory_tokens(trajectory)
+        trajectory = self._preprocess_tool_results(trajectory, metrics)
+
+        # Count tokens per turn after optional lossless tool-result compaction.
         turn_tokens = self.count_turn_tokens(trajectory)
         total_tokens = sum(turn_tokens)
-        metrics.original_tokens = total_tokens
         
         # Check if compression needed
         if total_tokens <= self.config.target_max_tokens:
             metrics.skipped_under_target = True
             metrics.compressed_tokens = total_tokens
             metrics.compressed_turns = len(trajectory)
-            metrics.compression_ratio = 1.0
+            metrics.tokens_saved = metrics.original_tokens - metrics.compressed_tokens
+            metrics.compression_ratio = metrics.compressed_tokens / max(metrics.original_tokens, 1)
             return trajectory, metrics
         
         # Find protected regions
@@ -752,6 +873,8 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
             # Nothing to compress, return as-is
             metrics.compressed_tokens = total_tokens
             metrics.compressed_turns = len(trajectory)
+            metrics.tokens_saved = metrics.original_tokens - metrics.compressed_tokens
+            metrics.compression_ratio = metrics.compressed_tokens / max(metrics.original_tokens, 1)
             metrics.still_over_limit = total_tokens > self.config.target_max_tokens
             return trajectory, metrics
         
@@ -838,17 +961,20 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         metrics = TrajectoryMetrics()
         metrics.original_turns = len(trajectory)
         
-        # Count tokens per turn
+        metrics.original_tokens = self.count_trajectory_tokens(trajectory)
+        trajectory = self._preprocess_tool_results(trajectory, metrics)
+
+        # Count tokens per turn after optional lossless tool-result compaction.
         turn_tokens = self.count_turn_tokens(trajectory)
         total_tokens = sum(turn_tokens)
-        metrics.original_tokens = total_tokens
         
         # Check if compression needed
         if total_tokens <= self.config.target_max_tokens:
             metrics.skipped_under_target = True
             metrics.compressed_tokens = total_tokens
             metrics.compressed_turns = len(trajectory)
-            metrics.compression_ratio = 1.0
+            metrics.tokens_saved = metrics.original_tokens - metrics.compressed_tokens
+            metrics.compression_ratio = metrics.compressed_tokens / max(metrics.original_tokens, 1)
             return trajectory, metrics
         
         # Find protected regions
@@ -858,6 +984,8 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         if compress_start >= compress_end:
             metrics.compressed_tokens = total_tokens
             metrics.compressed_turns = len(trajectory)
+            metrics.tokens_saved = metrics.original_tokens - metrics.compressed_tokens
+            metrics.compression_ratio = metrics.compressed_tokens / max(metrics.original_tokens, 1)
             metrics.still_over_limit = total_tokens > self.config.target_max_tokens
             return trajectory, metrics
         
@@ -940,7 +1068,9 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         result["conversations"] = compressed_trajectory
         
         # Add compression metadata if enabled
-        if self.config.metrics_per_trajectory and metrics.was_compressed:
+        if self.config.metrics_per_trajectory and (
+            metrics.was_compressed or metrics.toon_encoded_tool_results
+        ):
             result["compression_metrics"] = metrics.to_dict()
         
         return result, metrics
@@ -967,7 +1097,9 @@ Write only the summary, starting with "[CONTEXT SUMMARY]:" prefix."""
         result["conversations"] = compressed_trajectory
         
         # Add compression metadata if enabled
-        if self.config.metrics_per_trajectory and metrics.was_compressed:
+        if self.config.metrics_per_trajectory and (
+            metrics.was_compressed or metrics.toon_encoded_tool_results
+        ):
             result["compression_metrics"] = metrics.to_dict()
         
         return result, metrics

@@ -239,6 +239,30 @@ class ChatCompletionsTransport(ProviderTransport):
                 "type": "enabled" if _kimi_thinking_enabled else "disabled",
             }
 
+        # DeepSeek: thinking mode toggle and effort mapping
+        is_deepseek = params.get("is_deepseek", False)
+        if is_deepseek:
+            _ds_thinking_enabled = True
+            if reasoning_config and isinstance(reasoning_config, dict):
+                if reasoning_config.get("enabled") is False:
+                    _ds_thinking_enabled = False
+            if _ds_thinking_enabled:
+                # DeepSeek only supports "high" and "max" effort values.
+                # Map low/medium/high → "high", xhigh/max → "max".
+                _ds_effort = "high"
+                if reasoning_config and isinstance(reasoning_config, dict):
+                    _e = (reasoning_config.get("effort") or "").strip().lower()
+                    if _e in ("xhigh", "max"):
+                        _ds_effort = "max"
+                extra_body["thinking"] = {"type": "enabled", "budget_tokens": 8192}
+                api_kwargs["reasoning_effort"] = _ds_effort
+                # DeepSeek rejects temperature/top_p/presence_penalty/
+                # frequency_penalty when thinking is enabled.
+                for _k in ("temperature", "top_p", "presence_penalty", "frequency_penalty"):
+                    api_kwargs.pop(_k, None)
+            else:
+                extra_body["thinking"] = {"type": "disabled"}
+
         # Reasoning
         if params.get("supports_reasoning", False):
             if is_github_models:
@@ -347,7 +371,7 @@ class ChatCompletionsTransport(ProviderTransport):
         reasoning_content = getattr(msg, "reasoning_content", None)
 
         provider_data: Dict[str, Any] = {}
-        if reasoning_content:
+        if reasoning_content is not None:
             provider_data["reasoning_content"] = reasoning_content
         rd = getattr(msg, "reasoning_details", None)
         if rd:

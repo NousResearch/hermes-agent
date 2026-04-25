@@ -2939,15 +2939,18 @@ class AIAgent:
         """
         reasoning_parts = []
         
-        # Check direct reasoning field
-        if hasattr(assistant_message, 'reasoning') and assistant_message.reasoning:
-            reasoning_parts.append(assistant_message.reasoning)
-        
+        # Check direct reasoning field (isinstance guard: some providers
+        # return non-string values that are truthy but not valid reasoning)
+        reasoning_val = getattr(assistant_message, 'reasoning', None)
+        if isinstance(reasoning_val, str) and reasoning_val:
+            reasoning_parts.append(reasoning_val)
+
         # Check reasoning_content field (alternative name used by some providers)
-        if hasattr(assistant_message, 'reasoning_content') and assistant_message.reasoning_content:
+        rc_val = getattr(assistant_message, 'reasoning_content', None)
+        if isinstance(rc_val, str) and rc_val:
             # Don't duplicate if same as reasoning
-            if assistant_message.reasoning_content not in reasoning_parts:
-                reasoning_parts.append(assistant_message.reasoning_content)
+            if rc_val not in reasoning_parts:
+                reasoning_parts.append(rc_val)
         
         # Check reasoning_details array (OpenRouter unified format)
         # Format: [{"type": "reasoning.summary", "summary": "...", ...}, ...]
@@ -7406,6 +7409,7 @@ class AIAgent:
             or base_url_host_matches(self.base_url, "moonshot.ai")
             or base_url_host_matches(self.base_url, "moonshot.cn")
         )
+        _is_deepseek = base_url_host_matches(self._base_url_lower, "api.deepseek.com")
 
         # Temperature: _fixed_temperature_for_model may return OMIT_TEMPERATURE
         # sentinel (temperature omitted entirely), a numeric override, or None.
@@ -7474,6 +7478,7 @@ class AIAgent:
             is_github_models=_is_gh,
             is_nvidia_nim=_is_nvidia,
             is_kimi=_is_kimi,
+            is_deepseek=_is_deepseek,
             is_custom_provider=self.provider == "custom",
             ollama_num_ctx=self._ollama_num_ctx,
             provider_preferences=_prefs or None,
@@ -7722,6 +7727,23 @@ class AIAgent:
             or base_url_host_matches(self.base_url, "moonshot.cn")
         )
         if kimi_requires_reasoning and source_msg.get("tool_calls"):
+            api_msg["reasoning_content"] = ""
+            return
+
+        # DeepSeek thinking mode requires reasoning_content on ALL assistant
+        # messages — not just tool_calls turns.  Empty string is valid.
+        # Scope to native DeepSeek API and OpenRouter-routed DeepSeek.
+        deepseek_requires_reasoning = (
+            base_url_host_matches(self.base_url, "api.deepseek.com")
+            or (
+                self._is_openrouter_url()
+                and (self.model or "").lower().startswith("deepseek/")
+            )
+        )
+        if deepseek_requires_reasoning:
+            rc = self.reasoning_config
+            if isinstance(rc, dict) and rc.get("enabled") is False:
+                return
             api_msg["reasoning_content"] = ""
 
     @staticmethod
@@ -9097,6 +9119,7 @@ class AIAgent:
                 api_msg = msg.copy()
                 for internal_field in ("reasoning", "finish_reason", "_thinking_prefill"):
                     api_msg.pop(internal_field, None)
+                self._copy_reasoning_content_for_api(msg, api_msg)
                 if _needs_sanitize:
                     self._sanitize_tool_calls_for_strict_api(api_msg)
                 api_messages.append(api_msg)

@@ -162,8 +162,12 @@ DEFAULT_CONTEXT_LENGTHS = {
     "gemma-4-31b": 256000,
     "gemma-3": 131072,
     "gemma": 8192,  # fallback for older gemma models
-    # DeepSeek
-    "deepseek": 128000,
+    # DeepSeek — V4 family supports 1M context (api.deepseek.com docs)
+    "deepseek-v4-pro": 1000000,
+    "deepseek-v4-flash": 1000000,
+    "deepseek-chat": 1000000,
+    "deepseek-reasoner": 1000000,
+    "deepseek": 128000,  # fallback for older/unrecognised DeepSeek models
     # Meta
     "llama": 131072,
     # Qwen — specific model families before the catch-all.

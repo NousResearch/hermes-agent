@@ -4735,7 +4735,7 @@ def _update_via_zip(args):
                     break
 
         # Copy updated files over existing installation, preserving venv/node_modules/.git
-        preserve = {"venv", "node_modules", ".git", ".env"}
+        preserve = {"venv", ".venv", "node_modules", ".git", ".env"}
         update_count = 0
         for item in os.listdir(extracted):
             if item in preserve:
@@ -4773,7 +4773,7 @@ def _update_via_zip(args):
 
     uv_bin = shutil.which("uv")
     if uv_bin:
-        uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+        uv_env = {**os.environ, "VIRTUAL_ENV": str(_detect_project_venv())}
         _install_python_dependencies_with_optional_fallback([uv_bin, "pip"], env=uv_env)
     else:
         # Use sys.executable to explicitly call the venv's pip module,
@@ -5310,6 +5310,22 @@ def _load_installable_optional_extras() -> list[str]:
     return referenced
 
 
+def _detect_project_venv() -> Path:
+    """Detect the project's virtualenv directory.
+
+    Mirrors gateway._detect_venv_dir() fallback logic so that the update
+    code installs into the same venv the gateway service uses.  Checks
+    ``.venv`` first (the default for uv-managed dev checkouts), then falls
+    back to ``venv`` (the default for ``hermes install`` / installer script).
+    """
+    for candidate in (".venv", "venv"):
+        venv = PROJECT_ROOT / candidate
+        if venv.is_dir():
+            return venv
+    # Default to venv if neither exists (installer will create it)
+    return PROJECT_ROOT / "venv"
+
+
 def _install_python_dependencies_with_optional_fallback(
     install_cmd_prefix: list[str],
     *,
@@ -5827,7 +5843,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         print("→ Updating Python dependencies...")
         uv_bin = shutil.which("uv")
         if uv_bin:
-            uv_env = {**os.environ, "VIRTUAL_ENV": str(PROJECT_ROOT / "venv")}
+            uv_env = {**os.environ, "VIRTUAL_ENV": str(_detect_project_venv())}
             _install_python_dependencies_with_optional_fallback(
                 [uv_bin, "pip"], env=uv_env
             )

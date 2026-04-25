@@ -5141,6 +5141,8 @@ class AIAgent:
         # response.incomplete instead of response.completed).
         self._codex_streamed_text_parts: list = []
         for attempt in range(max_stream_retries + 1):
+            if self._interrupt_requested:
+                raise InterruptedError("Agent interrupted before Codex stream retry")
             collected_output_items: list = []
             try:
                 with active_client.responses.stream(**api_kwargs) as stream:
@@ -6310,6 +6312,14 @@ class AIAgent:
 
             try:
                 for _stream_attempt in range(_max_stream_retries + 1):
+                    # Check for interrupt before each retry attempt.  Without
+                    # this, /stop closes the HTTP connection (outer poll loop),
+                    # but the retry loop opens a FRESH connection — negating the
+                    # interrupt entirely.  On slow providers (ollama-cloud) each
+                    # retry can block for the full stream-read timeout (120s+),
+                    # causing multi-minute delays between /stop and response.
+                    if self._interrupt_requested:
+                        raise InterruptedError("Agent interrupted before stream retry")
                     try:
                         if self.api_mode == "anthropic_messages":
                             self._try_refresh_anthropic_client_credentials()

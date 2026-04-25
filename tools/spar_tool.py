@@ -578,7 +578,7 @@ registry.register(
         max_fix_rounds=args.get("max_fix_rounds", 1),
     ),
     check_fn=check_spar_requirements,
-    requires_env=["XIAOMI_API_KEY", "MINIMAX_API_KEY", "DEEPSEEK_API_KEY"],
+    requires_env=["XIAOMI_API_KEY", "OPENROUTER_API_KEY"],
     is_async=True,
     emoji="🛡️",
 )

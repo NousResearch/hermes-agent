@@ -16,6 +16,13 @@ def test_moa_defaults_track_current_direct_provider_stack():
     assert moa.AGGREGATOR_MODEL == "xiaomi/mimo-v2-pro"
 
 
+def test_moa_registry_requires_current_provider_keys():
+    assert moa.registry.get_entry("mixture_of_agents").requires_env == [
+        "XIAOMI_API_KEY",
+        "OPENROUTER_API_KEY",
+    ]
+
+
 def test_construct_aggregator_prompt_keeps_model_labels():
     prompt = moa._construct_aggregator_prompt(
         "Base",
@@ -115,7 +122,7 @@ async def test_moa_top_level_error_logs_single_traceback_on_aggregator_failure(m
 def test_check_moa_requirements_accepts_direct_provider_stack(monkeypatch):
     available = {
         "xiaomi/mimo-v2-pro",
-        "minimax/MiniMax-M2.7-highspeed",
+        "nvidia/nemotron-3-super-120b-a12b:free",
     }
 
     monkeypatch.setattr(
@@ -146,6 +153,26 @@ def test_get_moa_configuration_reads_configured_route_overrides(monkeypatch):
 
     assert config["reference_models"] == ["deepseek/deepseek-chat"]
     assert config["aggregator_model"] == "xiaomi/mimo-v2-flash"
+
+
+def test_legacy_paid_moa_config_upgrades_to_free_defaults(monkeypatch):
+    monkeypatch.setattr(
+        moa,
+        "_load_moa_task_config",
+        lambda: {
+            "reference_models": [
+                {"provider": "minimax", "model": "MiniMax-M2.7-highspeed"},
+                {"provider": "deepseek", "model": "deepseek-reasoner"},
+            ],
+        },
+    )
+
+    config = moa.get_moa_configuration()
+
+    assert config["reference_models"] == [
+        "nvidia/nemotron-3-super-120b-a12b:free",
+        "google/gemma-4-31b-it:free",
+    ]
 
 
 def test_forensic_analysis_placeholder_detector_flags_template_echo():

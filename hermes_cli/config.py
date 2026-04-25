@@ -542,14 +542,14 @@ DEFAULT_CONFIG = {
             "extra_body": {},
             "reference_models": [
                 {
-                    "provider": "minimax",
-                    "model": "MiniMax-M2.7-highspeed",
-                    "label": "minimax/MiniMax-M2.7-highspeed",
+                    "provider": "openrouter",
+                    "model": "nvidia/nemotron-3-super-120b-a12b:free",
+                    "label": "nvidia/nemotron-3-super-120b-a12b:free",
                 },
                 {
-                    "provider": "deepseek",
-                    "model": "deepseek-reasoner",
-                    "label": "deepseek/deepseek-reasoner",
+                    "provider": "openrouter",
+                    "model": "google/gemma-4-31b-it:free",
+                    "label": "google/gemma-4-31b-it:free",
                 },
             ],
             "aggregator_model": {

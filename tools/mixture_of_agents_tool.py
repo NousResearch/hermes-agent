@@ -100,6 +100,10 @@ AGGREGATOR_TEMPERATURE = 0.4  # Focused synthesis for consistency
 MIN_SUCCESSFUL_REFERENCES = 1  # Minimum successful reference models needed to proceed
 SELF_DRAFT_SUFFIX = " (self-draft)"
 _MOA_FORENSIC_REPAIR_ATTEMPTS = 2
+_LEGACY_PAID_REFERENCE_LABELS = {
+    "minimax/MiniMax-M2.7-highspeed",
+    "deepseek/deepseek-reasoner",
+}
 
 # System prompt for the aggregator model (from the research paper)
 AGGREGATOR_SYSTEM_PROMPT = """You have been provided with a set of responses from various open-source models to the latest user query. Your task is to synthesize these responses into a single, high-quality response. It is crucial to critically evaluate the information provided in these responses, recognizing that some of it may be biased or incorrect. Your response should not simply replicate the given answers but should offer a refined, accurate, and comprehensive reply to the instruction. Ensure your response is well-structured, coherent, and adheres to the highest standards of accuracy and reliability.
@@ -251,6 +255,11 @@ def _resolve_moa_routes(
         else task_config.get("reference_models")
     )
     if not isinstance(raw_references, list) or not raw_references:
+        raw_references = DEFAULT_REFERENCE_ROUTES
+    elif {
+        _route_label(_normalize_model_route(spec, "reference_model"))
+        for spec in raw_references
+    } == _LEGACY_PAID_REFERENCE_LABELS:
         raw_references = DEFAULT_REFERENCE_ROUTES
 
     raw_aggregator = (
@@ -1180,7 +1189,7 @@ registry.register(
     schema=MOA_SCHEMA,
     handler=lambda args, **kw: mixture_of_agents_tool(user_prompt=args.get("user_prompt", "")),
     check_fn=check_moa_requirements,
-    requires_env=["XIAOMI_API_KEY", "MINIMAX_API_KEY"],
+    requires_env=["XIAOMI_API_KEY", "OPENROUTER_API_KEY"],
     is_async=True,
     emoji="🧠",
 )

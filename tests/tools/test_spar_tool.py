@@ -7,6 +7,13 @@ import pytest
 from tools import spar_tool as spar
 
 
+def test_spar_registry_requires_current_provider_keys():
+    assert spar.registry.get_entry("spar").requires_env == [
+        "XIAOMI_API_KEY",
+        "OPENROUTER_API_KEY",
+    ]
+
+
 def _llm_text(text: str):
     return SimpleNamespace(
         choices=[

@@ -2425,8 +2425,24 @@ class AIAgent:
                 # compression actually works this session.  The hard floor
                 # above guarantees aux_context >= MINIMUM_CONTEXT_LENGTH,
                 # so the new threshold is always >= 64K.
+                #
+                # Headroom: the threshold budgets RAW MESSAGES only, but the
+                # actual request auxiliary callers send also includes the
+                # system prompt and every tool schema.  With 50+ tools that
+                # overhead can be 25-30K tokens; setting new_threshold =
+                # aux_context directly would let messages grow right to the
+                # aux limit and the first compression/flush request would
+                # overflow with HTTP 400.  Subtract a dynamic headroom
+                # estimate so the full request still fits.
+                from agent.model_metadata import estimate_request_tokens_rough
+                tool_overhead = estimate_request_tokens_rough([], tools=self.tools)
+                # System prompt is not yet built at __init__ time; allow a
+                # conservative 10K budget (SOUL/AGENTS.md + memory snapshot +
+                # skills guidance) plus 2K for the flush instruction and a
+                # small safety margin.
+                headroom = tool_overhead + 12_000
                 old_threshold = threshold
-                new_threshold = aux_context
+                new_threshold = max(aux_context - headroom, MINIMUM_CONTEXT_LENGTH)
                 self.context_compressor.threshold_tokens = new_threshold
                 # Keep threshold_percent in sync so future main-model
                 # context_length changes (update_model) re-derive from a

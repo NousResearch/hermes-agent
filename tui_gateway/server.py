@@ -2440,6 +2440,12 @@ def _(rid, params: dict) -> dict:
     except Exception:
         pass
     try:
+        agent = session.get("agent")
+        if agent and hasattr(agent, "close"):
+            agent.close()
+    except Exception:
+        pass
+    try:
         worker = session.get("slash_worker")
         if worker:
             worker.close()

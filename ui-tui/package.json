@@ -13,7 +13,8 @@
     "fmt": "prettier --write 'src/**/*.{ts,tsx}' 'packages/**/*.{ts,tsx}'",
     "fix": "npm run lint:fix && npm run fmt",
     "test": "vitest run",
-    "test:watch": "vitest"
+    "test:watch": "vitest",
+    "postinstall": "patch-package"
   },
   "dependencies": {
     "@hermes/ink": "file:./packages/hermes-ink",

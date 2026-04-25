@@ -1,0 +1,13 @@
+diff --git a/node_modules/ink-text-input/build/index.js b/node_modules/ink-text-input/build/index.js
+index ada7cdc..d0bbf63 100644
+--- a/node_modules/ink-text-input/build/index.js
++++ b/node_modules/ink-text-input/build/index.js
+@@ -53,7 +53,7 @@ function TextInput({ value: originalValue, placeholder = '', focus = true, mask,
+             (key.shift && key.tab)) {
+             return;
+         }
+-        if (key.return) {
++        if (key.return && !key.shift) {
+             if (onSubmit) {
+                 onSubmit(originalValue);
+             }

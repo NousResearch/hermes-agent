@@ -567,3 +567,61 @@ class TestGemini3ToolCallIds:
         result = translate_gemini_response(resp, model="gemini-2.5-flash")
         tool_calls = result.choices[0].message.tool_calls
         assert tool_calls[0].id.startswith("call_")
+
+
+def test_stream_event_translation_keeps_identical_calls_in_distinct_parts():
+    from agent.gemini_native_adapter import translate_stream_event
+
+    event = {
+        "candidates": [
+            {
+                "content": {
+                    "parts": [
+                        {"functionCall": {"name": "search", "args": {"q": "abc"}}},
+                        {"functionCall": {"name": "search", "args": {"q": "abc"}}},
+                    ]
+                },
+                "finishReason": "STOP",
+            }
+        ]
+    }
+
+    chunks = translate_stream_event(event, model="gemini-2.5-flash", tool_call_indices={})
+    tool_chunks = [chunk for chunk in chunks if chunk.choices[0].delta.tool_calls]
+    assert tool_chunks[0].choices[0].delta.tool_calls[0].index == 0
+    assert tool_chunks[1].choices[0].delta.tool_calls[0].index == 1
+    assert tool_chunks[0].choices[0].delta.tool_calls[0].id != tool_chunks[1].choices[0].delta.tool_calls[0].id
+
+
+def test_stream_event_translation_does_not_split_slot_when_signature_arrives_late():
+    """A late thought signature must not create a second tool-call slot."""
+    from agent.gemini_native_adapter import translate_stream_event
+
+    tool_call_indices: Dict[str, Dict[str, Any]] = {}
+    event_a = {
+        "candidates": [{"content": {"parts": [
+            {"functionCall": {"name": "terminal", "args": {}}}
+        ]}}]
+    }
+    event_b = {
+        "candidates": [{
+            "content": {"parts": [{
+                "functionCall": {"name": "terminal", "args": {"cmd": "ls"}},
+                "thoughtSignature": "sig-late",
+            }]},
+            "finishReason": "STOP",
+        }]
+    }
+
+    chunks_a = translate_stream_event(
+        event_a, model="gemini-3.1-flash", tool_call_indices=tool_call_indices
+    )
+    chunks_b = translate_stream_event(
+        event_b, model="gemini-3.1-flash", tool_call_indices=tool_call_indices
+    )
+    a_tool = [c for c in chunks_a if c.choices[0].delta.tool_calls][0].choices[0].delta.tool_calls[0]
+    b_tool = [c for c in chunks_b if c.choices[0].delta.tool_calls][0].choices[0].delta.tool_calls[0]
+
+    assert a_tool.index == b_tool.index == 0
+    assert a_tool.id == b_tool.id
+    assert b_tool.extra_content == {"google": {"thought_signature": "sig-late"}}

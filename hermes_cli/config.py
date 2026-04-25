@@ -349,6 +349,13 @@ DEFAULT_CONFIG = {
     "fallback_providers": [],
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
+    
+    # Projects — session tagging, directory linking, markdown export
+    "projects": {
+        # "obsidian_vault": "~/Documents/ObsidianVault",
+        # "auto_export": false,
+    },
+
     "agent": {
         "max_turns": 90,
         # Inactivity timeout for gateway agent execution (seconds).
@@ -4048,3 +4055,38 @@ def config_command(args):
         print("  hermes config path      Show config file path")
         print("  hermes config env-path  Show .env file path")
         sys.exit(1)
+
+# ── Project helpers ──
+def get_projects_config(cfg: dict) -> dict:
+    """projects 설정 섹션을 반환한다. 없으면 빈 dict."""
+    return cfg.get("projects") or {}
+
+
+def get_projects_obsidian_vault(cfg: dict) -> str | None:
+    """Obsidian vault 경로를 반환한다. 설정 안 됐으면 None."""
+    projects = get_projects_config(cfg)
+    val = projects.get("obsidian_vault") if isinstance(projects, dict) else None
+    if val:
+        return os.path.expanduser(str(val))
+    return None
+
+
+def get_projects_auto_export(cfg: dict) -> bool:
+    """세션 종료 시 자동 export 여부. 기본값 False."""
+    projects = get_projects_config(cfg)
+    return bool(projects.get("auto_export", False)) if isinstance(projects, dict) else False
+
+
+def get_projects_base_dir(cfg: dict, default: str | None = None) -> str:
+    """프로젝트 파일 저장 디렉토리. 기본값 ~/.hermes/projects."""
+    return default or os.path.join(str(Path.home()), ".hermes", "projects")
+
+
+def get_projects_list_all(cfg: dict) -> list:
+    """설정된 프로젝트 목록. 설정이 dict인 경우."""
+    projects = get_projects_config(cfg)
+    if isinstance(projects, dict) and "list" in projects:
+        return projects["list"]
+    return []
+
+

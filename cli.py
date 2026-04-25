@@ -2201,7 +2201,22 @@ class HermesCLI:
             "session_total_tokens": 0,
             "session_api_calls": 0,
             "compressions": 0,
+            "session_title": None,
+            "session_project": None,
         }
+
+        # Populate session title from DB or pending title
+        if self._session_db:
+            try:
+                session = self._session_db.get_session(self.session_id)
+                if session and session.get("title"):
+                    snapshot["session_title"] = session["title"]
+                if session and session.get("project"):
+                    snapshot["session_project"] = session["project"]
+            except Exception:
+                pass
+        if not snapshot["session_title"] and getattr(self, "_pending_title", None):
+            snapshot["session_title"] = self._pending_title
 
         if not agent:
             return snapshot
@@ -2382,6 +2397,12 @@ class HermesCLI:
             prompt_elapsed = snapshot.get("prompt_elapsed")
             if prompt_elapsed:
                 parts.append(prompt_elapsed)
+            session_project = snapshot.get("session_project")
+            if session_project:
+                parts.append(f"project: {session_project}")
+            session_title = snapshot.get("session_title")
+            if session_title:
+                parts.append(f"title: {session_title}")
             return self._trim_status_bar_text(" │ ".join(parts), width)
         except Exception:
             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
@@ -2446,6 +2467,16 @@ class HermesCLI:
                     if prompt_elapsed:
                         frags.append(("class:status-bar-dim", " │ "))
                         frags.append(("class:status-bar-dim", prompt_elapsed))
+                    # Session project before title
+                    session_project = snapshot.get("session_project")
+                    if session_project:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-dim", f"project: {session_project}"))
+                    # Session title at the end
+                    session_title = snapshot.get("session_title")
+                    if session_title:
+                        frags.append(("class:status-bar-dim", " │ "))
+                        frags.append(("class:status-bar-dim", f"title: {session_title}"))
                     frags.append(("class:status-bar", " "))
 
             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
@@ -4723,6 +4754,90 @@ class HermesCLI:
         if not silent:
             print("(^_^)v New session started!")
 
+    def _handle_project_command(self, cmd_original: str) -> None:
+        """Handle /project slash command — create/set project, list, save, off."""
+        parts = cmd_original.split(None, 2)
+        # sub_raw: 원본 케이스 보존 (프로젝트 이름으로 사용)
+        # sub_lower: 서브커맨드 키워드 비교용 (list/save/off)
+        sub_raw = parts[1].strip() if len(parts) > 1 else None
+        sub = sub_raw.lower() if sub_raw else None
+
+        if not self._session_db:
+            _cprint("  Session database not available.")
+            return
+
+        # /project  (no args) — show current project info
+        if sub is None:
+            session = self._session_db.get_session(self.session_id)
+            project_name = session.get("project") if session else None
+            if project_name:
+                proj = self._session_db.get_project(project_name)
+                _cprint(f"  Current project: {project_name}")
+                if proj and proj.get("work_dir"):
+                    _cprint(f"  Work dir: {proj['work_dir']}")
+                if proj and proj.get("description"):
+                    _cprint(f"  Description: {proj['description']}")
+            else:
+                _cprint("  No project set. Usage: /project <name>")
+            return
+
+        # /project list
+        if sub == "list":
+            projects = self._session_db.list_projects()
+            if projects:
+                _cprint("  Projects:")
+                for p in projects:
+                    work_dir = f"  ({p['work_dir']})" if p.get("work_dir") else ""
+                    _cprint(f"    · {p['name']}{work_dir}")
+            else:
+                _cprint("  No projects yet. Usage: /project <name>")
+            return
+
+        # /project off — detach current session from project
+        if sub == "off":
+            self._session_db.set_session_project(self.session_id, None)
+            _cprint("  Project detached from current session.")
+            return
+
+        # /project save — export current session to markdown
+        if sub == "save":
+            try:
+                from hermes_cli.project_exporter import export_session
+                from hermes_cli.config import get_projects_obsidian_vault, get_projects_base_dir
+                session = self._session_db.get_session(self.session_id)
+                project_name = session.get("project") if session else None
+                if not project_name:
+                    _cprint("  No project set on this session. Use /project <name> first.")
+                    return
+                cfg = load_cli_config()
+                base_dir = get_projects_base_dir(cfg)
+                obsidian_vault = get_projects_obsidian_vault(cfg)
+                path = export_session(
+                    db=self._session_db,
+                    session_id=self.session_id,
+                    project_name=project_name,
+                    base_dir=base_dir,
+                    obsidian_vault=obsidian_vault,
+                )
+                _cprint(f"  Session saved: {path}")
+            except Exception as e:
+                _cprint(f"  Export failed: {e}")
+            return
+
+        # /project <name> [path] — create/set project and tag session
+        project_name = sub_raw.lower()
+        work_dir = parts[2].strip() if len(parts) > 2 else None
+
+        # Upsert project record
+        self._session_db.upsert_project(project_name, work_dir=work_dir)
+        # Tag current session
+        self._session_db.set_session_project(self.session_id, project_name)
+
+        if work_dir:
+            _cprint(f"  Project set: {project_name}  (dir: {work_dir})")
+        else:
+            _cprint(f"  Project set: {project_name}")
+
     def _handle_resume_command(self, cmd_original: str) -> None:
         """Handle /resume <session_id_or_title> — switch to a previous session mid-conversation."""
         parts = cmd_original.split(None, 1)
@@ -6024,6 +6139,8 @@ class HermesCLI:
                         _cprint("  No title set. Usage: /title <your session title>")
                 else:
                     _cprint("  Session database not available.")
+        elif canonical == "project":
+            self._handle_project_command(cmd_original)
         elif canonical == "new":
             self.new_session()
         elif canonical == "resume":

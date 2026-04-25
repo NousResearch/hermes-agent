@@ -8596,8 +8596,8 @@ Examples:
             if not sessions:
                 print("No sessions found.")
                 return
-            has_titles = any(s.get("title") for s in sessions)
-            if has_titles:
+            has_titles_or_project = any(s.get("title") or s.get("project") for s in sessions)
+            if has_titles_or_project:
                 print(f"{'Title':<32} {'Preview':<40} {'Last Active':<13} {'ID'}")
                 print("─" * 110)
             else:
@@ -8607,11 +8607,12 @@ Examples:
                 last_active = _relative_time(s.get("last_active"))
                 preview = (
                     s.get("preview", "")[:38]
-                    if has_titles
+                    if has_titles_or_project
                     else s.get("preview", "")[:48]
                 )
-                if has_titles:
-                    title = (s.get("title") or "—")[:30]
+                if has_titles_or_project:
+                    title_display = s.get("title") or ("[" + s["project"] + "]" if s.get("project") else "—")
+                    title = title_display[:30]
                     sid = s["id"]
                     print(f"{title:<32} {preview:<40} {last_active:<13} {sid}")
                 else:

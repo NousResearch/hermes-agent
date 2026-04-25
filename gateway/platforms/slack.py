@@ -2303,7 +2303,13 @@ class SlackAdapter(BasePlatformAdapter):
             #       across the whole channel so context accumulates across
             #       messages (#15421 bug 1)
             event_thread_ts_raw = event.get("thread_ts")
-            if event_thread_ts_raw:
+            # Align with ``is_thread_reply`` below — a ``thread_ts ==
+            # ts`` payload (some thread-root shapes) is not a real reply
+            # and must not prevent the shared-session path from taking
+            # effect.  Matching the same invariant here keeps the two
+            # branches in sync even if Slack introduces new payload
+            # variants (Copilot on #15464).
+            if event_thread_ts_raw and event_thread_ts_raw != ts:
                 thread_ts = event_thread_ts_raw
             elif self.config.extra.get("reply_in_thread", True):
                 # Legacy default: treat ts as a synthetic thread root so

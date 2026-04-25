@@ -930,7 +930,7 @@ def cmd_timezone(args):
                     utc_offset = f"{utc_offset}:{os_:02d}"
             elif tz_data.get("standardUtcOffset"):
                 offset_info2 = tz_data["standardUtcOffset"]
-if isinstance(offset_info2, dict):
+                if isinstance(offset_info2, dict):
                     oh = offset_info2.get("hours", 0)
                     om = abs(offset_info2.get("minutes", 0))
                     os_ = offset_info2.get("seconds", 0)

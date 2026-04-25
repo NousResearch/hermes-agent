@@ -1,24 +1,23 @@
 """Regression test: DeepSeek V4 thinking mode reasoning_content echo.
 
 DeepSeek V4-flash / V4-pro thinking mode requires ``reasoning_content`` on
-every assistant message that carries ``tool_calls``. When a persisted
-session replays an assistant tool-call turn that was recorded without the
-field, DeepSeek rejects the next request with HTTP 400::
+EVERY assistant message (both tool-call and plain turns). When a persisted
+session replays any assistant turn without the field, DeepSeek rejects the
+next request with HTTP 400::
 
     The reasoning_content in the thinking mode must be passed back to the API.
 
 Fix covers three paths:
 
-1. ``_build_assistant_message`` — new tool-call messages without raw
-   reasoning_content get ``""`` pinned at creation time so nothing gets
-   persisted poisoned.
+1. ``_build_assistant_message`` — new messages without raw reasoning_content
+   get ``""`` pinned at creation time (tool-call AND plain turns).
 2. ``_copy_reasoning_content_for_api`` — already-poisoned history replays
-   with ``reasoning_content=""`` injected defensively.
+   with ``reasoning_content=""`` injected defensively for all turns.
 3. Detection covers three signals: ``provider == "deepseek"``,
-   ``"deepseek" in model``, and ``api.deepseek.com`` host match. The third
-   catches custom-provider setups pointing at DeepSeek.
+   ``"deepseek" in model``, and ``api.deepseek.com`` host match.
 
-Refs #15250 / #15353.
+Kimi still only requires the echo on tool-call turns (#15250 / #15353 /
+#15741).
 """
 
 from __future__ import annotations
@@ -88,9 +87,21 @@ class TestCopyReasoningContentForApi:
         agent._copy_reasoning_content_for_api(source, api_msg)
         assert api_msg.get("reasoning_content") == ""
 
-    def test_deepseek_assistant_no_tool_call_left_alone(self) -> None:
-        """Plain assistant turns without tool_calls don't get padded."""
+    def test_deepseek_plain_assistant_also_padded(self) -> None:
+        """Plain assistant turns (no tool_calls) also get reasoning_content=''.
+
+        DeepSeek thinking mode requires the field on EVERY assistant turn,
+        not just tool-call turns. (#15741)
+        """
         agent = _make_agent(provider="deepseek", model="deepseek-v4-flash")
+        source = {"role": "assistant", "content": "hello"}
+        api_msg: dict = {}
+        agent._copy_reasoning_content_for_api(source, api_msg)
+        assert api_msg.get("reasoning_content") == ""
+
+    def test_kimi_plain_assistant_not_padded(self) -> None:
+        """Kimi only requires reasoning_content on tool-call turns, not plain ones."""
+        agent = _make_agent(provider="kimi-coding", model="kimi-k2.5")
         source = {"role": "assistant", "content": "hello"}
         api_msg: dict = {}
         agent._copy_reasoning_content_for_api(source, api_msg)

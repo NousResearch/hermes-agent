@@ -7639,11 +7639,11 @@ class AIAgent:
             raw_reasoning_content = getattr(assistant_message, "reasoning_content", None)
             if raw_reasoning_content is not None:
                 msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
-            elif msg.get("tool_calls") and self._needs_deepseek_tool_reasoning():
-                # DeepSeek thinking mode requires reasoning_content on every
-                # assistant tool-call message. Without it, replaying the
-                # persisted message causes HTTP 400. Include empty string
-                # as a defensive compatibility fallback (refs #15250).
+            elif self._needs_deepseek_tool_reasoning():
+                # DeepSeek thinking mode requires reasoning_content on EVERY
+                # assistant message (not just tool-call turns). Without it,
+                # replaying any persisted assistant turn causes HTTP 400.
+                # Include empty string as a defensive compatibility fallback.
                 msg["reasoning_content"] = ""
 
         if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
@@ -7764,14 +7764,14 @@ class AIAgent:
             api_msg["reasoning_content"] = normalized_reasoning
             return
 
-        # Providers that require an echoed reasoning_content on every
-        # assistant tool-call turn. Detection logic lives in the per-provider
-        # helpers so both the creation path (_build_assistant_message) and
-        # this replay path stay in sync.
-        if source_msg.get("tool_calls") and (
-            self._needs_kimi_tool_reasoning()
-            or self._needs_deepseek_tool_reasoning()
-        ):
+        # Kimi requires reasoning_content only on tool-call turns.
+        if source_msg.get("tool_calls") and self._needs_kimi_tool_reasoning():
+            api_msg["reasoning_content"] = ""
+            return
+        # DeepSeek thinking mode requires reasoning_content on EVERY assistant
+        # turn (not just tool-call turns). Plain assistant turns without it
+        # cause HTTP 400 on replay (#15741).
+        if self._needs_deepseek_tool_reasoning():
             api_msg["reasoning_content"] = ""
 
     @staticmethod

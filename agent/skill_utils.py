@@ -24,7 +24,7 @@ PLATFORM_MAP = {
     "windows": "win32",
 }
 
-EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub", ".archive"))
+EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub", ".archive", "_archived", ".archived"))
 
 # ── Lazy YAML loader ─────────────────────────────────────────────────────
 
@@ -245,6 +245,38 @@ def get_all_skills_dirs() -> List[Path]:
 
 # ── Condition extraction ──────────────────────────────────────────────────
 
+_TOOLSET_ALIASES = {
+    "files": "file",
+    "skills_tools": "skills",
+    "terminal_tools": "terminal",
+}
+
+
+def _normalize_condition_list(value: Any, *, aliases: dict[str, str] | None = None) -> List[str]:
+    """Normalize frontmatter condition values to a clean list of strings.
+
+    Accepts a scalar string, list, tuple, or set. Strings are wrapped into a
+    single-item list, surrounding whitespace is stripped, and simple aliases
+    like ``files`` -> ``file`` are normalized.
+    """
+    if value is None:
+        return []
+    if isinstance(value, str):
+        raw_items = [value]
+    elif isinstance(value, (list, tuple, set)):
+        raw_items = list(value)
+    else:
+        return []
+
+    normalized: List[str] = []
+    alias_map = aliases or {}
+    for item in raw_items:
+        text = str(item).strip()
+        if not text:
+            continue
+        normalized.append(alias_map.get(text, text))
+    return normalized
+
 
 def extract_skill_conditions(frontmatter: Dict[str, Any]) -> Dict[str, List]:
     """Extract conditional activation fields from parsed frontmatter."""
@@ -256,10 +288,14 @@ def extract_skill_conditions(frontmatter: Dict[str, Any]) -> Dict[str, List]:
     if not isinstance(hermes, dict):
         hermes = {}
     return {
-        "fallback_for_toolsets": hermes.get("fallback_for_toolsets", []),
-        "requires_toolsets": hermes.get("requires_toolsets", []),
-        "fallback_for_tools": hermes.get("fallback_for_tools", []),
-        "requires_tools": hermes.get("requires_tools", []),
+        "fallback_for_toolsets": _normalize_condition_list(
+            hermes.get("fallback_for_toolsets", []), aliases=_TOOLSET_ALIASES
+        ),
+        "requires_toolsets": _normalize_condition_list(
+            hermes.get("requires_toolsets", []), aliases=_TOOLSET_ALIASES
+        ),
+        "fallback_for_tools": _normalize_condition_list(hermes.get("fallback_for_tools", [])),
+        "requires_tools": _normalize_condition_list(hermes.get("requires_tools", [])),
     }
 
 

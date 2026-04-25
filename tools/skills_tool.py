@@ -100,7 +100,7 @@ _PLATFORM_MAP = {
     "windows": "win32",
 }
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
-_EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub", ".archive"))
+_EXCLUDED_SKILL_DIRS = frozenset((".git", ".github", ".hub", ".archive", "_archived", ".archived"))
 _REMOTE_ENV_BACKENDS = frozenset(
     {"docker", "singularity", "modal", "ssh", "daytona", "vercel_sandbox"}
 )
@@ -984,6 +984,26 @@ def skill_view(
 
                 for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
                     if found_skill_md.parent.name == name:
+                        skill_dir = found_skill_md.parent
+                        skill_md = found_skill_md
+                        break
+                if skill_md:
+                    break
+
+        # Search by frontmatter name across all dirs (local first, then external)
+        if not skill_md:
+            for search_dir in all_dirs:
+                from agent.skill_utils import iter_skill_index_files
+
+                for found_skill_md in iter_skill_index_files(search_dir, "SKILL.md"):
+                    try:
+                        found_frontmatter, _ = _parse_frontmatter(
+                            found_skill_md.read_text(encoding="utf-8")[:4000]
+                        )
+                    except Exception:
+                        continue
+                    found_name = str(found_frontmatter.get("name") or "").strip()
+                    if found_name == name:
                         skill_dir = found_skill_md.parent
                         skill_md = found_skill_md
                         break

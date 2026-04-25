@@ -6124,7 +6124,7 @@ class AIAgent:
             next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
             if next_entry is not None:
                 logger.info(
-                    "Credential %s (billing) — rotated to pool entry %s",
+                    "HTTP %s (billing) — rotated credential to pool entry %s",
                     rotate_status,
                     getattr(next_entry, "id", "?"),
                 )
@@ -6139,7 +6139,7 @@ class AIAgent:
             next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
             if next_entry is not None:
                 logger.info(
-                    "Credential %s (rate limit) — rotated to pool entry %s",
+                    "HTTP %s (rate limit) — rotated credential to pool entry %s",
                     rotate_status,
                     getattr(next_entry, "id", "?"),
                 )
@@ -6157,7 +6157,7 @@ class AIAgent:
             next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
             if next_entry is not None:
                 logger.info(
-                    "Credential %s (provider overloaded) — rotated to pool entry %s",
+                    "HTTP %s (provider overloaded) — rotated credential to pool entry %s",
                     rotate_status,
                     getattr(next_entry, "id", "?"),
                 )
@@ -6177,7 +6177,7 @@ class AIAgent:
             next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
             if next_entry is not None:
                 logger.info(
-                    "Credential %s (auth refresh failed) — rotated to pool entry %s",
+                    "HTTP %s (auth refresh failed) — rotated credential to pool entry %s",
                     rotate_status,
                     getattr(next_entry, "id", "?"),
                 )

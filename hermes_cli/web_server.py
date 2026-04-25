@@ -3329,6 +3329,25 @@ async def tui_gateway_ws(websocket: WebSocket):
                         _notify("assistant.done", {"text": final})
                         _reply(rpc_id, {"ok": True})
 
+                        # Push usage/model info for the web status bar
+                        try:
+                            ctx_len = getattr(
+                                getattr(agent, "context_compressor", None),
+                                "context_length", 0,
+                            )
+                            _notify("usage.update", {
+                                "model": getattr(agent, "model", ""),
+                                "provider": getattr(agent, "provider", ""),
+                                "api_calls": getattr(agent, "session_api_calls", 0),
+                                "input_tokens": getattr(agent, "session_input_tokens", 0),
+                                "output_tokens": getattr(agent, "session_output_tokens", 0),
+                                "total_tokens": getattr(agent, "session_total_tokens", 0),
+                                "context_length": ctx_len,
+                                "estimated_cost_usd": getattr(agent, "session_estimated_cost_usd", 0.0),
+                            })
+                        except Exception:
+                            pass
+
                         # Auto-generate session title after first exchange
                         if final and db:
                             try:

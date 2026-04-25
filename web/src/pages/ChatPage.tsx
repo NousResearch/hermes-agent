@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState, useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { Send, Square, Plus, MessageSquare, Copy } from "lucide-react";
+import { Send, Square, Plus, MessageSquare, Copy, BarChart3 } from "lucide-react";
 import { H2 } from "@nous-research/ui";
 import { GatewayClient } from "@/lib/gatewayClient";
 import type { GatewayEvent } from "@/lib/gatewayClient";
@@ -9,7 +9,7 @@ import type { ToolCallState } from "@/components/ToolCall";
 import { Markdown } from "@/components/Markdown";
 import { Button } from "@/components/ui/button";
 import { fetchJSON } from "@/lib/api";
-import type { SessionMessagesResponse } from "@/lib/api";
+import type { SessionMessagesResponse, ModelInfoResponse } from "@/lib/api";
 
 // ── Types ──────────────────────────────────────────────────────────────────
 
@@ -28,6 +28,17 @@ interface SlashCommand {
   description: string;
 }
 
+interface UsageSnapshot {
+  model: string;
+  provider: string;
+  apiCalls: number;
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+  contextLength: number;
+  estimatedCostUsd: number;
+}
+
 // ── Helper ─────────────────────────────────────────────────────────────────
 
 let _msgCounter = 0;
@@ -36,6 +47,13 @@ function nextId() {
 }
 
 const ACTIVE_CHAT_SESSION_KEY = "hermes.chat.activeSessionId";
+const STATUS_BAR_VISIBLE_KEY = "hermes.chat.statusBarVisible";
+
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
+  return String(n);
+}
 
 function rememberedChatSession() {
   try {
@@ -136,6 +154,13 @@ export default function ChatPage() {
   const [showPicker, setShowPicker] = useState(false);
   const [pickerQuery, setPickerQuery] = useState("");
 
+  // Status bar state
+  const [statusBarVisible, setStatusBarVisible] = useState(() => {
+    try { return localStorage.getItem(STATUS_BAR_VISIBLE_KEY) !== "false"; } catch { return true; }
+  });
+  const [modelInfo, setModelInfo] = useState<ModelInfoResponse | null>(null);
+  const [usage, setUsage] = useState<UsageSnapshot | null>(null);
+
   const clientRef = useRef<GatewayClient | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -150,6 +175,13 @@ export default function ChatPage() {
   useEffect(() => {
     fetchJSON<{ commands: SlashCommand[] }>("/api/chat/commands")
       .then((r) => setAllCommands(r.commands))
+      .catch(() => {});
+  }, []);
+
+  // Fetch model info once on mount
+  useEffect(() => {
+    fetchJSON<ModelInfoResponse>("/api/model/info")
+      .then(setModelInfo)
       .catch(() => {});
   }, []);
 
@@ -308,6 +340,19 @@ export default function ChatPage() {
             setRunning(false);
           }
           break;
+
+        case "usage.update":
+          setUsage({
+            model: ev.params.model,
+            provider: ev.params.provider,
+            apiCalls: ev.params.api_calls,
+            inputTokens: ev.params.input_tokens,
+            outputTokens: ev.params.output_tokens,
+            totalTokens: ev.params.total_tokens,
+            contextLength: ev.params.context_length,
+            estimatedCostUsd: ev.params.estimated_cost_usd,
+          });
+          break;
       }
     });
 
@@ -389,6 +434,14 @@ export default function ChatPage() {
     setErrorMsg(null);
     navigate("/chat", { replace: true });
   }, [navigate]);
+
+  const toggleStatusBar = useCallback(() => {
+    setStatusBarVisible((prev) => {
+      const next = !prev;
+      try { localStorage.setItem(STATUS_BAR_VISIBLE_KEY, String(next)); } catch {}
+      return next;
+    });
+  }, []);
 
   // ── Render ────────────────────────────────────────────────────────────────
 
@@ -554,6 +607,67 @@ export default function ChatPage() {
             >
               <Square className="h-4 w-4" />
             </Button>
+          )}
+        </div>
+
+        {/* Status bar toggle + info */}
+        <div className="flex items-center gap-2 mt-1.5">
+          <button
+            type="button"
+            className={`p-0.5 rounded transition-colors ${
+              statusBarVisible
+                ? "text-primary hover:text-primary/80"
+                : "text-muted-foreground hover:text-foreground"
+            }`}
+            onClick={toggleStatusBar}
+            title={statusBarVisible ? "Hide status bar" : "Show status bar"}
+          >
+            <BarChart3 className="h-3.5 w-3.5" />
+          </button>
+          {statusBarVisible && (
+            <div className="flex items-center gap-3 text-[10px] font-mono-ui text-muted-foreground overflow-x-auto">
+              <span className="whitespace-nowrap">
+                {usage?.model || modelInfo?.model || "—"}
+              </span>
+              {((usage?.contextLength ?? modelInfo?.effective_context_length ?? 0) > 0) && (
+                <span className="whitespace-nowrap">
+                  ctx {fmtTokens(usage?.contextLength ?? modelInfo?.effective_context_length ?? 0)}
+                </span>
+              )}
+              {usage && usage.totalTokens > 0 && (
+                <>
+                  <span className="whitespace-nowrap">
+                    in {fmtTokens(usage.inputTokens)}
+                  </span>
+                  <span className="whitespace-nowrap">
+                    out {fmtTokens(usage.outputTokens)}
+                  </span>
+                  <span className="whitespace-nowrap">
+                    {usage.apiCalls} call{usage.apiCalls !== 1 ? "s" : ""}
+                  </span>
+                </>
+              )}
+              {usage && usage.estimatedCostUsd > 0 && (
+                <span className="whitespace-nowrap">
+                  ${usage.estimatedCostUsd.toFixed(4)}
+                </span>
+              )}
+              {usage && usage.contextLength > 0 && usage.totalTokens > 0 && (
+                <span
+                  className={`whitespace-nowrap ${
+                    usage.totalTokens / usage.contextLength > 0.95
+                      ? "text-destructive"
+                      : usage.totalTokens / usage.contextLength > 0.8
+                        ? "text-orange-500"
+                        : usage.totalTokens / usage.contextLength > 0.5
+                          ? "text-yellow-600"
+                          : "text-emerald-600"
+                  }`}
+                >
+                  {((usage.totalTokens / usage.contextLength) * 100).toFixed(1)}%
+                </span>
+              )}
+            </div>
           )}
         </div>
       </div>

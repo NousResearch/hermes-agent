@@ -11,7 +11,20 @@ export type GatewayEvent =
   | { method: "assistant.done"; params: { text: string } }
   | { method: "tool.started"; params: { name: string; preview: string } }
   | { method: "tool.completed"; params: { name: string; result?: string } }
-  | { method: "error"; params: { message: string } };
+  | { method: "error"; params: { message: string } }
+  | {
+      method: "usage.update";
+      params: {
+        model: string;
+        provider: string;
+        api_calls: number;
+        input_tokens: number;
+        output_tokens: number;
+        total_tokens: number;
+        context_length: number;
+        estimated_cost_usd: number;
+      };
+    };
 
 type EventHandler = (event: GatewayEvent) => void;
 type RpcResolver = (result: unknown) => void;

@@ -1121,6 +1121,23 @@ export default class Ink {
       this.repaint()
     }
   }
+
+  /**
+   * Toggle mouse tracking at runtime while the alt screen is active.
+   * Writes the appropriate DEC reset/set sequences so the terminal
+   * (and ConPTY on Windows WSL2) reflects the change immediately.
+   */
+  setAltScreenMouseTracking(enabled: boolean): void {
+    if (this.altScreenMouseTracking === enabled) {
+      return
+    }
+
+    this.altScreenMouseTracking = enabled
+
+    if (this.altScreenActive) {
+      this.options.stdout.write(enabled ? ENABLE_MOUSE_TRACKING : DISABLE_MOUSE_TRACKING)
+    }
+  }
   get isAltScreenActive(): boolean {
     return this.altScreenActive
   }

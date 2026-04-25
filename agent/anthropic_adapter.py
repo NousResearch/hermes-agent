@@ -1680,9 +1680,9 @@ def build_anthropic_kwargs(
 
     # ── Strip sampling params on 4.7+ ─────────────────────────────────
     # Opus 4.7 rejects any non-default temperature/top_p/top_k with a 400.
-    # Callers (auxiliary_client, flush_memories, etc.) may set these for
-    # older models; drop them here as a safety net so upstream 4.6 → 4.7
-    # migrations don't require coordinated edits everywhere.
+    # Callers (auxiliary_client, etc.) may set these for older models;
+    # drop them here as a safety net so upstream 4.6 → 4.7 migrations
+    # don't require coordinated edits everywhere.
     if _forbids_sampling_params(model):
         for _sampling_key in ("temperature", "top_p", "top_k"):
             kwargs.pop(_sampling_key, None)

@@ -839,6 +839,8 @@ def _find_bundled_tui(tui_dir: Path) -> Optional[Path]:
 
 
 def _tui_build_needed(tui_dir: Path) -> bool:
+    if _hermes_ink_bundle_stale(tui_dir):
+        return True
     entry = tui_dir / "dist" / "entry.js"
     if not entry.exists():
         return True
@@ -1026,7 +1028,12 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     return [node, str(root / "dist" / "entry.js")], root
 
 
-def _launch_tui(resume_session_id: Optional[str] = None, tui_dev: bool = False):
+def _launch_tui(
+    resume_session_id: Optional[str] = None,
+    tui_dev: bool = False,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+):
     """Replace current process with the TUI."""
     tui_dir = PROJECT_ROOT / "ui-tui"
 
@@ -1036,6 +1043,12 @@ def _launch_tui(resume_session_id: Optional[str] = None, tui_dev: bool = False):
     )
     env.setdefault("HERMES_PYTHON", sys.executable)
     env.setdefault("HERMES_CWD", os.getcwd())
+    if model:
+        env["HERMES_MODEL"] = model
+        env["HERMES_INFERENCE_MODEL"] = model
+    if provider:
+        env["HERMES_TUI_PROVIDER"] = provider
+        env["HERMES_INFERENCE_PROVIDER"] = provider
     # Guarantee an 8GB V8 heap + exposed GC for the TUI. Default node cap is
     # ~1.5–4GB depending on version and can fatal-OOM on long sessions with
     # large transcripts / reasoning blobs. Token-level merge: respect any
@@ -1174,6 +1187,8 @@ def cmd_chat(args):
         _launch_tui(
             getattr(args, "resume", None),
             tui_dev=getattr(args, "tui_dev", False),
+            model=getattr(args, "model", None),
+            provider=getattr(args, "provider", None),
         )
 
     # Import and run the CLI
@@ -1707,7 +1722,6 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
     ("session_search",   "Session search",   "past-conversation recall"),
     ("approval",         "Approval",         "smart command approval"),
     ("mcp",              "MCP",              "MCP tool reasoning"),
-    ("flush_memories",   "Flush memories",   "memory consolidation"),
     ("title_generation", "Title generation", "session titles"),
     ("skills_hub",       "Skills hub",       "skills search/install"),
 ]
@@ -6071,6 +6085,50 @@ def _cmd_update_impl(args, gateway_mode: bool):
                         return False
                     _time.sleep(0.5)
 
+            def _service_restart_sec(
+                scope_cmd_: list, svc_name_: str, default: float = 0.0,
+            ) -> float:
+                """Read the unit's ``RestartUSec`` (RestartSec) in seconds.
+
+                After a graceful exit-75, systemd waits ``RestartSec`` before
+                respawning the unit.  Callers that poll for ``is-active``
+                must use a timeout >= ``RestartSec`` + transition slack, or
+                they'll give up *during* the cooldown window and wrongly
+                conclude the unit didn't relaunch.
+                """
+                try:
+                    _show = subprocess.run(
+                        scope_cmd_ + [
+                            "show", svc_name_,
+                            "--property=RestartUSec", "--value",
+                        ],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                except (FileNotFoundError, subprocess.TimeoutExpired):
+                    return default
+                raw = (_show.stdout or "").strip()
+                # systemd emits values like "30s", "100ms", "1min 30s", or
+                # "infinity".  Parse conservatively; on any miss return default.
+                if not raw or raw == "infinity":
+                    return default
+                total = 0.0
+                matched = False
+                for part in raw.split():
+                    for _suf, _mult in (
+                        ("ms", 0.001),
+                        ("us", 0.000001),
+                        ("min", 60.0),
+                        ("s", 1.0),
+                    ):
+                        if part.endswith(_suf):
+                            try:
+                                total += float(part[: -len(_suf)]) * _mult
+                                matched = True
+                            except ValueError:
+                                pass
+                            break
+                return total if matched else default
+
             # Drain budget for graceful SIGUSR1 restarts.  The gateway drains
             # for up to ``agent.restart_drain_timeout`` (default 60s) before
             # exiting with code 75; we wait slightly longer so the drain
@@ -6177,13 +6235,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
                             if _graceful_ok:
                                 # Gateway exited 75; systemd should relaunch
-                                # via Restart=on-failure.  Poll is-active for
-                                # up to ~10s because the unit's Stopped ->
-                                # Started transition can take a few seconds
-                                # after the old PID exits, and a one-shot
-                                # check races that window.
+                                # via Restart=on-failure.  The unit's
+                                # RestartSec (default 30s on ours) gates the
+                                # respawn — poll past that + slack so we
+                                # don't give up mid-cooldown and falsely
+                                # print "drained but didn't relaunch".  For
+                                # units without RestartSec set we fall back
+                                # to the original 10s budget.
+                                _restart_sec = _service_restart_sec(
+                                    scope_cmd, svc_name, default=0.0,
+                                )
+                                _post_drain_timeout = max(
+                                    10.0, _restart_sec + 10.0,
+                                )
                                 if _wait_for_service_active(
-                                    scope_cmd, svc_name, timeout=10.0,
+                                    scope_cmd, svc_name,
+                                    timeout=_post_drain_timeout,
                                 ):
                                     restarted_services.append(svc_name)
                                     continue
@@ -6835,6 +6902,40 @@ For more help on a command:
 
     parser.add_argument(
         "--version", "-V", action="store_true", help="Show version and exit"
+    )
+    parser.add_argument(
+        "-z",
+        "--oneshot",
+        metavar="PROMPT",
+        default=None,
+        help=(
+            "One-shot mode: send a single prompt and print ONLY the final "
+            "response text to stdout. No banner, no spinner, no tool "
+            "previews, no session_id line. Tools, memory, rules, and "
+            "AGENTS.md in the CWD are loaded as normal; approvals are "
+            "auto-bypassed. Intended for scripts / pipes."
+        ),
+    )
+    # --model / --provider are accepted at the top level so they can pair
+    # with -z without needing the `chat` subcommand.  If neither -z nor a
+    # subcommand consumes them, they fall through harmlessly as None.
+    # Mirrors `hermes chat --model ... --provider ...` semantics.
+    parser.add_argument(
+        "-m",
+        "--model",
+        default=None,
+        help=(
+            "Model override for this invocation (e.g. anthropic/claude-sonnet-4.6). "
+            "Applies to -z/--oneshot and --tui. Also settable via HERMES_INFERENCE_MODEL env var."
+        ),
+    )
+    parser.add_argument(
+        "--provider",
+        default=None,
+        help=(
+            "Provider override for this invocation (e.g. openrouter, anthropic). "
+            "Applies to -z/--oneshot and --tui. Also settable via HERMES_INFERENCE_PROVIDER env var."
+        ),
     )
     parser.add_argument(
         "--resume",
@@ -9115,6 +9216,17 @@ Examples:
                 "shell-hook registration failed at CLI startup",
                 exc_info=True,
             )
+
+    # Handle top-level --oneshot / -z: single-shot mode, stdout = final
+    # response only, nothing else. Bypasses cli.py entirely.
+    if getattr(args, "oneshot", None):
+        from hermes_cli.oneshot import run_oneshot
+
+        sys.exit(run_oneshot(
+            args.oneshot,
+            model=getattr(args, "model", None),
+            provider=getattr(args, "provider", None),
+        ))
 
     # Handle top-level --resume / --continue as shortcut to chat
     if (args.resume or args.continue_last) and args.command is None:

@@ -98,6 +98,14 @@ def test_startup_runtime_uses_tui_provider_env(monkeypatch):
     assert server._resolve_startup_runtime() == ("nous/hermes-test", "nous")
 
 
+def test_startup_runtime_does_not_treat_inference_provider_as_explicit(monkeypatch):
+    monkeypatch.setenv("HERMES_MODEL", "nous/hermes-test")
+    monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
+    monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "nous")
+
+    assert server._resolve_startup_runtime() == ("nous/hermes-test", None)
+
+
 def test_startup_runtime_detects_provider_for_model_env(monkeypatch):
     monkeypatch.setenv("HERMES_MODEL", "sonnet")
     monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)

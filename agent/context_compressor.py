@@ -318,6 +318,15 @@ class ContextCompressor(ContextEngine):
             int(context_length * self.threshold_percent),
             MINIMUM_CONTEXT_LENGTH,
         )
+        # Re-derive token budgets from the new threshold — mirrors __init__.
+        # Without this, switching to a model with a very different context window
+        # leaves tail_token_budget stale: too large protects the entire history
+        # as "tail" (nothing left to summarize); too small aggressively compresses
+        # recent turns and can lose the active task.
+        self.tail_token_budget = int(self.threshold_tokens * self.summary_target_ratio)
+        self.max_summary_tokens = min(
+            int(self.context_length * 0.05), _SUMMARY_TOKENS_CEILING,
+        )
 
     def __init__(
         self,

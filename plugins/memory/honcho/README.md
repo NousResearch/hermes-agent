@@ -125,6 +125,8 @@ For every key, resolution order is: **host block > root > env var > default**.
 | `enabled` | bool | auto | Master toggle. Auto-enables when `apiKey` or `baseUrl` present |
 | `workspace` | string | host key | Honcho workspace ID. Shared environment — all profiles in the same workspace can see the same user identity and related memories |
 | `peerName` | string | — | User peer identity |
+| `peerIdentityStrategy` | string | `"runtime"` | Default user-peer resolution. `"runtime"` uses gateway `user_id` for per-platform/per-user isolation; `"configured"` uses `peerName` for shared cross-channel memory |
+| `peerIdentities` | object | `{}` | Per-platform overrides. Values may be `"runtime"`, `"configured"`, or a custom peer name string |
 | `aiPeer` | string | host key | AI peer identity |
 
 ### Memory & Recall
@@ -149,6 +151,40 @@ For every key, resolution order is: **host block > root > env var > default**.
 | `sessionStrategy` | string | `"per-directory"` | `"per-directory"`, `"per-session"`, `"per-repo"` (git root), `"global"` |
 | `sessionPeerPrefix` | bool | `false` | Prepend peer name to session keys |
 | `sessions` | object | `{}` | Manual directory-to-session-name mappings |
+
+### Peer Identity Resolution
+
+Gateway platforms pass a runtime `user_id` so multi-user bots can isolate each
+person's memory. Personal deployments that use Telegram, WeChat, CLI, and other
+channels as alternate entry points can instead route those channels to the same
+Honcho user peer.
+
+```json
+{
+  "hosts": {
+    "hermes": {
+      "peerName": "kawarox",
+      "peerIdentityStrategy": "configured",
+      "peerIdentities": {
+        "telegram": "configured",
+        "weixin": "configured",
+        "discord": "runtime",
+        "matrix": "matrix-custom-peer"
+      }
+    }
+  }
+}
+```
+
+Rule values:
+
+- `"runtime"`: use the gateway `user_id`, falling back to `peerName`.
+- `"configured"`: use `peerName`, falling back to gateway `user_id`.
+- any other string: use that string as the Honcho user peer for the platform.
+
+Changing the strategy affects the peer used for future Honcho reads and writes.
+Existing conclusions and messages under previous runtime peers are left
+untouched unless you migrate them separately.
 
 #### Session Name Resolution
 

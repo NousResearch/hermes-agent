@@ -250,6 +250,7 @@ class TestHonchoUserIdScoping:
         mock_cfg.dialectic_depth_levels = None
         mock_cfg.init_on_session_start = False
         mock_cfg.ai_peer = "hermes"
+        mock_cfg.resolve_runtime_peer_name.return_value = "discord_user_789"
         mock_cfg.resolve_session_name.return_value = "test-sess"
         mock_cfg.session_strategy = "shared"
 
@@ -272,7 +273,88 @@ class TestHonchoUserIdScoping:
             )
 
         assert mock_cfg.peer_name == "static-user"
+        mock_cfg.resolve_runtime_peer_name.assert_called_once_with(
+            platform="discord",
+            user_id="discord_user_789",
+        )
         assert mock_manager_cls.call_args.kwargs["runtime_user_peer_name"] == "discord_user_789"
+
+    def test_configured_peer_identity_strategy_overrides_gateway_user_id(self):
+        """Configured strategy should make read/write context use the shared peerName."""
+        from plugins.memory.honcho import HonchoMemoryProvider
+
+        provider = HonchoMemoryProvider()
+
+        mock_cfg = MagicMock()
+        mock_cfg.enabled = True
+        mock_cfg.api_key = "test-key"
+        mock_cfg.base_url = None
+        mock_cfg.peer_name = "static-user"
+        mock_cfg.recall_mode = "context"
+        mock_cfg.context_tokens = None
+        mock_cfg.raw = {}
+        mock_cfg.dialectic_depth = 1
+        mock_cfg.dialectic_depth_levels = None
+        mock_cfg.init_on_session_start = False
+        mock_cfg.ai_peer = "hermes"
+        mock_cfg.resolve_runtime_peer_name.return_value = "static-user"
+        mock_cfg.resolve_session_name.return_value = "test-sess"
+        mock_cfg.session_strategy = "shared"
+
+        with patch(
+            "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
+            return_value=mock_cfg,
+        ), patch(
+            "plugins.memory.honcho.client.get_honcho_client",
+            return_value=MagicMock(),
+        ), patch(
+            "plugins.memory.honcho.session.HonchoSessionManager",
+        ) as mock_manager_cls:
+            mock_manager = MagicMock()
+            mock_manager.get_or_create.return_value = MagicMock(messages=[])
+            mock_manager_cls.return_value = mock_manager
+            provider.initialize(
+                session_id="test-sess",
+                user_id="discord_user_789",
+                platform="discord",
+            )
+
+        mock_cfg.resolve_runtime_peer_name.assert_called_once_with(
+            platform="discord",
+            user_id="discord_user_789",
+        )
+        assert mock_manager_cls.call_args.kwargs["runtime_user_peer_name"] == "static-user"
+
+    def test_peer_identity_map_supports_per_platform_custom_peer(self):
+        """Per-platform rules can keep runtime ids or route to a custom peer."""
+        from plugins.memory.honcho.client import HonchoClientConfig
+
+        cfg = HonchoClientConfig(
+            peer_name="shared-user",
+            peer_identity_strategy="configured",
+            peer_identities={
+                "telegram": "runtime",
+                "weixin": "wechat-shared-user",
+                "discord": {"peerName": "discord-custom-user"},
+            },
+        )
+
+        assert (
+            cfg.resolve_runtime_peer_name(platform="telegram", user_id="tg_123")
+            == "tg_123"
+        )
+        assert (
+            cfg.resolve_runtime_peer_name(platform="weixin", user_id="wx_456")
+            == "wechat-shared-user"
+        )
+        assert (
+            cfg.resolve_runtime_peer_name(platform="discord", user_id="dc_789")
+            == "discord-custom-user"
+        )
+        assert (
+            cfg.resolve_runtime_peer_name(platform="cli", user_id=None)
+            == "shared-user"
+        )
 
     def test_session_manager_prefers_runtime_user_id_over_config_peer_name(self):
         """Session manager should isolate gateway users even when config peer_name is static."""
@@ -356,4 +438,3 @@ class TestAIAgentUserIdPropagation:
             agent = object.__new__(AIAgent)
             agent._user_id = None
             assert agent._user_id is None
-

@@ -351,11 +351,15 @@ class HonchoMemoryProvider(MemoryProvider):
         from plugins.memory.honcho.session import HonchoSessionManager
 
         client = get_honcho_client(cfg)
+        runtime_user_peer_name = cfg.resolve_runtime_peer_name(
+            platform=kwargs.get("platform"),
+            user_id=kwargs.get("user_id") or None,
+        )
         self._manager = HonchoSessionManager(
             honcho=client,
             config=cfg,
             context_tokens=cfg.context_tokens,
-            runtime_user_peer_name=kwargs.get("user_id") or None,
+            runtime_user_peer_name=runtime_user_peer_name,
         )
 
         # ----- B3: resolve_session_name -----

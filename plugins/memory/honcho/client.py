@@ -158,12 +158,30 @@ def _resolve_optional_float(*values: Any) -> float | None:
 
 _VALID_OBSERVATION_MODES = {"unified", "directional"}
 _OBSERVATION_MODE_ALIASES = {"shared": "unified", "separate": "directional", "cross": "directional"}
+_VALID_PEER_IDENTITY_STRATEGIES = {"runtime", "configured"}
+_PEER_IDENTITY_ALIASES = {
+    "gateway": "runtime",
+    "user_id": "runtime",
+    "platform": "runtime",
+    "peerName": "configured",
+    "peer_name": "configured",
+    "static": "configured",
+    "honcho": "configured",
+}
 
 
 def _normalize_observation_mode(val: str) -> str:
     """Normalize observation mode values."""
     val = _OBSERVATION_MODE_ALIASES.get(val, val)
     return val if val in _VALID_OBSERVATION_MODES else "directional"
+
+
+def _normalize_peer_identity_strategy(val: str | None) -> str:
+    """Normalize peer identity strategy values."""
+    if not val:
+        return "runtime"
+    val = _PEER_IDENTITY_ALIASES.get(str(val), str(val))
+    return val if val in _VALID_PEER_IDENTITY_STRATEGIES else "runtime"
 
 
 # Observation presets — granular booleans derived from legacy string mode.
@@ -226,6 +244,13 @@ class HonchoClientConfig:
     # Identity
     peer_name: str | None = None
     ai_peer: str = "hermes"
+    # How gateway user_id maps to Honcho's user peer identity.
+    # runtime: gateway user_id scopes memory (multi-user bot default).
+    # configured: peerName scopes memory (personal cross-channel default).
+    # peer_identities can override per platform; values may be "runtime",
+    # "configured", or a custom peer name string.
+    peer_identity_strategy: str = "runtime"
+    peer_identities: dict[str, Any] = field(default_factory=dict)
     # Toggles
     enabled: bool = False
     save_messages: bool = True
@@ -289,6 +314,79 @@ class HonchoClientConfig:
     # stray HONCHO_API_KEY env var.
     explicitly_configured: bool = False
 
+    def resolve_runtime_peer_name(
+        self,
+        *,
+        platform: str | None = None,
+        user_id: str | None = None,
+    ) -> str | None:
+        """Resolve the Honcho user peer for this runtime context.
+
+        Per-platform rules let personal deployments share one Honcho peer
+        across Telegram/WeChat/CLI, while multi-user deployments keep the
+        existing gateway user_id isolation by default.
+
+        Supported rule values:
+          - "runtime": use gateway user_id, falling back to peerName
+          - "configured": use peerName, falling back to gateway user_id
+          - any other string: use that string as a custom peer name
+
+        Dict values are also accepted:
+          - {"strategy": "runtime" | "configured"}
+          - {"peerName": "custom-name"} / {"name": "custom-name"}
+        """
+        rule = self._peer_identity_rule_for_platform(platform)
+        strategy = self.peer_identity_strategy
+        custom_peer: str | None = None
+
+        if isinstance(rule, dict):
+            custom_peer = (
+                rule.get("peerName")
+                or rule.get("peer_name")
+                or rule.get("name")
+                or rule.get("peer")
+            )
+            strategy = _normalize_peer_identity_strategy(
+                rule.get("strategy") or rule.get("mode") or strategy
+            )
+        elif isinstance(rule, str):
+            normalized = _PEER_IDENTITY_ALIASES.get(rule, rule)
+            if normalized in _VALID_PEER_IDENTITY_STRATEGIES:
+                strategy = normalized
+            else:
+                custom_peer = rule
+
+        if custom_peer:
+            return str(custom_peer)
+
+        strategy = _normalize_peer_identity_strategy(strategy)
+        if strategy == "configured":
+            return self.peer_name or user_id
+        return user_id or self.peer_name
+
+    def _peer_identity_rule_for_platform(self, platform: str | None) -> Any | None:
+        """Return the configured identity rule for a platform, if any."""
+        if not self.peer_identities:
+            return None
+
+        candidates: list[str] = []
+        if platform:
+            platform_key = str(platform)
+            candidates.extend(
+                [
+                    platform_key,
+                    platform_key.lower(),
+                    platform_key.replace("-", "_"),
+                    platform_key.replace("_", "-"),
+                ]
+            )
+        candidates.extend(["default", "*"])
+
+        for key in candidates:
+            if key in self.peer_identities:
+                return self.peer_identities[key]
+        return None
+
     @classmethod
     def from_env(
         cls,
@@ -308,6 +406,9 @@ class HonchoClientConfig:
             base_url=base_url,
             timeout=timeout,
             ai_peer=resolved_host,
+            peer_identity_strategy=_normalize_peer_identity_strategy(
+                os.environ.get("HONCHO_PEER_IDENTITY_STRATEGY")
+            ),
             enabled=bool(api_key or base_url),
         )
 
@@ -420,6 +521,16 @@ class HonchoClientConfig:
             timeout=timeout,
             peer_name=host_block.get("peerName") or raw.get("peerName"),
             ai_peer=ai_peer,
+            peer_identity_strategy=_normalize_peer_identity_strategy(
+                host_block.get("peerIdentityStrategy")
+                or raw.get("peerIdentityStrategy")
+                or "runtime"
+            ),
+            peer_identities=(
+                host_block.get("peerIdentities")
+                or raw.get("peerIdentities")
+                or {}
+            ),
             enabled=enabled,
             save_messages=save_messages,
             write_frequency=write_frequency,

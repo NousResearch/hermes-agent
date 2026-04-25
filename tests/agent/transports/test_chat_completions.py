@@ -117,7 +117,34 @@ class TestChatCompletionsBuildKwargs:
             is_custom_provider=True,
             reasoning_config={"effort": "none"},
         )
+        # Native /api/chat path
         assert kw["extra_body"]["think"] is False
+        # OAI-compatible /v1/chat/completions path: gemma4 family ignores
+        # `think` and emits CoT into message.reasoning unless reasoning is
+        # explicitly disabled. Send both keys to cover both routes.
+        assert kw["extra_body"]["reasoning"] == {"effort": "none", "enabled": False}
+
+    def test_custom_reasoning_disabled_via_enabled_false(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemma4:26b-a4b-it-q4_K_M", messages=msgs,
+            is_custom_provider=True,
+            reasoning_config={"enabled": False},
+        )
+        # enabled=False without effort='none' should still emit both keys
+        assert kw["extra_body"]["think"] is False
+        assert kw["extra_body"]["reasoning"] == {"effort": "none", "enabled": False}
+
+    def test_custom_no_reasoning_keys_when_unset(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="qwen3", messages=msgs,
+            is_custom_provider=True,
+        )
+        # No reasoning_config => no think/reasoning keys injected
+        extra_body = kw.get("extra_body", {})
+        assert "think" not in extra_body
+        assert "reasoning" not in extra_body
 
     def test_max_tokens_with_fn(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]

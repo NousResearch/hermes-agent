@@ -98,6 +98,65 @@ class TestAgentConfigSignature:
         sig2 = GatewayRunner._agent_config_signature("claude-sonnet-4", runtime, ["hermes-telegram"], "")
         assert sig1 == sig2
 
+    def test_session_id_change_changes_cache_signature(self):
+        """Same session_key/config but new session_id must not reuse AIAgent."""
+        from gateway.run import GatewayRunner
+
+        runtime = {
+            "api_key": "sk-test12345678",
+            "base_url": "https://openrouter.ai/api/v1",
+            "provider": "openrouter",
+        }
+        config_sig = GatewayRunner._agent_config_signature(
+            "claude-sonnet-4",
+            runtime,
+            ["hermes-telegram"],
+            "",
+        )
+
+        old_sig = GatewayRunner._agent_session_cache_signature(
+            config_sig,
+            "session_20260424_234051_d1f6545c",
+        )
+        new_sig = GatewayRunner._agent_session_cache_signature(
+            config_sig,
+            "session_20260425_135100_4c2c369e",
+        )
+
+        assert old_sig != new_sig
+
+    def test_session_id_change_forces_cache_miss(self):
+        """Regression guard for reset/model-switch cross-talk via stale agents."""
+        from gateway.run import GatewayRunner
+
+        runner = _make_runner()
+        session_key = "agent:main:telegram:dm:zmetaboard"
+        agent = MagicMock()
+        agent.session_id = "session_20260424_234051_d1f6545c"
+
+        old_config_sig = GatewayRunner._agent_config_signature(
+            "claude-sonnet-4",
+            {"api_key": "test", "provider": "openrouter"},
+            ["hermes-telegram"],
+            "",
+        )
+        old_sig = GatewayRunner._agent_session_cache_signature(
+            old_config_sig,
+            agent.session_id,
+        )
+        with runner._agent_cache_lock:
+            runner._agent_cache[session_key] = (agent, old_sig)
+
+        new_sig = GatewayRunner._agent_session_cache_signature(
+            old_config_sig,
+            "session_20260425_135100_4c2c369e",
+        )
+
+        with runner._agent_cache_lock:
+            cached = runner._agent_cache.get(session_key)
+        assert cached is not None
+        assert cached[1] != new_sig
+
 
 class TestAgentCacheLifecycle:
     """End-to-end cache behavior with real AIAgent construction."""

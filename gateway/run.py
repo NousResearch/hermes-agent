@@ -4139,6 +4139,7 @@ class GatewayRunner:
         # If the previous session expired and was auto-reset, prepend a notice
         # so the agent knows this is a fresh conversation (not an intentional /reset).
         if getattr(session_entry, 'was_auto_reset', False):
+            self._evict_cached_agent(session_key)
             reset_reason = getattr(session_entry, 'auto_reset_reason', None) or 'idle'
             if reset_reason == "suspended":
                 context_note = "[System note: The user's previous session was stopped and suspended. This is a fresh conversation with no prior context.]"
@@ -4455,6 +4456,7 @@ class GatewayRunner:
                                     if _hyg_new_sid != session_entry.session_id:
                                         session_entry.session_id = _hyg_new_sid
                                         self.session_store._save()
+                                        self._evict_cached_agent(session_key)
 
                                     self.session_store.rewrite_transcript(
                                         session_entry.session_id, _compressed
@@ -4675,6 +4677,7 @@ class GatewayRunner:
             # session_entry so transcript writes below go to the right session.
             if agent_result.get("session_id") and agent_result["session_id"] != session_entry.session_id:
                 session_entry.session_id = agent_result["session_id"]
+                self._evict_cached_agent(session_key)
 
             # Prepend reasoning/thinking if display is enabled (per-platform)
             try:
@@ -7115,6 +7118,7 @@ class GatewayRunner:
                 if new_session_id != session_entry.session_id:
                     session_entry.session_id = new_session_id
                     self.session_store._save()
+                    self._evict_cached_agent(session_key)
 
                 self.session_store.rewrite_transcript(new_session_id, compressed)
                 # Reset stored token count — transcript changed, old value is stale
@@ -7255,6 +7259,7 @@ class GatewayRunner:
         if not new_entry:
             return "Failed to switch session."
         self._clear_session_boundary_security_state(session_key)
+        self._evict_cached_agent(session_key)
 
         # Get the title for confirmation
         title = self._session_db.get_session_title(target_id) or name
@@ -8669,6 +8674,22 @@ class GatewayRunner:
         )
         return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
+    @staticmethod
+    def _agent_session_cache_signature(config_signature: str, session_id: str) -> str:
+        """Bind an agent cache signature to the active transcript session.
+
+        The cache key itself is the stable gateway ``session_key``.  Session
+        resets and resumes intentionally keep that key while changing the
+        transcript ``session_id``; if the cache signature ignores session_id,
+        a cached AIAgent can keep writing to the old transcript after reset.
+        """
+        if not session_id:
+            return config_signature
+        import hashlib
+
+        session_fingerprint = hashlib.sha256(str(session_id).encode()).hexdigest()[:16]
+        return f"{config_signature}:{session_fingerprint}"
+
     def _apply_session_model_override(
         self, session_key: str, model: str, runtime_kwargs: dict
     ) -> tuple:
@@ -9802,12 +9823,13 @@ class GatewayRunner:
             # Check agent cache — reuse the AIAgent from the previous message
             # in this session to preserve the frozen system prompt and tool
             # schemas for prompt cache hits.
-            _sig = self._agent_config_signature(
+            _config_sig = self._agent_config_signature(
                 turn_route["model"],
                 turn_route["runtime"],
                 enabled_toolsets,
                 combined_ephemeral,
             )
+            _sig = self._agent_session_cache_signature(_config_sig, session_id)
             agent = None
             _cache_lock = getattr(self, "_agent_cache_lock", None)
             _cache = getattr(self, "_agent_cache", None)
@@ -10231,6 +10253,7 @@ class GatewayRunner:
                 if entry:
                     entry.session_id = agent.session_id
                     self.session_store._save()
+                self._evict_cached_agent(session_key)
 
             effective_session_id = getattr(agent, 'session_id', session_id) if agent else session_id
 

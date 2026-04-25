@@ -115,6 +115,29 @@ class TestCommandTimeoutCache:
         mock_read.assert_called_once()
 
 
+class TestSessionInactivityTimeout:
+
+    def test_default_is_300(self, monkeypatch):
+        from tools.browser_tool import _get_session_inactivity_timeout
+        monkeypatch.delenv("BROWSER_INACTIVITY_TIMEOUT", raising=False)
+        with patch("hermes_cli.config.read_raw_config", return_value={}):
+            assert _get_session_inactivity_timeout() == 300
+
+    def test_reads_from_config_over_env(self, monkeypatch):
+        from tools.browser_tool import _get_session_inactivity_timeout
+        monkeypatch.setenv("BROWSER_INACTIVITY_TIMEOUT", "120")
+        cfg = {"browser": {"inactivity_timeout": 900}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _get_session_inactivity_timeout() == 900
+
+    def test_floor_at_30_seconds(self, monkeypatch):
+        from tools.browser_tool import _get_session_inactivity_timeout
+        monkeypatch.setenv("BROWSER_INACTIVITY_TIMEOUT", "120")
+        cfg = {"browser": {"inactivity_timeout": 1}}
+        with patch("hermes_cli.config.read_raw_config", return_value=cfg):
+            assert _get_session_inactivity_timeout() == 30
+
+
 # ---------------------------------------------------------------------------
 # Caching: _discover_homebrew_node_dirs
 # ---------------------------------------------------------------------------

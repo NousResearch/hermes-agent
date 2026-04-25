@@ -328,6 +328,46 @@ class TestWebServerEndpoints:
         resp = unauth_client.get("/api/status")
         assert resp.status_code == 200
 
+    def test_dashboard_update_disabled_by_config(self, monkeypatch):
+        """POST /api/hermes/update should honor the profile-level safety gate."""
+        import hermes_cli.web_server as web_server
+
+        monkeypatch.setattr(
+            web_server,
+            "load_config",
+            lambda: {"dashboard": {"enable_update_action": False}},
+        )
+
+        def _fail_spawn(*args, **kwargs):
+            raise AssertionError("update action should not spawn")
+
+        monkeypatch.setattr(web_server, "_spawn_hermes_action", _fail_spawn)
+
+        resp = self.client.post("/api/hermes/update")
+        assert resp.status_code == 403
+        assert "disabled" in resp.json()["detail"].lower()
+
+    def test_dashboard_update_enabled_by_default(self, monkeypatch):
+        """Existing profiles keep the dashboard update behavior unless they opt out."""
+        import hermes_cli.web_server as web_server
+
+        class _Proc:
+            pid = 4242
+
+        calls = []
+
+        monkeypatch.setattr(web_server, "load_config", lambda: {})
+        monkeypatch.setattr(
+            web_server,
+            "_spawn_hermes_action",
+            lambda subcommand, name: calls.append((subcommand, name)) or _Proc(),
+        )
+
+        resp = self.client.post("/api/hermes/update")
+        assert resp.status_code == 200
+        assert resp.json()["pid"] == 4242
+        assert calls == [(["update"], "hermes-update")]
+
     def test_path_traversal_blocked(self):
         """Verify URL-encoded path traversal is blocked."""
         # %2e%2e = ..

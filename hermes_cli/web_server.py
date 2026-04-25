@@ -663,6 +663,27 @@ _ACTION_LOG_FILES: Dict[str, str] = {
 _ACTION_PROCS: Dict[str, subprocess.Popen] = {}
 
 
+def _dashboard_update_action_enabled() -> bool:
+    """Return whether the dashboard may start ``hermes update``.
+
+    The dashboard session token proves the request came from this browser
+    session, but some deployments still want source updates to go through an
+    explicit operator workflow. Default to the historical behavior unless the
+    profile opts out with ``dashboard.enable_update_action: false``.
+    """
+    try:
+        dashboard_cfg = load_config().get("dashboard", {})
+    except Exception:
+        return True
+
+    raw = dashboard_cfg.get("enable_update_action", True) if isinstance(dashboard_cfg, dict) else True
+    if isinstance(raw, bool):
+        return raw
+    if raw is None:
+        return True
+    return str(raw).strip().lower() not in {"0", "false", "no", "off", "disabled"}
+
+
 def _spawn_hermes_action(subcommand: List[str], name: str) -> subprocess.Popen:
     """Spawn ``hermes <subcommand>`` detached and record the Popen handle.
 
@@ -731,6 +752,11 @@ async def restart_gateway():
 @app.post("/api/hermes/update")
 async def update_hermes():
     """Kick off ``hermes update`` in the background."""
+    if not _dashboard_update_action_enabled():
+        raise HTTPException(
+            status_code=403,
+            detail="Dashboard-triggered Hermes updates are disabled for this profile.",
+        )
     try:
         proc = _spawn_hermes_action(["update"], "hermes-update")
     except Exception as exc:

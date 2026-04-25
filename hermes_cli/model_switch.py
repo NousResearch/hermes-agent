@@ -527,6 +527,40 @@ def _resolve_alias_fallback(
     return None
 
 
+def _lookup_custom_provider_context_length(model: str, base_url: str) -> Optional[int]:
+    """Return per-model context_length from custom_providers config for (model, base_url).
+
+    Matches the entry whose ``base_url`` equals *base_url* (trailing slash
+    ignored, case-insensitive) and reads ``models.<model>.context_length``.
+    Returns None when no match is found, when the value is not a valid integer,
+    or on any error loading the config.
+    """
+    norm_url = (base_url or "").rstrip("/").lower()
+    if not norm_url:
+        return None
+    try:
+        from hermes_cli.config import get_compatible_custom_providers
+        providers = get_compatible_custom_providers()
+    except Exception:
+        return None
+    for cp in providers:
+        if not isinstance(cp, dict):
+            continue
+        if (cp.get("base_url") or "").rstrip("/").lower() == norm_url:
+            cp_models = cp.get("models") or {}
+            if isinstance(cp_models, dict):
+                model_cfg = cp_models.get(model) or {}
+                if isinstance(model_cfg, dict):
+                    ctx = model_cfg.get("context_length")
+                    if ctx is not None:
+                        try:
+                            return int(ctx)
+                        except (TypeError, ValueError):
+                            return None
+            break
+    return None
+
+
 def resolve_display_context_length(
     model: str,
     provider: str,
@@ -543,9 +577,15 @@ def resolve_display_context_length(
     about Codex OAuth, Copilot, Nous, and falls back to models.dev for the
     rest.
 
+    Named custom providers can declare per-model context windows under
+    ``custom_providers[].models.<model>.context_length``; this value is
+    checked first and forwarded to the resolver as ``config_context_length``
+    so it wins over any auto-detected default.
+
     Prefer the provider-aware value; fall back to ``model_info.context_window``
     only if the resolver returns nothing.
     """
+    config_ctx = _lookup_custom_provider_context_length(model, base_url)
     try:
         from agent.model_metadata import get_model_context_length
         ctx = get_model_context_length(
@@ -553,6 +593,7 @@ def resolve_display_context_length(
             base_url=base_url or "",
             api_key=api_key or "",
             provider=provider or None,
+            config_context_length=config_ctx,
         )
         if ctx:
             return int(ctx)

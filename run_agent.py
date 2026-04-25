@@ -2141,12 +2141,24 @@ class AIAgent:
         # ── Update context compressor ──
         if hasattr(self, "context_compressor") and self.context_compressor:
             from agent.model_metadata import get_model_context_length
+            # Refresh config_context_length for the new model/provider: the
+            # startup value captured the original model's custom_providers entry
+            # and does not reflect the newly switched target.
+            _switch_config_ctx = getattr(self, "_config_context_length", None)
+            try:
+                from hermes_cli.model_switch import _lookup_custom_provider_context_length
+                _cp_ctx = _lookup_custom_provider_context_length(self.model, self.base_url)
+                if _cp_ctx is not None:
+                    _switch_config_ctx = _cp_ctx
+            except Exception:
+                pass
+            self._config_context_length = _switch_config_ctx
             new_context_length = get_model_context_length(
                 self.model,
                 base_url=self.base_url,
                 api_key=self.api_key,
                 provider=self.provider,
-                config_context_length=getattr(self, "_config_context_length", None),
+                config_context_length=_switch_config_ctx,
             )
             self.context_compressor.update_model(
                 model=self.model,

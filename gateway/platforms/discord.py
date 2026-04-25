@@ -2892,22 +2892,38 @@ class DiscordAdapter(BasePlatformAdapter):
             if not channel:
                 channel = await self._client.fetch_channel(int(target_id))
 
-            # Discord embed description limit is 4096; show full command up to that
-            max_desc = 4088
-            cmd_display = command if len(command) <= max_desc else command[: max_desc - 3] + "..."
-            embed = discord.Embed(
-                title="⚠️ Command Approval Required",
-                description=f"```\n{cmd_display}\n```",
-                color=discord.Color.orange(),
+            command_text = str(command or "").strip()
+            if not command_text:
+                command_text = "(command text missing - deny unless you can verify the request elsewhere)"
+            reason_text = str(description or "dangerous command").strip()
+
+            # Put the command in normal message content, not an embed. The
+            # buttons can still render when embeds are collapsed or hidden, so
+            # the approval context must live in the same visible message text.
+            max_content_cmd = 1400
+            content_cmd = (
+                command_text
+                if len(command_text) <= max_content_cmd
+                else command_text[: max_content_cmd - 3] + "..."
             )
-            embed.add_field(name="Reason", value=description, inline=False)
+            max_content_reason = 350
+            content_reason = (
+                reason_text
+                if len(reason_text) <= max_content_reason
+                else reason_text[: max_content_reason - 3] + "..."
+            )
+            content = (
+                "⚠️ **Command Approval Required**\n"
+                f"```sh\n{content_cmd}\n```\n"
+                f"Reason: {content_reason}"
+            )
 
             view = ExecApprovalView(
                 session_key=session_key,
                 allowed_user_ids=self._allowed_user_ids,
             )
 
-            msg = await channel.send(embed=embed, view=view)
+            msg = await channel.send(content=content, view=view)
             return SendResult(success=True, message_id=str(msg.id))
 
         except Exception as e:

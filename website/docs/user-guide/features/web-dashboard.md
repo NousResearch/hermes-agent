@@ -342,6 +342,6 @@ To build your own theme, add a plugin tab, inject into shell slots, or expose pl
 
 - Theme YAML schema — palette, typography, layout, assets, componentStyles, colorOverrides, customCSS
 - Layout variants — `standard`, `cockpit`, `tiled`
-- Plugin manifest, SDK, shell slots, backend FastAPI routes
+- Plugin manifest, SDK, shell slots, page-scoped slots (inject widgets into built-in pages without overriding them), backend FastAPI routes
 - A full combined theme-plus-plugin walkthrough (Strike Freedom cockpit demo)
 - Discovery, reload, and troubleshooting

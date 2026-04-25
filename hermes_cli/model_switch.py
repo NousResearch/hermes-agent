@@ -527,6 +527,42 @@ def _resolve_alias_fallback(
     return None
 
 
+def resolve_display_context_length(
+    model: str,
+    provider: str,
+    base_url: str = "",
+    api_key: str = "",
+    model_info: Optional[ModelInfo] = None,
+) -> Optional[int]:
+    """Resolve the context length to show in /model output.
+
+    models.dev reports per-vendor context (e.g. gpt-5.5 = 1.05M on openai)
+    but provider-enforced limits can be lower (e.g. Codex OAuth caps the
+    same slug at 272k). The authoritative source is
+    ``agent.model_metadata.get_model_context_length`` which already knows
+    about Codex OAuth, Copilot, Nous, and falls back to models.dev for the
+    rest.
+
+    Prefer the provider-aware value; fall back to ``model_info.context_window``
+    only if the resolver returns nothing.
+    """
+    try:
+        from agent.model_metadata import get_model_context_length
+        ctx = get_model_context_length(
+            model,
+            base_url=base_url or "",
+            api_key=api_key or "",
+            provider=provider or None,
+        )
+        if ctx:
+            return int(ctx)
+    except Exception:
+        pass
+    if model_info is not None and model_info.context_window:
+        return int(model_info.context_window)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Core model-switching pipeline
 # ---------------------------------------------------------------------------

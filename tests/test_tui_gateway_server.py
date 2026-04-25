@@ -203,6 +203,21 @@ def test_config_set_section_clears_override_on_empty_value(tmp_path, monkeypatch
     assert saved["display"]["sections"] == {"tools": "expanded"}
 
 
+def test_voice_transcript_payload_marks_draft_when_auto_submit_disabled(monkeypatch):
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"voice": {"auto_submit": False}})
+
+    assert server._voice_transcript_payload("edit me") == {
+        "auto_submit": False,
+        "text": "edit me",
+    }
+
+
+def test_voice_transcript_payload_defaults_to_auto_submit(monkeypatch):
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"voice": {}})
+
+    assert server._voice_transcript_payload("send me") == {"text": "send me"}
+
+
 def test_config_set_section_rejects_unknown_section_or_mode(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
 

@@ -3875,6 +3875,20 @@ def _voice_tts_enabled() -> bool:
     return os.environ.get("HERMES_VOICE_TTS", "").strip() == "1"
 
 
+def _voice_transcript_payload(text: str) -> dict:
+    """Build the TUI voice transcript event payload from persisted config.
+
+    ``voice.auto_submit`` defaults to True for backward compatibility. When it
+    is explicitly false, the TUI inserts the transcript into the composer as an
+    editable draft instead of immediately submitting it as the next user turn.
+    """
+    payload = {"text": text}
+    voice_cfg = _load_cfg().get("voice", {})
+    if voice_cfg.get("auto_submit") is False:
+        payload["auto_submit"] = False
+    return payload
+
+
 @method("voice.toggle")
 def _(rid, params: dict) -> dict:
     """CLI parity for the ``/voice`` slash command.
@@ -3975,7 +3989,9 @@ def _(rid, params: dict) -> dict:
 
             voice_cfg = _load_cfg().get("voice", {})
             start_continuous(
-                on_transcript=lambda t: _voice_emit("voice.transcript", {"text": t}),
+                on_transcript=lambda t: _voice_emit(
+                    "voice.transcript", _voice_transcript_payload(t)
+                ),
                 on_status=lambda s: _voice_emit("voice.status", {"state": s}),
                 on_silent_limit=lambda: _voice_emit(
                     "voice.transcript", {"no_speech_limit": True}

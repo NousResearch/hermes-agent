@@ -301,16 +301,19 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
-        // CLI parity: _pending_input.put(transcript) unconditionally feeds
-        // the transcript to the agent as its next turn — draft handling
-        // doesn't apply because voice-mode users are speaking, not typing.
-        //
-        // We can't branch on composer input from inside a setInput updater
-        // (React strict mode double-invokes it, duplicating the submit).
-        // Just clear + defer submit so the cleared input is committed before
-        // submit reads it.
-        setInput('')
-        setTimeout(() => submitRef.current(text), 0)
+        // By default we preserve CLI parity: submit the transcript as the
+        // next user turn. When the gateway marks the transcript as a draft,
+        // place it in the composer instead so users can edit before sending.
+        if (ev.payload?.auto_submit === false) {
+          setInput(text)
+        } else {
+          // We can't branch on composer input from inside a setInput updater
+          // (React strict mode double-invokes it, duplicating the submit).
+          // Just clear + defer submit so the cleared input is committed before
+          // submit reads it.
+          setInput('')
+          setTimeout(() => submitRef.current(text), 0)
+        }
 
         return
       }

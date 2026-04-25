@@ -315,4 +315,29 @@ describe('createGatewayEventHandler', () => {
 
     expect(getTurnState().activity).toMatchObject([{ text: 'boom', tone: 'error' }])
   })
+
+  it('inserts voice transcripts into the composer when auto_submit is false', () => {
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { auto_submit: false, text: 'edit this first' }, type: 'voice.transcript' } as any)
+
+    expect(ctx.composer.setInput).toHaveBeenCalledWith('edit this first')
+    expect(ctx.submission.submitRef.current).not.toHaveBeenCalled()
+  })
+
+  it('auto-submits voice transcripts by default for backward compatibility', () => {
+    vi.useFakeTimers()
+    const appended: Msg[] = []
+    const ctx = buildCtx(appended)
+    const onEvent = createGatewayEventHandler(ctx)
+
+    onEvent({ payload: { text: 'send now' }, type: 'voice.transcript' } as any)
+    vi.runAllTimers()
+
+    expect(ctx.composer.setInput).toHaveBeenCalledWith('')
+    expect(ctx.submission.submitRef.current).toHaveBeenCalledWith('send now')
+    vi.useRealTimers()
+  })
 })

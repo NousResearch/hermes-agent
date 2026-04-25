@@ -551,6 +551,7 @@ def _make_stream_chunk(
     tool_call_delta: Optional[Dict[str, Any]] = None,
     finish_reason: Optional[str] = None,
     reasoning: str = "",
+    usage: Optional[SimpleNamespace] = None,
 ) -> _GeminiStreamChunk:
     delta_kwargs: Dict[str, Any] = {
         "role": "assistant",
@@ -586,7 +587,7 @@ def _make_stream_chunk(
         created=int(time.time()),
         model=model,
         choices=[choice],
-        usage=None,
+        usage=usage,
     )
 
 
@@ -679,7 +680,19 @@ def translate_stream_event(event: Dict[str, Any], model: str, tool_call_indices:
     finish_reason_raw = str(cand.get("finishReason") or "")
     if finish_reason_raw:
         mapped = "tool_calls" if tool_call_indices else _map_gemini_finish_reason(finish_reason_raw)
-        chunks.append(_make_stream_chunk(model=model, finish_reason=mapped))
+        usage_meta = event.get("usageMetadata") or {}
+        usage = None
+        if usage_meta:
+            usage = SimpleNamespace(
+                prompt_tokens=int(usage_meta.get("promptTokenCount") or 0),
+                completion_tokens=int(usage_meta.get("candidatesTokenCount") or 0),
+                total_tokens=int(usage_meta.get("totalTokenCount") or 0),
+                prompt_tokens_details=SimpleNamespace(
+                    cached_tokens=int(usage_meta.get("cachedContentTokenCount") or 0),
+                ),
+            )
+        chunks.append(_make_stream_chunk(model=model, finish_reason=mapped, usage=usage))
+
     return chunks
 
 

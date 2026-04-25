@@ -7,6 +7,8 @@ import type { ModelOptionProvider, ModelOptionsResponse } from '../gatewayTypes.
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
+import { OverlayControls, useOverlayKeys } from './overlayControls.js'
+
 const VISIBLE = 12
 const MIN_WIDTH = 40
 const MAX_WIDTH = 90
@@ -71,20 +73,20 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
   const models = provider?.models ?? []
   const names = useMemo(() => providerDisplayNames(providers), [providers])
 
-  useInput((ch, key) => {
-    if (key.escape) {
-      if (stage === 'model') {
-        setStage('provider')
-        setModelIdx(0)
-
-        return
-      }
-
-      onCancel()
+  const back = () => {
+    if (stage === 'model') {
+      setStage('provider')
+      setModelIdx(0)
 
       return
     }
 
+    onCancel()
+  }
+
+  useOverlayKeys({ onBack: back, onClose: onCancel })
+
+  useInput((ch, key) => {
     const count = stage === 'provider' ? providers.length : models.length
     const sel = stage === 'provider' ? providerIdx : modelIdx
     const setSel = stage === 'provider' ? setProviderIdx : setModelIdx
@@ -155,7 +157,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
     return (
       <Box flexDirection="column">
         <Text color={t.color.label}>error: {err}</Text>
-        <Text color={t.color.dim}>Esc to cancel</Text>
+        <OverlayControls t={t}>Esc/q cancel</OverlayControls>
       </Box>
     )
   }
@@ -164,7 +166,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
     return (
       <Box flexDirection="column">
         <Text color={t.color.dim}>no authenticated providers</Text>
-        <Text color={t.color.dim}>Esc to cancel</Text>
+        <OverlayControls t={t}>Esc/q cancel</OverlayControls>
       </Box>
     )
   }
@@ -221,9 +223,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
         <Text color={t.color.dim} wrap="truncate-end">
           persist: {persistGlobal ? 'global' : 'session'} · g toggle
         </Text>
-        <Text color={t.color.dim} wrap="truncate-end">
-          ↑/↓ select · Enter choose · 1-9,0 quick · Esc cancel
-        </Text>
+        <OverlayControls t={t}>↑/↓ select · Enter choose · 1-9,0 quick · Esc/q cancel</OverlayControls>
       </Box>
     )
   }
@@ -283,9 +283,9 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
       <Text color={t.color.dim} wrap="truncate-end">
         persist: {persistGlobal ? 'global' : 'session'} · g toggle
       </Text>
-      <Text color={t.color.dim} wrap="truncate-end">
-        {models.length ? '↑/↓ select · Enter switch · 1-9,0 quick · Esc back' : 'Enter/Esc back'}
-      </Text>
+      <OverlayControls t={t}>
+        {models.length ? '↑/↓ select · Enter switch · 1-9,0 quick · Esc back · q close' : 'Enter/Esc back · q close'}
+      </OverlayControls>
     </Box>
   )
 }

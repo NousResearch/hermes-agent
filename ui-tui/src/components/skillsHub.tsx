@@ -5,6 +5,8 @@ import type { GatewayClient } from '../gatewayClient.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
+import { OverlayControls, useOverlayKeys } from './overlayControls.js'
+
 const VISIBLE = 12
 const MIN_WIDTH = 40
 const MAX_WIDTH = 90
@@ -48,6 +50,27 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
   const skills = selectedCat ? (skillsByCat[selectedCat] ?? []) : []
   const skillName = skills[skillIdx] ?? ''
 
+  const back = () => {
+    if (stage === 'actions') {
+      setStage('skill')
+      setInfo(null)
+      setErr('')
+
+      return
+    }
+
+    if (stage === 'skill') {
+      setStage('category')
+      setSkillIdx(0)
+
+      return
+    }
+
+    onClose()
+  }
+
+  useOverlayKeys({ disabled: installing, onBack: back, onClose })
+
   const inspect = (name: string) => {
     setInfo(null)
     setErr('')
@@ -69,27 +92,6 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
 
   useInput((ch, key) => {
     if (installing) {
-      return
-    }
-
-    if (key.escape) {
-      if (stage === 'actions') {
-        setStage('skill')
-        setInfo(null)
-        setErr('')
-
-        return
-      }
-
-      if (stage === 'skill') {
-        setStage('category')
-        setSkillIdx(0)
-
-        return
-      }
-
-      onClose()
-
       return
     }
 
@@ -193,7 +195,7 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
     return (
       <Box flexDirection="column" width={width}>
         <Text color={t.color.label}>error: {err}</Text>
-        <Text color={t.color.dim}>Esc to cancel</Text>
+        <OverlayControls t={t}>Esc/q cancel</OverlayControls>
       </Box>
     )
   }
@@ -202,7 +204,7 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
     return (
       <Box flexDirection="column" width={width}>
         <Text color={t.color.dim}>no skills available</Text>
-        <Text color={t.color.dim}>Esc to cancel</Text>
+        <OverlayControls t={t}>Esc/q cancel</OverlayControls>
       </Box>
     )
   }
@@ -238,7 +240,7 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
         })}
 
         {off + VISIBLE < rows.length && <Text color={t.color.dim}> ↓ {rows.length - off - VISIBLE} more</Text>}
-        <Text color={t.color.dim}>↑/↓ select · Enter open · 1-9,0 quick · Esc cancel</Text>
+        <OverlayControls t={t}>↑/↓ select · Enter open · 1-9,0 quick · Esc/q cancel</OverlayControls>
       </Box>
     )
   }
@@ -274,9 +276,9 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
         })}
 
         {off + VISIBLE < skills.length && <Text color={t.color.dim}> ↓ {skills.length - off - VISIBLE} more</Text>}
-        <Text color={t.color.dim}>
-          {skills.length ? '↑/↓ select · Enter open · 1-9,0 quick · Esc back' : 'Esc back'}
-        </Text>
+        <OverlayControls t={t}>
+          {skills.length ? '↑/↓ select · Enter open · 1-9,0 quick · Esc back · q close' : 'Esc back · q close'}
+        </OverlayControls>
       </Box>
     )
   }
@@ -294,7 +296,7 @@ export function SkillsHub({ gw, onClose, t }: SkillsHubProps) {
       {err ? <Text color={t.color.label}>error: {err}</Text> : null}
       {installing ? <Text color={t.color.amber}>installing…</Text> : null}
 
-      <Text color={t.color.dim}>i reinspect · x reinstall · Enter/Esc back</Text>
+      <OverlayControls t={t}>i reinspect · x reinstall · Enter/Esc back · q close</OverlayControls>
     </Box>
   )
 }

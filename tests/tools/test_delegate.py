@@ -2128,5 +2128,103 @@ class TestOrchestratorEndToEnd(unittest.TestCase):
         self.assertFalse(built_agents[2]["is_orchestrator_prompt"])
 
 
+class TestSubagentApprovalCallback(unittest.TestCase):
+    """Subagent worker threads must have a non-interactive approval callback
+    installed so dangerous-command prompts don't fall back to input() and
+    deadlock the parent's prompt_toolkit TUI.
+
+    Governed by delegation.subagent_auto_approve:
+      false (default) → _subagent_auto_deny
+      true            → _subagent_auto_approve
+    """
+
+    def test_auto_deny_returns_deny(self):
+        from tools.delegate_tool import _subagent_auto_deny
+        self.assertEqual(
+            _subagent_auto_deny("rm -rf /tmp/x", "dangerous"),
+            "deny",
+        )
+
+    def test_auto_approve_returns_once(self):
+        from tools.delegate_tool import _subagent_auto_approve
+        self.assertEqual(
+            _subagent_auto_approve("rm -rf /tmp/x", "dangerous"),
+            "once",
+        )
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_getter_defaults_to_deny(self, _mock_cfg):
+        from tools.delegate_tool import (
+            _get_subagent_approval_callback,
+            _subagent_auto_deny,
+        )
+        self.assertIs(_get_subagent_approval_callback(), _subagent_auto_deny)
+
+    @patch(
+        "tools.delegate_tool._load_config",
+        return_value={"subagent_auto_approve": False},
+    )
+    def test_getter_explicit_false_is_deny(self, _mock_cfg):
+        from tools.delegate_tool import (
+            _get_subagent_approval_callback,
+            _subagent_auto_deny,
+        )
+        self.assertIs(_get_subagent_approval_callback(), _subagent_auto_deny)
+
+    @patch(
+        "tools.delegate_tool._load_config",
+        return_value={"subagent_auto_approve": True},
+    )
+    def test_getter_true_is_approve(self, _mock_cfg):
+        from tools.delegate_tool import (
+            _get_subagent_approval_callback,
+            _subagent_auto_approve,
+        )
+        self.assertIs(_get_subagent_approval_callback(), _subagent_auto_approve)
+
+    @patch(
+        "tools.delegate_tool._load_config",
+        return_value={"subagent_auto_approve": "yes"},
+    )
+    def test_getter_truthy_string_is_approve(self, _mock_cfg):
+        """is_truthy_value accepts 'yes'/'1'/'true' as truthy."""
+        from tools.delegate_tool import (
+            _get_subagent_approval_callback,
+            _subagent_auto_approve,
+        )
+        self.assertIs(_get_subagent_approval_callback(), _subagent_auto_approve)
+
+    def test_executor_initializer_installs_callback_in_worker(self):
+        """The initializer sets the callback on the worker thread's TLS,
+        not the parent's — verifies the fix actually scopes to workers.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+        from tools.terminal_tool import (
+            set_approval_callback as _set_cb,
+            _get_approval_callback,
+        )
+        from tools.delegate_tool import _subagent_auto_deny
+
+        # Parent thread has no callback.
+        _set_cb(None)
+        self.assertIsNone(_get_approval_callback())
+
+        seen = []
+
+        def worker():
+            seen.append(_get_approval_callback())
+
+        with ThreadPoolExecutor(
+            max_workers=1,
+            initializer=_set_cb,
+            initargs=(_subagent_auto_deny,),
+        ) as executor:
+            executor.submit(worker).result()
+
+        self.assertEqual(seen, [_subagent_auto_deny])
+        # Parent's callback slot is still empty (TLS isolates threads).
+        self.assertIsNone(_get_approval_callback())
+
+
 if __name__ == "__main__":
     unittest.main()

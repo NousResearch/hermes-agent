@@ -7024,10 +7024,19 @@ class AIAgent:
             "finish_reason": finish_reason,
         }
 
-        if hasattr(assistant_message, "reasoning_content"):
-            raw_reasoning_content = getattr(assistant_message, "reasoning_content", None)
-            if raw_reasoning_content is not None:
-                msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
+        _rc = getattr(assistant_message, "reasoning_content", None)
+        if _rc is None and hasattr(assistant_message, "model_extra"):
+            _rc = (assistant_message.model_extra or {}).get("reasoning_content")
+
+        deepseek_requires_reasoning = (
+            self.provider == "deepseek"
+            or base_url_host_matches(self.base_url, "api.deepseek.com")
+        )
+
+        if _rc is not None:
+            msg["reasoning_content"] = _sanitize_surrogates(_rc)
+        elif deepseek_requires_reasoning:
+            msg["reasoning_content"] = ""
 
         if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
             # Pass reasoning_details back unmodified so providers (OpenRouter,
@@ -7124,7 +7133,13 @@ class AIAgent:
             or base_url_host_matches(self.base_url, "moonshot.ai")
             or base_url_host_matches(self.base_url, "moonshot.cn")
         )
-        if kimi_requires_reasoning and source_msg.get("tool_calls"):
+        deepseek_requires_reasoning = (
+            self.provider == "deepseek"
+            or base_url_host_matches(self.base_url, "api.deepseek.com")
+        )
+        if deepseek_requires_reasoning or (
+            source_msg.get("tool_calls") and kimi_requires_reasoning
+        ):
             api_msg["reasoning_content"] = ""
 
     @staticmethod

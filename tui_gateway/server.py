@@ -774,6 +774,7 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
         _emit("session.info", sid, _session_info(agent))
 
     os.environ["HERMES_MODEL"] = result.new_model
+    os.environ["HERMES_INFERENCE_MODEL"] = result.new_model
     # Keep the process-level provider env var in sync with the user's explicit
     # choice so any ambient re-resolution (credential pool refresh, compressor
     # rebuild, aux clients) resolves to the new provider instead of the

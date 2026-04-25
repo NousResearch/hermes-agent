@@ -1452,7 +1452,8 @@ def detect_static_provider_for_model(
 ) -> Optional[tuple[str, str]]:
     """Auto-detect a provider from static catalogs only.
 
-    Returns ``(provider_id, model_name)`` — the model name may be remapped
+    Returns ``(provider_id, model_name)``. The model name may be remapped
+    when a static alias or bare provider name resolves to a catalog default.
     Returns ``None`` when no confident match is found.
     """
     name = (model_name or "").strip()

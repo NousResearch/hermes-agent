@@ -59,15 +59,16 @@ class CommandDef:
 COMMAND_REGISTRY: list[CommandDef] = [
     # Session
     CommandDef("new", "Start a new session (fresh session ID + history)", "Session",
-               aliases=("reset",)),
+               aliases=("reset",), args_hint="[--yes]"),
     CommandDef("clear", "Clear screen and start a new session", "Session",
-               cli_only=True),
+               cli_only=True, args_hint="[--yes]"),
     CommandDef("history", "Show conversation history", "Session",
                cli_only=True),
     CommandDef("save", "Save the current conversation", "Session",
                cli_only=True),
     CommandDef("retry", "Retry the last message (resend to agent)", "Session"),
-    CommandDef("undo", "Remove the last user/assistant exchange", "Session"),
+    CommandDef("undo", "Remove the last user/assistant exchange", "Session",
+               args_hint="[--yes]"),
     CommandDef("title", "Set a title for the current session", "Session",
                args_hint="[name]"),
     CommandDef("branch", "Branch the current session (explore a different path)", "Session",
@@ -194,6 +195,18 @@ def _build_command_lookup() -> dict[str, CommandDef]:
 
 _COMMAND_LOOKUP: dict[str, CommandDef] = _build_command_lookup()
 
+_DESTRUCTIVE_COMMAND_ACTIONS: dict[str, str] = {
+    "new": "discard the current conversation history and start a fresh session",
+    "clear": "clear the screen and discard the current conversation history",
+    "undo": "remove the last user/assistant exchange from this session",
+}
+_DESTRUCTIVE_CONFIRM_TOKENS: frozenset[str] = frozenset({
+    "--yes",
+    "--confirm",
+    "yes",
+    "confirm",
+})
+
 
 def resolve_command(name: str) -> CommandDef | None:
     """Resolve a command name or alias to its CommandDef.
@@ -201,6 +214,26 @@ def resolve_command(name: str) -> CommandDef | None:
     Accepts names with or without the leading slash.
     """
     return _COMMAND_LOOKUP.get(name.lower().lstrip("/"))
+
+
+def destructive_command_is_confirmed(args: str) -> bool:
+    """Return True when the command args include an explicit confirmation token."""
+    return any(token.lower() in _DESTRUCTIVE_CONFIRM_TOKENS for token in args.split())
+
+
+def destructive_command_confirmation_message(
+    canonical_name: str,
+    typed_name: str | None = None,
+) -> str:
+    """Build a consistent warning for destructive session commands."""
+    action = _DESTRUCTIVE_COMMAND_ACTIONS.get(canonical_name)
+    if not action:
+        raise KeyError(f"Unknown destructive command: {canonical_name}")
+    command_name = (typed_name or canonical_name).lstrip("/").lower()
+    return (
+        f"Confirmation required: this will {action}. "
+        f"Re-run `/{command_name} --yes` to continue."
+    )
 
 
 def _build_description(cmd: CommandDef) -> str:

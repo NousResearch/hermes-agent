@@ -117,6 +117,7 @@ def _make_cli(env_overrides=None, config_overrides=None, **kwargs):
         with patch.object(_cli_mod, "get_tool_definitions", return_value=[]), patch.dict(
             _cli_mod.__dict__, {"CLI_CONFIG": _clean_config}
         ):
+            _cli_mod._cprint = MagicMock()
             return _cli_mod.HermesCLI(**kwargs)
 
 
@@ -139,7 +140,7 @@ def test_new_command_creates_real_fresh_session_and_resets_agent_state(tmp_path)
     old_session_id = cli.session_id
     old_session_start = cli.session_start
 
-    cli.process_command("/new")
+    cli.process_command("/new --yes")
 
     assert cli.session_id != old_session_id
 
@@ -165,7 +166,7 @@ def test_reset_command_is_alias_for_new_session(tmp_path):
     cli = _prepare_cli_with_active_session(tmp_path)
     old_session_id = cli.session_id
 
-    cli.process_command("/reset")
+    cli.process_command("/reset --yes")
 
     assert cli.session_id != old_session_id
     assert cli._session_db.get_session(old_session_id)["end_reason"] == "new_session"
@@ -178,7 +179,7 @@ def test_clear_command_starts_new_session_before_redrawing(tmp_path):
     cli.show_banner = MagicMock()
 
     old_session_id = cli.session_id
-    cli.process_command("/clear")
+    cli.process_command("/clear --yes")
 
     assert cli.session_id != old_session_id
     assert cli._session_db.get_session(old_session_id)["end_reason"] == "new_session"
@@ -198,7 +199,7 @@ def test_new_session_resets_token_counters(tmp_path):
     assert agent.session_api_calls > 0
     assert agent.context_compressor.compression_count > 0
 
-    cli.process_command("/new")
+    cli.process_command("/new --yes")
 
     # All agent token counters must be zero
     assert agent.session_total_tokens == 0
@@ -221,3 +222,79 @@ def test_new_session_resets_token_counters(tmp_path):
     assert comp.last_total_tokens == 0
     assert comp.compression_count == 0
     assert comp._context_probed is False
+
+
+def test_new_command_requires_confirmation_before_resetting(tmp_path):
+    cli = _prepare_cli_with_active_session(tmp_path)
+    old_session_id = cli.session_id
+
+    cli.process_command("/new")
+
+    assert cli.session_id == old_session_id
+    assert cli._session_db.get_session(old_session_id) is not None
+    assert cli.conversation_history == [{"role": "user", "content": "hello"}]
+
+
+def test_reset_without_confirmation_does_not_reset_session(tmp_path):
+    cli = _prepare_cli_with_active_session(tmp_path)
+    old_session_id = cli.session_id
+
+    cli.process_command("/reset")
+
+    assert cli.session_id == old_session_id
+
+
+def test_reset_alias_warning_uses_typed_command():
+    from hermes_cli.commands import destructive_command_confirmation_message
+
+    assert "/reset --yes" in destructive_command_confirmation_message("new", "reset")
+
+
+def test_clear_requires_confirmation_before_redrawing(tmp_path):
+    cli = _prepare_cli_with_active_session(tmp_path)
+    cli.console = MagicMock()
+    cli.show_banner = MagicMock()
+    old_session_id = cli.session_id
+
+    cli.process_command("/clear")
+
+    assert cli.session_id == old_session_id
+    assert cli.conversation_history == [{"role": "user", "content": "hello"}]
+    cli.console.clear.assert_not_called()
+    cli.show_banner.assert_not_called()
+
+
+def test_undo_requires_confirmation_before_mutating_history():
+    cli = _make_cli()
+    cli.conversation_history = [
+        {"role": "user", "content": "first prompt"},
+        {"role": "assistant", "content": "first reply"},
+        {"role": "user", "content": "second prompt"},
+        {"role": "assistant", "content": "second reply"},
+    ]
+
+    cli.process_command("/undo")
+
+    assert [msg["content"] for msg in cli.conversation_history] == [
+        "first prompt",
+        "first reply",
+        "second prompt",
+        "second reply",
+    ]
+
+
+def test_undo_with_confirmation_removes_last_exchange():
+    cli = _make_cli()
+    cli.conversation_history = [
+        {"role": "user", "content": "first prompt"},
+        {"role": "assistant", "content": "first reply"},
+        {"role": "user", "content": "second prompt"},
+        {"role": "assistant", "content": "second reply"},
+    ]
+
+    cli.process_command("/undo --yes")
+
+    assert [msg["content"] for msg in cli.conversation_history] == [
+        "first prompt",
+        "first reply",
+    ]

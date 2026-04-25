@@ -79,7 +79,7 @@ async def test_reset_fires_finalize_hook(mock_invoke_hook):
     """/new must fire on_session_finalize with the OLD session id."""
     runner = _make_runner()
 
-    await runner._handle_reset_command(_make_event("/new"))
+    await runner._handle_reset_command(_make_event("/new --yes"))
 
     mock_invoke_hook.assert_any_call(
         "on_session_finalize", session_id="sess-old", platform="telegram"
@@ -92,7 +92,7 @@ async def test_reset_fires_reset_hook(mock_invoke_hook):
     """/new must fire on_session_reset with the NEW session id."""
     runner = _make_runner()
 
-    await runner._handle_reset_command(_make_event("/new"))
+    await runner._handle_reset_command(_make_event("/new --yes"))
 
     mock_invoke_hook.assert_any_call(
         "on_session_reset", session_id="sess-new", platform="telegram"
@@ -105,7 +105,7 @@ async def test_finalize_before_reset(mock_invoke_hook):
     """on_session_finalize must fire before on_session_reset."""
     runner = _make_runner()
 
-    await runner._handle_reset_command(_make_event("/new"))
+    await runner._handle_reset_command(_make_event("/new --yes"))
 
     calls = [c for c in mock_invoke_hook.call_args_list
              if c[0][0] in ("on_session_finalize", "on_session_reset")]
@@ -162,7 +162,7 @@ async def test_hook_error_does_not_break_reset(mock_invoke_hook):
     """Plugin hook errors must not prevent /new from completing."""
     runner = _make_runner()
 
-    result = await runner._handle_reset_command(_make_event("/new"))
+    result = await runner._handle_reset_command(_make_event("/new --yes"))
 
     # Should still return a success message despite hook errors
     assert "Session reset" in result or "New session" in result

@@ -80,7 +80,7 @@ async def test_new_command_clears_session_model_override():
         "api_mode": "openai",
     }
 
-    await runner._handle_reset_command(_make_event("/new"))
+    await runner._handle_reset_command(_make_event("/new --yes"))
 
     assert session_key not in runner._session_model_overrides
 
@@ -93,7 +93,7 @@ async def test_new_command_no_override_is_noop():
 
     assert session_key not in runner._session_model_overrides
 
-    await runner._handle_reset_command(_make_event("/new"))
+    await runner._handle_reset_command(_make_event("/new --yes"))
 
     assert session_key not in runner._session_model_overrides
 
@@ -120,7 +120,7 @@ async def test_new_command_only_clears_own_session():
         "api_mode": "anthropic",
     }
 
-    await runner._handle_reset_command(_make_event("/new"))
+    await runner._handle_reset_command(_make_event("/new --yes"))
 
     assert session_key not in runner._session_model_overrides
     assert other_key in runner._session_model_overrides

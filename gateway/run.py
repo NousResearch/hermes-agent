@@ -5016,6 +5016,15 @@ class GatewayRunner:
 
     async def _handle_reset_command(self, event: MessageEvent) -> str:
         """Handle /new or /reset command."""
+        from hermes_cli.commands import (
+            destructive_command_confirmation_message,
+            destructive_command_is_confirmed,
+        )
+
+        typed_command = event.get_command() or "new"
+        if not destructive_command_is_confirmed(event.get_command_args()):
+            return destructive_command_confirmation_message("new", typed_command)
+
         source = event.source
         
         # Get existing session key
@@ -5954,6 +5963,11 @@ class GatewayRunner:
     
     async def _handle_undo_command(self, event: MessageEvent) -> str:
         """Handle /undo command - remove the last user/assistant exchange."""
+        from hermes_cli.commands import (
+            destructive_command_confirmation_message,
+            destructive_command_is_confirmed,
+        )
+
         source = event.source
         session_entry = self.session_store.get_or_create_session(source)
         history = self.session_store.load_transcript(session_entry.session_id)
@@ -5967,7 +5981,11 @@ class GatewayRunner:
         
         if last_user_idx is None:
             return "Nothing to undo."
-        
+
+        if not destructive_command_is_confirmed(event.get_command_args()):
+            typed_command = event.get_command() or "undo"
+            return destructive_command_confirmation_message("undo", typed_command)
+
         removed_msg = history[last_user_idx].get("content", "")
         removed_count = len(history) - last_user_idx
         self.session_store.rewrite_transcript(session_entry.session_id, history[:last_user_idx])

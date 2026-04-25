@@ -5894,10 +5894,16 @@ class HermesCLI:
 
         # Resolve aliases via central registry so adding an alias is a one-line
         # change in hermes_cli/commands.py instead of touching every dispatch site.
-        from hermes_cli.commands import resolve_command as _resolve_cmd
+        from hermes_cli.commands import (
+            destructive_command_confirmation_message as _destructive_command_msg,
+            destructive_command_is_confirmed as _destructive_command_is_confirmed,
+            resolve_command as _resolve_cmd,
+        )
         _base_word = cmd_lower.split()[0].lstrip("/")
         _cmd_def = _resolve_cmd(_base_word)
         canonical = _cmd_def.name if _cmd_def else _base_word
+        _typed_command = cmd_original.split()[0].lstrip("/").lower()
+        _args = cmd_original.split(maxsplit=1)[1] if " " in cmd_original else ""
         
         if canonical in ("quit", "exit", "q"):
             return False
@@ -5912,6 +5918,9 @@ class HermesCLI:
         elif canonical == "config":
             self.show_config()
         elif canonical == "clear":
+            if not _destructive_command_is_confirmed(_args):
+                _cprint(_destructive_command_msg("clear", _typed_command))
+                return True
             self.new_session(silent=True)
             # Clear terminal screen.  Inside the TUI, Rich's console.clear()
             # goes through patch_stdout's StdoutProxy which swallows the
@@ -6029,6 +6038,9 @@ class HermesCLI:
                 else:
                     _cprint("  Session database not available.")
         elif canonical == "new":
+            if not _destructive_command_is_confirmed(_args):
+                _cprint(_destructive_command_msg("new", _typed_command))
+                return True
             self.new_session()
         elif canonical == "resume":
             self._handle_resume_command(cmd_original)
@@ -6046,6 +6058,9 @@ class HermesCLI:
                 # Re-queue the message so process_loop sends it to the agent
                 self._pending_input.put(retry_msg)
         elif canonical == "undo":
+            if not _destructive_command_is_confirmed(_args):
+                _cprint(_destructive_command_msg("undo", _typed_command))
+                return True
             self.undo_last()
         elif canonical == "branch":
             self._handle_branch_command(cmd_original)

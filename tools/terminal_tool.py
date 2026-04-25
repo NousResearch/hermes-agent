@@ -2125,7 +2125,121 @@ TERMINAL_SCHEMA = {
 }
 
 
+_CODE_SAFE_EXTENSIONS = {'.txt', '.log', '.csv', '.tmp', '.out', '.pid'}
+
+# Commands allowed WITHOUT claude-code (monitoring, read-only, infra ops)
+_ALLOWED_DIRECT_PREFIXES = (
+    # Read / inspect
+    "ls", "ll", "cat ", "head ", "tail ", "wc ", "grep ", "rg ", "find ",
+    "du ", "df ", "pwd", "echo ", "printf ", "stat ",
+    # Process / system monitoring
+    "ps ", "top", "htop", "pgrep", "kill", "pkill",
+    "docker logs", "docker ps", "docker inspect", "docker exec",
+    "docker stats", "docker images",
+    # Network / HTTP read
+    "curl ", "wget ", "ping ", "dig ", "nslookup ",
+    # Git read ops
+    "git log", "git status", "git diff", "git show", "git branch",
+    "git remote", "git fetch", "git pull", "git clone", "git push",
+    "git add", "git commit", "git checkout", "git merge", "git stash",
+    # Package info (read-only)
+    "pip show", "pip list", "npm list", "which ", "type ",
+    # Env / config read
+    "env ", "printenv", "export ", "source ",
+    # claude-code invocation (the point of all this)
+    "claude-code",
+    # Misc safe
+    "sleep ", "date", "whoami", "id ", "uname", "hostname",
+    "mkdir ", "rm ", "mv ", "cp ", "chmod ", "chown ",
+    "apt-get ", "apt ", "pip install", "pip3 install", "npm install",
+    "ssh ", "scp ", "rsync ",
+    "tmux ", "screen ",
+    "systemctl ", "service ",
+    "tar ", "zip ", "unzip ", "gzip ",
+    "ffmpeg ", "convert ",
+    "jq ", "yq ",
+)
+
+_CODE_WRITE_PATTERNS = [
+    # Block inline code execution — force delegation to claude-code instead.
+    # The agent must never write/run code directly; all code tasks go through
+    # the claude-code wrapper at /home/hermes/.local/bin/claude-code which
+    # uses the OAuth subscription quota before falling back to the API key.
+    (re.compile(r'python3?\s+-c\s'), "execution inline Python"),
+    (re.compile(r'python3?\s+\S+\.py\b'), "execution script Python direct"),
+    (re.compile(r'node\s+-e\s'), "execution inline Node.js"),
+    # node *.js is blocked for arbitrary scripts but NOT for system packages under
+    # /usr/lib/node_modules or /opt/ (e.g. version checks of installed CLIs).
+    (re.compile(r'node\s+(?!/usr/lib/node_modules|/opt/)\S+\.js\b'), "execution script JS direct"),
+    (re.compile(r'perl\s+-e\s'), "execution inline Perl"),
+    (re.compile(r'ruby\s+-e\s'), "execution inline Ruby"),
+    (re.compile(r'bash\s+\S+\.sh\b'), "execution script bash direct"),
+    (re.compile(r'sh\s+\S+\.sh\b'), "execution script sh direct"),
+    (re.compile(r'sed\s+-i'), "edition fichier in-place via sed"),
+    # Block direct `claude` CLI calls — the agent must use `claude-code` (the
+    # wrapper) not `claude` directly. The negative lookbehind on the first
+    # pattern prevents matching `claude-code --print`. The pipe pattern uses
+    # a negative lookahead (?!-code) so `cat file | claude-code --print` is
+    # allowed while `cat file | claude --print` is blocked.
+    (re.compile(r'(?<![a-z-])claude\s+(-p|--print|--max-turns|--dangerously)'), "appel claude direct (use claude-code)"),
+    (re.compile(r'\|\s*claude(?!-code)\b'), "pipe vers claude direct (use claude-code)"),
+]
+
+_FILE_WRITE_RE = re.compile(
+    r'(?:cat|echo|printf)\s+.*?>\s*(\S+)'
+    r'|tee\s+(\S+)'
+    r'|awk\s+.*?>\s*(\S+)'
+)
+
+_DELEGATE_MSG = (
+    "BLOCKED: {reason}.\n\n"
+    "Delegue a claude-code immediatement:\n\n"
+    "  cat > /tmp/task.txt << 'EOF'\n"
+    "  Tu es dans /home/hermes/projects/MON-PROJET/.\n"
+    "  OBJECTIF: [description precise]\n"
+    "  CONTEXTE: [stack, fichiers existants, contraintes]\n"
+    "  EOF\n"
+    "  cat /tmp/task.txt | claude-code --print --max-turns 25 "
+    "--dangerously-skip-permissions --allowedTools Read,Write,Edit,Bash"
+)
+
+
+def _is_allowed_direct(command: str) -> bool:
+    """Return True if command is a safe read/monitoring/infra op."""
+    cmd = command.strip().lstrip("(").lstrip("!")
+    return any(cmd.startswith(p) for p in _ALLOWED_DIRECT_PREFIXES)
+
+
+def _check_file_write_guard(command):
+    """Block file writes to non-safe extensions."""
+    import os.path
+    for m in _FILE_WRITE_RE.finditer(command):
+        filepath = m.group(1) or m.group(2) or m.group(3)
+        if not filepath:
+            continue
+        _, ext = os.path.splitext(filepath)
+        if ext and ext.lower() not in _CODE_SAFE_EXTENSIONS:
+            return f"ecriture vers {filepath}"
+    return None
+
+
 def _handle_terminal(args, **kw):
+    command = args.get("command", "")
+    if command and not _is_allowed_direct(command):
+        for pattern, reason in _CODE_WRITE_PATTERNS:
+            if pattern.search(command):
+                return json.dumps({
+                    "output": _DELEGATE_MSG.format(reason=reason),
+                    "exit_code": 1,
+                    "error": "code_delegation_required",
+                })
+        file_write_reason = _check_file_write_guard(command)
+        if file_write_reason:
+            return json.dumps({
+                "output": _DELEGATE_MSG.format(reason=file_write_reason),
+                "exit_code": 1,
+                "error": "code_delegation_required",
+            })
     return terminal_tool(
         command=args.get("command"),
         background=args.get("background", False),

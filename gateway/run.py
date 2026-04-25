@@ -2402,6 +2402,20 @@ class GatewayRunner:
             directory = await build_channel_directory(self.adapters)
             ch_count = sum(len(chs) for chs in directory.get("platforms", {}).values())
             logger.info("Channel directory built: %d target(s)", ch_count)
+            # Log credential pool state at startup
+            try:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+                _startup_rt = resolve_runtime_provider(requested="anthropic")
+                _startup_pool = _startup_rt.get("credential_pool")
+                if _startup_pool:
+                    _startup_pool.log_pool_status()
+                else:
+                    _startup_key = str(_startup_rt.get("api_key", "") or "")
+                    from agent.anthropic_adapter import _is_oauth_token
+                    _startup_auth = "OAUTH" if _is_oauth_token(_startup_key) else "API_KEY"
+                    logger.info("CRED_POOL: single credential auth_type=%s key=%s", _startup_auth, _startup_key[:20])
+            except Exception as _cp_exc:
+                logger.debug("Could not log credential pool: %s", _cp_exc)
         except Exception as e:
             logger.warning("Channel directory build failed: %s", e)
         
@@ -4761,7 +4775,7 @@ class GatewayRunner:
         if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
             platform_name = source.platform.value
             env_key = f"{platform_name.upper()}_HOME_CHANNEL"
-            if not os.getenv(env_key):
+            if False:  # home channel notification disabled
                 adapter = self.adapters.get(source.platform)
                 if adapter:
                     # Slack dispatches all Hermes commands through a single
@@ -4793,6 +4807,18 @@ class GatewayRunner:
                 vc_context = adapter.get_voice_channel_context(guild_id)
                 if vc_context:
                     context_prompt += f"\n\n{vc_context}"
+
+        # -----------------------------------------------------------------
+        # Channel memory — inject per-channel persistent context for Slack
+        # -----------------------------------------------------------------
+        if source.platform == Platform.SLACK and source.chat_id:
+            try:
+                from channel_memory import build_channel_memory_prompt
+                _ch_mem = build_channel_memory_prompt(source.chat_id)
+                if _ch_mem:
+                    context_prompt += _ch_mem
+            except Exception as _cme:
+                logger.debug("Channel memory injection failed (non-fatal): %s", _cme)
 
         # -----------------------------------------------------------------
         # Auto-analyze images sent by the user
@@ -4887,10 +4913,17 @@ class GatewayRunner:
             _response_time = time.time() - _msg_start_time
             _api_calls = agent_result.get("api_calls", 0)
             _resp_len = len(response)
+            try:
+                from agent.anthropic_adapter import _is_oauth_token
+                _rr_key = str(runtime_kwargs.get("api_key", "") or "")
+                _rr_auth = "OAUTH" if _is_oauth_token(_rr_key) else "API_KEY"
+                _rr_key_preview = _rr_key[:20]
+            except Exception:
+                _rr_auth, _rr_key_preview = "unknown", "?"
             logger.info(
-                "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars",
+                "response ready: platform=%s chat=%s time=%.1fs api_calls=%d response=%d chars auth=%s key=%s",
                 _platform_name, source.chat_id or "unknown",
-                _response_time, _api_calls, _resp_len,
+                _response_time, _api_calls, _resp_len, _rr_auth, _rr_key_preview,
             )
 
             # Successful turn — clear any stuck-loop counter for this session.
@@ -11518,6 +11551,10 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
 
 def main():
     """CLI entry point for the gateway."""
+    try:
+        from gateway import sentry_init  # noqa: F401
+    except Exception:
+        pass
     import argparse
     
     parser = argparse.ArgumentParser(description="Hermes Gateway - Multi-platform messaging")

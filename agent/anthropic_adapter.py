@@ -446,6 +446,15 @@ def build_anthropic_client(api_key: str, base_url: str = None, timeout: float = 
         if common_betas:
             kwargs["default_headers"] = {"anthropic-beta": ",".join(common_betas)}
 
+    # ── Auth type logging ─────────────────────────────────────────────
+    # Emits AUTH_CALL at INFO level so every Anthropic SDK client creation
+    # is traceable in agent.log. The key is truncated (redacted further by
+    # RedactingFormatter). auth_type=OAUTH means Bearer auth via subscription
+    # quota; auth_type=API_KEY means x-api-key header billed per token.
+    _key_preview = (api_key or "")[:24] + "..." if api_key and len(api_key) > 24 else (api_key or "none")
+    _auth_type = "OAUTH" if (_is_oauth_token(api_key) or _requires_bearer_auth(base_url)) else "API_KEY"
+    logger.info("AUTH_CALL: auth_type=%s key=%s", _auth_type, _key_preview)
+
     return _anthropic_sdk.Anthropic(**kwargs)
 
 

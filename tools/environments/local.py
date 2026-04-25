@@ -178,6 +178,7 @@ _find_shell = _find_bash
 
 # Standard PATH entries for environments with minimal PATH.
 _SANE_PATH = (
+    "/home/hermes/.local/bin:"
     "/opt/homebrew/bin:/opt/homebrew/sbin:"
     "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 )

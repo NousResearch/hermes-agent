@@ -371,6 +371,34 @@ class CredentialPool:
         self._active_leases: Dict[str, int] = {}
         self._max_concurrent = DEFAULT_MAX_CONCURRENT_PER_CREDENTIAL
 
+    def log_pool_status(self) -> None:
+        """Log the current state of all credentials in the pool.
+
+        Emits one CRED_POOL log line per entry with auth_type (oauth/api_key),
+        key fingerprint (first 20 chars, redacted by RedactingFormatter),
+        current status, and remaining cooldown if exhausted.
+
+        Called at gateway startup so operators can immediately see which
+        credentials are available and whether OAuth is active or on cooldown.
+        """
+        with self._lock:
+            entries = list(self._entries)
+        for e in entries:
+            _auth = getattr(e, "auth_type", "unknown")
+            _key = (e.runtime_api_key or "")[:20]
+            _label = e.label or e.id[:8]
+            _status = getattr(e, "last_status", "?") or "ok"
+            _cooldown = ""
+            if getattr(e, "last_error_reset_at", None):
+                import time as _time
+                remaining = int(e.last_error_reset_at - _time.time())
+                if remaining > 0:
+                    _cooldown = f" cooldown={remaining}s"
+            logger.info(
+                "CRED_POOL: [%s] auth=%s key=%s status=%s%s",
+                _label, _auth, _key, _status, _cooldown,
+            )
+
     def has_credentials(self) -> bool:
         return bool(self._entries)
 
@@ -754,8 +782,19 @@ class CredentialPool:
         return False
 
     def select(self) -> Optional[PooledCredential]:
+        """Select the best available credential and log which one was chosen.
+
+        Logs CRED_SELECT with auth_type=oauth|api_key so operators can
+        track in agent.log exactly when OAuth vs the paid API key is used.
+        """
         with self._lock:
-            return self._select_unlocked()
+            entry = self._select_unlocked()
+            if entry is not None:
+                _auth = getattr(entry, "auth_type", "unknown")
+                _label = entry.label or entry.id[:8]
+                _key = (entry.runtime_api_key or "")[:20]
+                logger.info("CRED_SELECT: provider=%s auth_type=%s label=%s key=%s", self.provider, _auth, _label, _key)
+            return entry
 
     def _available_entries(self, *, clear_expired: bool = False, refresh: bool = False) -> List[PooledCredential]:
         """Return entries not currently in exhaustion cooldown.
@@ -866,16 +905,23 @@ class CredentialPool:
             if entry is None:
                 return None
             _label = entry.label or entry.id[:8]
+            _auth_ex = getattr(entry, "auth_type", "unknown")
+            _key_ex = (entry.runtime_api_key or "")[:20]
             logger.info(
-                "credential pool: marking %s exhausted (status=%s), rotating",
-                _label, status_code,
+                "CRED_EXHAUST: provider=%s auth_type=%s label=%s key=%s status=%s — rotating",
+                self.provider, _auth_ex, _label, _key_ex, status_code,
             )
             self._mark_exhausted(entry, status_code, error_context)
             self._current_id = None
             next_entry = self._select_unlocked()
             if next_entry:
                 _next_label = next_entry.label or next_entry.id[:8]
-                logger.info("credential pool: rotated to %s", _next_label)
+                _next_auth = getattr(next_entry, "auth_type", "unknown")
+                _next_key = (next_entry.runtime_api_key or "")[:20]
+                logger.info(
+                    "CRED_ROTATE: now using auth_type=%s label=%s key=%s",
+                    _next_auth, _next_label, _next_key,
+                )
             return next_entry
 
     def acquire_lease(self, credential_id: Optional[str] = None) -> Optional[str]:

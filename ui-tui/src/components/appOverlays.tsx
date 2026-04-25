@@ -9,7 +9,7 @@ import { $uiState } from '../app/uiStore.js'
 import { FloatBox } from './appChrome.js'
 import { MaskedPrompt } from './maskedPrompt.js'
 import { ModelPicker } from './modelPicker.js'
-import { OverlayControls } from './overlayControls.js'
+import { OverlayHint } from './overlayControls.js'
 import { ApprovalPrompt, ClarifyPrompt, ConfirmPrompt } from './prompts.js'
 import { SessionPicker } from './sessionPicker.js'
 import { SkillsHub } from './skillsHub.js'
@@ -163,11 +163,11 @@ export function FloatingOverlays({
             ))}
 
             <Box marginTop={1}>
-              <OverlayControls t={ui.theme}>
+              <OverlayHint t={ui.theme}>
                 {overlay.pager.offset + pagerPageSize < overlay.pager.lines.length
                   ? `↑↓/jk line · Enter/Space/PgDn page · b/PgUp back · g/G top/bottom · Esc/q close (${Math.min(overlay.pager.offset + pagerPageSize, overlay.pager.lines.length)}/${overlay.pager.lines.length})`
                   : `end · ↑↓/jk · b/PgUp back · g top · Esc/q close (${overlay.pager.lines.length} lines)`}
-              </OverlayControls>
+              </OverlayHint>
             </Box>
           </Box>
         </FloatBox>

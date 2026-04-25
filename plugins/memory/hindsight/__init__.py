@@ -105,6 +105,8 @@ def _get_loop() -> asyncio.AbstractEventLoop:
 def _run_sync(coro, timeout: float = _DEFAULT_TIMEOUT):
     """Schedule *coro* on the shared loop and block until done."""
     loop = _get_loop()
+    if loop.is_closed():
+        raise RuntimeError("Hindsight event loop is closed (interpreter shutting down)")
     future = asyncio.run_coroutine_threadsafe(coro, loop)
     return future.result(timeout=timeout)
 
@@ -419,6 +421,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._session_id = ""
         self._parent_session_id = ""
         self._document_id = ""
+        self._shutting_down = False
 
         # Tags
         self._tags: list[str] | None = None
@@ -1088,6 +1091,9 @@ class HindsightMemoryProvider(MemoryProvider):
 
         Respects retain_every_n_turns for batching.
         """
+        if self._shutting_down:
+            logger.debug("sync_turn: skipped (shutting down)")
+            return
         if not self._auto_retain:
             logger.debug("sync_turn: skipped (auto_retain disabled)")
             return
@@ -1224,6 +1230,7 @@ class HindsightMemoryProvider(MemoryProvider):
         return tool_error(f"Unknown tool: {tool_name}")
 
     def shutdown(self) -> None:
+        self._shutting_down = True
         logger.debug("Hindsight shutdown: waiting for background threads")
         for t in (self._prefetch_thread, self._sync_thread):
             if t and t.is_alive():

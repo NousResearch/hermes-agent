@@ -68,25 +68,58 @@ CONFIGURABLE_TOOLSETS = [
     ("rl",              "🧪 RL Training",               "Tinker-Atropos training tools"),
     ("homeassistant",    "🏠 Home Assistant",           "smart home device control"),
     ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
+    ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
+    ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
 ]
 
 # Toolsets that are OFF by default for new installs.
 # They're still in _HERMES_CORE_TOOLS (available at runtime if enabled),
 # but the setup checklist won't pre-select them for first-time users.
-_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify"}
+_DEFAULT_OFF_TOOLSETS = {"moa", "homeassistant", "rl", "spotify", "discord", "discord_admin"}
+
+# Platform-scoped toolsets: only appear in the `hermes tools` checklist for
+# these platforms, and only resolve/save for these platforms.  A toolset
+# absent from this map is available on every platform (current behaviour).
+#
+# Use this for tools whose APIs only make sense on one platform (Discord
+# server admin, Slack workspace admin, etc.).  Keeps every other platform's
+# checklist from filling up with irrelevant toggles.
+_TOOLSET_PLATFORM_RESTRICTIONS: Dict[str, Set[str]] = {
+    "discord": {"discord"},
+    "discord_admin": {"discord"},
+}
+
+
+def _toolset_allowed_for_platform(ts_key: str, platform: str) -> bool:
+    """Return True if ``ts_key`` is configurable on ``platform``.
+
+    Toolsets without a restriction entry are allowed everywhere (the default).
+    """
+    allowed = _TOOLSET_PLATFORM_RESTRICTIONS.get(ts_key)
+    return allowed is None or platform in allowed
 
 
 def _get_effective_configurable_toolsets():
     """Return CONFIGURABLE_TOOLSETS + any plugin-provided toolsets.
 
     Plugin toolsets are appended at the end so they appear after the
-    built-in toolsets in the TUI checklist.
+    built-in toolsets in the TUI checklist. A plugin whose toolset key
+    already appears in ``CONFIGURABLE_TOOLSETS`` is skipped — bundled
+    plugins (e.g. ``plugins/spotify``) share their toolset key with the
+    built-in entry, and we want the built-in label/description to win.
+    Without the dedupe, ``hermes tools`` → "reconfigure existing" would
+    list the same toolset twice.
     """
     result = list(CONFIGURABLE_TOOLSETS)
+    seen = {ts_key for ts_key, _, _ in result}
     try:
         from hermes_cli.plugins import discover_plugins, get_plugin_toolsets
         discover_plugins()  # idempotent — ensures plugins are loaded
-        result.extend(get_plugin_toolsets())
+        for entry in get_plugin_toolsets():
+            if entry[0] in seen:
+                continue
+            seen.add(entry[0])
+            result.append(entry)
     except Exception:
         pass
     return result
@@ -591,7 +624,7 @@ def _get_platform_tools(
     include_default_mcp_servers: bool = True,
 ) -> Set[str]:
     """Resolve which individual toolset names are enabled for a platform."""
-    from toolsets import resolve_toolset
+    from toolsets import resolve_toolset, TOOLSETS
 
     platform_toolsets = config.get("platform_toolsets") or {}
     toolset_names = platform_toolsets.get(platform)
@@ -605,6 +638,8 @@ def _get_platform_tools(
     toolset_names = [str(ts) for ts in toolset_names]
 
     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+    plugin_ts_keys = _get_plugin_toolset_keys()
+    platform_default_keys = {p["default_toolset"] for p in PLATFORMS.values()}
 
     # If the saved list contains any configurable keys directly, the user
     # has explicitly configured this platform — use direct membership.
@@ -614,7 +649,10 @@ def _get_platform_tools(
     has_explicit_config = any(ts in configurable_keys for ts in toolset_names)
 
     if has_explicit_config:
-        enabled_toolsets = {ts for ts in toolset_names if ts in configurable_keys}
+        enabled_toolsets = {
+            ts for ts in toolset_names
+            if ts in configurable_keys and _toolset_allowed_for_platform(ts, platform)
+        }
     else:
         # No explicit config — fall back to resolving composite toolset names
         # (e.g. "hermes-cli") to individual tool names and reverse-mapping.
@@ -624,13 +662,51 @@ def _get_platform_tools(
 
         enabled_toolsets = set()
         for ts_key, _, _ in CONFIGURABLE_TOOLSETS:
+            if not _toolset_allowed_for_platform(ts_key, platform):
+                continue
             ts_tools = set(resolve_toolset(ts_key))
             if ts_tools and ts_tools.issubset(all_tool_names):
                 enabled_toolsets.add(ts_key)
+
         default_off = set(_DEFAULT_OFF_TOOLSETS)
-        if platform in default_off:
+        # Legacy safety: if the platform's own name matches a default-off
+        # toolset (e.g. `homeassistant` platform + `homeassistant` toolset),
+        # keep that toolset enabled on first install.  Skip this dodge for
+        # platform-restricted toolsets — those are always opt-in even on
+        # their own platform (e.g. `discord` + `discord` should stay OFF).
+        if platform in default_off and platform not in _TOOLSET_PLATFORM_RESTRICTIONS:
             default_off.remove(platform)
         enabled_toolsets -= default_off
+
+    # Recover non-configurable platform toolsets (e.g. discord, feishu_doc,
+    # feishu_drive).  These are part of the platform's default composite but
+    # absent from CONFIGURABLE_TOOLSETS, so they can't appear in the TUI
+    # checklist or in a user-saved config.  Must run in BOTH branches —
+    # otherwise saving via `hermes tools` (which flips has_explicit_config
+    # to True) silently drops them.
+    platform_tool_universe = set(resolve_toolset(PLATFORMS[platform]["default_toolset"]))
+    configurable_tool_universe = set()
+    for ck in configurable_keys:
+        configurable_tool_universe.update(resolve_toolset(ck))
+    claimed = set()
+    for ts_key in enabled_toolsets:
+        claimed.update(resolve_toolset(ts_key))
+    skip = configurable_keys | plugin_ts_keys | platform_default_keys
+    skip |= {k for k in TOOLSETS if k.startswith("hermes-")}
+    skip |= set(_DEFAULT_OFF_TOOLSETS) - {platform}
+    for ts_key, ts_def in TOOLSETS.items():
+        if ts_key in skip:
+            continue
+        if ts_def.get("includes"):
+            continue
+        ts_tools = set(resolve_toolset(ts_key))
+        if not ts_tools or not ts_tools.issubset(platform_tool_universe):
+            continue
+        if ts_tools.issubset(configurable_tool_universe):
+            continue
+        if not ts_tools.issubset(claimed):
+            enabled_toolsets.add(ts_key)
+            claimed.update(ts_tools)
 
     # Plugin toolsets: enabled by default unless explicitly disabled, or
     # unless the toolset is in _DEFAULT_OFF_TOOLSETS (e.g. spotify —
@@ -639,7 +715,6 @@ def _get_platform_tools(
     # A plugin toolset is "known" for a platform once `hermes tools`
     # has been saved for that platform (tracked via known_plugin_toolsets).
     # Unknown plugins default to enabled; known-but-absent = disabled.
-    plugin_ts_keys = _get_plugin_toolset_keys()
     if plugin_ts_keys:
         known_map = config.get("known_plugin_toolsets", {})
         known_for_platform = set(known_map.get(platform, []))
@@ -657,7 +732,6 @@ def _get_platform_tools(
 
     # Preserve any explicit non-configurable toolset entries (for example,
     # custom toolsets or MCP server names saved in platform_toolsets).
-    platform_default_keys = {p["default_toolset"] for p in PLATFORMS.values()}
     explicit_passthrough = {
         ts
         for ts in toolset_names
@@ -703,6 +777,14 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     """
     config.setdefault("platform_toolsets", {})
 
+    # Drop platform-scoped toolsets that don't apply here.  Prevents the
+    # "Configure all platforms" checklist (or a hand-edited config.yaml)
+    # from turning on, say, the `discord` toolset for Telegram.
+    enabled_toolset_keys = {
+        ts for ts in enabled_toolset_keys
+        if _toolset_allowed_for_platform(ts, platform)
+    }
+
     # Get the set of all configurable toolset keys (built-in + plugin)
     configurable_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
     plugin_keys = _get_plugin_toolset_keys()
@@ -717,6 +799,7 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
     existing_toolsets = config.get("platform_toolsets", {}).get(platform, [])
     if not isinstance(existing_toolsets, list):
         existing_toolsets = []
+    existing_toolsets = [str(ts) for ts in existing_toolsets]
 
     # Preserve any entries that are NOT configurable toolsets and NOT platform
     # defaults (i.e. only MCP server names should be preserved)
@@ -724,6 +807,11 @@ def _save_platform_tools(config: dict, platform: str, enabled_toolset_keys: Set[
         entry for entry in existing_toolsets
         if entry not in configurable_keys and entry not in platform_default_keys
     }
+    # Opening `hermes tools` is the user's opt-in to reconfigure tools, so treat
+    # saving from the picker as consent to clear the "no_mcp" sentinel. The
+    # picker has no checkbox for no_mcp, so without this users who once set it
+    # by hand could never re-enable MCP servers through the UI.
+    preserved_entries.discard("no_mcp")
 
     # Merge preserved entries with new enabled toolsets
     config["platform_toolsets"][platform] = sorted(enabled_toolset_keys | preserved_entries)
@@ -831,7 +919,7 @@ def _estimate_tool_tokens() -> Dict[str, int]:
     return _tool_token_cache
 
 
-def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str]:
+def _prompt_toolset_checklist(platform_label: str, enabled: Set[str], platform: str = "cli") -> Set[str]:
     """Multi-select checklist of toolsets. Returns set of selected toolset keys."""
     from hermes_cli.curses_ui import curses_checklist
     from toolsets import resolve_toolset
@@ -839,7 +927,12 @@ def _prompt_toolset_checklist(platform_label: str, enabled: Set[str]) -> Set[str
     # Pre-compute per-tool token counts (cached after first call).
     tool_tokens = _estimate_tool_tokens()
 
-    effective = _get_effective_configurable_toolsets()
+    effective_all = _get_effective_configurable_toolsets()
+    # Drop platform-scoped toolsets that don't apply to this platform.
+    effective = [
+        (k, l, d) for (k, l, d) in effective_all
+        if _toolset_allowed_for_platform(k, platform)
+    ]
 
     labels = []
     for ts_key, ts_label, ts_desc in effective:
@@ -1753,7 +1846,7 @@ def tools_command(args=None, first_install: bool = False, config: dict = None):
             checklist_preselected = current_enabled - _DEFAULT_OFF_TOOLSETS
 
             # Show checklist
-            new_enabled = _prompt_toolset_checklist(pinfo["label"], checklist_preselected)
+            new_enabled = _prompt_toolset_checklist(pinfo["label"], checklist_preselected, pkey)
 
             added = new_enabled - current_enabled
             removed = current_enabled - new_enabled
@@ -2109,7 +2202,11 @@ def _apply_mcp_change(config: dict, targets: List[str], action: str) -> Set[str]
 
 def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = "cli"):
     """Print a summary of enabled/disabled toolsets and MCP tool filters."""
-    effective = _get_effective_configurable_toolsets()
+    effective_all = _get_effective_configurable_toolsets()
+    effective = [
+        (k, l, d) for (k, l, d) in effective_all
+        if _toolset_allowed_for_platform(k, platform)
+    ]
     builtin_keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
 
     print(f"Built-in toolsets ({platform}):")
@@ -2174,6 +2271,20 @@ def tools_disable_enable_command(args):
         for name in unknown_toolsets:
             _print_error(f"Unknown toolset '{name}'")
         toolset_targets = [t for t in toolset_targets if t in valid_toolsets]
+
+    # Reject platform-scoped toolsets on platforms that don't allow them.
+    restricted_targets = [
+        t for t in toolset_targets
+        if not _toolset_allowed_for_platform(t, platform)
+    ]
+    if restricted_targets:
+        for name in restricted_targets:
+            allowed = sorted(_TOOLSET_PLATFORM_RESTRICTIONS.get(name) or set())
+            _print_error(
+                f"Toolset '{name}' is not available on platform '{platform}' "
+                f"(only: {', '.join(allowed)})"
+            )
+        toolset_targets = [t for t in toolset_targets if t not in restricted_targets]
 
     if toolset_targets:
         _apply_toolset_change(config, platform, toolset_targets, action)

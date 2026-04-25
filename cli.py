@@ -3176,7 +3176,14 @@ class HermesCLI:
         # the configured model (e.g. "qwen3.6-plus"), causing 400 errors.
         runtime_model = runtime.get("model")
         if runtime_model and isinstance(runtime_model, str):
-            self.model = runtime_model
+            # Only use runtime model if: model is unset, or model equals provider name
+            should_use_runtime_model = (
+                not self.model or  # No model configured yet
+                self.model == self.provider or  # Model is the provider slug
+                self.model == runtime.get("name")  # Model matches provider display name
+            )
+            if should_use_runtime_model:
+                self.model = runtime_model
 
         # If model is still empty (e.g. user ran `hermes auth add openai-codex`
         # without `hermes model`), fall back to the provider's first catalog
@@ -4661,10 +4668,6 @@ class HermesCLI:
     def new_session(self, silent=False):
         """Start a fresh session with a new session ID and cleared agent state."""
         if self.agent and self.conversation_history:
-            try:
-                self.agent.flush_memories(self.conversation_history)
-            except (Exception, KeyboardInterrupt):
-                pass
             # Trigger memory extraction on the old session before session_id rotates.
             self.agent.commit_memory_session(self.conversation_history)
             self._notify_session_boundary("on_session_finalize")
@@ -10780,12 +10783,6 @@ class HermesCLI:
                 try:
                     self.agent.interrupt()
                 except Exception:
-                    pass
-            # Flush memories before exit (only for substantial conversations)
-            if self.agent and self.conversation_history:
-                try:
-                    self.agent.flush_memories(self.conversation_history)
-                except (Exception, KeyboardInterrupt):
                     pass
             # Shut down voice recorder (release persistent audio stream)
             if hasattr(self, '_voice_recorder') and self._voice_recorder:

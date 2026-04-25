@@ -721,14 +721,6 @@ auxiliary:
     base_url: ""
     api_key: ""
     timeout: 30
-
-  # Memory flush — summarizes conversation for persistent memory
-  flush_memories:
-    provider: "auto"
-    model: ""
-    base_url: ""
-    api_key: ""
-    timeout: 30
 ```
 
 :::tip

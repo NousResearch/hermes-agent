@@ -1578,7 +1578,6 @@ class AIAgent:
         self._memory_enabled = False
         self._user_profile_enabled = False
         self._memory_nudge_interval = 10
-        self._memory_flush_min_turns = 6
         self._turns_since_memory = 0
         self._iters_since_skill = 0
         if not skip_memory:
@@ -1587,7 +1586,6 @@ class AIAgent:
                 self._memory_enabled = mem_config.get("memory_enabled", False)
                 self._user_profile_enabled = mem_config.get("user_profile_enabled", False)
                 self._memory_nudge_interval = int(mem_config.get("nudge_interval", 10))
-                self._memory_flush_min_turns = int(mem_config.get("flush_min_turns", 6))
                 if self._memory_enabled or self._user_profile_enabled:
                     from tools.memory_tool import MemoryStore
                     self._memory_store = MemoryStore(
@@ -2399,6 +2397,7 @@ class AIAgent:
                 base_url=aux_base_url,
                 api_key=aux_api_key,
                 config_context_length=getattr(self, "_aux_compression_context_length_config", None),
+                provider=getattr(self, "provider", ""),
             )
 
             # Hard floor: the auxiliary compression model must have at least
@@ -2425,6 +2424,11 @@ class AIAgent:
                 # compression actually works this session.  The hard floor
                 # above guarantees aux_context >= MINIMUM_CONTEXT_LENGTH,
                 # so the new threshold is always >= 64K.
+                #
+                # The compression summariser sends a single user-role
+                # prompt (no system prompt, no tools) to the aux model, so
+                # new_threshold == aux_context is safe: the request is
+                # the raw messages plus a small summarisation instruction.
                 old_threshold = threshold
                 new_threshold = aux_context
                 self.context_compressor.threshold_tokens = new_threshold
@@ -5137,6 +5141,8 @@ class AIAgent:
         # response.incomplete instead of response.completed).
         self._codex_streamed_text_parts: list = []
         for attempt in range(max_stream_retries + 1):
+            if self._interrupt_requested:
+                raise InterruptedError("Agent interrupted before Codex stream retry")
             collected_output_items: list = []
             try:
                 with active_client.responses.stream(**api_kwargs) as stream:
@@ -6306,6 +6312,14 @@ class AIAgent:
 
             try:
                 for _stream_attempt in range(_max_stream_retries + 1):
+                    # Check for interrupt before each retry attempt.  Without
+                    # this, /stop closes the HTTP connection (outer poll loop),
+                    # but the retry loop opens a FRESH connection — negating the
+                    # interrupt entirely.  On slow providers (ollama-cloud) each
+                    # retry can block for the full stream-read timeout (120s+),
+                    # causing multi-minute delays between /stop and response.
+                    if self._interrupt_requested:
+                        raise InterruptedError("Agent interrupted before stream retry")
                     try:
                         if self.api_mode == "anthropic_messages":
                             self._try_refresh_anthropic_client_credentials()
@@ -7910,251 +7924,6 @@ class AIAgent:
         """
         return self.api_mode != "codex_responses"
 
-    def flush_memories(self, messages: list = None, min_turns: int = None):
-        """Give the model one turn to persist memories before context is lost.
-
-        Called before compression, session reset, or CLI exit. Injects a flush
-        message, makes one API call, executes any memory tool calls, then
-        strips all flush artifacts from the message list.
-
-        Args:
-            messages: The current conversation messages. If None, uses
-                      self._session_messages (last run_conversation state).
-            min_turns: Minimum user turns required to trigger the flush.
-                       None = use config value (flush_min_turns).
-                       0 = always flush (used for compression).
-        """
-        if self._memory_flush_min_turns == 0 and min_turns is None:
-            return
-        if "memory" not in self.valid_tool_names or not self._memory_store:
-            return
-        effective_min = min_turns if min_turns is not None else self._memory_flush_min_turns
-        if self._user_turn_count < effective_min:
-            return
-
-        if messages is None:
-            messages = getattr(self, '_session_messages', None)
-        if not messages or len(messages) < 3:
-            return
-
-        flush_content = (
-            "[System: The session is being compressed. "
-            "Save anything worth remembering — prioritize user preferences, "
-            "corrections, and recurring patterns over task-specific details.]"
-        )
-        _sentinel = f"__flush_{id(self)}_{time.monotonic()}"
-        flush_msg = {"role": "user", "content": flush_content, "_flush_sentinel": _sentinel}
-        messages.append(flush_msg)
-
-        try:
-            # Build API messages for the flush call
-            _needs_sanitize = self._should_sanitize_tool_calls()
-            api_messages = []
-            for msg in messages:
-                api_msg = msg.copy()
-                self._copy_reasoning_content_for_api(msg, api_msg)
-                api_msg.pop("reasoning", None)
-                api_msg.pop("finish_reason", None)
-                api_msg.pop("_flush_sentinel", None)
-                api_msg.pop("_thinking_prefill", None)
-                if _needs_sanitize:
-                    self._sanitize_tool_calls_for_strict_api(api_msg)
-                api_messages.append(api_msg)
-
-            if self._cached_system_prompt:
-                api_messages = [{"role": "system", "content": self._cached_system_prompt}] + api_messages
-
-            # Make one API call with only the memory tool available
-            memory_tool_def = None
-            for t in (self.tools or []):
-                if t.get("function", {}).get("name") == "memory":
-                    memory_tool_def = t
-                    break
-
-            if not memory_tool_def:
-                messages.pop()  # remove flush msg
-                return
-
-            # Use auxiliary client for the flush call when available --
-            # it's cheaper and avoids Codex Responses API incompatibility.
-            from agent.auxiliary_client import (
-                call_llm as _call_llm,
-                _fixed_temperature_for_model,
-                OMIT_TEMPERATURE,
-            )
-            _aux_available = True
-            # Kimi models manage temperature server-side — omit it entirely.
-            # Other models with a fixed contract get that value; everyone else
-            # gets the historical 0.3 default.
-            _fixed_temp = _fixed_temperature_for_model(self.model, self.base_url)
-            _omit_temperature = _fixed_temp is OMIT_TEMPERATURE
-            if _omit_temperature:
-                _flush_temperature = None
-            elif _fixed_temp is not None:
-                _flush_temperature = _fixed_temp
-            else:
-                _flush_temperature = 0.3
-            aux_error = None
-            try:
-                response = _call_llm(
-                    task="flush_memories",
-                    messages=api_messages,
-                    tools=[memory_tool_def],
-                    temperature=_flush_temperature,
-                    max_tokens=5120,
-                    # timeout resolved from auxiliary.flush_memories.timeout config
-                )
-            except Exception as e:
-                aux_error = e
-                _aux_available = False
-                response = None
-
-            if not _aux_available and self.api_mode == "codex_responses":
-                # No auxiliary client -- use the Codex Responses path directly
-                codex_kwargs = self._build_api_kwargs(api_messages)
-                _ct_flush = self._get_transport()
-                if _ct_flush is not None:
-                    codex_kwargs["tools"] = _ct_flush.convert_tools([memory_tool_def])
-                elif not codex_kwargs.get("tools"):
-                    codex_kwargs["tools"] = [memory_tool_def]
-                if _flush_temperature is not None:
-                    codex_kwargs["temperature"] = _flush_temperature
-                else:
-                    codex_kwargs.pop("temperature", None)
-                if "max_output_tokens" in codex_kwargs:
-                    codex_kwargs["max_output_tokens"] = 5120
-                response = self._run_codex_stream(codex_kwargs)
-            elif not _aux_available and self.api_mode == "anthropic_messages":
-                # Native Anthropic — use the transport for kwargs
-                _tflush = self._get_transport()
-                ant_kwargs = _tflush.build_kwargs(
-                    model=self.model, messages=api_messages,
-                    tools=[memory_tool_def], max_tokens=5120,
-                    reasoning_config=None,
-                    preserve_dots=self._anthropic_preserve_dots(),
-                )
-                response = self._anthropic_messages_create(ant_kwargs)
-            elif not _aux_available:
-                api_kwargs = {
-                    "model": self.model,
-                    "messages": api_messages,
-                    "tools": [memory_tool_def],
-                    **self._max_tokens_param(5120),
-                }
-                if _flush_temperature is not None:
-                    api_kwargs["temperature"] = _flush_temperature
-                from agent.auxiliary_client import _get_task_timeout
-                response = self._ensure_primary_openai_client(reason="flush_memories").chat.completions.create(
-                    **api_kwargs, timeout=_get_task_timeout("flush_memories")
-                )
-
-            if aux_error is not None:
-                logger.warning("Auxiliary memory flush failed; used fallback path: %s", aux_error)
-                self._emit_auxiliary_failure("memory flush", aux_error)
-
-            def _openai_tool_calls(resp):
-                if resp is not None and hasattr(resp, "choices") and resp.choices:
-                    msg = getattr(resp.choices[0], "message", None)
-                    calls = getattr(msg, "tool_calls", None)
-                    if calls:
-                        return calls
-                return []
-
-            def _codex_output_tool_calls(resp):
-                calls = []
-                for item in getattr(resp, "output", []) or []:
-                    if getattr(item, "type", None) == "function_call":
-                        calls.append(SimpleNamespace(
-                            id=getattr(item, "call_id", None),
-                            type="function",
-                            function=SimpleNamespace(
-                                name=getattr(item, "name", ""),
-                                arguments=getattr(item, "arguments", "{}"),
-                            ),
-                        ))
-                return calls
-
-            # Extract tool calls from the response, handling all API formats
-            tool_calls = []
-            if self.api_mode == "codex_responses" and not _aux_available:
-                _ct_flush = self._get_transport()
-                _cnr_flush = _ct_flush.normalize_response(response) if _ct_flush is not None else None
-                if _cnr_flush and _cnr_flush.tool_calls:
-                    tool_calls = [
-                        SimpleNamespace(
-                            id=tc.id, type="function",
-                            function=SimpleNamespace(name=tc.name, arguments=tc.arguments),
-                        ) for tc in _cnr_flush.tool_calls
-                    ]
-                else:
-                    tool_calls = _codex_output_tool_calls(response)
-            elif self.api_mode == "anthropic_messages" and not _aux_available:
-                _tfn = self._get_transport()
-                _flush_result = _tfn.normalize_response(response, strip_tool_prefix=self._is_anthropic_oauth)
-                if _flush_result and _flush_result.tool_calls:
-                    tool_calls = [
-                        SimpleNamespace(
-                            id=tc.id, type="function",
-                            function=SimpleNamespace(name=tc.name, arguments=tc.arguments),
-                        ) for tc in _flush_result.tool_calls
-                    ]
-            elif self.api_mode in ("chat_completions", "bedrock_converse"):
-                # chat_completions / bedrock — normalize through transport
-                _tfn = self._get_transport()
-                _flush_result = _tfn.normalize_response(response) if _tfn is not None else None
-                if _flush_result and _flush_result.tool_calls:
-                    tool_calls = _flush_result.tool_calls
-                else:
-                    tool_calls = _openai_tool_calls(response)
-            elif _aux_available and hasattr(response, "choices") and response.choices:
-                # Auxiliary client returned OpenAI-shaped response while main
-                # api_mode is codex/anthropic — extract tool_calls from .choices
-                tool_calls = _openai_tool_calls(response)
-
-            for tc in tool_calls:
-                if tc.function.name == "memory":
-                    try:
-                        args = json.loads(tc.function.arguments)
-                        flush_target = args.get("target", "memory")
-                        from tools.memory_tool import memory_tool as _memory_tool
-                        _memory_tool(
-                            action=args.get("action"),
-                            target=flush_target,
-                            content=args.get("content"),
-                            old_text=args.get("old_text"),
-                            store=self._memory_store,
-                        )
-                        if self._memory_manager and args.get("action") in ("add", "replace"):
-                            try:
-                                self._memory_manager.on_memory_write(
-                                    args.get("action", ""),
-                                    flush_target,
-                                    args.get("content", ""),
-                                    metadata=self._build_memory_write_metadata(
-                                        write_origin="memory_flush",
-                                        execution_context="flush_memories",
-                                    ),
-                                )
-                            except Exception:
-                                pass
-                        if not self.quiet_mode:
-                            print(f"  🧠 Memory flush: saved to {args.get('target', 'memory')}")
-                    except Exception as e:
-                        logger.warning("Memory flush tool call failed: %s", e)
-                        self._emit_auxiliary_failure("memory flush tool", e)
-        except Exception as e:
-            logger.warning("Memory flush API call failed: %s", e)
-            self._emit_auxiliary_failure("memory flush", e)
-        finally:
-            # Strip flush artifacts: remove everything from the flush message onward.
-            # Use sentinel marker instead of identity check for robustness.
-            while messages and messages[-1].get("_flush_sentinel") != _sentinel:
-                messages.pop()
-                if not messages:
-                    break
-            if messages and messages[-1].get("_flush_sentinel") == _sentinel:
-                messages.pop()
-
     def _compress_context(self, messages: list, system_message: str, *, approx_tokens: int = None, task_id: str = "default", focus_topic: str = None) -> tuple:
         """Compress conversation context and split the session in SQLite.
 
@@ -8173,8 +7942,6 @@ class AIAgent:
             f"{approx_tokens:,}" if approx_tokens else "unknown", self.model,
             focus_topic,
         )
-        # Pre-compression memory flush: let the model save memories before they're lost
-        self.flush_memories(messages, min_turns=0)
 
         # Notify external memory provider before compression discards context
         if self._memory_manager:

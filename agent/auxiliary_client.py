@@ -1349,21 +1349,27 @@ def _is_auth_error(exc: Exception) -> bool:
     return "error code: 401" in err_lower or "authenticationerror" in type(exc).__name__.lower()
 
 
-def _is_unsupported_temperature_error(exc: Exception) -> bool:
-    """Detect API errors where the selected model rejects `temperature`.
+def _is_unsupported_parameter_error(exc: Exception, param: str) -> bool:
+    """Detect provider 400s for an unsupported request parameter.
 
-    Triggered by provider responses like:
-      * OpenAI / Codex Responses — ``Unsupported parameter: temperature``
-      * Copilot reasoning models — ``unsupported_parameter`` with temperature
-      * OpenRouter reasoning models — ``does not support temperature``
-      * Anthropic Opus 4.7+ via OpenAI-compat — ``temperature is not supported``
+    Different OpenAI-compatible endpoints phrase the same class of error a few
+    ways: ``Unsupported parameter: X``, ``unsupported_parameter`` with a
+    ``param`` field, ``X is not supported``, ``unknown parameter: X``,
+    ``unrecognized request argument: X``.  We match on both the parameter
+    name and a generic "unsupported/unknown/unrecognized parameter" marker so
+    call sites can reactively retry without the offending key instead of
+    surfacing a noisy auxiliary failure.
 
-    The same backend can accept temperature for some models and reject it for
-    others (e.g. gpt-5.4 accepts, gpt-5.5 rejects on the same endpoint), so we
-    react to the concrete error rather than maintaining a model allowlist.
+    Generalizes the temperature-specific detector that originally shipped
+    with PR #15621 so the same retry strategy can cover ``max_tokens``,
+    ``seed``, ``top_p``, and any future quirk. Credit @nicholasrae (PR #15416)
+    for the generalization pattern.
     """
+    param_lower = (param or "").lower()
+    if not param_lower:
+        return False
     err_lower = str(exc).lower()
-    if "temperature" not in err_lower:
+    if param_lower not in err_lower:
         return False
     return any(marker in err_lower for marker in (
         "unsupported parameter",
@@ -1372,7 +1378,18 @@ def _is_unsupported_temperature_error(exc: Exception) -> bool:
         "does not support",
         "unknown parameter",
         "unrecognized request argument",
+        "unrecognized parameter",
+        "invalid parameter",
     ))
+
+
+def _is_unsupported_temperature_error(exc: Exception) -> bool:
+    """Back-compat wrapper: detect API errors where the model rejects ``temperature``.
+
+    Delegates to :func:`_is_unsupported_parameter_error`; kept as a separate
+    public symbol because existing tests and call sites import it by name.
+    """
+    return _is_unsupported_parameter_error(exc, "temperature")
 
 
 def _evict_cached_clients(provider: str) -> None:
@@ -3012,7 +3029,11 @@ def call_llm(
                 kwargs = retry_kwargs
 
         err_str = str(first_err)
-        if "max_tokens" in err_str or "unsupported_parameter" in err_str:
+        if max_tokens is not None and (
+            "max_tokens" in err_str
+            or "unsupported_parameter" in err_str
+            or _is_unsupported_parameter_error(first_err, "max_tokens")
+        ):
             kwargs.pop("max_tokens", None)
             kwargs["max_completion_tokens"] = max_tokens
             try:
@@ -3299,7 +3320,11 @@ async def async_call_llm(
                 kwargs = retry_kwargs
 
         err_str = str(first_err)
-        if "max_tokens" in err_str or "unsupported_parameter" in err_str:
+        if max_tokens is not None and (
+            "max_tokens" in err_str
+            or "unsupported_parameter" in err_str
+            or _is_unsupported_parameter_error(first_err, "max_tokens")
+        ):
             kwargs.pop("max_tokens", None)
             kwargs["max_completion_tokens"] = max_tokens
             try:

@@ -1984,9 +1984,15 @@ class HermesCLI:
         )
         
         # Reasoning config (OpenRouter reasoning effort level)
-        self.reasoning_config = _parse_reasoning_config(
+        self._global_reasoning_config = _parse_reasoning_config(
             CLI_CONFIG["agent"].get("reasoning_effort", "")
         )
+        self.reasoning_config = (
+            dict(self._global_reasoning_config)
+            if isinstance(self._global_reasoning_config, dict)
+            else None
+        )
+        self._reasoning_session_override_active = False
         self.service_tier = _parse_service_tier_config(
             CLI_CONFIG["agent"].get("service_tier", "")
         )
@@ -4686,11 +4692,22 @@ class HermesCLI:
         self.conversation_history = []
         self._pending_title = None
         self._resumed = False
+        self.reasoning_config = (
+            dict(self._global_reasoning_config)
+            if isinstance(self._global_reasoning_config, dict)
+            else None
+        )
+        self._reasoning_session_override_active = False
 
         if self.agent:
             self.agent.session_id = self.session_id
             self.agent.session_start = self.session_start
             self.agent.reset_session_state()
+            self.agent.reasoning_config = (
+                dict(self.reasoning_config)
+                if isinstance(self.reasoning_config, dict)
+                else None
+            )
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = 0
             if hasattr(self.agent, "_todo_store"):
@@ -4789,10 +4806,25 @@ class HermesCLI:
         except Exception:
             pass
 
+        # Resuming a different session is a session boundary, so clear any
+        # session-scoped reasoning override and fall back to the configured
+        # default for the resumed session.
+        self.reasoning_config = (
+            dict(self._global_reasoning_config)
+            if isinstance(self._global_reasoning_config, dict)
+            else None
+        )
+        self._reasoning_session_override_active = False
+
         # Sync the agent if already initialised
         if self.agent:
             self.agent.session_id = target_id
             self.agent.reset_session_state()
+            self.agent.reasoning_config = (
+                dict(self.reasoning_config)
+                if isinstance(self.reasoning_config, dict)
+                else None
+            )
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = len(self.conversation_history)
             if hasattr(self.agent, "_todo_store"):
@@ -6844,15 +6876,17 @@ class HermesCLI:
         """Handle /reasoning — manage effort level and display toggle.
 
         Usage:
-            /reasoning              Show current effort level and display state
-            /reasoning <level>      Set reasoning effort (none, minimal, low, medium, high, xhigh)
-            /reasoning show|on      Show model thinking/reasoning in output
-            /reasoning hide|off     Hide model thinking/reasoning from output
+            /reasoning                       Show current effort level and display state
+            /reasoning <level>              Set reasoning effort for this session
+            /reasoning <level> --global     Set reasoning effort and persist to config.yaml
+            /reasoning show|on              Show model thinking/reasoning in output
+            /reasoning hide|off             Hide model thinking/reasoning from output
         """
+        from hermes_constants import parse_reasoning_flags
+
         parts = cmd.strip().split(maxsplit=1)
 
         if len(parts) < 2:
-            # Show current state
             rc = self.reasoning_config
             if rc is None:
                 level = "medium (default)"
@@ -6860,13 +6894,15 @@ class HermesCLI:
                 level = "none (disabled)"
             else:
                 level = rc.get("effort", "medium")
+            scope = "session" if getattr(self, "_reasoning_session_override_active", False) else "global"
             display_state = "on ✓" if self.show_reasoning else "off"
             _cprint(f"  {_ACCENT}Reasoning effort:  {level}{_RST}")
+            _cprint(f"  {_ACCENT}Reasoning scope:   {scope}{_RST}")
             _cprint(f"  {_ACCENT}Reasoning display: {display_state}{_RST}")
-            _cprint(f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|show|hide>{_RST}")
+            _cprint(f"  {_DIM}Usage: /reasoning <none|minimal|low|medium|high|xhigh|show|hide> [--global]{_RST}")
             return
 
-        arg = parts[1].strip().lower()
+        arg, persist_global = parse_reasoning_flags(parts[1].strip().lower())
 
         # Display toggle
         if arg in ("show", "on"):
@@ -6885,7 +6921,6 @@ class HermesCLI:
             _cprint(f"  {_ACCENT}✓ Reasoning display: OFF (saved){_RST}")
             return
 
-        # Effort level change
         parsed = _parse_reasoning_config(arg)
         if parsed is None:
             _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
@@ -6893,13 +6928,22 @@ class HermesCLI:
             _cprint(f"  {_DIM}Display:      show, hide{_RST}")
             return
 
-        self.reasoning_config = parsed
+        self.reasoning_config = dict(parsed) if isinstance(parsed, dict) else None
         self.agent = None  # Force agent re-init with new reasoning config
 
-        if save_config_value("agent.reasoning_effort", arg):
-            _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (saved to config){_RST}")
-        else:
-            _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (session only){_RST}")
+        if persist_global:
+            saved = save_config_value("agent.reasoning_effort", arg)
+            if saved:
+                self._global_reasoning_config = dict(parsed) if isinstance(parsed, dict) else None
+                self._reasoning_session_override_active = False
+                _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (saved to config){_RST}")
+            else:
+                self._reasoning_session_override_active = True
+                _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (session only){_RST}")
+            return
+
+        self._reasoning_session_override_active = True
+        _cprint(f"  {_ACCENT}✓ Reasoning effort set to '{arg}' (session only){_RST}")
 
     def _handle_fast_command(self, cmd: str):
         """Handle /fast — toggle fast mode (OpenAI Priority Processing / Anthropic Fast Mode)."""

@@ -50,6 +50,24 @@ class TestParseReasoningConfig(unittest.TestCase):
         self.assertEqual(result["effort"], "high")
 
 
+class TestParseReasoningFlags(unittest.TestCase):
+    def test_standalone_global_flag_is_stripped(self):
+        from hermes_constants import parse_reasoning_flags
+
+        self.assertEqual(parse_reasoning_flags("high --global"), ("high", True))
+
+    def test_unicode_dash_global_flag_is_accepted(self):
+        from hermes_constants import parse_reasoning_flags
+
+        self.assertEqual(parse_reasoning_flags("high —global"), ("high", True))
+
+    def test_embedded_global_substring_is_not_treated_as_flag(self):
+        from hermes_constants import parse_reasoning_flags
+
+        self.assertEqual(parse_reasoning_flags("high--global"), ("high--global", False))
+        self.assertEqual(parse_reasoning_flags("high --globalize"), ("high --globalize", False))
+
+
 # ---------------------------------------------------------------------------
 # /reasoning command handler (combined effort + display)
 # ---------------------------------------------------------------------------
@@ -154,6 +172,156 @@ class TestHandleReasoningCommand(unittest.TestCase):
         rc = stub.reasoning_config
         level = rc.get("effort", "medium")
         self.assertEqual(level, "xhigh")
+
+    def test_effort_switch_defaults_to_session_scope(self):
+        from cli import HermesCLI
+
+        cli_obj = HermesCLI.__new__(HermesCLI)
+        cli_obj.reasoning_config = {"enabled": True, "effort": "medium"}
+        cli_obj._global_reasoning_config = {"enabled": True, "effort": "medium"}
+        cli_obj.show_reasoning = False
+        cli_obj.agent = object()
+
+        with patch("cli._cprint") as cprint, patch(
+            "cli.save_config_value", side_effect=AssertionError("should not persist")
+        ):
+            HermesCLI._handle_reasoning_command(cli_obj, "/reasoning high")
+
+        self.assertEqual(cli_obj.reasoning_config, {"enabled": True, "effort": "high"})
+        self.assertIsNone(cli_obj.agent)
+        joined = "\n".join(call.args[0] for call in cprint.call_args_list)
+        self.assertIn("session only", joined)
+
+    def test_effort_switch_global_persists_with_flag(self):
+        from cli import HermesCLI
+
+        cli_obj = HermesCLI.__new__(HermesCLI)
+        cli_obj.reasoning_config = {"enabled": True, "effort": "medium"}
+        cli_obj._global_reasoning_config = {"enabled": True, "effort": "medium"}
+        cli_obj.show_reasoning = False
+        cli_obj.agent = object()
+
+        with patch("cli._cprint") as cprint, patch(
+            "cli.save_config_value", return_value=True
+        ) as save_config:
+            HermesCLI._handle_reasoning_command(cli_obj, "/reasoning high --global")
+
+        save_config.assert_called_once_with("agent.reasoning_effort", "high")
+        self.assertEqual(cli_obj.reasoning_config, {"enabled": True, "effort": "high"})
+        joined = "\n".join(call.args[0] for call in cprint.call_args_list)
+        self.assertIn("saved to config", joined)
+
+    def test_effort_switch_global_save_failure_stays_session_scoped(self):
+        from cli import HermesCLI
+
+        cli_obj = HermesCLI.__new__(HermesCLI)
+        cli_obj.reasoning_config = {"enabled": True, "effort": "medium"}
+        cli_obj._global_reasoning_config = {"enabled": True, "effort": "medium"}
+        cli_obj._reasoning_session_override_active = False
+        cli_obj.show_reasoning = False
+        cli_obj.agent = object()
+
+        with patch("cli._cprint") as cprint, patch(
+            "cli.save_config_value", return_value=False
+        ) as save_config:
+            HermesCLI._handle_reasoning_command(cli_obj, "/reasoning high --global")
+
+        save_config.assert_called_once_with("agent.reasoning_effort", "high")
+        self.assertEqual(cli_obj.reasoning_config, {"enabled": True, "effort": "high"})
+        self.assertEqual(cli_obj._global_reasoning_config, {"enabled": True, "effort": "medium"})
+        self.assertTrue(cli_obj._reasoning_session_override_active)
+        joined = "\n".join(call.args[0] for call in cprint.call_args_list)
+        self.assertIn("session only", joined)
+
+    def test_new_session_clears_session_reasoning_override(self):
+        from cli import HermesCLI
+
+        class _Agent:
+            def __init__(self):
+                self.session_id = "old-session"
+                self.session_start = None
+
+            def reset_session_state(self):
+                return None
+
+            def _invalidate_system_prompt(self):
+                return None
+
+        cli_obj = HermesCLI.__new__(HermesCLI)
+        cli_obj.agent = _Agent()
+        cli_obj.conversation_history = []
+        cli_obj._notify_session_boundary = lambda *_args, **_kwargs: None
+        cli_obj.session_id = "old-session"
+        cli_obj._session_db = None
+        cli_obj._pending_title = None
+        cli_obj._resumed = False
+        cli_obj.model = "gpt-5"
+        cli_obj.max_turns = 90
+        cli_obj.reasoning_config = {"enabled": True, "effort": "xhigh"}
+        cli_obj._global_reasoning_config = {"enabled": True, "effort": "medium"}
+
+        HermesCLI.new_session(cli_obj, silent=True)
+
+        self.assertEqual(
+            cli_obj.reasoning_config,
+            {"enabled": True, "effort": "medium"},
+        )
+        self.assertEqual(
+            cli_obj.agent.reasoning_config,
+            {"enabled": True, "effort": "medium"},
+        )
+
+    def test_resume_clears_session_reasoning_override(self):
+        from cli import HermesCLI
+
+        class _Agent:
+            def __init__(self):
+                self.session_id = "old-session"
+                self.reasoning_config = {"enabled": True, "effort": "xhigh"}
+                self._last_flushed_db_idx = 0
+
+            def reset_session_state(self):
+                return None
+
+            def _invalidate_system_prompt(self):
+                return None
+
+        class _SessionDB:
+            def get_session(self, session_id):
+                return {"id": session_id, "title": "Target"}
+
+            def resolve_resume_session_id(self, session_id):
+                return session_id
+
+            def end_session(self, session_id, reason):
+                return None
+
+            def get_messages_as_conversation(self, session_id):
+                return [{"role": "user", "content": "hello"}]
+
+            def reopen_session(self, session_id):
+                return None
+
+        cli_obj = HermesCLI.__new__(HermesCLI)
+        cli_obj.agent = _Agent()
+        cli_obj.session_id = "old-session"
+        cli_obj._session_db = _SessionDB()
+        cli_obj._pending_title = None
+        cli_obj._resumed = False
+        cli_obj.conversation_history = []
+        cli_obj.reasoning_config = {"enabled": True, "effort": "xhigh"}
+        cli_obj._global_reasoning_config = {"enabled": True, "effort": "medium"}
+        cli_obj._reasoning_session_override_active = True
+
+        with patch("cli._cprint"), patch(
+            "hermes_cli.main._resolve_session_by_name_or_id", return_value="target-session"
+        ):
+            HermesCLI._handle_resume_command(cli_obj, "/resume target-session")
+
+        self.assertEqual(cli_obj.session_id, "target-session")
+        self.assertEqual(cli_obj.reasoning_config, {"enabled": True, "effort": "medium"})
+        self.assertFalse(cli_obj._reasoning_session_override_active)
+        self.assertEqual(cli_obj.agent.reasoning_config, {"enabled": True, "effort": "medium"})
 
 
 # ---------------------------------------------------------------------------

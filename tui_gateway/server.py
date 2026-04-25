@@ -1191,6 +1191,12 @@ def _background_agent_kwargs(agent, task_id: str) -> dict:
 
 
 def _reset_session_agent(sid: str, session: dict) -> dict:
+    reasoning_scope = str(session.get("reasoning_scope") or "global")
+    session_reasoning = (
+        dict(session.get("reasoning_config") or {})
+        if reasoning_scope == "session"
+        else dict(_load_reasoning_config() or {})
+    )
     tokens = _set_session_context(session["session_key"])
     try:
         new_agent = _make_agent(
@@ -1198,7 +1204,10 @@ def _reset_session_agent(sid: str, session: dict) -> dict:
         )
     finally:
         _clear_session_context(tokens)
+    if session_reasoning:
+        new_agent.reasoning_config = dict(session_reasoning)
     session["agent"] = new_agent
+    session["reasoning_config"] = dict(session_reasoning)
     session["attached_images"] = []
     session["edit_snapshots"] = {}
     session["image_counter"] = 0
@@ -1259,6 +1268,8 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         "cols": cols,
         "slash_worker": None,
         "show_reasoning": _load_show_reasoning(),
+        "reasoning_config": dict(getattr(agent, "reasoning_config", None) or _load_reasoning_config() or {}),
+        "reasoning_scope": "global",
         "tool_progress_mode": _load_tool_progress_mode(),
         "edit_snapshots": {},
         "tool_started_at": {},
@@ -1401,6 +1412,8 @@ def _(rid, params: dict) -> dict:
         "running": False,
         "session_key": key,
         "show_reasoning": _load_show_reasoning(),
+        "reasoning_config": dict(_load_reasoning_config() or {}),
+        "reasoning_scope": "global",
         "slash_worker": None,
         "tool_progress_mode": _load_tool_progress_mode(),
         "tool_started_at": {},
@@ -1435,6 +1448,19 @@ def _(rid, params: dict) -> dict:
             if db is not None:
                 db.create_session(key, source="tui", model=_resolve_model())
             session["agent"] = agent
+            pending_reasoning_scope = str(session.get("reasoning_scope") or "global")
+            pending_reasoning = session.get("reasoning_config")
+            if pending_reasoning_scope == "session" and isinstance(pending_reasoning, dict):
+                agent.reasoning_config = dict(pending_reasoning)
+                session["reasoning_config"] = dict(pending_reasoning)
+            else:
+                latest_global_reasoning = _load_reasoning_config()
+                if isinstance(latest_global_reasoning, dict):
+                    agent.reasoning_config = dict(latest_global_reasoning)
+                    session["reasoning_config"] = dict(latest_global_reasoning)
+                else:
+                    agent.reasoning_config = None
+                    session["reasoning_config"] = {}
 
             try:
                 worker = _SlashWorker(key, getattr(agent, "model", _resolve_model()))
@@ -2616,9 +2642,9 @@ def _(rid, params: dict) -> dict:
 
     if key == "reasoning":
         try:
-            from hermes_constants import parse_reasoning_effort
+            from hermes_constants import parse_reasoning_effort, parse_reasoning_flags
 
-            arg = str(value or "").strip().lower()
+            arg, persist_global = parse_reasoning_flags(str(value or "").strip().lower())
             if arg in ("show", "on"):
                 _write_config_key("display.show_reasoning", True)
                 if session:
@@ -2633,9 +2659,22 @@ def _(rid, params: dict) -> dict:
             parsed = parse_reasoning_effort(arg)
             if parsed is None:
                 return _err(rid, 4002, f"unknown reasoning value: {value}")
-            _write_config_key("agent.reasoning_effort", arg)
-            if session and session.get("agent") is not None:
-                session["agent"].reasoning_config = parsed
+            if persist_global or not session:
+                try:
+                    _write_config_key("agent.reasoning_effort", arg)
+                except Exception:
+                    if session:
+                        session["reasoning_scope"] = "session"
+                        session["reasoning_config"] = dict(parsed)
+                        if session.get("agent") is not None:
+                            session["agent"].reasoning_config = dict(parsed)
+                        return _ok(rid, {"key": key, "value": arg})
+                    raise
+            if session:
+                session["reasoning_scope"] = "global" if persist_global else "session"
+                session["reasoning_config"] = dict(parsed)
+                if session.get("agent") is not None:
+                    session["agent"].reasoning_config = dict(parsed)
             return _ok(rid, {"key": key, "value": arg})
         except Exception as e:
             return _err(rid, 5001, str(e))
@@ -2805,11 +2844,19 @@ def _(rid, params: dict) -> dict:
         )
     if key == "reasoning":
         cfg = _load_cfg()
-        effort = str(cfg.get("agent", {}).get("reasoning_effort", "medium") or "medium")
-        display = (
-            "show"
-            if bool(cfg.get("display", {}).get("show_reasoning", False))
-            else "hide"
+        session = _sessions.get(params.get("session_id", ""))
+        if session and session.get("reasoning_scope") == "session":
+            reasoning_cfg = session.get("reasoning_config") or {}
+        elif session and session.get("agent") is not None and getattr(session["agent"], "reasoning_config", None):
+            reasoning_cfg = getattr(session["agent"], "reasoning_config", None) or {}
+        else:
+            reasoning_cfg = _load_reasoning_config() or {}
+        if reasoning_cfg.get("enabled") is False:
+            effort = "none"
+        else:
+            effort = str(reasoning_cfg.get("effort", cfg.get("agent", {}).get("reasoning_effort", "medium") or "medium"))
+        display = "show" if session and session.get("show_reasoning", _load_show_reasoning()) else (
+            "show" if bool(cfg.get("display", {}).get("show_reasoning", False)) else "hide"
         )
         return _ok(rid, {"value": effort, "display": display})
     if key == "details_mode":

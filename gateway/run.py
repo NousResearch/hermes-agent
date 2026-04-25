@@ -616,6 +616,7 @@ class GatewayRunner:
     _restart_via_service: bool = False
     _stop_task: Optional[asyncio.Task] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
+    _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
     
     def __init__(self, config: Optional[GatewayConfig] = None):
         self.config = config or load_gateway_config()
@@ -679,6 +680,8 @@ class GatewayRunner:
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
         self._session_model_overrides: Dict[str, Dict[str, str]] = {}
+        # Per-session reasoning overrides from /reasoning command.
+        self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
         # Track pending exec approvals per session
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
@@ -1121,6 +1124,16 @@ class GatewayRunner:
                 pass
 
         return model, runtime_kwargs
+
+    @staticmethod
+    def _copy_reasoning_config(config: Optional[dict]) -> Optional[dict]:
+        return dict(config) if isinstance(config, dict) else None
+
+    def _resolve_session_reasoning_config(self, session_key: Optional[str] = None) -> Optional[dict]:
+        global_config = self._load_reasoning_config()
+        self._reasoning_config = self._copy_reasoning_config(global_config)
+        override = self._session_reasoning_overrides.get(session_key) if session_key else None
+        return self._copy_reasoning_config(override if override is not None else global_config)
 
     def _resolve_turn_agent_config(self, user_message: str, model: str, runtime_kwargs: dict) -> dict:
         """Build the effective model/runtime config for a single turn.
@@ -2330,6 +2343,7 @@ class GatewayRunner:
                         # be garbage-collected.  Otherwise the cache grows
                         # unbounded across the gateway's lifetime.
                         self._evict_cached_agent(key)
+                        self._session_reasoning_overrides.pop(key, None)
                         # Mark as flushed and persist to disk so the flag
                         # survives gateway restarts.
                         with self.session_store._lock:
@@ -4739,6 +4753,7 @@ class GatewayRunner:
                 self.session_store.reset_session(session_key)
                 self._evict_cached_agent(session_key)
                 self._session_model_overrides.pop(session_key, None)
+                self._session_reasoning_overrides.pop(session_key, None)
                 response = (response or "") + (
                     "\n\n🔄 Session auto-reset — the conversation exceeded the "
                     "maximum context size and could not be compressed further. "
@@ -5023,9 +5038,10 @@ class GatewayRunner:
         # Reset the session
         new_entry = self.session_store.reset_session(session_key)
 
-        # Clear any session-scoped model override so the next agent picks up
-        # the configured default instead of the previously switched model.
+        # Clear any session-scoped model/reasoning override so the next agent picks up
+        # the configured default instead of the previous session's override.
         self._session_model_overrides.pop(session_key, None)
+        self._session_reasoning_overrides.pop(session_key, None)
 
         # Clear session-scoped dangerous-command approvals and /yolo state.
         # /new is a conversation-boundary operation — approval state from the
@@ -6461,11 +6477,12 @@ class GatewayRunner:
             )
 
         source = event.source
+        session_key = self._session_key_for_source(source)
         task_id = f"bg_{datetime.now().strftime('%H%M%S')}_{os.urandom(3).hex()}"
 
         # Fire-and-forget the background task
         _task = asyncio.create_task(
-            self._run_background_task(prompt, source, task_id)
+            self._run_background_task(prompt, source, task_id, session_key)
         )
         self._background_tasks.add(_task)
         _task.add_done_callback(self._background_tasks.discard)
@@ -6474,7 +6491,7 @@ class GatewayRunner:
         return f'🔄 Background task started: "{preview}"\nTask ID: {task_id}\nYou can keep chatting — results will appear when done.'
 
     async def _run_background_task(
-        self, prompt: str, source: "SessionSource", task_id: str
+        self, prompt: str, source: "SessionSource", task_id: str, session_key: Optional[str] = None
     ) -> None:
         """Execute a background agent task and deliver the result to the chat."""
         from run_agent import AIAgent
@@ -6507,8 +6524,7 @@ class GatewayRunner:
 
             pr = self._provider_routing
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
-            reasoning_config = self._load_reasoning_config()
-            self._reasoning_config = reasoning_config
+            reasoning_config = self._resolve_session_reasoning_config(session_key)
             self._service_tier = self._load_service_tier()
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
 
@@ -6680,7 +6696,7 @@ class GatewayRunner:
                 return
 
             platform_key = _platform_config_key(source.platform)
-            reasoning_config = self._load_reasoning_config()
+            reasoning_config = self._resolve_session_reasoning_config(session_key)
             self._service_tier = self._load_service_tier()
             turn_route = self._resolve_turn_agent_config(question, model, runtime_kwargs)
             pr = self._provider_routing
@@ -6787,15 +6803,19 @@ class GatewayRunner:
 
         Usage:
             /reasoning              Show current effort level and display state
-            /reasoning <level>      Set reasoning effort (none, minimal, low, medium, high, xhigh)
-            /reasoning show|on      Show model reasoning in responses
-            /reasoning hide|off     Hide model reasoning from responses
+            /reasoning <level>              Set reasoning effort for this chat session
+            /reasoning <level> --global     Set reasoning effort and persist to config.yaml
+            /reasoning show|on              Show model reasoning in responses
+            /reasoning hide|off             Hide model reasoning from responses
         """
         import yaml
+        from hermes_constants import parse_reasoning_effort, parse_reasoning_flags
 
-        args = event.get_command_args().strip().lower()
+        raw_args = event.get_command_args().strip().lower()
+        args, persist_global = parse_reasoning_flags(raw_args)
         config_path = _hermes_home / "config.yaml"
-        self._reasoning_config = self._load_reasoning_config()
+        session_key = self._session_key_for_source(event.source)
+        reasoning_config = self._resolve_session_reasoning_config(session_key)
         self._show_reasoning = self._load_show_reasoning()
 
         def _save_config_key(key_path: str, value):
@@ -6819,20 +6839,20 @@ class GatewayRunner:
                 return False
 
         if not args:
-            # Show current state
-            rc = self._reasoning_config
-            if rc is None:
+            if reasoning_config is None:
                 level = "medium (default)"
-            elif rc.get("enabled") is False:
+            elif reasoning_config.get("enabled") is False:
                 level = "none (disabled)"
             else:
-                level = rc.get("effort", "medium")
+                level = reasoning_config.get("effort", "medium")
+            scope = "session" if session_key in self._session_reasoning_overrides else "global"
             display_state = "on ✓" if self._show_reasoning else "off"
             return (
                 "🧠 **Reasoning Settings**\n\n"
                 f"**Effort:** `{level}`\n"
+                f"**Scope:** `{scope}`\n"
                 f"**Display:** {display_state}\n\n"
-                "_Usage:_ `/reasoning <none|minimal|low|medium|high|xhigh|show|hide>`"
+                "_Usage:_ `/reasoning <none|minimal|low|medium|high|xhigh|show|hide> [--global]`"
             )
 
         # Display toggle (per-platform)
@@ -6850,24 +6870,27 @@ class GatewayRunner:
             _save_config_key(f"display.platforms.{platform_key}.show_reasoning", False)
             return f"🧠 ✓ Reasoning display: **OFF** for **{platform_key}**"
 
-        # Effort level change
         effort = args.strip()
-        if effort == "none":
-            parsed = {"enabled": False}
-        elif effort in ("minimal", "low", "medium", "high", "xhigh"):
-            parsed = {"enabled": True, "effort": effort}
-        else:
+        parsed = parse_reasoning_effort(effort)
+        if parsed is None:
             return (
                 f"⚠️ Unknown argument: `{effort}`\n\n"
                 "**Valid levels:** none, minimal, low, medium, high, xhigh\n"
                 "**Display:** show, hide"
             )
 
-        self._reasoning_config = parsed
-        if _save_config_key("agent.reasoning_effort", effort):
-            return f"🧠 ✓ Reasoning effort set to `{effort}` (saved to config)\n_(takes effect on next message)_"
-        else:
+        self._evict_cached_agent(session_key)
+        if persist_global:
+            saved = _save_config_key("agent.reasoning_effort", effort)
+            if saved:
+                self._reasoning_config = self._copy_reasoning_config(parsed)
+                self._session_reasoning_overrides.pop(session_key, None)
+                return f"🧠 ✓ Reasoning effort set to `{effort}` (saved to config)\n_(takes effect on next message)_"
+            self._session_reasoning_overrides[session_key] = self._copy_reasoning_config(parsed) or {}
             return f"🧠 ✓ Reasoning effort set to `{effort}` (this session only)"
+
+        self._session_reasoning_overrides[session_key] = self._copy_reasoning_config(parsed) or {}
+        return f"🧠 ✓ Reasoning effort set to `{effort}` (this session only)\n_(takes effect on next message)_"
 
     async def _handle_fast_command(self, event: MessageEvent) -> str:
         """Handle /fast — mirror the CLI Priority Processing toggle in gateway chats."""
@@ -7212,6 +7235,11 @@ class GatewayRunner:
             _flush_task.add_done_callback(self._background_tasks.discard)
         except Exception as e:
             logger.debug("Memory flush on resume failed: %s", e)
+
+        # Clear any session-scoped reasoning override for this chat slot.
+        # /resume is a session boundary and should fall back to the resumed
+        # session's configured default unless the user sets a new override.
+        self._session_reasoning_overrides.pop(session_key, None)
 
         # Clear any running agent for this session key
         self._release_running_agent_state(session_key)
@@ -9673,8 +9701,7 @@ class GatewayRunner:
                 }
 
             pr = self._provider_routing
-            reasoning_config = self._load_reasoning_config()
-            self._reasoning_config = reasoning_config
+            reasoning_config = self._resolve_session_reasoning_config(session_key)
             self._service_tier = self._load_service_tier()
             # Set up stream consumer for token streaming or interim commentary.
             _stream_consumer = None

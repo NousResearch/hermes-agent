@@ -141,6 +141,37 @@ def get_subprocess_home() -> str | None:
 VALID_REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
 
 
+def parse_reasoning_flags(raw_args: str) -> tuple[str, bool]:
+    """Parse ``--global`` from /reasoning command args.
+
+    Returns ``(argument, is_global)`` where ``argument`` is the remaining value
+    after stripping a standalone ``--global`` token. Unicode dash variants are
+    normalized so Telegram/iOS smart punctuation still works.
+    """
+
+    def _normalize_flag_token(token: str) -> str:
+        if not token:
+            return ""
+        prefix = token[0]
+        if prefix in "\u2012\u2013\u2014\u2015" and token[1:] == "global":
+            return "--global"
+        return token
+
+    tokens = [
+        _normalize_flag_token(part.strip())
+        for part in str(raw_args or "").split()
+        if part.strip()
+    ]
+    persist_global = False
+    remaining: list[str] = []
+    for token in tokens:
+        if token == "--global":
+            persist_global = True
+            continue
+        remaining.append(token)
+    return " ".join(remaining).strip(), persist_global
+
+
 def parse_reasoning_effort(effort: str) -> dict | None:
     """Parse a reasoning effort level into a config dict.
 

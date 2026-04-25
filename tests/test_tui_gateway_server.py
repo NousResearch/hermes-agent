@@ -96,6 +96,8 @@ def _session(agent=None, **extra):
         "cols": 80,
         "slash_worker": None,
         "show_reasoning": False,
+        "reasoning_config": {},
+        "reasoning_scope": "global",
         "tool_progress_mode": "all",
         **extra,
     }
@@ -471,6 +473,253 @@ def test_config_set_personality_resets_history_and_returns_info(monkeypatch):
     assert session["history"] == []
     assert session["history_version"] == 5
     assert ("session.info", "sid", {"model": "x"}) in emits
+
+
+def test_config_set_reasoning_defaults_to_session_scope(monkeypatch):
+    session = _session(agent=types.SimpleNamespace(reasoning_config={"enabled": True, "effort": "medium"}))
+    writes = []
+    server._sessions["sid"] = session
+    monkeypatch.setattr(server, "_write_config_key", lambda path, value: writes.append((path, value)))
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"session_id": "sid", "key": "reasoning", "value": "high"},
+        }
+    )
+
+    assert resp["result"]["value"] == "high"
+    assert session["agent"].reasoning_config == {"enabled": True, "effort": "high"}
+    assert writes == []
+
+
+def test_config_set_reasoning_global_persists_with_flag(monkeypatch):
+    session = _session(agent=types.SimpleNamespace(reasoning_config={"enabled": True, "effort": "medium"}))
+    writes = []
+    server._sessions["sid"] = session
+    monkeypatch.setattr(server, "_write_config_key", lambda path, value: writes.append((path, value)))
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"session_id": "sid", "key": "reasoning", "value": "high --global"},
+        }
+    )
+
+    assert resp["result"]["value"] == "high"
+    assert session["agent"].reasoning_config == {"enabled": True, "effort": "high"}
+    assert writes == [("agent.reasoning_effort", "high")]
+
+
+def test_config_set_reasoning_global_falls_back_to_session_on_write_failure(monkeypatch):
+    session = _session(agent=types.SimpleNamespace(reasoning_config={"enabled": True, "effort": "medium"}))
+    server._sessions["sid"] = session
+    monkeypatch.setattr(
+        server,
+        "_write_config_key",
+        lambda path, value: (_ for _ in ()).throw(RuntimeError("disk full")),
+    )
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"session_id": "sid", "key": "reasoning", "value": "high --global"},
+        }
+    )
+
+    assert resp["result"]["value"] == "high"
+    assert session["reasoning_scope"] == "session"
+    assert session["reasoning_config"] == {"enabled": True, "effort": "high"}
+    assert session["agent"].reasoning_config == {"enabled": True, "effort": "high"}
+
+
+def test_config_get_reasoning_prefers_session_override(monkeypatch):
+    server._sessions["sid"] = _session(
+        agent=types.SimpleNamespace(reasoning_config={"enabled": True, "effort": "xhigh"}),
+        reasoning_config={"enabled": True, "effort": "xhigh"},
+        reasoning_scope="session",
+        show_reasoning=True,
+    )
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"agent": {"reasoning_effort": "low"}, "display": {"show_reasoning": False}},
+    )
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.get",
+            "params": {"session_id": "sid", "key": "reasoning"},
+        }
+    )
+
+    assert resp["result"] == {"value": "xhigh", "display": "show"}
+
+
+def test_reset_session_agent_preserves_reasoning_override(monkeypatch):
+    old_agent = types.SimpleNamespace(reasoning_config={"enabled": True, "effort": "xhigh"})
+    new_agent = types.SimpleNamespace(model="x", reasoning_config={"enabled": True, "effort": "medium"})
+    session = _session(
+        agent=old_agent,
+        reasoning_config={"enabled": True, "effort": "xhigh"},
+        reasoning_scope="session",
+        history=[{"role": "user", "text": "hi"}],
+        history_version=1,
+    )
+    server._sessions["sid"] = session
+
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key, session_id=None: new_agent)
+    monkeypatch.setattr(server, "_session_info", lambda agent: {"model": getattr(agent, "model", "?")})
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+
+    server._reset_session_agent("sid", session)
+
+    assert session["agent"].reasoning_config == {"enabled": True, "effort": "xhigh"}
+
+
+def test_session_create_preserves_pending_reasoning_override(monkeypatch):
+    created = {}
+    build_targets = []
+    db_stub = types.SimpleNamespace(create_session=lambda *args, **kwargs: None)
+    agent = types.SimpleNamespace(model="x", reasoning_config={"enabled": True, "effort": "medium"})
+
+    class _DeferredThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            build_targets.append(self._target)
+
+    monkeypatch.setattr(server.threading, "Thread", _DeferredThread)
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key: agent)
+    monkeypatch.setattr(server, "_get_db", lambda: db_stub)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_session_info", lambda agent: {"model": getattr(agent, "model", "?")})
+    monkeypatch.setattr(server, "_probe_credentials", lambda agent: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda sid: None)
+
+    class _Worker:
+        def close(self):
+            return None
+
+    monkeypatch.setattr(server, "_SlashWorker", lambda key, model: _Worker())
+
+    resp = server.handle_request({"id": "1", "method": "session.create", "params": {}})
+    sid = resp["result"]["session_id"]
+    session = server._sessions[sid]
+    created["sid"] = sid
+
+    set_resp = server.handle_request(
+        {
+            "id": "2",
+            "method": "config.set",
+            "params": {"session_id": sid, "key": "reasoning", "value": "xhigh"},
+        }
+    )
+    assert set_resp["result"]["value"] == "xhigh"
+    assert session["reasoning_scope"] == "session"
+    assert session["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
+
+    assert len(build_targets) == 1
+    build_targets[0]()
+
+    assert session["agent"] is agent
+    assert session["agent"].reasoning_config == {"enabled": True, "effort": "xhigh"}
+    assert session["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
+
+
+def test_session_create_keeps_latest_global_reasoning_if_config_changes_before_build_finishes(monkeypatch):
+    build_targets = []
+    db_stub = types.SimpleNamespace(create_session=lambda *args, **kwargs: None)
+    agent = types.SimpleNamespace(model="x", reasoning_config={"enabled": True, "effort": "medium"})
+    current_global = {"enabled": True, "effort": "medium"}
+
+    class _DeferredThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            build_targets.append(self._target)
+
+    monkeypatch.setattr(server.threading, "Thread", _DeferredThread)
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key: agent)
+    monkeypatch.setattr(server, "_get_db", lambda: db_stub)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_session_info", lambda agent: {"model": getattr(agent, "model", "?")})
+    monkeypatch.setattr(server, "_probe_credentials", lambda agent: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda sid: None)
+    monkeypatch.setattr(server, "_load_reasoning_config", lambda: dict(current_global))
+
+    class _Worker:
+        def close(self):
+            return None
+
+    monkeypatch.setattr(server, "_SlashWorker", lambda key, model: _Worker())
+
+    resp = server.handle_request({"id": "1", "method": "session.create", "params": {}})
+    sid = resp["result"]["session_id"]
+    session = server._sessions[sid]
+
+    set_resp = server.handle_request(
+        {
+            "id": "2",
+            "method": "config.set",
+            "params": {"session_id": sid, "key": "reasoning", "value": "high --global"},
+        }
+    )
+    assert set_resp["result"]["value"] == "high"
+    current_global["effort"] = "high"
+
+    assert len(build_targets) == 1
+    build_targets[0]()
+
+    assert session["reasoning_scope"] == "global"
+    assert session["reasoning_config"] == {"enabled": True, "effort": "high"}
+    assert session["agent"].reasoning_config == {"enabled": True, "effort": "high"}
+
+
+def test_session_create_keeps_agent_reasoning_none_when_no_global_reasoning_is_configured(monkeypatch):
+    build_targets = []
+    db_stub = types.SimpleNamespace(create_session=lambda *args, **kwargs: None)
+    agent = types.SimpleNamespace(model="x", reasoning_config=None)
+
+    class _DeferredThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            build_targets.append(self._target)
+
+    monkeypatch.setattr(server.threading, "Thread", _DeferredThread)
+    monkeypatch.setattr(server, "_make_agent", lambda sid, key: agent)
+    monkeypatch.setattr(server, "_get_db", lambda: db_stub)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_session_info", lambda agent: {"model": getattr(agent, "model", "?")})
+    monkeypatch.setattr(server, "_probe_credentials", lambda agent: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda sid: None)
+    monkeypatch.setattr(server, "_load_reasoning_config", lambda: None)
+
+    class _Worker:
+        def close(self):
+            return None
+
+    monkeypatch.setattr(server, "_SlashWorker", lambda key, model: _Worker())
+
+    resp = server.handle_request({"id": "1", "method": "session.create", "params": {}})
+    sid = resp["result"]["session_id"]
+    session = server._sessions[sid]
+
+    assert len(build_targets) == 1
+    build_targets[0]()
+
+    assert session["agent"] is agent
+    assert session["agent"].reasoning_config is None
+    assert session["reasoning_config"] == {}
 
 
 def test_session_compress_uses_compress_helper(monkeypatch):

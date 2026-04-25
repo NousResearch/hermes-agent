@@ -6,7 +6,13 @@ Usage:
     result = transport.normalize_response(raw_response)
 """
 
-from agent.transports.types import NormalizedResponse, ToolCall, Usage, build_tool_call, map_finish_reason  # noqa: F401
+from agent.transports.types import (  # noqa: F401
+    NormalizedResponse,
+    ToolCall,
+    Usage,
+    build_tool_call,
+    map_finish_reason,
+)
 
 _REGISTRY: dict = {}
 

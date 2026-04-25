@@ -17,9 +17,9 @@ import os
 import platform
 import subprocess
 from pathlib import Path
+from typing import Any, Dict, List, Optional, Tuple
 
 from hermes_constants import get_hermes_home
-from typing import Any, Dict, List, Optional, Tuple
 from utils import normalize_proxy_env_vars
 
 try:
@@ -479,7 +479,6 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
 
     Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
     """
-    import platform
     import subprocess
 
     if platform.system() != "Darwin":
@@ -818,7 +817,6 @@ def run_oauth_setup_token() -> Optional[str]:
     Raises FileNotFoundError if the 'claude' CLI is not installed.
     """
     import shutil
-    import subprocess
 
     claude_path = shutil.which("claude")
     if not claude_path:

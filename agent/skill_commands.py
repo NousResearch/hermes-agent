@@ -10,12 +10,16 @@ import re
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from hermes_constants import display_hermes_home
 from agent.skill_preprocessing import (
     expand_inline_shell as _expand_inline_shell,
+)
+from agent.skill_preprocessing import (
     load_skills_config as _load_skills_config,
+)
+from agent.skill_preprocessing import (
     substitute_template_vars as _substitute_template_vars,
 )
+from hermes_constants import display_hermes_home
 
 logger = logging.getLogger(__name__)
 
@@ -221,8 +225,13 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     global _skill_commands
     _skill_commands = {}
     try:
-        from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, _get_disabled_skill_names
         from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
+        from tools.skills_tool import (
+            SKILLS_DIR,
+            _get_disabled_skill_names,
+            _parse_frontmatter,
+            skill_matches_platform,
+        )
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
 

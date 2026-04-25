@@ -17,7 +17,7 @@ import logging
 import os
 import shlex
 from pathlib import Path
-from typing import Dict, Any, Optional, Set
+from typing import Any, Dict, Optional, Set
 
 from agent.prompt_builder import _scan_context_content
 

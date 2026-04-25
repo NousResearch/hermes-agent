@@ -11,8 +11,6 @@ import re
 import threading
 from collections import OrderedDict
 from pathlib import Path
-
-from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
 from typing import Optional
 
 from agent.skill_utils import (
@@ -24,6 +22,7 @@ from agent.skill_utils import (
     parse_frontmatter,
     skill_matches_platform,
 )
+from hermes_constants import get_hermes_home, get_skills_dir, is_wsl
 from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)

@@ -3,17 +3,16 @@
 from __future__ import annotations
 
 import logging
+import os
 import random
+import re
 import threading
 import time
 import uuid
-import os
-import re
 from dataclasses import dataclass, fields, replace
 from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
-from hermes_constants import OPENROUTER_BASE_URL
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import (
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
@@ -31,6 +30,7 @@ from hermes_cli.auth import (
     read_credential_pool,
     write_credential_pool,
 )
+from hermes_constants import OPENROUTER_BASE_URL
 
 logger = logging.getLogger(__name__)
 
@@ -596,7 +596,9 @@ class CredentialPool:
                 # see the latest tokens.
                 if entry.source == "claude_code":
                     try:
-                        from agent.anthropic_adapter import _write_claude_code_credentials
+                        from agent.anthropic_adapter import (
+                            _write_claude_code_credentials,
+                        )
                         _write_claude_code_credentials(
                             refreshed["access_token"],
                             refreshed["refresh_token"],
@@ -678,7 +680,9 @@ class CredentialPool:
                         self._replace_entry(synced, updated)
                         self._persist()
                         try:
-                            from agent.anthropic_adapter import _write_claude_code_credentials
+                            from agent.anthropic_adapter import (
+                                _write_claude_code_credentials,
+                            )
                             _write_claude_code_credentials(
                                 refreshed["access_token"],
                                 refreshed["refresh_token"],
@@ -1095,7 +1099,10 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         except ImportError:
             pass
 
-        from agent.anthropic_adapter import read_claude_code_credentials, read_hermes_oauth_credentials
+        from agent.anthropic_adapter import (
+            read_claude_code_credentials,
+            read_hermes_oauth_credentials,
+        )
 
         for source_name, creds in (
             ("hermes_pkce", read_hermes_oauth_credentials()),
@@ -1170,7 +1177,10 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         # env vars (COPILOT_GITHUB_TOKEN / GH_TOKEN).  They don't live in
         # the auth store or credential pool, so we resolve them here.
         try:
-            from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token
+            from hermes_cli.copilot_auth import (
+                get_copilot_api_token,
+                resolve_copilot_token,
+            )
             token, source = resolve_copilot_token()
             if token:
                 api_token = get_copilot_api_token(token)

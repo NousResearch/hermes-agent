@@ -165,6 +165,8 @@ def is_stale_connection_error(exc: BaseException) -> bool:
     try:
         from botocore.exceptions import (
             ConnectionError as BotoConnectionError,
+        )
+        from botocore.exceptions import (
             HTTPClientError,
         )
         botocore_errors: tuple = (BotoConnectionError, HTTPClientError)
@@ -176,9 +178,11 @@ def is_stale_connection_error(exc: BaseException) -> bool:
     # urllib3: low-level transport failures
     try:
         from urllib3.exceptions import (
-            ProtocolError,
-            NewConnectionError,
             ConnectionError as Urllib3ConnectionError,
+        )
+        from urllib3.exceptions import (
+            NewConnectionError,
+            ProtocolError,
         )
         urllib3_errors = (ProtocolError, NewConnectionError, Urllib3ConnectionError)
     except ImportError:  # pragma: no cover

@@ -28,10 +28,9 @@ Usage in run_agent.py:
 
 from __future__ import annotations
 
-import json
+import inspect
 import logging
 import re
-import inspect
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider

@@ -1192,9 +1192,6 @@ def list_authenticated_providers(
         })
         seen_slugs.add(_cp.slug.lower())
 
-    # --- 2c. OpenRouter free model shortcut group ---
-    # UX-only grouping: selecting any entry still routes through provider
-    # "openrouter". Do not introduce a real/fake provider named "free".
     if any(p.get("slug") == "openrouter" for p in results):
         try:
             from hermes_cli.models import fetch_openrouter_free_models

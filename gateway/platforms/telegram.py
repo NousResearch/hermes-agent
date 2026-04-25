@@ -1336,11 +1336,6 @@ class TelegramAdapter(BasePlatformAdapter):
                 label = f"{p['name']} ({count})"
                 if p.get("is_current"):
                     label = f"✓ {label}"
-                # Compact callback data: mp:<index>  (max 64 bytes).
-                # The picker can include multiple UX groups with the same real
-                # provider slug (for example OpenRouter and OpenRouter free
-                # models). Use the row index for Telegram navigation, while
-                # still passing the real provider slug to switch_model later.
                 buttons.append(
                     InlineKeyboardButton(label, callback_data=f"mp:{idx}")
                 )
@@ -1451,8 +1446,6 @@ class TelegramAdapter(BasePlatformAdapter):
             if 0 <= provider_idx < len(state["providers"]):
                 provider = state["providers"][provider_idx]
             else:
-                # Backward compatibility with any older in-flight pickers that
-                # used mp:<slug> callback data.
                 provider = next(
                     (p for p in state["providers"] if p["slug"] == provider_ref),
                     None,

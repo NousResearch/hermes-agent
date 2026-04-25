@@ -973,7 +973,6 @@ def fetch_openrouter_free_models(
         mid = str(item.get("id") or "").strip()
         if not mid:
             continue
-        # First pass intentionally avoids adding NVIDIA-specific free models.
         if mid.lower().startswith("nvidia/"):
             continue
         if not _openrouter_model_supports_tools(item):

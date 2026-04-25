@@ -1296,20 +1296,24 @@ class SessionDB:
             LIMIT ? OFFSET ?
         """
 
-        with self._lock:
-            try:
-                cursor = self._conn.execute(sql, params)
-            except sqlite3.OperationalError:
-                # FTS5 query syntax error despite sanitization — return empty
-                # unless query contains CJK (fall back to LIKE below)
-                if not self._contains_cjk(query):
+        # CJK queries bypass FTS5 entirely: the default tokenizer splits CJK
+        # characters into individual tokens, so "大别山项目" becomes
+        # "大 AND 别 AND 山 AND 项 AND 目".  This produces false positives
+        # (all chars scattered in a message) and misses exact phrase matches.
+        # LIKE substring search is more accurate for CJK phrase matching.
+        if self._contains_cjk(query):
+            matches = []
+        else:
+            with self._lock:
+                try:
+                    cursor = self._conn.execute(sql, params)
+                except sqlite3.OperationalError:
+                    # FTS5 query syntax error despite sanitization — return empty
                     return []
-                matches = []
-            else:
-                matches = [dict(row) for row in cursor.fetchall()]
+                else:
+                    matches = [dict(row) for row in cursor.fetchall()]
 
-        # LIKE fallback for CJK queries: FTS5 default tokenizer splits CJK
-        # characters individually, causing multi-character queries to fail.
+        # LIKE search for CJK queries (primary path) or CJK fallback
         if not matches and self._contains_cjk(query):
             raw_query = query.strip('"').strip()
             like_where = ["m.content LIKE ?"]

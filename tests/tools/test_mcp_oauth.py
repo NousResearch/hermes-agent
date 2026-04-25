@@ -491,11 +491,22 @@ def test_configure_callback_port_uses_explicit_port():
     assert cfg["_resolved_port"] == 54321
 
 
-def test_parse_base_url_strips_path():
-    """_parse_base_url drops path components for OAuth discovery."""
-    from tools.mcp_oauth import _parse_base_url
+def test_build_oauth_auth_preserves_server_url_path():
+    """build_oauth_auth must pass the full server URL (including path) to
+    OAuthClientProvider. Stripping the path causes RFC 8707 PRM resource
+    matching to fail against servers (e.g. Fastmail) whose PRM advertises
+    the full endpoint URL as the resource."""
+    from tools.mcp_oauth import _OAUTH_AVAILABLE, build_oauth_auth
 
-    assert _parse_base_url("https://example.com/mcp/v1") == "https://example.com"
-    assert _parse_base_url("https://example.com") == "https://example.com"
-    assert _parse_base_url("https://host.example.com:8080/api") == "https://host.example.com:8080"
+    if not _OAUTH_AVAILABLE:
+        return  # SDK not available — nothing to test
+
+    provider = build_oauth_auth("test_server", "https://api.example.com/mcp")
+    if provider is None:
+        return  # SDK lacks OAuth support
+
+    # The provider stores the URL in its OAuthContext. Per RFC 8707 the path
+    # must be preserved so that PRM resource matching succeeds when a server
+    # advertises e.g. resource="https://api.example.com/mcp".
+    assert str(provider.context.server_url) == "https://api.example.com/mcp"
 

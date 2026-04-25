@@ -88,6 +88,7 @@ export interface UiState {
   detailsMode: DetailsMode
   info: null | SessionInfo
   inlineDiffs: boolean
+  mouseTracking: boolean
   sections: SectionVisibility
   showCost: boolean
   showReasoning: boolean

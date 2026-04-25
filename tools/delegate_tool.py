@@ -19,6 +19,7 @@ never the child's intermediate tool calls or reasoning.
 import enum
 import json
 import logging
+import re
 
 logger = logging.getLogger(__name__)
 import os
@@ -47,6 +48,65 @@ DELEGATE_BLOCKED_TOOLS = frozenset(
         "execute_code",  # children should reason step-by-step, not write scripts
     ]
 )
+
+
+_REVIEW_AGENT_PATTERNS = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"\b(independent\s+)?code[-\s]+reviewer\b",
+        r"\bcode[-\s]+review(er)?\b",
+        r"\breview(er)?[-\s]+(sub)?agent\b",
+        r"\b(code|security|logic|pull\s+request|pr)[-\s]+review\b",
+        r"\breview\s+(the\s+)?(git\s+diff|diff|changes|code|pull\s+request|pr)\b",
+        r"\breview\s+this\s+pr\b",
+    )
+)
+
+_REVIEW_COMMENT_FIX_PATTERNS = tuple(
+    re.compile(pattern)
+    for pattern in (
+        r"\b(address|fix|apply|resolve|respond\s+to)\s+(the\s+)?review(er)?\s+comments?\b",
+        r"\b(address|fix|apply|resolve|respond\s+to|implement|incorporate)\s+(the\s+)?(code[-\s]+review|pr[-\s]+review|pull[-\s]+request[-\s]+review)\s+(comments?|feedback)\b",
+        r"\breviewer\s+comments?\s+(fix|resolution|follow[-\s]?up)\b",
+    )
+)
+
+
+def _is_review_agent_task(goal: Optional[str], context: Optional[str] = None) -> bool:
+    """Return True when a delegated task is explicitly a review agent."""
+    text = f"{goal or ''}\n{context or ''}".strip().lower()
+    if not text:
+        return False
+    if any(pattern.search(text) for pattern in _REVIEW_COMMENT_FIX_PATTERNS):
+        return False
+    return any(pattern.search(text) for pattern in _REVIEW_AGENT_PATTERNS)
+
+
+def _parse_delegation_reasoning_effort(
+    value: Any,
+    *,
+    config_key: str,
+    fallback: Optional[Dict[str, Any]],
+) -> Optional[Dict[str, Any]]:
+    """Parse a configured delegation reasoning effort with consistent logging."""
+    effort = str(value or "").strip()
+    if not effort:
+        return fallback
+    try:
+        from hermes_constants import parse_reasoning_effort
+
+        parsed = parse_reasoning_effort(effort)
+    except Exception as exc:
+        logger.debug("Could not parse %s: %s", config_key, exc)
+        return fallback
+    if parsed is not None:
+        return parsed
+    logger.warning(
+        "Unknown %s '%s', falling back to inherited/generic delegation reasoning",
+        config_key,
+        effort,
+    )
+    return fallback
 
 
 # ---------------------------------------------------------------------------
@@ -1000,24 +1060,20 @@ def _build_child_agent(
         effective_provider = "copilot-acp"
         effective_api_mode = "chat_completions"
 
-    # Resolve reasoning config: delegation override > parent inherit
+    # Resolve reasoning config:
+    # review_reasoning_effort (review tasks only) > reasoning_effort > parent inherit.
     parent_reasoning = getattr(parent_agent, "reasoning_config", None)
-    child_reasoning = parent_reasoning
-    try:
-        delegation_effort = str(delegation_cfg.get("reasoning_effort") or "").strip()
-        if delegation_effort:
-            from hermes_constants import parse_reasoning_effort
-
-            parsed = parse_reasoning_effort(delegation_effort)
-            if parsed is not None:
-                child_reasoning = parsed
-            else:
-                logger.warning(
-                    "Unknown delegation.reasoning_effort '%s', inheriting parent level",
-                    delegation_effort,
-                )
-    except Exception as exc:
-        logger.debug("Could not load delegation reasoning_effort: %s", exc)
+    child_reasoning = _parse_delegation_reasoning_effort(
+        delegation_cfg.get("reasoning_effort"),
+        config_key="delegation.reasoning_effort",
+        fallback=parent_reasoning,
+    )
+    if _is_review_agent_task(goal, context):
+        child_reasoning = _parse_delegation_reasoning_effort(
+            delegation_cfg.get("review_reasoning_effort"),
+            config_key="delegation.review_reasoning_effort",
+            fallback=child_reasoning,
+        )
 
     child = AIAgent(
         base_url=effective_base_url,

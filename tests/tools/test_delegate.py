@@ -32,6 +32,7 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _is_review_agent_task,
 )
 
 
@@ -1112,6 +1113,89 @@ class TestChildCredentialPoolResolution(unittest.TestCase):
         self.assertEqual(
             MockAgent.call_args[1]["enabled_toolsets"],
             ["web", "browser"],
+        )
+
+
+class TestDelegationReasoningDefaults(unittest.TestCase):
+    def test_review_agent_detection_matches_explicit_review_tasks(self):
+        self.assertTrue(
+            _is_review_agent_task(
+                "You are an independent code reviewer. Review the git diff."
+            )
+        )
+        self.assertTrue(
+            _is_review_agent_task(
+                "Check this work",
+                "Independent code review. Return only JSON verdict.",
+            )
+        )
+        self.assertTrue(_is_review_agent_task("Run a code-review agent on this diff"))
+        self.assertTrue(_is_review_agent_task("Use a code-reviewer subagent"))
+
+    def test_review_agent_detection_ignores_reviewer_comment_fix_tasks(self):
+        self.assertFalse(_is_review_agent_task("Fix reviewer comments in PR 42"))
+        self.assertFalse(_is_review_agent_task("Fix code review comments in PR 42"))
+        self.assertFalse(_is_review_agent_task("Fix PR review comments"))
+        self.assertFalse(_is_review_agent_task("Address pull request review feedback"))
+        self.assertFalse(_is_review_agent_task("Implement code review feedback"))
+        self.assertFalse(_is_review_agent_task("Address the review comments"))
+
+    @patch(
+        "tools.delegate_tool._load_config",
+        return_value={
+            "reasoning_effort": "medium",
+            "review_reasoning_effort": "xhigh",
+        },
+    )
+    def test_review_agent_uses_review_reasoning_override(self, mock_cfg):
+        parent = _make_mock_parent()
+        parent.reasoning_config = {"enabled": True, "effort": "high"}
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="You are an independent code reviewer. Review the git diff.",
+                context="Independent code review. Return only JSON verdict.",
+                toolsets=["terminal"],
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        self.assertEqual(
+            MockAgent.call_args[1]["reasoning_config"],
+            {"enabled": True, "effort": "xhigh"},
+        )
+
+    @patch(
+        "tools.delegate_tool._load_config",
+        return_value={
+            "reasoning_effort": "medium",
+            "review_reasoning_effort": "xhigh",
+        },
+    )
+    def test_non_review_agent_uses_generic_delegation_reasoning(self, mock_cfg):
+        parent = _make_mock_parent()
+        parent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            MockAgent.return_value = MagicMock()
+            _build_child_agent(
+                task_index=0,
+                goal="Implement the requested bugfix",
+                context="Implement code review feedback and update tests.",
+                toolsets=["terminal", "file"],
+                model=None,
+                max_iterations=10,
+                parent_agent=parent,
+                task_count=1,
+            )
+
+        self.assertEqual(
+            MockAgent.call_args[1]["reasoning_config"],
+            {"enabled": True, "effort": "medium"},
         )
 
 

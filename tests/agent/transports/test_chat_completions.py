@@ -376,6 +376,80 @@ class TestChatCompletionsKimi:
         assert "type" not in kw["tools"][0]["function"]["parameters"]["properties"]["q"]
 
 
+class TestChatCompletionsLmStudioReasoning:
+    """LM Studio publishes per-model reasoning ``allowed_options``. When the
+    user requests an effort the model can't honor (e.g. ``high`` on a
+    toggle-style ``["off","on"]`` model), the transport omits
+    ``reasoning_effort`` so LM Studio falls back to the model's default —
+    silently downgrading "high" to "low" would mislead the user.
+    """
+
+    def test_omits_effort_when_high_not_allowed_toggle(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-oss", messages=[{"role": "user", "content": "Hi"}],
+            is_lmstudio=True,
+            supports_reasoning=True,
+            reasoning_config={"effort": "high"},
+            lmstudio_reasoning_options=["off", "on"],
+        )
+        assert "reasoning_effort" not in kw
+
+    def test_omits_effort_when_high_not_allowed_minimal_low(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-oss", messages=[{"role": "user", "content": "Hi"}],
+            is_lmstudio=True,
+            supports_reasoning=True,
+            reasoning_config={"effort": "high"},
+            lmstudio_reasoning_options=["off", "minimal", "low"],
+        )
+        assert "reasoning_effort" not in kw
+
+    def test_passes_through_when_effort_allowed(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-oss", messages=[{"role": "user", "content": "Hi"}],
+            is_lmstudio=True,
+            supports_reasoning=True,
+            reasoning_config={"effort": "high"},
+            lmstudio_reasoning_options=["off", "low", "medium", "high"],
+        )
+        assert kw["reasoning_effort"] == "high"
+
+    def test_passes_through_aliased_on_for_toggle(self, transport):
+        # User has reasoning enabled at the default "medium"; toggle model
+        # publishes ["off","on"] which aliases to {"none","medium"}, so the
+        # default request is honorable and gets sent.
+        kw = transport.build_kwargs(
+            model="gpt-oss", messages=[{"role": "user", "content": "Hi"}],
+            is_lmstudio=True,
+            supports_reasoning=True,
+            reasoning_config={"effort": "medium"},
+            lmstudio_reasoning_options=["off", "on"],
+        )
+        assert kw["reasoning_effort"] == "medium"
+
+    def test_disabled_keeps_none_when_off_allowed(self, transport):
+        kw = transport.build_kwargs(
+            model="gpt-oss", messages=[{"role": "user", "content": "Hi"}],
+            is_lmstudio=True,
+            supports_reasoning=True,
+            reasoning_config={"enabled": False},
+            lmstudio_reasoning_options=["off", "on"],
+        )
+        assert kw["reasoning_effort"] == "none"
+
+    def test_no_options_falls_back_to_legacy_behavior(self, transport):
+        # When the probe failed or returned nothing, allowed_options is unknown;
+        # send whatever the user picked rather than blocking the request.
+        kw = transport.build_kwargs(
+            model="gpt-oss", messages=[{"role": "user", "content": "Hi"}],
+            is_lmstudio=True,
+            supports_reasoning=True,
+            reasoning_config={"effort": "high"},
+            lmstudio_reasoning_options=None,
+        )
+        assert kw["reasoning_effort"] == "high"
+
+
 class TestChatCompletionsValidate:
 
     def test_none(self, transport):

@@ -12,6 +12,7 @@ reasoning configuration, temperature handling, and extra_body assembly.
 import copy
 from typing import Any, Dict, List, Optional
 
+from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
@@ -153,6 +154,8 @@ class ChatCompletionsTransport(ProviderTransport):
             is_github_models: bool
             is_nvidia_nim: bool
             is_kimi: bool
+            is_tokenhub: bool
+            is_lmstudio: bool
             is_custom_provider: bool
             ollama_num_ctx: int | None
             # Provider routing
@@ -166,6 +169,7 @@ class ChatCompletionsTransport(ProviderTransport):
             # Reasoning
             supports_reasoning: bool
             github_reasoning_extra: dict | None
+            lmstudio_reasoning_options: list[str] | None  # raw allowed_options from /api/v1/models
             # Claude on OpenRouter/Nous max output
             anthropic_max_output: int | None
             # Extra
@@ -287,6 +291,18 @@ class ChatCompletionsTransport(ProviderTransport):
                         _tokenhub_effort = _e
                 api_kwargs["reasoning_effort"] = _tokenhub_effort
 
+        # LM Studio: top-level reasoning_effort. Only emit when the model
+        # declares reasoning support via /api/v1/models capabilities (gated
+        # upstream by params["supports_reasoning"]). resolve_lmstudio_effort
+        # is shared with run_agent's summary path so both stay in sync.
+        if params.get("is_lmstudio", False) and params.get("supports_reasoning", False):
+            _lm_effort = resolve_lmstudio_effort(
+                reasoning_config,
+                params.get("lmstudio_reasoning_options"),
+            )
+            if _lm_effort is not None:
+                api_kwargs["reasoning_effort"] = _lm_effort
+
         # extra_body assembly
         extra_body: Dict[str, Any] = {}
 
@@ -309,8 +325,9 @@ class ChatCompletionsTransport(ProviderTransport):
                 "type": "enabled" if _kimi_thinking_enabled else "disabled",
             }
 
-        # Reasoning
-        if params.get("supports_reasoning", False):
+        # Reasoning. LM Studio is handled above via top-level reasoning_effort,
+        # so skip emitting extra_body.reasoning for it.
+        if params.get("supports_reasoning", False) and not params.get("is_lmstudio", False):
             if is_github_models:
                 gh_reasoning = params.get("github_reasoning_extra")
                 if gh_reasoning is not None:

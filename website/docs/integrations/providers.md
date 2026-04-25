@@ -38,6 +38,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Hugging Face** | `HF_TOKEN` in `~/.hermes/.env` (provider: `huggingface`, aliases: `hf`) |
 | **Google / Gemini** | `GOOGLE_API_KEY` (or `GEMINI_API_KEY`) in `~/.hermes/.env` (provider: `gemini`) |
 | **Google Gemini (OAuth)** | `hermes model` → "Google Gemini (OAuth)" (provider: `google-gemini-cli`, free tier supported, browser PKCE login) |
+| **LM Studio** | `hermes model` → "LM Studio" (provider: `lmstudio`, optional `LM_API_KEY`) |
 | **Custom Endpoint** | `hermes model` → choose "Custom endpoint" (saved in `config.yaml`) |
 
 :::tip Model key alias
@@ -725,10 +726,10 @@ Then configure Hermes:
 
 ```bash
 hermes model
-# Select "Custom endpoint (self-hosted / VLLM / etc.)"
-# Enter URL: http://localhost:1234/v1
-# Skip API key (LM Studio doesn't require one)
-# Enter model name
+# Select "LM Studio"
+# Press Enter to use http://127.0.0.1:1234/v1
+# Pick one of the discovered models
+# If LM Studio server auth is enabled, enter LM_API_KEY when prompted
 ```
 
 :::caution Context length often defaults to 2048

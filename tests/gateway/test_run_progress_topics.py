@@ -496,6 +496,75 @@ class ToolErrorCompletedAgent:
         }
 
 
+class ToolPrefixCollisionAgent:
+    """Two tools where one name is a substring of the other; only the
+    matching started-line should receive the completion marker."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback("tool.started", "ls", "-la", {})
+        time.sleep(0.35)
+        self.tool_progress_callback("tool.started", "list_files", "/tmp", {})
+        time.sleep(0.35)
+        self.tool_progress_callback(
+            "tool.completed", "ls", '{"success": true, "output": "a b c"}',
+            None, duration=0.4, is_error=False,
+        )
+        time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class ToolPlainTextResultAgent:
+    """Result preview is plain text (not JSON) — snippet should fall back
+    to the first-line heuristic."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback("tool.started", "calculator", "2+2", {})
+        time.sleep(0.35)
+        self.tool_progress_callback(
+            "tool.completed", "calculator", "result is 4",
+            None, duration=0.1, is_error=False,
+        )
+        time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
+class ToolCompletedNoStartAgent:
+    """Completion fires without a prior started event — handler should
+    append a standalone line rather than silently drop the update."""
+
+    def __init__(self, **kwargs):
+        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None):
+        self.tool_progress_callback(
+            "tool.completed", "calculator", '{"success": true, "output": "42"}',
+            None, duration=0.2, is_error=False,
+        )
+        time.sleep(0.35)
+        return {
+            "final_response": "done",
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 async def _run_with_agent(
     monkeypatch,
     tmp_path,
@@ -969,3 +1038,139 @@ async def test_tool_completed_appends_result_snippet_for_short_output(monkeypatc
     combined = "\n".join(all_edits)
     # The result snippet from ToolCompletedAgent output: /home/user/project
     assert "/home/user/project" in combined, f"Expected result snippet in edits: {all_edits}"
+
+
+@pytest.mark.asyncio
+async def test_tool_completed_does_not_mark_substring_collision(monkeypatch, tmp_path):
+    """Completing 'ls' must not mark the 'list_files' line, even though
+    'ls' appears as a substring of 'list_files'."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = ToolPrefixCollisionAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-collision",
+        session_key="agent:main:telegram:dm:12345",
+    )
+
+    assert result["final_response"] == "done"
+    final_text = adapter.edits[-1]["content"] if adapter.edits else adapter.sent[0]["content"]
+    lines = final_text.splitlines()
+    ls_line = next((ln for ln in lines if " ls" in f" {ln}" and "list_files" not in ln), None)
+    list_files_line = next((ln for ln in lines if "list_files" in ln), None)
+    assert ls_line is not None and list_files_line is not None, (
+        f"Expected separate ls and list_files lines, got: {lines}"
+    )
+    assert "✓" in ls_line, f"Expected ✓ on the ls line: {ls_line!r}"
+    assert "✓" not in list_files_line and "✗" not in list_files_line, (
+        f"list_files line must not be marked completed: {list_files_line!r}"
+    )
+
+
+@pytest.mark.asyncio
+async def test_tool_completed_appends_plain_text_result(monkeypatch, tmp_path):
+    """Non-JSON result preview should still produce a short snippet via
+    the first-line fallback in the except branch."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = ToolPlainTextResultAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-plain",
+        session_key="agent:main:telegram:dm:12345",
+    )
+
+    assert result["final_response"] == "done"
+    combined = "\n".join(call["content"] for call in adapter.edits) or adapter.sent[0]["content"]
+    assert "result is 4" in combined, f"Expected plain-text snippet, got: {combined!r}"
+
+
+@pytest.mark.asyncio
+async def test_tool_completed_without_started_appends_standalone_line(monkeypatch, tmp_path):
+    """If tool.completed fires without a matching started line, a new
+    standalone line is appended so the user still sees the completion."""
+    monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+
+    fake_dotenv = types.ModuleType("dotenv")
+    fake_dotenv.load_dotenv = lambda *args, **kwargs: None
+    monkeypatch.setitem(sys.modules, "dotenv", fake_dotenv)
+
+    fake_run_agent = types.ModuleType("run_agent")
+    fake_run_agent.AIAgent = ToolCompletedNoStartAgent
+    monkeypatch.setitem(sys.modules, "run_agent", fake_run_agent)
+
+    adapter = ProgressCaptureAdapter()
+    runner = _make_runner(adapter)
+    gateway_run = importlib.import_module("gateway.run")
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
+
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        chat_id="12345",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    result = await runner._run_agent(
+        message="hello",
+        context_prompt="",
+        history=[],
+        source=source,
+        session_id="sess-no-start",
+        session_key="agent:main:telegram:dm:12345",
+    )
+
+    assert result["final_response"] == "done"
+    combined = "\n".join(call["content"] for call in adapter.edits) or (
+        adapter.sent[0]["content"] if adapter.sent else ""
+    )
+    assert "calculator" in combined and "✓" in combined, (
+        f"Expected standalone calculator ✓ line, got: {combined!r}"
+    )

@@ -61,6 +61,7 @@ export interface ConfigDisplayConfig {
   streaming?: boolean
   thinking_mode?: string
   tui_compact?: boolean
+  tui_mouse?: boolean
   tui_statusbar?: 'bottom' | 'off' | 'on' | 'top' | boolean
 }
 

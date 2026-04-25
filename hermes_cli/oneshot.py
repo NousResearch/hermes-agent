@@ -90,6 +90,18 @@ def _run_agent(prompt: str) -> str:
         quiet_mode=True,
         platform="cli",
         credential_pool=runtime.get("credential_pool"),
+        # Interactive callbacks are intentionally NOT wired beyond this
+        # one.  In oneshot mode there's no user sitting at a terminal:
+        #   - clarify  → returns a synthetic "pick a default" instruction
+        #                so the agent continues instead of stalling on
+        #                the tool's built-in "not available" error
+        #   - sudo password prompt → terminal_tool gates on
+        #                HERMES_INTERACTIVE which we never set
+        #   - shell-hook approval → auto-approved via HERMES_ACCEPT_HOOKS=1
+        #                (set above); also falls back to deny on non-tty
+        #   - dangerous-command approval → bypassed via HERMES_YOLO_MODE=1
+        #   - skill secret capture → returns gracefully when no callback set
+        clarify_callback=_oneshot_clarify_callback,
     )
 
     # Belt-and-braces: make sure AIAgent doesn't invoke any streaming
@@ -99,3 +111,17 @@ def _run_agent(prompt: str) -> str:
     agent.tool_gen_callback = None
 
     return agent.chat(prompt) or ""
+
+
+def _oneshot_clarify_callback(question: str, choices=None) -> str:
+    """Clarify is disabled in oneshot mode — tell the agent to pick a
+    default and proceed instead of stalling or erroring."""
+    if choices:
+        return (
+            f"[oneshot mode: no user available. Pick the best option from "
+            f"{choices} using your own judgment and continue.]"
+        )
+    return (
+        "[oneshot mode: no user available. Make the most reasonable "
+        "assumption you can and continue.]"
+    )

@@ -88,3 +88,24 @@ class TestResolveDisplayContextLength:
                 model_info=fake_mi,
             )
         assert ctx == 128_000
+
+    def test_config_context_length_passed_through_to_resolver(self):
+        """config_context_length (from model.context_length in config.yaml) must be
+        forwarded to get_model_context_length so the step-0 config override fires."""
+        captured = {}
+
+        def fake_resolver(model, *, base_url, api_key, provider, config_context_length):
+            captured["config_context_length"] = config_context_length
+            return config_context_length
+
+        with patch("agent.model_metadata.get_model_context_length", side_effect=fake_resolver):
+            ctx = resolve_display_context_length(
+                "custom-model",
+                "custom-provider",
+                config_context_length=1_000_000,
+            )
+
+        assert captured["config_context_length"] == 1_000_000
+        assert ctx == 1_000_000, (
+            "Explicit config_context_length must be returned as the display context"
+        )

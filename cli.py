@@ -5382,12 +5382,22 @@ class HermesCLI:
         # (e.g. gpt-5.5 is 1.05M on openai but 272K on Codex OAuth).
         mi = result.model_info
         from hermes_cli.model_switch import resolve_display_context_length
+        _cfg_ctx = self.config.get("model", {})
+        if isinstance(_cfg_ctx, dict):
+            _cfg_ctx = _cfg_ctx.get("context_length")
+        else:
+            _cfg_ctx = None
+        try:
+            _cfg_ctx = int(_cfg_ctx) if _cfg_ctx is not None else None
+        except (TypeError, ValueError):
+            _cfg_ctx = None
         ctx = resolve_display_context_length(
             result.new_model,
             result.target_provider,
             base_url=result.base_url or self.base_url or "",
             api_key=result.api_key or self.api_key or "",
             model_info=mi,
+            config_context_length=_cfg_ctx,
         )
         if ctx:
             _cprint(f"    Context: {ctx:,} tokens")

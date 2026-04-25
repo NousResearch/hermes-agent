@@ -1287,13 +1287,12 @@ def get_model_context_length(
                 if local_ctx and local_ctx > 0:
                     save_context_length(model, base_url, local_ctx)
                     return local_ctx
-            logger.info(
-                "Could not detect context length for model %r at %s — "
-                "defaulting to %s tokens (probe-down). Set model.context_length "
-                "in config.yaml to override.",
-                model, base_url, f"{DEFAULT_FALLBACK_CONTEXT:,}",
+            logger.debug(
+                "Could not detect context length for model %r at %s via endpoint probe — "
+                "falling through to catalog sources (models.dev, hardcoded defaults). "
+                "Set model.context_length in config.yaml to override.",
+                model, base_url,
             )
-            return DEFAULT_FALLBACK_CONTEXT
 
     # 4. Anthropic /v1/models API (only for regular API keys, not OAuth)
     if provider == "anthropic" or (

@@ -951,11 +951,22 @@ def run_doctor(args):
         else:
             check_warn("Node.js not found", "(optional, needed for browser tools)")
     
-    # npm audit for all Node.js packages
+    # npm audit for all Node.js packages.
+    # The WhatsApp bridge moved into the ``gateway`` package in #15336 so
+    # pip/Nix installs ship the files; resolve from the package __file__
+    # rather than ``PROJECT_ROOT`` so doctor finds it under both source
+    # checkouts and installed wheels.
     if _safe_which("npm"):
+        try:
+            import gateway as _gateway_pkg
+            _whatsapp_bridge_dir = (
+                Path(_gateway_pkg.__file__).resolve().parent / "whatsapp_bridge"
+            )
+        except Exception:
+            _whatsapp_bridge_dir = PROJECT_ROOT / "gateway" / "whatsapp_bridge"
         npm_dirs = [
             (PROJECT_ROOT, "Browser tools (agent-browser)"),
-            (PROJECT_ROOT / "scripts" / "whatsapp-bridge", "WhatsApp bridge"),
+            (_whatsapp_bridge_dir, "WhatsApp bridge"),
         ]
         for npm_dir, label in npm_dirs:
             if not (npm_dir / "node_modules").exists():

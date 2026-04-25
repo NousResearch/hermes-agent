@@ -163,13 +163,13 @@ hermes-agent/
 │   ├── run.py                    # GatewayRunner — platform lifecycle, message routing, cron
 │   ├── config.py                 # Platform configuration resolution
 │   ├── session.py                # Session store, context prompts, reset policies
+│   ├── whatsapp_bridge/          # Embedded Node.js WhatsApp bridge (shipped as package-data)
 │   └── platforms/                # Platform adapters
 │       ├── telegram.py, discord_adapter.py, slack.py, whatsapp.py
 │
-├── scripts/                  # Installer and bridge scripts
+├── scripts/                  # Installer and dev scripts
 │   ├── install.sh                # Linux/macOS installer
-│   ├── install.ps1               # Windows PowerShell installer
-│   └── whatsapp-bridge/          # Node.js WhatsApp bridge (Baileys)
+│   └── install.ps1               # Windows PowerShell installer
 │
 ├── skills/                   # Bundled skills (copied to ~/.hermes/skills/ on install)
 ├── optional-skills/          # Official optional skills (discoverable via hub, not activated by default)

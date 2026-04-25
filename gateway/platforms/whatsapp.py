@@ -159,8 +159,12 @@ class WhatsAppAdapter(BasePlatformAdapter):
     # WhatsApp allows ~65K but long messages are unreadable on mobile.
     MAX_MESSAGE_LENGTH = 4096
     
-    # Default bridge location relative to the hermes-agent install
-    _DEFAULT_BRIDGE_DIR = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
+    # Default bridge location.  The bridge files live inside the
+    # ``gateway`` package (``gateway/whatsapp_bridge/``) so setuptools /
+    # pip / Nix all ship them as package-data.  Resolving via
+    # ``__file__.parents[1]`` (gateway/) keeps the path correct under
+    # both source-tree runs and installed wheels (#15336).
+    _DEFAULT_BRIDGE_DIR = Path(__file__).resolve().parents[1] / "whatsapp_bridge"
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.WHATSAPP)

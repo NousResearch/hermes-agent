@@ -265,7 +265,7 @@ The official image is based on `debian:13.4` and includes:
 - ripgrep, ffmpeg, git, and tini as system utilities
 - **`docker-cli`** — so agents running inside the container can drive the host's Docker daemon (bind-mount `/var/run/docker.sock` to opt in) for `docker build`, `docker run`, container inspection, etc.
 - **`openssh-client`** — enables the [SSH terminal backend](/docs/user-guide/configuration#ssh-backend) from inside the container. The SSH backend shells out to the system `ssh` binary; without this, it failed silently in containerized installs.
-- The WhatsApp bridge (`scripts/whatsapp-bridge/`)
+- The WhatsApp bridge (`gateway/whatsapp_bridge/`)
 
 The entrypoint script (`docker/entrypoint.sh`) bootstraps the data volume on first run:
 - Creates the directory structure (`sessions/`, `memories/`, `skills/`, etc.)

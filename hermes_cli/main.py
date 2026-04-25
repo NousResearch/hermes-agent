@@ -1447,8 +1447,13 @@ def cmd_whatsapp(args):
             print("  ⚠ No allowlist — the agent will respond to ALL incoming messages")
 
     # ── Step 4: Install bridge dependencies ──────────────────────────────
-    project_root = Path(__file__).resolve().parents[1]
-    bridge_dir = project_root / "scripts" / "whatsapp-bridge"
+    # Bridge files were moved from ``scripts/whatsapp-bridge/`` to
+    # ``gateway/whatsapp_bridge/`` so setuptools / pip / Nix would actually
+    # ship them in installed wheels (#15336).  Resolving from the
+    # ``gateway`` package's __file__ works whether Hermes is running from
+    # a source checkout or a site-packages install.
+    import gateway as _gateway_pkg
+    bridge_dir = Path(_gateway_pkg.__file__).resolve().parent / "whatsapp_bridge"
     bridge_script = bridge_dir / "bridge.js"
 
     if not bridge_script.exists():

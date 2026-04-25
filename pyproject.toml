@@ -139,6 +139,13 @@ py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajector
 
 [tool.setuptools.package-data]
 hermes_cli = ["web_dist/**/*"]
+# Embed the WhatsApp bridge (Node.js) so pip / Nix / Docker installs
+# ship the bridge files at ``site-packages/gateway/whatsapp_bridge/``
+# rather than leaving them outside the wheel (#15336).  The glob covers
+# JS sources, package.json, and the package-lock (the npm install step
+# in ``hermes setup`` re-creates ``node_modules`` at runtime, so we
+# deliberately do NOT bundle the lockfile-resolved tree).
+"gateway.whatsapp_bridge" = ["*.js", "*.mjs", "package.json", "package-lock.json"]
 
 [tool.setuptools.packages.find]
 include = ["agent", "agent.*", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "tui_gateway", "tui_gateway.*", "cron", "acp_adapter", "plugins", "plugins.*"]

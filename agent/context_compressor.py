@@ -314,10 +314,10 @@ class ContextCompressor(ContextEngine):
         self.provider = provider
         self.api_mode = api_mode
         self.context_length = context_length
-        self.threshold_tokens = max(
-            int(context_length * self.threshold_percent),
-            MINIMUM_CONTEXT_LENGTH,
-        )
+        pct_based = int(context_length * self.threshold_percent)
+        self.threshold_tokens = max(pct_based, MINIMUM_CONTEXT_LENGTH)
+        if self.threshold_tokens >= self.context_length and self.context_length > 0:
+            self.threshold_tokens = pct_based
 
     def __init__(
         self,
@@ -354,10 +354,13 @@ class ContextCompressor(ContextEngine):
         # the percentage would suggest a lower value.  This prevents premature
         # compression on large-context models at 50% while keeping the % sane
         # for models right at the minimum.
-        self.threshold_tokens = max(
-            int(self.context_length * threshold_percent),
-            MINIMUM_CONTEXT_LENGTH,
-        )
+        # Safety: if the floor pushes threshold to >= context_length (e.g. when
+        # context_length == 64000), compression can never fire. Fall back to the
+        # percentage-based value instead.  Fixes #14690.
+        pct_based = int(self.context_length * threshold_percent)
+        self.threshold_tokens = max(pct_based, MINIMUM_CONTEXT_LENGTH)
+        if self.threshold_tokens >= self.context_length and self.context_length > 0:
+            self.threshold_tokens = pct_based
         self.compression_count = 0
 
         # Derive token budgets: ratio is relative to the threshold, not total context

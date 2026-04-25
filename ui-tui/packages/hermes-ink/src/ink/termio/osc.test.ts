@@ -9,18 +9,21 @@ describe('shouldEmitClipboardSequence', () => {
   })
 
   it('keeps OSC enabled for remote or plain local terminals', () => {
-    expect(shouldEmitClipboardSequence({ SSH_CONNECTION: '1', TMUX: '/tmp/tmux-1/default,1,0' } as NodeJS.ProcessEnv)).toBe(
-      true
-    )
+    expect(
+      shouldEmitClipboardSequence({ SSH_CONNECTION: '1', TMUX: '/tmp/tmux-1/default,1,0' } as NodeJS.ProcessEnv)
+    ).toBe(true)
     expect(shouldEmitClipboardSequence({ TERM: 'xterm-256color' } as NodeJS.ProcessEnv)).toBe(true)
   })
 
   it('honors explicit env override', () => {
-    expect(shouldEmitClipboardSequence({ HERMES_TUI_CLIPBOARD_OSC52: '1', TMUX: '/tmp/tmux-1/default,1,0' } as NodeJS.ProcessEnv)).toBe(
-      true
-    )
-    expect(shouldEmitClipboardSequence({ HERMES_TUI_COPY_OSC52: '0', TERM: 'xterm-256color' } as NodeJS.ProcessEnv)).toBe(
-      false
-    )
+    expect(
+      shouldEmitClipboardSequence({
+        HERMES_TUI_CLIPBOARD_OSC52: '1',
+        TMUX: '/tmp/tmux-1/default,1,0'
+      } as NodeJS.ProcessEnv)
+    ).toBe(true)
+    expect(
+      shouldEmitClipboardSequence({ HERMES_TUI_COPY_OSC52: '0', TERM: 'xterm-256color' } as NodeJS.ProcessEnv)
+    ).toBe(false)
   })
 })

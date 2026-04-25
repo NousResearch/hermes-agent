@@ -1,7 +1,7 @@
 import { NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { HOTKEYS } from '../../../content/hotkeys.js'
-import { SECTION_NAMES, isSectionName, nextDetailsMode, parseDetailsMode } from '../../../domain/details.js'
+import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from '../../../domain/details.js'
 import type {
   ConfigGetValueResponse,
   ConfigSetResponse,
@@ -40,8 +40,10 @@ const flagFromArg = (arg: string, current: boolean): boolean | null => {
 
 const RESET_WORDS = new Set(['reset', 'clear', 'default'])
 const CYCLE_WORDS = new Set(['cycle', 'toggle'])
+
 const DETAILS_USAGE =
   'usage: /details [hidden|collapsed|expanded|cycle]  or  /details <section> [hidden|collapsed|expanded|reset]'
+
 const DETAILS_SECTION_USAGE = 'usage: /details <section> [hidden|collapsed|expanded|reset]'
 
 export const coreCommands: SlashCommand[] = [
@@ -97,9 +99,7 @@ export const coreCommands: SlashCommand[] = [
       }
 
       patchUiState({ mouseTracking: next })
-      ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { key: 'mouse', value: next ? 'on' : 'off' })
-        .catch(() => {})
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'mouse', value: next ? 'on' : 'off' }).catch(() => {})
 
       queueMicrotask(() => ctx.transcript.sys(`mouse tracking ${next ? 'on' : 'off'}`))
     }
@@ -178,7 +178,9 @@ export const coreCommands: SlashCommand[] = [
         gateway
           .rpc<ConfigGetValueResponse>('config.get', { key: 'details_mode' })
           .then(r => {
-            if (ctx.stale()) return
+            if (ctx.stale()) {
+              return
+            }
 
             const mode = parseDetailsMode(r?.value) ?? ui.detailsMode
             patchUiState({ detailsMode: mode })

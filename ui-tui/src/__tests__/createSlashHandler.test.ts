@@ -126,9 +126,7 @@ describe('createSlashHandler', () => {
     const ctx = buildCtx()
     createSlashHandler(ctx)('/details tools blink')
     expect(getUiState().sections.tools).toBeUndefined()
-    expect(ctx.transcript.sys).toHaveBeenCalledWith(
-      'usage: /details <section> [hidden|collapsed|expanded|reset]'
-    )
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('usage: /details <section> [hidden|collapsed|expanded|reset]')
   })
 
   it('shows tool enable usage when names are missing', () => {

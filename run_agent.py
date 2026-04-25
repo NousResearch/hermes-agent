@@ -7785,6 +7785,29 @@ class AIAgent:
         ):
             api_msg["reasoning_content"] = ""
 
+    def _sanitize_fallback_reasoning(self, api_messages: list) -> None:
+        """Re-sanitize pre-built api_messages reasoning_content after fallback.
+
+        ``api_messages`` is built once before the retry loop (line ~9806) with
+        the active provider at that moment.  When fallback switches from a
+        non-DeepSeek provider (e.g. ``openai-codex``, ``gpt-5.5``) to DeepSeek
+        or Kimi thinking mode, the pre-built messages lack ``reasoning_content``
+        on assistant tool-call turns — this causes HTTP 400 from DeepSeek.
+
+        This method patches ``api_messages in-place`` so the existing retry loop
+        can reuse them without rebuilding from scratch.
+        """
+        if not self._needs_deepseek_tool_reasoning() and not self._needs_kimi_tool_reasoning():
+            return
+        for msg in api_messages:
+            if (
+                isinstance(msg, dict)
+                and msg.get("role") == "assistant"
+                and msg.get("tool_calls")
+                and not isinstance(msg.get("reasoning_content"), str)
+            ):
+                msg["reasoning_content"] = ""
+
     @staticmethod
     def _sanitize_tool_calls_for_strict_api(api_msg: dict) -> dict:
         """Strip Codex Responses API fields from tool_calls for strict providers.
@@ -9979,6 +10002,16 @@ class AIAgent:
             api_kwargs = None  # Guard against UnboundLocalError in except handler
 
             while retry_count < max_retries:
+                # If the provider switched via fallback, re-sanitize
+                # pre-built api_messages for the new provider's
+                # reasoning_content requirements (e.g. DeepSeek/Kimi
+                # thinking mode).  api_messages is built once before
+                # the retry loop (line ~9806); without this check a
+                # fallback from openai-codex to deepseek-v4-flash
+                # sends tool-call messages lacking reasoning_content
+                # and causes HTTP 400 (#15213, #15688).
+                if getattr(self, '_fallback_activated', False):
+                    self._sanitize_fallback_reasoning(api_messages)
                 # ── Nous Portal rate limit guard ──────────────────────
                 # If another session already recorded that Nous is rate-
                 # limited, skip the API call entirely.  Each attempt

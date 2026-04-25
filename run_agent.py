@@ -3173,6 +3173,8 @@ class AIAgent:
                         quiet_mode=True,
                         platform=self.platform,
                         provider=self.provider,
+                        api_key=self.api_key,
+                        base_url=self.base_url,
                         parent_session_id=self.session_id,
                     )
                     review_agent._memory_write_origin = "background_review"
@@ -7642,12 +7644,16 @@ class AIAgent:
             raw_reasoning_content = getattr(assistant_message, "reasoning_content", None)
             if raw_reasoning_content is not None:
                 msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
-            elif msg.get("tool_calls") and self._needs_deepseek_tool_reasoning():
+            elif self._needs_deepseek_tool_reasoning():
                 # DeepSeek thinking mode requires reasoning_content on every
-                # assistant tool-call message. Without it, replaying the
-                # persisted message causes HTTP 400. Include empty string
-                # as a defensive compatibility fallback (refs #15250).
+                # assistant message (not just tool-call turns). Include empty
+                # string as a defensive compatibility fallback (refs #15250).
                 msg["reasoning_content"] = ""
+        elif self._needs_deepseek_tool_reasoning():
+            # DeepSeek V4 always returns reasoning_content in thinking mode,
+            # but if the response object somehow lacks the attribute, inject
+            # an empty string to prevent HTTP 400 on replay.
+            msg["reasoning_content"] = ""
 
         if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
             # Pass reasoning_details back unmodified so providers (OpenRouter,
@@ -7774,6 +7780,16 @@ class AIAgent:
         if source_msg.get("tool_calls") and (
             self._needs_kimi_tool_reasoning()
             or self._needs_deepseek_tool_reasoning()
+        ):
+            api_msg["reasoning_content"] = ""
+
+        # DeepSeek V4 thinking mode requires reasoning_content on ALL
+        # assistant messages (not just tool-call turns). Messages from a
+        # previous provider (e.g. glm-5.1) won't have this field, so we
+        # inject an empty string as a compatibility shim.
+        if (
+            "reasoning_content" not in api_msg
+            and self._needs_deepseek_tool_reasoning()
         ):
             api_msg["reasoning_content"] = ""
 

@@ -12,12 +12,18 @@ Import chain (circular-import safe):
     model_tools.py  (imports tools.registry + all tool modules)
            ^
     run_agent.py, cli.py, batch_runner.py, etc.
+
+Lazy Loading:
+    Non-core tool groups are loaded on-demand via load_tool_group().
+    Core tools (terminal, file, todo, memory, delegate, cronjob, send_message)
+    are always loaded eagerly at startup.
 """
 
 import ast
 import importlib
 import json
 import logging
+import sys
 import threading
 from pathlib import Path
 from typing import Callable, Dict, List, Optional, Set
@@ -54,7 +60,11 @@ def _module_registers_tools(module_path: Path) -> bool:
 
 
 def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
-    """Import built-in self-registering tool modules and return their module names."""
+    """Import built-in self-registering tool modules and return their module names.
+
+    This is the full-load fallback that imports ALL tool modules.
+    For lazy loading of specific groups, use load_tool_group() instead.
+    """
     tools_path = Path(tools_dir) if tools_dir is not None else Path(__file__).resolve().parent
     module_names = [
         f"tools.{path.stem}"
@@ -71,6 +81,58 @@ def discover_builtin_tools(tools_dir: Optional[Path] = None) -> List[str]:
         except Exception as e:
             logger.warning("Could not import tool module %s: %s", mod_name, e)
     return imported
+
+
+# ----------------------------------------------------------------------
+# Lazy tool loading support
+# ----------------------------------------------------------------------
+
+_lazy_loaded_groups: Set[str] = set()
+
+try:
+    from tools.tool_groups import TOOL_GROUPS, MODULE_TO_TOOLSET
+except Exception as e:
+    logger.debug("Could not import tool_groups: %s", e)
+    TOOL_GROUPS = {}
+    MODULE_TO_TOOLSET = {}
+
+
+def load_tool_group(group_name: str) -> List[str]:
+    """Load all tool modules in a named group.
+
+    Idempotent: calling twice for the same group is a no-op.
+    Returns the list of module names that were loaded.
+    """
+    global _lazy_loaded_groups
+
+    if group_name in _lazy_loaded_groups:
+        return []
+
+    if group_name not in TOOL_GROUPS:
+        logger.warning("Unknown tool group: %s", group_name)
+        return []
+
+    modules = TOOL_GROUPS[group_name]
+    loaded: List[str] = []
+    tools_path = Path(__file__).resolve().parent
+
+    for module_stem in modules:
+        mod_name = f"tools.{module_stem}"
+        # Check if module already registered some tools
+        if mod_name in sys.modules or any(
+            m.startswith(mod_name) for m in sys.modules
+        ):
+            # Module already loaded, but still track group as loaded
+            continue
+
+        try:
+            importlib.import_module(mod_name)
+            loaded.append(mod_name)
+        except Exception as e:
+            logger.warning("Could not lazy-load tool module %s: %s", mod_name, e)
+
+    _lazy_loaded_groups.add(group_name)
+    return loaded
 
 
 class ToolEntry:
@@ -295,10 +357,25 @@ class ToolRegistry:
         * Async handlers are bridged automatically via ``_run_async()``.
         * All exceptions are caught and returned as ``{"error": "..."}``
           for consistent error format.
+        * If the tool is not found, attempts lazy loading of its group
+          and retries once before returning "Unknown tool".
         """
         entry = self.get_entry(name)
         if not entry:
-            return json.dumps({"error": f"Unknown tool: {name}"})
+            # Attempt lazy loading if tool not found
+            global _lazy_loaded_groups
+            if TOOL_GROUPS:
+                # Find which group this tool might be in by trying to load groups
+                for group_name, modules in TOOL_GROUPS.items():
+                    if group_name not in _lazy_loaded_groups:
+                        load_tool_group(group_name)
+                        entry = self.get_entry(name)
+                        if entry:
+                            break
+
+            if not entry:
+                return json.dumps({"error": f"Unknown tool: {name}"})
+
         try:
             if entry.is_async:
                 from model_tools import _run_async
@@ -323,7 +400,18 @@ class ToolRegistry:
         return DEFAULT_RESULT_SIZE_CHARS
 
     def get_all_tool_names(self) -> List[str]:
-        """Return sorted list of all registered tool names."""
+        """Return sorted list of all registered tool names.
+
+        On first call, triggers lazy loading of all remaining tool groups
+        so that introspection functions see all available tools.
+        """
+        # Auto-load remaining lazy groups on first introspection call
+        global _lazy_loaded_groups
+        if _lazy_loaded_groups is not None and "core" in _lazy_loaded_groups:
+            for group_name in list(TOOL_GROUPS.keys()):
+                if group_name not in _lazy_loaded_groups:
+                    load_tool_group(group_name)
+
         return sorted(entry.name for entry in self._snapshot_entries())
 
     def get_schema(self, name: str) -> Optional[dict]:

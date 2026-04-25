@@ -26,7 +26,7 @@ import logging
 import threading
 from typing import Dict, Any, List, Optional, Tuple
 
-from tools.registry import discover_builtin_tools, registry
+from tools.registry import registry, load_tool_group
 from toolsets import resolve_toolset, validate_toolset
 
 logger = logging.getLogger(__name__)
@@ -129,7 +129,8 @@ def _run_async(coro):
 # Tool Discovery  (importing each module triggers its registry.register calls)
 # =============================================================================
 
-discover_builtin_tools()
+# Load core tools eagerly (terminal, file, todo, memory, delegate, cronjob, send_message)
+load_tool_group("core")
 
 # MCP tool discovery (external MCP servers from config)
 try:

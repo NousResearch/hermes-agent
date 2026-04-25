@@ -645,6 +645,18 @@ Options: `fill_first` (default), `round_robin`, `least_used`, `random`. See [Cre
 
 Hermes uses lightweight "auxiliary" models for side tasks like image analysis, web page summarization, and browser screenshot analysis. By default, these use **Gemini Flash** via auto-detection — you don't need to configure anything.
 
+### Video Tutorial
+
+<div style={{position: 'relative', width: '100%', aspectRatio: '16 / 9', marginBottom: '1.5rem'}}>
+  <iframe
+    src="https://www.youtube.com/embed/NoF-YajElIM"
+    title="Hermes Agent — Auxiliary Models Tutorial"
+    style={{position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', border: 0}}
+    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+    allowFullScreen
+  />
+</div>
+
 ### The universal config pattern
 
 Every model slot in Hermes — auxiliary tasks, compression, fallback — uses the same three knobs:

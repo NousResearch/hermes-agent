@@ -1,0 +1,97 @@
+{
+  "version": 1,
+  "source_reference": "/Users/travis/Documents/obsidian/References/2026-04-25 Agent Interop Background Computer Use and Permission-Hardened Daemons.md",
+  "a2a_peer_policy_required_fields": [
+    "peer_id",
+    "display_name",
+    "owner",
+    "auth",
+    "policy_profile",
+    "allowed_ingress_routes",
+    "allowed_outbound_routes",
+    "read_roots",
+    "write_roots",
+    "blocked_roots",
+    "allowed_toolsets",
+    "external_send_allowed",
+    "dangerous_command_mode",
+    "credential_policy",
+    "max_tokens_per_day",
+    "max_tool_calls_per_message",
+    "transcript_retention_days"
+  ],
+  "task_observability_required_fields": [
+    "task_id",
+    "created_at",
+    "origin",
+    "source_peer",
+    "target_agent",
+    "route",
+    "conversation_id",
+    "policy_profile",
+    "enabled_toolsets",
+    "read_scope",
+    "write_scope",
+    "external_systems_contacted",
+    "approvals",
+    "token_budget",
+    "token_usage",
+    "redaction_count",
+    "status",
+    "artifacts"
+  ],
+  "default_a2a_policy": {
+    "policy_profile": "a2a-readonly-default",
+    "read_roots": [],
+    "write_roots": [],
+    "blocked_roots": [
+      "~/.credentials",
+      "~/.ssh",
+      "~/.cloudflared",
+      "~/Library/Messages",
+      "~/Library/Mail",
+      "/etc",
+      "/System",
+      "/usr/bin",
+      "/var/db"
+    ],
+    "allowed_toolsets": [],
+    "external_send_allowed": false,
+    "dangerous_command_mode": "deny",
+    "credential_policy": "no_plaintext_file_path_only_when_explicitly_authorized",
+    "max_tokens_per_day": 20000,
+    "max_tool_calls_per_message": 5,
+    "transcript_retention_days": 30
+  },
+  "observability_event_template": {
+    "task_id": "",
+    "created_at": "",
+    "origin": "a2a|telegram|cron|local|api_server",
+    "source_peer": null,
+    "target_agent": "hermes",
+    "route": "",
+    "conversation_id": "",
+    "policy_profile": "",
+    "enabled_toolsets": [],
+    "read_scope": [],
+    "write_scope": [],
+    "external_systems_contacted": [],
+    "approvals": [],
+    "token_budget": {
+      "limit": null,
+      "thresholds": {
+        "auto_concise_percent": 70,
+        "stop_nonessential_percent": 90
+      },
+      "measurement": "estimated|measured|unavailable"
+    },
+    "token_usage": {
+      "input": null,
+      "output": null,
+      "total": null
+    },
+    "redaction_count": 0,
+    "status": "planned|running|completed|failed|blocked",
+    "artifacts": []
+  }
+}

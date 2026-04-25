@@ -17,6 +17,14 @@ describe('createSlashHandler', () => {
     expect(getOverlayState().picker).toBe(true)
   })
 
+  it('treats /provider as a local /model alias', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/provider')).toBe(true)
+    expect(getOverlayState().modelPicker).toBe(true)
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
   it('opens the skills hub locally for bare /skills', () => {
     const ctx = buildCtx()
 

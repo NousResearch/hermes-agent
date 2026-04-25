@@ -321,6 +321,14 @@ def test_setup_status_reports_provider_config(monkeypatch):
     assert resp["result"]["provider_configured"] is False
 
 
+def test_complete_slash_includes_provider_alias():
+    resp = server.handle_request(
+        {"id": "1", "method": "complete.slash", "params": {"text": "/pro"}}
+    )
+
+    assert any(item["text"] == "provider" for item in resp["result"]["items"])
+
+
 def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     agent = types.SimpleNamespace(reasoning_config=None)

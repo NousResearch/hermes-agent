@@ -1851,7 +1851,7 @@ def terminal_tool(
             # Extract output
             output = result.get("output", "")
             returncode = result.get("returncode", 0)
-            
+
             # Add helpful message for sudo failures in messaging context
             output = _handle_sudo_failure(output, env_type)
 

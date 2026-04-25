@@ -386,9 +386,16 @@ class BaseEnvironment(ABC):
 
         parts = []
 
-        # Source snapshot (env vars from previous commands)
+        # Source snapshot (env vars from previous commands).
+        # Redirect stdout to /dev/null: on macOS (bash 3.2 and certain
+        # Homebrew bash builds) sourcing a file containing ``declare -x``
+        # can emit the declarations to stdout, leaking ~60 lines of env
+        # vars into every tool response (issue #15459).  Linux bash is
+        # silent here, but the redirect is harmless.
         if self._snapshot_ready:
-            parts.append(f"source {self._snapshot_path} 2>/dev/null || true")
+            parts.append(
+                f"source {self._snapshot_path} >/dev/null 2>&1 || true"
+            )
 
         # Preserve bare ``~`` expansion, but rewrite ``~/...`` through
         # ``$HOME`` so suffixes with spaces remain a single shell word.

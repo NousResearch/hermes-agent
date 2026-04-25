@@ -218,11 +218,7 @@ export function StatusRule({
           {voiceLabel ? (
             <Text
               color={
-                voiceLabel.startsWith('●')
-                  ? t.color.error
-                  : voiceLabel.startsWith('◉')
-                    ? t.color.warn
-                    : t.color.dim
+                voiceLabel.startsWith('●') ? t.color.error : voiceLabel.startsWith('◉') ? t.color.warn : t.color.dim
               }
             >
               {' │ '}

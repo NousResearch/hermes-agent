@@ -1768,7 +1768,15 @@ This compaction should PRIORITISE preserving all information related to the focu
             # retry (_generate_summary recursion) re-enters harmlessly.
             with aux_interrupt_protection():
                 response = call_llm(**call_kwargs)
-            content = response.choices[0].message.content
+            # ``_validate_llm_response`` only guarantees ``choices[0].message``
+            # exists, not that it's an object with ``.content``. Some
+            # OpenAI-compatible proxies / local backends return a dict- or
+            # str-shaped message; coerce defensively instead of crashing.
+            message = response.choices[0].message
+            if isinstance(message, dict):
+                content = message.get("content")
+            else:
+                content = getattr(message, "content", message)
             # Handle cases where content is not a string (e.g., dict from llama.cpp)
             if not isinstance(content, str):
                 content = str(content) if content else ""

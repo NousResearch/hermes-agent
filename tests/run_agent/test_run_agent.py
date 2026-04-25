@@ -2752,8 +2752,28 @@ class TestRunConversation:
             finish_reason="tool_calls",
             tool_calls=[_mock_tool_call(name="web_search", arguments="{}", call_id="c1")],
         )
+        # Content must be >=500 chars to pass the minimum-length gate
+        # introduced in #14572; shorter responses are assumed complete.
+        long_truncated = (
+            "Based on my thorough analysis of the search results and the documentation "
+            "you provided, I have identified several key findings that are worth discussing "
+            "in detail. First, the configuration parameters need to be updated to reflect "
+            "the new API endpoint structure that was introduced in version 3.2 of the "
+            "framework. This is particularly important because the old endpoint format "
+            "is being deprecated starting next quarter and will no longer receive security "
+            "patches. Second, the authentication mechanism should be migrated from the "
+            "legacy token-based system to the newer OAuth 2.0 flow that the platform team "
+            "has been rolling out across all services. The migration guide mentions that "
+            "you will need to update your client libraries to version 5.0 or later to "
+            "maintain compatibility, and there is a migration script available in the "
+            "repository that can handle most of the common refactoring patterns "
+            "automatically. Third, and perhaps most importantly for your use case, the "
+            "rate limiting behavior has changed significantly in the new version, so you "
+            "should review your current throttling strategy to make sure it aligns with "
+            "the updated quota system before deploying to production. The best next"
+        )
         misreported_stop = _mock_response(
-            content="Based on the search results, the best next",
+            content=long_truncated,
             finish_reason="stop",
         )
         continued = _mock_response(
@@ -2778,7 +2798,7 @@ class TestRunConversation:
         assert result["api_calls"] == 3
         assert (
             result["final_response"]
-            == "Based on the search results, the best next step is to update the config."
+            == long_truncated + " step is to update the config."
         )
 
         third_call_messages = agent.client.chat.completions.create.call_args_list[2].kwargs["messages"]

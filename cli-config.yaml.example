@@ -524,7 +524,16 @@ agent:
   # primaries (default 3). The OpenAI SDK does its own low-level retries
   # underneath this wrapper — this is the Hermes-level loop.
   # api_max_retries: 3
-  
+
+  # Ollama/GLM truncation heuristic.  When using Ollama-hosted GLM models,
+  # some finish_reason='stop' responses are actually truncated.  This heuristic
+  # detects such cases and requests continuations.  However, it can false-trigger
+  # on responses ending with emoji sign-offs or conversational text lacking
+  # terminal punctuation (see #14572).  The heuristic now has guard rails
+  # (500-char minimum, emoji recognition) but if you still hit false positives,
+  # set this to false to disable it entirely.
+  # glm_truncation_heuristic: true
+
   # Enable verbose logging
   verbose: false
   

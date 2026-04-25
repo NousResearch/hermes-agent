@@ -847,6 +847,32 @@ class TestTokenBudgetTailProtection:
         assert isinstance(pruned, int)
 
 
+class TestUpdateModelBudgets:
+    """Regression: update_model() must recalculate token budgets."""
+
+    def test_tail_budget_recalculated(self):
+        """tail_token_budget must change after switching to a different context length."""
+        from unittest.mock import patch
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            comp = ContextCompressor("model-a", threshold_percent=0.50, quiet_mode=True)
+        old_tail = comp.tail_token_budget
+        old_max_summary = comp.max_summary_tokens
+
+        comp.update_model("model-b", context_length=32_000)
+        assert comp.tail_token_budget != old_tail, "tail_token_budget should change"
+        assert comp.tail_token_budget < old_tail, "smaller context → smaller budget"
+        assert comp.max_summary_tokens != old_max_summary, "max_summary_tokens should change"
+
+    def test_budgets_proportional(self):
+        """Budgets should be proportional to context_length after update."""
+        from unittest.mock import patch
+        with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+            comp = ContextCompressor("model-a", threshold_percent=0.50, quiet_mode=True)
+        comp.update_model("model-b", context_length=10_000)
+        assert comp.tail_token_budget == int(comp.threshold_tokens * comp.summary_target_ratio)
+        assert comp.max_summary_tokens == min(int(10_000 * 0.05), 4000)
+
+
 class TestTruncateToolCallArgsJson:
     """Regression tests for #11762.
 

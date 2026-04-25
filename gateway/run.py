@@ -1943,7 +1943,21 @@ class GatewayRunner:
             return
         try:
             if hasattr(agent, "shutdown_memory_provider"):
-                agent.shutdown_memory_provider()
+                # Pass the agent's own conversation transcript so memory
+                # providers' ``on_session_end`` hooks see the real messages
+                # instead of the empty default (#15165). ``_session_messages``
+                # is set on ``AIAgent`` (run_agent.py:1518) and refreshed at
+                # the end of every ``run_conversation`` turn via
+                # ``_persist_session``; on an agent built through
+                # ``object.__new__`` (test stubs) the attribute may be
+                # absent, so ``getattr`` with a ``None`` default keeps the
+                # call signature-compatible with the pre-fix behaviour
+                # (``shutdown_memory_provider(messages=None)``).
+                session_messages = getattr(agent, "_session_messages", None)
+                if isinstance(session_messages, list):
+                    agent.shutdown_memory_provider(session_messages)
+                else:
+                    agent.shutdown_memory_provider()
         except Exception:
             pass
         # Close tool resources (terminal sandboxes, browser daemons,

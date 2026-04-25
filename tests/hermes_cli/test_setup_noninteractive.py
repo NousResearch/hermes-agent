@@ -229,6 +229,39 @@ class TestNonInteractiveSetup:
             "Exit",
         ]
 
+    def test_api_key_provider_install_detected_as_existing(self, tmp_path):
+        """Regression for #13024: installs whose only provider key is an
+        API-key provider registered via PROVIDER_REGISTRY (Anthropic, Z.AI,
+        MiniMax, Kimi, …) must be treated as existing installations, not
+        as first-time setups."""
+        from hermes_cli import setup as setup_mod
+
+        args = _make_setup_args()
+        captured = {}
+
+        def fake_prompt_choice(question, choices, default=0):
+            captured["question"] = question
+            captured["choices"] = list(choices)
+            return len(choices) - 1  # "Exit"
+
+        with (
+            patch.object(setup_mod, "ensure_hermes_home"),
+            patch.object(setup_mod, "load_config", return_value={}),
+            patch.object(setup_mod, "get_hermes_home", return_value=tmp_path),
+            patch.object(setup_mod, "is_interactive_stdin", return_value=True),
+            patch.object(
+                setup_mod,
+                "get_env_value",
+                side_effect=lambda key: "sk-ant" if key == "ANTHROPIC_API_KEY" else "",
+            ),
+            patch("hermes_cli.auth.get_active_provider", return_value=None),
+            patch.object(setup_mod, "prompt_choice", side_effect=fake_prompt_choice),
+        ):
+            setup_mod.run_setup_wizard(args)
+
+        # Returning-user menu is shown (not the first-time quick-setup prompt).
+        assert captured["question"] == "What would you like to do?"
+
     def test_main_accepts_tts_setup_section(self, monkeypatch):
         """`hermes setup tts` should parse and dispatch like other setup sections."""
         from hermes_cli import main as main_mod

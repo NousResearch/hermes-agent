@@ -511,8 +511,14 @@ class RetainDBMemoryProvider(MemoryProvider):
         self._queue = _WriteQueue(self._client, db_path)
 
         # Seed agent identity from SOUL.md in background
-        soul_path = hermes_home_path / "SOUL.md"
-        if soul_path.exists():
+        soul_path = hermes_home_path / "knowledge" / "facts" / "SOUL.md"
+        if not soul_path.exists():
+            old_path = hermes_home_path / "SOUL.md"
+            if old_path.exists():
+                soul_path = old_path
+            else:
+                soul_path = None
+        if soul_path and soul_path.exists():
             soul_content = soul_path.read_text(encoding="utf-8", errors="replace").strip()
             if soul_content:
                 threading.Thread(

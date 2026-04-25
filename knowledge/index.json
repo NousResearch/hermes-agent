@@ -1,0 +1,28 @@
+{
+  "knowledge_base_version": "1.0.0",
+  "created": "2026-04-25T06:31:00Z",
+  "horizon": 1,
+  "description": "Hermes-First knowledge organization structure",
+  "structure": {
+    "docs": {
+      "plans": ["2026-03-16-pricing-accuracy-architecture-design.md", "hermes-first-architecture-redesign.md", "INTEGRATED-IMPLEMENTATION-PLAN.md"],
+      "specs": ["container-cli-review-fixes.md"],
+      "migration": ["openclaw.md"]
+    },
+    "facts": ["learnings.md", "learnings-v2.md", "OPTIMIZATION-HISTORY.md", "incident-log/"],
+    "policies": []
+  },
+  "files": [
+    {"path": "knowledge/AGENTS.md", "type": "root", "description": "Agent definitions and configuration"},
+    {"path": "knowledge/SOUL.md", "type": "root", "description": "Core identity and values document"},
+    {"path": "knowledge/docs/plans/2026-03-16-pricing-accuracy-architecture-design.md", "type": "plan", "description": "Pricing accuracy architecture design"},
+    {"path": "knowledge/docs/plans/hermes-first-architecture-redesign.md", "type": "plan", "description": "Hermes-First architecture redesign plan"},
+    {"path": "knowledge/docs/plans/INTEGRATED-IMPLEMENTATION-PLAN.md", "type": "plan", "description": "Integrated implementation plan"},
+    {"path": "knowledge/docs/specs/container-cli-review-fixes.md", "type": "spec", "description": "Container CLI review fixes specification"},
+    {"path": "knowledge/docs/migration/openclaw.md", "type": "migration", "description": "OpenClaw migration guide"},
+    {"path": "knowledge/facts/learnings.md", "type": "fact", "description": "Historical learnings"},
+    {"path": "knowledge/facts/learnings-v2.md", "type": "fact", "description": "Version 2 learnings"},
+    {"path": "knowledge/facts/OPTIMIZATION-HISTORY.md", "type": "fact", "description": "Optimization history and decisions"},
+    {"path": "knowledge/facts/incident-log/", "type": "fact", "description": "Incident log directory"}
+  ]
+}

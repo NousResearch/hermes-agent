@@ -32,6 +32,7 @@ from tools.delegate_tool import (
     _strip_blocked_tools,
     _resolve_child_credential_pool,
     _resolve_delegation_credentials,
+    _load_config,
 )
 
 
@@ -108,6 +109,34 @@ class TestStripBlockedTools(unittest.TestCase):
         self.assertEqual(result, [])
 
 
+class TestLoadConfig(unittest.TestCase):
+    def test_merges_runtime_and_persistent_delegation_config(self):
+        fake_cli = type("FakeCLI", (), {
+            "CLI_CONFIG": {
+                "delegation": {
+                    "model": "",
+                    "provider": "",
+                    "default_toolsets": ["terminal", "file", "web"],
+                }
+            }
+        })
+
+        with patch.dict(sys.modules, {"cli": fake_cli}):
+            with patch("hermes_cli.config.load_config", return_value={
+                "delegation": {
+                    "model": "gpt-5.4",
+                    "provider": "openai-codex",
+                    "max_iterations": 50,
+                }
+            }):
+                merged = _load_config()
+
+        self.assertEqual(merged["model"], "gpt-5.4")
+        self.assertEqual(merged["provider"], "openai-codex")
+        self.assertEqual(merged["default_toolsets"], ["terminal", "file", "web"])
+        self.assertEqual(merged["max_iterations"], 50)
+
+
 class TestDelegateTask(unittest.TestCase):
     def test_no_parent_agent(self):
         result = json.loads(delegate_task(goal="test"))
@@ -148,6 +177,32 @@ class TestDelegateTask(unittest.TestCase):
         self.assertEqual(result["results"][0]["status"], "completed")
         self.assertEqual(result["results"][0]["summary"], "Done!")
         mock_run.assert_called_once()
+
+    def test_single_goal_propagates_acp_overrides(self):
+        parent = _make_mock_parent(depth=0)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "ok",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(
+                goal="Use codex",
+                acp_command="claude",
+                acp_args=["--acp", "--stdio", "--model", "openai-codex:gpt-5.4"],
+                parent_agent=parent,
+            )
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["acp_command"], "claude")
+            self.assertEqual(
+                kwargs["acp_args"],
+                ["--acp", "--stdio", "--model", "openai-codex:gpt-5.4"],
+            )
 
     @patch("tools.delegate_tool._run_single_child")
     def test_batch_mode(self, mock_run):

@@ -1,0 +1,42 @@
+{
+  "holder": "Yao",
+  "lastUpdated": "2026-04-17",
+  "note": "已賣出 03710B，現金部位",
+  "holdings": [
+    {
+      "code": "04006C",
+      "name": "04006C認購權證",
+      "quantity": 50000,
+      "avgCost": 2.67,
+      "buyDate": "2026-04-14"
+    }
+  ],
+  "cash": 214866.5,
+  "history": [
+    {
+      "code": "03710B",
+      "name": "臺股指元大61熊18",
+      "quantity": 250000,
+      "avgCost": 1.22,
+      "soldPrice": 0.66,
+      "soldDate": "2026-04-11",
+      "result": "虧損 -46%"
+    }
+  ],
+  "watchlist": [
+    "2303",
+    "3008"
+  ],
+  "risk_control": [
+    {
+      "code": "04006C",
+      "stop_loss_pct": -10,
+      "stop_loss_price": 2.403,
+      "target_profit_pct": 20,
+      "target_price": 3.2039999999999997,
+      "set_date": "2026-04-14",
+      "note": "權證高槓桿，設定嚴格停損",
+      "avg_cost": 2.67
+    }
+  ]
+}

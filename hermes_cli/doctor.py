@@ -545,7 +545,13 @@ def run_doctor(args):
                 check_warn(f"{_DHH}/{subdir_name}/ not found", "(will be created on first use)")
     
     # Check for SOUL.md persona file
-    soul_path = hermes_home / "SOUL.md"
+    soul_path = hermes_home / "knowledge" / "facts" / "SOUL.md"
+    if not soul_path.exists():
+        old_path = hermes_home / "SOUL.md"
+        if old_path.exists():
+            soul_path = old_path
+        else:
+            soul_path = None
     if soul_path.exists():
         content = soul_path.read_text(encoding="utf-8").strip()
         # Check if it's just the template comments (no real content)

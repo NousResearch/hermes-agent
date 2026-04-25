@@ -1,0 +1,187 @@
+# Skills index — TOML representation of available skills and categories.
+# Used by skill_commands.py and skills_tool.py for fast skill metadata lookups.
+
+[meta]
+version = "1.0"
+last_updated = "2026-04-25"
+
+# Skill categories — each category is a separate subtable under [categories]
+[categories.email]
+description = "Email management via CLI (himalaya)"
+path = "email"
+skills = ["himalaya"]
+
+[categories.feeds]
+description = "RSS/feed monitoring and aggregation (mcporter)"
+path = "feeds"
+skills = ["mcporter"]
+
+[categories.github]
+description = "GitHub integration via gh CLI and REST API"
+path = "github"
+skills = [
+  "codebase-inspection",
+  "github-auth",
+  "github-code-review",
+  "github-issues",
+  "github-pr-workflow",
+  "github-repo-management",
+]
+
+[categories.mcp]
+description = "Model Context Protocol client and server management"
+path = "mcp"
+skills = ["native-mcp", "mcporter"]
+
+[categories.note-taking]
+description = "Note-taking apps: Obsidian vault integration"
+path = "note-taking"
+skills = ["obsidian"]
+
+[categories.productivity]
+description = "Productivity suites: Notion, Google Workspace, Linear, and more"
+path = "productivity"
+skills = [
+  "google-workspace",
+  "linear",
+  "nano-pdf",
+  "notion",
+  "ocr-and-documents",
+  "powerpoint",
+]
+
+[categories.research]
+description = "Research tools: arxiv, blogwatcher, LLM wiki, polymarket"
+path = "research"
+skills = [
+  "arxiv",
+  "blogwatcher",
+  "llm-wiki",
+  "polymarket",
+  "research-paper-writing",
+]
+
+[categories.software-development]
+description = "Software development lifecycle skills"
+path = "software-development"
+skills = [
+  "plan",
+  "requesting-code-review",
+  "subagent-driven-development",
+  "systematic-debugging",
+  "test-driven-development",
+  "writing-plans",
+]
+
+# Flat list of all skills — dotted subtable names under [skills]
+[skills.email.himalaya]
+category = "email"
+path = "email/himalaya"
+
+[skills.feeds.mcporter]
+category = "feeds"
+path = "feeds/mcporter"
+
+[skills.github.codebase-inspection]
+category = "github"
+path = "github/codebase-inspection"
+
+[skills.github.github-auth]
+category = "github"
+path = "github/github-auth"
+
+[skills.github.github-code-review]
+category = "github"
+path = "github/github-code-review"
+
+[skills.github.github-issues]
+category = "github"
+path = "github/github-issues"
+
+[skills.github.github-pr-workflow]
+category = "github"
+path = "github/github-pr-workflow"
+
+[skills.github.github-repo-management]
+category = "github"
+path = "github/github-repo-management"
+
+[skills.mcp.native-mcp]
+category = "mcp"
+path = "mcp/native-mcp"
+
+[skills.mcp.mcporter]
+category = "mcp"
+path = "mcp/mcporter"
+
+[skills.note-taking.obsidian]
+category = "note-taking"
+path = "note-taking/obsidian"
+
+[skills.productivity.google-workspace]
+category = "productivity"
+path = "productivity/google-workspace"
+
+[skills.productivity.linear]
+category = "productivity"
+path = "productivity/linear"
+
+[skills.productivity.nano-pdf]
+category = "productivity"
+path = "productivity/nano-pdf"
+
+[skills.productivity.notion]
+category = "productivity"
+path = "productivity/notion"
+
+[skills.productivity.ocr-and-documents]
+category = "productivity"
+path = "productivity/ocr-and-documents"
+
+[skills.productivity.powerpoint]
+category = "productivity"
+path = "productivity/powerpoint"
+
+[skills.research.arxiv]
+category = "research"
+path = "research/arxiv"
+
+[skills.research.blogwatcher]
+category = "research"
+path = "research/blogwatcher"
+
+[skills.research.llm-wiki]
+category = "research"
+path = "research/llm-wiki"
+
+[skills.research.polymarket]
+category = "research"
+path = "research/polymarket"
+
+[skills.research.research-paper-writing]
+category = "research"
+path = "research/research-paper-writing"
+
+[skills.software-development.plan]
+category = "software-development"
+path = "software-development/plan"
+
+[skills.software-development.requesting-code-review]
+category = "software-development"
+path = "software-development/requesting-code-review"
+
+[skills.software-development.subagent-driven-development]
+category = "software-development"
+path = "software-development/subagent-driven-development"
+
+[skills.software-development.systematic-debugging]
+category = "software-development"
+path = "software-development/systematic-debugging"
+
+[skills.software-development.test-driven-development]
+category = "software-development"
+path = "software-development/test-driven-development"
+
+[skills.software-development.writing-plans]
+category = "software-development"
+path = "software-development/writing-plans"

@@ -290,8 +290,12 @@ def _secure_file(path):
 
 def _ensure_default_soul_md(home: Path) -> None:
     """Seed a default SOUL.md into HERMES_HOME if the user doesn't have one yet."""
-    soul_path = home / "SOUL.md"
+    soul_path = home / "knowledge" / "facts" / "SOUL.md"
     if soul_path.exists():
+        return
+    # Fallback to old location for backward compatibility during transition
+    old_path = home / "SOUL.md"
+    if old_path.exists():
         return
     soul_path.write_text(DEFAULT_SOUL_MD, encoding="utf-8")
     _secure_file(soul_path)

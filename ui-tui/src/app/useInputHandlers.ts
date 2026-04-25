@@ -8,7 +8,7 @@ import type {
   SudoRespondResponse,
   VoiceRecordResponse
 } from '../gatewayTypes.js'
-import { isAction, isMac, isVoiceToggleKey } from '../lib/platform.js'
+import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platform.js'
 
 import { getInputSelection } from './inputSelectionStore.js'
 import type { InputHandlerContext, InputHandlerResult } from './interfaces.js'
@@ -30,11 +30,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const copySelection = () => {
     // ink's copySelection() already calls setClipboard() which handles
     // pbcopy (macOS), wl-copy/xclip (Linux), tmux, and OSC 52 fallback.
-    const text = terminal.selection.copySelection()
-
-    if (text) {
-      actions.sys(`copied ${text.length} chars`)
-    }
+    terminal.selection.copySelection()
   }
 
   const clearSelection = () => {
@@ -315,7 +311,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       }
     }
 
-    if (isAction(key, ch, 'c')) {
+    if (isCopyShortcut(key, ch)) {
       if (terminal.hasSelection) {
         return copySelection()
       }

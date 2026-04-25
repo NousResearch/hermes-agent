@@ -699,18 +699,60 @@ def test_get_platform_tools_second_pass_skips_fully_claimed_toolsets():
     assert "search" not in enabled
 
 
-def test_get_platform_tools_discord_includes_discord_not_admin():
+def test_get_platform_tools_discord_both_off_by_default():
+    """Both `discord` and `discord_admin` are opt-in via `hermes tools`,
+    even on the Discord platform itself.  Users shouldn't auto-inherit 19
+    extra tools just because DISCORD_BOT_TOKEN is set."""
     enabled = _get_platform_tools({}, "discord")
+    assert "discord" not in enabled
+    assert "discord_admin" not in enabled
+
+
+def test_discord_toolsets_in_configurable_toolsets():
+    keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+    assert "discord" in keys
+    assert "discord_admin" in keys
+
+
+def test_discord_toolsets_in_default_off():
+    assert "discord" in _DEFAULT_OFF_TOOLSETS
+    assert "discord_admin" in _DEFAULT_OFF_TOOLSETS
+
+
+def test_discord_toolsets_not_available_on_other_platforms():
+    """Platform-scoping: discord / discord_admin should not appear on CLI,
+    Telegram, etc. — not even as an opt-in."""
+    from hermes_cli.tools_config import _toolset_allowed_for_platform
+    for plat in ["cli", "telegram", "slack", "whatsapp", "signal"]:
+        assert not _toolset_allowed_for_platform("discord", plat), (
+            f"`discord` toolset leaked onto {plat}"
+        )
+        assert not _toolset_allowed_for_platform("discord_admin", plat), (
+            f"`discord_admin` toolset leaked onto {plat}"
+        )
+    assert _toolset_allowed_for_platform("discord", "discord")
+    assert _toolset_allowed_for_platform("discord_admin", "discord")
+
+
+def test_discord_toolsets_user_enabled_are_honored():
+    """When the user opts in via `hermes tools`, the toolset appears."""
+    config = {"platform_toolsets": {"discord": ["web", "terminal", "discord"]}}
+    enabled = _get_platform_tools(config, "discord")
     assert "discord" in enabled
     assert "discord_admin" not in enabled
 
 
-def test_discord_admin_in_configurable_toolsets():
-    assert any(ts_key == "discord_admin" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
-
-
-def test_discord_admin_in_default_off():
-    assert "discord_admin" in _DEFAULT_OFF_TOOLSETS
+def test_save_platform_tools_strips_restricted_toolsets():
+    """Hand-edited or all-platforms checklist with `discord` selected for
+    Telegram must be stripped at save time."""
+    from hermes_cli.tools_config import _save_platform_tools
+    config = {}
+    _save_platform_tools(config, "telegram", {"web", "terminal", "discord", "discord_admin"})
+    saved = config["platform_toolsets"]["telegram"]
+    assert "discord" not in saved
+    assert "discord_admin" not in saved
+    assert "web" in saved
+    assert "terminal" in saved
 
 
 def test_get_platform_tools_feishu_includes_doc_and_drive():

@@ -543,9 +543,54 @@ def resolve_display_context_length(
     about Codex OAuth, Copilot, Nous, and falls back to models.dev for the
     rest.
 
+    For custom providers, also honor per-model ``custom_providers[].models``
+    context_length overrides so the /model success message matches the actual
+    runtime context window Hermes will use.
+
     Prefer the provider-aware value; fall back to ``model_info.context_window``
     only if the resolver returns nothing.
     """
+    config_context_length = None
+    try:
+        from hermes_cli.config import load_config, get_compatible_custom_providers
+
+        cfg = load_config()
+        custom_providers = get_compatible_custom_providers(cfg)
+        normalized_provider = (provider or "").strip().lower()
+        normalized_base_url = (base_url or "").strip().rstrip("/")
+        model_context_length = None
+        global_context_length = None
+
+        model_cfg = cfg.get("model", {}) if isinstance(cfg, dict) else {}
+        if isinstance(model_cfg, dict):
+            global_context_length = model_cfg.get("context_length")
+
+        for entry in custom_providers:
+            if not isinstance(entry, dict):
+                continue
+            entry_name = str(entry.get("name", "") or "").strip().lower()
+            entry_base_url = str(entry.get("base_url", "") or "").strip().rstrip("/")
+            if normalized_provider and entry_name != normalized_provider:
+                continue
+            if normalized_base_url and entry_base_url and entry_base_url != normalized_base_url:
+                continue
+
+            models = entry.get("models", {})
+            if isinstance(models, dict):
+                model_cfg = models.get(model, {})
+                if isinstance(model_cfg, dict):
+                    model_context_length = model_cfg.get("context_length")
+            break
+
+        chosen_context_length = model_context_length
+        if chosen_context_length is None:
+            chosen_context_length = global_context_length
+
+        if chosen_context_length is not None:
+            config_context_length = int(chosen_context_length)
+    except Exception:
+        config_context_length = None
+
     try:
         from agent.model_metadata import get_model_context_length
         ctx = get_model_context_length(
@@ -553,6 +598,7 @@ def resolve_display_context_length(
             base_url=base_url or "",
             api_key=api_key or "",
             provider=provider or None,
+            config_context_length=config_context_length,
         )
         if ctx:
             return int(ctx)

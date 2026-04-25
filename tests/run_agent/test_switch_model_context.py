@@ -1,4 +1,4 @@
-"""Tests that switch_model preserves config_context_length."""
+"""Tests that switch_model preserves and re-resolves config context length."""
 
 from unittest.mock import MagicMock, patch
 
@@ -72,3 +72,45 @@ def test_switch_model_without_config_context_length():
         mock_ctx_len.assert_called_once()
         call_kwargs = mock_ctx_len.call_args.kwargs
         assert call_kwargs.get("config_context_length") is None
+
+
+def test_switch_model_re_resolves_custom_provider_per_model_context_length():
+    """Switching between models on the same custom provider must refresh the
+    per-model context length instead of reusing the previous model's value."""
+    agent = _make_agent_with_compressor(config_context_length=1_048_576)
+    agent.provider = "cpa"
+    agent.base_url = "http://proxy.example/v1"
+
+    fake_cfg = {
+        "model": {
+            "provider": "cpa",
+            "default": "gemini-3-flash-preview",
+            "base_url": "http://proxy.example/v1",
+            "context_length": 1_048_576,
+        },
+        "custom_providers": [
+            {
+                "name": "cpa",
+                "base_url": "http://proxy.example/v1",
+                "models": {
+                    "gemini-3-flash-preview": {"context_length": 1_048_576},
+                    "gemma-4-31b-it": {"context_length": 262_144},
+                },
+            }
+        ],
+    }
+
+    with patch("hermes_cli.config.load_config", return_value=fake_cfg), patch(
+        "hermes_cli.config.get_compatible_custom_providers",
+        return_value=fake_cfg["custom_providers"],
+    ), patch("agent.model_metadata.get_model_context_length", return_value=262_144) as mock_ctx_len:
+        agent.switch_model(
+            "gemma-4-31b-it",
+            "cpa",
+            api_key="sk-new",
+            base_url="http://proxy.example/v1",
+        )
+
+    call_kwargs = mock_ctx_len.call_args.kwargs
+    assert call_kwargs.get("config_context_length") == 262_144
+    assert agent._config_context_length == 262_144

@@ -1,4 +1,4 @@
-"""Regression test for /model context-length display on provider-capped models.
+"""Regression tests for /model context-length display.
 
 Bug (April 2026): `/model gpt-5.5` on openai-codex (ChatGPT OAuth) showed
 "Context: 1,050,000 tokens" because the display code used the raw models.dev
@@ -6,9 +6,9 @@ Bug (April 2026): `/model gpt-5.5` on openai-codex (ChatGPT OAuth) showed
 of the provider-aware resolver. The agent was actually running at 272K — Codex
 OAuth's enforced cap — so the display was lying to the user.
 
-Fix: ``resolve_display_context_length()`` prefers
-``agent.model_metadata.get_model_context_length`` (which knows about Codex OAuth,
-Copilot, Nous, etc.) and falls back to models.dev only if that returns nothing.
+Another bug: custom providers with per-model ``custom_providers[].models``
+``context_length`` overrides still showed the fallback/provider-detected value
+(e.g. 128K) in /model output instead of the configured context window.
 """
 from __future__ import annotations
 
@@ -88,3 +88,36 @@ class TestResolveDisplayContextLength:
                 model_info=fake_mi,
             )
         assert ctx == 128_000
+
+    def test_custom_provider_per_model_context_length_is_forwarded(self):
+        fake_mi = _FakeModelInfo(128_000)
+        fake_cfg = {
+            "model": {
+                "provider": "cpa",
+                "context_length": 1_048_576,
+            },
+            "custom_providers": [
+                {
+                    "name": "cpa",
+                    "base_url": "http://proxy.example/v1",
+                    "models": {
+                        "gemma-4-31b-it": {"context_length": 262_144},
+                    },
+                }
+            ],
+        }
+        with patch("hermes_cli.config.load_config", return_value=fake_cfg), patch(
+            "hermes_cli.config.get_compatible_custom_providers",
+            return_value=fake_cfg["custom_providers"],
+        ), patch(
+            "agent.model_metadata.get_model_context_length", return_value=262_144
+        ) as mock_ctx:
+            ctx = resolve_display_context_length(
+                "gemma-4-31b-it",
+                "cpa",
+                base_url="http://proxy.example/v1",
+                model_info=fake_mi,
+            )
+
+        assert ctx == 262_144
+        assert mock_ctx.call_args.kwargs["config_context_length"] == 262_144

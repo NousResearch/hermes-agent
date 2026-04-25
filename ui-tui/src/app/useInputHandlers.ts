@@ -30,11 +30,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const copySelection = () => {
     // ink's copySelection() already calls setClipboard() which handles
     // pbcopy (macOS), wl-copy/xclip (Linux), tmux, and OSC 52 fallback.
-    const text = terminal.selection.copySelection()
-
-    if (text) {
-      actions.sys(`copied ${text.length} chars`)
-    }
+    terminal.selection.copySelection()
   }
 
   const clearSelection = () => {

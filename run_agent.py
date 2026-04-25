@@ -2351,12 +2351,18 @@ class AIAgent:
         }
 
     def _check_compression_model_feasibility(self) -> None:
-        """Warn at session start if the auxiliary compression model's context
-        window is smaller than the main model's compression threshold.
+        """Warn at session start if auxiliary models' context windows are
+        smaller than the main model's compression threshold.
 
-        When the auxiliary model cannot fit the content that needs summarising,
-        compression will either fail outright (the LLM call errors) or produce
-        a severely truncated summary.
+        Checks both the **compression** auxiliary model (used for
+        summarisation) and the **flush_memories** auxiliary model (used for
+        pre-compression memory extraction).  ``flush_memories`` runs with
+        the *full* conversation just before compression trims it, so its
+        auxiliary model must also be able to fit the threshold-sized window.
+
+        When either auxiliary model cannot fit the content, the session's
+        compression threshold is auto-lowered so the conversation never
+        grows larger than the smallest auxiliary context window.
 
         Called during ``__init__`` so CLI users see the warning immediately
         (via ``_vprint``).  The gateway sets ``status_callback`` *after*
@@ -2373,9 +2379,11 @@ class AIAgent:
                 get_model_context_length,
             )
 
+            _main_runtime = self._current_main_runtime()
+
             client, aux_model = get_text_auxiliary_client(
                 "compression",
-                main_runtime=self._current_main_runtime(),
+                main_runtime=_main_runtime,
             )
             if client is None or not aux_model:
                 msg = (
@@ -2401,18 +2409,54 @@ class AIAgent:
                 config_context_length=getattr(self, "_aux_compression_context_length_config", None),
             )
 
+            # Also resolve the flush_memories auxiliary model — it may differ
+            # from the compression model if the user configured separate
+            # auxiliary.flush_memories.provider/model settings, or if the
+            # auto-detection fallback chain lands on a different provider.
+            # flush_memories runs with the FULL pre-compression conversation
+            # at line ~8296, so its model must also fit the threshold.
+            flush_aux_context = aux_context  # default: same as compression
+            try:
+                flush_client, flush_model = get_text_auxiliary_client(
+                    "flush_memories",
+                    main_runtime=_main_runtime,
+                )
+                if flush_client and flush_model:
+                    _fb = str(getattr(flush_client, "base_url", ""))
+                    _fk = str(getattr(flush_client, "api_key", ""))
+                    _flush_ctx = get_model_context_length(
+                        flush_model, base_url=_fb, api_key=_fk,
+                    )
+                    if _flush_ctx:
+                        flush_aux_context = _flush_ctx
+                        if _flush_ctx < aux_context:
+                            logger.info(
+                                "flush_memories model %s context (%d) is smaller "
+                                "than compression model %s context (%d) — using "
+                                "the smaller value as the effective auxiliary limit.",
+                                flush_model, _flush_ctx, aux_model, aux_context,
+                            )
+            except Exception:
+                pass  # Non-fatal — fall back to compression model's context
+
+            # Use the SMALLER of the two auxiliary context windows as the
+            # effective limit.  This ensures flush_memories (which runs at
+            # the compression threshold) never exceeds its model's context.
+            effective_aux_context = min(aux_context, flush_aux_context)
+
             # Hard floor: the auxiliary compression model must have at least
             # MINIMUM_CONTEXT_LENGTH (64K) tokens of context.  The main model
             # is already required to meet this floor (checked earlier in
             # __init__), so the compression model must too — otherwise it
             # cannot summarise a full threshold-sized window of main-model
             # content.  Mirrors the main-model rejection pattern.
-            if aux_context and aux_context < MINIMUM_CONTEXT_LENGTH:
+            if effective_aux_context and effective_aux_context < MINIMUM_CONTEXT_LENGTH:
+                _limiting_model = flush_model if flush_aux_context < aux_context else aux_model
                 raise ValueError(
-                    f"Auxiliary compression model {aux_model} has a context "
-                    f"window of {aux_context:,} tokens, which is below the "
+                    f"Auxiliary model {_limiting_model} has a context "
+                    f"window of {effective_aux_context:,} tokens, which is below the "
                     f"minimum {MINIMUM_CONTEXT_LENGTH:,} required by Hermes "
-                    f"Agent.  Choose a compression model with at least "
+                    f"Agent.  Choose an auxiliary model with at least "
                     f"{MINIMUM_CONTEXT_LENGTH // 1000}K context (set "
                     f"auxiliary.compression.model in config.yaml), or set "
                     f"auxiliary.compression.context_length to override the "
@@ -2420,13 +2464,13 @@ class AIAgent:
                 )
 
             threshold = self.context_compressor.threshold_tokens
-            if aux_context < threshold:
+            if effective_aux_context < threshold:
                 # Auto-correct: lower the live session threshold so
                 # compression actually works this session.  The hard floor
-                # above guarantees aux_context >= MINIMUM_CONTEXT_LENGTH,
+                # above guarantees effective_aux_context >= MINIMUM_CONTEXT_LENGTH,
                 # so the new threshold is always >= 64K.
                 old_threshold = threshold
-                new_threshold = aux_context
+                new_threshold = effective_aux_context
                 self.context_compressor.threshold_tokens = new_threshold
                 # Keep threshold_percent in sync so future main-model
                 # context_length changes (update_model) re-derive from a
@@ -2436,15 +2480,18 @@ class AIAgent:
                     self.context_compressor.threshold_percent = (
                         new_threshold / main_ctx
                     )
-                safe_pct = int((aux_context / main_ctx) * 100) if main_ctx else 50
+                safe_pct = int((effective_aux_context / main_ctx) * 100) if main_ctx else 50
+                _limiting_model = (
+                    flush_model if flush_aux_context < aux_context else aux_model
+                )
                 msg = (
-                    f"⚠ Compression model ({aux_model}) context is "
-                    f"{aux_context:,} tokens, but the main model's "
+                    f"⚠ Auxiliary model ({_limiting_model}) context is "
+                    f"{effective_aux_context:,} tokens, but the main model's "
                     f"compression threshold was {old_threshold:,} tokens. "
                     f"Auto-lowered this session's threshold to "
                     f"{new_threshold:,} tokens so compression can run.\n"
                     f"  To make this permanent, edit config.yaml — either:\n"
-                    f"  1. Use a larger compression model:\n"
+                    f"  1. Use a larger auxiliary model:\n"
                     f"       auxiliary:\n"
                     f"         compression:\n"
                     f"           model: <model-with-{old_threshold:,}+-context>\n"
@@ -2455,12 +2502,12 @@ class AIAgent:
                 self._compression_warning = msg
                 self._emit_status(msg)
                 logger.warning(
-                    "Auxiliary compression model %s has %d token context, "
+                    "Auxiliary model %s has %d token context, "
                     "below the main model's compression threshold of %d "
                     "tokens — auto-lowered session threshold to %d to "
                     "keep compression working.",
-                    aux_model,
-                    aux_context,
+                    _limiting_model,
+                    effective_aux_context,
                     old_threshold,
                     new_threshold,
                 )
@@ -7974,6 +8021,74 @@ class AIAgent:
             if not memory_tool_def:
                 messages.pop()  # remove flush msg
                 return
+
+            # ── Defence-in-depth: trim messages to fit auxiliary context ──
+            #
+            # _check_compression_model_feasibility already lowers the
+            # compression threshold so conversations should never grow past
+            # the auxiliary model's context.  But flush_memories is also
+            # called from CLI /new and gateway session resets — paths that
+            # don't go through the preflight compression check.  Trim here
+            # as a safety net so those paths can't 400 either.
+            try:
+                from agent.auxiliary_client import get_text_auxiliary_client
+                from agent.model_metadata import (
+                    get_model_context_length,
+                    estimate_messages_tokens_rough,
+                )
+                _flush_client, _flush_model = get_text_auxiliary_client(
+                    "flush_memories",
+                    main_runtime=self._current_main_runtime(),
+                )
+                _flush_ctx = 0
+                if _flush_client and _flush_model:
+                    _flush_ctx = get_model_context_length(
+                        _flush_model,
+                        base_url=str(getattr(_flush_client, "base_url", "") or ""),
+                        api_key=str(getattr(_flush_client, "api_key", "") or ""),
+                    )
+                if not _flush_ctx:
+                    # Fall back to main model's context length
+                    _flush_ctx = getattr(
+                        getattr(self, "context_compressor", None),
+                        "context_length", 0,
+                    )
+                if _flush_ctx:
+                    # Budget = context - output reservation - tool schema overhead
+                    _budget = _flush_ctx - 5120 - 500
+                    if _budget > 0:
+                        _est = estimate_messages_tokens_rough(api_messages)
+                        if _est > _budget:
+                            # Keep system prompt + as many recent messages as fit
+                            _sys = []
+                            _conv = api_messages
+                            if api_messages and api_messages[0].get("role") == "system":
+                                _sys = [api_messages[0]]
+                                _conv = api_messages[1:]
+                            _sys_tok = estimate_messages_tokens_rough(_sys)
+                            _rem = _budget - _sys_tok
+                            _kept: list = []
+                            _acc = 0
+                            for _m in reversed(_conv):
+                                _mt = estimate_messages_tokens_rough([_m])
+                                if _acc + _mt > _rem:
+                                    break
+                                _kept.append(_m)
+                                _acc += _mt
+                            _kept.reverse()
+                            # Always keep at least the last 3 messages
+                            if len(_kept) < 3 and len(_conv) >= 3:
+                                _kept = _conv[-3:]
+                            api_messages = _sys + _kept
+                            logger.info(
+                                "flush_memories: trimmed %d msgs (~%d tok) → %d msgs "
+                                "(~%d tok) to fit %d-token aux context",
+                                len(_sys) + len(_conv), _est, len(api_messages),
+                                estimate_messages_tokens_rough(api_messages),
+                                _flush_ctx,
+                            )
+            except Exception as _trim_err:
+                logger.debug("flush_memories: context trim failed (non-fatal): %s", _trim_err)
 
             # Use auxiliary client for the flush call when available --
             # it's cheaper and avoids Codex Responses API incompatibility.

@@ -71,7 +71,7 @@ def test_auto_corrects_threshold_when_aux_context_below_threshold(mock_get_clien
     agent._check_compression_model_feasibility()
 
     assert len(messages) == 1
-    assert "Compression model" in messages[0]
+    assert "Auxiliary model" in messages[0]
     assert "80,000" in messages[0]        # aux context
     assert "100,000" in messages[0]       # old threshold
     assert "Auto-lowered" in messages[0]
@@ -147,16 +147,16 @@ def test_feasibility_check_passes_live_main_runtime():
         agent._emit_status = lambda msg: None
         agent._check_compression_model_feasibility()
 
-    mock_get_client.assert_called_once_with(
-        "compression",
-        main_runtime={
-            "model": "gpt-5.4",
-            "provider": "openai-codex",
-            "base_url": "https://chatgpt.com/backend-api/codex",
-            "api_key": "codex-token",
-            "api_mode": "codex_responses",
-        },
-    )
+    # Called for both "compression" and "flush_memories" tasks
+    expected_runtime = {
+        "model": "gpt-5.4",
+        "provider": "openai-codex",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "api_key": "codex-token",
+        "api_mode": "codex_responses",
+    }
+    calls = mock_get_client.call_args_list
+    assert any(c == (("compression",), {"main_runtime": expected_runtime}) for c in calls)
 
 
 @patch("agent.model_metadata.get_model_context_length", return_value=1_000_000)
@@ -175,11 +175,16 @@ def test_feasibility_check_passes_config_context_length(mock_get_client, mock_ct
     agent._emit_status = lambda msg: None
     agent._check_compression_model_feasibility()
 
-    mock_ctx_len.assert_called_once_with(
-        "custom/big-model",
-        base_url="http://custom-endpoint:8080/v1",
-        api_key="sk-custom",
-        config_context_length=1_000_000,
+    # The compression task call should include config_context_length
+    calls = mock_ctx_len.call_args_list
+    compression_call = calls[0]  # first call is for the compression model
+    assert compression_call == (
+        ("custom/big-model",),
+        {
+            "base_url": "http://custom-endpoint:8080/v1",
+            "api_key": "sk-custom",
+            "config_context_length": 1_000_000,
+        },
     )
 
 
@@ -197,11 +202,16 @@ def test_feasibility_check_ignores_invalid_context_length(mock_get_client, mock_
     agent._emit_status = lambda msg: None
     agent._check_compression_model_feasibility()
 
-    mock_ctx_len.assert_called_once_with(
-        "custom/model",
-        base_url="http://custom:8080/v1",
-        api_key="sk-test",
-        config_context_length=None,
+    # The compression task call should forward config_context_length=None
+    calls = mock_ctx_len.call_args_list
+    compression_call = calls[0]
+    assert compression_call == (
+        ("custom/model",),
+        {
+            "base_url": "http://custom:8080/v1",
+            "api_key": "sk-test",
+            "config_context_length": None,
+        },
     )
 
 
@@ -249,11 +259,17 @@ def test_init_feasibility_check_uses_aux_context_override_from_config():
         )
 
     assert agent._aux_compression_context_length_config == 1_000_000
-    mock_ctx_len.assert_called_once_with(
-        "custom/big-model",
-        base_url="http://custom-endpoint:8080/v1",
-        api_key="sk-custom",
-        config_context_length=1_000_000,
+    # The compression model call includes config_context_length;
+    # flush_memories call may also fire (same mock).
+    calls = mock_ctx_len.call_args_list
+    compression_call = calls[0]
+    assert compression_call == (
+        ("custom/big-model",),
+        {
+            "base_url": "http://custom-endpoint:8080/v1",
+            "api_key": "sk-custom",
+            "config_context_length": 1_000_000,
+        },
     )
 
 

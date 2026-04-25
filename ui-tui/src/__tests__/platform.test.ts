@@ -31,6 +31,36 @@ describe('platform action modifier', () => {
   })
 })
 
+describe('isVoiceToggleKey', () => {
+  it('matches raw Ctrl+B on macOS (doc-default across platforms)', async () => {
+    const { isVoiceToggleKey } = await importPlatform('darwin')
+
+    expect(isVoiceToggleKey({ ctrl: true, meta: false, super: false }, 'b')).toBe(true)
+    expect(isVoiceToggleKey({ ctrl: true, meta: false, super: false }, 'B')).toBe(true)
+  })
+
+  it('matches Cmd+B on macOS (preserve platform muscle memory)', async () => {
+    const { isVoiceToggleKey } = await importPlatform('darwin')
+
+    expect(isVoiceToggleKey({ ctrl: false, meta: true, super: false }, 'b')).toBe(true)
+    expect(isVoiceToggleKey({ ctrl: false, meta: false, super: true }, 'b')).toBe(true)
+  })
+
+  it('matches Ctrl+B on non-macOS platforms', async () => {
+    const { isVoiceToggleKey } = await importPlatform('linux')
+
+    expect(isVoiceToggleKey({ ctrl: true, meta: false, super: false }, 'b')).toBe(true)
+  })
+
+  it('does not match unmodified b or other Ctrl combos', async () => {
+    const { isVoiceToggleKey } = await importPlatform('darwin')
+
+    expect(isVoiceToggleKey({ ctrl: false, meta: false, super: false }, 'b')).toBe(false)
+    expect(isVoiceToggleKey({ ctrl: true, meta: false, super: false }, 'a')).toBe(false)
+    expect(isVoiceToggleKey({ ctrl: true, meta: false, super: false }, 'c')).toBe(false)
+  })
+})
+
 describe('isMacActionFallback', () => {
   it('routes raw Ctrl+K and Ctrl+W to readline kill-to-end / delete-word on macOS', async () => {
     const { isMacActionFallback } = await importPlatform('darwin')

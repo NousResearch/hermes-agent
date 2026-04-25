@@ -23,6 +23,7 @@ from typing import Callable, Dict, Optional, Any
 logger = logging.getLogger(__name__)
 
 VALID_THREAD_AUTO_ARCHIVE_MINUTES = {60, 1440, 4320, 10080}
+_DISCORD_COMMAND_SYNC_POLICIES = {"safe", "bulk", "off"}
 
 try:
     import discord
@@ -802,14 +803,210 @@ class DiscordAdapter(BasePlatformAdapter):
         if not self._client:
             return
         try:
-            synced = await asyncio.wait_for(self._client.tree.sync(), timeout=30)
-            logger.info("[%s] Synced %d slash command(s)", self.name, len(synced))
+            sync_policy = self._get_discord_command_sync_policy()
+            if sync_policy == "off":
+                logger.info("[%s] Skipping Discord slash command sync (policy=off)", self.name)
+                return
+
+            if sync_policy == "bulk":
+                synced = await asyncio.wait_for(self._client.tree.sync(), timeout=30)
+                logger.info("[%s] Synced %d slash command(s) via bulk tree sync", self.name, len(synced))
+                return
+
+            summary = await asyncio.wait_for(self._safe_sync_slash_commands(), timeout=30)
+            logger.info(
+                "[%s] Safely reconciled %d slash command(s): unchanged=%d updated=%d recreated=%d created=%d deleted=%d",
+                self.name,
+                summary["total"],
+                summary["unchanged"],
+                summary["updated"],
+                summary["recreated"],
+                summary["created"],
+                summary["deleted"],
+            )
         except asyncio.TimeoutError:
             logger.warning("[%s] Slash command sync timed out after 30s", self.name)
         except asyncio.CancelledError:
             raise
         except Exception as e:  # pragma: no cover - defensive logging
             logger.warning("[%s] Slash command sync failed: %s", self.name, e, exc_info=True)
+
+    def _get_discord_command_sync_policy(self) -> str:
+        raw = str(os.getenv("DISCORD_COMMAND_SYNC_POLICY", "safe") or "").strip().lower()
+        if raw in _DISCORD_COMMAND_SYNC_POLICIES:
+            return raw
+        if raw:
+            logger.warning(
+                "[%s] Invalid DISCORD_COMMAND_SYNC_POLICY=%r; falling back to 'safe'",
+                self.name,
+                raw,
+            )
+        return "safe"
+
+    def _canonicalize_app_command_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Reduce command payloads to the semantic fields Hermes manages."""
+        contexts = payload.get("contexts")
+        integration_types = payload.get("integration_types")
+        return {
+            "type": int(payload.get("type", 1) or 1),
+            "name": str(payload.get("name", "") or ""),
+            "description": str(payload.get("description", "") or ""),
+            "default_member_permissions": self._normalize_permissions(
+                payload.get("default_member_permissions")
+            ),
+            "dm_permission": bool(payload.get("dm_permission", True)),
+            "nsfw": bool(payload.get("nsfw", False)),
+            "contexts": sorted(int(c) for c in contexts) if contexts else None,
+            "integration_types": (
+                sorted(int(i) for i in integration_types) if integration_types else None
+            ),
+            "options": [
+                self._canonicalize_app_command_option(item)
+                for item in payload.get("options", []) or []
+                if isinstance(item, dict)
+            ],
+        }
+
+    @staticmethod
+    def _normalize_permissions(value: Any) -> Optional[str]:
+        """Discord emits default_member_permissions as str server-side but discord.py
+        sets it as int locally. Normalize to str-or-None so the comparison is stable."""
+        if value is None:
+            return None
+        return str(value)
+
+    def _existing_command_to_payload(self, command: Any) -> Dict[str, Any]:
+        """Build a canonical-ready dict from an AppCommand.
+
+        discord.py's AppCommand.to_dict() does NOT include nsfw,
+        dm_permission, or default_member_permissions (they live only on the
+        attributes). Pull them from the attributes so the canonicalizer sees
+        the real server-side values instead of defaults — otherwise any
+        command using non-default permissions would diff on every startup.
+        """
+        payload = dict(command.to_dict())
+        nsfw = getattr(command, "nsfw", None)
+        if nsfw is not None:
+            payload["nsfw"] = bool(nsfw)
+        guild_only = getattr(command, "guild_only", None)
+        if guild_only is not None:
+            payload["dm_permission"] = not bool(guild_only)
+        default_permissions = getattr(command, "default_member_permissions", None)
+        if default_permissions is not None:
+            payload["default_member_permissions"] = getattr(
+                default_permissions, "value", default_permissions
+            )
+        return payload
+
+    def _canonicalize_app_command_option(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        return {
+            "type": int(payload.get("type", 0) or 0),
+            "name": str(payload.get("name", "") or ""),
+            "description": str(payload.get("description", "") or ""),
+            "required": bool(payload.get("required", False)),
+            "autocomplete": bool(payload.get("autocomplete", False)),
+            "choices": [
+                {
+                    "name": str(choice.get("name", "") or ""),
+                    "value": choice.get("value"),
+                }
+                for choice in payload.get("choices", []) or []
+                if isinstance(choice, dict)
+            ],
+            "channel_types": list(payload.get("channel_types", []) or []),
+            "min_value": payload.get("min_value"),
+            "max_value": payload.get("max_value"),
+            "min_length": payload.get("min_length"),
+            "max_length": payload.get("max_length"),
+            "options": [
+                self._canonicalize_app_command_option(item)
+                for item in payload.get("options", []) or []
+                if isinstance(item, dict)
+            ],
+        }
+
+    def _patchable_app_command_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Fields supported by discord.py's edit_global_command route."""
+        canonical = self._canonicalize_app_command_payload(payload)
+        return {
+            "name": canonical["name"],
+            "description": canonical["description"],
+            "options": canonical["options"],
+        }
+
+    async def _safe_sync_slash_commands(self) -> Dict[str, int]:
+        """Diff existing global commands and only mutate the commands that changed."""
+        if not self._client:
+            return {
+                "total": 0,
+                "unchanged": 0,
+                "updated": 0,
+                "recreated": 0,
+                "created": 0,
+                "deleted": 0,
+            }
+
+        tree = self._client.tree
+        app_id = getattr(self._client, "application_id", None) or getattr(getattr(self._client, "user", None), "id", None)
+        if not app_id:
+            raise RuntimeError("Discord application ID is unavailable for slash command sync")
+
+        desired_payloads = [command.to_dict(tree) for command in tree.get_commands()]
+        desired_by_key = {
+            (int(payload.get("type", 1) or 1), str(payload.get("name", "") or "").lower()): payload
+            for payload in desired_payloads
+        }
+        existing_commands = await tree.fetch_commands()
+        existing_by_key = {
+            (
+                int(getattr(getattr(command, "type", None), "value", getattr(command, "type", 1)) or 1),
+                str(command.name or "").lower(),
+            ): command
+            for command in existing_commands
+        }
+
+        unchanged = 0
+        updated = 0
+        recreated = 0
+        created = 0
+        deleted = 0
+        http = self._client.http
+
+        for key, desired in desired_by_key.items():
+            current = existing_by_key.pop(key, None)
+            if current is None:
+                await http.upsert_global_command(app_id, desired)
+                created += 1
+                continue
+
+            current_existing_payload = self._existing_command_to_payload(current)
+            current_payload = self._canonicalize_app_command_payload(current_existing_payload)
+            desired_payload = self._canonicalize_app_command_payload(desired)
+            if current_payload == desired_payload:
+                unchanged += 1
+                continue
+
+            if self._patchable_app_command_payload(current_existing_payload) == self._patchable_app_command_payload(desired):
+                await http.delete_global_command(app_id, current.id)
+                await http.upsert_global_command(app_id, desired)
+                recreated += 1
+                continue
+
+            await http.edit_global_command(app_id, current.id, desired)
+            updated += 1
+
+        for current in existing_by_key.values():
+            await http.delete_global_command(app_id, current.id)
+            deleted += 1
+
+        return {
+            "total": len(desired_payloads),
+            "unchanged": unchanged,
+            "updated": updated,
+            "recreated": recreated,
+            "created": created,
+            "deleted": deleted,
+        }
 
     async def _add_reaction(self, message: Any, emoji: str) -> bool:
         """Add an emoji reaction to a Discord message."""
@@ -2049,10 +2246,6 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_usage(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/usage")
 
-        @tree.command(name="provider", description="Show available providers")
-        async def slash_provider(interaction: discord.Interaction):
-            await self._run_simple_slash(interaction, "/provider")
-
         @tree.command(name="help", description="Show available commands")
         async def slash_help(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/help")
@@ -2522,7 +2715,12 @@ class DiscordAdapter(BasePlatformAdapter):
         return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no", "off")
 
     def _discord_free_response_channels(self) -> set:
-        """Return Discord channel IDs where no bot mention is required."""
+        """Return Discord channel IDs where no bot mention is required.
+
+        A single ``"*"`` entry (either from a list or a comma-separated
+        string) is preserved in the returned set so callers can short-circuit
+        on wildcard membership, consistent with ``allowed_channels``.
+        """
         raw = self.config.extra.get("free_response_channels")
         if raw is None:
             raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
@@ -3015,14 +3213,14 @@ class DiscordAdapter(BasePlatformAdapter):
             allowed_channels_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
             if allowed_channels_raw:
                 allowed_channels = {ch.strip() for ch in allowed_channels_raw.split(",") if ch.strip()}
-                if not (channel_ids & allowed_channels):
+                if "*" not in allowed_channels and not (channel_ids & allowed_channels):
                     logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_ids)
                     return
 
             # Check ignored channels - never respond even when mentioned
             ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
             ignored_channels = {ch.strip() for ch in ignored_channels_raw.split(",") if ch.strip()}
-            if channel_ids & ignored_channels:
+            if "*" in ignored_channels or (channel_ids & ignored_channels):
                 logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_ids)
                 return
 
@@ -3036,7 +3234,11 @@ class DiscordAdapter(BasePlatformAdapter):
             voice_linked_ids = {str(ch_id) for ch_id in self._voice_text_channels.values()}
             current_channel_id = str(message.channel.id)
             is_voice_linked_channel = current_channel_id in voice_linked_ids
-            is_free_channel = bool(channel_ids & free_channels) or is_voice_linked_channel
+            is_free_channel = (
+                "*" in free_channels
+                or bool(channel_ids & free_channels)
+                or is_voice_linked_channel
+            )
 
             # Skip the mention check if the message is in a thread where
             # the bot has previously participated (auto-created or replied in).
@@ -3669,6 +3871,15 @@ if DISCORD_AVAILABLE:
 
             self.resolved = True
             model_id = interaction.data["values"][0]
+            self.clear_items()
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="⚙ Switching Model",
+                    description=f"Switching to `{model_id}`...",
+                    color=discord.Color.blue(),
+                ),
+                view=None,
+            )
 
             try:
                 result_text = await self.on_model_selected(
@@ -3679,14 +3890,13 @@ if DISCORD_AVAILABLE:
             except Exception as exc:
                 result_text = f"Error switching model: {exc}"
 
-            self.clear_items()
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 embed=discord.Embed(
                     title="⚙ Model Switched",
                     description=result_text,
                     color=discord.Color.green(),
                 ),
-                view=self,
+                view=None,
             )
 
         async def _on_back(self, interaction: discord.Interaction):

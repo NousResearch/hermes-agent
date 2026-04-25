@@ -361,6 +361,15 @@ DEFAULT_CONFIG = {
         # to finish, then interrupts any remaining runs after the timeout.
         # 0 = no drain, interrupt immediately.
         "restart_drain_timeout": 60,
+        # Max app-level retry attempts for API errors (connection drops,
+        # provider timeouts, 5xx, etc.) before the agent surfaces the
+        # failure.  The OpenAI SDK already does its own low-level retries
+        # (max_retries=2 default) for transient network errors; this is
+        # the Hermes-level retry loop that wraps the whole call.  Lower
+        # this to 1 if you use fallback providers and want fast failover
+        # on flaky primaries; raise it if you prefer to tolerate longer
+        # provider hiccups on a single provider.
+        "api_max_retries": 3,
         "service_tier": "",
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.
@@ -375,7 +384,11 @@ DEFAULT_CONFIG = {
         # Periodic "still working" notification interval (seconds).
         # Sends a status message every N seconds so the user knows the
         # agent hasn't died during long tasks.  0 = disable notifications.
-        "gateway_notify_interval": 600,
+        # Lower values mean faster feedback on slow tasks but more chat
+        # noise; 180s is a compromise that catches spinning weak-model runs
+        # (60+ tool iterations with tiny output) before users assume the
+        # bot is dead and /restart.
+        "gateway_notify_interval": 180,
     },
     
     "terminal": {
@@ -453,6 +466,12 @@ DEFAULT_CONFIG = {
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
         "allow_private_urls": False,  # Allow navigating to private/internal IPs (localhost, 192.168.x.x, etc.)
         "cdp_url": "",  # Optional persistent CDP endpoint for attaching to an existing Chromium/Chrome
+        # CDP supervisor — dialog + frame detection via a persistent WebSocket.
+        # Active only when a CDP-capable backend is attached (Browserbase or
+        # local Chrome via /browser connect). See
+        # website/docs/developer-guide/browser-supervisor.md.
+        "dialog_policy": "must_respond",  # must_respond | auto_dismiss | auto_accept
+        "dialog_timeout_s": 300,  # Safety auto-dismiss after N seconds under must_respond
         "camofox": {
             # When true, Hermes sends a stable profile-scoped userId to Camofox
             # so the server maps it to a persistent Firefox profile automatically.
@@ -473,13 +492,39 @@ DEFAULT_CONFIG = {
     # exceed this are rejected with guidance to use offset+limit.
     # 100K chars ≈ 25–35K tokens across typical tokenisers.
     "file_read_max_chars": 100_000,
-    
+
+    # Tool-output truncation thresholds. When terminal output or a
+    # single read_file page exceeds these limits, Hermes truncates the
+    # payload sent to the model (keeping head + tail for terminal,
+    # enforcing pagination for read_file). Tuning these trades context
+    # footprint against how much raw output the model can see in one
+    # shot. Ported from anomalyco/opencode PR #23770.
+    #
+    # - max_bytes:       terminal_tool output cap, in chars
+    #                    (default 50_000 ≈ 12-15K tokens).
+    # - max_lines:       read_file pagination cap — the maximum `limit`
+    #                    a single read_file call can request before
+    #                    being clamped (default 2000).
+    # - max_line_length: per-line cap applied when read_file emits a
+    #                    line-numbered view (default 2000 chars).
+    "tool_output": {
+        "max_bytes": 50_000,
+        "max_lines": 2000,
+        "max_line_length": 2000,
+    },
+
     "compression": {
         "enabled": True,
         "threshold": 0.50,            # compress when context usage exceeds this ratio
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
 
+    },
+
+    # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
+    # cache_ttl must be "5m" or "1h" (Anthropic-supported tiers); other values are ignored.
+    "prompt_caching": {
+        "cache_ttl": "5m",
     },
 
     # AWS Bedrock provider configuration.
@@ -726,6 +771,10 @@ DEFAULT_CONFIG = {
         "inherit_mcp_toolsets": True,
         "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
+        "child_timeout_seconds": 600,  # wall-clock timeout for each child agent (floor 30s,
+                                       # no ceiling). High-reasoning models on large tasks
+                                       # (e.g. gpt-5.5 xhigh, opus-4.6) need generous budgets;
+                                       # raise if children time out before producing output.
         "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
                                  # "low", "minimal", "none" (empty = inherit parent's level)
         "max_concurrent_children": 3,  # max parallel children per batch; floor of 1 enforced, no ceiling
@@ -760,6 +809,17 @@ DEFAULT_CONFIG = {
         "inline_shell": False,
         # Timeout (seconds) for each !`cmd` snippet when inline_shell is on.
         "inline_shell_timeout": 10,
+        # Run the keyword/pattern security scanner on skills the agent
+        # writes via skill_manage (create/edit/patch).  Off by default
+        # because the agent can already execute the same code paths via
+        # terminal() with no gate, so the scan adds friction (blocks
+        # skills that mention risky keywords in prose) without meaningful
+        # security.  Turn on if you want the belt-and-suspenders — a
+        # dangerous verdict will then surface as a tool error to the
+        # agent, which can retry with the flagged content removed.
+        # External hub installs (trusted/community sources) are always
+        # scanned regardless of this setting.
+        "guard_agent_created": False,
     },
 
     # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.
@@ -1280,7 +1340,7 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
     "XIAOMI_API_KEY": {
-        "description": "Xiaomi MiMo API key for MiMo models (mimo-v2-pro, mimo-v2-omni, mimo-v2-flash)",
+        "description": "Xiaomi MiMo API key for MiMo models (mimo-v2.5-pro, mimo-v2.5, mimo-v2-pro, mimo-v2-omni, mimo-v2-flash)",
         "prompt": "Xiaomi MiMo API Key",
         "url": "https://platform.xiaomimimo.com",
         "password": True,

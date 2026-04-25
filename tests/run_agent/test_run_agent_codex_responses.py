@@ -578,6 +578,36 @@ def test_run_conversation_codex_refreshes_after_401_and_retries(monkeypatch):
     assert result["final_response"] == "Recovered after refresh"
 
 
+def test_run_conversation_copilot_refreshes_after_401_and_retries(monkeypatch):
+    agent = _build_copilot_agent(monkeypatch)
+    calls = {"api": 0, "refresh": 0}
+
+    class _UnauthorizedError(RuntimeError):
+        def __init__(self):
+            super().__init__("Error code: 401 - unauthorized")
+            self.status_code = 401
+
+    def _fake_api_call(api_kwargs):
+        calls["api"] += 1
+        if calls["api"] == 1:
+            raise _UnauthorizedError()
+        return _codex_message_response("Recovered after copilot refresh")
+
+    def _fake_refresh():
+        calls["refresh"] += 1
+        return True
+
+    monkeypatch.setattr(agent, "_interruptible_api_call", _fake_api_call)
+    monkeypatch.setattr(agent, "_try_refresh_copilot_client_credentials", _fake_refresh)
+
+    result = agent.run_conversation("Say OK")
+
+    assert calls["api"] == 2
+    assert calls["refresh"] == 1
+    assert result["completed"] is True
+    assert result["final_response"] == "Recovered after copilot refresh"
+
+
 def test_try_refresh_codex_client_credentials_rebuilds_client(monkeypatch):
     agent = _build_agent(monkeypatch)
     closed = {"value": False}
@@ -611,6 +641,62 @@ def test_try_refresh_codex_client_credentials_rebuilds_client(monkeypatch):
     assert rebuilt["kwargs"]["api_key"] == "new-codex-token"
     assert rebuilt["kwargs"]["base_url"] == "https://chatgpt.com/backend-api/codex"
     assert isinstance(agent.client, _RebuiltClient)
+
+
+def test_try_refresh_copilot_client_credentials_rebuilds_client(monkeypatch):
+    agent = _build_copilot_agent(monkeypatch)
+    closed = {"value": False}
+    rebuilt = {"kwargs": None}
+
+    class _ExistingClient:
+        def close(self):
+            closed["value"] = True
+
+    class _RebuiltClient:
+        pass
+
+    def _fake_openai(**kwargs):
+        rebuilt["kwargs"] = kwargs
+        return _RebuiltClient()
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("gho_new_token", "GH_TOKEN"),
+    )
+    monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
+
+    agent.client = _ExistingClient()
+    ok = agent._try_refresh_copilot_client_credentials()
+
+    assert ok is True
+    assert closed["value"] is True
+    assert rebuilt["kwargs"]["api_key"] == "gho_new_token"
+    assert rebuilt["kwargs"]["base_url"] == "https://api.githubcopilot.com"
+    assert rebuilt["kwargs"]["default_headers"]["Copilot-Integration-Id"] == "vscode-chat"
+    assert isinstance(agent.client, _RebuiltClient)
+
+
+def test_try_refresh_copilot_client_credentials_rebuilds_even_if_token_unchanged(monkeypatch):
+    agent = _build_copilot_agent(monkeypatch)
+    rebuilt = {"count": 0}
+
+    class _RebuiltClient:
+        pass
+
+    def _fake_openai(**kwargs):
+        rebuilt["count"] += 1
+        return _RebuiltClient()
+
+    monkeypatch.setattr(
+        "hermes_cli.copilot_auth.resolve_copilot_token",
+        lambda: ("gh-token", "gh auth token"),
+    )
+    monkeypatch.setattr(run_agent, "OpenAI", _fake_openai)
+
+    ok = agent._try_refresh_copilot_client_credentials()
+
+    assert ok is True
+    assert rebuilt["count"] == 1
 
 
 def test_run_conversation_codex_tool_round_trip(monkeypatch):
@@ -855,6 +941,113 @@ def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(mo
 
     assert finish_reason == "incomplete"
     assert "inspect the repository" in (assistant_message.content or "")
+
+
+def test_normalize_codex_response_detects_leaked_tool_call_text(monkeypatch):
+    """Harmony-style `to=functions.foo` leaked into assistant content with no
+    structured function_call items must be treated as incomplete so the
+    continuation path can re-elicit a proper tool call. This is the
+    Taiwan-embassy-email (Discord bug report) failure mode: child agent
+    produces a confident-looking summary, tool_trace is empty because no
+    tools actually ran, parent can't audit the claim.
+    """
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    leaked_content = (
+        "I'll check the official page directly.\n"
+        "to=functions.exec_command {\"cmd\": \"curl https://example.test\"}\n"
+        "assistant to=functions.exec_command {\"stdout\": \"mailto:foo@example.test\"}\n"
+        "Extracted: foo@example.test"
+    )
+    response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                status="completed",
+                content=[SimpleNamespace(type="output_text", text=leaked_content)],
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
+        status="completed",
+        model="gpt-5.4",
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "incomplete"
+    # Content is scrubbed so the parent never surfaces the leaked text as a
+    # summary. tool_calls stays empty because no structured function_call
+    # item existed.
+    assert (assistant_message.content or "") == ""
+    assert assistant_message.tool_calls == []
+
+
+def test_normalize_codex_response_ignores_tool_call_text_when_real_tool_call_present(monkeypatch):
+    """If the model emitted BOTH a structured function_call AND some text that
+    happens to contain `to=functions.*` (unlikely but possible), trust the
+    structured call — don't wipe content that came alongside a real tool use.
+    """
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                status="completed",
+                content=[SimpleNamespace(
+                    type="output_text",
+                    text="Running the command via to=functions.exec_command now.",
+                )],
+            ),
+            SimpleNamespace(
+                type="function_call",
+                id="fc_1",
+                call_id="call_1",
+                name="terminal",
+                arguments="{}",
+            ),
+        ],
+        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
+        status="completed",
+        model="gpt-5.4",
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "tool_calls"
+    assert assistant_message.tool_calls  # real call preserved
+    assert "Running the command" in (assistant_message.content or "")
+
+
+def test_normalize_codex_response_no_leak_passes_through(monkeypatch):
+    """Sanity: normal assistant content that doesn't contain the leak pattern
+    is returned verbatim with finish_reason=stop."""
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                status="completed",
+                content=[SimpleNamespace(
+                    type="output_text",
+                    text="Here is the answer with no leak.",
+                )],
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
+        status="completed",
+        model="gpt-5.4",
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "stop"
+    assert assistant_message.content == "Here is the answer with no leak."
+    assert assistant_message.tool_calls == []
 
 
 def test_interim_commentary_is_not_marked_already_streamed_without_callbacks(monkeypatch):

@@ -327,6 +327,16 @@ compression:
   # auxiliary section below (auxiliary.compression.provider / model).
 
 # =============================================================================
+# Anthropic prompt caching TTL
+# =============================================================================
+# When prompt caching is active (Claude via OpenRouter or native Anthropic),
+# Anthropic supports two TTL tiers for cached prefixes: "5m" (default) and
+# "1h". Other values are ignored and "5m" is used.
+#
+prompt_caching:
+  cache_ttl: "5m" # use "1h" for long sessions with pauses between turns
+
+# =============================================================================
 # Auxiliary Models (Advanced — Experimental)
 # =============================================================================
 # Hermes uses lightweight "auxiliary" models for side tasks: image analysis,
@@ -507,6 +517,13 @@ agent:
   # finish, then interrupts anything still running after this timeout.
   # 0 = no drain, interrupt immediately.
   # restart_drain_timeout: 60
+
+  # Max app-level retry attempts for API errors (connection drops, provider
+  # timeouts, 5xx, etc.) before the agent surfaces the failure. Lower this
+  # to 1 if you use fallback providers and want fast failover on flaky
+  # primaries (default 3). The OpenAI SDK does its own low-level retries
+  # underneath this wrapper — this is the Hermes-level loop.
+  # api_max_retries: 3
   
   # Enable verbose logging
   verbose: false

@@ -9,7 +9,7 @@ resolution-markers = [
 ]
 
 [options]
-exclude-newer = "2026-04-16T11:49:00.318115Z"
+exclude-newer = "2026-04-17T16:49:45.944715922Z"
 exclude-newer-span = "P7D"
 
 [[package]]
@@ -1870,7 +1870,7 @@ wheels = [
 
 [[package]]
 name = "hermes-agent"
-version = "0.10.0"
+version = "0.11.0"
 source = { editable = "." }
 dependencies = [
     { name = "anthropic" },

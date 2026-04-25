@@ -19,6 +19,26 @@ const INTERRUPT_COOLDOWN_MS = 1500
 const ACTIVITY_LIMIT = 8
 const TRAIL_LIMIT = 8
 
+// Extracts the raw patch from a diff-only segment produced by
+// pushInlineDiffSegment. Used at message.complete to dedupe against final
+// assistant text that narrates the same patch. Returns null for anything
+// else so real assistant narration never gets touched.
+const diffSegmentBody = (msg: Msg): null | string => {
+  if (msg.kind !== 'diff') {
+    return null
+  }
+
+  const m = msg.text.match(/^```diff\n([\s\S]*?)\n```$/)
+
+  return m ? m[1]! : null
+}
+
+const insertBeforeFirstDiff = (segments: Msg[], msg: Msg): Msg[] => {
+  const index = segments.findIndex(segment => segment.kind === 'diff')
+
+  return index < 0 ? [...segments, msg] : [...segments.slice(0, index), msg, ...segments.slice(index)]
+}
+
 export interface InterruptDeps {
   appendMessage: (msg: Msg) => void
   gw: { request: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T> }
@@ -40,7 +60,6 @@ class TurnController {
   bufRef = ''
   interrupted = false
   lastStatusNote = ''
-  pendingInlineDiffs: string[] = []
   persistedToolLabels = new Set<string>()
   persistSpawnTree?: (subagents: SubagentProgress[], sessionId: null | string) => Promise<void>
   protocolWarned = false
@@ -79,7 +98,6 @@ class TurnController {
     this.activeTools = []
     this.streamTimer = clear(this.streamTimer)
     this.bufRef = ''
-    this.pendingInlineDiffs = []
     this.pendingSegmentTools = []
     this.segmentMessages = []
 
@@ -186,18 +204,35 @@ class TurnController {
     }, REASONING_PULSE_MS)
   }
 
-  queueInlineDiff(diffText: string) {
+  pushInlineDiffSegment(diffText: string) {
     // Strip CLI chrome the gateway emits before the unified diff (e.g. a
     // leading "┊ review diff" header written by `_emit_inline_diff` for the
     // terminal printer). That header only makes sense as stdout dressing,
     // not inside a markdown ```diff block.
-    const text = diffText.replace(/^\s*┊[^\n]*\n?/, '').trim()
+    const stripped = diffText.replace(/^\s*┊[^\n]*\n?/, '').trim()
 
-    if (!text || this.pendingInlineDiffs.includes(text)) {
+    if (!stripped) {
       return
     }
 
-    this.pendingInlineDiffs = [...this.pendingInlineDiffs, text]
+    // Flush any in-progress streaming text as its own segment first, so the
+    // diff lands BETWEEN the assistant narration that preceded the edit and
+    // whatever the agent streams afterwards — not glued onto the final
+    // message. This is the whole point of segment-anchored diffs: the diff
+    // renders where the edit actually happened.
+    this.flushStreamingSegment()
+
+    const block = `\`\`\`diff\n${stripped}\n\`\`\``
+
+    // Skip consecutive duplicates (same tool firing tool.complete twice, or
+    // two edits producing the same patch). Keeping this cheap — deeper
+    // dedupe against the final assistant text happens at message.complete.
+    if (this.segmentMessages.at(-1)?.text === block) {
+      return
+    }
+
+    this.segmentMessages = [...this.segmentMessages, { kind: 'diff', role: 'assistant', text: block }]
+    patchTurnState({ streamSegments: this.segmentMessages })
   }
 
   pushActivity(text: string, tone: ActivityItem['tone'] = 'info', replaceLabel?: string) {
@@ -234,7 +269,6 @@ class TurnController {
     this.idle()
     this.clearReasoning()
     this.clearStatusTimer()
-    this.pendingInlineDiffs = []
     this.pendingSegmentTools = []
     this.segmentMessages = []
     this.turnTools = []
@@ -245,35 +279,49 @@ class TurnController {
     const rawText = (payload.rendered ?? payload.text ?? this.bufRef).trimStart()
     const split = splitReasoning(rawText)
     const finalText = split.text
-    // Skip appending if the assistant already narrated the diff inside a
-    // markdown fence of its own — otherwise we render two stacked diff
-    // blocks for the same edit.
-    const assistantAlreadyHasDiff = /```(?:diff|patch)\b/i.test(finalText)
-
-    const remainingInlineDiffs = assistantAlreadyHasDiff
-      ? []
-      : this.pendingInlineDiffs.filter(diff => !finalText.includes(diff))
-
-    const inlineDiffBlock = remainingInlineDiffs.length
-      ? `\`\`\`diff\n${remainingInlineDiffs.join('\n\n')}\n\`\`\``
-      : ''
-
-    const mergedText = [finalText, inlineDiffBlock].filter(Boolean).join('\n\n')
     const existingReasoning = this.reasoningText.trim() || String(payload.reasoning ?? '').trim()
     const savedReasoning = [existingReasoning, existingReasoning ? '' : split.reasoning].filter(Boolean).join('\n\n')
     const savedReasoningTokens = savedReasoning ? estimateTokensRough(savedReasoning) : 0
     const savedToolTokens = this.toolTokenAcc
     const tools = this.pendingSegmentTools
-    const finalMessages = [...this.segmentMessages]
 
-    if (mergedText) {
+    // Drop diff-only segments the agent is about to narrate in the final
+    // reply. Without this, a closing "here's the diff …" message would
+    // render two stacked copies of the same patch. Only touches segments
+    // with `kind: 'diff'` emitted by pushInlineDiffSegment — real
+    // assistant narration stays put.
+    const finalHasOwnDiffFence = /```(?:diff|patch)\b/i.test(finalText)
+
+    const segments = this.segmentMessages.filter(msg => {
+      const body = diffSegmentBody(msg)
+
+      return body === null || (!finalHasOwnDiffFence && !finalText.includes(body))
+    })
+
+    const hasDiffSegment = segments.some(msg => msg.kind === 'diff')
+    const detailsBelongBeforeDiff = hasDiffSegment && (tools.length > 0 || Boolean(savedReasoning))
+    const finalMessages = detailsBelongBeforeDiff
+      ? insertBeforeFirstDiff(segments, {
+          kind: 'trail',
+          role: 'system',
+          text: '',
+          thinking: savedReasoning || undefined,
+          thinkingTokens: savedReasoning ? savedReasoningTokens : undefined,
+          toolTokens: savedToolTokens || undefined,
+          ...(tools.length && { tools })
+        })
+      : [...segments]
+
+    if (finalText) {
       finalMessages.push({
         role: 'assistant',
-        text: mergedText,
-        thinking: savedReasoning || undefined,
-        thinkingTokens: savedReasoning ? savedReasoningTokens : undefined,
-        toolTokens: savedToolTokens || undefined,
-        ...(tools.length && { tools })
+        text: finalText,
+        ...(!detailsBelongBeforeDiff && {
+          thinking: savedReasoning || undefined,
+          thinkingTokens: savedReasoning ? savedReasoningTokens : undefined,
+          toolTokens: savedToolTokens || undefined,
+          ...(tools.length && { tools })
+        })
       })
     }
 
@@ -300,7 +348,7 @@ class TurnController {
     this.bufRef = ''
     patchTurnState({ activity: [], outcome: '' })
 
-    return { finalMessages, finalText: mergedText, wasInterrupted }
+    return { finalMessages, finalText, wasInterrupted }
   }
 
   recordMessageDelta({ rendered, text }: { rendered?: string; text?: string }) {
@@ -406,7 +454,6 @@ class TurnController {
     this.bufRef = ''
     this.interrupted = false
     this.lastStatusNote = ''
-    this.pendingInlineDiffs = []
     this.pendingSegmentTools = []
     this.protocolWarned = false
     this.segmentMessages = []
@@ -452,7 +499,6 @@ class TurnController {
     this.endReasoningPhase()
     this.clearReasoning()
     this.activeTools = []
-    this.pendingInlineDiffs = []
     this.turnTools = []
     this.toolTokenAcc = 0
     this.persistedToolLabels.clear()

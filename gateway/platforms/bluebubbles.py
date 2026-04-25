@@ -99,6 +99,7 @@ def _normalize_server_url(raw: str) -> str:
 
 class BlueBubblesAdapter(BasePlatformAdapter):
     platform = Platform.BLUEBUBBLES
+    SUPPORTS_MESSAGE_EDITING = False
     MAX_MESSAGE_LENGTH = MAX_TEXT_LENGTH
 
     def __init__(self, config: PlatformConfig):
@@ -391,6 +392,13 @@ class BlueBubblesAdapter(BasePlatformAdapter):
     # Text sending
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def truncate_message(content: str, max_length: int = MAX_TEXT_LENGTH) -> List[str]:
+        # Use the base splitter but skip pagination indicators — iMessage
+        # bubbles flow naturally without "(1/3)" suffixes.
+        chunks = BasePlatformAdapter.truncate_message(content, max_length)
+        return [re.sub(r"\s*\(\d+/\d+\)$", "", c) for c in chunks]
+
     async def send(
         self,
         chat_id: str,
@@ -398,10 +406,19 @@ class BlueBubblesAdapter(BasePlatformAdapter):
         reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> SendResult:
-        text = strip_markdown(content or "")
+        text = self.format_message(content)
         if not text:
             return SendResult(success=False, error="BlueBubbles send requires text")
-        chunks = self.truncate_message(text, max_length=self.MAX_MESSAGE_LENGTH)
+        # Split on paragraph breaks first (double newlines) so each thought
+        # becomes its own iMessage bubble, then truncate any that are still
+        # too long.
+        paragraphs = [p.strip() for p in re.split(r'\n\s*\n', text) if p.strip()]
+        chunks: List[str] = []
+        for para in (paragraphs or [text]):
+            if len(para) <= self.MAX_MESSAGE_LENGTH:
+                chunks.append(para)
+            else:
+                chunks.extend(self.truncate_message(para, max_length=self.MAX_MESSAGE_LENGTH))
         last = SendResult(success=True)
         for chunk in chunks:
             guid = await self._resolve_chat_guid(chat_id)

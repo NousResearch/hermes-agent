@@ -455,6 +455,61 @@ class CredentialPool:
             logger.debug("Failed to sync from credentials file: %s", exc)
         return entry
 
+    def _sync_nous_entry_from_auth_store(self, entry: PooledCredential) -> PooledCredential:
+        """Sync a Nous pool entry from auth.json if tokens differ.
+
+        Nous OAuth refresh tokens are single-use.  When another process
+        (e.g. a concurrent cron) refreshes the token via
+        ``resolve_nous_runtime_credentials``, it writes fresh tokens to
+        auth.json under ``_auth_store_lock``.  The pool entry's tokens
+        become stale.  This method detects that and adopts the newer pair,
+        avoiding a "refresh token reuse" revocation on the Nous Portal.
+        """
+        if self.provider != "nous" or entry.source != "device_code":
+            return entry
+        try:
+            with _auth_store_lock():
+                auth_store = _load_auth_store()
+                state = _load_provider_state(auth_store, "nous")
+            if not state:
+                return entry
+            store_refresh = state.get("refresh_token", "")
+            store_access = state.get("access_token", "")
+            if store_refresh and store_refresh != entry.refresh_token:
+                logger.debug(
+                    "Pool entry %s: syncing tokens from auth.json (Nous refresh token changed)",
+                    entry.id,
+                )
+                field_updates: Dict[str, Any] = {
+                    "access_token": store_access,
+                    "refresh_token": store_refresh,
+                    "last_status": None,
+                    "last_status_at": None,
+                    "last_error_code": None,
+                }
+                if state.get("expires_at"):
+                    field_updates["expires_at"] = state["expires_at"]
+                if state.get("agent_key"):
+                    field_updates["agent_key"] = state["agent_key"]
+                if state.get("agent_key_expires_at"):
+                    field_updates["agent_key_expires_at"] = state["agent_key_expires_at"]
+                if state.get("inference_base_url"):
+                    field_updates["inference_base_url"] = state["inference_base_url"]
+                extra_updates = dict(entry.extra)
+                for extra_key in ("obtained_at", "expires_in", "agent_key_id",
+                                  "agent_key_expires_in", "agent_key_reused",
+                                  "agent_key_obtained_at"):
+                    val = state.get(extra_key)
+                    if val is not None:
+                        extra_updates[extra_key] = val
+                updated = replace(entry, extra=extra_updates, **field_updates)
+                self._replace_entry(entry, updated)
+                self._persist()
+                return updated
+        except Exception as exc:
+            logger.debug("Failed to sync Nous entry from auth.json: %s", exc)
+        return entry
+
     def _sync_device_code_entry_to_auth_store(self, entry: PooledCredential) -> None:
         """Write refreshed pool entry tokens back to auth.json providers.
 
@@ -561,6 +616,9 @@ class CredentialPool:
                     last_refresh=refreshed.get("last_refresh"),
                 )
             elif self.provider == "nous":
+                synced = self._sync_nous_entry_from_auth_store(entry)
+                if synced is not entry:
+                    entry = synced
                 nous_state = {
                     "access_token": entry.access_token,
                     "refresh_token": entry.refresh_token,
@@ -635,6 +693,26 @@ class CredentialPool:
                     # Credentials file had a valid (non-expired) token — use it directly
                     logger.debug("Credentials file has valid token, using without refresh")
                     return synced
+            # For nous: another process may have consumed the refresh token
+            # between our proactive sync and the HTTP call.  Re-sync from
+            # auth.json and adopt the fresh tokens if available.
+            if self.provider == "nous":
+                synced = self._sync_nous_entry_from_auth_store(entry)
+                if synced.refresh_token != entry.refresh_token:
+                    logger.debug("Nous refresh failed but auth.json has newer tokens — adopting")
+                    updated = replace(
+                        synced,
+                        last_status=STATUS_OK,
+                        last_status_at=None,
+                        last_error_code=None,
+                        last_error_reason=None,
+                        last_error_message=None,
+                        last_error_reset_at=None,
+                    )
+                    self._replace_entry(synced, updated)
+                    self._persist()
+                    self._sync_device_code_entry_to_auth_store(updated)
+                    return updated
             self._mark_exhausted(entry, None)
             return None
 
@@ -698,6 +776,17 @@ class CredentialPool:
                 if synced is not entry:
                     entry = synced
                     cleared_any = True
+            # For nous entries, sync from auth.json before status checks.
+            # Another process may have successfully refreshed via
+            # resolve_nous_runtime_credentials(), making this entry's
+            # exhausted status stale.
+            if (self.provider == "nous"
+                    and entry.source == "device_code"
+                    and entry.last_status == STATUS_EXHAUSTED):
+                synced = self._sync_nous_entry_from_auth_store(entry)
+                if synced is not entry:
+                    entry = synced
+                    cleared_any = True
             if entry.last_status == STATUS_EXHAUSTED:
                 exhausted_until = _exhausted_until(entry)
                 if exhausted_until is not None and now < exhausted_until:
@@ -739,8 +828,11 @@ class CredentialPool:
 
         if self._strategy == STRATEGY_LEAST_USED and len(available) > 1:
             entry = min(available, key=lambda e: e.request_count)
+            # Increment usage counter so subsequent selections distribute load
+            updated = replace(entry, request_count=entry.request_count + 1)
+            self._replace_entry(entry, updated)
             self._current_id = entry.id
-            return entry
+            return updated
 
         if self._strategy == STRATEGY_ROUND_ROBIN and len(available) > 1:
             entry = available[0]
@@ -1056,6 +1148,18 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                     "inference_base_url": state.get("inference_base_url"),
                     "agent_key": state.get("agent_key"),
                     "agent_key_expires_at": state.get("agent_key_expires_at"),
+                    # Carry the mint/refresh timestamps into the pool so
+                    # freshness-sensitive consumers (self-heal hooks, pool
+                    # pruning by age) can distinguish just-minted credentials
+                    # from stale ones.  Without these, fresh device_code
+                    # entries get obtained_at=None and look older than they
+                    # are (#15099).
+                    "obtained_at": state.get("obtained_at"),
+                    "expires_in": state.get("expires_in"),
+                    "agent_key_id": state.get("agent_key_id"),
+                    "agent_key_expires_in": state.get("agent_key_expires_in"),
+                    "agent_key_reused": state.get("agent_key_reused"),
+                    "agent_key_obtained_at": state.get("agent_key_obtained_at"),
                     "tls": state.get("tls") if isinstance(state.get("tls"), dict) else None,
                     "label": seeded_label,
                 },
@@ -1066,9 +1170,10 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
         # env vars (COPILOT_GITHUB_TOKEN / GH_TOKEN).  They don't live in
         # the auth store or credential pool, so we resolve them here.
         try:
-            from hermes_cli.copilot_auth import resolve_copilot_token
+            from hermes_cli.copilot_auth import resolve_copilot_token, get_copilot_api_token
             token, source = resolve_copilot_token()
             if token:
+                api_token = get_copilot_api_token(token)
                 source_name = "gh_cli" if "gh" in source.lower() else f"env:{source}"
                 if not _is_suppressed(provider, source_name):
                     active_sources.add(source_name)
@@ -1080,7 +1185,7 @@ def _seed_from_singletons(provider: str, entries: List[PooledCredential]) -> Tup
                         {
                             "source": source_name,
                             "auth_type": AUTH_TYPE_API_KEY,
-                            "access_token": token,
+                            "access_token": api_token,
                             "base_url": pconfig.inference_base_url if pconfig else "",
                             "label": source,
                         },

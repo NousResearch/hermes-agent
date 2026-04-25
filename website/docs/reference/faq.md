@@ -614,19 +614,6 @@ No. Each profile has its own memory store, session database, and skills director
 
 `hermes update` pulls the latest code and reinstalls dependencies **once** (not per-profile). It then syncs updated skills to all profiles automatically. You only need to run `hermes update` once — it covers every profile on the machine.
 
-### Can I move a profile to a different machine?
-
-Yes. Export the profile to a portable archive and import it on the other machine:
-
-```bash
-# On the source machine
-hermes profile export work ./work-backup.tar.gz
-
-# Copy the file to the target machine, then:
-hermes profile import ./work-backup.tar.gz work
-```
-
-The imported profile will have all config, memories, sessions, and skills from the export. You may need to update paths or re-authenticate with providers if the new machine has a different setup.
 
 ### How many profiles can I run?
 
@@ -749,24 +736,55 @@ Skills with very long descriptions are truncated to 40 characters in the Telegra
    curl -fsSL https://raw.githubusercontent.com/NousResearch/hermes-agent/main/scripts/install.sh | bash
    ```
 
-2. Copy your entire `~/.hermes/` directory **except** the `hermes-agent` subdirectory (that's the code repo — the new install has its own):
+2. On the **source machine**, create a full backup:
+   ```bash
+   hermes backup
+   ```
+   This creates a zip of your entire `~/.hermes/` directory — config, API keys, memories, skills, sessions, and profiles — saved to your home directory as `~/hermes-backup-<timestamp>.zip`.
+
+3. Copy the zip to the new machine and import it:
    ```bash
    # On the source machine
-   rsync -av --exclude='hermes-agent' ~/.hermes/ newmachine:~/.hermes/
+   scp ~/hermes-backup-<timestamp>.zip newmachine:~/
+
+   # On the new machine
+   hermes import ~/hermes-backup-<timestamp>.zip
    ```
 
-   Or use profile export/import:
-   ```bash
-   # On source machine
-   hermes profile export default ./hermes-backup.tar.gz
+4. On the new machine, run `hermes setup` to verify API keys and provider config are working.
 
-   # On target machine
-   hermes profile import ./hermes-backup.tar.gz default
-   ```
+### Moving a single profile to another machine
 
-3. On the new machine, run `hermes setup` to verify API keys and provider config are working. Re-authenticate any messaging platforms (especially WhatsApp, which uses QR pairing).
+**Scenario:** You want to move or share one specific profile — not your full installation.
 
-The `~/.hermes/` directory contains everything: `config.yaml`, `.env`, `SOUL.md`, `memories/`, `skills/`, `state.db` (sessions), `cron/`, and any custom plugins. The code itself lives in `~/.hermes/hermes-agent/` and is installed fresh.
+```bash
+# On the source machine
+hermes profile export work ./work-backup.tar.gz
+
+# Copy the file to the target machine, then:
+hermes profile import ./work-backup.tar.gz work
+```
+
+The imported profile will have all config, memories, sessions, and skills from the export. You may need to update paths or re-authenticate with providers if the new machine has a different setup.
+
+### `hermes backup` vs `hermes profile export`
+
+| Feature | `hermes backup` | `hermes profile export` |
+| :--- | :--- | :--- |
+| **Use Case** | **Full machine migration** | **Porting/sharing a specific profile** |
+| **Scope** | Global (entire `~/.hermes` directory) | Local (single profile directory) |
+| **Includes** | All profiles, global config, API keys, sessions | Single profile: SOUL.md, memories, sessions, skills |
+| **Credentials** | **Included** (`.env` and `auth.json`) | **Excluded** (stripped for safe sharing) |
+| **Format** | `.zip` | `.tar.gz` |
+
+**Manual fallback (rsync):** If you prefer to copy files directly, exclude the code repo:
+```bash
+rsync -av --exclude='hermes-agent' ~/.hermes/ newmachine:~/.hermes/
+```
+
+:::tip
+`hermes backup` produces a consistent snapshot even while Hermes is actively running. The restored archive excludes machine-local runtime files like `gateway.pid` and `cron.pid`.
+:::
 
 ### Permission denied when reloading shell after install
 

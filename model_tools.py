@@ -343,6 +343,18 @@ def get_tool_definitions(
     global _last_resolved_tool_names
     _last_resolved_tool_names = [t["function"]["name"] for t in filtered_tools]
 
+    # Sanitize schemas for broad backend compatibility. llama.cpp's
+    # json-schema-to-grammar converter (used by its OAI server to build
+    # GBNF tool-call parsers) rejects some shapes that cloud providers
+    # silently accept — bare "type": "object" with no properties,
+    # string-valued schema nodes from malformed MCP servers, etc. This
+    # is a no-op for schemas that are already well-formed.
+    try:
+        from tools.schema_sanitizer import sanitize_tool_schemas
+        filtered_tools = sanitize_tool_schemas(filtered_tools)
+    except Exception as e:  # pragma: no cover — defensive
+        logger.warning("Schema sanitization skipped: %s", e)
+
     return filtered_tools
 
 
@@ -418,6 +430,31 @@ def _coerce_value(value: str, expected_type):
         return _coerce_number(value, integer_only=(expected_type == "integer"))
     if expected_type == "boolean":
         return _coerce_boolean(value)
+    if expected_type == "array":
+        return _coerce_json(value, list)
+    if expected_type == "object":
+        return _coerce_json(value, dict)
+    return value
+
+
+def _coerce_json(value: str, expected_python_type: type):
+    """Parse *value* as JSON when the schema expects an array or object.
+
+    Handles model output drift where a complex oneOf/discriminated-union schema
+    causes the LLM to emit the array/object as a JSON string instead of a native
+    structure.  Returns the original string if parsing fails or yields the wrong
+    Python type.
+    """
+    try:
+        parsed = json.loads(value)
+    except (ValueError, TypeError):
+        return value
+    if isinstance(parsed, expected_python_type):
+        logger.debug(
+            "coerce_tool_args: coerced string to %s via json.loads",
+            expected_python_type.__name__,
+        )
+        return parsed
     return value
 
 
@@ -427,9 +464,9 @@ def _coerce_number(value: str, integer_only: bool = False):
         f = float(value)
     except (ValueError, OverflowError):
         return value
-    # Guard against inf/nan before int() conversion
+    # Guard against inf/nan — not JSON-serializable, keep original string
     if f != f or f == float("inf") or f == float("-inf"):
-        return f
+        return value
     # If it looks like an integer (no fractional part), return int
     if f == int(f):
         return int(f)

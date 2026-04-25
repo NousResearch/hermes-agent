@@ -33,3 +33,17 @@ export const isMacActionFallback = (
 /** Match action-modifier + a single character (case-insensitive). */
 export const isAction = (key: { ctrl: boolean; meta: boolean; super?: boolean }, ch: string, target: string): boolean =>
   isActionMod(key) && ch.toLowerCase() === target
+
+/**
+ * Voice recording toggle key (Ctrl+B).
+ *
+ * Documented as "Ctrl+B" everywhere: tips.py, config.yaml's voice.record_key
+ * default, and the Python CLI prompt_toolkit handler. We accept raw Ctrl+B on
+ * every platform so the TUI matches those docs. On macOS we additionally
+ * accept Cmd+B (the platform action modifier) so existing macOS muscle memory
+ * keeps working.
+ */
+export const isVoiceToggleKey = (
+  key: { ctrl: boolean; meta: boolean; super?: boolean },
+  ch: string
+): boolean => (key.ctrl || isActionMod(key)) && ch.toLowerCase() === 'b'

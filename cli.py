@@ -4882,15 +4882,22 @@ class HermesCLI:
             _cprint(f"  Failed to create branch session: {e}")
             return
 
-        # Copy conversation history to the new session
+        # Copy conversation history to the new session, redacting packet content
+        from run_agent import _scrub_packet_tool_args
         for msg in self.conversation_history:
             try:
+                tool_calls = msg.get("tool_calls")
+                if isinstance(tool_calls, list):
+                    tool_calls = _scrub_packet_tool_args(tool_calls)
+                content = msg.get("content")
+                if isinstance(content, list):
+                    content = _scrub_packet_tool_args(content)
                 self._session_db.append_message(
                     session_id=new_session_id,
                     role=msg.get("role", "user"),
-                    content=msg.get("content"),
+                    content=content,
                     tool_name=msg.get("tool_name") or msg.get("name"),
-                    tool_calls=msg.get("tool_calls"),
+                    tool_calls=tool_calls,
                     tool_call_id=msg.get("tool_call_id"),
                     reasoning=msg.get("reasoning"),
                 )
@@ -4938,16 +4945,26 @@ class HermesCLI:
         if not self.conversation_history:
             print("(;_;) No conversation to save.")
             return
-        
+
+        from run_agent import _scrub_packet_tool_args
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         filename = f"hermes_conversation_{timestamp}.json"
-        
+
+        scrubbed_history = []
+        for msg in self.conversation_history:
+            msg = dict(msg)
+            if isinstance(msg.get("tool_calls"), list):
+                msg["tool_calls"] = _scrub_packet_tool_args(msg["tool_calls"])
+            if isinstance(msg.get("content"), list):
+                msg["content"] = _scrub_packet_tool_args(msg["content"])
+            scrubbed_history.append(msg)
+
         try:
             with open(filename, "w", encoding="utf-8") as f:
                 json.dump({
                     "model": self.model,
                     "session_start": self.session_start.isoformat(),
-                    "messages": self.conversation_history,
+                    "messages": scrubbed_history,
                 }, f, indent=2, ensure_ascii=False)
             print(f"(^_^)v Conversation saved to: {filename}")
         except Exception as e:

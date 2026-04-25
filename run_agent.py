@@ -806,6 +806,81 @@ def _qwen_portal_headers() -> dict:
     }
 
 
+_PACKET_CONTENT_REDACT_MARKER = "[REDACTED: orchestrator_packet_write content]"
+
+
+def _scrub_packet_tool_args(data):
+    """Redact ``content`` from orchestrator_packet_write calls before persistence.
+
+    Called in _flush_messages_to_session_db and _save_session_log so that
+    packet bodies never land in session JSON or the SQLite messages table.
+    Handles OpenAI-style tool_calls_data ({name, arguments}), Anthropic-style
+    content blocks ({type: tool_use, name, input}), and OpenAI Responses API
+    style ({type: function, function: {name, arguments}}).
+    Recurses into nested content arrays so tool_result wrappers are also scrubbed.
+    All other tool calls or blocks are returned unchanged.
+
+    The ``content`` key is preserved with a stable marker value rather than
+    deleted, so session transcripts show that redaction occurred.
+    """
+    if data is None:
+        return None
+    # Recurse into lists (handles top-level tool_calls arrays and nested content arrays)
+    if isinstance(data, list):
+        return [_scrub_packet_tool_args(item) for item in data]
+    if not isinstance(data, dict):
+        return data
+
+    call = data
+    name = call.get("name")
+
+    # OpenAI Responses API style: {"type": "function", "function": {"name": ..., "arguments": ...}}
+    if call.get("type") == "function" and isinstance(call.get("function"), dict):
+        fn = call["function"]
+        if fn.get("name") == "orchestrator_packet_write":
+            args_raw = fn.get("arguments", "{}")
+            if isinstance(args_raw, dict):
+                new_args = dict(args_raw)
+                new_args["content"] = _PACKET_CONTENT_REDACT_MARKER
+                return {**call, "function": {**fn, "arguments": new_args}}
+            try:
+                args = json.loads(args_raw)
+                args["content"] = _PACKET_CONTENT_REDACT_MARKER
+                return {**call, "function": {**fn, "arguments": json.dumps(args)}}
+            except (json.JSONDecodeError, TypeError):
+                return {**call, "function": {**fn, "arguments": json.dumps({"_redacted": True})}}
+        # Not a packet_write Responses API call — recurse into nested content if any
+        content = call.get("content")
+        if isinstance(content, list):
+            return {**call, "content": _scrub_packet_tool_args(content)}
+        return call
+
+    if name == "orchestrator_packet_write":
+        # OpenAI-style: {"name": ..., "arguments": "<json string>"}
+        if "arguments" in call:
+            try:
+                args = json.loads(call.get("arguments", "{}"))
+                args["content"] = _PACKET_CONTENT_REDACT_MARKER
+                return {**call, "arguments": json.dumps(args)}
+            except (json.JSONDecodeError, TypeError):
+                return {**call, "arguments": json.dumps({"_redacted": True})}
+        # Anthropic-style: {"type": "tool_use", "name": ..., "input": {...}}
+        if "input" in call:
+            new_call = dict(call)
+            inp = dict(new_call.get("input") or {})
+            inp["content"] = _PACKET_CONTENT_REDACT_MARKER
+            new_call["input"] = inp
+            return new_call
+        return call
+
+    # Not a packet_write call — recurse into any nested content array
+    # (covers tool_result blocks that may contain nested tool_use blocks)
+    content = call.get("content")
+    if isinstance(content, list):
+        return {**call, "content": _scrub_packet_tool_args(content)}
+    return call
+
+
 class AIAgent:
     """
     AI Agent with tool calling capabilities.
@@ -3314,6 +3389,9 @@ class AIAgent:
                     ]
                 elif isinstance(msg.get("tool_calls"), list):
                     tool_calls_data = msg["tool_calls"]
+                tool_calls_data = _scrub_packet_tool_args(tool_calls_data)
+                # Also scrub Anthropic-format content blocks
+                content = _scrub_packet_tool_args(content) if isinstance(content, list) else content
                 self._session_db.append_message(
                     session_id=self.session_id,
                     role=role,
@@ -3832,9 +3910,20 @@ class AIAgent:
             # Clean assistant content for session logs
             cleaned = []
             for msg in messages:
-                if msg.get("role") == "assistant" and msg.get("content"):
-                    msg = dict(msg)
-                    msg["content"] = self._clean_session_content(msg["content"])
+                if msg.get("role") == "assistant":
+                    content = msg.get("content")
+                    if isinstance(content, list):
+                        # Scrub packet content from Anthropic-format blocks
+                        scrubbed = _scrub_packet_tool_args(content)
+                        msg = dict(msg)
+                        msg["content"] = scrubbed
+                    elif content:
+                        msg = dict(msg)
+                        msg["content"] = self._clean_session_content(content)
+                    # Scrub packet content from OpenAI-style tool_calls
+                    if isinstance(msg.get("tool_calls"), list):
+                        msg = dict(msg)
+                        msg["tool_calls"] = _scrub_packet_tool_args(msg["tool_calls"])
                 cleaned.append(msg)
 
             # Guard: never overwrite a larger session log with fewer messages.

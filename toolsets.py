@@ -450,9 +450,23 @@ TOOLSETS = {
         "description": "Gateway toolset - union of all messaging platform tools",
         "tools": [],
         "includes": ["hermes-telegram", "hermes-discord", "hermes-whatsapp", "hermes-slack", "hermes-signal", "hermes-bluebubbles", "hermes-homeassistant", "hermes-email", "hermes-sms", "hermes-mattermost", "hermes-matrix", "hermes-dingtalk", "hermes-feishu", "hermes-wecom", "hermes-wecom-callback", "hermes-weixin", "hermes-qqbot", "hermes-webhook"]
-    }
+    },
+
+    "orchestrator": {
+        "description": "Orchestrator-only tools for confined packet dispatch and routing",
+        "tools": ["orchestrator_packet_write"],
+        "includes": [],
+        # Excluded from resolve_toolset("all") — requires explicit profile/config binding.
+        # Added to _TOOLSETS_EXCLUDED_FROM_ALL below.
+    },
 }
 
+
+# Toolsets excluded from the "all" / "*" expansion.
+# These require explicit profile or config binding and must never be silently
+# injected into broad tool lists — they are activated only when a profile's
+# platform_toolsets entry names them directly.
+_TOOLSETS_EXCLUDED_FROM_ALL: frozenset = frozenset({"orchestrator"})
 
 
 def get_toolset(name: str) -> Optional[Dict[str, Any]]:
@@ -523,6 +537,8 @@ def resolve_toolset(name: str, visited: Set[str] = None) -> List[str]:
     if name in {"all", "*"}:
         all_tools: Set[str] = set()
         for toolset_name in get_toolset_names():
+            if toolset_name in _TOOLSETS_EXCLUDED_FROM_ALL:
+                continue
             # Use a fresh visited set per branch to avoid cross-branch contamination
             resolved = resolve_toolset(toolset_name, visited.copy())
             all_tools.update(resolved)

@@ -842,6 +842,33 @@ export function isCellSelected(s: SelectionState, col: number, row: number): boo
   return true
 }
 
+function rowSelectableContentBounds(screen: Screen, row: number): { first: number; last: number } | null {
+  if (row < 0 || row >= screen.height) {
+    return null
+  }
+
+  const rowOff = row * screen.width
+  let first = -1
+  let last = -1
+
+  for (let col = 0; col < screen.width; col++) {
+    if (screen.noSelect[rowOff + col] === 1) {
+      continue
+    }
+
+    const cell = cellAt(screen, col, row)
+
+    if (!cell || cell.width === CellWidth.SpacerTail || cell.width === CellWidth.SpacerHead || !cell.char.trim()) {
+      continue
+    }
+
+    first = first === -1 ? col : first
+    last = col
+  }
+
+  return first === -1 ? null : { first, last }
+}
+
 /** Extract text from one screen row. When the next row is a soft-wrap
  *  continuation (screen.softWrap[row+1]>0), clamp to that content-end
  *  column and skip the trailing trim so the word-separator space survives
@@ -926,7 +953,7 @@ export function getSelectedText(s: SelectionState, screen: Screen): string {
     joinRows(lines, s.scrolledOffBelow[i]!, s.scrolledOffBelowSW[i])
   }
 
-  return lines.join('\n')
+  return lines.join('\n').trim()
 }
 
 /**
@@ -1049,9 +1076,19 @@ export function applySelectionOverlay(screen: Screen, selection: SelectionState,
   const noSelect = screen.noSelect
 
   for (let row = start.row; row <= end.row && row < screen.height; row++) {
-    const colStart = row === start.row ? start.col : 0
-    const colEnd = row === end.row ? Math.min(end.col, width - 1) : width - 1
+    const bounds = rowSelectableContentBounds(screen, row)
+
+    if (!bounds) {
+      continue
+    }
+
+    const colStart = Math.max(row === start.row ? start.col : 0, bounds.first)
+    const colEnd = Math.min(row === end.row ? end.col : width - 1, bounds.last)
     const rowOff = row * width
+
+    if (colStart > colEnd) {
+      continue
+    }
 
     for (let col = colStart; col <= colEnd; col++) {
       const idx = rowOff + col

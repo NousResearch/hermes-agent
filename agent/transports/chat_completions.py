@@ -275,6 +275,21 @@ class ChatCompletionsTransport(ProviderTransport):
         if additions:
             extra_body.update(additions)
 
+        # Session affinity for custom (local) llama.cpp / vLLM / Ollama / LM
+        # Studio endpoints. Sends X-Hermes-Session-Id so an upstream router
+        # (nginx consistent-hash, Envoy, etc.) can pin a conversation to one
+        # replica, keeping its KV cache warm across turns. Mirrors the
+        # xAI/Grok pattern in transports/codex.py:128.
+        # extra_body.prompt_cache_key gives servers that honor it (OpenAI
+        # Responses, recent llama-server) an in-process hint as well; servers
+        # that don't recognize the field ignore it.
+        session_id = params.get("session_id")
+        if session_id and params.get("is_custom_provider"):
+            headers = api_kwargs.get("extra_headers") or {}
+            headers.setdefault("X-Hermes-Session-Id", session_id)
+            api_kwargs["extra_headers"] = headers
+            extra_body.setdefault("prompt_cache_key", session_id)
+
         if extra_body:
             api_kwargs["extra_body"] = extra_body
 

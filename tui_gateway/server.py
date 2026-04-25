@@ -574,48 +574,6 @@ def _resolve_model() -> str:
     return "anthropic/claude-sonnet-4"
 
 
-def _detect_static_provider_for_model(model_name: str, current_provider: str) -> tuple[str, str] | None:
-    """Startup-safe provider detection: static catalogs only, no network fetches."""
-    name = (model_name or "").strip()
-    if not name:
-        return None
-
-    try:
-        from hermes_cli.models import (
-            _PROVIDER_ALIASES,
-            _PROVIDER_LABELS,
-            _PROVIDER_MODELS,
-            normalize_provider,
-        )
-    except Exception:
-        return None
-
-    name_lower = name.lower()
-    normalized_current = normalize_provider(current_provider)
-    resolved_provider = _PROVIDER_ALIASES.get(name_lower, name_lower)
-    if resolved_provider not in {"custom", "openrouter"}:
-        default_models = _PROVIDER_MODELS.get(resolved_provider, [])
-        if (
-            resolved_provider in _PROVIDER_LABELS
-            and default_models
-            and resolved_provider != normalized_current
-        ):
-            return resolved_provider, default_models[0]
-
-    aggregators = {"nous", "openrouter", "ai-gateway", "copilot", "kilocode"}
-    current_models = _PROVIDER_MODELS.get(normalized_current, [])
-    if any(name_lower == m.lower() for m in current_models):
-        return None
-
-    for provider, models in _PROVIDER_MODELS.items():
-        if provider == normalized_current or provider in aggregators:
-            continue
-        if any(name_lower == m.lower() for m in models):
-            return provider, name
-
-    return None
-
-
 def _resolve_startup_runtime() -> tuple[str, str | None]:
     model = _resolve_model()
     explicit_provider = os.environ.get("HERMES_TUI_PROVIDER", "").strip()
@@ -630,13 +588,19 @@ def _resolve_startup_runtime() -> tuple[str, str | None]:
         return model, None
 
     try:
+        from hermes_cli.models import detect_static_provider_for_model
+
         cfg = _load_cfg().get("model") or {}
         current_provider = (
-            str(cfg.get("provider") or "").strip().lower()
-            if isinstance(cfg, dict)
-            else ""
-        ) or os.environ.get("HERMES_INFERENCE_PROVIDER", "").strip().lower() or "auto"
-        detected = _detect_static_provider_for_model(explicit_model, current_provider)
+            (
+                str(cfg.get("provider") or "").strip().lower()
+                if isinstance(cfg, dict)
+                else ""
+            )
+            or os.environ.get("HERMES_INFERENCE_PROVIDER", "").strip().lower()
+            or "auto"
+        )
+        detected = detect_static_provider_for_model(explicit_model, current_provider)
         if detected:
             provider, detected_model = detected
             return detected_model, provider

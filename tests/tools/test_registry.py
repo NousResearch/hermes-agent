@@ -303,6 +303,7 @@ class TestBuiltinDiscovery:
             "tools.feishu_drive_tool",
             "tools.file_tools",
             "tools.homeassistant_tool",
+            "tools.human_approval_tool",
             "tools.image_generation_tool",
             "tools.memory_tool",
             "tools.mixture_of_agents_tool",

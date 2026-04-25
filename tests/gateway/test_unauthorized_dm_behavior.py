@@ -355,7 +355,7 @@ def test_telegram_group_users_mixed_sender_and_legacy_chat(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_unauthorized_dm_pairs_by_default(monkeypatch):
+async def test_unauthorized_dm_ignores_by_default(monkeypatch):
     _clear_auth_env(monkeypatch)
     config = GatewayConfig(
         platforms={Platform.WHATSAPP: PlatformConfig(enabled=True)},
@@ -372,13 +372,8 @@ async def test_unauthorized_dm_pairs_by_default(monkeypatch):
     )
 
     assert result is None
-    runner.pairing_store.generate_code.assert_called_once_with(
-        "whatsapp",
-        "15551234567@s.whatsapp.net",
-        "tester",
-    )
-    adapter.send.assert_awaited_once()
-    assert "ABC12DEF" in adapter.send.await_args.args[1]
+    runner.pairing_store.generate_code.assert_not_called()
+    adapter.send.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -436,6 +431,7 @@ async def test_rejection_message_records_rate_limit(monkeypatch):
     so subsequent messages are silently ignored."""
     _clear_auth_env(monkeypatch)
     config = GatewayConfig(
+        unauthorized_dm_behavior="pair",
         platforms={Platform.WHATSAPP: PlatformConfig(enabled=True)},
     )
     runner, adapter = _make_runner(Platform.WHATSAPP, config)
@@ -550,8 +546,8 @@ async def test_global_allowlist_ignores_unauthorized_dm(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_no_allowlist_still_pairs_by_default(monkeypatch):
-    """Without any allowlist, pairing behavior is preserved (open gateway)."""
+async def test_no_allowlist_ignores_by_default(monkeypatch):
+    """Without explicit opt-in, unknown DMs fail closed."""
     _clear_auth_env(monkeypatch)
     # No SIGNAL_ALLOWED_USERS, no GATEWAY_ALLOWED_USERS
 
@@ -562,13 +558,12 @@ async def test_no_allowlist_still_pairs_by_default(monkeypatch):
     runner.pairing_store.generate_code.return_value = "PAIR1234"
 
     result = await runner._handle_message(
-        _make_event(Platform.SIGNAL, "+15559999999", "+15559999999")
+        _make_event(Platform.SIGNAL, "+155****9999", "+155****9999")
     )
 
     assert result is None
-    runner.pairing_store.generate_code.assert_called_once()
-    adapter.send.assert_awaited_once()
-    assert "PAIR1234" in adapter.send.await_args.args[1]
+    runner.pairing_store.generate_code.assert_not_called()
+    adapter.send.assert_not_awaited()
 
 
 def test_explicit_pair_config_overrides_allowlist_default(monkeypatch):
@@ -615,8 +610,8 @@ def test_allowlist_authorized_user_returns_ignore_for_unauthorized(monkeypatch):
     assert behavior == "ignore"
 
 
-def test_get_unauthorized_dm_behavior_no_allowlist_returns_pair(monkeypatch):
-    """Without any allowlist, 'pair' is still the default."""
+def test_get_unauthorized_dm_behavior_no_allowlist_returns_ignore(monkeypatch):
+    """Without explicit opt-in, 'ignore' is the fail-closed default."""
     _clear_auth_env(monkeypatch)
 
     config = GatewayConfig(
@@ -625,7 +620,7 @@ def test_get_unauthorized_dm_behavior_no_allowlist_returns_pair(monkeypatch):
     runner, _adapter = _make_runner(Platform.SIGNAL, config)
 
     behavior = runner._get_unauthorized_dm_behavior(Platform.SIGNAL)
-    assert behavior == "pair"
+    assert behavior == "ignore"
 
 
 def test_qqbot_with_allowlist_ignores_unauthorized_dm(monkeypatch):

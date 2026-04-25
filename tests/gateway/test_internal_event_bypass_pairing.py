@@ -375,7 +375,7 @@ async def test_non_internal_event_without_user_triggers_pairing(monkeypatch, tmp
     monkeypatch.delenv("GATEWAY_ALLOW_ALL_USERS", raising=False)
     monkeypatch.delenv("GATEWAY_ALLOWED_USERS", raising=False)
 
-    runner = GatewayRunner(GatewayConfig())
+    runner = GatewayRunner(GatewayConfig(unauthorized_dm_behavior="pair"))
     adapter = SimpleNamespace(send=AsyncMock())
     runner.adapters[Platform.DISCORD] = adapter
 

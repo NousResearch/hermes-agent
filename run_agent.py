@@ -2112,6 +2112,11 @@ class AIAgent:
                 provider=self.provider,
                 api_mode=self.api_mode,
             )
+            # Re-apply the auxiliary compression feasibility guard after
+            # in-place model switches. Context engines (including LCM) recompute
+            # threshold_tokens from the new main-model context, which can drift
+            # back above the auxiliary compression model's real context window.
+            self._check_compression_model_feasibility()
 
         # ── Invalidate cached system prompt so it rebuilds next turn ──
         self._cached_system_prompt = None

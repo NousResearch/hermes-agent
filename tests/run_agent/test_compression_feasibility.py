@@ -205,6 +205,73 @@ def test_feasibility_check_ignores_invalid_context_length(mock_get_client, mock_
     )
 
 
+def test_switch_model_reapplies_compression_feasibility_guard_after_threshold_reset():
+    """switch_model() should re-run the compression feasibility guard after
+    the context engine resets threshold_tokens from the new main-model
+    context. Without this hook, live sessions can drift back above the
+    auxiliary compression model's safe context window."""
+
+    class _StubCompressor:
+        def __init__(self):
+            self.context_length = 200_000
+            self.threshold_tokens = 128_000
+            self.threshold_percent = 0.64
+            self.model = "old-model"
+            self.base_url = "https://old.example/v1"
+            self.api_key = "sk-old"
+            self.provider = "old-provider"
+
+        def update_model(self, model, context_length, base_url="", api_key="", provider="", api_mode=""):
+            self.model = model
+            self.context_length = context_length
+            self.base_url = base_url
+            self.api_key = api_key
+            self.provider = provider
+            # Mirror the live LCM behavior: update_model() re-derives the raw
+            # threshold solely from the new main-model context.
+            self.threshold_tokens = int(context_length * 0.75)
+
+    agent = AIAgent.__new__(AIAgent)
+    agent.model = "glm-5.1"
+    agent.provider = "custom:infini-ai"
+    agent.base_url = "https://cloud.infini-ai.com/maas/coding/v1"
+    agent.api_key = "sk-old"
+    agent.api_mode = "chat_completions"
+    agent.context_compressor = _StubCompressor()
+    agent._transport_cache = {}
+    agent._client_kwargs = {}
+    agent._cached_system_prompt = "cached"
+    agent._fallback_activated = False
+    agent._fallback_index = 0
+    agent._fallback_chain = []
+    agent._fallback_model = None
+    agent._create_openai_client = lambda kwargs, reason="", shared=False: MagicMock()
+    agent._anthropic_prompt_cache_policy = lambda **kwargs: (False, False)
+    agent._get_runtime_config_context_length = lambda **kwargs: 350_000
+
+    seen_thresholds = []
+
+    def _fake_feasibility_guard():
+        seen_thresholds.append(agent.context_compressor.threshold_tokens)
+        agent.context_compressor.threshold_tokens = 128_000
+        agent.context_compressor.threshold_percent = 128_000 / agent.context_compressor.context_length
+
+    agent._check_compression_model_feasibility = _fake_feasibility_guard
+
+    with patch("agent.model_metadata.get_model_context_length", return_value=350_000):
+        agent.switch_model(
+            new_model="gpt-5.4",
+            new_provider="custom:yunfei",
+            api_key="sk-new",
+            base_url="https://ai.yunfei.best/v1",
+            api_mode="chat_completions",
+        )
+
+    assert seen_thresholds == [262_500]
+    assert agent.context_compressor.context_length == 350_000
+    assert agent.context_compressor.threshold_tokens == 128_000
+
+
 def test_init_feasibility_check_uses_aux_context_override_from_config():
     """Real AIAgent init should cache and forward auxiliary.compression.context_length."""
 

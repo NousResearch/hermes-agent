@@ -36,6 +36,7 @@ import sys
 import tempfile
 import time
 import threading
+import unicodedata
 from types import SimpleNamespace
 import urllib.request
 import uuid
@@ -2830,7 +2831,6 @@ class AIAgent:
 
         # Strip trailing variation selectors (U+FE0F) and zero-width joiners
         # (U+200D) that emoji sequences use, so we check the "real" base glyph.
-        import unicodedata
         i = len(stripped) - 1
         while i >= 0 and unicodedata.category(stripped[i]) in ("Mn", "Me", "Cf"):
             i -= 1
@@ -2843,22 +2843,20 @@ class AIAgent:
             return True
 
         # Emoji and other Unicode sign-off glyphs.
-        # We already imported unicodedata above.  We use it rather than a
-        # hard-coded codepoint list so we automatically cover new emoji as
-        # Python's Unicode database grows.
+        # We use unicodedata categories rather than a hard-coded codepoint
+        # list so we automatically cover new emoji as Python's Unicode
+        # database grows.
         cat = unicodedata.category(last_char)
-        # So (Other_Symbol) covers ✨ 💪 🚀 etc.
+        # So (Other_Symbol) covers ✨ 💪 🚀 ✅ ❌ ⚠ etc.
         # Sk (Modifier_Symbol) covers VS16 (❤️ variation selector, etc.)
-        if cat in ("So", "Sk"):
+        # Sm (Math_Symbol) covers → ← ∞ ≈ and similar sign-off glyphs.
+        if cat in ("So", "Sk", "Sm"):
             return True
         # Emoji_Presentation property: many emoji are General_Category=So
         # but some are in Lo/Lm/Other.  Check the wide "Extended_Pictographic"
         # property via the Emoji character range heuristic (U+1F000..U+1FAFF).
         cp = ord(last_char)
         if 0x1F000 <= cp <= 0x1FAFF:
-            return True
-        # A few common sign-off codepoints outside those ranges.
-        if last_char in "✓✔✗✘♠♣♥♦♪♫☀☁☂★☆":
             return True
 
         return False

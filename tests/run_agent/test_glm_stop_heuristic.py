@@ -114,6 +114,28 @@ class TestHasNaturalResponseEnding:
             f"Here's your answer. Let me know if you need more {emoji}"
         ) is True
 
+    @pytest.mark.parametrize("symbol", [
+        "\u2192",  # → (RIGHTWARDS ARROW, Sm)
+        "\u2190",  # ← (LEFTWARDS ARROW, Sm)
+        "\u2794",  # ➔ (RIGHTWARD ARROW, So — broad arrow variant)
+        "\u221e",  # ∞ (INFINITY, Sm)
+        "\u2248",  # ≈ (ALMOST EQUAL TO, Sm)
+        "\u2713",  # ✓ (CHECK MARK, So — was in old hardcoded list)
+        "\u2764",  # ❤ (HEAVY BLACK HEART, So — was in old hardcoded list)
+        "\u2605",  # ★ (BLACK STAR, So — was in old hardcoded list)
+    ])
+    def test_math_symbols_and_sign_off_glyphs_are_natural(self, symbol):
+        """Math symbols (Sm) and sign-off glyphs (So) are natural endings.
+
+        The Sm category covers arrows (→ ←) and math symbols (∞ ≈) that
+        commonly appear at the end of structured responses. The So category
+        covers check marks (✓), hearts (❤), and stars (★) that were previously
+        in a now-removed hardcoded string.
+        """
+        assert AIAgent._has_natural_response_ending(
+            f"Here's the result {symbol}"
+        ) is True
+
     @pytest.mark.parametrize("text", [
         "```python\nprint('hello')\n```",
         "```",
@@ -309,8 +331,12 @@ class TestShouldTreatStopAsTruncated:
         )
         assert agent._should_treat_stop_as_truncated("stop", response, messages) is False
 
-    def test_emoji_sign_off_with_100_chars_does_not_trigger(self):
-        """A substantive response (~100 chars) ending with emoji is complete."""
+    def test_short_response_with_emoji_does_not_trigger(self):
+        """A short response (<500 chars) ending with emoji is not truncated.
+
+        Tests the 500-char minimum-length gate: short conversational replies
+        that happen to end with emoji are complete, not truncated continuations.
+        """
         agent = _make_agent()
         messages = [
             {"role": "user", "content": "hello"},

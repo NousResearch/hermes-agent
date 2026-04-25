@@ -31,7 +31,7 @@ import re
 import sqlite3
 import time
 import uuid
-from typing import Any, Dict, List, Optional
+from typing import Any, AsyncIterator, Callable, Dict, List, Optional, Set, Tuple
 
 try:
     from aiohttp import web
@@ -55,6 +55,10 @@ DEFAULT_PORT = 8642
 MAX_STORED_RESPONSES = 100
 MAX_REQUEST_BYTES = 1_000_000  # 1 MB default limit for POST bodies
 CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS = 30.0
+RESPONSES_SSE_KEEPALIVE_SECONDS = float(os.getenv("API_SERVER_RESPONSE_SSE_KEEPALIVE_SECONDS", "15"))
+MAX_CONCURRENT_RESPONSE_RUNS = int(os.getenv("API_SERVER_MAX_RESPONSE_RUNS", "10"))
+RESPONSE_SUBSCRIBER_QUEUE_SIZE = int(os.getenv("API_SERVER_RESPONSE_SUBSCRIBER_QUEUE_SIZE", "100"))
+RESPONSE_INTERNAL_EVENT_QUEUE_SIZE = int(os.getenv("API_SERVER_RESPONSE_EVENT_QUEUE_SIZE", "1000"))
 MAX_NORMALIZED_TEXT_LENGTH = 65_536  # 64 KB cap for normalized content parts
 MAX_CONTENT_LIST_SIZE = 1_000  # Max items when content is an array
 
@@ -311,10 +315,49 @@ class ResponseStore:
         self._conn.execute(
             """CREATE TABLE IF NOT EXISTS conversations (
                 name TEXT PRIMARY KEY,
-                response_id TEXT NOT NULL
+                latest_completed_response_id TEXT,
+                active_response_id TEXT
             )"""
         )
+        self._migrate_conversations_schema()
         self._conn.commit()
+
+    def _migrate_conversations_schema(self) -> None:
+        """Upgrade legacy conversation mappings to active/completed checkpoints.
+
+        Older databases used ``conversations(name, response_id TEXT NOT NULL)``.
+        Adding nullable columns is not enough because the legacy NOT NULL column
+        would still reject inserts that only set the new active/completed fields.
+        Rebuild the table whenever the old column exists.
+        """
+        rows = self._conn.execute("PRAGMA table_info(conversations)").fetchall()
+        cols = {row[1] for row in rows}
+        if "response_id" in cols:
+            latest_expr = (
+                "COALESCE(latest_completed_response_id, response_id)"
+                if "latest_completed_response_id" in cols
+                else "response_id"
+            )
+            active_expr = "active_response_id" if "active_response_id" in cols else "NULL"
+            self._conn.execute(
+                """CREATE TABLE conversations_new (
+                    name TEXT PRIMARY KEY,
+                    latest_completed_response_id TEXT,
+                    active_response_id TEXT
+                )"""
+            )
+            self._conn.execute(
+                f"INSERT OR REPLACE INTO conversations_new (name, latest_completed_response_id, active_response_id) "
+                f"SELECT name, {latest_expr}, {active_expr} FROM conversations"
+            )
+            self._conn.execute("DROP TABLE conversations")
+            self._conn.execute("ALTER TABLE conversations_new RENAME TO conversations")
+            return
+
+        if "latest_completed_response_id" not in cols:
+            self._conn.execute("ALTER TABLE conversations ADD COLUMN latest_completed_response_id TEXT")
+        if "active_response_id" not in cols:
+            self._conn.execute("ALTER TABLE conversations ADD COLUMN active_response_id TEXT")
 
     def get(self, response_id: str) -> Optional[Dict[str, Any]]:
         """Retrieve a stored response by ID (updates access time for LRU)."""
@@ -336,36 +379,106 @@ class ResponseStore:
             "INSERT OR REPLACE INTO responses (response_id, data, accessed_at) VALUES (?, ?, ?)",
             (response_id, json.dumps(data, default=str), time.time()),
         )
-        # Evict oldest entries beyond max_size
         count = self._conn.execute("SELECT COUNT(*) FROM responses").fetchone()[0]
         if count > self._max_size:
-            self._conn.execute(
-                "DELETE FROM responses WHERE response_id IN "
-                "(SELECT response_id FROM responses ORDER BY accessed_at ASC LIMIT ?)",
-                (count - self._max_size,),
-            )
+            evicted = [
+                row[0]
+                for row in self._conn.execute(
+                    "SELECT response_id FROM responses ORDER BY accessed_at ASC LIMIT ?",
+                    (count - self._max_size,),
+                ).fetchall()
+            ]
+            if evicted:
+                placeholders = ",".join("?" for _ in evicted)
+                self._conn.execute(f"DELETE FROM responses WHERE response_id IN ({placeholders})", evicted)
+                for evicted_id in evicted:
+                    self._clear_conversation_references_no_commit(evicted_id)
         self._conn.commit()
 
     def delete(self, response_id: str) -> bool:
-        """Remove a response from the store. Returns True if found and deleted."""
+        """Remove a response and any conversation references to it."""
         cursor = self._conn.execute(
             "DELETE FROM responses WHERE response_id = ?", (response_id,)
         )
+        self._clear_conversation_references_no_commit(response_id)
         self._conn.commit()
         return cursor.rowcount > 0
 
+    def _clear_conversation_references_no_commit(self, response_id: str) -> None:
+        self._conn.execute(
+            "UPDATE conversations "
+            "SET latest_completed_response_id = CASE WHEN latest_completed_response_id = ? THEN NULL ELSE latest_completed_response_id END, "
+            "active_response_id = CASE WHEN active_response_id = ? THEN NULL ELSE active_response_id END "
+            "WHERE latest_completed_response_id = ? OR active_response_id = ?",
+            (response_id, response_id, response_id, response_id),
+        )
+        self._conn.execute(
+            "DELETE FROM conversations WHERE latest_completed_response_id IS NULL AND active_response_id IS NULL"
+        )
+
+    def clear_conversation_references(self, response_id: str) -> None:
+        """Clear any conversation fields pointing at response_id."""
+        self._clear_conversation_references_no_commit(response_id)
+        self._conn.commit()
+
     def get_conversation(self, name: str) -> Optional[str]:
-        """Get the latest response_id for a conversation name."""
+        """Backward-compatible alias for latest completed response_id."""
+        return self.get_conversation_latest_completed(name)
+
+    def get_conversation_latest_completed(self, name: str) -> Optional[str]:
         row = self._conn.execute(
-            "SELECT response_id FROM conversations WHERE name = ?", (name,)
+            "SELECT latest_completed_response_id FROM conversations WHERE name = ?", (name,)
         ).fetchone()
-        return row[0] if row else None
+        return row[0] if row and row[0] else None
+
+    def get_conversation_active(self, name: str) -> Optional[str]:
+        row = self._conn.execute(
+            "SELECT active_response_id FROM conversations WHERE name = ?", (name,)
+        ).fetchone()
+        return row[0] if row and row[0] else None
 
     def set_conversation(self, name: str, response_id: str) -> None:
-        """Map a conversation name to its latest response_id."""
+        """Backward-compatible alias for setting latest completed response_id."""
+        self.set_conversation_completed(name, response_id)
+
+    def set_conversation_completed(self, name: str, response_id: str) -> None:
+        """Mark response_id as the latest completed checkpoint for a conversation."""
         self._conn.execute(
-            "INSERT OR REPLACE INTO conversations (name, response_id) VALUES (?, ?)",
+            """INSERT INTO conversations (name, latest_completed_response_id, active_response_id)
+               VALUES (?, ?, NULL)
+               ON CONFLICT(name) DO UPDATE SET
+                   latest_completed_response_id = excluded.latest_completed_response_id,
+                   active_response_id = CASE
+                       WHEN conversations.active_response_id = excluded.latest_completed_response_id THEN NULL
+                       ELSE conversations.active_response_id
+                   END""",
             (name, response_id),
+        )
+        self._conn.commit()
+
+    def set_conversation_active(self, name: str, response_id: str) -> None:
+        """Track an in-progress response for a conversation."""
+        self._conn.execute(
+            """INSERT INTO conversations (name, latest_completed_response_id, active_response_id)
+               VALUES (?, NULL, ?)
+               ON CONFLICT(name) DO UPDATE SET active_response_id = excluded.active_response_id""",
+            (name, response_id),
+        )
+        self._conn.commit()
+
+    def clear_conversation_active(self, name: str, response_id: Optional[str] = None) -> None:
+        """Clear a conversation's active response, optionally only if it matches response_id."""
+        if response_id is None:
+            self._conn.execute(
+                "UPDATE conversations SET active_response_id = NULL WHERE name = ?", (name,)
+            )
+        else:
+            self._conn.execute(
+                "UPDATE conversations SET active_response_id = NULL WHERE name = ? AND active_response_id = ?",
+                (name, response_id),
+            )
+        self._conn.execute(
+            "DELETE FROM conversations WHERE latest_completed_response_id IS NULL AND active_response_id IS NULL"
         )
         self._conn.commit()
 
@@ -510,6 +623,44 @@ class _IdempotencyCache:
 _idem_cache = _IdempotencyCache()
 
 
+class _ResponseRunIdempotencyIndex:
+    """TTL index mapping streaming Idempotency-Key fingerprints to response IDs."""
+
+    def __init__(self, max_items: int = 1000, ttl_seconds: int = 3600):
+        from collections import OrderedDict
+        self._store = OrderedDict()
+        self._max = max_items
+        self._ttl = ttl_seconds
+
+    def _purge(self) -> None:
+        now = time.time()
+        expired = [k for k, v in self._store.items() if now - v["ts"] > self._ttl]
+        for key in expired:
+            self._store.pop(key, None)
+        while len(self._store) > self._max:
+            self._store.popitem(last=False)
+
+    def lookup(self, key: str, fingerprint: str) -> Tuple[Optional[str], bool]:
+        """Return (response_id, conflict)."""
+        self._purge()
+        item = self._store.get(key)
+        if not item:
+            return None, False
+        if item.get("fp") != fingerprint:
+            return None, True
+        item["ts"] = time.time()
+        return item.get("response_id"), False
+
+    def put(self, key: str, fingerprint: str, response_id: str) -> None:
+        self._purge()
+        self._store[key] = {"fp": fingerprint, "response_id": response_id, "ts": time.time()}
+        self._purge()
+
+    def remove_response(self, response_id: str) -> None:
+        for key in [k for k, v in self._store.items() if v.get("response_id") == response_id]:
+            self._store.pop(key, None)
+
+
 def _make_request_fingerprint(body: Dict[str, Any], keys: List[str]) -> str:
     from hashlib import sha256
     subset = {k: body.get(k) for k in keys}
@@ -532,6 +683,472 @@ def _derive_chat_session_id(
     seed = f"{system_prompt or ''}\n{first_user_message}"
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
     return f"api-{digest}"
+
+
+class ResponseRun:
+    """Authoritative lifecycle for one background /v1/responses streaming run."""
+
+    def __init__(
+        self,
+        *,
+        response_id: str,
+        model: str,
+        created_at: int,
+        response_store: ResponseStore,
+        run_agent_coro_factory: Callable[[Any, list], Any],
+        conversation_history: List[Dict[str, Any]],
+        user_message: Any,
+        instructions: Optional[str],
+        conversation: Optional[str],
+        session_id: str,
+        store: bool,
+        on_done: Callable[[str], None],
+        loop: "asyncio.AbstractEventLoop",
+    ) -> None:
+        self.response_id = response_id
+        self.model = model
+        self.created_at = created_at
+        self._response_store = response_store
+        self._run_agent_coro_factory = run_agent_coro_factory
+        self._conversation_history = list(conversation_history)
+        self._user_message = user_message
+        self._instructions = instructions
+        self._conversation = conversation
+        self.session_id = session_id
+        self._store = store
+        self._on_done = on_done
+        self._loop = loop
+        self._event_queue: "asyncio.Queue[Tuple[str, Dict[str, Any]]]" = asyncio.Queue(maxsize=RESPONSE_INTERNAL_EVENT_QUEUE_SIZE)
+        self._subscribers: Set["asyncio.Queue[Optional[Tuple[str, Dict[str, Any]]]]"] = set()
+        self._done = asyncio.Event()
+        self._task: Optional[asyncio.Task] = None
+        self._agent_task: Optional[asyncio.Task] = None
+        self._agent_ref: list = [None]
+        self._cancel_requested = False
+        self._cancel_reason = "Response run cancelled"
+        self._deleted = False
+        self.status = "queued"
+        self.final_text_parts: List[str] = []
+        self.pending_tool_calls: List[Dict[str, Any]] = []
+        self.emitted_items: List[Dict[str, Any]] = []
+        self.usage: Dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        self.agent_error: Optional[str] = None
+        self.sequence_number = 0
+        self.output_index = 0
+        self.call_counter = 0
+        self.message_item_id = f"msg_{uuid.uuid4().hex[:24]}"
+        self.message_output_index: Optional[int] = None
+        self.message_opened = False
+        self.final_response_text = ""
+
+    def start(self) -> None:
+        if self._task is None:
+            self._task = asyncio.create_task(self._run(), name=f"response-run-{self.response_id}")
+
+    async def wait_done(self) -> None:
+        await self._done.wait()
+
+    def _next_seq(self, data: Dict[str, Any]) -> Dict[str, Any]:
+        if "sequence_number" not in data:
+            data["sequence_number"] = self.sequence_number
+        self.sequence_number += 1
+        return data
+
+    def _envelope(self, status: str, *, output: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        env: Dict[str, Any] = {
+            "id": self.response_id,
+            "object": "response",
+            "status": status,
+            "created_at": self.created_at,
+            "model": self.model,
+        }
+        if output is not None:
+            env["output"] = output
+        env["usage"] = {
+            "input_tokens": self.usage.get("input_tokens", 0),
+            "output_tokens": self.usage.get("output_tokens", 0),
+            "total_tokens": self.usage.get("total_tokens", 0),
+        }
+        if self.agent_error:
+            env["error"] = {"message": self.agent_error, "type": "server_error"}
+        return env
+
+    def get_snapshot(self) -> Dict[str, Any]:
+        output = self._current_output_items()
+        return self._envelope(self.status if self.status != "queued" else "in_progress", output=output)
+
+    def _persist_snapshot(self, response_env: Dict[str, Any], *, conversation_history_snapshot: Optional[List[Dict[str, Any]]] = None) -> None:
+        if not self._store or self._deleted:
+            return
+        if conversation_history_snapshot is None:
+            conversation_history_snapshot = list(self._conversation_history)
+            conversation_history_snapshot.append({"role": "user", "content": self._user_message})
+        self._response_store.put(self.response_id, {
+            "response": response_env,
+            "conversation_history": conversation_history_snapshot,
+            "instructions": self._instructions,
+            "session_id": self.session_id,
+        })
+
+    async def _broadcast(self, event_type: str, data: Dict[str, Any]) -> None:
+        data = self._next_seq(data)
+        dead = []
+        for q in list(self._subscribers):
+            try:
+                q.put_nowait((event_type, data))
+            except asyncio.QueueFull:
+                dead.append(q)
+        for q in dead:
+            self._subscribers.discard(q)
+
+    async def _broadcast_done(self) -> None:
+        for q in list(self._subscribers):
+            try:
+                q.put_nowait(None)
+            except asyncio.QueueFull:
+                pass
+        self._subscribers.clear()
+
+    def _put_event_threadsafe(self, kind: str, payload: Dict[str, Any]) -> None:
+        def _put() -> None:
+            try:
+                self._event_queue.put_nowait((kind, payload))
+            except asyncio.QueueFull:
+                logger.warning("Response run %s event queue overflow; cancelling", self.response_id)
+                asyncio.create_task(self.cancel("response event queue overflow"))
+        try:
+            self._loop.call_soon_threadsafe(_put)
+        except RuntimeError:
+            pass
+
+    def _callbacks(self):
+        run = self
+        class _Callbacks:
+            def on_delta(self, delta):
+                if delta is not None:
+                    run._put_event_threadsafe("text_delta", {"delta": delta})
+            def on_tool_progress(self, event_type, name, preview, args, **kwargs):
+                return
+            def on_tool_start(self, tool_call_id, function_name, function_args):
+                run._put_event_threadsafe("tool_started", {
+                    "tool_call_id": tool_call_id,
+                    "name": function_name,
+                    "arguments": function_args or {},
+                })
+            def on_tool_complete(self, tool_call_id, function_name, function_args, function_result):
+                run._put_event_threadsafe("tool_completed", {
+                    "tool_call_id": tool_call_id,
+                    "name": function_name,
+                    "arguments": function_args or {},
+                    "result": function_result,
+                })
+        return _Callbacks()
+
+    async def subscribe(
+        self,
+        *,
+        snapshot_event: bool = False,
+        keepalive_seconds: float = RESPONSES_SSE_KEEPALIVE_SECONDS,
+    ) -> AsyncIterator[Tuple[str, Dict[str, Any]]]:
+        q: "asyncio.Queue[Optional[Tuple[str, Dict[str, Any]]]]" = asyncio.Queue(maxsize=RESPONSE_SUBSCRIBER_QUEUE_SIZE)
+        snapshot = self.get_snapshot()
+        if snapshot_event and snapshot.get("status") not in {"completed", "failed", "incomplete"}:
+            first_type = "response.snapshot"
+        elif snapshot.get("status") == "completed":
+            first_type = "response.completed"
+        elif snapshot.get("status") == "failed":
+            first_type = "response.failed"
+        elif snapshot.get("status") == "incomplete":
+            first_type = "response.incomplete"
+        else:
+            first_type = "response.created"
+        await q.put((first_type, {"type": first_type, "response": snapshot}))
+        if not self._done.is_set():
+            self._subscribers.add(q)
+        try:
+            while True:
+                try:
+                    item = await asyncio.wait_for(q.get(), timeout=keepalive_seconds)
+                except asyncio.TimeoutError:
+                    if self._done.is_set():
+                        break
+                    yield ("__keepalive__", {})
+                    continue
+                if item is None:
+                    break
+                yield item
+                if self._done.is_set() and q.empty():
+                    break
+        finally:
+            self._subscribers.discard(q)
+
+    async def cancel(self, reason: str, *, delete: bool = False) -> None:
+        self._cancel_requested = True
+        self._cancel_reason = reason
+        if delete:
+            self._deleted = True
+        await self._interrupt_agent_when_available()
+        if self._agent_task and not self._agent_task.done():
+            self._agent_task.cancel()
+        if self._task and not self._task.done():
+            self._task.cancel()
+
+    def _interrupt_agent_if_available(self) -> bool:
+        agent = self._agent_ref[0]
+        if agent is not None:
+            try:
+                agent.interrupt(self._cancel_reason)
+            except Exception:
+                pass
+            return True
+        return False
+
+    async def _interrupt_agent_when_available(self, timeout: float = 0.5) -> None:
+        if self._interrupt_agent_if_available():
+            return
+        deadline = time.monotonic() + timeout
+        while self._agent_ref[0] is None and time.monotonic() < deadline:
+            await asyncio.sleep(0.02)
+        self._interrupt_agent_if_available()
+
+    async def _run(self) -> None:
+        try:
+            self.status = "in_progress"
+            created_env = self._envelope("in_progress", output=[])
+            self._persist_snapshot(created_env)
+            if self._conversation and self._store and not self._deleted:
+                self._response_store.set_conversation_active(self._conversation, self.response_id)
+            await self._broadcast("response.created", {"type": "response.created", "response": created_env})
+            callbacks = self._callbacks()
+            self._agent_task = asyncio.create_task(self._run_agent_coro_factory(callbacks, self._agent_ref))
+            if self._cancel_requested:
+                await self._interrupt_agent_when_available()
+            while True:
+                if self._agent_task.done() and self._event_queue.empty():
+                    break
+                try:
+                    kind, payload = await asyncio.wait_for(self._event_queue.get(), timeout=0.5)
+                except asyncio.TimeoutError:
+                    continue
+                await self._dispatch_event(kind, payload)
+            try:
+                result, usage = await self._agent_task
+                self.usage = usage or self.usage
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                result = {"error": str(exc), "messages": []}
+                self.agent_error = str(exc)
+            await self._finalize(result)
+        except asyncio.CancelledError:
+            await self._finalize_incomplete()
+            raise
+        except Exception as exc:
+            logger.error("Response run %s failed: %s", self.response_id, exc, exc_info=True)
+            self.agent_error = str(exc)
+            await self._finalize_failed()
+        finally:
+            self._done.set()
+            await self._broadcast_done()
+            try:
+                self._on_done(self.response_id)
+            except Exception:
+                pass
+
+    async def _dispatch_event(self, kind: str, payload: Dict[str, Any]) -> None:
+        if kind == "text_delta":
+            await self._emit_text_delta(str(payload.get("delta", "")))
+        elif kind == "tool_started":
+            await self._emit_tool_started(payload)
+        elif kind == "tool_completed":
+            await self._emit_tool_completed(payload)
+
+    async def _open_message_item(self) -> None:
+        if self.message_opened:
+            return
+        self.message_opened = True
+        self.message_output_index = self.output_index
+        self.output_index += 1
+        await self._broadcast("response.output_item.added", {
+            "type": "response.output_item.added",
+            "output_index": self.message_output_index,
+            "item": {"id": self.message_item_id, "type": "message", "status": "in_progress", "role": "assistant", "content": []},
+        })
+
+    async def _emit_text_delta(self, delta_text: str) -> None:
+        if not delta_text:
+            return
+        await self._open_message_item()
+        self.final_text_parts.append(delta_text)
+        await self._broadcast("response.output_text.delta", {
+            "type": "response.output_text.delta",
+            "item_id": self.message_item_id,
+            "output_index": self.message_output_index,
+            "content_index": 0,
+            "delta": delta_text,
+            "logprobs": [],
+        })
+
+    async def _emit_tool_started(self, payload: Dict[str, Any]) -> None:
+        self.call_counter += 1
+        call_id = payload.get("tool_call_id") or f"call_{self.response_id[5:]}_{self.call_counter}"
+        args = payload.get("arguments", {})
+        arguments_str = json.dumps(args) if isinstance(args, dict) else str(args)
+        item_id = f"fc_{uuid.uuid4().hex[:24]}"
+        idx = self.output_index
+        self.output_index += 1
+        self.pending_tool_calls.append({"call_id": call_id, "name": payload.get("name", ""), "arguments": arguments_str, "item_id": item_id, "output_index": idx})
+        self.emitted_items.append({"type": "function_call", "name": payload.get("name", ""), "arguments": arguments_str, "call_id": call_id})
+        await self._broadcast("response.output_item.added", {
+            "type": "response.output_item.added",
+            "output_index": idx,
+            "item": {"id": item_id, "type": "function_call", "status": "in_progress", "name": payload.get("name", ""), "call_id": call_id, "arguments": arguments_str},
+        })
+
+    async def _emit_tool_completed(self, payload: Dict[str, Any]) -> None:
+        call_id = payload.get("tool_call_id")
+        pending = None
+        if call_id:
+            for i, p in enumerate(self.pending_tool_calls):
+                if p["call_id"] == call_id:
+                    pending = self.pending_tool_calls.pop(i)
+                    break
+        if pending is None:
+            return
+        done_item = {"id": pending["item_id"], "type": "function_call", "status": "completed", "name": pending["name"], "call_id": pending["call_id"], "arguments": pending["arguments"]}
+        await self._broadcast("response.output_item.done", {"type": "response.output_item.done", "output_index": pending["output_index"], "item": done_item})
+        result = payload.get("result", "")
+        result_str = result if isinstance(result, str) else json.dumps(result)
+        output_parts = [{"type": "input_text", "text": result_str}]
+        idx = self.output_index
+        self.output_index += 1
+        output_item = {"id": f"fco_{uuid.uuid4().hex[:24]}", "type": "function_call_output", "call_id": pending["call_id"], "output": output_parts, "status": "completed"}
+        self.emitted_items.append({"type": "function_call_output", "call_id": pending["call_id"], "output": output_parts})
+        await self._broadcast("response.output_item.added", {"type": "response.output_item.added", "output_index": idx, "item": output_item})
+        await self._broadcast("response.output_item.done", {"type": "response.output_item.done", "output_index": idx, "item": output_item})
+
+    def _current_output_items(self) -> List[Dict[str, Any]]:
+        items = list(self.emitted_items)
+        text = "".join(self.final_text_parts) or self.final_response_text
+        if text:
+            items.append({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text}]})
+        return items
+
+    async def _close_message_if_needed(self) -> None:
+        self.final_response_text = "".join(self.final_text_parts) or self.final_response_text
+        if self.message_opened:
+            await self._broadcast("response.output_text.done", {
+                "type": "response.output_text.done",
+                "item_id": self.message_item_id,
+                "output_index": self.message_output_index,
+                "content_index": 0,
+                "text": self.final_response_text,
+                "logprobs": [],
+            })
+            await self._broadcast("response.output_item.done", {
+                "type": "response.output_item.done",
+                "output_index": self.message_output_index,
+                "item": {"id": self.message_item_id, "type": "message", "status": "completed", "role": "assistant", "content": [{"type": "output_text", "text": self.final_response_text}]},
+            })
+
+    async def _finalize(self, result: Dict[str, Any]) -> None:
+        agent_final = result.get("final_response", "") if isinstance(result, dict) else ""
+        if agent_final and not self.final_text_parts:
+            await self._emit_text_delta(agent_final)
+        if agent_final and not self.final_response_text:
+            self.final_response_text = agent_final
+        if isinstance(result, dict) and result.get("error") and not self.final_response_text:
+            self.agent_error = result["error"]
+        await self._close_message_if_needed()
+        if self.agent_error:
+            await self._finalize_failed(result)
+        else:
+            await self._finalize_completed(result)
+
+    async def _finalize_completed(self, result: Optional[Dict[str, Any]] = None) -> None:
+        self.status = "completed"
+        final_items = list(self.emitted_items)
+        final_items.append({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": self.final_response_text}]})
+        env = self._envelope("completed", output=final_items)
+        full_history = list(self._conversation_history)
+        full_history.append({"role": "user", "content": self._user_message})
+        if isinstance(result, dict) and result.get("messages"):
+            full_history.extend(result["messages"])
+        else:
+            full_history.append({"role": "assistant", "content": self.final_response_text})
+        self._persist_snapshot(env, conversation_history_snapshot=full_history)
+        if self._conversation and self._store and not self._deleted:
+            self._response_store.set_conversation_completed(self._conversation, self.response_id)
+            self._response_store.clear_conversation_active(self._conversation, self.response_id)
+        await self._broadcast("response.completed", {"type": "response.completed", "response": env})
+
+    async def _finalize_failed(self, result: Optional[Dict[str, Any]] = None) -> None:
+        self.status = "failed"
+        final_text = self.final_response_text or (self.agent_error or "")
+        final_items = list(self.emitted_items)
+        final_items.append({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": final_text}]})
+        env = self._envelope("failed", output=final_items)
+        hist = list(self._conversation_history)
+        hist.append({"role": "user", "content": self._user_message})
+        if final_text:
+            hist.append({"role": "assistant", "content": final_text})
+        self._persist_snapshot(env, conversation_history_snapshot=hist)
+        if self._conversation and self._store:
+            self._response_store.clear_conversation_active(self._conversation, self.response_id)
+        await self._broadcast("response.failed", {"type": "response.failed", "response": env})
+
+    async def _finalize_incomplete(self) -> None:
+        if self._deleted:
+            return
+        self.status = "incomplete"
+        self._interrupt_agent_if_available()
+        final_text = "".join(self.final_text_parts) or self.final_response_text
+        final_items = list(self.emitted_items)
+        if final_text:
+            final_items.append({"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": final_text}]})
+        env = self._envelope("incomplete", output=final_items)
+        hist = list(self._conversation_history)
+        hist.append({"role": "user", "content": self._user_message})
+        if final_text:
+            hist.append({"role": "assistant", "content": final_text})
+        self._persist_snapshot(env, conversation_history_snapshot=hist)
+        if self._conversation and self._store:
+            self._response_store.clear_conversation_active(self._conversation, self.response_id)
+        await self._broadcast("response.incomplete", {"type": "response.incomplete", "response": env})
+
+
+class ResponseRunManager:
+    """Tracks active background /v1/responses runs."""
+
+    def __init__(self, max_concurrent: int = MAX_CONCURRENT_RESPONSE_RUNS):
+        self._active: Dict[str, ResponseRun] = {}
+        self._max_concurrent = max_concurrent
+
+    def can_start(self) -> bool:
+        return len(self._active) < self._max_concurrent
+
+    def register(self, run: ResponseRun) -> None:
+        self._active[run.response_id] = run
+
+    def get(self, response_id: str) -> Optional[ResponseRun]:
+        return self._active.get(response_id)
+
+    def unregister(self, response_id: str) -> None:
+        self._active.pop(response_id, None)
+
+    async def cancel(self, response_id: str, reason: str, *, delete: bool = False) -> bool:
+        run = self.get(response_id)
+        if not run:
+            return False
+        await run.cancel(reason, delete=delete)
+        return True
+
+    async def shutdown(self) -> None:
+        runs = list(self._active.values())
+        for run in runs:
+            await run.cancel("api server shutting down")
+        await asyncio.gather(*(run.wait_done() for run in runs), return_exceptions=True)
+
 
 
 _CRON_AVAILABLE = False
@@ -582,6 +1199,8 @@ class APIServerAdapter(BasePlatformAdapter):
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
         self._response_store = ResponseStore()
+        self._response_run_manager = ResponseRunManager()
+        self._response_run_idempotency = _ResponseRunIdempotencyIndex()
         # Active run streams: run_id -> asyncio.Queue of SSE event dicts
         self._run_streams: Dict[str, "asyncio.Queue[Optional[Dict]]"] = {}
         # Creation timestamps for orphaned-run TTL sweep
@@ -1167,53 +1786,8 @@ class APIServerAdapter(BasePlatformAdapter):
 
         return response
 
-    async def _write_sse_responses(
-        self,
-        request: "web.Request",
-        response_id: str,
-        model: str,
-        created_at: int,
-        stream_q,
-        agent_task,
-        agent_ref,
-        conversation_history: List[Dict[str, str]],
-        user_message: str,
-        instructions: Optional[str],
-        conversation: Optional[str],
-        store: bool,
-        session_id: str,
-    ) -> "web.StreamResponse":
-        """Write an SSE stream for POST /v1/responses (OpenAI Responses API).
-
-        Emits spec-compliant event types as the agent runs:
-
-        - ``response.created`` — initial envelope (status=in_progress)
-        - ``response.output_text.delta`` / ``response.output_text.done`` —
-          streamed assistant text
-        - ``response.output_item.added`` / ``response.output_item.done``
-          with ``item.type == "function_call"`` — when the agent invokes a
-          tool (both events fire; the ``done`` event carries the finalized
-          ``arguments`` string)
-        - ``response.output_item.added`` with
-          ``item.type == "function_call_output"`` — tool result with
-          ``{call_id, output, status}``
-        - ``response.completed`` — terminal event carrying the full
-          response object with all output items + usage (same payload
-          shape as the non-streaming path for parity)
-        - ``response.failed`` — terminal event on agent error
-
-        If the client disconnects mid-stream, ``agent.interrupt()`` is
-        called so the agent stops issuing upstream LLM calls, then the
-        asyncio task is cancelled.  When ``store=True`` an initial
-        ``in_progress`` snapshot is persisted immediately after
-        ``response.created`` and disconnects update it to an
-        ``incomplete`` snapshot so GET /v1/responses/{id} and
-        ``previous_response_id`` chaining still have something to
-        recover from.
-        """
-        import queue as _q
-
-        sse_headers = {
+    def _sse_headers(self, request: "web.Request", session_id: Optional[str] = None) -> Dict[str, str]:
+        headers = {
             "Content-Type": "text/event-stream",
             "Cache-Control": "no-cache",
             "X-Accel-Buffering": "no",
@@ -1221,450 +1795,74 @@ class APIServerAdapter(BasePlatformAdapter):
         origin = request.headers.get("Origin", "")
         cors = self._cors_headers_for_origin(origin) if origin else None
         if cors:
-            sse_headers.update(cors)
+            headers.update(cors)
         if session_id:
-            sse_headers["X-Hermes-Session-Id"] = session_id
-        response = web.StreamResponse(status=200, headers=sse_headers)
+            headers["X-Hermes-Session-Id"] = session_id
+        return headers
+
+    async def _stream_response_run(
+        self,
+        request: "web.Request",
+        run: ResponseRun,
+        session_id: Optional[str] = None,
+        *,
+        snapshot_event: bool = False,
+        cancel_on_disconnect: bool = False,
+    ) -> "web.StreamResponse":
+        """Write SSE events for a ResponseRun subscriber.
+
+        By default the SSE subscriber does not own the run lifecycle: client
+        disconnect only detaches the subscriber and the run continues.  Ephemeral
+        store=false streams pass cancel_on_disconnect=True so the connection owns
+        the run and disconnect cancels it.
+        """
+        response = web.StreamResponse(status=200, headers=self._sse_headers(request, session_id))
         await response.prepare(request)
-
-        # State accumulated during the stream
-        final_text_parts: List[str] = []
-        # Track open function_call items by name so we can emit a matching
-        # ``done`` event when the tool completes.  Order preserved.
-        pending_tool_calls: List[Dict[str, Any]] = []
-        # Output items we've emitted so far (used to build the terminal
-        # response.completed payload).  Kept in the order they appeared.
-        emitted_items: List[Dict[str, Any]] = []
-        # Monotonic counter for output_index (spec requires it).
-        output_index = 0
-        # Monotonic counter for call_id generation if the agent doesn't
-        # provide one (it doesn't, from tool_progress_callback).
-        call_counter = 0
-        # Canonical Responses SSE events include a monotonically increasing
-        # sequence_number. Add it server-side for every emitted event so
-        # clients that validate the OpenAI event schema can parse our stream.
-        sequence_number = 0
-        # Track the assistant message item id + content index for text
-        # delta events — the spec ties deltas to a specific item.
-        message_item_id = f"msg_{uuid.uuid4().hex[:24]}"
-        message_output_index: Optional[int] = None
-        message_opened = False
-
-        async def _write_event(event_type: str, data: Dict[str, Any]) -> None:
-            nonlocal sequence_number
-            if "sequence_number" not in data:
-                data["sequence_number"] = sequence_number
-            sequence_number += 1
-            payload = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
-            await response.write(payload.encode())
-
-        def _envelope(status: str) -> Dict[str, Any]:
-            env: Dict[str, Any] = {
-                "id": response_id,
-                "object": "response",
-                "status": status,
-                "created_at": created_at,
-                "model": model,
-            }
-            return env
-
-        final_response_text = ""
-        agent_error: Optional[str] = None
-        usage: Dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
-        terminal_snapshot_persisted = False
-
-        def _persist_response_snapshot(
-            response_env: Dict[str, Any],
-            *,
-            conversation_history_snapshot: Optional[List[Dict[str, Any]]] = None,
-        ) -> None:
-            if not store:
-                return
-            if conversation_history_snapshot is None:
-                conversation_history_snapshot = list(conversation_history)
-                conversation_history_snapshot.append({"role": "user", "content": user_message})
-            self._response_store.put(response_id, {
-                "response": response_env,
-                "conversation_history": conversation_history_snapshot,
-                "instructions": instructions,
-                "session_id": session_id,
-            })
-            if conversation:
-                self._response_store.set_conversation(conversation, response_id)
-
-        def _persist_incomplete_if_needed() -> None:
-            """Persist an ``incomplete`` snapshot if no terminal one was written.
-
-            Called from both the client-disconnect (``ConnectionResetError``)
-            and server-cancellation (``asyncio.CancelledError``) paths so
-            GET /v1/responses/{id} and ``previous_response_id`` chaining keep
-            working after abrupt stream termination.
-            """
-            if not store or terminal_snapshot_persisted:
-                return
-            incomplete_text = "".join(final_text_parts) or final_response_text
-            incomplete_items: List[Dict[str, Any]] = list(emitted_items)
-            if incomplete_text:
-                incomplete_items.append({
-                    "type": "message",
-                    "role": "assistant",
-                    "content": [{"type": "output_text", "text": incomplete_text}],
-                })
-            incomplete_env = _envelope("incomplete")
-            incomplete_env["output"] = incomplete_items
-            incomplete_env["usage"] = {
-                "input_tokens": usage.get("input_tokens", 0),
-                "output_tokens": usage.get("output_tokens", 0),
-                "total_tokens": usage.get("total_tokens", 0),
-            }
-            incomplete_history = list(conversation_history)
-            incomplete_history.append({"role": "user", "content": user_message})
-            if incomplete_text:
-                incomplete_history.append({"role": "assistant", "content": incomplete_text})
-            _persist_response_snapshot(
-                incomplete_env,
-                conversation_history_snapshot=incomplete_history,
-            )
-
+        disconnected = False
         try:
-            # response.created — initial envelope, status=in_progress
-            created_env = _envelope("in_progress")
-            created_env["output"] = []
-            await _write_event("response.created", {
-                "type": "response.created",
-                "response": created_env,
-            })
-            _persist_response_snapshot(created_env)
-            last_activity = time.monotonic()
-
-            async def _open_message_item() -> None:
-                """Emit response.output_item.added for the assistant message
-                the first time any text delta arrives."""
-                nonlocal message_opened, message_output_index, output_index
-                if message_opened:
-                    return
-                message_opened = True
-                message_output_index = output_index
-                output_index += 1
-                item = {
-                    "id": message_item_id,
-                    "type": "message",
-                    "status": "in_progress",
-                    "role": "assistant",
-                    "content": [],
-                }
-                await _write_event("response.output_item.added", {
-                    "type": "response.output_item.added",
-                    "output_index": message_output_index,
-                    "item": item,
-                })
-
-            async def _emit_text_delta(delta_text: str) -> None:
-                await _open_message_item()
-                final_text_parts.append(delta_text)
-                await _write_event("response.output_text.delta", {
-                    "type": "response.output_text.delta",
-                    "item_id": message_item_id,
-                    "output_index": message_output_index,
-                    "content_index": 0,
-                    "delta": delta_text,
-                    "logprobs": [],
-                })
-
-            async def _emit_tool_started(payload: Dict[str, Any]) -> str:
-                """Emit response.output_item.added for a function_call.
-
-                Returns the call_id so the matching completion event can
-                reference it.  Prefer the real ``tool_call_id`` from the
-                agent when available; fall back to a generated call id for
-                safety in tests or older code paths.
-                """
-                nonlocal output_index, call_counter
-                call_counter += 1
-                call_id = payload.get("tool_call_id") or f"call_{response_id[5:]}_{call_counter}"
-                args = payload.get("arguments", {})
-                if isinstance(args, dict):
-                    arguments_str = json.dumps(args)
-                else:
-                    arguments_str = str(args)
-                item = {
-                    "id": f"fc_{uuid.uuid4().hex[:24]}",
-                    "type": "function_call",
-                    "status": "in_progress",
-                    "name": payload.get("name", ""),
-                    "call_id": call_id,
-                    "arguments": arguments_str,
-                }
-                idx = output_index
-                output_index += 1
-                pending_tool_calls.append({
-                    "call_id": call_id,
-                    "name": payload.get("name", ""),
-                    "arguments": arguments_str,
-                    "item_id": item["id"],
-                    "output_index": idx,
-                })
-                emitted_items.append({
-                    "type": "function_call",
-                    "name": payload.get("name", ""),
-                    "arguments": arguments_str,
-                    "call_id": call_id,
-                })
-                await _write_event("response.output_item.added", {
-                    "type": "response.output_item.added",
-                    "output_index": idx,
-                    "item": item,
-                })
-                return call_id
-
-            async def _emit_tool_completed(payload: Dict[str, Any]) -> None:
-                """Emit response.output_item.done (function_call) followed
-                by response.output_item.added (function_call_output)."""
-                nonlocal output_index
-                call_id = payload.get("tool_call_id")
-                result = payload.get("result", "")
-                pending = None
-                if call_id:
-                    for i, p in enumerate(pending_tool_calls):
-                        if p["call_id"] == call_id:
-                            pending = pending_tool_calls.pop(i)
-                            break
-                if pending is None:
-                    # Completion without a matching start — skip to avoid
-                    # emitting orphaned done events.
-                    return
-
-                # function_call done
-                done_item = {
-                    "id": pending["item_id"],
-                    "type": "function_call",
-                    "status": "completed",
-                    "name": pending["name"],
-                    "call_id": pending["call_id"],
-                    "arguments": pending["arguments"],
-                }
-                await _write_event("response.output_item.done", {
-                    "type": "response.output_item.done",
-                    "output_index": pending["output_index"],
-                    "item": done_item,
-                })
-
-                # function_call_output added (result)
-                result_str = result if isinstance(result, str) else json.dumps(result)
-                output_parts = [{"type": "input_text", "text": result_str}]
-                output_item = {
-                    "id": f"fco_{uuid.uuid4().hex[:24]}",
-                    "type": "function_call_output",
-                    "call_id": pending["call_id"],
-                    "output": output_parts,
-                    "status": "completed",
-                }
-                idx = output_index
-                output_index += 1
-                emitted_items.append({
-                    "type": "function_call_output",
-                    "call_id": pending["call_id"],
-                    "output": output_parts,
-                })
-                await _write_event("response.output_item.added", {
-                    "type": "response.output_item.added",
-                    "output_index": idx,
-                    "item": output_item,
-                })
-                await _write_event("response.output_item.done", {
-                    "type": "response.output_item.done",
-                    "output_index": idx,
-                    "item": output_item,
-                })
-
-            # Main drain loop — thread-safe queue fed by agent callbacks.
-            async def _dispatch(it) -> None:
-                """Route a queue item to the correct SSE emitter.
-
-                Plain strings are text deltas.  Tagged tuples with
-                ``__tool_started__`` / ``__tool_completed__`` prefixes
-                are tool lifecycle events.
-                """
-                if isinstance(it, tuple) and len(it) == 2 and isinstance(it[0], str):
-                    tag, payload = it
-                    if tag == "__tool_started__":
-                        await _emit_tool_started(payload)
-                    elif tag == "__tool_completed__":
-                        await _emit_tool_completed(payload)
-                    # Unknown tags are silently ignored (forward-compat).
-                elif isinstance(it, str):
-                    await _emit_text_delta(it)
-                # Other types (non-string, non-tuple) are silently dropped.
-
-            loop = asyncio.get_running_loop()
-            while True:
+            async for event_type, data in run.subscribe(snapshot_event=snapshot_event):
                 try:
-                    item = await loop.run_in_executor(None, lambda: stream_q.get(timeout=0.5))
-                except _q.Empty:
-                    if agent_task.done():
-                        # Drain remaining
-                        while True:
-                            try:
-                                item = stream_q.get_nowait()
-                                if item is None:
-                                    break
-                                await _dispatch(item)
-                                last_activity = time.monotonic()
-                            except _q.Empty:
-                                break
-                        break
-                    if time.monotonic() - last_activity >= CHAT_COMPLETIONS_SSE_KEEPALIVE_SECONDS:
+                    if event_type == "__keepalive__":
                         await response.write(b": keepalive\n\n")
-                        last_activity = time.monotonic()
-                    continue
-
-                if item is None:  # EOS sentinel
+                        continue
+                    payload = f"event: {event_type}\ndata: {json.dumps(data)}\n\n"
+                    await response.write(payload.encode())
+                except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
+                    disconnected = True
+                    logger.info("SSE subscriber disconnected for response run %s", run.response_id)
+                    if cancel_on_disconnect:
+                        await run.cancel("SSE client disconnected")
                     break
-
-                await _dispatch(item)
-                last_activity = time.monotonic()
-
-            # Pick up agent result + usage from the completed task
-            try:
-                result, agent_usage = await agent_task
-                usage = agent_usage or usage
-                # If the agent produced a final_response but no text
-                # deltas were streamed (e.g. some providers only emit
-                # the full response at the end), emit a single fallback
-                # delta so Responses clients still receive a live text part.
-                agent_final = result.get("final_response", "") if isinstance(result, dict) else ""
-                if agent_final and not final_text_parts:
-                    await _emit_text_delta(agent_final)
-                if agent_final and not final_response_text:
-                    final_response_text = agent_final
-                if isinstance(result, dict) and result.get("error") and not final_response_text:
-                    agent_error = result["error"]
-            except Exception as e:  # noqa: BLE001
-                logger.error("Error running agent for streaming responses: %s", e, exc_info=True)
-                agent_error = str(e)
-
-            # Close the message item if it was opened
-            final_response_text = "".join(final_text_parts) or final_response_text
-            if message_opened:
-                await _write_event("response.output_text.done", {
-                    "type": "response.output_text.done",
-                    "item_id": message_item_id,
-                    "output_index": message_output_index,
-                    "content_index": 0,
-                    "text": final_response_text,
-                    "logprobs": [],
-                })
-                msg_done_item = {
-                    "id": message_item_id,
-                    "type": "message",
-                    "status": "completed",
-                    "role": "assistant",
-                    "content": [
-                        {"type": "output_text", "text": final_response_text}
-                    ],
-                }
-                await _write_event("response.output_item.done", {
-                    "type": "response.output_item.done",
-                    "output_index": message_output_index,
-                    "item": msg_done_item,
-                })
-
-            # Always append a final message item in the completed
-            # response envelope so clients that only parse the terminal
-            # payload still see the assistant text.  This mirrors the
-            # shape produced by _extract_output_items in the batch path.
-            final_items: List[Dict[str, Any]] = list(emitted_items)
-            final_items.append({
-                "type": "message",
-                "role": "assistant",
-                "content": [
-                    {"type": "output_text", "text": final_response_text or (agent_error or "")}
-                ],
-            })
-
-            if agent_error:
-                failed_env = _envelope("failed")
-                failed_env["output"] = final_items
-                failed_env["error"] = {"message": agent_error, "type": "server_error"}
-                failed_env["usage"] = {
-                    "input_tokens": usage.get("input_tokens", 0),
-                    "output_tokens": usage.get("output_tokens", 0),
-                    "total_tokens": usage.get("total_tokens", 0),
-                }
-                _failed_history = list(conversation_history)
-                _failed_history.append({"role": "user", "content": user_message})
-                if final_response_text or agent_error:
-                    _failed_history.append({
-                        "role": "assistant",
-                        "content": final_response_text or agent_error,
-                    })
-                _persist_response_snapshot(
-                    failed_env,
-                    conversation_history_snapshot=_failed_history,
-                )
-                terminal_snapshot_persisted = True
-                await _write_event("response.failed", {
-                    "type": "response.failed",
-                    "response": failed_env,
-                })
-            else:
-                completed_env = _envelope("completed")
-                completed_env["output"] = final_items
-                completed_env["usage"] = {
-                    "input_tokens": usage.get("input_tokens", 0),
-                    "output_tokens": usage.get("output_tokens", 0),
-                    "total_tokens": usage.get("total_tokens", 0),
-                }
-                full_history = list(conversation_history)
-                full_history.append({"role": "user", "content": user_message})
-                if isinstance(result, dict) and result.get("messages"):
-                    full_history.extend(result["messages"])
-                else:
-                    full_history.append({"role": "assistant", "content": final_response_text})
-                _persist_response_snapshot(
-                    completed_env,
-                    conversation_history_snapshot=full_history,
-                )
-                terminal_snapshot_persisted = True
-                await _write_event("response.completed", {
-                    "type": "response.completed",
-                    "response": completed_env,
-                })
-
-        except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
-            _persist_incomplete_if_needed()
-            # Client disconnected — interrupt the agent so it stops
-            # making upstream LLM calls, then cancel the task.
-            agent = agent_ref[0] if agent_ref else None
-            if agent is not None:
+            if not disconnected:
                 try:
-                    agent.interrupt("SSE client disconnected")
-                except Exception:
-                    pass
-            if not agent_task.done():
-                agent_task.cancel()
-                try:
-                    await agent_task
-                except (asyncio.CancelledError, Exception):
-                    pass
-            logger.info("SSE client disconnected; interrupted agent task %s", response_id)
+                    await response.write(b"data: [DONE]\n\n")
+                except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
+                    disconnected = True
+                    if cancel_on_disconnect:
+                        await run.cancel("SSE client disconnected")
         except asyncio.CancelledError:
-            # Server-side cancellation (e.g. shutdown, request timeout) —
-            # persist an incomplete snapshot so GET /v1/responses/{id} and
-            # previous_response_id chaining still work, then re-raise so the
-            # runtime's cancellation semantics are respected.
-            _persist_incomplete_if_needed()
-            agent = agent_ref[0] if agent_ref else None
-            if agent is not None:
-                try:
-                    agent.interrupt("SSE task cancelled")
-                except Exception:
-                    pass
-            if not agent_task.done():
-                agent_task.cancel()
-            logger.info("SSE task cancelled; persisted incomplete snapshot for %s", response_id)
+            if cancel_on_disconnect:
+                await run.cancel("SSE request cancelled")
             raise
+        finally:
+            if cancel_on_disconnect and not run._done.is_set():
+                await run.wait_done()
+        return response
 
+    async def _stream_stored_response(
+        self,
+        request: "web.Request",
+        response_data: Dict[str, Any],
+        session_id: Optional[str] = None,
+    ) -> "web.StreamResponse":
+        """Return a short SSE stream for an idempotent retry of an already-stored response."""
+        response = web.StreamResponse(status=200, headers=self._sse_headers(request, session_id))
+        await response.prepare(request)
+        status = response_data.get("status")
+        event_type = "response.completed" if status == "completed" else "response.failed" if status == "failed" else "response.created"
+        payload = {"type": event_type, "response": response_data, "sequence_number": 0}
+        await response.write(f"event: {event_type}\ndata: {json.dumps(payload)}\n\n".encode())
+        await response.write(b"data: [DONE]\n\n")
         return response
 
     async def _handle_responses(self, request: "web.Request") -> "web.Response":
@@ -1695,10 +1893,32 @@ class APIServerAdapter(BasePlatformAdapter):
         if conversation and previous_response_id:
             return web.json_response(_openai_error("Cannot use both 'conversation' and 'previous_response_id'"), status=400)
 
-        # Resolve conversation name to latest response_id
+        resolved_previous_from_conversation = False
+
+        # Resolve conversation name to an active response guard plus latest completed checkpoint.
         if conversation:
-            previous_response_id = self._response_store.get_conversation(conversation)
-            # No error if conversation doesn't exist yet — it's a new conversation
+            active_response_id = self._response_store.get_conversation_active(conversation)
+            if active_response_id:
+                active_run = self._response_run_manager.get(active_response_id)
+                active_stored = self._response_store.get(active_response_id)
+                active_status = (active_stored.get("response") or {}).get("status") if active_stored else None
+                if active_run or active_status in {"queued", "in_progress"}:
+                    return web.json_response(
+                        _openai_error(
+                            f"Conversation {conversation!r} has an active response {active_response_id}",
+                            code="conversation_response_not_completed",
+                            param="conversation",
+                        ),
+                        status=409,
+                    )
+                self._response_store.clear_conversation_active(conversation, active_response_id)
+
+            previous_response_id = self._response_store.get_conversation_latest_completed(conversation)
+            if previous_response_id and self._response_store.get(previous_response_id) is None:
+                self._response_store.clear_conversation_references(previous_response_id)
+                previous_response_id = None
+            if previous_response_id:
+                resolved_previous_from_conversation = True
 
         # Normalize input to message list
         input_messages: List[Dict[str, Any]] = []
@@ -1749,6 +1969,25 @@ class APIServerAdapter(BasePlatformAdapter):
             stored = self._response_store.get(previous_response_id)
             if stored is None:
                 return web.json_response(_openai_error(f"Previous response not found: {previous_response_id}"), status=404)
+            prev_status = (stored.get("response") or {}).get("status") or "completed"
+            if prev_status != "completed":
+                if resolved_previous_from_conversation:
+                    return web.json_response(
+                        _openai_error(
+                            f"Conversation {conversation!r} has non-completed response {previous_response_id} status={prev_status}",
+                            code="conversation_response_not_completed",
+                            param="conversation",
+                        ),
+                        status=409,
+                    )
+                return web.json_response(
+                    _openai_error(
+                        f"Previous response is not completed: {previous_response_id} has status {prev_status}",
+                        code="previous_response_not_completed",
+                        param="previous_response_id",
+                    ),
+                    status=409,
+                )
             conversation_history = list(stored.get("conversation_history", []))
             stored_session_id = stored.get("session_id")
             # If no instructions provided, carry forward from previous
@@ -1774,77 +2013,122 @@ class APIServerAdapter(BasePlatformAdapter):
 
         stream = bool(body.get("stream", False))
         if stream:
-            # Streaming branch — emit OpenAI Responses SSE events as the
-            # agent runs so frontends can render text deltas and tool
-            # calls in real time.  See _write_sse_responses for details.
-            import queue as _q
-            _stream_q: _q.Queue = _q.Queue()
+            idempotency_key = request.headers.get("Idempotency-Key")
+            if store is False:
+                if idempotency_key:
+                    return web.json_response(
+                        _openai_error(
+                            "Streaming idempotency requires store=true",
+                            code="idempotency_requires_store",
+                            param="Idempotency-Key",
+                        ),
+                        status=400,
+                    )
+                response_id = f"resp_{uuid.uuid4().hex[:28]}"
+                loop = asyncio.get_running_loop()
 
-            def _on_delta(delta):
-                # None from the agent is a CLI box-close signal, not EOS.
-                # Forwarding would kill the SSE stream prematurely; the
-                # SSE writer detects completion via agent_task.done().
-                if delta is not None:
-                    _stream_q.put(delta)
+                def _ephemeral_factory(callbacks, agent_ref):
+                    return self._run_agent(
+                        user_message=user_message,
+                        conversation_history=conversation_history,
+                        ephemeral_system_prompt=instructions,
+                        session_id=session_id,
+                        stream_delta_callback=callbacks.on_delta,
+                        tool_progress_callback=callbacks.on_tool_progress,
+                        tool_start_callback=callbacks.on_tool_start,
+                        tool_complete_callback=callbacks.on_tool_complete,
+                        agent_ref=agent_ref,
+                    )
 
-            def _on_tool_progress(event_type, name, preview, args, **kwargs):
-                """Queue non-start tool progress events if needed in future.
+                run = ResponseRun(
+                    response_id=response_id,
+                    model=body.get("model", self._model_name),
+                    created_at=int(time.time()),
+                    response_store=self._response_store,
+                    run_agent_coro_factory=_ephemeral_factory,
+                    conversation_history=conversation_history,
+                    user_message=user_message,
+                    instructions=instructions,
+                    conversation=None,
+                    session_id=session_id,
+                    store=False,
+                    on_done=lambda _response_id: None,
+                    loop=loop,
+                )
+                run.start()
+                return await self._stream_response_run(
+                    request,
+                    run,
+                    session_id=session_id,
+                    cancel_on_disconnect=True,
+                )
+            idem_fp = None
+            if idempotency_key:
+                idem_fp = _make_request_fingerprint(
+                    body,
+                    keys=["input", "instructions", "previous_response_id", "conversation", "conversation_history", "model", "tools", "stream", "store"],
+                )
+                existing_response_id, conflict = self._response_run_idempotency.lookup(idempotency_key, idem_fp)
+                if conflict:
+                    return web.json_response(
+                        _openai_error("Idempotency-Key was reused with different request body", code="idempotency_key_conflict"),
+                        status=409,
+                    )
+                if existing_response_id:
+                    active_run = self._response_run_manager.get(existing_response_id)
+                    if active_run:
+                        return await self._stream_response_run(request, active_run, session_id=active_run.session_id, snapshot_event=True)
+                    stored = self._response_store.get(existing_response_id)
+                    if stored:
+                        return await self._stream_stored_response(request, stored["response"], session_id=stored.get("session_id"))
 
-                The structured Responses stream uses ``tool_start_callback``
-                and ``tool_complete_callback`` for exact call-id correlation,
-                so progress events are currently ignored here.
-                """
-                return
-
-            def _on_tool_start(tool_call_id, function_name, function_args):
-                """Queue a started tool for live function_call streaming."""
-                _stream_q.put(("__tool_started__", {
-                    "tool_call_id": tool_call_id,
-                    "name": function_name,
-                    "arguments": function_args or {},
-                }))
-
-            def _on_tool_complete(tool_call_id, function_name, function_args, function_result):
-                """Queue a completed tool result for live function_call_output streaming."""
-                _stream_q.put(("__tool_completed__", {
-                    "tool_call_id": tool_call_id,
-                    "name": function_name,
-                    "arguments": function_args or {},
-                    "result": function_result,
-                }))
-
-            agent_ref = [None]
-            agent_task = asyncio.ensure_future(self._run_agent(
-                user_message=user_message,
-                conversation_history=conversation_history,
-                ephemeral_system_prompt=instructions,
-                session_id=session_id,
-                stream_delta_callback=_on_delta,
-                tool_progress_callback=_on_tool_progress,
-                tool_start_callback=_on_tool_start,
-                tool_complete_callback=_on_tool_complete,
-                agent_ref=agent_ref,
-            ))
+            if not self._response_run_manager.can_start():
+                return web.json_response(
+                    _openai_error(
+                        f"Too many concurrent response runs (max {MAX_CONCURRENT_RESPONSE_RUNS})",
+                        code="rate_limit_exceeded",
+                    ),
+                    status=429,
+                )
 
             response_id = f"resp_{uuid.uuid4().hex[:28]}"
             model_name = body.get("model", self._model_name)
             created_at = int(time.time())
+            loop = asyncio.get_running_loop()
 
-            return await self._write_sse_responses(
-                request=request,
+            def _factory(callbacks, agent_ref):
+                return self._run_agent(
+                    user_message=user_message,
+                    conversation_history=conversation_history,
+                    ephemeral_system_prompt=instructions,
+                    session_id=session_id,
+                    stream_delta_callback=callbacks.on_delta,
+                    tool_progress_callback=callbacks.on_tool_progress,
+                    tool_start_callback=callbacks.on_tool_start,
+                    tool_complete_callback=callbacks.on_tool_complete,
+                    agent_ref=agent_ref,
+                )
+
+            run = ResponseRun(
                 response_id=response_id,
                 model=model_name,
                 created_at=created_at,
-                stream_q=_stream_q,
-                agent_task=agent_task,
-                agent_ref=agent_ref,
+                response_store=self._response_store,
+                run_agent_coro_factory=_factory,
                 conversation_history=conversation_history,
                 user_message=user_message,
                 instructions=instructions,
                 conversation=conversation,
-                store=store,
                 session_id=session_id,
+                store=True,
+                on_done=self._response_run_manager.unregister,
+                loop=loop,
             )
+            self._response_run_manager.register(run)
+            if idempotency_key and idem_fp:
+                self._response_run_idempotency.put(idempotency_key, idem_fp, response_id)
+            run.start()
+            return await self._stream_response_run(request, run, session_id=session_id, cancel_on_disconnect=False)
 
         async def _compute_response():
             return await self._run_agent(
@@ -1924,7 +2208,7 @@ class APIServerAdapter(BasePlatformAdapter):
             # Update conversation mapping so the next request with the same
             # conversation name automatically chains to this response
             if conversation:
-                self._response_store.set_conversation(conversation, response_id)
+                self._response_store.set_conversation_completed(conversation, response_id)
 
         return web.json_response(response_data)
 
@@ -1941,6 +2225,9 @@ class APIServerAdapter(BasePlatformAdapter):
         response_id = request.match_info["response_id"]
         stored = self._response_store.get(response_id)
         if stored is None:
+            run = self._response_run_manager.get(response_id)
+            if run:
+                return web.json_response(run.get_snapshot())
             return web.json_response(_openai_error(f"Response not found: {response_id}"), status=404)
 
         return web.json_response(stored["response"])
@@ -1952,7 +2239,21 @@ class APIServerAdapter(BasePlatformAdapter):
             return auth_err
 
         response_id = request.match_info["response_id"]
+        run = self._response_run_manager.get(response_id)
+        if run:
+            await run.cancel("response deleted", delete=True)
+            await run.wait_done()
+            self._response_store.delete(response_id)
+            self._response_run_idempotency.remove_response(response_id)
+            return web.json_response({
+                "id": response_id,
+                "object": "response",
+                "deleted": True,
+            })
+
         deleted = self._response_store.delete(response_id)
+        if deleted:
+            self._response_run_idempotency.remove_response(response_id)
         if not deleted:
             return web.json_response(_openai_error(f"Response not found: {response_id}"), status=404)
 
@@ -2661,6 +2962,8 @@ class APIServerAdapter(BasePlatformAdapter):
     async def disconnect(self) -> None:
         """Stop the aiohttp web server."""
         self._mark_disconnected()
+        if getattr(self, "_response_run_manager", None) is not None:
+            await self._response_run_manager.shutdown()
         if self._site:
             await self._site.stop()
             self._site = None

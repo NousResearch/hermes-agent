@@ -14,6 +14,7 @@ Tests cover:
 
 import asyncio
 import json
+import sqlite3
 import time
 import uuid
 from unittest.mock import AsyncMock, MagicMock, patch
@@ -25,6 +26,7 @@ from aiohttp.test_utils import AioHTTPTestCase, TestClient, TestServer
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
+    ResponseRun,
     ResponseStore,
     _IdempotencyCache,
     _CORS_HEADERS,
@@ -104,6 +106,47 @@ class TestResponseStore:
     def test_delete_missing(self):
         store = ResponseStore(max_size=10)
         assert store.delete("resp_missing") is False
+
+    def test_delete_clears_conversation_references(self):
+        store = ResponseStore(max_size=10)
+        store.put("resp_1", {"response": {"id": "resp_1"}})
+        store.set_conversation_completed("conv", "resp_1")
+        store.set_conversation_active("conv-active", "resp_1")
+        assert store.delete("resp_1") is True
+        assert store.get_conversation("conv") is None
+        assert store.get_conversation_active("conv-active") is None
+
+    def test_lru_eviction_clears_conversation_references(self):
+        store = ResponseStore(max_size=1)
+        store.put("resp_1", {"response": {"id": "resp_1"}})
+        store.set_conversation_completed("conv", "resp_1")
+        store.put("resp_2", {"response": {"id": "resp_2"}})
+        assert store.get("resp_1") is None
+        assert store.get_conversation("conv") is None
+
+    def test_legacy_conversation_schema_rebuilt_without_response_id_not_null(self, tmp_path):
+        db_path = tmp_path / "legacy_response_store.db"
+        conn = sqlite3.connect(db_path)
+        conn.execute(
+            "CREATE TABLE responses (response_id TEXT PRIMARY KEY, data TEXT NOT NULL, accessed_at REAL NOT NULL)"
+        )
+        conn.execute(
+            "CREATE TABLE conversations (name TEXT PRIMARY KEY, response_id TEXT NOT NULL)"
+        )
+        conn.execute(
+            "INSERT INTO conversations (name, response_id) VALUES (?, ?)",
+            ("legacy", "resp_old"),
+        )
+        conn.commit()
+        conn.close()
+
+        store = ResponseStore(max_size=10, db_path=str(db_path))
+        assert store.get_conversation("legacy") == "resp_old"
+        store.set_conversation_active("active", "resp_active")
+        assert store.get_conversation_active("active") == "resp_active"
+        columns = {row[1] for row in store._conn.execute("PRAGMA table_info(conversations)").fetchall()}
+        assert "response_id" not in columns
+        assert {"latest_completed_response_id", "active_response_id"}.issubset(columns)
 
 
 # ---------------------------------------------------------------------------
@@ -1375,72 +1418,43 @@ class TestResponsesStreaming:
                 assert data["output"][-1]["content"][0]["text"] == "Stored response"
 
     @pytest.mark.asyncio
-    async def test_stream_cancelled_persists_incomplete_snapshot(self, adapter):
-        """Server-side asyncio.CancelledError (shutdown, request timeout) must
-        still leave an ``incomplete`` snapshot in ResponseStore so
-        GET /v1/responses/{id} and previous_response_id chaining keep
-        working.  Regression for PR #15171 follow-up.
-
-        Calls _write_sse_responses directly so the test can await the
-        handler to completion (TestClient disconnection races the server
-        handler, which makes end-to-end assertion on the final stored
-        snapshot flaky).
-        """
-        # Build a minimal fake request + stream queue the writer understands.
-        fake_request = MagicMock()
-        fake_request.headers = {}
-
-        written_payloads: list = []
-
-        class _FakeStreamResponse:
-            async def prepare(self, req):
-                pass
-
-            async def write(self, payload):
-                written_payloads.append(payload)
-
-        # Patch web.StreamResponse for the duration of the writer call.
-        import gateway.platforms.api_server as api_mod
-        import queue as _q
-
-        stream_q: _q.Queue = _q.Queue()
-
-        async def _agent_coro():
-            # Feed one partial delta into the stream queue...
-            stream_q.put("partial output")
-            # ...then give the drain loop a moment to pick it up before
-            # raising CancelledError to simulate a server-side cancel.
-            await asyncio.sleep(0.01)
-            raise asyncio.CancelledError()
-
-        agent_task = asyncio.ensure_future(_agent_coro())
+    async def test_response_run_cancelled_persists_incomplete_snapshot(self, adapter):
+        """Server-side cancellation of ResponseRun leaves an incomplete snapshot."""
+        started = asyncio.Event()
         response_id = f"resp_{uuid.uuid4().hex[:28]}"
 
-        with patch.object(api_mod.web, "StreamResponse", return_value=_FakeStreamResponse()):
-            with pytest.raises(asyncio.CancelledError):
-                await adapter._write_sse_responses(
-                    request=fake_request,
-                    response_id=response_id,
-                    model="hermes-agent",
-                    created_at=int(time.time()),
-                    stream_q=stream_q,
-                    agent_task=agent_task,
-                    agent_ref=[None],
-                    conversation_history=[],
-                    user_message="will be cancelled",
-                    instructions=None,
-                    conversation=None,
-                    store=True,
-                    session_id=None,
-                )
+        async def _factory(callbacks, ref):
+            started.set()
+            callbacks.on_delta("partial output")
+            await asyncio.sleep(10)
+            return ({"final_response": "late", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2})
 
-        # The in_progress snapshot was persisted on response.created,
-        # and the CancelledError handler must have updated it to
-        # ``incomplete`` with the partial text it saw.
+        run = ResponseRun(
+            response_id=response_id,
+            model="hermes-agent",
+            created_at=int(time.time()),
+            response_store=adapter._response_store,
+            run_agent_coro_factory=_factory,
+            conversation_history=[],
+            user_message="will be cancelled",
+            instructions=None,
+            conversation=None,
+            session_id="sess-cancel",
+            store=True,
+            on_done=adapter._response_run_manager.unregister,
+            loop=asyncio.get_running_loop(),
+        )
+        adapter._response_run_manager.register(run)
+        run.start()
+        await started.wait()
+        await asyncio.sleep(0.05)
+        await run.cancel("test cancellation")
+        await run.wait_done()
+
         stored = adapter._response_store.get(response_id)
         assert stored is not None, "snapshot must be retrievable after cancellation"
         assert stored["response"]["status"] == "incomplete"
-        # Partial text captured before cancel should be preserved.
         output_text = "".join(
             part.get("text", "")
             for item in stored["response"].get("output", [])
@@ -1450,62 +1464,384 @@ class TestResponsesStreaming:
         assert "partial output" in output_text
 
     @pytest.mark.asyncio
-    async def test_stream_client_disconnect_persists_incomplete_snapshot(self, adapter):
-        """Client disconnect (ConnectionResetError) during streaming must
-        persist an ``incomplete`` snapshot in ResponseStore.  Regression
-        for PR #15171."""
+    async def test_background_run_client_disconnect_does_not_cancel_agent(self, adapter):
         fake_request = MagicMock()
         fake_request.headers = {}
-
-        write_call_count = {"n": 0}
+        writes = {"n": 0}
 
         class _DisconnectingStreamResponse:
             async def prepare(self, req):
                 pass
 
             async def write(self, payload):
-                # First two writes succeed (prepare + response.created).
-                # On the third write (a text delta), the "client"
-                # disconnects — simulate with ConnectionResetError.
-                write_call_count["n"] += 1
-                if write_call_count["n"] >= 3:
-                    raise ConnectionResetError("simulated client disconnect")
+                writes["n"] += 1
+                if writes["n"] >= 2:
+                    raise ConnectionResetError("client went away")
+
+        started = asyncio.Event()
+        finish = asyncio.Event()
+        agent_ref = [MagicMock()]
+
+        async def _factory(callbacks, ref):
+            ref[0] = agent_ref[0]
+            started.set()
+            callbacks.on_delta("still running")
+            await finish.wait()
+            return ({"final_response": "still running", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3})
+
+        run = ResponseRun(
+            response_id=f"resp_{uuid.uuid4().hex[:28]}",
+            model="hermes-agent",
+            created_at=int(time.time()),
+            response_store=adapter._response_store,
+            run_agent_coro_factory=_factory,
+            conversation_history=[],
+            user_message="hi",
+            instructions=None,
+            conversation=None,
+            session_id="sess-bg",
+            store=True,
+            on_done=adapter._response_run_manager.unregister,
+            loop=asyncio.get_running_loop(),
+        )
+        adapter._response_run_manager.register(run)
+        run.start()
 
         import gateway.platforms.api_server as api_mod
-        import queue as _q
+        with patch.object(api_mod.web, "StreamResponse", return_value=_DisconnectingStreamResponse()):
+            await adapter._stream_response_run(fake_request, run, session_id="sess-bg")
 
-        stream_q: _q.Queue = _q.Queue()
-        stream_q.put("some streamed text")
-        stream_q.put(None)  # EOS sentinel
+        await started.wait()
+        assert not run._done.is_set()
+        agent_ref[0].interrupt.assert_not_called()
+        finish.set()
+        await run.wait_done()
+        stored = adapter._response_store.get(run.response_id)
+        assert stored["response"]["status"] == "completed"
 
-        async def _agent_coro():
-            await asyncio.sleep(0.01)
-            return ({"final_response": "", "messages": [], "api_calls": 0},
-                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+    @pytest.mark.asyncio
+    async def test_stream_store_false_is_ephemeral_and_not_stored(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                if cb:
+                    cb("hello")
+                return ({"final_response": "hello", "messages": [], "api_calls": 1},
+                        {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2})
 
-        agent_task = asyncio.ensure_future(_agent_coro())
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post("/v1/responses", json={"input": "hi", "stream": True, "store": False})
+                assert resp.status == 200
+                body = await resp.text()
+                assert "response.created" in body
+                assert "response.completed" in body
+                response_id = body.split('"id": "', 1)[1].split('"', 1)[0]
+
+                get_resp = await cli.get(f"/v1/responses/{response_id}")
+                assert get_resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_stream_store_false_idempotency_key_rejected(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/responses",
+                json={"input": "hi", "stream": True, "store": False},
+                headers={"Idempotency-Key": "ephemeral-key"},
+            )
+            assert resp.status == 400
+            data = await resp.json()
+            assert data["error"]["code"] == "idempotency_requires_store"
+            assert data["error"]["param"] == "Idempotency-Key"
+
+    @pytest.mark.asyncio
+    async def test_ephemeral_stream_disconnect_interrupts_agent(self, adapter):
+        fake_request = MagicMock()
+        fake_request.headers = {}
+        writes = {"n": 0}
+
+        class _DisconnectingStreamResponse:
+            async def prepare(self, req):
+                pass
+
+            async def write(self, payload):
+                writes["n"] += 1
+                if writes["n"] >= 2:
+                    raise ConnectionResetError("client went away")
+
+        agent = MagicMock()
+        started = asyncio.Event()
+
+        async def _mock_run_agent(**kwargs):
+            kwargs["agent_ref"][0] = agent
+            started.set()
+            cb = kwargs.get("stream_delta_callback")
+            if cb:
+                cb("partial")
+            await asyncio.sleep(10)
+            return ({"final_response": "late", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2})
+
         response_id = f"resp_{uuid.uuid4().hex[:28]}"
 
-        with patch.object(api_mod.web, "StreamResponse", return_value=_DisconnectingStreamResponse()):
-            await adapter._write_sse_responses(
-                request=fake_request,
-                response_id=response_id,
-                model="hermes-agent",
-                created_at=int(time.time()),
-                stream_q=stream_q,
-                agent_task=agent_task,
-                agent_ref=[None],
+        def _factory(callbacks, ref):
+            return adapter._run_agent(
+                user_message="hi",
                 conversation_history=[],
-                user_message="will disconnect",
-                instructions=None,
-                conversation=None,
-                store=True,
-                session_id=None,
+                ephemeral_system_prompt=None,
+                session_id="sess-ephemeral",
+                stream_delta_callback=callbacks.on_delta,
+                tool_progress_callback=callbacks.on_tool_progress,
+                tool_start_callback=callbacks.on_tool_start,
+                tool_complete_callback=callbacks.on_tool_complete,
+                agent_ref=ref,
             )
 
-        stored = adapter._response_store.get(response_id)
-        assert stored is not None, "snapshot must survive client disconnect"
-        assert stored["response"]["status"] == "incomplete"
+        run = ResponseRun(
+            response_id=response_id,
+            model="hermes-agent",
+            created_at=int(time.time()),
+            response_store=adapter._response_store,
+            run_agent_coro_factory=_factory,
+            conversation_history=[],
+            user_message="hi",
+            instructions=None,
+            conversation=None,
+            session_id="sess-ephemeral",
+            store=False,
+            on_done=lambda _response_id: None,
+            loop=asyncio.get_running_loop(),
+        )
+        run.start()
+
+        import gateway.platforms.api_server as api_mod
+        with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent), \
+             patch.object(api_mod.web, "StreamResponse", return_value=_DisconnectingStreamResponse()):
+            await adapter._stream_response_run(
+                fake_request,
+                run,
+                session_id="sess-ephemeral",
+                cancel_on_disconnect=True,
+            )
+
+        await started.wait()
+        agent.interrupt.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_previous_response_rejects_non_completed_status(self, adapter):
+        for status in ("in_progress", "failed", "incomplete"):
+            adapter._response_store.put(f"resp_{status}", {
+                "response": {"id": f"resp_{status}", "object": "response", "status": status},
+                "conversation_history": [],
+                "instructions": None,
+            })
+            app = _create_app(adapter)
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.post("/v1/responses", json={"input": "next", "previous_response_id": f"resp_{status}"})
+                assert resp.status == 409
+                data = await resp.json()
+                assert data["error"]["code"] == "previous_response_not_completed"
+
+    @pytest.mark.asyncio
+    async def test_conversation_rejects_non_completed_latest_response(self, adapter):
+        adapter._response_store.put("resp_active", {
+            "response": {"id": "resp_active", "object": "response", "status": "in_progress"},
+            "conversation_history": [],
+            "instructions": None,
+        })
+        adapter._response_store.set_conversation("conv-a", "resp_active")
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/responses", json={"input": "next", "conversation": "conv-a"})
+            assert resp.status == 409
+            data = await resp.json()
+            assert data["error"]["code"] == "conversation_response_not_completed"
+
+    @pytest.mark.asyncio
+    async def test_streaming_idempotency_key_reuses_active_run(self, adapter):
+        started = asyncio.Event()
+        finish = asyncio.Event()
+
+        async def _mock_run_agent(**kwargs):
+            started.set()
+            await finish.wait()
+            cb = kwargs.get("stream_delta_callback")
+            if cb:
+                cb("done")
+            return ({"final_response": "done", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2})
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                first = await cli.post("/v1/responses", json={"input": "idem", "stream": True}, headers={"Idempotency-Key": "idem-bg-1"})
+                assert first.status == 200
+                await started.wait()
+                # Same request/key should attach to the existing active run, not create another.
+                second_task = asyncio.create_task(cli.post("/v1/responses", json={"input": "idem", "stream": True}, headers={"Idempotency-Key": "idem-bg-1"}))
+                await asyncio.sleep(0.05)
+                assert len(adapter._response_run_manager._active) == 1
+                finish.set()
+                first_body = await first.text()
+                second = await second_task
+                second_body = await second.text()
+                assert second.status == 200
+                assert "response.completed" in first_body
+                assert "event: response.snapshot" in second_body
+                assert "response.completed" in second_body
+
+    @pytest.mark.asyncio
+    async def test_streaming_idempotency_key_conflict(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                return ({"final_response": "ok", "messages": [], "api_calls": 1},
+                        {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2})
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                first = await cli.post("/v1/responses", json={"input": "one", "stream": True}, headers={"Idempotency-Key": "idem-conflict"})
+                assert first.status == 200
+                await first.text()
+                second = await cli.post("/v1/responses", json={"input": "two", "stream": True}, headers={"Idempotency-Key": "idem-conflict"})
+                assert second.status == 409
+                data = await second.json()
+                assert data["error"]["code"] == "idempotency_key_conflict"
+
+    @pytest.mark.asyncio
+    async def test_stored_streaming_idempotency_retry_includes_cors(self):
+        adapter = _make_adapter(cors_origins=["http://localhost:3000"])
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                if cb:
+                    cb("ok")
+                return ({"final_response": "ok", "messages": [], "api_calls": 1},
+                        {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2})
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                first = await cli.post(
+                    "/v1/responses",
+                    json={"input": "cors idem", "stream": True},
+                    headers={"Idempotency-Key": "idem-cors"},
+                )
+                assert first.status == 200
+                await first.text()
+                retry = await cli.post(
+                    "/v1/responses",
+                    json={"input": "cors idem", "stream": True},
+                    headers={"Idempotency-Key": "idem-cors", "Origin": "http://localhost:3000"},
+                )
+                assert retry.status == 200
+                assert retry.headers.get("Access-Control-Allow-Origin") == "http://localhost:3000"
+
+    @pytest.mark.asyncio
+    async def test_response_run_keepalive_on_idle_subscription(self, adapter):
+        async def _factory(callbacks, ref):
+            await asyncio.sleep(0.2)
+            return ({"final_response": "done", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2})
+
+        run = ResponseRun(
+            response_id=f"resp_{uuid.uuid4().hex[:28]}",
+            model="hermes-agent",
+            created_at=int(time.time()),
+            response_store=adapter._response_store,
+            run_agent_coro_factory=_factory,
+            conversation_history=[],
+            user_message="idle",
+            instructions=None,
+            conversation=None,
+            session_id="sess-idle",
+            store=True,
+            on_done=adapter._response_run_manager.unregister,
+            loop=asyncio.get_running_loop(),
+        )
+        run.start()
+        events = []
+        async for event_type, data in run.subscribe(keepalive_seconds=0.01):
+            events.append(event_type)
+            if event_type == "__keepalive__":
+                await run.cancel("test done")
+                break
+        await run.wait_done()
+        assert "__keepalive__" in events
+
+    @pytest.mark.asyncio
+    async def test_cancel_waits_briefly_for_agent_ref(self, adapter):
+        agent = MagicMock()
+        release = asyncio.Event()
+
+        async def _factory(callbacks, ref):
+            await release.wait()
+            ref[0] = agent
+            await asyncio.sleep(10)
+            return ({"final_response": "late", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2})
+
+        run = ResponseRun(
+            response_id=f"resp_{uuid.uuid4().hex[:28]}",
+            model="hermes-agent",
+            created_at=int(time.time()),
+            response_store=adapter._response_store,
+            run_agent_coro_factory=_factory,
+            conversation_history=[],
+            user_message="race",
+            instructions=None,
+            conversation=None,
+            session_id="sess-race",
+            store=True,
+            on_done=adapter._response_run_manager.unregister,
+            loop=asyncio.get_running_loop(),
+        )
+        run.start()
+        await asyncio.sleep(0)
+        cancel_task = asyncio.create_task(run.cancel("race cancel"))
+        await asyncio.sleep(0.05)
+        release.set()
+        await cancel_task
+        await run.wait_done()
+        agent.interrupt.assert_called()
+
+    @pytest.mark.asyncio
+    async def test_delete_active_run_does_not_repersist(self, adapter):
+        started = asyncio.Event()
+        finish = asyncio.Event()
+        agent = MagicMock()
+
+        async def _factory(callbacks, ref):
+            ref[0] = agent
+            started.set()
+            await finish.wait()
+            return ({"final_response": "late", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2})
+
+        run = ResponseRun(
+            response_id=f"resp_{uuid.uuid4().hex[:28]}",
+            model="hermes-agent",
+            created_at=int(time.time()),
+            response_store=adapter._response_store,
+            run_agent_coro_factory=_factory,
+            conversation_history=[],
+            user_message="delete me",
+            instructions=None,
+            conversation=None,
+            session_id="sess-del",
+            store=True,
+            on_done=adapter._response_run_manager.unregister,
+            loop=asyncio.get_running_loop(),
+        )
+        adapter._response_run_manager.register(run)
+        run.start()
+        await started.wait()
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.delete(f"/v1/responses/{run.response_id}")
+            assert resp.status == 200
+            assert adapter._response_store.get(run.response_id) is None
+        agent.interrupt.assert_called()
 
 
 # ---------------------------------------------------------------------------
@@ -2208,6 +2544,131 @@ class TestConversationParameter:
                 assert resp.status == 200
                 # Conversation mapping should NOT be set since store=false
                 assert adapter._response_store.get_conversation("ephemeral-chat") is None
+
+    @pytest.mark.asyncio
+    async def test_stream_store_false_conversation_reads_history_without_checkpoint(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "First", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                first = await cli.post("/v1/responses", json={"input": "first", "conversation": "eph-conv"})
+                assert first.status == 200
+                first_id = (await first.json())["id"]
+
+            async def _mock_stream(**kwargs):
+                history = kwargs.get("conversation_history", [])
+                assert any(msg.get("content") == "First" for msg in history)
+                cb = kwargs.get("stream_delta_callback")
+                if cb:
+                    cb("ephemeral")
+                return ({"final_response": "ephemeral", "messages": [], "api_calls": 1},
+                        {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2})
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_stream):
+                streamed = await cli.post(
+                    "/v1/responses",
+                    json={"input": "temp", "conversation": "eph-conv", "stream": True, "store": False},
+                )
+                assert streamed.status == 200
+                body = await streamed.text()
+                assert "response.completed" in body
+                assert adapter._response_store.get_conversation("eph-conv") == first_id
+                assert adapter._response_store.get_conversation_active("eph-conv") is None
+
+    @pytest.mark.asyncio
+    async def test_stream_store_false_conversation_blocked_by_active_background(self, adapter):
+        adapter._response_store.put("resp_active_bg", {
+            "response": {"id": "resp_active_bg", "object": "response", "status": "in_progress"},
+            "conversation_history": [],
+            "instructions": None,
+        })
+        adapter._response_store.set_conversation_active("blocked-eph", "resp_active_bg")
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/responses",
+                json={"input": "temp", "conversation": "blocked-eph", "stream": True, "store": False},
+            )
+            assert resp.status == 409
+            data = await resp.json()
+            assert data["error"]["code"] == "conversation_response_not_completed"
+
+    @pytest.mark.asyncio
+    async def test_conversation_active_blocks_concurrent_request(self, adapter):
+        started = asyncio.Event()
+        finish = asyncio.Event()
+
+        async def _mock_run_agent(**kwargs):
+            started.set()
+            await finish.wait()
+            return ({"final_response": "done", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2})
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                first = await cli.post("/v1/responses", json={"input": "start", "conversation": "busy", "stream": True})
+                assert first.status == 200
+                await started.wait()
+                second = await cli.post("/v1/responses", json={"input": "next", "conversation": "busy"})
+                assert second.status == 409
+                data = await second.json()
+                assert data["error"]["code"] == "conversation_response_not_completed"
+                finish.set()
+                await first.text()
+
+    @pytest.mark.asyncio
+    async def test_failed_stream_does_not_poison_conversation_latest_completed(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "First", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                first = await cli.post("/v1/responses", json={"input": "first", "conversation": "recover"})
+                assert first.status == 200
+                first_id = (await first.json())["id"]
+
+            async def _failed_run(**kwargs):
+                return ({"error": "boom", "messages": [], "api_calls": 1},
+                        {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2})
+
+            with patch.object(adapter, "_run_agent", side_effect=_failed_run):
+                failed = await cli.post("/v1/responses", json={"input": "fail", "conversation": "recover", "stream": True})
+                assert failed.status == 200
+                body = await failed.text()
+                assert "response.failed" in body
+
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "Recovered", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                recovered = await cli.post("/v1/responses", json={"input": "after", "conversation": "recover"})
+                assert recovered.status == 200
+                history = mock_run.call_args.kwargs.get("conversation_history", [])
+                assert any(msg.get("content") == "First" for msg in history)
+                assert adapter._response_store.get_conversation("recover") != first_id
+
+    @pytest.mark.asyncio
+    async def test_delete_clears_conversation_mapping(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "Hello", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+                resp = await cli.post("/v1/responses", json={"input": "hi", "conversation": "delete-me"})
+                response_id = (await resp.json())["id"]
+                assert adapter._response_store.get_conversation("delete-me") == response_id
+                deleted = await cli.delete(f"/v1/responses/{response_id}")
+                assert deleted.status == 200
+                assert adapter._response_store.get_conversation("delete-me") is None
 
 
 # ---------------------------------------------------------------------------

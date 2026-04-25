@@ -23,6 +23,8 @@ Refs #15250 / #15353.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from run_agent import AIAgent
@@ -184,6 +186,41 @@ class TestCopyReasoningContentForApi:
         api_msg: dict = {}
         agent._copy_reasoning_content_for_api(source, api_msg)
         assert "reasoning_content" not in api_msg
+
+
+class TestBuildAssistantMessageReasoningContent:
+    """_build_assistant_message pins replay-safe reasoning_content on fresh tool turns."""
+
+    def test_deepseek_tool_call_without_reasoning_content_gets_empty_string(self) -> None:
+        agent = _make_agent(provider="deepseek", model="deepseek-v4-flash")
+        agent._extract_reasoning = lambda assistant_message: None
+        agent._strip_think_blocks = lambda s: s
+        agent.verbose_logging = False
+        agent.reasoning_callback = None
+        agent.stream_delta_callback = None
+        agent._stream_callback = None
+        agent._split_responses_tool_id = lambda raw_id: (None, None)
+        agent._deterministic_call_id = lambda name, args, idx: f"call_{idx}"
+        agent._derive_responses_function_call_id = (
+            lambda call_id, response_item_id=None: f"fc_{call_id}"
+        )
+
+        assistant_message = SimpleNamespace(
+            content="",
+            tool_calls=[
+                SimpleNamespace(
+                    id="call_1",
+                    call_id="call_1",
+                    response_item_id=None,
+                    type="function",
+                    function=SimpleNamespace(name="terminal", arguments="{}"),
+                )
+            ],
+        )
+
+        msg = agent._build_assistant_message(assistant_message, "tool_calls")
+        assert msg["reasoning_content"] == ""
+        assert msg["tool_calls"][0]["id"] == "call_1"
 
 
 class TestNeedsKimiToolReasoning:

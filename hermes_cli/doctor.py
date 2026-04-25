@@ -321,8 +321,15 @@ def run_doctor(args):
 
             canonical_provider = provider
             if provider and _resolve_provider_full is not None and provider != "auto":
-                provider_def = _resolve_provider_full(provider, user_providers, custom_providers)
-                canonical_provider = provider_def.id if provider_def is not None else None
+                # Prefer exact provider IDs registered by Hermes over models.dev
+                # aliases. For example, ``kimi-coding-cn`` is a first-class
+                # Hermes provider, but the shared alias table maps it to the
+                # models.dev provider id ``kimi-for-coding``. Treating that
+                # alias as canonical makes doctor report a false unknown
+                # provider even though the configured provider is valid.
+                if provider not in known_providers:
+                    provider_def = _resolve_provider_full(provider, user_providers, custom_providers)
+                    canonical_provider = provider_def.id if provider_def is not None else None
 
             if provider and provider != "auto":
                 if canonical_provider is None or (known_providers and canonical_provider not in known_providers):

@@ -253,6 +253,35 @@ class TestSummaryPrefixNormalization:
 
 
 class TestCompressWithClient:
+    def test_system_content_list_gets_compression_note_without_crashing(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary text"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+
+        msgs = [
+            {"role": "system", "content": [{"type": "text", "text": "system prompt"}]},
+            {"role": "user", "content": "msg 1"},
+            {"role": "assistant", "content": "msg 2"},
+            {"role": "user", "content": "msg 3"},
+            {"role": "assistant", "content": "msg 4"},
+            {"role": "user", "content": "msg 5"},
+            {"role": "assistant", "content": "msg 6"},
+            {"role": "user", "content": "msg 7"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs)
+
+        assert isinstance(result[0]["content"], list)
+        assert any(
+            isinstance(block, dict)
+            and "compacted into a handoff summary" in block.get("text", "")
+            for block in result[0]["content"]
+        )
+
     def test_summarization_path(self):
         mock_client = MagicMock()
         mock_response = MagicMock()
@@ -459,6 +488,41 @@ class TestCompressWithClient:
         first_tail = [m for m in result if "msg 6" in (m.get("content") or "")]
         assert len(first_tail) == 1
         assert "summary text" in first_tail[0]["content"]
+
+    def test_double_collision_merges_summary_into_list_tail_content(self):
+        """Structured tail content should accept a merged summary without TypeError."""
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary text"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=3, protect_last_n=3)
+
+        msgs = [
+            {"role": "system", "content": "system prompt"},
+            {"role": "user", "content": "msg 1"},
+            {"role": "assistant", "content": "msg 2"},
+            {"role": "user", "content": "msg 3"},
+            {"role": "assistant", "content": "msg 4"},
+            {"role": "user", "content": "msg 5"},
+            {"role": "user", "content": [{"type": "text", "text": "msg 6"}]},
+            {"role": "assistant", "content": "msg 7"},
+            {"role": "user", "content": "msg 8"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            result = c.compress(msgs)
+
+        merged_tail = next(
+            m for m in result
+            if m.get("role") == "user" and isinstance(m.get("content"), list)
+        )
+        assert isinstance(merged_tail["content"], list)
+        assert "summary text" in merged_tail["content"][0]["text"]
+        assert any(
+            isinstance(block, dict) and block.get("text") == "msg 6"
+            for block in merged_tail["content"]
+        )
 
     def test_double_collision_user_head_assistant_tail(self):
         """Reverse double collision: head ends with 'user', tail starts with 'assistant'.
@@ -781,3 +845,127 @@ class TestTokenBudgetTailProtection:
         # Tool at index 2 is outside the protected tail (last 3 = indices 2,3,4)
         # so it might or might not be pruned depending on boundary
         assert isinstance(pruned, int)
+
+
+class TestTruncateToolCallArgsJson:
+    """Regression tests for #11762.
+
+    The previous implementation produced invalid JSON by slicing
+    ``function.arguments`` mid-string, which caused non-retryable 400s from
+    strict providers (observed on MiniMax) and stuck long sessions in a
+    re-send loop. The helper here must always emit parseable JSON whose
+    shape matches the original — shrunken, not corrupted.
+    """
+
+    def _helper(self):
+        from agent.context_compressor import _truncate_tool_call_args_json
+        return _truncate_tool_call_args_json
+
+    def test_shrunken_args_remain_valid_json(self):
+        import json as _json
+        shrink = self._helper()
+        original = _json.dumps({
+            "path": "~/.hermes/skills/shopping/browser-setup-notes.md",
+            "content": "# Shopping Browser Setup Notes\n\n" + "abc " * 400,
+        })
+        assert len(original) > 500
+        shrunk = shrink(original)
+        parsed = _json.loads(shrunk)  # must not raise
+        assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
+        assert parsed["content"].endswith("...[truncated]")
+        assert len(shrunk) < len(original)
+
+    def test_non_json_arguments_pass_through(self):
+        shrink = self._helper()
+        not_json = "this is not json at all, " * 50
+        assert shrink(not_json) == not_json
+
+    def test_short_string_leaves_unchanged(self):
+        import json as _json
+        shrink = self._helper()
+        payload = _json.dumps({"command": "ls -la", "cwd": "/tmp"})
+        assert _json.loads(shrink(payload)) == {"command": "ls -la", "cwd": "/tmp"}
+
+    def test_nested_structures_are_walked(self):
+        import json as _json
+        shrink = self._helper()
+        payload = _json.dumps({
+            "messages": [
+                {"role": "user", "content": "x" * 500},
+                {"role": "assistant", "content": "ok"},
+            ],
+            "meta": {"note": "y" * 500},
+        })
+        parsed = _json.loads(shrink(payload))
+        assert parsed["messages"][0]["content"].endswith("...[truncated]")
+        assert parsed["messages"][1]["content"] == "ok"
+        assert parsed["meta"]["note"].endswith("...[truncated]")
+
+    def test_non_string_leaves_preserved(self):
+        import json as _json
+        shrink = self._helper()
+        payload = _json.dumps({
+            "retries": 3,
+            "enabled": True,
+            "timeout": None,
+            "items": [1, 2, 3],
+            "note": "z" * 500,
+        })
+        parsed = _json.loads(shrink(payload))
+        assert parsed["retries"] == 3
+        assert parsed["enabled"] is True
+        assert parsed["timeout"] is None
+        assert parsed["items"] == [1, 2, 3]
+        assert parsed["note"].endswith("...[truncated]")
+
+    def test_scalar_json_string_gets_shrunk(self):
+        import json as _json
+        shrink = self._helper()
+        payload = _json.dumps("q" * 500)
+        parsed = _json.loads(shrink(payload))
+        assert isinstance(parsed, str)
+        assert parsed.endswith("...[truncated]")
+
+    def test_unicode_preserved(self):
+        import json as _json
+        shrink = self._helper()
+        payload = _json.dumps({"content": "非德满" + ("a" * 500)})
+        out = shrink(payload)
+        # ensure_ascii=False keeps CJK intact rather than emitting \uXXXX
+        assert "非德满" in out
+
+    def test_pass3_emits_valid_json_for_downstream_provider(self):
+        """End-to-end: Pass 3 must never produce the exact failure payload
+        that caused the 400 loop (unterminated string, missing brace)."""
+        import json as _json
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test/model",
+                threshold_percent=0.85,
+                protect_first_n=1,
+                protect_last_n=1,
+                quiet_mode=True,
+            )
+        huge_content = "# Shopping Browser Setup Notes\n\n## Overview\n" + "x " * 400
+        args_payload = _json.dumps({
+            "path": "~/.hermes/skills/shopping/browser-setup-notes.md",
+            "content": huge_content,
+        })
+        assert len(args_payload) > 500  # triggers the Pass-3 shrink
+        messages = [
+            {"role": "user", "content": "please write two files"},
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "call_1", "type": "function",
+                 "function": {"name": "write_file", "arguments": args_payload}},
+            ]},
+            {"role": "tool", "tool_call_id": "call_1",
+             "content": '{"bytes_written": 727}'},
+            {"role": "user", "content": "ok"},
+            {"role": "assistant", "content": "done"},
+        ]
+        result, _ = c._prune_old_tool_results(messages, protect_tail_count=2)
+        shrunk = result[1]["tool_calls"][0]["function"]["arguments"]
+        # Must parse — otherwise downstream provider returns 400
+        parsed = _json.loads(shrunk)
+        assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
+        assert parsed["content"].endswith("...[truncated]")

@@ -1,14 +1,19 @@
-import { useEffect, useState, useCallback } from "react";
+import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import {
   BarChart3,
+  Brain,
   Cpu,
   Hash,
+  RefreshCw,
   TrendingUp,
 } from "lucide-react";
 import { api } from "@/lib/api";
-import type { AnalyticsResponse, AnalyticsDailyEntry, AnalyticsModelEntry } from "@/lib/api";
+import type { AnalyticsResponse, AnalyticsDailyEntry, AnalyticsModelEntry, AnalyticsSkillEntry } from "@/lib/api";
+import { timeAgo } from "@/lib/utils";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 
 const PERIODS = [
@@ -227,12 +232,59 @@ function ModelTable({ models }: { models: AnalyticsModelEntry[] }) {
   );
 }
 
+function SkillTable({ skills }: { skills: AnalyticsSkillEntry[] }) {
+  const { t } = useI18n();
+  if (skills.length === 0) return null;
+
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center gap-2">
+          <Brain className="h-5 w-5 text-muted-foreground" />
+          <CardTitle className="text-base">{t.analytics.topSkills}</CardTitle>
+        </div>
+      </CardHeader>
+      <CardContent>
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
+            <thead>
+              <tr className="border-b border-border text-muted-foreground text-xs">
+                <th className="text-left py-2 pr-4 font-medium">{t.analytics.skill}</th>
+                <th className="text-right py-2 px-4 font-medium">{t.analytics.loads}</th>
+                <th className="text-right py-2 px-4 font-medium">{t.analytics.edits}</th>
+                <th className="text-right py-2 px-4 font-medium">{t.analytics.total}</th>
+                <th className="text-right py-2 pl-4 font-medium">{t.analytics.lastUsed}</th>
+              </tr>
+            </thead>
+            <tbody>
+              {skills.map((skill) => (
+                <tr key={skill.skill} className="border-b border-border/50 hover:bg-secondary/20 transition-colors">
+                  <td className="py-2 pr-4">
+                    <span className="font-mono-ui text-xs">{skill.skill}</span>
+                  </td>
+                  <td className="text-right py-2 px-4 text-muted-foreground">{skill.view_count}</td>
+                  <td className="text-right py-2 px-4 text-muted-foreground">{skill.manage_count}</td>
+                  <td className="text-right py-2 px-4">{skill.total_count}</td>
+                  <td className="text-right py-2 pl-4 text-muted-foreground">
+                    {skill.last_used_at ? timeAgo(skill.last_used_at) : "—"}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
 export default function AnalyticsPage() {
   const [days, setDays] = useState(30);
   const [data, setData] = useState<AnalyticsResponse | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const { t } = useI18n();
+  const { setAfterTitle, setEnd } = usePageHeader();
 
   const load = useCallback(() => {
     setLoading(true);
@@ -244,28 +296,60 @@ export default function AnalyticsPage() {
       .finally(() => setLoading(false));
   }, [days]);
 
+  useLayoutEffect(() => {
+    const periodLabel =
+      PERIODS.find((p) => p.days === days)?.label ?? `${days}d`;
+    setAfterTitle(
+      <span className="flex items-center gap-2">
+        {loading && (
+          <div className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+        )}
+        <Badge variant="secondary" className="text-[10px]">
+          {periodLabel}
+        </Badge>
+      </span>,
+    );
+    setEnd(
+      <div className="flex w-full min-w-0 flex-wrap items-center justify-end gap-2 sm:gap-2">
+        <div className="flex flex-wrap items-center gap-1.5">
+          {PERIODS.map((p) => (
+            <Button
+              key={p.label}
+              type="button"
+              variant={days === p.days ? "default" : "outline"}
+              size="sm"
+              className="h-7 min-w-0 text-xs"
+              onClick={() => setDays(p.days)}
+            >
+              {p.label}
+            </Button>
+          ))}
+        </div>
+        <Button
+          type="button"
+          variant="outline"
+          size="sm"
+          onClick={load}
+          disabled={loading}
+          className="h-7 text-xs"
+        >
+          <RefreshCw className="mr-1 h-3 w-3" />
+          {t.common.refresh}
+        </Button>
+      </div>,
+    );
+    return () => {
+      setAfterTitle(null);
+      setEnd(null);
+    };
+  }, [days, loading, load, setAfterTitle, setEnd, t.common.refresh]);
+
   useEffect(() => {
     load();
   }, [load]);
 
   return (
     <div className="flex flex-col gap-6">
-      {/* Period selector */}
-      <div className="flex items-center gap-2">
-        <span className="text-sm text-muted-foreground font-medium">{t.analytics.period}</span>
-        {PERIODS.map((p) => (
-          <Button
-            key={p.label}
-            variant={days === p.days ? "default" : "outline"}
-            size="sm"
-            className="text-xs h-7"
-            onClick={() => setDays(p.days)}
-          >
-            {p.label}
-          </Button>
-        ))}
-      </div>
-
       {loading && !data && (
         <div className="flex items-center justify-center py-24">
           <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
@@ -299,7 +383,7 @@ export default function AnalyticsPage() {
             <SummaryCard
               icon={TrendingUp}
               label={t.analytics.apiCalls}
-              value={String(data.daily.reduce((sum, d) => sum + d.sessions, 0))}
+              value={String(data.totals.total_api_calls ?? data.daily.reduce((sum, d) => sum + d.sessions, 0))}
               sub={t.analytics.acrossModels.replace("{count}", String(data.by_model.length))}
             />
           </div>
@@ -310,10 +394,11 @@ export default function AnalyticsPage() {
           {/* Tables */}
           <DailyTable daily={data.daily} />
           <ModelTable models={data.by_model} />
+          <SkillTable skills={data.skills.top_skills} />
         </>
       )}
 
-      {data && data.daily.length === 0 && data.by_model.length === 0 && (
+      {data && data.daily.length === 0 && data.by_model.length === 0 && data.skills.top_skills.length === 0 && (
         <Card>
           <CardContent className="py-12">
             <div className="flex flex-col items-center text-muted-foreground">

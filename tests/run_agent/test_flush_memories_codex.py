@@ -73,9 +73,12 @@ def _chat_response_with_memory_call():
     """Simulated chat completions response with a memory tool call."""
     return SimpleNamespace(
         choices=[SimpleNamespace(
+            finish_reason="tool_calls",
             message=SimpleNamespace(
                 content=None,
                 tool_calls=[SimpleNamespace(
+                    id="call_mem_0",
+                    type="function",
                     function=SimpleNamespace(
                         name="memory",
                         arguments=json.dumps({
@@ -185,6 +188,30 @@ class TestFlushMemoriesUsesAuxiliaryClient:
 
         agent.client.chat.completions.create.assert_called_once()
 
+    def test_auxiliary_provider_failure_surfaces_warning_and_falls_back(self, monkeypatch):
+        """Provider/API failures from auxiliary flush must be visible.
+
+        Exhausted keys and rate limits are not always RuntimeError. They used
+        to fall into the broad outer handler and disappear into debug logs.
+        """
+        agent = _make_agent(monkeypatch, api_mode="chat_completions", provider="openrouter")
+        agent.client = MagicMock()
+        agent.client.chat.completions.create.return_value = _chat_response_with_memory_call()
+        events = []
+        agent.status_callback = lambda kind, text=None: events.append((kind, text))
+
+        with patch("agent.auxiliary_client.call_llm", side_effect=Exception("opencode-go key exhausted")), \
+             patch("tools.memory_tool.memory_tool", return_value="Saved."):
+            messages = [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi there"},
+                {"role": "user", "content": "Save this"},
+            ]
+            agent.flush_memories(messages)
+
+        agent.client.chat.completions.create.assert_called_once()
+        assert any(kind == "warn" and "Auxiliary memory flush failed" in text for kind, text in events)
+
     def test_flush_executes_memory_tool_calls(self, monkeypatch):
         """Verify that memory tool calls from the flush response actually get executed."""
         agent = _make_agent(monkeypatch, api_mode="chat_completions", provider="openrouter")
@@ -205,6 +232,31 @@ class TestFlushMemoriesUsesAuxiliaryClient:
         assert call_kwargs.kwargs["action"] == "add"
         assert call_kwargs.kwargs["target"] == "notes"
         assert "dark mode" in call_kwargs.kwargs["content"]
+
+    def test_flush_bridges_memory_write_metadata(self, monkeypatch):
+        """Flush memory writes notify external providers with flush provenance."""
+        agent = _make_agent(monkeypatch, api_mode="chat_completions", provider="openrouter")
+        agent._memory_manager = MagicMock()
+        agent.session_id = "sess-flush"
+        agent.platform = "cli"
+
+        mock_response = _chat_response_with_memory_call()
+
+        with patch("agent.auxiliary_client.call_llm", return_value=mock_response):
+            messages = [
+                {"role": "user", "content": "Hello"},
+                {"role": "assistant", "content": "Hi"},
+                {"role": "user", "content": "Note this"},
+            ]
+            with patch("tools.memory_tool.memory_tool", return_value="Saved."):
+                agent.flush_memories(messages)
+
+        agent._memory_manager.on_memory_write.assert_called_once()
+        call_kwargs = agent._memory_manager.on_memory_write.call_args
+        assert call_kwargs.args[:3] == ("add", "notes", "User prefers dark mode.")
+        assert call_kwargs.kwargs["metadata"]["write_origin"] == "memory_flush"
+        assert call_kwargs.kwargs["metadata"]["execution_context"] == "flush_memories"
+        assert call_kwargs.kwargs["metadata"]["session_id"] == "sess-flush"
 
     def test_flush_strips_artifacts_from_messages(self, monkeypatch):
         """After flush, the flush prompt and any response should be removed from messages."""

@@ -72,6 +72,15 @@ class TestHandleFunctionCall:
                 session_id="session-1",
                 tool_call_id="call-1",
             ),
+            call(
+                "transform_tool_result",
+                tool_name="web_search",
+                args={"q": "test"},
+                result='{"ok":true}',
+                task_id="task-1",
+                session_id="session-1",
+                tool_call_id="call-1",
+            ),
         ]
 
 
@@ -222,3 +231,46 @@ class TestBackwardCompat:
     def test_tool_to_toolset_map(self):
         assert isinstance(TOOL_TO_TOOLSET_MAP, dict)
         assert len(TOOL_TO_TOOLSET_MAP) > 0
+
+
+# =========================================================================
+# _coerce_number — inf / nan must fall through to the original string
+# (regression: fix: eliminate duplicate checkpoint entries and JSON-unsafe coercion)
+# =========================================================================
+
+class TestCoerceNumberInfNan:
+    """_coerce_number must honor its documented contract ("Returns original
+    string on failure") for inf/nan inputs, because float('inf') and
+    float('nan') are not JSON-compliant under strict serialization."""
+
+    def test_inf_returns_original_string(self):
+        from model_tools import _coerce_number
+        assert _coerce_number("inf") == "inf"
+
+    def test_negative_inf_returns_original_string(self):
+        from model_tools import _coerce_number
+        assert _coerce_number("-inf") == "-inf"
+
+    def test_nan_returns_original_string(self):
+        from model_tools import _coerce_number
+        assert _coerce_number("nan") == "nan"
+
+    def test_infinity_spelling_returns_original_string(self):
+        from model_tools import _coerce_number
+        # Python's float() parses "Infinity" too — still not JSON-safe.
+        assert _coerce_number("Infinity") == "Infinity"
+
+    def test_coerced_result_is_strict_json_safe(self):
+        """Whatever _coerce_number returns for inf/nan must round-trip
+        through strict (allow_nan=False) json.dumps without raising."""
+        from model_tools import _coerce_number
+        for s in ("inf", "-inf", "nan", "Infinity"):
+            result = _coerce_number(s)
+            json.dumps({"x": result}, allow_nan=False)  # must not raise
+
+    def test_normal_numbers_still_coerce(self):
+        """Guard against over-correction — real numbers still coerce."""
+        from model_tools import _coerce_number
+        assert _coerce_number("42") == 42
+        assert _coerce_number("3.14") == 3.14
+        assert _coerce_number("1e3") == 1000

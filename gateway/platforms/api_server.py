@@ -117,6 +117,160 @@ def _normalize_chat_content(
         return ""
 
 
+# Content part type aliases used by the OpenAI Chat Completions and Responses
+# APIs.  We accept both spellings on input and emit a single canonical internal
+# shape (``{"type": "text", ...}`` / ``{"type": "image_url", ...}``) that the
+# rest of the agent pipeline already understands.
+_TEXT_PART_TYPES = frozenset({"text", "input_text", "output_text"})
+_IMAGE_PART_TYPES = frozenset({"image_url", "input_image"})
+_FILE_PART_TYPES = frozenset({"file", "input_file"})
+
+
+def _normalize_multimodal_content(content: Any) -> Any:
+    """Validate and normalize multimodal content for the API server.
+
+    Returns a plain string when the content is text-only, or a list of
+    ``{"type": "text"|"image_url", ...}`` parts when images are present.
+    The output shape is the native OpenAI Chat Completions vision format,
+    which the agent pipeline accepts verbatim (OpenAI-wire providers) or
+    converts (``_preprocess_anthropic_content`` for Anthropic).
+
+    Raises ``ValueError`` with an OpenAI-style code on invalid input:
+      * ``unsupported_content_type`` — file/input_file/file_id parts, or
+        non-image ``data:`` URLs.
+      * ``invalid_image_url`` — missing URL or unsupported scheme.
+      * ``invalid_content_part`` — malformed text/image objects.
+
+    Callers translate the ValueError into a 400 response.
+    """
+    # Scalar passthrough mirrors ``_normalize_chat_content``.
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content[:MAX_NORMALIZED_TEXT_LENGTH] if len(content) > MAX_NORMALIZED_TEXT_LENGTH else content
+    if not isinstance(content, list):
+        # Mirror the legacy text-normalizer's fallback so callers that
+        # pre-existed image support still get a string back.
+        return _normalize_chat_content(content)
+
+    items = content[:MAX_CONTENT_LIST_SIZE] if len(content) > MAX_CONTENT_LIST_SIZE else content
+    normalized_parts: List[Dict[str, Any]] = []
+    text_accum_len = 0
+
+    for part in items:
+        if isinstance(part, str):
+            if part:
+                trimmed = part[:MAX_NORMALIZED_TEXT_LENGTH]
+                normalized_parts.append({"type": "text", "text": trimmed})
+                text_accum_len += len(trimmed)
+            continue
+
+        if not isinstance(part, dict):
+            # Ignore unknown scalars for forward compatibility with future
+            # Responses API additions (e.g. ``refusal``).  The same policy
+            # the text normalizer applies.
+            continue
+
+        raw_type = part.get("type")
+        part_type = str(raw_type or "").strip().lower()
+
+        if part_type in _TEXT_PART_TYPES:
+            text = part.get("text")
+            if text is None:
+                continue
+            if not isinstance(text, str):
+                text = str(text)
+            if text:
+                trimmed = text[:MAX_NORMALIZED_TEXT_LENGTH]
+                normalized_parts.append({"type": "text", "text": trimmed})
+                text_accum_len += len(trimmed)
+            continue
+
+        if part_type in _IMAGE_PART_TYPES:
+            detail = part.get("detail")
+            image_ref = part.get("image_url")
+            # OpenAI Responses sends ``input_image`` with a top-level
+            # ``image_url`` string; Chat Completions sends ``image_url`` as
+            # ``{"url": "...", "detail": "..."}``.  Support both.
+            if isinstance(image_ref, dict):
+                url_value = image_ref.get("url")
+                detail = image_ref.get("detail", detail)
+            else:
+                url_value = image_ref
+            if not isinstance(url_value, str) or not url_value.strip():
+                raise ValueError("invalid_image_url:Image parts must include a non-empty image URL.")
+            url_value = url_value.strip()
+            lowered = url_value.lower()
+            if lowered.startswith("data:"):
+                if not lowered.startswith("data:image/") or "," not in url_value:
+                    raise ValueError(
+                        "unsupported_content_type:Only image data URLs are supported. "
+                        "Non-image data payloads are not supported."
+                    )
+            elif not (lowered.startswith("http://") or lowered.startswith("https://")):
+                raise ValueError(
+                    "invalid_image_url:Image inputs must use http(s) URLs or data:image/... URLs."
+                )
+            image_part: Dict[str, Any] = {"type": "image_url", "image_url": {"url": url_value}}
+            if detail is not None:
+                if not isinstance(detail, str) or not detail.strip():
+                    raise ValueError("invalid_content_part:Image detail must be a non-empty string when provided.")
+                image_part["image_url"]["detail"] = detail.strip()
+            normalized_parts.append(image_part)
+            continue
+
+        if part_type in _FILE_PART_TYPES:
+            raise ValueError(
+                "unsupported_content_type:Inline image inputs are supported, "
+                "but uploaded files and document inputs are not supported on this endpoint."
+            )
+
+        # Unknown part type — reject explicitly so clients get a clear error
+        # instead of a silently dropped turn.
+        raise ValueError(
+            f"unsupported_content_type:Unsupported content part type {raw_type!r}. "
+            "Only text and image_url/input_image parts are supported."
+        )
+
+    if not normalized_parts:
+        return ""
+
+    # Text-only: collapse to a plain string so downstream logging/trajectory
+    # code sees the native shape and prompt caching on text-only turns is
+    # unaffected.
+    if all(p.get("type") == "text" for p in normalized_parts):
+        return "\n".join(p["text"] for p in normalized_parts if p.get("text"))
+
+    return normalized_parts
+
+
+def _content_has_visible_payload(content: Any) -> bool:
+    """True when content has any text or image attachment.  Used to reject empty turns."""
+    if isinstance(content, str):
+        return bool(content.strip())
+    if isinstance(content, list):
+        for part in content:
+            if isinstance(part, dict):
+                ptype = str(part.get("type") or "").strip().lower()
+                if ptype in _TEXT_PART_TYPES and str(part.get("text") or "").strip():
+                    return True
+                if ptype in _IMAGE_PART_TYPES:
+                    return True
+    return False
+
+
+def _multimodal_validation_error(exc: ValueError, *, param: str) -> "web.Response":
+    """Translate a ``_normalize_multimodal_content`` ValueError into a 400 response."""
+    raw = str(exc)
+    code, _, message = raw.partition(":")
+    if not message:
+        code, message = "invalid_content_part", raw
+    return web.json_response(
+        _openai_error(message, code=code, param=param),
+        status=400,
+    )
+
+
 def check_api_server_requirements() -> bool:
     """Check if API server dependencies are available."""
     return AIOHTTP_AVAILABLE
@@ -169,7 +323,6 @@ class ResponseStore:
         ).fetchone()
         if row is None:
             return None
-        import time
         self._conn.execute(
             "UPDATE responses SET accessed_at = ? WHERE response_id = ?",
             (time.time(), response_id),
@@ -179,7 +332,6 @@ class ResponseStore:
 
     def put(self, response_id: str, data: Dict[str, Any]) -> None:
         """Store a response, evicting the oldest if at capacity."""
-        import time
         self._conn.execute(
             "INSERT OR REPLACE INTO responses (response_id, data, accessed_at) VALUES (?, ?, ?)",
             (response_id, json.dumps(data, default=str), time.time()),
@@ -315,12 +467,12 @@ class _IdempotencyCache:
     def __init__(self, max_items: int = 1000, ttl_seconds: int = 300):
         from collections import OrderedDict
         self._store = OrderedDict()
+        self._inflight: Dict[tuple[str, str], "asyncio.Task[Any]"] = {}
         self._ttl = ttl_seconds
         self._max = max_items
 
     def _purge(self):
-        import time as _t
-        now = _t.time()
+        now = time.time()
         expired = [k for k, v in self._store.items() if now - v["ts"] > self._ttl]
         for k in expired:
             self._store.pop(k, None)
@@ -332,11 +484,27 @@ class _IdempotencyCache:
         item = self._store.get(key)
         if item and item["fp"] == fingerprint:
             return item["resp"]
-        resp = await compute_coro()
-        import time as _t
-        self._store[key] = {"resp": resp, "fp": fingerprint, "ts": _t.time()}
-        self._purge()
-        return resp
+
+        inflight_key = (key, fingerprint)
+        task = self._inflight.get(inflight_key)
+        if task is None:
+            async def _compute_and_store():
+                resp = await compute_coro()
+                import time as _t
+                self._store[key] = {"resp": resp, "fp": fingerprint, "ts": _t.time()}
+                self._purge()
+                return resp
+
+            task = asyncio.create_task(_compute_and_store())
+            self._inflight[inflight_key] = task
+
+            def _clear_inflight(done_task: "asyncio.Task[Any]") -> None:
+                if self._inflight.get(inflight_key) is done_task:
+                    self._inflight.pop(inflight_key, None)
+
+            task.add_done_callback(_clear_inflight)
+
+        return await asyncio.shield(task)
 
 
 _idem_cache = _IdempotencyCache()
@@ -364,6 +532,30 @@ def _derive_chat_session_id(
     seed = f"{system_prompt or ''}\n{first_user_message}"
     digest = hashlib.sha256(seed.encode("utf-8")).hexdigest()[:16]
     return f"api-{digest}"
+
+
+_CRON_AVAILABLE = False
+try:
+    from cron.jobs import (
+        list_jobs as _cron_list,
+        get_job as _cron_get,
+        create_job as _cron_create,
+        update_job as _cron_update,
+        remove_job as _cron_remove,
+        pause_job as _cron_pause,
+        resume_job as _cron_resume,
+        trigger_job as _cron_trigger,
+    )
+    _CRON_AVAILABLE = True
+except ImportError:
+    _cron_list = None
+    _cron_get = None
+    _cron_create = None
+    _cron_update = None
+    _cron_remove = None
+    _cron_pause = None
+    _cron_resume = None
+    _cron_trigger = None
 
 
 class APIServerAdapter(BasePlatformAdapter):
@@ -637,26 +829,32 @@ class APIServerAdapter(BasePlatformAdapter):
         system_prompt = None
         conversation_messages: List[Dict[str, str]] = []
 
-        for msg in messages:
+        for idx, msg in enumerate(messages):
             role = msg.get("role", "")
-            content = _normalize_chat_content(msg.get("content", ""))
+            raw_content = msg.get("content", "")
             if role == "system":
-                # Accumulate system messages
+                # System messages don't support images (Anthropic rejects, OpenAI
+                # text-model systems don't render them).  Flatten to text.
+                content = _normalize_chat_content(raw_content)
                 if system_prompt is None:
                     system_prompt = content
                 else:
                     system_prompt = system_prompt + "\n" + content
             elif role in ("user", "assistant"):
+                try:
+                    content = _normalize_multimodal_content(raw_content)
+                except ValueError as exc:
+                    return _multimodal_validation_error(exc, param=f"messages[{idx}].content")
                 conversation_messages.append({"role": role, "content": content})
 
         # Extract the last user message as the primary input
-        user_message = ""
+        user_message: Any = ""
         history = []
         if conversation_messages:
             user_message = conversation_messages[-1].get("content", "")
             history = conversation_messages[:-1]
 
-        if not user_message:
+        if not _content_has_visible_payload(user_message):
             return web.json_response(
                 {"error": {"message": "No user message found in messages", "type": "invalid_request_error"}},
                 status=400,
@@ -902,7 +1100,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 return time.monotonic()
 
             # Stream content chunks as they arrive from the agent
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             while True:
                 try:
                     delta = await loop.run_in_executor(None, lambda: stream_q.get(timeout=0.5))
@@ -1006,10 +1204,12 @@ class APIServerAdapter(BasePlatformAdapter):
 
         If the client disconnects mid-stream, ``agent.interrupt()`` is
         called so the agent stops issuing upstream LLM calls, then the
-        asyncio task is cancelled.  When ``store=True`` the full response
-        is persisted to the ResponseStore in a ``finally`` block so GET
-        /v1/responses/{id} and ``previous_response_id`` chaining work the
-        same as the batch path.
+        asyncio task is cancelled.  When ``store=True`` an initial
+        ``in_progress`` snapshot is persisted immediately after
+        ``response.created`` and disconnects update it to an
+        ``incomplete`` snapshot so GET /v1/responses/{id} and
+        ``previous_response_id`` chaining still have something to
+        recover from.
         """
         import queue as _q
 
@@ -1071,6 +1271,60 @@ class APIServerAdapter(BasePlatformAdapter):
         final_response_text = ""
         agent_error: Optional[str] = None
         usage: Dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+        terminal_snapshot_persisted = False
+
+        def _persist_response_snapshot(
+            response_env: Dict[str, Any],
+            *,
+            conversation_history_snapshot: Optional[List[Dict[str, Any]]] = None,
+        ) -> None:
+            if not store:
+                return
+            if conversation_history_snapshot is None:
+                conversation_history_snapshot = list(conversation_history)
+                conversation_history_snapshot.append({"role": "user", "content": user_message})
+            self._response_store.put(response_id, {
+                "response": response_env,
+                "conversation_history": conversation_history_snapshot,
+                "instructions": instructions,
+                "session_id": session_id,
+            })
+            if conversation:
+                self._response_store.set_conversation(conversation, response_id)
+
+        def _persist_incomplete_if_needed() -> None:
+            """Persist an ``incomplete`` snapshot if no terminal one was written.
+
+            Called from both the client-disconnect (``ConnectionResetError``)
+            and server-cancellation (``asyncio.CancelledError``) paths so
+            GET /v1/responses/{id} and ``previous_response_id`` chaining keep
+            working after abrupt stream termination.
+            """
+            if not store or terminal_snapshot_persisted:
+                return
+            incomplete_text = "".join(final_text_parts) or final_response_text
+            incomplete_items: List[Dict[str, Any]] = list(emitted_items)
+            if incomplete_text:
+                incomplete_items.append({
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": incomplete_text}],
+                })
+            incomplete_env = _envelope("incomplete")
+            incomplete_env["output"] = incomplete_items
+            incomplete_env["usage"] = {
+                "input_tokens": usage.get("input_tokens", 0),
+                "output_tokens": usage.get("output_tokens", 0),
+                "total_tokens": usage.get("total_tokens", 0),
+            }
+            incomplete_history = list(conversation_history)
+            incomplete_history.append({"role": "user", "content": user_message})
+            if incomplete_text:
+                incomplete_history.append({"role": "assistant", "content": incomplete_text})
+            _persist_response_snapshot(
+                incomplete_env,
+                conversation_history_snapshot=incomplete_history,
+            )
 
         try:
             # response.created — initial envelope, status=in_progress
@@ -1080,6 +1334,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 "type": "response.created",
                 "response": created_env,
             })
+            _persist_response_snapshot(created_env)
             last_activity = time.monotonic()
 
             async def _open_message_item() -> None:
@@ -1241,7 +1496,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     await _emit_text_delta(it)
                 # Other types (non-string, non-tuple) are silently dropped.
 
-            loop = asyncio.get_event_loop()
+            loop = asyncio.get_running_loop()
             while True:
                 try:
                     item = await loop.run_in_executor(None, lambda: stream_q.get(timeout=0.5))
@@ -1336,6 +1591,18 @@ class APIServerAdapter(BasePlatformAdapter):
                     "output_tokens": usage.get("output_tokens", 0),
                     "total_tokens": usage.get("total_tokens", 0),
                 }
+                _failed_history = list(conversation_history)
+                _failed_history.append({"role": "user", "content": user_message})
+                if final_response_text or agent_error:
+                    _failed_history.append({
+                        "role": "assistant",
+                        "content": final_response_text or agent_error,
+                    })
+                _persist_response_snapshot(
+                    failed_env,
+                    conversation_history_snapshot=_failed_history,
+                )
+                terminal_snapshot_persisted = True
                 await _write_event("response.failed", {
                     "type": "response.failed",
                     "response": failed_env,
@@ -1348,30 +1615,24 @@ class APIServerAdapter(BasePlatformAdapter):
                     "output_tokens": usage.get("output_tokens", 0),
                     "total_tokens": usage.get("total_tokens", 0),
                 }
+                full_history = list(conversation_history)
+                full_history.append({"role": "user", "content": user_message})
+                if isinstance(result, dict) and result.get("messages"):
+                    full_history.extend(result["messages"])
+                else:
+                    full_history.append({"role": "assistant", "content": final_response_text})
+                _persist_response_snapshot(
+                    completed_env,
+                    conversation_history_snapshot=full_history,
+                )
+                terminal_snapshot_persisted = True
                 await _write_event("response.completed", {
                     "type": "response.completed",
                     "response": completed_env,
                 })
 
-                # Persist for future chaining / GET retrieval, mirroring
-                # the batch path behavior.
-                if store:
-                    full_history = list(conversation_history)
-                    full_history.append({"role": "user", "content": user_message})
-                    if isinstance(result, dict) and result.get("messages"):
-                        full_history.extend(result["messages"])
-                    else:
-                        full_history.append({"role": "assistant", "content": final_response_text})
-                    self._response_store.put(response_id, {
-                        "response": completed_env,
-                        "conversation_history": full_history,
-                        "instructions": instructions,
-                        "session_id": session_id,
-                    })
-                    if conversation:
-                        self._response_store.set_conversation(conversation, response_id)
-
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
+            _persist_incomplete_if_needed()
             # Client disconnected — interrupt the agent so it stops
             # making upstream LLM calls, then cancel the task.
             agent = agent_ref[0] if agent_ref else None
@@ -1387,6 +1648,22 @@ class APIServerAdapter(BasePlatformAdapter):
                 except (asyncio.CancelledError, Exception):
                     pass
             logger.info("SSE client disconnected; interrupted agent task %s", response_id)
+        except asyncio.CancelledError:
+            # Server-side cancellation (e.g. shutdown, request timeout) —
+            # persist an incomplete snapshot so GET /v1/responses/{id} and
+            # previous_response_id chaining still work, then re-raise so the
+            # runtime's cancellation semantics are respected.
+            _persist_incomplete_if_needed()
+            agent = agent_ref[0] if agent_ref else None
+            if agent is not None:
+                try:
+                    agent.interrupt("SSE task cancelled")
+                except Exception:
+                    pass
+            if not agent_task.done():
+                agent_task.cancel()
+            logger.info("SSE task cancelled; persisted incomplete snapshot for %s", response_id)
+            raise
 
         return response
 
@@ -1424,16 +1701,19 @@ class APIServerAdapter(BasePlatformAdapter):
             # No error if conversation doesn't exist yet — it's a new conversation
 
         # Normalize input to message list
-        input_messages: List[Dict[str, str]] = []
+        input_messages: List[Dict[str, Any]] = []
         if isinstance(raw_input, str):
             input_messages = [{"role": "user", "content": raw_input}]
         elif isinstance(raw_input, list):
-            for item in raw_input:
+            for idx, item in enumerate(raw_input):
                 if isinstance(item, str):
                     input_messages.append({"role": "user", "content": item})
                 elif isinstance(item, dict):
                     role = item.get("role", "user")
-                    content = _normalize_chat_content(item.get("content", ""))
+                    try:
+                        content = _normalize_multimodal_content(item.get("content", ""))
+                    except ValueError as exc:
+                        return _multimodal_validation_error(exc, param=f"input[{idx}].content")
                     input_messages.append({"role": role, "content": content})
         else:
             return web.json_response(_openai_error("'input' must be a string or array"), status=400)
@@ -1442,7 +1722,7 @@ class APIServerAdapter(BasePlatformAdapter):
         # This lets stateless clients supply their own history instead of
         # relying on server-side response chaining via previous_response_id.
         # Precedence: explicit conversation_history > previous_response_id.
-        conversation_history: List[Dict[str, str]] = []
+        conversation_history: List[Dict[str, Any]] = []
         raw_history = body.get("conversation_history")
         if raw_history:
             if not isinstance(raw_history, list):
@@ -1456,7 +1736,11 @@ class APIServerAdapter(BasePlatformAdapter):
                         _openai_error(f"conversation_history[{i}] must have 'role' and 'content' fields"),
                         status=400,
                     )
-                conversation_history.append({"role": str(entry["role"]), "content": str(entry["content"])})
+                try:
+                    entry_content = _normalize_multimodal_content(entry["content"])
+                except ValueError as exc:
+                    return _multimodal_validation_error(exc, param=f"conversation_history[{i}].content")
+                conversation_history.append({"role": str(entry["role"]), "content": entry_content})
             if previous_response_id:
                 logger.debug("Both conversation_history and previous_response_id provided; using conversation_history")
 
@@ -1476,8 +1760,8 @@ class APIServerAdapter(BasePlatformAdapter):
             conversation_history.append(msg)
 
         # Last input message is the user_message
-        user_message = input_messages[-1].get("content", "") if input_messages else ""
-        if not user_message:
+        user_message: Any = input_messages[-1].get("content", "") if input_messages else ""
+        if not _content_has_visible_payload(user_message):
             return web.json_response(_openai_error("No user message found in input"), status=400)
 
         # Truncation support
@@ -1682,44 +1966,16 @@ class APIServerAdapter(BasePlatformAdapter):
     # Cron jobs API
     # ------------------------------------------------------------------
 
-    # Check cron module availability once (not per-request)
-    _CRON_AVAILABLE = False
-    try:
-        from cron.jobs import (
-            list_jobs as _cron_list,
-            get_job as _cron_get,
-            create_job as _cron_create,
-            update_job as _cron_update,
-            remove_job as _cron_remove,
-            pause_job as _cron_pause,
-            resume_job as _cron_resume,
-            trigger_job as _cron_trigger,
-        )
-        # Wrap as staticmethod to prevent descriptor binding — these are plain
-        # module functions, not instance methods.  Without this, self._cron_*()
-        # injects ``self`` as the first positional argument and every call
-        # raises TypeError.
-        _cron_list = staticmethod(_cron_list)
-        _cron_get = staticmethod(_cron_get)
-        _cron_create = staticmethod(_cron_create)
-        _cron_update = staticmethod(_cron_update)
-        _cron_remove = staticmethod(_cron_remove)
-        _cron_pause = staticmethod(_cron_pause)
-        _cron_resume = staticmethod(_cron_resume)
-        _cron_trigger = staticmethod(_cron_trigger)
-        _CRON_AVAILABLE = True
-    except ImportError:
-        pass
-
     _JOB_ID_RE = __import__("re").compile(r"[a-f0-9]{12}")
     # Allowed fields for update — prevents clients injecting arbitrary keys
     _UPDATE_ALLOWED_FIELDS = {"name", "schedule", "prompt", "deliver", "skills", "skill", "repeat", "enabled"}
     _MAX_NAME_LENGTH = 200
     _MAX_PROMPT_LENGTH = 5000
 
-    def _check_jobs_available(self) -> Optional["web.Response"]:
+    @staticmethod
+    def _check_jobs_available() -> Optional["web.Response"]:
         """Return error response if cron module isn't available."""
-        if not self._CRON_AVAILABLE:
+        if not _CRON_AVAILABLE:
             return web.json_response(
                 {"error": "Cron module not available"}, status=501,
             )
@@ -1744,7 +2000,7 @@ class APIServerAdapter(BasePlatformAdapter):
             return cron_err
         try:
             include_disabled = request.query.get("include_disabled", "").lower() in ("true", "1")
-            jobs = self._cron_list(include_disabled=include_disabled)
+            jobs = _cron_list(include_disabled=include_disabled)
             return web.json_response({"jobs": jobs})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -1792,7 +2048,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if repeat is not None:
                 kwargs["repeat"] = repeat
 
-            job = self._cron_create(**kwargs)
+            job = _cron_create(**kwargs)
             return web.json_response({"job": job})
         except Exception as e:
             return web.json_response({"error": str(e)}, status=500)
@@ -1809,7 +2065,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if id_err:
             return id_err
         try:
-            job = self._cron_get(job_id)
+            job = _cron_get(job_id)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
@@ -1842,7 +2098,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 return web.json_response(
                     {"error": f"Prompt must be ≤ {self._MAX_PROMPT_LENGTH} characters"}, status=400,
                 )
-            job = self._cron_update(job_id, sanitized)
+            job = _cron_update(job_id, sanitized)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
@@ -1861,7 +2117,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if id_err:
             return id_err
         try:
-            success = self._cron_remove(job_id)
+            success = _cron_remove(job_id)
             if not success:
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"ok": True})
@@ -1880,7 +2136,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if id_err:
             return id_err
         try:
-            job = self._cron_pause(job_id)
+            job = _cron_pause(job_id)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
@@ -1899,7 +2155,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if id_err:
             return id_err
         try:
-            job = self._cron_resume(job_id)
+            job = _cron_resume(job_id)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
@@ -1918,7 +2174,7 @@ class APIServerAdapter(BasePlatformAdapter):
         if id_err:
             return id_err
         try:
-            job = self._cron_trigger(job_id)
+            job = _cron_trigger(job_id)
             if not job:
                 return web.json_response({"error": "Job not found"}, status=404)
             return web.json_response({"job": job})
@@ -2004,7 +2260,7 @@ class APIServerAdapter(BasePlatformAdapter):
         callers (e.g. the SSE writer) to call ``agent.interrupt()`` from
         another thread to stop in-progress LLM calls.
         """
-        loop = asyncio.get_event_loop()
+        loop = asyncio.get_running_loop()
 
         def _run():
             agent = self._create_agent(

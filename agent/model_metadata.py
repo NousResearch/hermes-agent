@@ -1281,7 +1281,10 @@ def get_model_context_length(
     model = _strip_provider_prefix(model)
 
     # 1. Check persistent cache (model+provider)
-    if base_url:
+    # LM Studio is excluded — its loaded context length is transient (the
+    # user can reload the model with a different context_length at any time
+    # via /api/v1/models/load), so a stale cached value would mask reloads.
+    if base_url and provider != "lmstudio":
         cached = get_cached_context_length(model, base_url)
         if cached is not None:
             # Invalidate stale Codex OAuth cache entries: pre-PR #14935 builds
@@ -1334,7 +1337,8 @@ def get_model_context_length(
             if is_local_endpoint(base_url):
                 local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
                 if local_ctx and local_ctx > 0:
-                    save_context_length(model, base_url, local_ctx)
+                    if provider != "lmstudio":
+                        save_context_length(model, base_url, local_ctx)
                     return local_ctx
             logger.info(
                 "Could not detect context length for model %r at %s — "
@@ -1424,7 +1428,8 @@ def get_model_context_length(
     if base_url and is_local_endpoint(base_url):
         local_ctx = _query_local_context_length(model, base_url, api_key=api_key)
         if local_ctx and local_ctx > 0:
-            save_context_length(model, base_url, local_ctx)
+            if provider != "lmstudio":
+                save_context_length(model, base_url, local_ctx)
             return local_ctx
 
     # 10. Default fallback — 128K

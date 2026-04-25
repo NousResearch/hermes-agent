@@ -946,6 +946,42 @@ def slack_subcommand_map() -> dict[str, str]:
 # Autocomplete
 # ---------------------------------------------------------------------------
 
+
+# Per-process cache for /model<space> LM Studio autocomplete. Probing on
+# every keystroke would block the UI; a short TTL keeps it live without
+# hammering the server.
+_LMSTUDIO_COMPLETION_CACHE: tuple[float, list[str]] | None = None
+
+
+def _lmstudio_completion_models() -> list[str]:
+    """Locally-loaded LM Studio models for /model autocomplete (cached, gated)."""
+    global _LMSTUDIO_COMPLETION_CACHE
+    # Gate: don't probe 127.0.0.1 on every keystroke for users who don't use LM Studio.
+    if not (os.environ.get("LM_API_KEY") or os.environ.get("LM_BASE_URL")):
+        try:
+            from hermes_cli.auth import _load_auth_store
+            store = _load_auth_store() or {}
+            if "lmstudio" not in (store.get("providers") or {}) \
+               and "lmstudio" not in (store.get("credential_pool") or {}):
+                return []
+        except Exception:
+            return []
+    now = time.time()
+    if _LMSTUDIO_COMPLETION_CACHE and (now - _LMSTUDIO_COMPLETION_CACHE[0]) < 30.0:
+        return _LMSTUDIO_COMPLETION_CACHE[1]
+    try:
+        from hermes_cli.models import fetch_lmstudio_models
+        models = fetch_lmstudio_models(
+            api_key=os.environ.get("LM_API_KEY", ""),
+            base_url=os.environ.get("LM_BASE_URL") or "http://127.0.0.1:1234/v1",
+            timeout=0.8,
+        )
+    except Exception:
+        models = []
+    _LMSTUDIO_COMPLETION_CACHE = (now, models)
+    return models
+
+
 class SlashCommandCompleter(Completer):
     """Autocomplete for built-in slash commands, subcommands, and skill commands."""
 
@@ -1369,6 +1405,19 @@ class SlashCommandCompleter(Completer):
                     )
         except Exception:
             pass
+        # LM Studio: surface locally-loaded models. Gated on the user actually
+        # having LM Studio configured (env var or auth-store entry) so we
+        # don't probe 127.0.0.1 on every keystroke for users who don't use it.
+        for name in _lmstudio_completion_models():
+            if name in seen:
+                continue
+            if name.startswith(sub_lower) and name != sub_lower:
+                yield Completion(
+                    name,
+                    start_position=-len(sub_text),
+                    display=name,
+                    display_meta="LM Studio",
+                )
 
     def get_completions(self, document, complete_event):
         text = document.text_before_cursor

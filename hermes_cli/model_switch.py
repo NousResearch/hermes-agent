@@ -984,6 +984,7 @@ def list_authenticated_providers(
     user_providers: dict = None,
     custom_providers: list | None = None,
     max_models: int = 8,
+    current_model: str = "",
 ) -> List[dict]:
     """Detect which providers have credentials and list their curated models.
 
@@ -1030,6 +1031,34 @@ def list_authenticated_providers(
     if "ollama-cloud" not in curated:
         from hermes_cli.models import fetch_ollama_cloud_models
         curated["ollama-cloud"] = fetch_ollama_cloud_models()
+    # LM Studio has no static catalog — probe its native /api/v1/models
+    # endpoint live so the picker reflects whatever the user has loaded.
+    # Base URL precedence: LM_BASE_URL env var > active config's base_url
+    # (when current provider is lmstudio) > 127.0.0.1 default.
+    # On auth rejection or unreachable server, fall back to the caller-supplied
+    # current model so the picker still shows something when offline / mis-keyed.
+    if "lmstudio" not in curated and (
+        os.environ.get("LM_API_KEY") or os.environ.get("LM_BASE_URL") or current_provider.strip().lower() == "lmstudio"
+    ):
+        from hermes_cli.models import fetch_lmstudio_models
+        from hermes_cli.auth import AuthError
+        is_current_lmstudio = current_provider.strip().lower() == "lmstudio"
+        lm_base = (
+            os.environ.get("LM_BASE_URL")
+            or (current_base_url if is_current_lmstudio and current_base_url else None)
+            or "http://127.0.0.1:1234/v1"
+        )
+        try:
+            live = fetch_lmstudio_models(
+                api_key=os.environ.get("LM_API_KEY", ""),
+                base_url=lm_base,
+                timeout=1.5, # Smaller timeout for picker
+            )
+        except AuthError:
+            live = []
+        if not live and is_current_lmstudio and current_model:
+            live = [current_model]
+        curated["lmstudio"] = live
 
     # --- 1. Check Hermes-mapped providers ---
     for hermes_id, mdev_id in PROVIDER_TO_MODELS_DEV.items():

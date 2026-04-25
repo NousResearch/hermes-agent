@@ -4168,6 +4168,7 @@ def _(rid, params: dict) -> dict:
         cfg = _load_cfg()
         current_provider = getattr(agent, "provider", "") or ""
         current_model = getattr(agent, "model", "") or _resolve_model()
+        current_base_url = getattr(agent, "base_url", "") or ""
         # list_authenticated_providers already populates each provider's
         # "models" with the curated list (same source as `hermes model` and
         # classic CLI's /model picker). Do NOT overwrite with live
@@ -4176,6 +4177,8 @@ def _(rid, params: dict) -> dict:
         # TTS, embeddings, rerankers, image/video generators).
         providers = list_authenticated_providers(
             current_provider=current_provider,
+            current_base_url=current_base_url,
+            current_model=current_model,
             user_providers=(
                 cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
             ),

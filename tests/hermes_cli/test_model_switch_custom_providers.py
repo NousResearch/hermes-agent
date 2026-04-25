@@ -398,3 +398,84 @@ def test_list_authenticated_providers_total_models_reflects_grouped_count(monkey
     assert group["total_models"] == 6
     # All six models are preserved in the grouped row.
     assert sorted(group["models"]) == sorted(f"model-{i}" for i in range(6))
+
+
+def test_lmstudio_picker_probes_active_config_base_url(monkeypatch):
+    """When `provider: lmstudio` is saved with a remote base_url and no
+    LM_BASE_URL env var, the picker must probe the saved base_url — not
+    127.0.0.1. Regression: prior behavior always probed localhost, so users
+    with LM Studio on a lab box saw the wrong (or empty) model list.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.delenv("LM_BASE_URL", raising=False)
+    monkeypatch.delenv("LM_API_KEY", raising=False)
+
+    captured: dict = {}
+
+    def _fake_fetch(api_key=None, base_url=None, timeout=5.0):
+        captured["base_url"] = base_url
+        captured["api_key"] = api_key
+        return ["qwen/qwen3-coder-30b"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_lmstudio_models", _fake_fetch)
+
+    list_authenticated_providers(
+        current_provider="lmstudio",
+        current_base_url="http://192.168.1.10:1234/v1",
+        current_model="qwen/qwen3-coder-30b",
+    )
+
+    assert captured["base_url"] == "http://192.168.1.10:1234/v1"
+
+
+def test_lmstudio_picker_lm_base_url_env_wins_over_active_config(monkeypatch):
+    """LM_BASE_URL env var must still take precedence over the saved
+    base_url so users can temporarily redirect the picker without editing
+    config.yaml.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setenv("LM_BASE_URL", "http://override.local:9999/v1")
+    monkeypatch.delenv("LM_API_KEY", raising=False)
+
+    captured: dict = {}
+
+    def _fake_fetch(api_key=None, base_url=None, timeout=5.0):
+        captured["base_url"] = base_url
+        return []
+
+    monkeypatch.setattr("hermes_cli.models.fetch_lmstudio_models", _fake_fetch)
+
+    list_authenticated_providers(
+        current_provider="lmstudio",
+        current_base_url="http://192.168.1.10:1234/v1",
+    )
+
+    assert captured["base_url"] == "http://override.local:9999/v1"
+
+
+def test_lmstudio_picker_skips_probe_when_not_configured(monkeypatch):
+    """If the user has never configured LM Studio (no LM_API_KEY / LM_BASE_URL
+    and not on lmstudio), the picker must not pay the localhost probe cost
+    just to discover LM Studio is unavailable.
+    """
+    monkeypatch.setattr("agent.models_dev.fetch_models_dev", lambda: {})
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.delenv("LM_BASE_URL", raising=False)
+    monkeypatch.delenv("LM_API_KEY", raising=False)
+
+    captured: dict = {}
+
+    def _fake_fetch(api_key=None, base_url=None, timeout=5.0):
+        captured["base_url"] = base_url
+        return []
+
+    monkeypatch.setattr("hermes_cli.models.fetch_lmstudio_models", _fake_fetch)
+
+    list_authenticated_providers(
+        current_provider="openrouter",
+        current_base_url="https://openrouter.ai/api/v1",
+    )
+
+    assert "base_url" not in captured

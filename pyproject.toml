@@ -169,4 +169,4 @@ not-iterable = "ignore"
 exclude = ["*"]
 
 [tool.uv]
-exclude-newer = "7 days"
+exclude-newer = "2026-04-25T00:00:00Z"

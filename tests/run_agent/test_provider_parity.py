@@ -12,7 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 import pytest
-from agent.codex_responses_adapter import _chat_messages_to_responses_input, _normalize_codex_response, _preflight_codex_input_items
+from agent.codex_responses_adapter import _chat_content_to_responses_parts, _chat_messages_to_responses_input, _normalize_codex_response, _preflight_codex_input_items
 
 sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
 sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
@@ -519,6 +519,111 @@ class TestChatMessagesToResponsesInput:
         items = _chat_messages_to_responses_input(messages)
         reasoning_items = [i for i in items if i.get("type") == "reasoning"]
         assert len(reasoning_items) == 0
+
+    def test_user_multimodal_content_uses_input_text(self, monkeypatch):
+        """User messages with list content must use input_text type."""
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        messages = [{"role": "user", "content": [
+            {"type": "text", "text": "find files"},
+        ]}]
+        items = _chat_messages_to_responses_input(messages)
+        assert len(items) == 1
+        assert items[0]["role"] == "user"
+        content = items[0]["content"]
+        assert isinstance(content, list)
+        assert content[0]["type"] == "input_text"
+        assert content[0]["text"] == "find files"
+
+    def test_assistant_multimodal_content_uses_output_text(self, monkeypatch):
+        """Assistant messages with list content must use output_text type.
+
+        This is the fix for #15687 — the Responses API rejects input_text
+        inside assistant messages.
+        """
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        messages = [{"role": "assistant", "content": [
+            {"type": "text", "text": "I found the files."},
+        ]}]
+        items = _chat_messages_to_responses_input(messages)
+        assert len(items) == 1
+        assert items[0]["role"] == "assistant"
+        content = items[0]["content"]
+        assert isinstance(content, list)
+        assert content[0]["type"] == "output_text"
+        assert content[0]["text"] == "I found the files."
+
+    def test_preflight_preserves_assistant_output_text(self, monkeypatch):
+        """_preflight_codex_input_items must preserve output_text for assistant."""
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        raw_input = [
+            {"role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+            {"role": "assistant", "content": [{"type": "output_text", "text": "hello"}]},
+        ]
+        normalized = _preflight_codex_input_items(raw_input)
+        user_content = normalized[0]["content"]
+        asst_content = normalized[1]["content"]
+        assert user_content[0]["type"] == "input_text"
+        assert asst_content[0]["type"] == "output_text"
+
+    def test_full_round_trip_with_list_content(self, monkeypatch):
+        """End-to-end: user + assistant with list content through both stages."""
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": "hello"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "hi there"}]},
+            {"role": "user", "content": [{"type": "text", "text": "continue"}]},
+        ]
+        items = _chat_messages_to_responses_input(messages)
+        normalized = _preflight_codex_input_items(items)
+
+        # User items use input_text
+        assert normalized[0]["content"][0]["type"] == "input_text"
+        assert normalized[2]["content"][0]["type"] == "input_text"
+        # Assistant item uses output_text
+        assert normalized[1]["content"][0]["type"] == "output_text"
+
+
+class TestChatContentToResponsesParts:
+    """Unit tests for _chat_content_to_responses_parts role parameter (#15687)."""
+
+    def test_default_role_emits_input_text(self):
+        """Default (user) role emits input_text."""
+        result = _chat_content_to_responses_parts([{"type": "text", "text": "hello"}])
+        assert result[0]["type"] == "input_text"
+
+    def test_explicit_user_role_emits_input_text(self):
+        result = _chat_content_to_responses_parts(
+            [{"type": "text", "text": "hello"}], role="user"
+        )
+        assert result[0]["type"] == "input_text"
+
+    def test_assistant_role_emits_output_text(self):
+        result = _chat_content_to_responses_parts(
+            [{"type": "text", "text": "hello"}], role="assistant"
+        )
+        assert result[0]["type"] == "output_text"
+
+    def test_assistant_role_with_string_parts(self):
+        """String parts in assistant content also get output_text."""
+        result = _chat_content_to_responses_parts(["hello"], role="assistant")
+        assert result[0]["type"] == "output_text"
+        assert result[0]["text"] == "hello"
+
+    def test_assistant_role_with_mixed_input_output_text_types(self):
+        """Parts already marked input_text or output_text get normalized to role's type."""
+        parts = [
+            {"type": "input_text", "text": "a"},
+            {"type": "output_text", "text": "b"},
+            {"type": "text", "text": "c"},
+        ]
+        result = _chat_content_to_responses_parts(parts, role="assistant")
+        # All text parts should become output_text regardless of original type
+        assert all(p["type"] == "output_text" for p in result)
+        assert [p["text"] for p in result] == ["a", "b", "c"]
 
 
 # ── Response normalization tests ─────────────────────────────────────────────

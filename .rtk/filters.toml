@@ -1,0 +1,62 @@
+schema_version = 1
+
+[filters.hermes-gateway-status]
+description = "Compact Hermes gateway systemd status"
+match_command = "^(hermes\\s+gateway\\s+status|systemctl(?:\\s+--user)?\\s+status\\s+hermes-gateway(?:\\b.*)?)$"
+strip_ansi = true
+keep_lines_matching = [
+  "^\\s*✓ User gateway service is running$",
+  "^\\s*✗ User gateway service is stopped$",
+  "^\\s*Recent gateway health:",
+  "^\\s*[⚠⏳✓].*$",
+  "^\\s*Active:.*$",
+  "^\\s*Last .*",
+  "^\\s*telegram:.*$",
+  "^\\s*ERROR.*$",
+  "^\\s*WARNING.*$",
+]
+max_lines = 12
+on_empty = "hermes-gateway: no status lines matched"
+
+[[tests.hermes-gateway-status]]
+name = "keeps the important gateway status lines"
+input = """
+● hermes-gateway.service - Hermes Agent Gateway - Messaging Platform Integration
+     Loaded: loaded (/home/jc-blenny/.config/systemd/user/hermes-gateway.service; enabled; preset: enabled)
+     Active: active (running) since Sun 2026-04-26 08:54:31 +11; 1min 1s ago
+    Main PID: 562008 (python)
+Recent gateway health:
+  ⏳ Gateway draining for restart (0 active agent(s))
+  ⚠ Last startup issue: telegram: Telegram startup failed: Unauthorized
+✓ Systemd linger is enabled (service survives logout)
+"""
+expected = """
+     Active: active (running) since Sun 2026-04-26 08:54:31 +11; 1min 1s ago
+Recent gateway health:
+  ⏳ Gateway draining for restart (0 active agent(s))
+  ⚠ Last startup issue: telegram: Telegram startup failed: Unauthorized
+✓ Systemd linger is enabled (service survives logout)
+"""
+
+[filters.hermes-gateway-log]
+description = "Compact Hermes gateway log output"
+match_command = "^(journalctl\\s+--user\\s+-u\\s+hermes-gateway(?:\\b.*)?|tail\\s+-f\\s+~/.hermes/logs/gateway\\.log(?:\\b.*)?)$"
+strip_ansi = true
+keep_lines_matching = [
+  "(?i).*(invalidtoken|unauthorized|failed to connect|failed to start|startup issue|shutdown reason|telegram|error|warning).*",
+  "(?i).*(started hermes-gateway|reloaded hermes-gateway|reloading hermes-gateway).*",
+]
+max_lines = 20
+on_empty = "gateway log: no notable lines"
+
+[[tests.hermes-gateway-log]]
+name = "keeps only meaningful log lines"
+input = """
+avril 26 08:50:12 jc-blenny python[554353]: telegram.error.InvalidToken: Unauthorized
+avril 26 08:50:13 jc-blenny systemd[2329]: hermes-gateway.service: Main process exited, code=exited, status=75/TEMPFAIL
+avril 26 08:50:13 jc-blenny systemd[2329]: Started hermes-gateway.service - Hermes Agent Gateway - Messaging Platform Integration.
+"""
+expected = """
+avril 26 08:50:12 jc-blenny python[554353]: telegram.error.InvalidToken: Unauthorized
+avril 26 08:50:13 jc-blenny systemd[2329]: Started hermes-gateway.service - Hermes Agent Gateway - Messaging Platform Integration.
+"""

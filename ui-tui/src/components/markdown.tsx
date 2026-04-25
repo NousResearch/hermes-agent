@@ -114,25 +114,6 @@ const renderTable = (k: number, rows: string[][], t: Theme) => {
   )
 }
 
-const codeText = (text: string, color: string | undefined, key: number | string, t: Theme) => (
-  <Text color={color ?? (text.trim() ? undefined : t.color.dim)} key={key}>
-    {text}
-  </Text>
-)
-
-const plainCodeLine = (text: string, t: Theme) => {
-  const indent = text.match(/^\s+/)?.[0] ?? ''
-
-  return indent ? (
-    <>
-      {codeText(indent, undefined, 'indent', t)}
-      {text.slice(indent.length)}
-    </>
-  ) : (
-    text
-  )
-}
-
 function MdInline({ t, text }: { t: Theme; text: string }) {
   const parts: ReactNode[] = []
 
@@ -335,7 +316,19 @@ function MdImpl({ compact, t, text }: MdProps) {
 
             {block.map((l, j) => {
               if (highlighted) {
-                return <Text key={j}>{highlightLine(l, lang, t).map(([color, text], kk) => codeText(text, color, kk, t))}</Text>
+                return (
+                  <Text key={j}>
+                    {highlightLine(l, lang, t).map(([color, text], kk) =>
+                      color ? (
+                        <Text color={color} key={kk}>
+                          {text}
+                        </Text>
+                      ) : (
+                        <Text key={kk}>{text}</Text>
+                      )
+                    )}
+                  </Text>
+                )
               }
 
               const add = isDiff && l.startsWith('+')
@@ -349,7 +342,7 @@ function MdImpl({ compact, t, text }: MdProps) {
                   dimColor={isDiff && !add && !del && !hunk && l.startsWith(' ')}
                   key={j}
                 >
-                  {plainCodeLine(l, t)}
+                  {l}
                 </Text>
               )
             })}

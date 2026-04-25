@@ -12,7 +12,7 @@
 
 import { clamp } from './layout/geometry.js'
 import type { Screen, StylePool } from './screen.js'
-import { cellAt, cellAtIndex, CellWidth, isEmptyCellAt, setCellStyleId } from './screen.js'
+import { cellAt, cellAtIndex, CellWidth, isWrittenCellAt, setCellStyleId } from './screen.js'
 
 type Point = { col: number; row: number }
 
@@ -847,7 +847,7 @@ function selectableCell(screen: Screen, row: number, col: number): boolean {
 
   return (
     screen.noSelect[row * screen.width + col] !== 1 &&
-    !isEmptyCellAt(screen, col, row) &&
+    isWrittenCellAt(screen, col, row) &&
     !!cell &&
     cell.width !== CellWidth.SpacerTail &&
     cell.width !== CellWidth.SpacerHead

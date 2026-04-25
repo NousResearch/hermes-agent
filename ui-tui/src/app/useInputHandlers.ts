@@ -159,16 +159,14 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       voice.setProcessing(false)
     }
 
-    gateway
-      .rpc<VoiceRecordResponse>('voice.record', { action })
-      .catch((e: Error) => {
-        // Revert optimistic UI on failure.
-        if (starting) {
-          voice.setRecording(false)
-        }
+    gateway.rpc<VoiceRecordResponse>('voice.record', { action }).catch((e: Error) => {
+      // Revert optimistic UI on failure.
+      if (starting) {
+        voice.setRecording(false)
+      }
 
-        actions.sys(`voice error: ${e.message}`)
-      })
+      actions.sys(`voice error: ${e.message}`)
+    })
   }
 
   useInput((ch, key) => {

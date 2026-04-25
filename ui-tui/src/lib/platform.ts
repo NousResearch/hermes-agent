@@ -43,7 +43,5 @@ export const isAction = (key: { ctrl: boolean; meta: boolean; super?: boolean },
  * accept Cmd+B (the platform action modifier) so existing macOS muscle memory
  * keeps working.
  */
-export const isVoiceToggleKey = (
-  key: { ctrl: boolean; meta: boolean; super?: boolean },
-  ch: string
-): boolean => (key.ctrl || isActionMod(key)) && ch.toLowerCase() === 'b'
+export const isVoiceToggleKey = (key: { ctrl: boolean; meta: boolean; super?: boolean }, ch: string): boolean =>
+  (key.ctrl || isActionMod(key)) && ch.toLowerCase() === 'b'

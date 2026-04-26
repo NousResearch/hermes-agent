@@ -511,6 +511,35 @@ class TestIncomingDocumentHandling:
         msg_event = adapter.handle_message.call_args[0][0]
         assert msg_event.message_type == MessageType.PHOTO
 
+    @pytest.mark.asyncio
+    async def test_download_failure_is_surfaced_in_message_text(self, adapter):
+        """Attachment download failures (401/403/HTML-body/etc.) should be
+        translated into a user-facing `[Slack attachment notice]` block so
+        the agent can tell the user what to fix (e.g. missing files:read
+        scope). No proactive files.info probe is made — the diagnostic
+        runs only when the download actually fails.
+        """
+        import httpx
+        req = httpx.Request("GET", "https://files.slack.com/photo.jpg")
+        resp = httpx.Response(403, request=req)
+
+        with patch.object(adapter, "_download_slack_file", new_callable=AsyncMock) as dl:
+            dl.side_effect = httpx.HTTPStatusError("403", request=req, response=resp)
+            event = self._make_event(text="what's in this?", files=[{
+                "id": "F123",
+                "mimetype": "image/jpeg",
+                "name": "photo.jpg",
+                "url_private_download": "https://files.slack.com/photo.jpg",
+                "size": 1024,
+            }])
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.TEXT
+        assert "[Slack attachment notice]" in msg_event.text
+        assert "403" in msg_event.text
+        assert "what's in this?" in msg_event.text
+
 
 # ---------------------------------------------------------------------------
 # TestMessageRouting

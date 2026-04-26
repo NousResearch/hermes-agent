@@ -1617,8 +1617,14 @@ def _resolve_auto(main_runtime: Optional[Dict[str, Any]] = None) -> Tuple[Option
 # below — never look up auth env vars ad-hoc.
 
 
-def _to_async_client(sync_client, model: str):
-    """Convert a sync client to its async counterpart, preserving Codex routing."""
+def _to_async_client(sync_client, model: str, is_vision: bool = False):
+    """Convert a sync client to its async counterpart, preserving Codex routing.
+
+    When ``is_vision=True`` and the underlying base URL is Copilot, the
+    resulting async client carries the ``Copilot-Vision-Request: true``
+    header so the request is routed to Copilot's vision-capable
+    infrastructure (otherwise vision payloads silently time out).
+    """
     from openai import AsyncOpenAI
 
     if isinstance(sync_client, CodexAuxiliaryClient):
@@ -1647,9 +1653,11 @@ def _to_async_client(sync_client, model: str):
     if base_url_host_matches(sync_base_url, "openrouter.ai"):
         async_kwargs["default_headers"] = dict(_OR_HEADERS)
     elif base_url_host_matches(sync_base_url, "api.githubcopilot.com"):
-        from hermes_cli.models import copilot_default_headers
+        from hermes_cli.copilot_auth import copilot_request_headers
 
-        async_kwargs["default_headers"] = copilot_default_headers()
+        async_kwargs["default_headers"] = copilot_request_headers(
+            is_agent_turn=True, is_vision=is_vision
+        )
     elif base_url_host_matches(sync_base_url, "api.kimi.com"):
         async_kwargs["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
     return AsyncOpenAI(**async_kwargs), model
@@ -1676,6 +1684,7 @@ def resolve_provider_client(
     explicit_api_key: str = None,
     api_mode: str = None,
     main_runtime: Optional[Dict[str, Any]] = None,
+    is_vision: bool = False,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Central router: given a provider name and optional model, return a
     configured client with the correct auth, base URL, and API format.
@@ -1759,7 +1768,7 @@ def resolve_provider_client(
                 "auxiliary provider (using %r instead)", model, resolved)
             model = None
         final_model = model or resolved
-        return (_to_async_client(client, final_model) if async_mode
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
     # ── OpenRouter ───────────────────────────────────────────────────
@@ -1772,7 +1781,7 @@ def resolve_provider_client(
             )
             return None, None
         final_model = _normalize_resolved_model(model or default, provider)
-        return (_to_async_client(client, final_model) if async_mode
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
     # ── Nous Portal (OAuth) ──────────────────────────────────────────
@@ -1789,7 +1798,7 @@ def resolve_provider_client(
                            "but Nous Portal not configured (run: hermes auth)")
             return None, None
         final_model = _normalize_resolved_model(model or default, provider)
-        return (_to_async_client(client, final_model) if async_mode
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
     # ── OpenAI Codex (OAuth → Responses API) ─────────────────────────
@@ -1816,7 +1825,7 @@ def resolve_provider_client(
                            "but no Codex OAuth token found (run: hermes model)")
             return None, None
         final_model = _normalize_resolved_model(model or default, provider)
-        return (_to_async_client(client, final_model) if async_mode
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
@@ -1845,11 +1854,13 @@ def resolve_provider_client(
             if base_url_host_matches(custom_base, "api.kimi.com"):
                 extra["default_headers"] = {"User-Agent": "claude-code/0.1.0"}
             elif base_url_host_matches(custom_base, "api.githubcopilot.com"):
-                from hermes_cli.models import copilot_default_headers
-                extra["default_headers"] = copilot_default_headers()
+                from hermes_cli.copilot_auth import copilot_request_headers
+                extra["default_headers"] = copilot_request_headers(
+                    is_agent_turn=True, is_vision=is_vision
+                )
             client = OpenAI(api_key=custom_key, base_url=_clean_base, **extra)
             client = _wrap_if_needed(client, final_model, custom_base)
-            return (_to_async_client(client, final_model) if async_mode
+            return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                     else (client, final_model))
         # Try custom first, then codex, then API-key providers
         for try_fn in (_try_custom_endpoint, _try_codex,
@@ -1859,7 +1870,7 @@ def resolve_provider_client(
                 final_model = _normalize_resolved_model(model or default, provider)
                 _cbase = str(getattr(client, "base_url", "") or "")
                 client = _wrap_if_needed(client, final_model, _cbase)
-                return (_to_async_client(client, final_model) if async_mode
+                return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                         else (client, final_model))
         logger.warning("resolve_provider_client: custom/main requested "
                        "but no endpoint credentials found")
@@ -1904,7 +1915,7 @@ def resolve_provider_client(
                             provider,
                         )
                         client = OpenAI(api_key=custom_key, base_url=_clean_base2, **_extra2)
-                        return (_to_async_client(client, final_model) if async_mode
+                        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                                 else (client, final_model))
                     sync_anthropic = AnthropicAuxiliaryClient(
                         real_client, final_model, custom_key, custom_base, is_oauth=False,
@@ -1923,7 +1934,7 @@ def resolve_provider_client(
                     client = CodexAuxiliaryClient(client, final_model)
                 else:
                     client = _wrap_if_needed(client, final_model, custom_base)
-                return (_to_async_client(client, final_model) if async_mode
+                return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                         else (client, final_model))
             logger.warning(
                 "resolve_provider_client: named custom provider %r has no base_url",
@@ -1955,7 +1966,7 @@ def resolve_provider_client(
                 logger.warning("resolve_provider_client: anthropic requested but no Anthropic credentials found")
                 return None, None
             final_model = _normalize_resolved_model(model or default_model, provider)
-            return (_to_async_client(client, final_model) if async_mode else (client, final_model))
+            return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode else (client, final_model))
 
         creds = resolve_api_key_provider_credentials(provider)
         api_key = str(creds.get("api_key", "")).strip()
@@ -1981,7 +1992,7 @@ def resolve_provider_client(
             if is_native_gemini_base_url(base_url):
                 client = GeminiNativeClient(api_key=api_key, base_url=base_url)
                 logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
-                return (_to_async_client(client, final_model) if async_mode
+                return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                         else (client, final_model))
 
         # Provider-specific headers
@@ -1989,9 +2000,11 @@ def resolve_provider_client(
         if base_url_host_matches(base_url, "api.kimi.com"):
             headers["User-Agent"] = "claude-code/0.1.0"
         elif base_url_host_matches(base_url, "api.githubcopilot.com"):
-            from hermes_cli.models import copilot_default_headers
+            from hermes_cli.copilot_auth import copilot_request_headers
 
-            headers.update(copilot_default_headers())
+            headers.update(copilot_request_headers(
+                is_agent_turn=True, is_vision=is_vision
+            ))
         client = OpenAI(api_key=api_key, base_url=base_url,
                         **({"default_headers": headers} if headers else {}))
 
@@ -2017,7 +2030,7 @@ def resolve_provider_client(
         client = _wrap_if_needed(client, final_model, base_url)
 
         logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
-        return (_to_async_client(client, final_model) if async_mode
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
     if pconfig.auth_type == "external_process":
@@ -2049,7 +2062,7 @@ def resolve_provider_client(
                 args=args,
             )
             logger.debug("resolve_provider_client: %s (%s)", provider, final_model)
-            return (_to_async_client(client, final_model) if async_mode
+            return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                     else (client, final_model))
         logger.warning("resolve_provider_client: external-process provider %s not "
                        "directly supported", provider)
@@ -2085,7 +2098,7 @@ def resolve_provider_client(
             base_url=f"https://bedrock-runtime.{region}.amazonaws.com",
         )
         logger.debug("resolve_provider_client: bedrock (%s, %s)", final_model, region)
-        return (_to_async_client(client, final_model) if async_mode
+        return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                 else (client, final_model))
 
     elif pconfig.auth_type in ("oauth_device_code", "oauth_external"):
@@ -2160,8 +2173,13 @@ def _normalize_vision_provider(provider: Optional[str]) -> str:
     return _normalize_aux_provider(provider)
 
 
-def _resolve_strict_vision_backend(provider: str) -> Tuple[Optional[Any], Optional[str]]:
+def _resolve_strict_vision_backend(
+    provider: str,
+    model: Optional[str] = None,
+) -> Tuple[Optional[Any], Optional[str]]:
     provider = _normalize_vision_provider(provider)
+    if provider == "copilot":
+        return resolve_provider_client("copilot", model, is_vision=True)
     if provider == "openrouter":
         return _try_openrouter()
     if provider == "nous":
@@ -2229,7 +2247,7 @@ def resolve_vision_provider_client(
             return resolved_provider, None, None
         final_model = resolved_model or default_model
         if async_mode:
-            async_client, async_model = _to_async_client(sync_client, final_model)
+            async_client, async_model = _to_async_client(sync_client, final_model, is_vision=True)
             return resolved_provider, async_client, async_model
         return resolved_provider, sync_client, final_model
 
@@ -2261,8 +2279,11 @@ def resolve_vision_provider_client(
         main_provider = _read_main_provider()
         main_model = _read_main_model()
         if main_provider and main_provider not in ("auto", ""):
+            vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
             if main_provider == "nous":
-                sync_client, default_model = _resolve_strict_vision_backend(main_provider)
+                sync_client, default_model = _resolve_strict_vision_backend(
+                    main_provider, vision_model
+                )
                 if sync_client is not None:
                     logger.info(
                         "Vision auto-detect: using main provider %s (%s)",
@@ -2270,10 +2291,10 @@ def resolve_vision_provider_client(
                     )
                     return _finalize(main_provider, sync_client, default_model)
             else:
-                vision_model = _PROVIDER_VISION_MODELS.get(main_provider, main_model)
                 rpc_client, rpc_model = resolve_provider_client(
                     main_provider, vision_model,
-                    api_mode=resolved_api_mode)
+                    api_mode=resolved_api_mode,
+                    is_vision=True)
                 if rpc_client is not None:
                     logger.info(
                         "Vision auto-detect: using main provider %s (%s)",
@@ -2295,11 +2316,14 @@ def resolve_vision_provider_client(
         return None, None, None
 
     if requested in _VISION_AUTO_PROVIDER_ORDER:
-        sync_client, default_model = _resolve_strict_vision_backend(requested)
+        sync_client, default_model = _resolve_strict_vision_backend(
+            requested, resolved_model
+        )
         return _finalize(requested, sync_client, default_model)
 
     client, final_model = _get_cached_client(requested, resolved_model, async_mode,
-                                             api_mode=resolved_api_mode)
+                                             api_mode=resolved_api_mode,
+                                             is_vision=True)
     if client is None:
         return requested, None, None
     return requested, client, final_model
@@ -2363,10 +2387,11 @@ def _client_cache_key(
     api_key: Optional[str] = None,
     api_mode: Optional[str] = None,
     main_runtime: Optional[Dict[str, Any]] = None,
+    is_vision: bool = False,
 ) -> tuple:
     runtime = _normalize_main_runtime(main_runtime)
     runtime_key = tuple(runtime.get(field, "") for field in _MAIN_RUNTIME_FIELDS) if provider == "auto" else ()
-    return (provider, async_mode, base_url or "", api_key or "", api_mode or "", runtime_key)
+    return (provider, async_mode, base_url or "", api_key or "", api_mode or "", runtime_key, is_vision)
 
 
 def _store_cached_client(cache_key: tuple, client: Any, default_model: Optional[str], *, bound_loop: Any = None) -> None:
@@ -2392,6 +2417,7 @@ def _refresh_nous_auxiliary_client(
     api_key: Optional[str] = None,
     api_mode: Optional[str] = None,
     main_runtime: Optional[Dict[str, Any]] = None,
+    is_vision: bool = False,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Refresh Nous runtime creds, rebuild the client, and replace the cache entry."""
     runtime = _resolve_nous_runtime_api(force_refresh=True)
@@ -2409,7 +2435,7 @@ def _refresh_nous_auxiliary_client(
             current_loop = _aio.get_event_loop()
         except RuntimeError:
             pass
-        client, final_model = _to_async_client(sync_client, final_model or "")
+        client, final_model = _to_async_client(sync_client, final_model or "", is_vision=is_vision)
     else:
         client = sync_client
 
@@ -2420,6 +2446,7 @@ def _refresh_nous_auxiliary_client(
         api_key=api_key,
         api_mode=api_mode,
         main_runtime=main_runtime,
+        is_vision=is_vision,
     )
     _store_cached_client(cache_key, client, final_model, bound_loop=current_loop)
     return client, final_model
@@ -2549,6 +2576,7 @@ def _get_cached_client(
     api_key: str = None,
     api_mode: str = None,
     main_runtime: Optional[Dict[str, Any]] = None,
+    is_vision: bool = False,
 ) -> Tuple[Optional[Any], Optional[str]]:
     """Get or create a cached client for the given provider.
 
@@ -2585,6 +2613,7 @@ def _get_cached_client(
         api_key=api_key,
         api_mode=api_mode,
         main_runtime=main_runtime,
+        is_vision=is_vision,
     )
     with _client_cache_lock:
         if cache_key in _client_cache:
@@ -2616,6 +2645,7 @@ def _get_cached_client(
         explicit_api_key=api_key,
         api_mode=api_mode,
         main_runtime=runtime,
+        is_vision=is_vision,
     )
     if client is not None:
         # For async clients, remember which loop they were created on so we
@@ -3079,6 +3109,7 @@ def call_llm(
                 api_key=resolved_api_key,
                 api_mode=resolved_api_mode,
                 main_runtime=main_runtime,
+                is_vision=(task == "vision"),
             )
             if refreshed_client is not None:
                 logger.info("Auxiliary %s: refreshed Nous runtime credentials after 401, retrying",
@@ -3369,6 +3400,7 @@ async def async_call_llm(
                 base_url=resolved_base_url,
                 api_key=resolved_api_key,
                 api_mode=resolved_api_mode,
+                is_vision=(task == "vision"),
             )
             if refreshed_client is not None:
                 logger.info("Auxiliary %s (async): refreshed Nous runtime credentials after 401, retrying",
@@ -3437,7 +3469,9 @@ async def async_call_llm(
                     extra_body=effective_extra_body,
                     base_url=str(getattr(fb_client, "base_url", "") or ""))
                 # Convert sync fallback client to async
-                async_fb, async_fb_model = _to_async_client(fb_client, fb_model or "")
+                async_fb, async_fb_model = _to_async_client(
+                    fb_client, fb_model or "", is_vision=(task == "vision")
+                )
                 if async_fb_model and async_fb_model != fb_kwargs.get("model"):
                     fb_kwargs["model"] = async_fb_model
                 return _validate_llm_response(

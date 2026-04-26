@@ -393,3 +393,39 @@ def test_curator_does_not_instruct_model_to_pin():
     assert not any(l.strip().startswith("pin ") for l in lines), (
         f"Found a pin action line in:\n{decision_block}"
     )
+
+
+
+def test_cli_unpin_refuses_bundled_skill(curator_env, capsys):
+    """hermes curator unpin must refuse bundled/hub skills too (matches pin)."""
+    from hermes_cli import curator as cli
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "ship-skill")
+    (skills_dir / ".bundled_manifest").write_text(
+        "ship-skill:abc\n", encoding="utf-8",
+    )
+
+    class _A:
+        skill = "ship-skill"
+
+    rc = cli._cmd_unpin(_A())
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "bundled" in captured.out.lower() or "hub" in captured.out.lower()
+
+
+def test_cli_pin_refuses_bundled_skill(curator_env, capsys):
+    from hermes_cli import curator as cli
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "ship-skill")
+    (skills_dir / ".bundled_manifest").write_text(
+        "ship-skill:abc\n", encoding="utf-8",
+    )
+
+    class _A:
+        skill = "ship-skill"
+
+    rc = cli._cmd_pin(_A())
+    captured = capsys.readouterr()
+    assert rc == 1
+    assert "bundled" in captured.out.lower() or "hub" in captured.out.lower()

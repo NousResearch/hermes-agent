@@ -1084,7 +1084,14 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             msg = messages[i]
             raw_content = msg.get("content") or ""
             content_len = (
-                sum(len(p.get("text", "")) for p in raw_content)
+                sum(
+                    len(p.get("text", ""))
+                    if isinstance(p, dict)
+                    else len(p)
+                    if isinstance(p, str)
+                    else len(str(p))
+                    for p in raw_content
+                )
                 if isinstance(raw_content, list)
                 else len(raw_content)
             )

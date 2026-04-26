@@ -1016,64 +1016,6 @@ def _tool_summary(name: str, result: str, duration_s: float | None) -> str | Non
     return f"{text or 'Completed'}{suffix}" if (text or dur) else None
 
 
-# ── Onboarding hint emission ─────────────────────────────────────────
-# First-touch hints are latched to config.yaml (onboarding.seen.<flag>)
-# and shared with CLI + gateway so each hint fires at most once per
-# install across all surfaces.  Best-effort — never raises.
-
-_ONBOARDING_HINTS_EMITTED: set[str] = set()
-
-
-def _maybe_emit_onboarding_hint(sid: str, flag: str) -> bool:
-    """Atomically claim an onboarding flag and emit its hint to Ink.
-
-    Returns True if a hint was emitted this call, False if the flag was
-    already seen (or if anything went wrong — onboarding must never
-    interrupt the normal event flow).  Also deduplicates within a single
-    process run via ``_ONBOARDING_HINTS_EMITTED`` so concurrent callers
-    can't double-emit before the config.yaml write lands.
-    """
-    if flag in _ONBOARDING_HINTS_EMITTED:
-        return False
-    try:
-        from agent.onboarding import (
-            BUSY_INPUT_FLAG,
-            TOOL_PROGRESS_FLAG,
-            busy_input_hint_tui,
-            is_seen,
-            mark_seen,
-            tool_progress_hint_tui,
-        )
-    except Exception:
-        return False
-
-    try:
-        cfg = _load_cfg()
-    except Exception:
-        cfg = {}
-    if is_seen(cfg, flag):
-        _ONBOARDING_HINTS_EMITTED.add(flag)
-        return False
-
-    if flag == BUSY_INPUT_FLAG:
-        hint_text = busy_input_hint_tui()
-    elif flag == TOOL_PROGRESS_FLAG:
-        hint_text = tool_progress_hint_tui()
-    else:
-        return False
-
-    _ONBOARDING_HINTS_EMITTED.add(flag)
-    try:
-        mark_seen(_hermes_home / "config.yaml", flag)
-    except Exception:
-        pass
-    try:
-        _emit("onboarding.hint", sid, {"flag": flag, "text": hint_text})
-    except Exception:
-        return False
-    return True
-
-
 def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
     session = _sessions.get(sid)
     if session is not None:
@@ -1124,20 +1066,6 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         pass
     if _tool_progress_enabled(sid) or payload.get("inline_diff"):
         _emit("tool.complete", sid, payload)
-
-    # First-touch onboarding: the first time a tool runs >= 30s in the
-    # noisiest progress mode ("all"), emit a one-time hint suggesting
-    # /verbose.  Claim is atomic via config.yaml so the hint fires at
-    # most once per install across CLI + gateway + TUI.
-    try:
-        if (
-            duration_s is not None
-            and duration_s >= 30.0
-            and _session_tool_progress_mode(sid) == "all"
-        ):
-            _maybe_emit_onboarding_hint(sid, "tool_progress_prompt")
-    except Exception as _hint_err:  # pragma: no cover — onboarding is best-effort
-        logger.debug("tui onboarding tool-progress hint failed: %s", _hint_err)
 
 
 def _on_tool_progress(
@@ -2004,53 +1932,6 @@ def _(rid, params: dict) -> dict:
     except Exception:
         pass
     return _ok(rid, {"status": "interrupted"})
-
-
-# ── Methods: onboarding ──────────────────────────────────────────────
-# First-touch hint latch, shared with CLI + gateway via config.yaml
-# (``onboarding.seen.<flag>``).  Ink calls ``onboarding.claim`` the first
-# time it hits a behavior fork (busy enqueue, long tool completion); the
-# method atomically returns the hint text AND marks the flag seen, so a
-# second fast trigger in the same session never double-renders.
-
-_VALID_ONBOARDING_FLAGS = {"busy_input_prompt", "tool_progress_prompt"}
-
-
-@method("onboarding.claim")
-def _(rid, params: dict) -> dict:
-    flag = str(params.get("flag", "") or "").strip()
-    if flag not in _VALID_ONBOARDING_FLAGS:
-        return _err(rid, 4002, f"unknown onboarding flag: {flag}")
-    try:
-        from agent.onboarding import (
-            BUSY_INPUT_FLAG,
-            TOOL_PROGRESS_FLAG,
-            busy_input_hint_tui,
-            is_seen,
-            mark_seen,
-            tool_progress_hint_tui,
-        )
-    except Exception as e:  # pragma: no cover — onboarding is best-effort
-        return _ok(rid, {"hint": None, "claimed": False, "error": str(e)})
-
-    cfg = _load_cfg()
-    if is_seen(cfg, flag):
-        return _ok(rid, {"hint": None, "claimed": False})
-
-    if flag == BUSY_INPUT_FLAG:
-        hint = busy_input_hint_tui()
-    elif flag == TOOL_PROGRESS_FLAG:
-        hint = tool_progress_hint_tui()
-    else:  # defensive — validated above
-        return _err(rid, 4002, f"unknown onboarding flag: {flag}")
-
-    # Mark seen atomically before returning.  If persistence fails, still
-    # return the hint so the user sees it at least once this session.
-    try:
-        mark_seen(_hermes_home / "config.yaml", flag)
-    except Exception:
-        pass
-    return _ok(rid, {"hint": hint, "claimed": True})
 
 
 # ── Delegation: subagent tree observability + controls ───────────────

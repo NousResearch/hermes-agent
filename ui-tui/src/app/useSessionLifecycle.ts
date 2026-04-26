@@ -181,14 +181,22 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               resetSession()
               setSessionStartedAt(Date.now())
 
+              const info = r.info
+                ? {
+                    ...r.info,
+                    resume_message_count: r.message_count,
+                    resumed_session_id: r.resumed
+                  }
+                : null
+
               const resumed = toTranscriptMessages(r.messages)
 
-              setHistoryItems(r.info ? [introMsg(r.info), ...resumed] : resumed)
+              setHistoryItems(info ? [introMsg(info), ...resumed] : resumed)
               patchUiState({
-                info: r.info ?? null,
+                info,
                 sid: r.session_id,
                 status: 'ready',
-                usage: usageFrom(r.info ?? null)
+                usage: usageFrom(info)
               })
               setTimeout(() => scrollRef.current?.scrollToBottom(), 0)
             })

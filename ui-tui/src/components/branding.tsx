@@ -1,9 +1,25 @@
 import { Box, Text, useStdout } from '@hermes/ink'
 
-import { artWidth, caduceus, CADUCEUS_WIDTH, logo, LOGO_WIDTH } from '../banner.js'
+import { artWidth, logo, LOGO_WIDTH } from '../banner.js'
 import { flat } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { PanelSection, SessionInfo } from '../types.js'
+
+export const MOTTO = 'The bridge remembers. The engine dreams.'
+
+const AURORA_IDENTITY = 'Aurora Proto'
+
+type LaunchTone = 'accent' | 'dim' | 'muted' | 'plain' | 'title' | 'warn'
+
+export interface LaunchCardLine {
+  text: string
+  tone?: LaunchTone
+}
+
+export interface LaunchCardModel {
+  lines: LaunchCardLine[]
+  mode: 'launch' | 'resume'
+}
 
 export function ArtLines({ lines }: { lines: [string, string][] }) {
   return (
@@ -27,154 +43,124 @@ export function Banner({ t }: { t: Theme }) {
         <ArtLines lines={logoLines} />
       ) : (
         <Text bold color={t.color.gold}>
-          {t.brand.icon} NOUS HERMES
+          ░▒▓ AURORA PROTO ▓▒░
         </Text>
       )}
 
-      <Text color={t.color.dim}>{t.brand.icon} Nous Research · Messenger of the Digital Gods</Text>
+      <Text color={t.color.dim}>{t.brand.icon} {MOTTO}</Text>
     </Box>
   )
 }
 
-export function SessionPanel({ info, sid, t }: SessionPanelProps) {
-  const cols = useStdout().stdout?.columns ?? 100
-  const heroLines = caduceus(t.color, t.bannerHero || undefined)
-  const leftW = Math.min((artWidth(heroLines) || CADUCEUS_WIDTH) + 4, Math.floor(cols * 0.4))
-  const wide = cols >= 90 && leftW + 40 < cols
-  const w = Math.max(20, wide ? cols - leftW - 14 : cols - 12)
-  const lineBudget = Math.max(12, w - 2)
-  const strip = (s: string) => (s.endsWith('_tools') ? s.slice(0, -6) : s)
+export function buildLaunchCardModel(info: SessionInfo, sid?: null | string): LaunchCardModel {
+  const toolsets = Object.keys(info.tools ?? {}).length
+  const skillRings = Object.keys(info.skills ?? {}).length
+  const tools = flat(info.tools ?? {}).length
+  const skills = flat(info.skills ?? {}).length
+  const mcp = info.mcp_servers ?? []
+  const onlineMcp = mcp.filter(server => server.connected).length
+  const cwd = info.cwd || process.cwd()
+  const model = info.model.split('/').pop() || info.model
+  const mode: LaunchCardModel['mode'] = info.resumed_session_id ? 'resume' : 'launch'
 
-  const truncLine = (pfx: string, items: string[]) => {
-    let line = ''
-    let shown = 0
+  const lines: LaunchCardLine[] = [
+    { text: `☤ ${AURORA_IDENTITY}`, tone: 'title' },
+    { text: MOTTO, tone: 'dim' },
+    { text: '' },
+    { text: `${model}${info.version ? ` · v${info.version}` : ''}${info.release_date ? ` · ${info.release_date}` : ''}`, tone: 'accent' },
+    { text: `▣ workspace  ${cwd}`, tone: 'plain' }
+  ]
 
-    for (const item of [...items].sort()) {
-      const next = line ? `${line}, ${item}` : item
-
-      if (pfx.length + next.length > lineBudget) {
-        return line ? `${line}, …+${items.length - shown}` : `${item}, …`
-      }
-
-      line = next
-      shown++
-    }
-
-    return line
+  if (sid) {
+    lines.push({ text: `◇ session    ${sid}`, tone: 'muted' })
   }
 
-  const section = (title: string, data: Record<string, string[]>, max = 8, overflowLabel = 'more…') => {
-    const entries = Object.entries(data).sort()
-    const shown = entries.slice(0, max)
-    const overflow = entries.length - max
+  lines.push({ text: '' })
 
-    return (
-      <Box flexDirection="column" marginTop={1}>
-        <Text bold color={t.color.amber}>
-          Available {title}
-        </Text>
-
-        {shown.map(([k, vs]) => (
-          <Text key={k} wrap="truncate">
-            <Text color={t.color.dim}>{strip(k)}: </Text>
-            <Text color={t.color.cornsilk}>{truncLine(strip(k) + ': ', vs)}</Text>
-          </Text>
-        ))}
-
-        {overflow > 0 && (
-          <Text color={t.color.dim}>
-            (and {overflow} {overflowLabel})
-          </Text>
-        )}
-      </Box>
+  if (mode === 'resume') {
+    lines.push(
+      { text: 'THREAD RE-ENTRY', tone: 'accent' },
+      { text: `◇ trace      ${info.resumed_session_id}`, tone: 'plain' },
+      {
+        text: `⟁ restored   ${info.resume_message_count ?? 0} messages restored`,
+        tone: 'plain'
+      },
+      { text: '→ continue from the last living edge', tone: 'title' },
+      { text: '' }
+    )
+  } else {
+    lines.push(
+      { text: 'LAUNCH SEQUENCE', tone: 'accent' },
+      { text: '◐ cognition  online', tone: 'plain' },
+      { text: '◇ memory     listening', tone: 'plain' },
+      { text: '' }
     )
   }
 
+  lines.push(
+    { text: 'AURORA BODY', tone: 'accent' },
+    { text: `⚙ tools      ${tools} indexed across ${toolsets} toolsets`, tone: 'plain' },
+    { text: `✦ skills     ${skills} procedures across ${skillRings} rings`, tone: 'plain' },
+    {
+      text: `⌁ mcp        ${onlineMcp}/${mcp.length} servers linked`,
+      tone: mcp.length && onlineMcp < mcp.length ? 'warn' : 'plain'
+    },
+    { text: '☉ hands      terminal · file · browser', tone: 'plain' },
+    { text: '◇ memory     chorus · sessions · skills', tone: 'plain' },
+    { text: '' },
+    { text: 'MISSION', tone: 'accent' },
+    { text: 'Build the cockpit we actually want to live inside.', tone: 'plain' },
+    { text: '' },
+    { text: mode === 'resume' ? '/palette command bridge · /status body · /resume thread' : '/palette command bridge · /tools inventory · /skills shelf', tone: 'dim' }
+  )
+
+  if (typeof info.update_behind === 'number' && info.update_behind > 0) {
+    lines.push({ text: `! ${info.update_behind} commits behind · ${info.update_command || 'hermes update'}`, tone: 'warn' })
+  }
+
+  return { lines, mode }
+}
+
+const launchColor = (t: Theme, tone: LaunchTone = 'plain') => {
+  switch (tone) {
+    case 'accent':
+      return t.color.amber
+
+    case 'dim':
+      return t.color.dim
+
+    case 'muted':
+      return t.color.sessionBorder
+
+    case 'title':
+      return t.color.gold
+
+    case 'warn':
+      return t.color.warn
+
+    case 'plain':
+
+    default:
+      return t.color.cornsilk
+  }
+}
+
+export function SessionPanel({ info, sid, t }: SessionPanelProps) {
+  const cols = useStdout().stdout?.columns ?? 100
+  const w = Math.max(20, cols - 12)
+  const model = buildLaunchCardModel(info, sid)
+
   return (
     <Box borderColor={t.color.bronze} borderStyle="round" marginBottom={1} paddingX={2} paddingY={1}>
-      {wide && (
-        <Box flexDirection="column" marginRight={2} width={leftW}>
-          <ArtLines lines={heroLines} />
-          <Text />
-
-          <Text color={t.color.amber}>
-            {info.model.split('/').pop()}
-            <Text color={t.color.dim}> · Nous Research</Text>
-          </Text>
-
-          <Text color={t.color.dim} wrap="truncate-end">
-            {info.cwd || process.cwd()}
-          </Text>
-
-          {sid && (
-            <Text>
-              <Text color={t.color.sessionLabel}>Session: </Text>
-              <Text color={t.color.sessionBorder}>{sid}</Text>
-            </Text>
-          )}
-        </Box>
-      )}
-
       <Box flexDirection="column" width={w}>
-        <Box justifyContent="center" marginBottom={1}>
-          <Text bold color={t.color.gold}>
-            {t.brand.name}
-            {info.version ? ` v${info.version}` : ''}
-            {info.release_date ? ` (${info.release_date})` : ''}
-          </Text>
-        </Box>
-
-        {section('Tools', info.tools, 8, 'more toolsets…')}
-        {section('Skills', info.skills)}
-
-        {info.mcp_servers && info.mcp_servers.length > 0 && (
-          <Box flexDirection="column" marginTop={1}>
-            <Text bold color={t.color.amber}>
-              MCP Servers
+        {model.lines.map((line, i) =>
+          line.text ? (
+            <Text bold={line.tone === 'title' || line.tone === 'accent'} color={launchColor(t, line.tone)} key={i} wrap="truncate">
+              {line.text}
             </Text>
-
-            {info.mcp_servers.map(s => (
-              <Text key={s.name} wrap="truncate">
-                <Text color={t.color.dim}>{`  ${s.name} `}</Text>
-                <Text color={t.color.dim}>{`[${s.transport}]`}</Text>
-                <Text color={t.color.dim}>: </Text>
-                {s.connected ? (
-                  <Text color={t.color.cornsilk}>
-                    {s.tools} tool{s.tools === 1 ? '' : 's'}
-                  </Text>
-                ) : (
-                  <Text color={t.color.error}>failed</Text>
-                )}
-              </Text>
-            ))}
-          </Box>
-        )}
-
-        <Text />
-
-        <Text color={t.color.cornsilk}>
-          {flat(info.tools).length} tools{' · '}
-          {flat(info.skills).length} skills
-          {info.mcp_servers?.length ? ` · ${info.mcp_servers.length} MCP` : ''}
-          {' · '}
-          <Text color={t.color.dim}>/help for commands</Text>
-        </Text>
-
-        {typeof info.update_behind === 'number' && info.update_behind > 0 && (
-          <Text bold color={t.color.warn}>
-            ! {info.update_behind} {info.update_behind === 1 ? 'commit' : 'commits'} behind
-            <Text bold={false} color={t.color.warn} dimColor>
-              {' '}
-              - run{' '}
-            </Text>
-            <Text bold color={t.color.warn}>
-              {info.update_command || 'hermes update'}
-            </Text>
-            <Text bold={false} color={t.color.warn} dimColor>
-              {' '}
-              to update
-            </Text>
-          </Text>
+          ) : (
+            <Text key={i}> </Text>
+          )
         )}
       </Box>
     </Box>

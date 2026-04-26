@@ -136,6 +136,8 @@ export interface SessionInfo {
   mcp_servers?: McpServerStatus[]
   model: string
   release_date?: string
+  resume_message_count?: number
+  resumed_session_id?: string
   skills: Record<string, string[]>
   tools: Record<string, string[]>
   update_behind?: number | null

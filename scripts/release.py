@@ -68,6 +68,7 @@ AUTHOR_MAP = {
     "keira.voss94@gmail.com": "keiravoss94",
     "16443023+stablegenius49@users.noreply.github.com": "stablegenius49",
     "simbamax99@gmail.com": "simbam99",
+    "iris@growthpillars.co": "irispillars",
     "185121704+stablegenius49@users.noreply.github.com": "stablegenius49",
     "101283333+batuhankocyigit@users.noreply.github.com": "batuhankocyigit",
     "255305877+ismell0992-afk@users.noreply.github.com": "ismell0992-afk",

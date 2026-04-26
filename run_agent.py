@@ -12721,7 +12721,10 @@ class AIAgent:
         if not text or text.startswith("/"):
             return False
 
-        if any(pattern in text for pattern in _COPILOT_REMOTE_AUTO_DELEGATION_SKIP_PATTERNS):
+        if any(
+            re.search(rf"\b{re.escape(pattern)}\b", text)
+            for pattern in _COPILOT_REMOTE_AUTO_DELEGATION_SKIP_PATTERNS
+        ):
             return False
 
         explicit_copilot_request = "copilot" in text and any(

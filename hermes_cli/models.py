@@ -2546,10 +2546,27 @@ def fetch_ollama_cloud_models(
             if m and m not in seen:
                 seen.add(m)
                 merged.append(m)
+        live_set = set(live_models)
         for m in mdev_models:
-            if m and m not in seen:
-                seen.add(m)
-                merged.append(m)
+            if not m or m in seen:
+                continue
+            # Strip :cloud / -cloud suffixes from static registry to avoid 400/404
+            if m.endswith(":cloud"):
+                sanitized = m[:-6]
+            elif m.endswith("-cloud"):
+                sanitized = m[:-6]
+            else:
+                sanitized = m
+            if not sanitized:
+                continue
+            # Discard if the sanitized version already exists in the live API
+            if sanitized in live_set:
+                continue
+            # Also dedupe against other sanitized models.dev entries
+            if sanitized in seen:
+                continue
+            seen.add(sanitized)
+            merged.append(sanitized)
         if merged:
             _save_ollama_cloud_cache(merged)
             return merged

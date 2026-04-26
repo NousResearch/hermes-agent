@@ -615,3 +615,30 @@ class TestNousRecommendedModels:
             patch("hermes_cli.models.check_nous_free_tier", side_effect=RuntimeError("boom")),
         ):
             assert get_nous_recommended_aux_model(vision=False) == "paid-model"
+
+
+class TestFetchOllamaCloudModels:
+    """Tests for fetch_ollama_cloud_models — suffix sanitization from static registry."""
+
+    def test_strips_cloud_suffixes_and_avoids_duplicates(self, tmp_path, monkeypatch):
+        """Static registry :cloud / -cloud suffixes are stripped; duplicates discarded."""
+        from hermes_cli.models import fetch_ollama_cloud_models
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
+
+        mock_mdev = {
+            "ollama-cloud": {
+                "models": {
+                    "kimi-k2.6:cloud": {"tool_call": True},
+                    "glm-5.1-cloud": {"tool_call": True},
+                }
+            }
+        }
+        with patch("hermes_cli.models.fetch_api_models", return_value=["kimi-k2.6"]), \
+             patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
+            result = fetch_ollama_cloud_models(force_refresh=True)
+
+        assert result == ["kimi-k2.6", "glm-5.1"]
+        assert "kimi-k2.6:cloud" not in result
+        assert "glm-5.1-cloud" not in result

@@ -1157,8 +1157,11 @@ class SlackAdapter(BasePlatformAdapter):
         if is_mentioned:
             # Strip the bot mention from the text
             text = text.replace(f"<@{bot_uid}>", "").strip()
-            # Register this thread so all future messages auto-trigger the bot
-            if event_thread_ts:
+            # Register this thread so all future messages auto-trigger the bot.
+            # Skipped in strict mode: strict_mention=true bots must be
+            # re-mentioned every turn, so remembering the thread would
+            # defeat the feature (and re-enable agent-to-agent ack loops).
+            if event_thread_ts and not self._slack_strict_mention():
                 self._mentioned_threads.add(event_thread_ts)
                 if len(self._mentioned_threads) > self._MENTIONED_THREADS_MAX:
                     to_remove = list(self._mentioned_threads)[:self._MENTIONED_THREADS_MAX // 2]

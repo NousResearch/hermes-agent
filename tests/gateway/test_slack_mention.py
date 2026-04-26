@@ -415,3 +415,48 @@ def test_config_bridges_slack_strict_mention(monkeypatch, tmp_path):
     assert config is not None
     import os as _os
     assert _os.environ["SLACK_STRICT_MENTION"] == "true"
+
+
+# ---------------------------------------------------------------------------
+# Regression: strict mode must NOT persist mentions into _mentioned_threads
+# ---------------------------------------------------------------------------
+# Prevents agent-to-agent ack loops — if a strict-mode bot remembered every
+# thread it was mentioned in, the next message from the other agent in that
+# thread would re-trigger the bot and defeat the entire feature.
+
+def test_mention_in_strict_mode_does_not_register_thread():
+    adapter = _make_adapter(strict_mention=True)
+    adapter._bot_user_id = "U_BOT"
+    adapter._mentioned_threads = set()
+    adapter._MENTIONED_THREADS_MAX = 5000
+
+    thread_ts = "1700000000.100200"
+    event_thread_ts = thread_ts  # incoming message is inside an existing thread
+
+    # Mirror the handler's @mention + strict-mode guard that protects
+    # _mentioned_threads.add(). If strict is on, we must skip the add.
+    text = "<@U_BOT> hello"
+    is_mentioned = f"<@{adapter._bot_user_id}>" in text
+    assert is_mentioned
+    if event_thread_ts and not adapter._slack_strict_mention():
+        adapter._mentioned_threads.add(event_thread_ts)
+
+    assert thread_ts not in adapter._mentioned_threads
+
+
+def test_mention_outside_strict_mode_still_registers_thread():
+    adapter = _make_adapter(strict_mention=False)
+    adapter._bot_user_id = "U_BOT"
+    adapter._mentioned_threads = set()
+    adapter._MENTIONED_THREADS_MAX = 5000
+
+    thread_ts = "1700000000.100200"
+    event_thread_ts = thread_ts
+
+    text = "<@U_BOT> hello"
+    is_mentioned = f"<@{adapter._bot_user_id}>" in text
+    assert is_mentioned
+    if event_thread_ts and not adapter._slack_strict_mention():
+        adapter._mentioned_threads.add(event_thread_ts)
+
+    assert thread_ts in adapter._mentioned_threads

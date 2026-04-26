@@ -46,6 +46,8 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/skills',
             'user-guide/features/memory',
             'user-guide/features/memory-providers',
+            'user-guide/features/honcho',
+            'user-guide/features/agentmemory',
             'user-guide/features/context-files',
             'user-guide/features/context-references',
             'user-guide/features/personality',

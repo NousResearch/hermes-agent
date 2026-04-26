@@ -1,0 +1,10 @@
+name: agentmemory
+version: 0.8.0
+description: "Persistent cross-session project memory for Hermes Agent via AgentMemory."
+author: "Rohit Ghumare"
+homepage: "https://github.com/rohitg00/agentmemory"
+cli_always: true
+hooks:
+  - on_session_end
+  - on_pre_compress
+  - on_memory_write

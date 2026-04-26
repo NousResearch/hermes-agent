@@ -26,7 +26,10 @@ import importlib.util
 import logging
 import sys
 from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import TYPE_CHECKING, List, Optional, Tuple
+
+if TYPE_CHECKING:
+    from agent.memory_provider import MemoryProvider
 
 logger = logging.getLogger(__name__)
 
@@ -51,7 +54,7 @@ def _is_memory_provider_dir(path: Path) -> bool:
     """Heuristic: does *path* look like a memory provider plugin?
 
     Checks for ``register_memory_provider`` or ``MemoryProvider`` in the
-    ``__init__.py`` source.  Cheap text scan — no import needed.
+    ``__init__.py`` source.  Cheap text scan, no import needed.
     """
     init_file = path / "__init__.py"
     if not init_file.exists():
@@ -140,7 +143,7 @@ def discover_memory_providers() -> List[Tuple[str, str, bool]]:
             except Exception:
                 pass
 
-        # Quick availability check — try loading and calling is_available()
+        # Quick availability check, try loading and calling is_available()
         available = True
         try:
             provider = _load_provider_from_dir(child)
@@ -185,8 +188,8 @@ def _load_provider_from_dir(provider_dir: Path) -> Optional["MemoryProvider"]:
     """Import a provider module and extract the MemoryProvider instance.
 
     The module must have either:
-    - A register(ctx) function (plugin-style) — we simulate a ctx
-    - A top-level class that extends MemoryProvider — we instantiate it
+    - A register(ctx) function (plugin-style), we simulate a ctx
+    - A top-level class that extends MemoryProvider, we instantiate it
     """
     name = provider_dir.name
     # Use a separate namespace for user-installed plugins so they don't
@@ -308,7 +311,7 @@ def _get_active_memory_provider() -> Optional[str]:
     """Read the active memory provider name from config.yaml.
 
     Returns the provider name (e.g. ``"honcho"``) or None if no
-    external provider is configured.  Lightweight — only reads config,
+    external provider is configured.  Lightweight, only reads config,
     no plugin loading.
     """
     try:
@@ -320,87 +323,87 @@ def _get_active_memory_provider() -> Optional[str]:
 
 
 def discover_plugin_cli_commands() -> List[dict]:
-    """Return CLI commands for the **active** memory plugin only.
+    """Return CLI commands exposed by memory plugins.
 
-    Only one memory provider can be active at a time (set via
-    ``memory.provider`` in config.yaml).  This function reads that
-    value and only loads CLI registration for the matching plugin.
-    If no provider is active, no commands are registered.
+    The active memory provider may expose a CLI command. A plugin can also set
+    ``cli_always: true`` in ``plugin.yaml`` when its command is needed before it
+    becomes the active provider, for example setup/status helpers.
 
-    Looks for a ``register_cli(subparser)`` function in the active
-    plugin's ``cli.py``.  Returns a list of at most one dict with
-    keys: ``name``, ``help``, ``description``, ``setup_fn``,
-    ``handler_fn``.
-
-    This is a lightweight scan — it only imports ``cli.py``, not the
-    full plugin module.  Safe to call during argparse setup before
-    any provider is loaded.
+    This is a lightweight scan: it imports only ``cli.py``, not the full provider
+    module. Safe to call during argparse setup before any provider is loaded.
     """
     results: List[dict] = []
     if not _MEMORY_PLUGINS_DIR.is_dir():
         return results
 
     active_provider = _get_active_memory_provider()
-    if not active_provider:
-        return results
+    candidates: list[tuple[str, Path]] = []
+    seen: set[str] = set()
 
-    # Only look at the active provider's directory
-    plugin_dir = find_provider_dir(active_provider)
-    if not plugin_dir:
-        return results
-
-    cli_file = plugin_dir / "cli.py"
-    if not cli_file.exists():
-        return results
-
-    _is_bundled = _MEMORY_PLUGINS_DIR in plugin_dir.parents or plugin_dir.parent == _MEMORY_PLUGINS_DIR
-    module_name = f"plugins.memory.{active_provider}.cli" if _is_bundled else f"_hermes_user_memory.{active_provider}.cli"
-    try:
-        # Import the CLI module (lightweight — no SDK needed)
-        if module_name in sys.modules:
-            cli_mod = sys.modules[module_name]
-        else:
-            spec = importlib.util.spec_from_file_location(
-                module_name, str(cli_file)
-            )
-            if not spec or not spec.loader:
-                return results
-            cli_mod = importlib.util.module_from_spec(spec)
-            sys.modules[module_name] = cli_mod
-            spec.loader.exec_module(cli_mod)
-
-        register_cli = getattr(cli_mod, "register_cli", None)
-        if not callable(register_cli):
-            return results
-
-        # Read metadata from plugin.yaml if available
-        help_text = f"Manage {active_provider} memory plugin"
-        description = ""
+    for name, plugin_dir in _iter_provider_dirs():
+        include = name == active_provider
         yaml_file = plugin_dir / "plugin.yaml"
         if yaml_file.exists():
             try:
                 import yaml
                 with open(yaml_file) as f:
                     meta = yaml.safe_load(f) or {}
-                desc = meta.get("description", "")
-                if desc:
-                    help_text = desc
-                    description = desc
+                include = include or bool(meta.get("cli_always"))
             except Exception:
                 pass
+        if include and name not in seen:
+            candidates.append((name, plugin_dir))
+            seen.add(name)
 
-        handler_fn = getattr(cli_mod, f"{active_provider}_command", None) or \
-                     getattr(cli_mod, "honcho_command", None)
+    for provider_name, plugin_dir in candidates:
+        cli_file = plugin_dir / "cli.py"
+        if not cli_file.exists():
+            continue
 
-        results.append({
-            "name": active_provider,
-            "help": help_text,
-            "description": description,
-            "setup_fn": register_cli,
-            "handler_fn": handler_fn,
-            "plugin": active_provider,
-        })
-    except Exception as e:
-        logger.debug("Failed to scan CLI for memory plugin '%s': %s", active_provider, e)
+        _is_bundled = _MEMORY_PLUGINS_DIR in plugin_dir.parents or plugin_dir.parent == _MEMORY_PLUGINS_DIR
+        module_name = f"plugins.memory.{provider_name}.cli" if _is_bundled else f"_hermes_user_memory.{provider_name}.cli"
+        try:
+            if module_name in sys.modules:
+                cli_mod = sys.modules[module_name]
+            else:
+                spec = importlib.util.spec_from_file_location(module_name, str(cli_file))
+                if not spec or not spec.loader:
+                    continue
+                cli_mod = importlib.util.module_from_spec(spec)
+                sys.modules[module_name] = cli_mod
+                spec.loader.exec_module(cli_mod)
+
+            register_cli = getattr(cli_mod, "register_cli", None)
+            if not callable(register_cli):
+                continue
+
+            help_text = f"Manage {provider_name} memory plugin"
+            description = ""
+            yaml_file = plugin_dir / "plugin.yaml"
+            if yaml_file.exists():
+                try:
+                    import yaml
+                    with open(yaml_file) as f:
+                        meta = yaml.safe_load(f) or {}
+                    desc = meta.get("description", "")
+                    if desc:
+                        help_text = desc
+                        description = desc
+                except Exception:
+                    pass
+
+            handler_fn = getattr(cli_mod, f"{provider_name}_command", None) or \
+                         getattr(cli_mod, "honcho_command", None)
+
+            results.append({
+                "name": provider_name,
+                "help": help_text,
+                "description": description,
+                "setup_fn": register_cli,
+                "handler_fn": handler_fn,
+                "plugin": provider_name,
+            })
+        except Exception as e:
+            logger.debug("Failed to scan CLI for memory plugin '%s': %s", provider_name, e)
 
     return results

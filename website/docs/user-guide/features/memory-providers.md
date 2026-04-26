@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
+description: "External memory provider plugins: AgentMemory, Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
 ---
 
 # Memory Providers
 
-Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent ships with external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time. The built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -22,7 +22,7 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
+  provider: agentmemory  # or honcho, openviking, mem0, hindsight, holographic, retaindb, byterover, supermemory
 ```
 
 ## How It Works
@@ -39,6 +39,29 @@ When a memory provider is active, Hermes automatically:
 The built-in memory (MEMORY.md / USER.md) continues to work exactly as before. The external provider is additive.
 
 ## Available Providers
+
+### AgentMemory
+
+Persistent cross-agent project memory for coding agents. AgentMemory captures repository work across sessions, compresses observations into searchable memories, and makes those memories available to Hermes and other MCP or REST-capable agents.
+
+| | |
+|---|---|
+| **Best for** | Codebase memory shared across Hermes, Claude Code, Cursor, OpenCode, Gemini CLI, and other agents |
+| **Requires** | Node.js / `npx`, running AgentMemory server, optional provider hooks |
+| **Data storage** | Local/self-hosted AgentMemory server by default |
+| **Cost** | Free/self-hosted unless you configure external LLM or embedding providers |
+
+**Quick setup:**
+```bash
+npx @agentmemory/agentmemory
+hermes agentmemory setup
+# or, for lifecycle hooks too:
+hermes agentmemory setup --provider
+```
+
+**Tools and integration:** MCP exposes AgentMemory tools via `@agentmemory/mcp`. The memory-provider plugin adds lifecycle hooks for prefetch, turn sync, session end, pre-compression context injection, and mirroring built-in memory writes.
+
+See [AgentMemory](./agentmemory.md) for the detailed guide.
 
 ### Honcho
 

@@ -1090,8 +1090,20 @@ class HonchoMemoryProvider(MemoryProvider):
         )
         self._sync_thread.start()
 
-    def on_memory_write(self, action: str, target: str, content: str) -> None:
-        """Mirror built-in user profile writes as Honcho conclusions."""
+    def on_memory_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Mirror built-in user profile writes as Honcho conclusions.
+
+        ``metadata`` is accepted for compatibility with the write-origin
+        work landed in main (commit 6a957a74); it's not yet threaded into
+        the Honcho conclusion payload.  Left as a follow-up so this PR
+        stays focused on the 7-PR consolidation and its review follow-ups.
+        """
         if action != "add" or target != "user" or not content:
             return
         if self._cron_skipped:

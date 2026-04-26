@@ -219,6 +219,45 @@ def format_report(data: dict[str, Any]) -> str:
                     f"  patches     p50={pct(patches,0.5):.0f}  p99={pct(patches,0.99):.0f}  "
                     f"max={max(patches)}  total={sum(patches)}"
                 )
+            optimized = [
+                f["phases"].get("optimizedPatches", 0)
+                for f in frames if f.get("phases")
+            ]
+            if any(optimized):
+                out.append(
+                    f"  optimized   p50={pct(optimized,0.5):.0f}  p99={pct(optimized,0.99):.0f}  "
+                    f"max={max(optimized)}  total={sum(optimized)}"
+                    f"  (ratio: {sum(optimized)/max(1,sum(patches)):.2f})"
+                )
+
+            # Write bytes + drain telemetry — the outer-terminal bottleneck gauge.
+            bytes_written = [
+                f["phases"].get("writeBytes", 0)
+                for f in frames if f.get("phases")
+            ]
+            if any(bytes_written):
+                total_b = sum(bytes_written)
+                kb = total_b / 1024
+                out.append(
+                    f"  writeBytes  p50={pct(bytes_written,0.5):.0f}B  p99={pct(bytes_written,0.99):.0f}B  "
+                    f"max={max(bytes_written)}B  total={kb:.1f}KB"
+                )
+            drains = [
+                f["phases"].get("prevFrameDrainMs", 0)
+                for f in frames if f.get("phases")
+            ]
+            if any(d > 0 for d in drains):
+                nonzero = [d for d in drains if d > 0]
+                out.append(
+                    f"  drainMs     p50={pct(nonzero,0.5):.2f}  p95={pct(nonzero,0.95):.2f}  "
+                    f"p99={pct(nonzero,0.99):.2f}  max={max(nonzero):.2f}   (terminal flush latency)"
+                )
+            backpressure = sum(1 for f in frames if f.get("phases", {}).get("backpressure"))
+            if backpressure:
+                out.append(
+                    f"  backpressure: {backpressure}/{len(frames)} frames "
+                    f"({100*backpressure/len(frames):.0f}%)   (Node stdout buffer full — terminal slow)"
+                )
 
         # Flickers
         flicker_frames = [f for f in frames if f.get("flickers")]

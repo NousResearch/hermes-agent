@@ -2193,7 +2193,27 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
 
     if configured_base_url:
-        api_key = configured_api_key or os.getenv("OPENAI_API_KEY", "").strip()
+        if configured_api_key:
+            api_key = configured_api_key
+            # Explicit API key → use custom provider (override mode)
+            provider = "custom"
+        elif configured_provider:
+            # No explicit API key → resolve from provider credential chain (issue #15810)
+            try:
+                from hermes_cli.runtime_provider import resolve_runtime_provider
+
+                runtime = resolve_runtime_provider(requested=configured_provider)
+                api_key = runtime.get("api_key", "")
+                # Preserve provider name from credential chain
+                provider = configured_provider
+            except Exception:
+                # Fall back to OPENAI_API_KEY if provider resolution fails
+                api_key = os.getenv("OPENAI_API_KEY", "").strip()
+                provider = "custom"
+        else:
+            api_key = os.getenv("OPENAI_API_KEY", "").strip()
+            provider = "custom"
+
         if not api_key:
             raise ValueError(
                 "Delegation base_url is configured but no API key was found. "
@@ -2201,7 +2221,7 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
             )
 
         base_lower = configured_base_url.lower()
-        provider = "custom"
+        # api_mode defaults to chat_completions; special cases override below
         api_mode = "chat_completions"
         if (
             base_url_hostname(configured_base_url) == "chatgpt.com"

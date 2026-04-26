@@ -674,6 +674,45 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIn("OPENAI_API_KEY", str(ctx.exception))
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_base_url_with_provider_uses_provider_credential_chain(self, mock_resolve):
+        """When delegation.base_url AND provider are both set, use provider credential chain.
+
+        Regression test for #15810: base_url path bypassed provider credential pool
+        and fell back to OPENAI_API_KEY, ignoring provider-specific env vars like
+        MINIMAX_API_KEY. This test verifies that when provider is configured, the
+        API key is resolved via resolve_runtime_provider() from the credential chain.
+        """
+        mock_resolve.return_value = {
+            "provider": "minimax",
+            "base_url": "https://api.minimax.io/anthropic",
+            "api_key": "minimax-key-from-pool",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "model": "minimax-m2.7",
+            "provider": "minimax",
+            "base_url": "https://api.minimax.io/anthropic",
+            "api_key": "",
+        }
+        with patch.dict(
+            os.environ,
+            {
+                "MINIMAX_API_KEY": "env-minimax-key",
+                "OPENAI_API_KEY": "env-openai-key",
+            },
+            clear=False,
+        ):
+            creds = _resolve_delegation_credentials(cfg, parent)
+        # Should use the provider credential chain, not OPENAI_API_KEY
+        self.assertEqual(creds["api_key"], "minimax-key-from-pool")
+        self.assertEqual(creds["provider"], "minimax")
+        self.assertEqual(creds["base_url"], "https://api.minimax.io/anthropic")
+        self.assertEqual(creds["api_mode"], "chat_completions")
+        # Verify that provider resolution was called
+        mock_resolve.assert_called_once_with(requested="minimax")
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_nous_provider_resolves_nous_credentials(self, mock_resolve):
         """Nous provider resolves Nous Portal base_url and api_key."""
         mock_resolve.return_value = {

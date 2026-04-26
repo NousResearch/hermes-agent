@@ -14,6 +14,7 @@ def _make_adapter(
     group_allow_from=None,
     allowed_chats=None,
     guest_mode=None,
+    group_topics=None,
 ):
     from gateway.platforms.telegram import TelegramAdapter
 
@@ -34,6 +35,8 @@ def _make_adapter(
         extra["allowed_chats"] = allowed_chats
     if guest_mode is not None:
         extra["guest_mode"] = guest_mode
+    if group_topics is not None:
+        extra["group_topics"] = group_topics
 
     adapter = object.__new__(TelegramAdapter)
     adapter.platform = Platform.TELEGRAM
@@ -389,3 +392,172 @@ def test_config_bridges_telegram_ignored_threads(monkeypatch, tmp_path):
 
     assert config is not None
     assert __import__("os").environ["TELEGRAM_IGNORED_THREADS"] == "31,42"
+
+
+# ── resolve_topic_allowlist (helper-level) ──────────────────────────────────
+
+
+class TestResolveTopicAllowlist:
+    """Direct tests for the resolve_topic_allowlist helper."""
+
+    def test_returns_none_when_extra_is_not_a_dict(self):
+        from gateway.platforms.telegram import resolve_topic_allowlist
+
+        assert resolve_topic_allowlist(None, "-100") is None
+        assert resolve_topic_allowlist("not a dict", "-100") is None
+
+    def test_returns_none_when_no_group_topics(self):
+        from gateway.platforms.telegram import resolve_topic_allowlist
+
+        assert resolve_topic_allowlist({}, "-100") is None
+        assert resolve_topic_allowlist({"group_topics": None}, "-100") is None
+
+    def test_returns_none_when_chat_id_not_found(self):
+        from gateway.platforms.telegram import resolve_topic_allowlist
+
+        extra = {"group_topics": [{"chat_id": -200, "strict": True, "topics": [{"thread_id": 1}]}]}
+        assert resolve_topic_allowlist(extra, "-100") is None
+
+    def test_returns_none_when_strict_missing(self):
+        from gateway.platforms.telegram import resolve_topic_allowlist
+
+        extra = {"group_topics": [{"chat_id": -100, "topics": [{"thread_id": 5}]}]}
+        assert resolve_topic_allowlist(extra, "-100") is None
+
+    def test_returns_none_when_strict_false(self):
+        from gateway.platforms.telegram import resolve_topic_allowlist
+
+        extra = {"group_topics": [{"chat_id": -100, "strict": False, "topics": [{"thread_id": 5}]}]}
+        assert resolve_topic_allowlist(extra, "-100") is None
+
+    def test_returns_thread_ids_as_strings_when_strict(self):
+        from gateway.platforms.telegram import resolve_topic_allowlist
+
+        extra = {
+            "group_topics": [
+                {
+                    "chat_id": -100,
+                    "strict": True,
+                    "topics": [
+                        {"name": "General", "thread_id": 1},
+                        {"name": "ops", "thread_id": "7"},
+                    ],
+                }
+            ]
+        }
+        assert resolve_topic_allowlist(extra, "-100") == {"1", "7"}
+
+    def test_returns_empty_set_when_strict_with_no_topics(self):
+        """Empty set vs None matters: empty means 'strict policy, nothing allowed' (rejects all)."""
+        from gateway.platforms.telegram import resolve_topic_allowlist
+
+        # Explicit empty list
+        extra_empty = {"group_topics": [{"chat_id": -100, "strict": True, "topics": []}]}
+        assert resolve_topic_allowlist(extra_empty, "-100") == set()
+
+        # `topics` key entirely absent — same outcome (strict policy, nothing allowed).
+        # Documents the behavior so a future refactor doesn't quietly switch to None.
+        # User foot-gun: writing `{chat_id: -100, strict: true}` rejects ALL threads.
+        extra_absent = {"group_topics": [{"chat_id": -100, "strict": True}]}
+        assert resolve_topic_allowlist(extra_absent, "-100") == set()
+
+    def test_chat_id_string_int_coercion(self):
+        from gateway.platforms.telegram import resolve_topic_allowlist
+
+        # Integer in config, string lookup
+        extra_int = {"group_topics": [{"chat_id": -100, "strict": True, "topics": [{"thread_id": 5}]}]}
+        assert resolve_topic_allowlist(extra_int, "-100") == {"5"}
+
+        # String in config, integer-string lookup
+        extra_str = {"group_topics": [{"chat_id": "-100", "strict": True, "topics": [{"thread_id": 5}]}]}
+        assert resolve_topic_allowlist(extra_str, "-100") == {"5"}
+
+    def test_skips_malformed_entries_gracefully(self):
+        from gateway.platforms.telegram import resolve_topic_allowlist
+
+        extra = {
+            "group_topics": [
+                "not a dict",
+                {"chat_id": -100, "strict": True, "topics": [
+                    {"thread_id": 7},
+                    "not a dict",
+                    {"name": "no thread_id"},
+                    {"thread_id": None},
+                ]},
+            ]
+        }
+        assert resolve_topic_allowlist(extra, "-100") == {"7"}
+
+
+# ── _should_process_message wired with strict allowlist ─────────────────────
+
+
+class TestStrictAllowlistGating:
+    """Integration tests via _should_process_message — the actual gating path."""
+
+    def test_strict_false_or_missing_accepts_all_threads(self):
+        # Backward compat: existing configs without `strict` keep current behavior.
+        gt = [{"chat_id": -100, "topics": [{"thread_id": 7}]}]
+        adapter = _make_adapter(require_mention=False, group_topics=gt)
+        assert adapter._should_process_message(_group_message(chat_id=-100, thread_id=99)) is True
+        assert adapter._should_process_message(_group_message(chat_id=-100, thread_id=7)) is True
+
+    def test_strict_true_rejects_unlisted_threads(self):
+        gt = [{"chat_id": -100, "strict": True, "topics": [{"thread_id": 7}, {"thread_id": 8}]}]
+        adapter = _make_adapter(require_mention=False, group_topics=gt)
+        assert adapter._should_process_message(_group_message(chat_id=-100, thread_id=7)) is True
+        assert adapter._should_process_message(_group_message(chat_id=-100, thread_id=8)) is True
+        assert adapter._should_process_message(_group_message(chat_id=-100, thread_id=9)) is False
+
+    def test_strict_only_applies_to_its_chat(self):
+        # foreman-style multi-chat profile: strict in 7stars, lax in ai-villa.
+        gt = [
+            {"chat_id": -100, "strict": True, "topics": [{"thread_id": 7}]},
+            {"chat_id": -200, "topics": [{"thread_id": 5}]},
+        ]
+        adapter = _make_adapter(require_mention=False, group_topics=gt)
+        # Strict chat
+        assert adapter._should_process_message(_group_message(chat_id=-100, thread_id=99)) is False
+        # Non-strict chat — accept anything
+        assert adapter._should_process_message(_group_message(chat_id=-200, thread_id=99)) is True
+
+    def test_strict_does_not_apply_to_messages_without_thread_id(self):
+        # Non-forum messages or General-without-thread bypass strict (no thread to check).
+        gt = [{"chat_id": -100, "strict": True, "topics": [{"thread_id": 7}]}]
+        adapter = _make_adapter(require_mention=False, group_topics=gt)
+        assert adapter._should_process_message(_group_message(chat_id=-100, thread_id=None)) is True
+
+    def test_strict_combines_with_ignored_threads(self):
+        # Both denylist (global) and allowlist (per-chat) — either rejects.
+        gt = [{"chat_id": -100, "strict": True, "topics": [{"thread_id": 7}, {"thread_id": 8}]}]
+        adapter = _make_adapter(require_mention=False, ignored_threads=[7], group_topics=gt)
+        assert adapter._should_process_message(_group_message(chat_id=-100, thread_id=7)) is False  # denylist wins
+        assert adapter._should_process_message(_group_message(chat_id=-100, thread_id=8)) is True   # allowlisted, not denied
+        assert adapter._should_process_message(_group_message(chat_id=-100, thread_id=99)) is False # not allowlisted
+
+    def test_strict_with_require_mention_true_still_filters_threads(self):
+        # Strict happens before mention check — unlisted thread rejected even with mention.
+        gt = [{"chat_id": -100, "strict": True, "topics": [{"thread_id": 7}]}]
+        adapter = _make_adapter(require_mention=True, group_topics=gt)
+        msg = _group_message("hi @hermes_bot", chat_id=-100, thread_id=99,
+                             entities=[_mention_entity("hi @hermes_bot")])
+        assert adapter._should_process_message(msg) is False
+        # Listed thread + mention → accepted as expected
+        msg_ok = _group_message("hi @hermes_bot", chat_id=-100, thread_id=7,
+                                entities=[_mention_entity("hi @hermes_bot")])
+        assert adapter._should_process_message(msg_ok) is True
+
+    def test_strict_with_free_response_chats_still_filters(self):
+        # free_response_chats bypasses require_mention but NOT strict allowlist
+        # (otherwise strict would be useless against the very chats that need it).
+        gt = [{"chat_id": -100, "strict": True, "topics": [{"thread_id": 7}]}]
+        adapter = _make_adapter(require_mention=True, free_response_chats=["-100"], group_topics=gt)
+        assert adapter._should_process_message(_group_message(chat_id=-100, thread_id=99)) is False
+        assert adapter._should_process_message(_group_message(chat_id=-100, thread_id=7)) is True
+
+    def test_strict_with_empty_topics_rejects_all_threads(self):
+        # Edge case: strict policy declared but no topics listed = bot accepts no thread.
+        gt = [{"chat_id": -100, "strict": True, "topics": []}]
+        adapter = _make_adapter(require_mention=False, group_topics=gt)
+        assert adapter._should_process_message(_group_message(chat_id=-100, thread_id=1)) is False
+        assert adapter._should_process_message(_group_message(chat_id=-100, thread_id=99)) is False

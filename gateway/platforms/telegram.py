@@ -313,6 +313,53 @@ def _wrap_markdown_tables(text: str) -> str:
     return '\n'.join(out)
 
 
+def resolve_topic_allowlist(
+    extra: dict,
+    chat_id: str,
+) -> set[str] | None:
+    """Resolve the allowlisted thread_ids for a chat from group_topics config.
+
+    Walks ``extra.group_topics`` for the entry matching ``chat_id``. If that
+    entry has ``strict: true``, returns the set of thread_ids declared under
+    its ``topics`` list (as strings). If ``strict`` is missing/false, or no
+    entry matches, returns ``None`` — meaning *no allowlist applies* and the
+    caller accepts all threads (default permissive behavior).
+
+    Returning ``None`` (no policy) vs an empty ``set`` (strict but empty) is
+    intentional: the caller must distinguish "this chat has no strict policy"
+    from "strict policy with no allowed threads".
+
+    Both ``chat_id`` and configured chat_ids are compared as strings to
+    tolerate int-typed YAML keys, matching the pattern used by
+    ``_event_from_message`` when matching ``group_topics`` entries.
+    """
+    if not isinstance(extra, dict):
+        return None
+    group_topics = extra.get("group_topics") or []
+    if not isinstance(group_topics, list):
+        return None
+    for group in group_topics:
+        if not isinstance(group, dict):
+            continue
+        if str(group.get("chat_id")) != str(chat_id):
+            continue
+        if not group.get("strict"):
+            return None
+        topics = group.get("topics") or []
+        if not isinstance(topics, list):
+            return set()
+        allowed: set[str] = set()
+        for topic in topics:
+            if not isinstance(topic, dict):
+                continue
+            tid = topic.get("thread_id")
+            if tid is None:
+                continue
+            allowed.add(str(tid))
+        return allowed
+    return None
+
+
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
@@ -3954,19 +4001,33 @@ class TelegramAdapter(BasePlatformAdapter):
         the Telegram bot menu (``/command@botname``) or by explicitly
         mentioning the bot (``@botname /command``), both of which are
         recognised as mentions by :meth:`_message_mentions_bot`.
+
+        Messages in forum threads are additionally subject to ``ignored_threads``
+        (a global denylist) and per-chat strict ``group_topics`` allowlists
+        (when an entry sets ``strict: true``). The strict allowlist lets
+        multiple bots co-tenant in a forum supergroup with
+        ``require_mention: false`` without cross-talk. Messages without a
+        ``thread_id`` (non-forum groups, or forum General when Telegram
+        omits the field) bypass both thread-level filters.
         """
         if not self._is_group_chat(message):
             return True
 
         thread_id = getattr(message, "message_thread_id", None)
+        chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
         if thread_id is not None:
             try:
                 if int(thread_id) in self._telegram_ignored_threads():
                     return False
             except (TypeError, ValueError):
-                logger.warning("[%s] Ignoring non-numeric Telegram message_thread_id: %r", self.name, thread_id)
-
-        chat_id_str = str(getattr(getattr(message, "chat", None), "id", ""))
+                logger.warning(
+                    "[%s] Non-numeric Telegram message_thread_id %r — skipping ignored_threads "
+                    "check; strict allowlist and other gates still apply",
+                    self.name, thread_id,
+                )
+            allowlist = resolve_topic_allowlist(self.config.extra, chat_id_str)
+            if allowlist is not None and str(thread_id) not in allowlist:
+                return False
 
         # Resolve guest-mode mention bypass once so _message_mentions_bot
         # is not called redundantly in the normal flow below.

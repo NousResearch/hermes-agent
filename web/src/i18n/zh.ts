@@ -238,6 +238,16 @@ export const zh: Translations = {
     activate: "设为活动",
     rename: "重命名",
     exportAction: "导出",
+    editConfig: "编辑配置档",
+    modelSection: "模型",
+    modelSlug: "模型",
+    modelSlugPlaceholder: "例如：moonshotai/kimi-k2.6",
+    modelProvider: "服务商",
+    modelProviderPlaceholder: "例如：nous、openrouter、openai",
+    saveModel: "保存模型",
+    soulSection: "SOUL.md（人格 / 系统提示词）",
+    soulPlaceholder: "# 这个代理应当如何工作……",
+    saveSoul: "保存 SOUL",
     confirmDeleteTitle: "删除配置档？",
     confirmDeleteMessage:
       "将永久删除配置档 '{name}' — 包括配置、密钥、记忆、会话、技能、定时任务。此操作无法撤销。",
@@ -247,6 +257,8 @@ export const zh: Translations = {
     activated: "活动配置档",
     exported: "已导出至",
     imported: "已导入",
+    soulSaved: "SOUL.md 已保存",
+    modelSaved: "模型已保存",
   },
 
   skills: {

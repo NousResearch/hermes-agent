@@ -245,6 +245,16 @@ export interface Translations {
     activate: string;
     rename: string;
     exportAction: string;
+    editConfig: string;
+    modelSection: string;
+    modelSlug: string;
+    modelSlugPlaceholder: string;
+    modelProvider: string;
+    modelProviderPlaceholder: string;
+    saveModel: string;
+    soulSection: string;
+    soulPlaceholder: string;
+    saveSoul: string;
     confirmDeleteTitle: string;
     confirmDeleteMessage: string;
     created: string;
@@ -253,6 +263,8 @@ export interface Translations {
     activated: string;
     exported: string;
     imported: string;
+    soulSaved: string;
+    modelSaved: string;
   };
 
   // ── Skills page ──

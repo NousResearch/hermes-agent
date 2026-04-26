@@ -1,9 +1,12 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   CheckCircle2,
+  ChevronDown,
+  ChevronRight,
   Download,
   Pencil,
   Plus,
+  Settings2,
   Trash2,
   Upload,
   Users,
@@ -44,6 +47,73 @@ export default function ProfilesPage() {
   const [importPath, setImportPath] = useState("");
   const [importName, setImportName] = useState("");
   const [importing, setImporting] = useState(false);
+
+  // Per-profile edit panel: which profile is expanded + cached form state.
+  const [editingName, setEditingName] = useState<string | null>(null);
+  const [soulText, setSoulText] = useState("");
+  const [soulSaving, setSoulSaving] = useState(false);
+  const [modelDraft, setModelDraft] = useState<{ model: string; provider: string }>({
+    model: "",
+    provider: "",
+  });
+  const [modelSaving, setModelSaving] = useState(false);
+
+  const openEditor = useCallback(
+    async (name: string) => {
+      // Toggle off if clicking the already-open row.
+      if (editingName === name) {
+        setEditingName(null);
+        return;
+      }
+      setEditingName(name);
+      setSoulText("");
+      setModelDraft({ model: "", provider: "" });
+      try {
+        const [soul, model] = await Promise.all([
+          api.getProfileSoul(name),
+          api.getProfileModel(name),
+        ]);
+        setSoulText(soul.content);
+        setModelDraft({
+          model: model.model ?? "",
+          provider: model.provider ?? "",
+        });
+      } catch (e) {
+        showToast(`${t.status.error}: ${e}`, "error");
+      }
+    },
+    [editingName, showToast, t.status.error],
+  );
+
+  const handleSaveSoul = async (name: string) => {
+    setSoulSaving(true);
+    try {
+      await api.updateProfileSoul(name, soulText);
+      showToast(`${t.profiles.soulSaved}: ${name}`, "success");
+    } catch (e) {
+      showToast(`${t.status.error}: ${e}`, "error");
+    } finally {
+      setSoulSaving(false);
+    }
+  };
+
+  const handleSaveModel = async (name: string) => {
+    setModelSaving(true);
+    try {
+      const res = await api.updateProfileModel(name, {
+        model: modelDraft.model.trim() || null,
+        provider: modelDraft.provider.trim() || null,
+      });
+      showToast(`${t.profiles.modelSaved}: ${name}`, "success");
+      // Reflect normalised values back so the row's badge / display refresh.
+      setModelDraft({ model: res.model ?? "", provider: res.provider ?? "" });
+      load();
+    } catch (e) {
+      showToast(`${t.status.error}: ${e}`, "error");
+    } finally {
+      setModelSaving(false);
+    }
+  };
 
   const load = useCallback(() => {
     api
@@ -337,6 +407,7 @@ export default function ProfilesPage() {
         {profiles.map((p) => {
           const isActive = p.name === active;
           const isRenaming = renamingFrom === p.name;
+          const isEditing = editingName === p.name;
           return (
             <Card key={p.name}>
               <CardContent className="flex items-center gap-4 py-4">
@@ -421,6 +492,19 @@ export default function ProfilesPage() {
                       <Button
                         variant="ghost"
                         size="icon"
+                        title={t.profiles.editConfig}
+                        aria-label={t.profiles.editConfig}
+                        onClick={() => openEditor(p.name)}
+                      >
+                        {isEditing ? (
+                          <ChevronDown className="h-4 w-4" />
+                        ) : (
+                          <Settings2 className="h-4 w-4" />
+                        )}
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="icon"
                         title={t.profiles.exportAction}
                         aria-label={t.profiles.exportAction}
                         onClick={() => handleExport(p.name)}
@@ -456,6 +540,79 @@ export default function ProfilesPage() {
                   )}
                 </div>
               </CardContent>
+
+              {isEditing && (
+                <div className="border-t border-border px-4 pb-4 pt-3 flex flex-col gap-4">
+                  <div className="grid gap-2">
+                    <Label className="flex items-center gap-2 text-xs uppercase tracking-wider text-muted-foreground">
+                      <ChevronRight className="h-3 w-3" />
+                      {t.profiles.modelSection}
+                    </Label>
+                    <div className="grid grid-cols-1 sm:grid-cols-3 gap-3">
+                      <div className="grid gap-1 sm:col-span-2">
+                        <Label htmlFor={`profile-${p.name}-model`}>
+                          {t.profiles.modelSlug}
+                        </Label>
+                        <Input
+                          id={`profile-${p.name}-model`}
+                          placeholder={t.profiles.modelSlugPlaceholder}
+                          value={modelDraft.model}
+                          onChange={(e) =>
+                            setModelDraft({ ...modelDraft, model: e.target.value })
+                          }
+                        />
+                      </div>
+                      <div className="grid gap-1">
+                        <Label htmlFor={`profile-${p.name}-provider`}>
+                          {t.profiles.modelProvider}
+                        </Label>
+                        <Input
+                          id={`profile-${p.name}-provider`}
+                          placeholder={t.profiles.modelProviderPlaceholder}
+                          value={modelDraft.provider}
+                          onChange={(e) =>
+                            setModelDraft({
+                              ...modelDraft,
+                              provider: e.target.value,
+                            })
+                          }
+                        />
+                      </div>
+                    </div>
+                    <div>
+                      <Button
+                        size="sm"
+                        onClick={() => handleSaveModel(p.name)}
+                        disabled={modelSaving}
+                      >
+                        {modelSaving ? t.common.saving : t.profiles.saveModel}
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div className="grid gap-2">
+                    <Label className="flex items-center gap-2 text-xs uppercase tracking-wider text-muted-foreground">
+                      <ChevronRight className="h-3 w-3" />
+                      {t.profiles.soulSection}
+                    </Label>
+                    <textarea
+                      className="flex min-h-[180px] w-full border border-input bg-transparent px-3 py-2 text-sm font-mono shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                      placeholder={t.profiles.soulPlaceholder}
+                      value={soulText}
+                      onChange={(e) => setSoulText(e.target.value)}
+                    />
+                    <div>
+                      <Button
+                        size="sm"
+                        onClick={() => handleSaveSoul(p.name)}
+                        disabled={soulSaving}
+                      >
+                        {soulSaving ? t.common.saving : t.profiles.saveSoul}
+                      </Button>
+                    </div>
+                  </div>
+                </div>
+              )}
             </Card>
           );
         })}

@@ -175,6 +175,35 @@ export const api = {
         body: JSON.stringify({ archive_path: archivePath, name: name ?? null }),
       },
     ),
+  getProfileSoul: (name: string) =>
+    fetchJSON<{ content: string; exists: boolean; path: string }>(
+      `/api/profiles/${encodeURIComponent(name)}/soul`,
+    ),
+  updateProfileSoul: (name: string, content: string) =>
+    fetchJSON<{ ok: boolean; path: string }>(
+      `/api/profiles/${encodeURIComponent(name)}/soul`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      },
+    ),
+  getProfileModel: (name: string) =>
+    fetchJSON<{ model: string | null; provider: string | null }>(
+      `/api/profiles/${encodeURIComponent(name)}/model`,
+    ),
+  updateProfileModel: (
+    name: string,
+    body: { model: string | null; provider: string | null },
+  ) =>
+    fetchJSON<{ ok: boolean; model: string | null; provider: string | null }>(
+      `/api/profiles/${encodeURIComponent(name)}/model`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(body),
+      },
+    ),
 
   // Skills & Toolsets
   getSkills: () => fetchJSON<SkillInfo[]>("/api/skills"),

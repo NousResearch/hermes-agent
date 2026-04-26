@@ -2267,6 +2267,121 @@ async def import_profile_endpoint(body: ProfileImport):
 
 
 # ---------------------------------------------------------------------------
+# Per-profile SOUL.md and model config (used by the Profiles dashboard page)
+# ---------------------------------------------------------------------------
+
+
+class ProfileSoulUpdate(BaseModel):
+    content: str
+
+
+class ProfileModelUpdate(BaseModel):
+    model: Optional[str] = None
+    provider: Optional[str] = None
+
+
+def _resolve_profile_dir(name: str) -> Path:
+    """Resolve a profile name to its directory or raise an HTTPException."""
+    from hermes_cli import profiles as profiles_mod
+    try:
+        profiles_mod.validate_profile_name(name)
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    if not profiles_mod.profile_exists(name):
+        raise HTTPException(status_code=404, detail=f"Profile '{name}' does not exist.")
+    return profiles_mod.get_profile_dir(name)
+
+
+@app.get("/api/profiles/{name}/soul")
+async def get_profile_soul(name: str):
+    profile_dir = _resolve_profile_dir(name)
+    soul_path = profile_dir / "SOUL.md"
+    if soul_path.exists():
+        try:
+            content = soul_path.read_text(encoding="utf-8")
+        except OSError as e:
+            raise HTTPException(status_code=500, detail=f"Could not read SOUL.md: {e}")
+        return {"content": content, "exists": True, "path": str(soul_path)}
+    return {"content": "", "exists": False, "path": str(soul_path)}
+
+
+@app.put("/api/profiles/{name}/soul")
+async def update_profile_soul(name: str, body: ProfileSoulUpdate):
+    profile_dir = _resolve_profile_dir(name)
+    soul_path = profile_dir / "SOUL.md"
+    try:
+        soul_path.write_text(body.content, encoding="utf-8")
+    except OSError as e:
+        _log.exception("PUT /api/profiles/%s/soul failed", name)
+        raise HTTPException(status_code=500, detail=f"Could not write SOUL.md: {e}")
+    return {"ok": True, "path": str(soul_path)}
+
+
+@app.get("/api/profiles/{name}/model")
+async def get_profile_model(name: str):
+    from hermes_cli.profiles import _read_config_model
+    profile_dir = _resolve_profile_dir(name)
+    model, provider = _read_config_model(profile_dir)
+    return {"model": model, "provider": provider}
+
+
+@app.put("/api/profiles/{name}/model")
+async def update_profile_model(name: str, body: ProfileModelUpdate):
+    from utils import atomic_yaml_write
+    profile_dir = _resolve_profile_dir(name)
+    config_path = profile_dir / "config.yaml"
+
+    if config_path.exists():
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                cfg = yaml.safe_load(f) or {}
+        except (yaml.YAMLError, OSError) as e:
+            raise HTTPException(status_code=500, detail=f"Could not read config.yaml: {e}")
+    else:
+        cfg = {}
+    if not isinstance(cfg, dict):
+        raise HTTPException(status_code=500, detail="config.yaml is not a mapping at the root")
+
+    # Normalise legacy `model: "<slug>"` string form into dict form before mutating.
+    existing_model = cfg.get("model")
+    if isinstance(existing_model, str):
+        model_block: Dict[str, Any] = {"default": existing_model}
+    elif isinstance(existing_model, dict):
+        model_block = dict(existing_model)
+    else:
+        model_block = {}
+
+    new_model = (body.model or "").strip()
+    new_provider = (body.provider or "").strip()
+
+    if new_model:
+        model_block["default"] = new_model
+        # Drop the legacy ``model.model`` key if present so we don't keep two
+        # sources of truth in the same file.
+        model_block.pop("model", None)
+    else:
+        model_block.pop("default", None)
+        model_block.pop("model", None)
+
+    if new_provider:
+        model_block["provider"] = new_provider
+    else:
+        model_block.pop("provider", None)
+
+    if model_block:
+        cfg["model"] = model_block
+    else:
+        cfg.pop("model", None)
+
+    try:
+        atomic_yaml_write(config_path, cfg)
+    except OSError as e:
+        _log.exception("PUT /api/profiles/%s/model failed", name)
+        raise HTTPException(status_code=500, detail=f"Could not write config.yaml: {e}")
+    return {"ok": True, "model": new_model or None, "provider": new_provider or None}
+
+
+# ---------------------------------------------------------------------------
 # Skills & Tools endpoints
 # ---------------------------------------------------------------------------
 

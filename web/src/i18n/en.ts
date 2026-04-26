@@ -242,6 +242,16 @@ export const en: Translations = {
     activate: "Set active",
     rename: "Rename",
     exportAction: "Export",
+    editConfig: "Edit profile",
+    modelSection: "Model",
+    modelSlug: "Model",
+    modelSlugPlaceholder: "e.g. moonshotai/kimi-k2.6",
+    modelProvider: "Provider",
+    modelProviderPlaceholder: "e.g. nous, openrouter, openai",
+    saveModel: "Save model",
+    soulSection: "SOUL.md (personality / system prompt)",
+    soulPlaceholder: "# How this agent should behave…",
+    saveSoul: "Save SOUL",
     confirmDeleteTitle: "Delete profile?",
     confirmDeleteMessage:
       "This permanently deletes profile '{name}' — config, keys, memories, sessions, skills, cron jobs. Cannot be undone.",
@@ -251,6 +261,8 @@ export const en: Translations = {
     activated: "Active profile",
     exported: "Exported to",
     imported: "Imported",
+    soulSaved: "SOUL.md saved",
+    modelSaved: "Model saved",
   },
 
   skills: {

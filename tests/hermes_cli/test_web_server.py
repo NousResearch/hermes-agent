@@ -693,6 +693,103 @@ class TestNewEndpoints:
         resp = self.client.post("/api/profiles/no-such-profile/activate")
         assert resp.status_code == 400
 
+    def test_profile_soul_round_trip(self, monkeypatch):
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "_cleanup_gateway_service", lambda *a, **kw: None)
+
+        self.client.post("/api/profiles", json={"name": "soul-prof"})
+
+        # Initial GET — profile created with seeded SOUL.md, so exists=True.
+        get1 = self.client.get("/api/profiles/soul-prof/soul")
+        assert get1.status_code == 200
+        assert get1.json()["exists"] is True
+
+        put = self.client.put(
+            "/api/profiles/soul-prof/soul",
+            json={"content": "# Edited\n\nThis is the new soul."},
+        )
+        assert put.status_code == 200
+
+        get2 = self.client.get("/api/profiles/soul-prof/soul")
+        assert get2.status_code == 200
+        assert get2.json()["content"] == "# Edited\n\nThis is the new soul."
+
+        self.client.delete("/api/profiles/soul-prof")
+
+    def test_profile_soul_unknown_profile_404(self):
+        resp = self.client.get("/api/profiles/nonexistent/soul")
+        assert resp.status_code == 404
+        resp = self.client.put(
+            "/api/profiles/nonexistent/soul",
+            json={"content": "x"},
+        )
+        assert resp.status_code == 404
+
+    def test_profile_model_round_trip(self, monkeypatch):
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "_cleanup_gateway_service", lambda *a, **kw: None)
+
+        self.client.post("/api/profiles", json={"name": "model-prof"})
+
+        put = self.client.put(
+            "/api/profiles/model-prof/model",
+            json={"model": "test-org/test-model", "provider": "openrouter"},
+        )
+        assert put.status_code == 200
+
+        got = self.client.get("/api/profiles/model-prof/model").json()
+        assert got["model"] == "test-org/test-model"
+        assert got["provider"] == "openrouter"
+
+        # Second write should overwrite, not append.
+        self.client.put(
+            "/api/profiles/model-prof/model",
+            json={"model": "another/model", "provider": None},
+        )
+        got2 = self.client.get("/api/profiles/model-prof/model").json()
+        assert got2["model"] == "another/model"
+        assert got2["provider"] is None
+
+        # Empty model + empty provider clears the model block entirely.
+        self.client.put(
+            "/api/profiles/model-prof/model",
+            json={"model": "", "provider": ""},
+        )
+        got3 = self.client.get("/api/profiles/model-prof/model").json()
+        assert got3["model"] is None
+        assert got3["provider"] is None
+
+        self.client.delete("/api/profiles/model-prof")
+
+    def test_profile_model_normalises_legacy_string_form(self, monkeypatch):
+        # Some profiles still ship the legacy ``model: "<slug>"`` string form
+        # at the root of config.yaml. The PUT must rewrite it as a dict
+        # without losing other top-level keys (we use `terminal:` as a
+        # canary because it is a known DEFAULT_CONFIG section).
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "_cleanup_gateway_service", lambda *a, **kw: None)
+
+        self.client.post("/api/profiles", json={"name": "legacy-model-prof"})
+        config_path = profiles_mod.get_profile_dir("legacy-model-prof") / "config.yaml"
+        config_path.write_text(
+            "model: legacy-string-slug\nterminal:\n  cwd: /tmp\n",
+            encoding="utf-8",
+        )
+
+        self.client.put(
+            "/api/profiles/legacy-model-prof/model",
+            json={"model": "shiny/new-slug", "provider": "nous"},
+        )
+
+        import yaml as _yaml
+        with open(config_path, encoding="utf-8") as f:
+            cfg = _yaml.safe_load(f)
+        assert cfg["model"] == {"default": "shiny/new-slug", "provider": "nous"}
+        # Sibling sections must survive the rewrite.
+        assert cfg["terminal"] == {"cwd": "/tmp"}
+
+        self.client.delete("/api/profiles/legacy-model-prof")
+
     def test_skills_list(self):
         resp = self.client.get("/api/skills")
         assert resp.status_code == 200

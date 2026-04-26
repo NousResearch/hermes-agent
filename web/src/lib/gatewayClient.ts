@@ -32,7 +32,6 @@ export type GatewayEventName =
   | "sudo.request"
   | "secret.request"
   | "background.complete"
-  | "btw.complete"
   | "error"
   | "skin.changed"
   | (string & {});

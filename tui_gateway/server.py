@@ -2550,48 +2550,6 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"task_id": task_id})
 
 
-@method("prompt.btw")
-def _(rid, params: dict) -> dict:
-    session, err = _sess(params, rid)
-    if err:
-        return err
-    text, sid = params.get("text", ""), params.get("session_id", "")
-    if not text:
-        return _err(rid, 4012, "text required")
-    snapshot = list(session.get("history", []))
-
-    def run():
-        session_tokens = _set_session_context(session["session_key"])
-        try:
-            from run_agent import AIAgent
-
-            result = AIAgent(
-                model=_resolve_model(),
-                quiet_mode=True,
-                platform="tui",
-                max_iterations=8,
-                enabled_toolsets=[],
-            ).run_conversation(text, conversation_history=snapshot)
-            _emit(
-                "btw.complete",
-                sid,
-                {
-                    "text": (
-                        result.get("final_response", str(result))
-                        if isinstance(result, dict)
-                        else str(result)
-                    )
-                },
-            )
-        except Exception as e:
-            _emit("btw.complete", sid, {"text": f"error: {e}"})
-        finally:
-            _clear_session_context(session_tokens)
-
-    threading.Thread(target=run, daemon=True).start()
-    return _ok(rid, {"status": "running"})
-
-
 # ── Methods: respond ─────────────────────────────────────────────────
 
 

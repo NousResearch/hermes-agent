@@ -6129,8 +6129,6 @@ class HermesCLI:
             self._handle_agents_command()
         elif canonical == "background":
             self._handle_background_command(cmd_original)
-        elif canonical == "btw":
-            self._handle_btw_command(cmd_original)
         elif canonical == "queue":
             # Extract prompt after "/queue " or "/q "
             parts = cmd_original.split(None, 1)
@@ -6415,122 +6413,6 @@ class HermesCLI:
 
         thread = threading.Thread(target=run_background, daemon=True, name=f"bg-task-{task_id}")
         self._background_tasks[task_id] = thread
-        thread.start()
-
-    def _handle_btw_command(self, cmd: str):
-        """Handle /btw <question> — ephemeral side question using session context.
-
-        Snapshots the current conversation history, spawns a no-tools agent in
-        a background thread, and prints the answer without persisting anything
-        to the main session.
-        """
-        parts = cmd.strip().split(maxsplit=1)
-        if len(parts) < 2 or not parts[1].strip():
-            _cprint("  Usage: /btw <question>")
-            _cprint("  Example: /btw what module owns session title sanitization?")
-            _cprint("  Answers using session context. No tools, not persisted.")
-            return
-
-        question = parts[1].strip()
-        task_id = f"btw_{datetime.now().strftime('%H%M%S')}_{uuid.uuid4().hex[:6]}"
-
-        if not self._ensure_runtime_credentials():
-            _cprint("  (>_<) Cannot start /btw: no valid credentials.")
-            return
-
-        turn_route = self._resolve_turn_agent_config(question)
-        history_snapshot = list(self.conversation_history)
-
-        preview = question[:60] + ("..." if len(question) > 60 else "")
-        _cprint(f'  💬 /btw: "{preview}"')
-
-        def run_btw():
-            try:
-                btw_agent = AIAgent(
-                    model=turn_route["model"],
-                    api_key=turn_route["runtime"].get("api_key"),
-                    base_url=turn_route["runtime"].get("base_url"),
-                    provider=turn_route["runtime"].get("provider"),
-                    api_mode=turn_route["runtime"].get("api_mode"),
-                    acp_command=turn_route["runtime"].get("command"),
-                    acp_args=turn_route["runtime"].get("args"),
-                    max_iterations=8,
-                    enabled_toolsets=[],
-                    quiet_mode=True,
-                    verbose_logging=False,
-                    session_id=task_id,
-                    platform="cli",
-                    reasoning_config=self.reasoning_config,
-                    service_tier=self.service_tier,
-                    request_overrides=turn_route.get("request_overrides"),
-                    providers_allowed=self._providers_only,
-                    providers_ignored=self._providers_ignore,
-                    providers_order=self._providers_order,
-                    provider_sort=self._provider_sort,
-                    provider_require_parameters=self._provider_require_params,
-                    provider_data_collection=self._provider_data_collection,
-                    fallback_model=self._fallback_model,
-                    session_db=None,
-                    skip_memory=True,
-                    skip_context_files=True,
-                    persist_session=False,
-                )
-
-                btw_prompt = (
-                    "[Ephemeral /btw side question. Answer using the conversation "
-                    "context. No tools available. Be direct and concise.]\n\n"
-                    + question
-                )
-                result = btw_agent.run_conversation(
-                    user_message=btw_prompt,
-                    conversation_history=history_snapshot,
-                    task_id=task_id,
-                )
-
-                response = (result.get("final_response") or "") if result else ""
-                if not response and result and result.get("error"):
-                    response = f"Error: {result['error']}"
-
-                # TUI refresh before printing
-                if self._app:
-                    self._app.invalidate()
-                    time.sleep(0.05)
-                print()
-
-                if response:
-                    try:
-                        from hermes_cli.skin_engine import get_active_skin
-                        _skin = get_active_skin()
-                        _resp_color = _skin.get_color("response_border", "#4F6D4A")
-                    except Exception:
-                        _resp_color = "#4F6D4A"
-
-                    ChatConsole().print(Panel(
-                        _render_final_assistant_content(response, mode=self.final_response_markdown),
-                        title=f"[{_resp_color} bold]⚕ /btw[/]",
-                        title_align="left",
-                        border_style=_resp_color,
-                        box=rich_box.HORIZONTALS,
-                        padding=(1, 4),
-                    ))
-                else:
-                    _cprint("  💬 /btw: (no response)")
-
-                if self.bell_on_complete:
-                    sys.stdout.write("\a")
-                    sys.stdout.flush()
-
-            except Exception as e:
-                if self._app:
-                    self._app.invalidate()
-                    time.sleep(0.05)
-                print()
-                _cprint(f"  ❌ /btw failed: {e}")
-            finally:
-                if self._app:
-                    self._invalidate(min_interval=0)
-
-        thread = threading.Thread(target=run_btw, daemon=True, name=f"btw-{task_id}")
         thread.start()
 
     @staticmethod

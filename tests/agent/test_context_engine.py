@@ -189,6 +189,28 @@ class TestCompressorSessionReset:
         assert c._context_probe_persistable is False
         assert c._previous_summary is None
 
+    def test_reset_clears_summary_failure_cooldown(self):
+        """_summary_failure_cooldown_until must be zeroed on reset (issue #16067).
+
+        A cooldown set during session A must not bleed into session B after /new.
+        """
+        import time
+        c = ContextCompressor(model="test", quiet_mode=True, config_context_length=200000)
+        c._summary_failure_cooldown_until = time.monotonic() + 600.0
+        c.on_session_reset()
+        assert c._summary_failure_cooldown_until == 0.0
+
+    def test_reset_clears_summary_model_fallen_back(self):
+        """_summary_model_fallen_back must be False after reset.
+
+        If the summary model fell back in session A, the fallback flag must not
+        persist into session B — the primary model should be tried first again.
+        """
+        c = ContextCompressor(model="test", quiet_mode=True, config_context_length=200000)
+        c._summary_model_fallen_back = True
+        c.on_session_reset()
+        assert c._summary_model_fallen_back is False
+
 
 # ---------------------------------------------------------------------------
 # Plugin slot (PluginManager integration)

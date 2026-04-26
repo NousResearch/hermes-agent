@@ -1,6 +1,5 @@
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
-import { TYPING_IDLE_MS } from '../config/timing.js'
 import { attachedImageNotice } from '../domain/messages.js'
 import { looksLikeSlashCommand } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
@@ -11,6 +10,7 @@ import { PASTE_SNIPPET_RE } from '../protocol/paste.js'
 import type { Msg } from '../types.js'
 
 import type { ComposerActions, ComposerRefs, ComposerState, PasteSnippet } from './interfaces.js'
+import { markTyping } from './interactionMode.js'
 import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
@@ -48,27 +48,12 @@ export function useSubmission(opts: UseSubmissionOptions) {
   } = opts
 
   const lastEmptyAt = useRef(0)
-  const typingIdleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
     if (composerState.input || composerState.inputBuf.length) {
+      markTyping()
       if (getUiState().busy) {
         turnController.boostStreamingForTyping()
-      }
-
-      if (typingIdleTimer.current) {
-        clearTimeout(typingIdleTimer.current)
-      }
-
-      typingIdleTimer.current = setTimeout(() => {
-        typingIdleTimer.current = null
-        turnController.relaxStreaming()
-      }, TYPING_IDLE_MS)
-    }
-
-    return () => {
-      if (typingIdleTimer.current) {
-        clearTimeout(typingIdleTimer.current)
       }
     }
   }, [composerState.input, composerState.inputBuf])

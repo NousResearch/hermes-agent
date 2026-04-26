@@ -6,8 +6,13 @@ export const isTodoDone = (todos: readonly TodoItem[]) =>
 export const isToolShelfMessage = (msg: Msg | undefined) =>
   Boolean(msg?.kind === 'trail' && !msg.text && !msg.thinking?.trim() && msg.tools?.length)
 
-const canHoldToolShelf = (msg: Msg | undefined) =>
+export const canHoldToolShelf = (msg: Msg | undefined) =>
   Boolean(msg?.kind === 'trail' && !msg.text && (msg.thinking?.trim() || msg.tools?.length))
+
+export const mergeToolShelfInto = (target: Msg, source: Msg): Msg => ({
+  ...target,
+  tools: [...(target.tools ?? []), ...(source.tools ?? [])]
+})
 
 export const appendToolShelfMessage = (prev: readonly Msg[], msg: Msg): Msg[] => {
   if (!isToolShelfMessage(msg)) {
@@ -20,7 +25,7 @@ export const appendToolShelfMessage = (prev: readonly Msg[], msg: Msg): Msg[] =>
     if (canHoldToolShelf(candidate)) {
       const next = [...prev]
 
-      next[index] = { ...candidate!, tools: [...(candidate!.tools ?? []), ...(msg.tools ?? [])] }
+      next[index] = mergeToolShelfInto(candidate!, msg)
 
       return next
     }

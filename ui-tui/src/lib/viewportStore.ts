@@ -45,19 +45,6 @@ export function viewportSnapshotKey(v: ViewportSnapshot) {
   return `${v.atBottom ? 1 : 0}:${v.top}:${v.viewportHeight}:${v.scrollHeight}:${v.pending}`
 }
 
-const snapshotFromKey = (key: string): ViewportSnapshot => {
-  const [atBottom = '1', top = '0', viewportHeight = '0', scrollHeight = '0', pending = '0'] = key.split(':')
-
-  return {
-    atBottom: atBottom === '1',
-    bottom: Number(top) + Number(viewportHeight),
-    pending: Number(pending),
-    scrollHeight: Number(scrollHeight),
-    top: Number(top),
-    viewportHeight: Number(viewportHeight)
-  }
-}
-
 export function useViewportSnapshot(scrollRef: RefObject<ScrollBoxHandle | null>): ViewportSnapshot {
   const key = useSyncExternalStore(
     useCallback((cb: () => void) => scrollRef.current?.subscribe(cb) ?? (() => {}), [scrollRef]),
@@ -65,5 +52,16 @@ export function useViewportSnapshot(scrollRef: RefObject<ScrollBoxHandle | null>
     () => viewportSnapshotKey(EMPTY)
   )
 
-  return useMemo(() => snapshotFromKey(key), [key])
+  return useMemo(() => {
+    const [atBottom = '1', top = '0', viewportHeight = '0', scrollHeight = '0', pending = '0'] = key.split(':')
+
+    return {
+      atBottom: atBottom === '1',
+      bottom: Number(top) + Number(viewportHeight),
+      pending: Number(pending),
+      scrollHeight: Number(scrollHeight),
+      top: Number(top),
+      viewportHeight: Number(viewportHeight)
+    }
+  }, [key])
 }

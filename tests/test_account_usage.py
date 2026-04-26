@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from agent.account_usage import (
     AccountUsageSnapshot,
     AccountUsageWindow,
+    fetch_all_relevant_providers,
     fetch_account_usage,
     render_account_usage_lines,
 )
@@ -201,3 +202,47 @@ def test_fetch_account_usage_openrouter_omits_quota_window_when_key_has_no_limit
     assert snapshot.windows == ()
     assert "Credits balance: $74.50" in snapshot.details
     assert "API key usage: $25.50 total • $1.25 today • $4.50 this week • $18.00 this month" in snapshot.details
+
+
+def test_fetch_account_usage_maritaca(monkeypatch):
+    monkeypatch.setenv("MARITACA_API_KEY", "maritaca-secret")
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=10.0: _RoutingClient(
+            {
+                "https://chat.maritaca.ai/api/info/credits": {
+                    "credits": 118.9582285,
+                    "has_received_initial_credits": True,
+                },
+            }
+        ),
+    )
+
+    snapshot = fetch_account_usage("maritaca")
+
+    assert snapshot is not None
+    assert snapshot.provider == "maritaca"
+    assert snapshot.details == ("Saldo: R$ 118,96",)
+
+
+def test_fetch_all_relevant_providers_includes_maritaca(monkeypatch):
+    monkeypatch.setattr(
+        "agent.account_usage.fetch_account_usage",
+        lambda provider, **kwargs: AccountUsageSnapshot(
+            provider=provider,
+            source="test",
+            fetched_at=datetime.now(timezone.utc),
+            details=(provider,),
+        )
+        if provider in {"openrouter", "maritaca", "anthropic", "openai-codex"}
+        else None,
+    )
+
+    snapshots = fetch_all_relevant_providers("openrouter")
+
+    assert [snapshot.provider for snapshot in snapshots] == [
+        "openrouter",
+        "maritaca",
+        "anthropic",
+        "openai-codex",
+    ]

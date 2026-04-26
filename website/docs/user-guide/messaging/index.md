@@ -131,7 +131,7 @@ hermes gateway status --system         # Linux only: inspect the system service 
 | `/compress` | Manually compress conversation context |
 | `/title [name]` | Set or show the session title |
 | `/resume [name]` | Resume a previously named session |
-| `/usage` | Show the compact usage table for this session, including balances and quota progress bars when available |
+| `/usage` | Show the compact usage table for this session, including balances (such as OpenRouter credits or Maritaca saldo) and quota progress bars when available |
 | `/insights [days]` | Show usage insights and analytics |
 | `/reasoning [level\|show\|hide]` | Change reasoning effort or toggle reasoning display |
 | `/voice [on\|off\|tts\|join\|leave\|status]` | Control messaging voice replies and Discord voice-channel behavior |

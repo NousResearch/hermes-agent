@@ -88,7 +88,7 @@ All slash commands work unchanged. A few are TUI-owned — they produce richer o
 | `/model` | Modal model picker grouped by provider, with cost hints |
 | `/skin` | Live preview — theme change applies as you browse |
 | `/details` | Toggle verbose tool-call details (global or per-section) |
-| `/usage` | Compact 79-character token / cost / balance / quota panel |
+| `/usage` | Compact 79-character token / cost / balance / quota panel (CLI adds ANSI colors when supported) |
 
 Every other slash command (including installed skills, quick commands, and personality toggles) works identically to the classic CLI. See [Slash Commands Reference](../reference/slash-commands.md).
 

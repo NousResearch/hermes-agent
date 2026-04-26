@@ -1259,6 +1259,74 @@ def _cprint(text: str):
     _pt_print(_PT_ANSI(text))
 
 
+def _usage_table_colors_enabled() -> bool:
+    if os.environ.get("NO_COLOR"):
+        return False
+    if str(os.environ.get("TERM", "")).strip().lower() == "dumb":
+        return False
+    stream = getattr(sys, "stdout", None)
+    isatty = getattr(stream, "isatty", None)
+    if callable(isatty):
+        try:
+            return bool(isatty())
+        except Exception:
+            return False
+    return False
+
+
+def _usage_line_ansi(line: str) -> str:
+    reset = "\x1b[0m"
+    dim = "\x1b[2;37m"
+    bright_cyan = "\x1b[1;36m"
+    bright_blue = "\x1b[1;34m"
+    bright_magenta = "\x1b[1;35m"
+    bright_yellow = "\x1b[1;33m"
+    bright_green = "\x1b[1;32m"
+    bright_red = "\x1b[1;31m"
+
+    def _replace_money(text: str) -> str:
+        return re.sub(r"(R\$ ?[\d.,]+|\$[\d.,]+)", lambda m: f"{bright_green}{m.group(1)}{reset}", text)
+
+    def _color_progress(text: str) -> str:
+        def _paint(match: re.Match[str]) -> str:
+            pct = int(match.group(2))
+            tone = bright_green if pct >= 60 else bright_yellow if pct >= 30 else bright_red
+            return f"{tone}{match.group(1)} {match.group(2)}%{reset}"
+
+        return re.sub(r"(\[[█░]+\]) (\d+)%", _paint, text)
+
+    if line == "#" * 79:
+        return f"{dim}{line}{reset}"
+    if line.startswith("#-") and line.endswith("#"):
+        return f"{dim}{line}{reset}"
+    if "|" not in line and line.startswith("#") and line.endswith("#"):
+        return f"{bright_magenta}{line}{reset}"
+    if "|" not in line:
+        return line
+
+    label = line[2:20]
+    value = line[23:77]
+    label_clean = label.strip().lower()
+    label_color = bright_cyan
+    if label_clean == "maritaca":
+        label_color = bright_magenta
+    elif label_clean == "openrouter":
+        label_color = bright_blue
+    elif label_clean in {"anthropic", "openai-codex"}:
+        label_color = bright_yellow
+    elif label_clean == "cost":
+        label_color = bright_green
+
+    value_colored = _replace_money(_color_progress(value))
+    return (
+        f"{dim}#{reset} "
+        f"{label_color}{label}{reset} "
+        f"{dim}|{reset} "
+        f"{value_colored} "
+        f"{dim}#{reset}"
+    )
+
+
 # ---------------------------------------------------------------------------
 # File-drop / local attachment detection — extracted as pure helpers for tests.
 # ---------------------------------------------------------------------------
@@ -7152,8 +7220,12 @@ class HermesCLI:
                 compression_count=compression_count,
                 session_notes=session_notes or (),
             )
+            colorize = _usage_table_colors_enabled()
             for line in lines:
-                print(line)
+                if colorize:
+                    _cprint(_usage_line_ansi(line))
+                else:
+                    print(line)
 
         agent = self.agent
         if not agent:

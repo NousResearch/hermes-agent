@@ -81,7 +81,7 @@ The bar adapts to terminal width — full layout at ≥ 76 columns, compact at 5
 | Orange | 80–95% | Approaching limit |
 | Red | ≥ 95% | Near overflow — consider `/compress` |
 
-Use `/usage` for a compact 79-character hash table that keeps the full report in one symmetric block.
+Use `/usage` for a compact 79-character hash table that keeps the full report in one symmetric block. In the interactive CLI, Hermes adds ANSI colors when the terminal supports them.
 
 ### `/usage` breakdown
 
@@ -90,7 +90,7 @@ The interactive CLI renders `/usage` as a fixed-width table with `#` borders so 
 Depending on what Hermes knows about the current session and configured providers, the table can include:
 
 - `session` — prompt/completion/cache tokens, estimated cost, context usage, duration, and API call count
-- `balances` — provider account balances such as OpenRouter credits
+- `balances` — provider account balances such as OpenRouter credits and Maritaca saldo
 - `claude code` — Claude subscription quota rows with progress bars and reset timers
 - `codex / openai` — Codex/OpenAI quota rows with progress bars and reset timers
 

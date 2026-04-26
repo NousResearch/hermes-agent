@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import os
 from typing import Any, Optional
 
 import httpx
@@ -63,6 +64,11 @@ def _parse_dt(value: Any) -> Optional[datetime]:
         except ValueError:
             return None
     return None
+
+
+def _format_brl(value: float) -> str:
+    formatted = f"{float(value):,.2f}"
+    return "R$ " + formatted.replace(",", "_").replace(".", ",").replace("_", ".")
 
 
 def _format_reset(dt: Optional[datetime]) -> str:
@@ -305,6 +311,29 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     )
 
 
+def _fetch_maritaca_account_usage(api_key: Optional[str] = None) -> Optional[AccountUsageSnapshot]:
+    token = str(api_key or os.getenv("MARITACA_API_KEY", "")).strip()
+    if not token:
+        return None
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+    with httpx.Client(timeout=10.0) as client:
+        response = client.get("https://chat.maritaca.ai/api/info/credits", headers=headers)
+        response.raise_for_status()
+    payload = response.json() or {}
+    credits = payload.get("credits")
+    if not isinstance(credits, (int, float)):
+        return None
+    return AccountUsageSnapshot(
+        provider="maritaca",
+        source="credits_api",
+        fetched_at=_utc_now(),
+        details=(f"Saldo: {_format_brl(float(credits))}",),
+    )
+
+
 def fetch_account_usage(
     provider: Optional[str],
     *,
@@ -321,6 +350,8 @@ def fetch_account_usage(
             return _fetch_anthropic_account_usage()
         if normalized == "openrouter":
             return _fetch_openrouter_account_usage(base_url, api_key)
+        if normalized == "maritaca":
+            return _fetch_maritaca_account_usage(api_key)
     except Exception:
         return None
     return None
@@ -334,7 +365,7 @@ def fetch_all_relevant_providers(
 ) -> list[AccountUsageSnapshot]:
     ordered: list[str] = []
     seen: set[str] = set()
-    for candidate in (provider, "openrouter", "anthropic", "openai-codex"):
+    for candidate in (provider, "openrouter", "maritaca", "anthropic", "openai-codex"):
         normalized = str(candidate or "").strip().lower()
         if normalized in {"", "auto", "custom"} or normalized in seen:
             continue

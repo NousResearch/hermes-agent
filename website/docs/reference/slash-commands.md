@@ -73,7 +73,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | Command | Description |
 |---------|-------------|
 | `/help` | Show this help message |
-| `/usage` | Show a compact 79-character usage table with session tokens, balances, quota progress bars, and session duration |
+| `/usage` | Show a compact 79-character usage table with session tokens, balances, quota progress bars, session duration, and CLI colors when supported |
 | `/insights` | Show usage insights and analytics (last 30 days) |
 | `/platforms` (alias: `/gateway`) | Show gateway/messaging platform status |
 | `/paste` | Attach a clipboard image |
@@ -133,7 +133,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 | `/compress [focus topic]` | Manually compress conversation context. Optional focus topic narrows what the summary preserves. |
 | `/title [name]` | Set or show the session title. |
 | `/resume [name]` | Resume a previously named session. |
-| `/usage` | Show the compact usage table with session totals, estimated cost, context state, provider balances, and quota progress bars. |
+| `/usage` | Show the compact usage table with session totals, estimated cost, context state, provider balances, and quota progress bars. In the CLI it also uses ANSI colors when the terminal supports them. |
 | `/insights [days]` | Show usage analytics. |
 | `/reasoning [level\|show\|hide]` | Change reasoning effort or toggle reasoning display. |
 | `/voice [on\|off\|tts\|join\|channel\|leave\|status]` | Control spoken replies in chat. `join`/`channel`/`leave` manage Discord voice-channel mode. |
@@ -152,7 +152,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 
 ## Notes
 
-- `/usage` now renders as a single symmetric 79-character `#`-bordered table. Depending on available provider metadata, it can include `session`, `balances`, `claude code`, and `codex / openai` sections in one block.
+- `/usage` now renders as a single symmetric 79-character `#`-bordered table. Depending on available provider metadata, it can include `session`, `balances`, `claude code`, and `codex / openai` sections in one block. In the interactive CLI, supported terminals also get ANSI colors without changing the layout.
 - In the interactive CLI, `/usage` also works before the first normal prompt when Hermes already knows the provider or has persisted counters from the current session. In that case it shows account/quota information even if no live agent has been created yet.
 - `/skin`, `/snapshot`, `/gquota`, `/reload`, `/tools`, `/toolsets`, `/browser`, `/config`, `/cron`, `/skills`, `/platforms`, `/paste`, `/image`, `/terminal-setup`, `/statusbar`, and `/plugins` are **CLI-only** commands.
 - `/verbose` is **CLI-only by default**, but can be enabled for messaging platforms by setting `display.tool_progress_command: true` in `config.yaml`. When enabled, it cycles the `display.tool_progress` mode and saves to config.

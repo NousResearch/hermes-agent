@@ -382,7 +382,10 @@ class TestCLIUsageReport:
         )
         monkeypatch.setattr(
             "cli.render_multi_provider_hash",
-            lambda snapshots: [("openrouter", "Credits balance: $44.48")],
+            lambda snapshots: [
+                ("openrouter", "Credits balance: $44.48"),
+                ("maritaca", "Saldo: R$ 118,96"),
+            ],
         )
 
         cli_obj._show_usage()
@@ -397,8 +400,32 @@ class TestCLIUsageReport:
         assert any("claude code" in line for line in lines)
         assert any("codex / openai" in line for line in lines)
         assert any("Credits balance: $44.48" in line for line in lines)
+        assert any("Saldo: R$ 118,96" in line for line in lines)
         assert any("$0.064" in line for line in lines)
         assert any("[████████" in line or "[███████" in line for line in lines)
+
+    def test_show_usage_uses_ansi_colors_when_tty_is_available(self, monkeypatch):
+        cli_obj = _attach_agent(
+            _make_cli(),
+            prompt_tokens=10_230,
+            completion_tokens=2_220,
+            total_tokens=12_450,
+            api_calls=7,
+            context_tokens=12_450,
+            context_length=200_000,
+        )
+        cli_obj.verbose = False
+
+        monkeypatch.setattr("cli.fetch_all_relevant_providers", lambda provider, base_url=None, api_key=None: [])
+        monkeypatch.setattr("cli._usage_table_colors_enabled", lambda: True)
+        captured = []
+        monkeypatch.setattr("cli._cprint", captured.append)
+
+        cli_obj._show_usage()
+
+        assert captured
+        assert any("\x1b[" in line for line in captured)
+        assert any("Usage" in line for line in captured)
 
     def test_show_usage_marks_unknown_pricing(self, capsys):
         cli_obj = _attach_agent(

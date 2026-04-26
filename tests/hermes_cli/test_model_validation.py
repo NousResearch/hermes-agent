@@ -63,6 +63,11 @@ class TestParseModelInput:
         assert provider == "zai"
         assert model == "glm-5"
 
+    def test_stepfun_alias_resolved(self):
+        provider, model = parse_model_input("step:step-3.5-flash", "openrouter")
+        assert provider == "stepfun"
+        assert model == "step-3.5-flash"
+
     def test_no_slash_no_colon_keeps_provider(self):
         provider, model = parse_model_input("gpt-5.4", "openrouter")
         assert provider == "openrouter"
@@ -154,6 +159,7 @@ class TestNormalizeProvider:
         assert normalize_provider("glm") == "zai"
         assert normalize_provider("kimi") == "kimi-coding"
         assert normalize_provider("moonshot") == "kimi-coding"
+        assert normalize_provider("step") == "stepfun"
         assert normalize_provider("github-copilot") == "copilot"
 
     def test_case_insensitive(self):
@@ -163,7 +169,8 @@ class TestNormalizeProvider:
 class TestProviderLabel:
     def test_known_labels_and_auto(self):
         assert provider_label("anthropic") == "Anthropic"
-        assert provider_label("kimi") == "Kimi / Moonshot"
+        assert provider_label("kimi") == "Kimi / Kimi Coding Plan"
+        assert provider_label("stepfun") == "StepFun Step Plan"
         assert provider_label("copilot") == "GitHub Copilot"
         assert provider_label("copilot-acp") == "GitHub Copilot ACP"
         assert provider_label("auto") == "Auto"
@@ -193,6 +200,16 @@ class TestProviderModelIds:
     def test_zai_returns_glm_models(self):
         assert "glm-5" in provider_model_ids("zai")
 
+    def test_stepfun_prefers_live_catalog(self):
+        with patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            return_value={"api_key": "***", "base_url": "https://api.stepfun.com/step_plan/v1"},
+        ), patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=["step-3.5-flash", "step-3-agent-lite"],
+        ):
+            assert provider_model_ids("stepfun") == ["step-3.5-flash", "step-3-agent-lite"]
+
     def test_copilot_prefers_live_catalog(self):
         with patch("hermes_cli.auth.resolve_api_key_provider_credentials", return_value={"api_key": "gh-token"}), \
              patch("hermes_cli.models._fetch_github_models", return_value=["gpt-5.4", "claude-sonnet-4.6"]):
@@ -203,13 +220,30 @@ class TestProviderModelIds:
              patch("hermes_cli.models._fetch_github_models", return_value=["gpt-5.4", "claude-sonnet-4.6"]):
             assert provider_model_ids("copilot-acp") == ["gpt-5.4", "claude-sonnet-4.6"]
 
+    def test_copilot_falls_back_to_curated_defaults_without_stale_opus(self):
+        with patch("hermes_cli.models._resolve_copilot_catalog_api_key", return_value="gh-token"), \
+             patch("hermes_cli.models._fetch_github_models", return_value=None):
+            ids = provider_model_ids("copilot")
+
+        assert "gpt-5.4" in ids
+        assert "claude-sonnet-4.6" in ids
+        assert "claude-sonnet-4" in ids
+        assert "claude-sonnet-4.5" in ids
+        assert "claude-haiku-4.5" in ids
+        assert "gemini-3.1-pro-preview" in ids
+        assert "claude-opus-4.6" not in ids
+
     def test_copilot_acp_falls_back_to_copilot_defaults(self):
-        with patch("hermes_cli.auth.resolve_api_key_provider_credentials", side_effect=Exception("no token")), \
+        with patch("hermes_cli.models._resolve_copilot_catalog_api_key", return_value="gh-token"), \
              patch("hermes_cli.models._fetch_github_models", return_value=None):
             ids = provider_model_ids("copilot-acp")
 
         assert "gpt-5.4" in ids
+        assert "claude-sonnet-4.6" in ids
+        assert "claude-sonnet-4" in ids
+        assert "gemini-3.1-pro-preview" in ids
         assert "copilot-acp" not in ids
+        assert "claude-opus-4.6" not in ids
 
 
 # -- fetch_api_models --------------------------------------------------------
@@ -370,6 +404,8 @@ class TestCopilotNormalization:
         assert opencode_model_api_mode("opencode-zen", "minimax-m2.5") == "chat_completions"
 
     def test_opencode_go_api_modes_match_docs(self):
+        assert opencode_model_api_mode("opencode-go", "glm-5.1") == "chat_completions"
+        assert opencode_model_api_mode("opencode-go", "opencode-go/glm-5.1") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "glm-5") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "opencode-go/glm-5") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "kimi-k2.5") == "chat_completions"
@@ -401,7 +437,8 @@ class TestValidateFormatChecks:
 
     def test_no_slash_model_rejected_if_not_in_api(self):
         result = _validate("gpt-5.4", api_models=["openai/gpt-5.4"])
-        assert result["accepted"] is True
+        assert result["accepted"] is False
+        assert result["persist"] is False
         assert "not found" in result["message"]
 
 
@@ -427,42 +464,89 @@ class TestValidateApiFound:
 # -- validate — API not found ------------------------------------------------
 
 class TestValidateApiNotFound:
-    def test_model_not_in_api_accepted_with_warning(self):
+    def test_model_not_in_api_rejected_with_guidance(self):
         result = _validate("anthropic/claude-nonexistent")
-        assert result["accepted"] is True
-        assert result["persist"] is True
+        assert result["accepted"] is False
+        assert result["persist"] is False
         assert "not found" in result["message"]
 
     def test_warning_includes_suggestions(self):
         result = _validate("anthropic/claude-opus-4.5")
         assert result["accepted"] is True
-        assert "Similar models" in result["message"]
+        # Close match auto-corrects; less similar inputs show suggestions
+        assert "Auto-corrected" in result["message"] or "Similar models" in result["message"]
+
+    def test_auto_correction_returns_corrected_model(self):
+        """When a very close match exists, validate returns corrected_model."""
+        result = _validate("anthropic/claude-opus-4.5")
+        assert result["accepted"] is True
+        assert result.get("corrected_model") == "anthropic/claude-opus-4.6"
+        assert result["recognized"] is True
+
+    def test_dissimilar_model_shows_suggestions_not_autocorrect(self):
+        """Models too different for auto-correction are rejected with suggestions."""
+        result = _validate("anthropic/claude-nonexistent")
+        assert result["accepted"] is False
+        assert result.get("corrected_model") is None
+        assert "not found" in result["message"]
 
 
-# -- validate — API unreachable — accept and persist everything ----------------
+# -- validate — API unreachable — soft-accept via catalog or warning --------
 
 class TestValidateApiFallback:
-    def test_any_model_accepted_when_api_down(self):
-        result = _validate("anthropic/claude-opus-4.6", api_models=None)
+    """When /models is unreachable, the validator must accept the model (with
+    a warning) rather than reject it outright — otherwise provider switches
+    fail in the gateway for any provider whose /models endpoint is down or
+    doesn't exist (e.g. opencode-go returns 404 HTML).
+
+    Two paths:
+      1. Provider has a curated catalog (``_PROVIDER_MODELS`` / live fetch):
+         validate against it (recognized=True for known models,
+         recognized=False with 'Note:' for unknown).
+      2. Provider has no catalog: accept with a generic 'Note:' warning.
+
+    In both cases ``accepted`` and ``persist`` must be True so the gateway can
+    write the ``_session_model_overrides`` entry.
+    """
+
+    def test_known_model_accepted_via_catalog_when_api_down(self):
+        # Force the openrouter catalog lookup to return a deterministic list.
+        with patch(
+            "hermes_cli.models.provider_model_ids",
+            return_value=["anthropic/claude-opus-4.6", "openai/gpt-5.4"],
+        ):
+            result = _validate("anthropic/claude-opus-4.6", api_models=None)
         assert result["accepted"] is True
         assert result["persist"] is True
+        assert result["recognized"] is True
 
-    def test_unknown_model_also_accepted_when_api_down(self):
-        """No hardcoded catalog gatekeeping — accept, persist, and warn."""
-        result = _validate("anthropic/claude-next-gen", api_models=None)
+    def test_unknown_model_accepted_with_note_when_api_down(self):
+        with patch(
+            "hermes_cli.models.provider_model_ids",
+            return_value=["anthropic/claude-opus-4.6", "openai/gpt-5.4"],
+        ):
+            result = _validate("anthropic/claude-next-gen", api_models=None)
         assert result["accepted"] is True
         assert result["persist"] is True
-        assert "could not reach" in result["message"].lower()
+        assert result["recognized"] is False
+        # Message flags it as unverified against the catalog.
+        assert "not found" in result["message"].lower() or "note" in result["message"].lower()
 
-    def test_zai_model_accepted_when_api_down(self):
+    def test_zai_known_model_accepted_via_catalog_when_api_down(self):
+        # glm-5 is in the zai curated catalog (_PROVIDER_MODELS["zai"]).
         result = _validate("glm-5", provider="zai", api_models=None)
         assert result["accepted"] is True
         assert result["persist"] is True
+        assert result["recognized"] is True
 
-    def test_unknown_provider_accepted_when_api_down(self):
-        result = _validate("some-model", provider="totally-unknown", api_models=None)
+    def test_unknown_provider_soft_accepted_when_api_down(self):
+        # No catalog for unknown providers — soft-accept with a Note.
+        with patch("hermes_cli.models.provider_model_ids", return_value=[]):
+            result = _validate("some-model", provider="totally-unknown", api_models=None)
         assert result["accepted"] is True
         assert result["persist"] is True
+        assert result["recognized"] is False
+        assert "note" in result["message"].lower()
 
     def test_custom_endpoint_warns_with_probed_url_and_v1_hint(self):
         with patch(
@@ -482,7 +566,107 @@ class TestValidateApiFallback:
                 base_url="http://localhost:8000",
             )
 
-        assert result["accepted"] is True
+        # Unreachable /models on a custom endpoint no longer hard-rejects —
+        # the model is persisted with a warning so Cloudflare-protected /
+        # proxy endpoints that don't expose /models still work. See #12950.
+        assert result["accepted"] is False
         assert result["persist"] is True
         assert "http://localhost:8000/v1/models" in result["message"]
         assert "http://localhost:8000/v1" in result["message"]
+
+
+# -- validate — Codex auto-correction ------------------------------------------
+
+class TestValidateCodexAutoCorrection:
+    """Auto-correction for typos on openai-codex provider."""
+
+    def test_missing_dash_auto_corrects(self):
+        """gpt5.3-codex (missing dash) auto-corrects to gpt-5.3-codex."""
+        codex_models = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex",
+                        "gpt-5.2-codex", "gpt-5.1-codex-max"]
+        with patch("hermes_cli.models.provider_model_ids", return_value=codex_models):
+            result = validate_requested_model("gpt5.3-codex", "openai-codex")
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert result["corrected_model"] == "gpt-5.3-codex"
+        assert "Auto-corrected" in result["message"]
+
+    def test_exact_match_no_correction(self):
+        """Exact model name does not trigger auto-correction."""
+        codex_models = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex"]
+        with patch("hermes_cli.models.provider_model_ids", return_value=codex_models):
+            result = validate_requested_model("gpt-5.3-codex", "openai-codex")
+        assert result["accepted"] is True
+        assert result["recognized"] is True
+        assert result.get("corrected_model") is None
+        assert result["message"] is None
+
+    def test_very_different_name_falls_to_suggestions(self):
+        """Names too different for auto-correction are rejected with a suggestion list."""
+        codex_models = ["gpt-5.4-mini", "gpt-5.4", "gpt-5.3-codex"]
+        with patch("hermes_cli.models.provider_model_ids", return_value=codex_models):
+            result = validate_requested_model("totally-wrong", "openai-codex")
+        assert result["accepted"] is False
+        assert result["recognized"] is False
+        assert result.get("corrected_model") is None
+        assert "not found" in result["message"]
+
+
+# -- probe_api_models — Cloudflare UA mitigation --------------------------------
+
+class TestProbeApiModelsUserAgent:
+    """Probing custom /v1/models must send a Hermes User-Agent.
+
+    Some custom Claude proxies (e.g. ``packyapi.com``) sit behind Cloudflare with
+    Browser Integrity Check enabled. The default ``Python-urllib/3.x`` signature
+    is rejected with HTTP 403 ``error code: 1010``, which ``probe_api_models``
+    swallowed into ``{"models": None}``, surfacing to users as a misleading
+    "Could not reach the ... API to validate ..." error — even though the
+    endpoint is reachable and the listing exists.
+    """
+
+    def _make_mock_response(self, body: bytes):
+        from unittest.mock import MagicMock
+        mock_resp = MagicMock()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_resp.read = MagicMock(return_value=body)
+        return mock_resp
+
+    def test_probe_sends_hermes_user_agent(self):
+        from unittest.mock import patch
+
+        body = b'{"data":[{"id":"claude-opus-4.7"}]}'
+        with patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            return_value=self._make_mock_response(body),
+        ) as mock_urlopen:
+            result = probe_api_models("sk-test", "https://example.com/v1")
+
+        assert result["models"] == ["claude-opus-4.7"]
+        # The urlopen call receives a Request object as its first positional arg
+        req = mock_urlopen.call_args[0][0]
+        ua = req.get_header("User-agent")  # urllib title-cases header names
+        assert ua, "probe_api_models must send a User-Agent header"
+        assert ua.startswith("hermes-cli/"), (
+            f"User-Agent must advertise hermes-cli, got {ua!r}"
+        )
+        # Must not fall back to urllib's default — that's what Cloudflare 1010 blocks.
+        assert not ua.startswith("Python-urllib")
+
+    def test_probe_user_agent_sent_without_api_key(self):
+        """UA must be present even for endpoints that don't need auth."""
+        from unittest.mock import patch
+
+        body = b'{"data":[]}'
+        with patch(
+            "hermes_cli.models.urllib.request.urlopen",
+            return_value=self._make_mock_response(body),
+        ) as mock_urlopen:
+            probe_api_models(None, "https://example.com/v1")
+
+        req = mock_urlopen.call_args[0][0]
+        ua = req.get_header("User-agent")
+        assert ua and ua.startswith("hermes-cli/")
+        # No Authorization was set, but UA must still be present.
+        assert req.get_header("Authorization") is None

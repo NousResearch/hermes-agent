@@ -1,19 +1,14 @@
 ---
 name: llm-wiki
 description: "Karpathy's LLM Wiki — build and maintain a persistent, interlinked markdown knowledge base. Ingest sources, query compiled knowledge, and lint for consistency."
-version: 2.0.0
+version: 2.1.0
 author: Hermes Agent
 license: MIT
 metadata:
   hermes:
     tags: [wiki, knowledge-base, research, notes, markdown, rag-alternative]
     category: research
-    related_skills: [obsidian, arxiv, agentic-research-ideas]
-    config:
-      - key: wiki.path
-        description: Path to the LLM Wiki knowledge base directory
-        default: "~/wiki"
-        prompt: Wiki directory path
+    related_skills: [obsidian, arxiv]
 ---
 
 # Karpathy's LLM Wiki
@@ -39,18 +34,13 @@ Use this skill when the user:
 
 ## Wiki Location
 
-Configured via `skills.config.wiki.path` in `~/.hermes/config.yaml` (prompted
-during `hermes config migrate` or `hermes setup`):
+**Location:** Set via `WIKI_PATH` environment variable (e.g. in `~/.hermes/.env`).
 
-```yaml
-skills:
-  config:
-    wiki:
-      path: ~/wiki
+If unset, defaults to `~/wiki`.
+
+```bash
+WIKI="${WIKI_PATH:-$HOME/wiki}"
 ```
-
-Falls back to `~/wiki` default. The resolved path is injected when this
-skill loads — check the `[Skill config: ...]` block above for the active value.
 
 The wiki is just a directory of markdown files — open it in Obsidian, VS Code, or
 any editor. No database, no special tooling required.
@@ -87,7 +77,7 @@ When the user has an existing wiki, **always orient yourself before doing anythi
 ③ **Scan recent `log.md`** — read the last 20-30 entries to understand recent activity.
 
 ```bash
-WIKI="${wiki_path:-$HOME/wiki}"
+WIKI="${WIKI_PATH:-$HOME/wiki}"
 # Orientation reads at session start
 read_file "$WIKI/SCHEMA.md"
 read_file "$WIKI/index.md"
@@ -107,7 +97,7 @@ at hand before creating anything new.
 
 When the user asks to create or start a wiki:
 
-1. Determine the wiki path (from config, env var, or ask the user; default `~/wiki`)
+1. Determine the wiki path (from `$WIKI_PATH` env var, or ask the user; default `~/wiki`)
 2. Create the directory structure above
 3. Ask the user what domain the wiki covers — be specific
 4. Write `SCHEMA.md` customized to the domain (see template below)
@@ -132,6 +122,10 @@ Adapt to the user's domain. The schema constrains agent behavior and ensures con
 - When updating a page, always bump the `updated` date
 - Every new page must be added to `index.md` under the correct section
 - Every action must be appended to `log.md`
+- **Provenance markers:** On pages that synthesize 3+ sources, append `^[raw/articles/source-file.md]`
+  at the end of paragraphs whose claims come from a specific source. This lets a reader trace each
+  claim back without re-reading the whole raw file. Optional on single-source pages where the
+  `sources:` frontmatter is enough.
 
 ## Frontmatter
   ```yaml
@@ -142,8 +136,32 @@ Adapt to the user's domain. The schema constrains agent behavior and ensures con
   type: entity | concept | comparison | query | summary
   tags: [from taxonomy below]
   sources: [raw/articles/source-name.md]
+  # Optional quality signals:
+  confidence: high | medium | low        # how well-supported the claims are
+  contested: true                        # set when the page has unresolved contradictions
+  contradictions: [other-page-slug]      # pages this one conflicts with
   ---
   ```
+
+`confidence` and `contested` are optional but recommended for opinion-heavy or fast-moving
+topics. Lint surfaces `contested: true` and `confidence: low` pages for review so weak claims
+don't silently harden into accepted wiki fact.
+
+### raw/ Frontmatter
+
+Raw sources ALSO get a small frontmatter block so re-ingests can detect drift:
+
+```yaml
+---
+source_url: https://example.com/article   # original URL, if applicable
+ingested: YYYY-MM-DD
+sha256: <hex digest of the raw content below the frontmatter>
+---
+```
+
+The `sha256:` lets a future re-ingest of the same URL skip processing when content is unchanged,
+and flag drift when it has changed. Compute over the body only (everything after the closing
+`---`), not the frontmatter itself.
 
 ## Tag Taxonomy
 [Define 10-20 top-level tags for the domain. Add new tags here BEFORE using them.]
@@ -244,6 +262,10 @@ When the user provides a source (URL, file, paste), integrate it into the wiki:
    - PDF → use `web_extract` (handles PDFs), save to `raw/papers/`
    - Pasted text → save to appropriate `raw/` subdirectory
    - Name the file descriptively: `raw/articles/karpathy-llm-wiki-2026.md`
+   - **Add raw frontmatter** (`source_url`, `ingested`, `sha256` of the body).
+     On re-ingest of the same URL: recompute the sha256, compare to the stored value —
+     skip if identical, flag drift and update if different. This is cheap enough to
+     do on every re-ingest and catches silent source changes.
 
 ② **Discuss takeaways** with the user — what's interesting, what matters for
    the domain. (Skip this in automated/cron contexts — proceed directly.)
@@ -260,6 +282,11 @@ When the user provides a source (URL, file, paste), integrate it into the wiki:
    - **Cross-reference:** Every new or updated page must link to at least 2 other
      pages via `[[wikilinks]]`. Check that existing pages link back.
    - **Tags:** Only use tags from the taxonomy in SCHEMA.md
+   - **Provenance:** On pages synthesizing 3+ sources, append `^[raw/articles/source.md]`
+     markers to paragraphs whose claims trace to a specific source.
+   - **Confidence:** For opinion-heavy, fast-moving, or single-source claims, set
+     `confidence: medium` or `low` in frontmatter. Don't mark `high` unless the
+     claim is well-supported across multiple sources.
 
 ⑤ **Update navigation:**
    - Add new pages to `index.md` under the correct section, alphabetically
@@ -314,18 +341,28 @@ wiki = "<WIKI_PATH>"
    recent source that mentions the same entities.
 
 ⑥ **Contradictions:** Pages on the same topic with conflicting claims. Look for
-   pages that share tags/entities but state different facts.
+   pages that share tags/entities but state different facts. Surface all pages
+   with `contested: true` or `contradictions:` frontmatter for user review.
 
-⑦ **Page size:** Flag pages over 200 lines — candidates for splitting.
+⑦ **Quality signals:** List pages with `confidence: low` and any page that cites
+   only a single source but has no confidence field set — these are candidates
+   for either finding corroboration or demoting to `confidence: medium`.
 
-⑧ **Tag audit:** List all tags in use, flag any not in the SCHEMA.md taxonomy.
+⑧ **Source drift:** For each file in `raw/` with a `sha256:` frontmatter, recompute
+   the hash and flag mismatches. Mismatches indicate the raw file was edited
+   (shouldn't happen — raw/ is immutable) or ingested from a URL that has since
+   changed. Not a hard error, but worth reporting.
 
-⑨ **Log rotation:** If log.md exceeds 500 entries, rotate it.
+⑨ **Page size:** Flag pages over 200 lines — candidates for splitting.
 
-⑩ **Report findings** with specific file paths and suggested actions, grouped by
-   severity (broken links > orphans > stale content > style issues).
+⑩ **Tag audit:** List all tags in use, flag any not in the SCHEMA.md taxonomy.
 
-⑪ **Append to log.md:** `## [YYYY-MM-DD] lint | N issues found`
+⑪ **Log rotation:** If log.md exceeds 500 entries, rotate it.
+
+⑫ **Report findings** with specific file paths and suggested actions, grouped by
+   severity (broken links > orphans > source drift > contested pages > stale content > style issues).
+
+⑬ **Append to log.md:** `## [YYYY-MM-DD] lint | N issues found`
 
 ## Working with the Wiki
 
@@ -458,3 +495,12 @@ vault in Obsidian on your laptop/phone — changes appear within seconds.
   The agent should check log size during lint.
 - **Handle contradictions explicitly** — don't silently overwrite. Note both claims with dates,
   mark in frontmatter, flag for user review.
+
+## Related Tools
+
+[llm-wiki-compiler](https://github.com/atomicmemory/llm-wiki-compiler) is a Node.js CLI that
+compiles sources into a concept wiki with the same Karpathy inspiration. It's Obsidian-compatible,
+so users who want a scheduled/CLI-driven compile pipeline can point it at the same vault this
+skill maintains. Trade-offs: it owns page generation (replaces the agent's judgment on page
+creation) and is tuned for small corpora. Use this skill when you want agent-in-the-loop curation;
+use llmwiki when you want batch compile of a source directory.

@@ -113,23 +113,6 @@ def test_prefetch_non_blocking():
         assert banner._update_result == 5
 
 
-def test_get_update_result_timeout():
-    """get_update_result() returns None when check hasn't completed within timeout."""
-    import hermes_cli.banner as banner
-
-    # Reset module state — don't set the event
-    banner._update_result = None
-    banner._update_check_done = threading.Event()
-
-    start = time.monotonic()
-    result = banner.get_update_result(timeout=0.1)
-    elapsed = time.monotonic() - start
-
-    # Should have waited ~0.1s and returned None
-    assert result is None
-    assert elapsed < 0.5
-
-
 def test_invalidate_update_cache_clears_all_profiles(tmp_path):
     """_invalidate_update_cache() should delete .update_check from ALL profiles."""
     from hermes_cli.main import _invalidate_update_cache

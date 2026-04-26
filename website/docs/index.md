@@ -4,6 +4,7 @@ sidebar_position: 0
 title: "Hermes Agent Documentation"
 description: "The self-improving AI agent built by Nous Research. A built-in learning loop that creates skills from experience, improves them during use, and remembers across sessions."
 hide_table_of_contents: true
+displayed_sidebar: docs
 ---
 
 # Hermes Agent

@@ -99,23 +99,41 @@ def _load_hermes_env_vars() -> dict[str, str]:
 
 
 def find_docker() -> Optional[str]:
-    """Locate the docker CLI binary.
+    """Locate the docker (or podman) CLI binary.
 
-    Checks ``shutil.which`` first (respects PATH), then probes well-known
-    install locations on macOS where Docker Desktop may not be in PATH
-    (e.g. when running as a gateway service via launchd).
+    Resolution order:
+    1. ``HERMES_DOCKER_BINARY`` env var — explicit override (e.g. ``/usr/bin/podman``)
+    2. ``docker`` on PATH via ``shutil.which``
+    3. ``podman`` on PATH via ``shutil.which``
+    4. Well-known macOS Docker Desktop install locations
 
-    Returns the absolute path, or ``None`` if docker cannot be found.
+    Returns the absolute path, or ``None`` if neither runtime can be found.
     """
     global _docker_executable
     if _docker_executable is not None:
         return _docker_executable
 
+    # 1. Explicit override via env var (e.g. for Podman on immutable distros)
+    override = os.getenv("HERMES_DOCKER_BINARY")
+    if override and os.path.isfile(override) and os.access(override, os.X_OK):
+        _docker_executable = override
+        logger.info("Using HERMES_DOCKER_BINARY override: %s", override)
+        return override
+
+    # 2. docker on PATH
     found = shutil.which("docker")
     if found:
         _docker_executable = found
         return found
 
+    # 3. podman on PATH (drop-in compatible for our use case)
+    found = shutil.which("podman")
+    if found:
+        _docker_executable = found
+        logger.info("Using podman as container runtime: %s", found)
+        return found
+
+    # 4. Well-known macOS Docker Desktop locations
     for path in _DOCKER_SEARCH_PATHS:
         if os.path.isfile(path) and os.access(path, os.X_OK):
             _docker_executable = path
@@ -130,6 +148,10 @@ def find_docker() -> Optional[str]:
 # We drop all capabilities then add back the minimum needed:
 #   DAC_OVERRIDE - root can write to bind-mounted dirs owned by host user
 #   CHOWN/FOWNER - package managers (pip, npm, apt) need to set file ownership
+#   SETUID/SETGID - the image entrypoint drops from root to the 'hermes'
+#       user via `gosu`, which requires these caps. Combined with
+#       `no-new-privileges`, gosu still cannot escalate back to root after
+#       the drop, so the security posture is preserved.
 # Block privilege escalation and limit PIDs.
 # /tmp is size-limited and nosuid but allows exec (needed by pip/npm builds).
 _SECURITY_ARGS = [
@@ -137,6 +159,8 @@ _SECURITY_ARGS = [
     "--cap-add", "DAC_OVERRIDE",
     "--cap-add", "CHOWN",
     "--cap-add", "FOWNER",
+    "--cap-add", "SETUID",
+    "--cap-add", "SETGID",
     "--security-opt", "no-new-privileges",
     "--pids-limit", "256",
     "--tmpfs", "/tmp:rw,nosuid,size=512m",

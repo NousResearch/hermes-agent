@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 import pytest
+from agent.codex_responses_adapter import _chat_content_to_responses_parts, _chat_messages_to_responses_input, _normalize_codex_response, _preflight_codex_input_items
 
 sys.modules.setdefault("fire", types.SimpleNamespace(Fire=lambda *a, **k: None))
 sys.modules.setdefault("firecrawl", types.SimpleNamespace(Firecrawl=object))
@@ -60,6 +61,9 @@ def _make_agent(monkeypatch, provider, api_mode="chat_completions", base_url="ht
     )
     if model:
         kwargs["model"] = model
+    base_url="https://openrouter.ai/api/v1",
+    api_key="test-key",
+    base_url="https://openrouter.ai/api/v1",
     return AIAgent(**kwargs)
 
 
@@ -248,6 +252,23 @@ class TestBuildApiKwargsChatCompletionsServiceTier:
         assert "service_tier" not in kwargs
 
 
+class TestBuildApiKwargsKimiNoTemperatureOverride:
+    def test_kimi_for_coding_omits_temperature(self, monkeypatch):
+        """Temperature should NOT be set client-side for Kimi models.
+
+        The Kimi gateway selects the correct temperature server-side.
+        """
+        agent = _make_agent(
+            monkeypatch,
+            "kimi-coding",
+            base_url="https://api.kimi.com/coding/v1",
+            model="kimi-for-coding",
+        )
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert "temperature" not in kwargs
+
+
 class TestBuildApiKwargsAIGateway:
     def test_uses_chat_completions_format(self, monkeypatch):
         agent = _make_agent(monkeypatch, "ai-gateway", base_url="https://ai-gateway.vercel.sh/v1", model="gpt-4o")
@@ -426,7 +447,7 @@ class TestChatMessagesToResponsesInput:
         agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
                             base_url="https://chatgpt.com/backend-api/codex")
         messages = [{"role": "user", "content": "hello"}]
-        items = agent._chat_messages_to_responses_input(messages)
+        items = _chat_messages_to_responses_input(messages)
         assert items == [{"role": "user", "content": "hello"}]
 
     def test_system_messages_filtered(self, monkeypatch):
@@ -436,7 +457,7 @@ class TestChatMessagesToResponsesInput:
             {"role": "system", "content": "be helpful"},
             {"role": "user", "content": "hello"},
         ]
-        items = agent._chat_messages_to_responses_input(messages)
+        items = _chat_messages_to_responses_input(messages)
         assert len(items) == 1
         assert items[0]["role"] == "user"
 
@@ -452,7 +473,7 @@ class TestChatMessagesToResponsesInput:
                 "function": {"name": "web_search", "arguments": '{"query": "test"}'},
             }],
         }]
-        items = agent._chat_messages_to_responses_input(messages)
+        items = _chat_messages_to_responses_input(messages)
         fc_items = [i for i in items if i.get("type") == "function_call"]
         assert len(fc_items) == 1
         assert fc_items[0]["name"] == "web_search"
@@ -462,7 +483,7 @@ class TestChatMessagesToResponsesInput:
         agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
                             base_url="https://chatgpt.com/backend-api/codex")
         messages = [{"role": "tool", "tool_call_id": "call_abc", "content": "result here"}]
-        items = agent._chat_messages_to_responses_input(messages)
+        items = _chat_messages_to_responses_input(messages)
         assert items[0]["type"] == "function_call_output"
         assert items[0]["call_id"] == "call_abc"
         assert items[0]["output"] == "result here"
@@ -482,7 +503,7 @@ class TestChatMessagesToResponsesInput:
             },
             {"role": "user", "content": "continue"},
         ]
-        items = agent._chat_messages_to_responses_input(messages)
+        items = _chat_messages_to_responses_input(messages)
         reasoning_items = [i for i in items if i.get("type") == "reasoning"]
         assert len(reasoning_items) == 1
         assert reasoning_items[0]["encrypted_content"] == "gAAAA_test_blob"
@@ -495,9 +516,114 @@ class TestChatMessagesToResponsesInput:
             {"role": "assistant", "content": "hi"},
             {"role": "user", "content": "hello"},
         ]
-        items = agent._chat_messages_to_responses_input(messages)
+        items = _chat_messages_to_responses_input(messages)
         reasoning_items = [i for i in items if i.get("type") == "reasoning"]
         assert len(reasoning_items) == 0
+
+    def test_user_multimodal_content_uses_input_text(self, monkeypatch):
+        """User messages with list content must use input_text type."""
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        messages = [{"role": "user", "content": [
+            {"type": "text", "text": "find files"},
+        ]}]
+        items = _chat_messages_to_responses_input(messages)
+        assert len(items) == 1
+        assert items[0]["role"] == "user"
+        content = items[0]["content"]
+        assert isinstance(content, list)
+        assert content[0]["type"] == "input_text"
+        assert content[0]["text"] == "find files"
+
+    def test_assistant_multimodal_content_uses_output_text(self, monkeypatch):
+        """Assistant messages with list content must use output_text type.
+
+        This is the fix for #15687 — the Responses API rejects input_text
+        inside assistant messages.
+        """
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        messages = [{"role": "assistant", "content": [
+            {"type": "text", "text": "I found the files."},
+        ]}]
+        items = _chat_messages_to_responses_input(messages)
+        assert len(items) == 1
+        assert items[0]["role"] == "assistant"
+        content = items[0]["content"]
+        assert isinstance(content, list)
+        assert content[0]["type"] == "output_text"
+        assert content[0]["text"] == "I found the files."
+
+    def test_preflight_preserves_assistant_output_text(self, monkeypatch):
+        """_preflight_codex_input_items must preserve output_text for assistant."""
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        raw_input = [
+            {"role": "user", "content": [{"type": "input_text", "text": "hi"}]},
+            {"role": "assistant", "content": [{"type": "output_text", "text": "hello"}]},
+        ]
+        normalized = _preflight_codex_input_items(raw_input)
+        user_content = normalized[0]["content"]
+        asst_content = normalized[1]["content"]
+        assert user_content[0]["type"] == "input_text"
+        assert asst_content[0]["type"] == "output_text"
+
+    def test_full_round_trip_with_list_content(self, monkeypatch):
+        """End-to-end: user + assistant with list content through both stages."""
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        messages = [
+            {"role": "user", "content": [{"type": "text", "text": "hello"}]},
+            {"role": "assistant", "content": [{"type": "text", "text": "hi there"}]},
+            {"role": "user", "content": [{"type": "text", "text": "continue"}]},
+        ]
+        items = _chat_messages_to_responses_input(messages)
+        normalized = _preflight_codex_input_items(items)
+
+        # User items use input_text
+        assert normalized[0]["content"][0]["type"] == "input_text"
+        assert normalized[2]["content"][0]["type"] == "input_text"
+        # Assistant item uses output_text
+        assert normalized[1]["content"][0]["type"] == "output_text"
+
+
+class TestChatContentToResponsesParts:
+    """Unit tests for _chat_content_to_responses_parts role parameter (#15687)."""
+
+    def test_default_role_emits_input_text(self):
+        """Default (user) role emits input_text."""
+        result = _chat_content_to_responses_parts([{"type": "text", "text": "hello"}])
+        assert result[0]["type"] == "input_text"
+
+    def test_explicit_user_role_emits_input_text(self):
+        result = _chat_content_to_responses_parts(
+            [{"type": "text", "text": "hello"}], role="user"
+        )
+        assert result[0]["type"] == "input_text"
+
+    def test_assistant_role_emits_output_text(self):
+        result = _chat_content_to_responses_parts(
+            [{"type": "text", "text": "hello"}], role="assistant"
+        )
+        assert result[0]["type"] == "output_text"
+
+    def test_assistant_role_with_string_parts(self):
+        """String parts in assistant content also get output_text."""
+        result = _chat_content_to_responses_parts(["hello"], role="assistant")
+        assert result[0]["type"] == "output_text"
+        assert result[0]["text"] == "hello"
+
+    def test_assistant_role_with_mixed_input_output_text_types(self):
+        """Parts already marked input_text or output_text get normalized to role's type."""
+        parts = [
+            {"type": "input_text", "text": "a"},
+            {"type": "output_text", "text": "b"},
+            {"type": "text", "text": "c"},
+        ]
+        result = _chat_content_to_responses_parts(parts, role="assistant")
+        # All text parts should become output_text regardless of original type
+        assert all(p["type"] == "output_text" for p in result)
+        assert [p["text"] for p in result] == ["a", "b", "c"]
 
 
 # ── Response normalization tests ─────────────────────────────────────────────
@@ -519,7 +645,7 @@ class TestNormalizeCodexResponse:
             ],
             status="completed",
         )
-        msg, reason = agent._normalize_codex_response(response)
+        msg, reason = _normalize_codex_response(response)
         assert msg.content == "Hello!"
         assert reason == "stop"
 
@@ -537,7 +663,7 @@ class TestNormalizeCodexResponse:
             ],
             status="completed",
         )
-        msg, reason = agent._normalize_codex_response(response)
+        msg, reason = _normalize_codex_response(response)
         assert msg.content == "42"
         assert "math" in msg.reasoning
         assert reason == "stop"
@@ -556,7 +682,7 @@ class TestNormalizeCodexResponse:
             ],
             status="completed",
         )
-        msg, reason = agent._normalize_codex_response(response)
+        msg, reason = _normalize_codex_response(response)
         assert msg.codex_reasoning_items is not None
         assert len(msg.codex_reasoning_items) == 1
         assert msg.codex_reasoning_items[0]["encrypted_content"] == "gAAAA_secret_blob_123"
@@ -572,7 +698,7 @@ class TestNormalizeCodexResponse:
             ],
             status="completed",
         )
-        msg, reason = agent._normalize_codex_response(response)
+        msg, reason = _normalize_codex_response(response)
         assert msg.codex_reasoning_items is None
 
     def test_tool_calls_extracted(self, monkeypatch):
@@ -585,10 +711,107 @@ class TestNormalizeCodexResponse:
             ],
             status="completed",
         )
-        msg, reason = agent._normalize_codex_response(response)
+        msg, reason = _normalize_codex_response(response)
         assert reason == "tool_calls"
         assert len(msg.tool_calls) == 1
         assert msg.tool_calls[0].function.name == "web_search"
+
+    def test_message_items_captured_with_id_and_phase(self, monkeypatch):
+        """Exact message items (with id/phase) must be captured for cache replay."""
+        agent = self._make_codex_agent(monkeypatch)
+        response = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message", status="completed", id="msg_abc",
+                    phase="commentary",
+                    content=[SimpleNamespace(type="output_text", text="Thinking...")],
+                ),
+                SimpleNamespace(
+                    type="message", status="completed", id="msg_def",
+                    phase="final_answer",
+                    content=[SimpleNamespace(type="output_text", text="Done!")],
+                ),
+            ],
+            status="completed",
+        )
+        msg, reason = _normalize_codex_response(response)
+        assert msg.codex_message_items is not None
+        assert len(msg.codex_message_items) == 2
+        assert msg.codex_message_items[0]["id"] == "msg_abc"
+        assert msg.codex_message_items[0]["phase"] == "commentary"
+        assert msg.codex_message_items[0]["content"][0]["text"] == "Thinking..."
+        assert msg.codex_message_items[1]["id"] == "msg_def"
+        assert msg.codex_message_items[1]["phase"] == "final_answer"
+        assert msg.codex_message_items[1]["content"][0]["text"] == "Done!"
+
+    def test_message_items_none_when_no_messages(self, monkeypatch):
+        """Only reasoning + tool calls should yield None codex_message_items."""
+        agent = self._make_codex_agent(monkeypatch)
+        response = SimpleNamespace(
+            output=[
+                SimpleNamespace(type="function_call", status="completed",
+                    call_id="call_1", name="web_search", arguments='{}', id="fc_1"),
+            ],
+            status="completed",
+        )
+        msg, reason = _normalize_codex_response(response)
+        assert msg.codex_message_items is None
+
+
+class TestChatMessagesToResponsesInputMessageItems:
+    """Verify codex_message_items are replayed verbatim instead of reconstructed."""
+
+    def test_replays_exact_message_items(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        messages = [
+            {
+                "role": "assistant",
+                "content": "Hello world",
+                "codex_message_items": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "id": "msg_123",
+                        "phase": "final_answer",
+                        "content": [{"type": "output_text", "text": "Hello world"}],
+                    },
+                ],
+            },
+            {"role": "user", "content": "follow up"},
+        ]
+        items = _chat_messages_to_responses_input(messages)
+        msg_items = [i for i in items if i.get("type") == "message"]
+        assert len(msg_items) == 1
+        assert msg_items[0]["id"] == "msg_123"
+        assert msg_items[0]["phase"] == "final_answer"
+        assert msg_items[0]["content"][0]["text"] == "Hello world"
+
+    def test_fallback_to_plain_when_no_message_items(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        messages = [{"role": "assistant", "content": "Hello world"}]
+        items = _chat_messages_to_responses_input(messages)
+        assert items == [{"role": "assistant", "content": "Hello world"}]
+
+    def test_skips_invalid_message_items(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openai-codex", api_mode="codex_responses",
+                            base_url="https://chatgpt.com/backend-api/codex")
+        messages = [
+            {
+                "role": "assistant",
+                "content": "fallback text",
+                "codex_message_items": [
+                    {"type": "function_call", "role": "assistant"},  # wrong type
+                    {"type": "message", "role": "user"},  # wrong role
+                    {"type": "message", "role": "assistant", "content": "not a list"},
+                ],
+            },
+        ]
+        items = _chat_messages_to_responses_input(messages)
+        # All invalid — falls back to plain text reconstruction
+        assert items == [{"role": "assistant", "content": "fallback text"}]
 
 
 # ── Chat completions response handling (OpenRouter/Nous) ─────────────────────
@@ -801,11 +1024,14 @@ class TestCodexReasoningPreflight:
              "summary": [{"type": "summary_text", "text": "Thinking about it"}]},
             {"role": "assistant", "content": "hi there"},
         ]
-        normalized = agent._preflight_codex_input_items(raw_input)
+        normalized = _preflight_codex_input_items(raw_input)
         reasoning_items = [i for i in normalized if i.get("type") == "reasoning"]
         assert len(reasoning_items) == 1
         assert reasoning_items[0]["encrypted_content"] == "abc123encrypted"
-        assert reasoning_items[0]["id"] == "r_001"
+        # Note: "id" is intentionally excluded from normalized output —
+        # with store=False the API returns 404 on server-side id resolution.
+        # The id is only used for local deduplication via seen_ids.
+        assert "id" not in reasoning_items[0]
         assert reasoning_items[0]["summary"] == [{"type": "summary_text", "text": "Thinking about it"}]
 
     def test_reasoning_item_without_id(self, monkeypatch):
@@ -814,7 +1040,7 @@ class TestCodexReasoningPreflight:
         raw_input = [
             {"type": "reasoning", "encrypted_content": "abc123"},
         ]
-        normalized = agent._preflight_codex_input_items(raw_input)
+        normalized = _preflight_codex_input_items(raw_input)
         assert len(normalized) == 1
         assert "id" not in normalized[0]
         assert normalized[0]["summary"] == []  # default empty summary
@@ -826,7 +1052,7 @@ class TestCodexReasoningPreflight:
             {"type": "reasoning", "encrypted_content": ""},
             {"role": "user", "content": "hello"},
         ]
-        normalized = agent._preflight_codex_input_items(raw_input)
+        normalized = _preflight_codex_input_items(raw_input)
         reasoning_items = [i for i in normalized if i.get("type") == "reasoning"]
         assert len(reasoning_items) == 0
 
@@ -845,7 +1071,7 @@ class TestCodexReasoningPreflight:
             },
             {"role": "user", "content": "follow up"},
         ]
-        items = agent._chat_messages_to_responses_input(messages)
+        items = _chat_messages_to_responses_input(messages)
         reasoning_items = [i for i in items if isinstance(i, dict) and i.get("type") == "reasoning"]
         assert len(reasoning_items) == 1
         assert reasoning_items[0]["encrypted_content"] == "enc123"

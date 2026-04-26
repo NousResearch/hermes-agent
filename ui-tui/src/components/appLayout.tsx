@@ -66,12 +66,10 @@ const TranscriptPane = memo(function TranscriptPane({
             progress={progress}
             sections={ui.sections}
           />
+
+          <LiveTodoPanel />
         </Box>
       </ScrollBox>
-
-      <Box flexDirection="column" flexShrink={0} paddingX={1}>
-        <LiveTodoPanel />
-      </Box>
 
       <NoSelect flexShrink={0} marginLeft={1}>
         <TranscriptScrollbar scrollRef={transcript.scrollRef} t={ui.theme} />

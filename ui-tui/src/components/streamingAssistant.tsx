@@ -4,24 +4,14 @@ import { memo } from 'react'
 import type { AppLayoutProgressProps } from '../app/interfaces.js'
 import { toggleTodoCollapsed, useTurnSelector } from '../app/turnStore.js'
 import { $uiState } from '../app/uiStore.js'
+import { appendToolShelfMessage } from '../lib/liveProgress.js'
 import type { DetailsMode, Msg, SectionVisibility } from '../types.js'
 
 import { MessageLine } from './messageLine.js'
 import { TodoPanel } from './todoPanel.js'
 
-const isToolOnly = (msg: Msg | undefined) =>
-  Boolean(msg && msg.kind === 'trail' && !msg.thinking?.trim() && !msg.text && msg.tools?.length)
-
-const groupedSegments = (segments: Msg[]) =>
-  segments.reduce<Msg[]>((acc, msg) => {
-    if (isToolOnly(msg) && isToolOnly(acc.at(-1))) {
-      const prev = acc.at(-1)!
-
-      return [...acc.slice(0, -1), { ...prev, tools: [...(prev.tools ?? []), ...(msg.tools ?? [])] }]
-    }
-
-    return [...acc, msg]
-  }, [])
+const groupedSegments = (segments: Msg[]): Msg[] =>
+  segments.reduce<Msg[]>((acc, msg) => appendToolShelfMessage(acc, msg), [])
 
 export const StreamingAssistant = memo(function StreamingAssistant({
   cols,

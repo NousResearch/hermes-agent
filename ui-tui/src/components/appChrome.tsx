@@ -3,7 +3,7 @@ import { useStore } from '@nanostores/react'
 import { type ReactNode, type RefObject, useEffect, useMemo, useState } from 'react'
 
 import { $delegationState } from '../app/delegationStore.js'
-import { $turnState } from '../app/turnStore.js'
+import { useTurnSelector } from '../app/turnStore.js'
 import { FACES } from '../content/faces.js'
 import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
@@ -69,9 +69,9 @@ function SpawnHud({ t }: { t: Theme }) {
   // Tight HUD that only appears when the session is actually fanning out.
   // Colour escalates to warn/error as depth or concurrency approaches the cap.
   const delegation = useStore($delegationState)
-  const turn = useStore($turnState)
+  const subagents = useTurnSelector(state => state.subagents)
 
-  const tree = useMemo(() => buildSubagentTree(turn.subagents), [turn.subagents])
+  const tree = useMemo(() => buildSubagentTree(subagents), [subagents])
   const totals = useMemo(() => treeTotals(tree), [tree])
 
   if (!totals.descendantCount && !delegation.paused) {

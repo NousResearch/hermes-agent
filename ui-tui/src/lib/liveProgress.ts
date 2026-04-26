@@ -14,15 +14,41 @@ export const mergeToolShelfInto = (target: Msg, source: Msg): Msg => ({
   tools: [...(target.tools ?? []), ...(source.tools ?? [])]
 })
 
+const isBarrierMessage = (msg: Msg | undefined) => {
+  if (!msg) {
+    return true
+  }
+
+  // Assistant text, user input, intro/panel rows all terminate the shelf.
+  if (msg.kind === 'intro' || msg.kind === 'panel' || msg.kind === 'diff') {
+    return true
+  }
+
+  if (msg.role && msg.role !== 'system') {
+    return true
+  }
+
+  if (msg.text) {
+    return true
+  }
+
+  return false
+}
+
+const isToolCarryingTrail = (msg: Msg | undefined) =>
+  Boolean(msg?.kind === 'trail' && !msg.text && msg.tools?.length)
+
 export const appendToolShelfMessage = (prev: readonly Msg[], msg: Msg): Msg[] => {
   if (!isToolShelfMessage(msg)) {
     return [...prev, msg]
   }
 
+  let fallbackHolder: number | null = null
+
   for (let index = prev.length - 1; index >= 0; index--) {
     const candidate = prev[index]
 
-    if (canHoldToolShelf(candidate)) {
+    if (isToolCarryingTrail(candidate)) {
       const next = [...prev]
 
       next[index] = mergeToolShelfInto(candidate!, msg)
@@ -30,9 +56,21 @@ export const appendToolShelfMessage = (prev: readonly Msg[], msg: Msg): Msg[] =>
       return next
     }
 
-    if (candidate?.kind !== 'trail' || candidate.text) {
+    if (fallbackHolder === null && canHoldToolShelf(candidate)) {
+      fallbackHolder = index
+    }
+
+    if (isBarrierMessage(candidate)) {
       break
     }
+  }
+
+  if (fallbackHolder !== null) {
+    const next = [...prev]
+
+    next[fallbackHolder] = mergeToolShelfInto(prev[fallbackHolder]!, msg)
+
+    return next
   }
 
   return [...prev, msg]

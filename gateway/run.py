@@ -9445,6 +9445,10 @@ class GatewayRunner:
 
         if source.thread_id:
             _thread_metadata: Optional[Dict[str, Any]] = {"thread_id": source.thread_id}
+            # For Feishu topics: carry the original user message ID so
+            # the stream consumer can reply into the topic thread.
+            if source.thread_id.startswith("omt_") and event_message_id:
+                _thread_metadata["reply_to_message_id"] = event_message_id
         else:
             _thread_metadata = None
 
@@ -9843,7 +9847,16 @@ class GatewayRunner:
             _progress_thread_id = source.thread_id or event_message_id
         else:
             _progress_thread_id = source.thread_id
-        _progress_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        _progress_metadata = None
+        if _progress_thread_id:
+            _progress_metadata = {"thread_id": _progress_thread_id}
+            # For Feishu topics (omt_ IDs): also carry the original user
+            # message ID so intermediate/progress messages can use
+            # im.v1.message.reply (with reply_in_thread=True) instead of
+            # falling through to im.v1.message.create which doesn't place
+            # messages inside topic threads.
+            if _progress_thread_id.startswith("omt_") and event_message_id:
+                _progress_metadata["reply_to_message_id"] = event_message_id
 
         async def send_progress_messages():
             if not progress_queue:
@@ -10033,7 +10046,11 @@ class GatewayRunner:
         # Bridge sync status_callback → async adapter.send for context pressure
         _status_adapter = self.adapters.get(source.platform)
         _status_chat_id = source.chat_id
-        _status_thread_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        _status_thread_metadata = None
+        if _progress_thread_id:
+            _status_thread_metadata = {"thread_id": _progress_thread_id}
+            if _progress_thread_id.startswith("omt_") and event_message_id:
+                _status_thread_metadata["reply_to_message_id"] = event_message_id
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():
@@ -10177,7 +10194,12 @@ class GatewayRunner:
                             adapter=_adapter,
                             chat_id=source.chat_id,
                             config=_consumer_cfg,
-                            metadata={"thread_id": _progress_thread_id} if _progress_thread_id else None,
+                            metadata=(
+                                {"thread_id": _progress_thread_id,
+                                 "reply_to_message_id": event_message_id}
+                                if _progress_thread_id and _progress_thread_id.startswith("omt_") and event_message_id
+                                else ({"thread_id": _progress_thread_id} if _progress_thread_id else None)
+                            ),
                         )
                         if _want_stream_deltas:
                             def _stream_delta_cb(text: str) -> None:

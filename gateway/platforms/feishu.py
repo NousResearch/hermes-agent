@@ -2715,6 +2715,9 @@ class FeishuAdapter(BasePlatformAdapter):
         )
 
         chat_id = getattr(message, "chat_id", "") or ""
+        _raw_root = getattr(message, "root_id", None)
+        _raw_thread = getattr(message, "thread_id", None)
+        _raw_parent = getattr(message, "parent_id", None)
         chat_info = await self.get_chat_info(chat_id)
         sender_profile = await self._resolve_sender_profile(sender_id)
         source = self.build_source(
@@ -2723,8 +2726,18 @@ class FeishuAdapter(BasePlatformAdapter):
             chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=chat_type),
             user_id=sender_profile["user_id"],
             user_name=sender_profile["user_name"],
-            thread_id=getattr(message, "thread_id", None) or None,
+            thread_id=(
+                getattr(message, "thread_id", None)
+                or getattr(message, "root_id", None)
+                or None
+            ),
             user_id_alt=sender_profile["user_id_alt"],
+        )
+        # DEBUG: Log topic-related fields for reply_in_thread verification
+        _resolved_tid = source.thread_id or "(none)"
+        logger.info(
+            "[Feishu] TOPIC_DEBUG chat_type=%s msg_id=%s parent=%s root=%s thread=%s chat_id=%s → resolved_thread=%s",
+            chat_type or "?", message_id, _raw_parent, _raw_root, _raw_thread, chat_id, _resolved_tid,
         )
         normalized = MessageEvent(
             text=text,
@@ -3907,7 +3920,33 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
-        reply_in_thread = bool((metadata or {}).get("thread_id"))
+        thread_id = (metadata or {}).get("thread_id")
+        reply_in_thread = bool(thread_id)
+        # DEBUG: Log outbound message threading params
+        logger.info(
+            "[Feishu] SEND_DEBUG chat_id=%s reply_to=%s thread_id=%s reply_in_thread=%s",
+            chat_id, reply_to, thread_id, reply_in_thread,
+        )
+        # In Feishu group topics, if there's no reply_to but we have a
+        # thread_id (from root_id), we MUST keep the response inside the
+        # topic.  Feishu IDs use two prefixes:
+        #   om_  → message ID    (valid for im.v1.message.reply)
+        #   omt_ → topic/thread ID (NOT valid as reply message_id)
+        # Using an omt_ ID as reply message_id triggers error 99992354.
+        if not reply_to and thread_id and thread_id.startswith("om_") and not thread_id.startswith("omt_"):
+            reply_to = thread_id
+        # If we still have no reply_to but the caller provided a
+        # reply_to_message_id in metadata (e.g. the original user
+        # message that started the session), use that as a reply target
+        # so the message stays inside the topic thread via
+        # im.v1.message.reply with reply_in_thread=True.
+        # This covers intermediate / progress messages that originate
+        # from the stream consumer or tool-progress sender, which don't
+        # carry an explicit reply_to but DO carry the topic thread_id.
+        if not reply_to and thread_id and thread_id.startswith("omt_"):
+            _meta_reply_to = (metadata or {}).get("reply_to_message_id")
+            if _meta_reply_to:
+                reply_to = _meta_reply_to
         if reply_to:
             body = self._build_reply_message_body(
                 content=payload,
@@ -3918,11 +3957,15 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_reply_message_request(reply_to, body)
             return await asyncio.to_thread(self._client.im.v1.message.reply, request)
 
+        # No valid reply_to — create a new message.  Pass root_id when
+        # we have a topic/thread ID so the message lands inside the topic.
+        _root_id = thread_id if (not reply_to and thread_id) else None
         body = self._build_create_message_body(
             receive_id=chat_id,
             msg_type=msg_type,
             content=payload,
             uuid_value=str(uuid.uuid4()),
+            root_id=_root_id,
         )
         request = self._build_create_message_request("chat_id", body)
         return await asyncio.to_thread(self._client.im.v1.message.create, request)
@@ -4201,22 +4244,28 @@ class FeishuAdapter(BasePlatformAdapter):
         return SimpleNamespace(message_id=message_id, request_body=request_body)
 
     @staticmethod
-    def _build_create_message_body(*, receive_id: str, msg_type: str, content: str, uuid_value: str) -> Any:
+    def _build_create_message_body(*, receive_id: str, msg_type: str, content: str, uuid_value: str, root_id: Optional[str] = None) -> Any:
         if "CreateMessageRequestBody" in globals():
-            return (
+            builder = (
                 CreateMessageRequestBody.builder()
                 .receive_id(receive_id)
                 .msg_type(msg_type)
                 .content(content)
                 .uuid(uuid_value)
-                .build()
             )
-        return SimpleNamespace(
+            body = builder.build()
+            if root_id:
+                body.root_id = root_id
+            return body
+        ns = SimpleNamespace(
             receive_id=receive_id,
             msg_type=msg_type,
             content=content,
             uuid=uuid_value,
         )
+        if root_id:
+            ns.root_id = root_id
+        return ns
 
     @staticmethod
     def _build_create_message_request(receive_id_type: str, request_body: Any) -> Any:

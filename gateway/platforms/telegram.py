@@ -1796,13 +1796,37 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            logger.error(
-                "[%s] Failed to send Telegram local image, falling back to base adapter: %s",
+            logger.warning(
+                "[%s] Failed to send Telegram local image as photo, trying document fallback: %s",
                 self.name,
                 e,
                 exc_info=True,
             )
-            return await super().send_image_file(chat_id, image_path, caption, reply_to)
+            # Telegram rejects some valid local images as photos (for example
+            # very tall screenshots, extreme aspect ratios, or images outside
+            # photo dimension limits).  Do not degrade to a text-only
+            # "Image: /path" message; upload the same file as a document so the
+            # user still receives an openable attachment.
+            try:
+                _thread = self._metadata_thread_id(metadata)
+                with open(image_path, "rb") as image_file:
+                    msg = await self._bot.send_document(
+                        chat_id=int(chat_id),
+                        document=image_file,
+                        filename=os.path.basename(image_path),
+                        caption=caption[:1024] if caption else None,
+                        reply_to_message_id=int(reply_to) if reply_to else None,
+                        message_thread_id=self._message_thread_id_for_send(_thread),
+                    )
+                return SendResult(success=True, message_id=str(msg.message_id))
+            except Exception as document_error:
+                logger.error(
+                    "[%s] Failed to send Telegram local image as document, falling back to base adapter: %s",
+                    self.name,
+                    document_error,
+                    exc_info=True,
+                )
+                return await super().send_image_file(chat_id, image_path, caption, reply_to)
 
     async def send_document(
         self,

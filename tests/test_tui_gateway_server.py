@@ -347,6 +347,30 @@ def test_complete_slash_includes_provider_alias():
     assert any(item["text"] == "provider" for item in resp["result"]["items"])
 
 
+def test_complete_slash_includes_tui_details_command():
+    resp = server.handle_request(
+        {"id": "1", "method": "complete.slash", "params": {"text": "/det"}}
+    )
+
+    assert any(item["text"] == "/details" for item in resp["result"]["items"])
+
+
+def test_complete_slash_details_args():
+    resp_section = server.handle_request(
+        {"id": "1", "method": "complete.slash", "params": {"text": "/details t"}}
+    )
+    resp_mode = server.handle_request(
+        {
+            "id": "2",
+            "method": "complete.slash",
+            "params": {"text": "/details thinking e"},
+        }
+    )
+
+    assert any(item["text"] == "thinking" for item in resp_section["result"]["items"])
+    assert any(item["text"] == "expanded" for item in resp_mode["result"]["items"])
+
+
 def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "_hermes_home", tmp_path)
     agent = types.SimpleNamespace(reasoning_config=None)

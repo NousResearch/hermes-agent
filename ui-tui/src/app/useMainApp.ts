@@ -627,7 +627,7 @@ export function useMainApp(gw: GatewayClient) {
 
   const onModelSelect = useCallback((value: string) => {
     patchOverlayState({ modelPicker: false })
-    slashRef.current(`/model ${value}`)
+    slashRef.current(`/model ${value} --global`)
   }, [])
 
   const hasReasoning = Boolean(turn.reasoning.trim())

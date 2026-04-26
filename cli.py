@@ -1279,15 +1279,21 @@ def _usage_line_ansi(line: str) -> str:
     dim = "\x1b[2;37m"
     bright_cyan = "\x1b[1;36m"
     bright_blue = "\x1b[1;34m"
-    bright_magenta = "\x1b[1;35m"
     bright_yellow = "\x1b[1;33m"
     bright_green = "\x1b[1;32m"
     bright_red = "\x1b[1;31m"
+    brazil_green = bright_green
+    brazil_yellow = bright_yellow
+    brazil_blue = bright_blue
 
-    def _replace_money(text: str, default_color: str = bright_green) -> str:
+    def _replace_money(
+        text: str,
+        default_color: str = bright_green,
+        brl_color: str | None = None,
+    ) -> str:
         def _paint(match: re.Match[str]) -> str:
             money = match.group(1)
-            tone = bright_magenta if money.startswith("R$") else default_color
+            tone = brl_color if money.startswith("R$") and brl_color else default_color
             return f"{tone}{money}{reset}"
 
         return re.sub(r"(R\$ ?[\d.,]+|\$[\d.,]+)", _paint, text)
@@ -1305,7 +1311,8 @@ def _usage_line_ansi(line: str) -> str:
     if line.startswith("#-") and line.endswith("#"):
         return f"{dim}{line}{reset}"
     if "|" not in line and line.startswith("#") and line.endswith("#"):
-        return f"{bright_magenta}{line}{reset}"
+        inner = line[1:-1]
+        return f"{dim}#{reset}{bright_cyan}{inner}{reset}{dim}#{reset}"
     if "|" not in line:
         return line
 
@@ -1314,9 +1321,11 @@ def _usage_line_ansi(line: str) -> str:
     label_clean = label.strip().lower()
     label_color = bright_cyan
     value_color = bright_green
+    brl_color: str | None = None
     if label_clean == "maritaca":
-        label_color = bright_magenta
-        value_color = bright_magenta
+        label_color = brazil_green
+        value_color = brazil_yellow
+        brl_color = brazil_blue
     elif label_clean == "openrouter":
         label_color = bright_blue
     elif label_clean in {"anthropic", "openai-codex"}:
@@ -1324,9 +1333,9 @@ def _usage_line_ansi(line: str) -> str:
     elif label_clean == "cost":
         label_color = bright_green
 
-    value_colored = _replace_money(_color_progress(value), default_color=value_color)
+    value_colored = _replace_money(_color_progress(value), default_color=value_color, brl_color=brl_color)
     if label_clean == "maritaca":
-        value_colored = value_colored.replace("Saldo:", f"{bright_magenta}Saldo:{reset}", 1)
+        value_colored = value_colored.replace("Saldo:", f"{brazil_yellow}Saldo:{reset}", 1)
     return (
         f"{dim}#{reset} "
         f"{label_color}{label}{reset} "

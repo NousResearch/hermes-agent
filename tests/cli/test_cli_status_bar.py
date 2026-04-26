@@ -427,14 +427,14 @@ class TestCLIUsageReport:
         assert any("\x1b[" in line for line in captured)
         assert any("Usage" in line for line in captured)
 
-    def test_usage_line_ansi_uses_dedicated_maritaca_theme(self):
+    def test_usage_line_ansi_uses_brazil_colors_for_maritaca(self):
         line = "# maritaca           | Saldo: R$ 118,96                                   #"
 
         rendered = _usage_line_ansi(line)
 
-        assert "\x1b[1;35mmaritaca" in rendered
-        assert "\x1b[1;35mSaldo:" in rendered
-        assert "\x1b[1;35mR$ 118,96" in rendered
+        assert "\x1b[1;32mmaritaca" in rendered
+        assert "\x1b[1;33mSaldo:" in rendered
+        assert "\x1b[1;34mR$ 118,96" in rendered
 
     def test_usage_line_ansi_keeps_usd_balances_green(self):
         line = "# openrouter         | Credits balance: $44.48                             #"
@@ -443,6 +443,15 @@ class TestCLIUsageReport:
 
         assert "\x1b[1;34mopenrouter" in rendered
         assert "\x1b[1;32m$44.48" in rendered
+
+    def test_usage_line_ansi_keeps_title_row_edges_gray(self):
+        line = "#" + " Usage ".center(77) + "#"
+
+        rendered = _usage_line_ansi(line)
+
+        assert rendered.startswith("\x1b[2;37m#\x1b[0m")
+        assert rendered.endswith("\x1b[2;37m#\x1b[0m")
+        assert "\x1b[1;36m" in rendered
 
     def test_show_usage_marks_unknown_pricing(self, capsys):
         cli_obj = _attach_agent(

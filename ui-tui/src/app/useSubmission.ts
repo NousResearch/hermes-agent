@@ -101,10 +101,10 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
         gw.request<PromptSubmitResponse>('prompt.submit', { session_id: sid, text: submitText }).catch((e: Error) => {
           if (isSessionBusyError(e)) {
-            composerActions.enqueue(text)
+            composerActions.enqueue(submitText)
             patchUiState({ busy: true, status: 'queued for next turn' })
 
-            return sys(`queued: "${text.slice(0, 50)}${text.length > 50 ? '…' : ''}"`)
+            return sys(`queued: "${submitText.slice(0, 50)}${submitText.length > 50 ? '…' : ''}"`)
           }
 
           sys(`error: ${e.message}`)

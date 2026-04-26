@@ -4569,11 +4569,7 @@ def _(rid, params: dict) -> dict:
 
             return _ok(rid, {"skills": get_available_skills()})
         if action == "search":
-            from hermes_cli.skills_hub import (
-                unified_search,
-                GitHubAuth,
-                create_source_router,
-            )
+            from tools.skills_hub import GitHubAuth, create_source_router, unified_search
 
             raw = (
                 unified_search(

@@ -6,6 +6,7 @@ from hermes_cli.models import (
     OPENROUTER_MODELS, fetch_openrouter_models, model_ids, detect_provider_for_model,
     is_nous_free_tier, partition_nous_models_by_tier,
     check_nous_free_tier, _FREE_TIER_CACHE_TTL,
+    model_supports_fast_mode, resolve_fast_mode_overrides,
 )
 import hermes_cli.models as _models_mod
 
@@ -15,6 +16,16 @@ LIVE_OPENROUTER_MODELS = [
     ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
 ]
 
+
+
+class TestFastModeModelSupport:
+    def test_gpt_55_resolves_openai_priority_processing_override(self):
+        assert model_supports_fast_mode("gpt-5.5") is True
+        assert resolve_fast_mode_overrides("gpt-5.5") == {"service_tier": "priority"}
+
+    def test_vendor_prefixed_gpt_55_resolves_openai_priority_processing_override(self):
+        assert model_supports_fast_mode("openai/gpt-5.5") is True
+        assert resolve_fast_mode_overrides("openai/gpt-5.5") == {"service_tier": "priority"}
 
 
 class TestModelIds:

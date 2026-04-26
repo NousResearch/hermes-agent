@@ -2383,29 +2383,6 @@ class GatewayRunner:
         # Discover and load event hooks
         self.hooks.discover_and_load()
 
-        # Curator — kick off a background skill-maintenance pass on gateway
-        # startup if the schedule says we're due. Runs in a daemon thread
-        # so it never blocks gateway startup. Best-effort; any failure is
-        # swallowed. The interval_hours gate prevents re-running on quick
-        # restarts.
-        try:
-            from agent.curator import maybe_run_curator
-
-            def _curator_summary(msg: str) -> None:
-                # Surface the one-line summary into gateway logs so operators
-                # can see what the curator did. No per-platform push since
-                # there's no user-facing session at gateway boot.
-                logger.info("curator: %s", msg)
-
-            maybe_run_curator(
-                idle_for_seconds=float("inf"),  # gateway boot = no active agent
-                on_summary=_curator_summary,
-            )
-        except Exception:
-            logger.debug(
-                "curator boot hook failed", exc_info=True,
-            )
-
         
         # Recover background processes from checkpoint (crash recovery)
         try:
@@ -11767,6 +11744,7 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     IMAGE_CACHE_EVERY = 60   # ticks — once per hour at default 60s interval
     CHANNEL_DIR_EVERY = 5    # ticks — every 5 minutes
     PASTE_SWEEP_EVERY = 60   # ticks — once per hour
+    CURATOR_EVERY = 60       # ticks — poll hourly (inner gate handles the real cadence)
 
     logger.info("Cron ticker started (interval=%ds)", interval)
     tick_count = 0
@@ -11817,6 +11795,21 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
                     )
             except Exception as e:
                 logger.debug("Paste sweep error: %s", e)
+
+        # Curator — piggy-back on the existing cron ticker so long-running
+        # gateways get weekly skill maintenance without needing restarts.
+        # maybe_run_curator() is internally gated by config.interval_hours
+        # (7 days by default), so CURATOR_EVERY is just the poll rate — the
+        # real work only fires once per config interval.
+        if tick_count % CURATOR_EVERY == 0:
+            try:
+                from agent.curator import maybe_run_curator
+                maybe_run_curator(
+                    idle_for_seconds=float("inf"),
+                    on_summary=lambda msg: logger.info("curator: %s", msg),
+                )
+            except Exception as e:
+                logger.debug("Curator tick error: %s", e)
 
         stop_event.wait(timeout=interval)
     logger.info("Cron ticker stopped")

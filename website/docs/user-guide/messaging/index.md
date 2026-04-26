@@ -115,6 +115,7 @@ hermes gateway start        # Start the default service
 hermes gateway stop         # Stop the default service
 hermes gateway status       # Check default service status
 hermes gateway status --system         # Linux only: inspect the system service explicitly
+# Native Windows: use scripts/windows-gateway.ps1 from a local clone
 ```
 
 ## Chat Commands (Inside Messaging)
@@ -364,6 +365,31 @@ launchd plists are static — if you install new tools (e.g. a new Node.js versi
 :::info Multiple installations
 Like the Linux systemd service, each `HERMES_HOME` directory gets its own launchd label. The default `~/.hermes` uses `ai.hermes.gateway`; other installations use `ai.hermes.gateway-<suffix>`.
 :::
+
+### Native Windows (PowerShell scheduled task)
+
+Native Windows is best treated as an advanced/manual setup. WSL2 remains the recommended Windows path for full Hermes support, but if you installed Hermes with `scripts/install.ps1` and want the messaging gateway to keep running without a visible PowerShell or CMD window, use the Windows helper script from a local clone:
+
+```powershell
+cd $env:LOCALAPPDATA\hermes\hermes-agent
+powershell -ExecutionPolicy Bypass -File .\scripts\windows-gateway.ps1 -Action install
+powershell -ExecutionPolicy Bypass -File .\scripts\windows-gateway.ps1 -Action restart
+powershell -ExecutionPolicy Bypass -File .\scripts\windows-gateway.ps1 -Action status
+```
+
+The helper creates a `Hermes Gateway` scheduled task that runs `wscript.exe`, which then launches `hermes gateway run --replace --accept-hooks` with the window hidden. The task is configured to start when available and to retry failed runs, which helps WebSocket-based gateways recover after transient disconnects or process exits.
+
+Common checks:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\scripts\windows-gateway.ps1 -Action logs
+powershell -ExecutionPolicy Bypass -File .\scripts\windows-gateway.ps1 -Action errors
+powershell -ExecutionPolicy Bypass -File .\scripts\windows-gateway.ps1 -Action follow
+```
+
+Unlike services that expose a fixed local port, Hermes Gateway status on Windows should be checked through `HERMES_HOME\gateway.pid`, `HERMES_HOME\gateway_state.json`, and `HERMES_HOME\logs\`. This is especially useful for WebSocket-based messaging platforms such as WeCom, where there may be no local listener port to probe.
+
+If the first `restart` cannot stop an older foreground gateway and reports `Access is denied`, close the old foreground terminal once, or rerun the helper from a PowerShell window with the same or higher permission level.
 
 ## Platform-Specific Toolsets
 

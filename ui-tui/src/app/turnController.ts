@@ -81,7 +81,6 @@ class TurnController {
   persistSpawnTree?: (subagents: SubagentProgress[], sessionId: null | string) => Promise<void>
   protocolWarned = false
   reasoningText = ''
-  reasoningSegmentOffset = 0
   segmentMessages: Msg[] = []
   pendingSegmentTools: string[] = []
   statusTimer: Timer = null
@@ -107,7 +106,6 @@ class TurnController {
   clearReasoning() {
     this.reasoningTimer = clear(this.reasoningTimer)
     this.reasoningText = ''
-    this.reasoningSegmentOffset = 0
     this.toolTokenAcc = 0
     patchTurnState({ reasoning: '', reasoningTokens: 0, toolTokens: 0 })
   }
@@ -202,15 +200,10 @@ class TurnController {
       patchTurnState({ reasoning: this.reasoningText, reasoningTokens: estimateTokensRough(this.reasoningText) })
     }
 
-    const thinking = this.reasoningText.slice(this.reasoningSegmentOffset).trim()
     const msg: Msg = {
       role: split.text ? 'assistant' : 'system',
       text: split.text,
       ...(!split.text && { kind: 'trail' as const }),
-      ...(thinking && {
-        thinking,
-        thinkingTokens: estimateTokensRough(thinking)
-      }),
       ...(this.pendingSegmentTools.length && { tools: this.pendingSegmentTools })
     }
 
@@ -220,7 +213,6 @@ class TurnController {
       this.segmentMessages = [...this.segmentMessages, msg]
     }
 
-    this.reasoningSegmentOffset = this.reasoningText.length
     this.pendingSegmentTools = []
     this.bufRef = ''
     patchTurnState({ streamPendingTools: [], streamSegments: this.segmentMessages, streaming: '' })
@@ -329,7 +321,7 @@ class TurnController {
       return body === null || (!finalHasOwnDiffFence && !finalText.includes(body))
     })
 
-    const finalThinking = savedReasoning.slice(this.reasoningSegmentOffset).trim()
+    const finalThinking = savedReasoning.trim()
     const finalDetails: Msg = {
       kind: 'trail',
       role: 'system',

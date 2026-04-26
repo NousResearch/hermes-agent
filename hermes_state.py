@@ -1483,16 +1483,30 @@ class SessionDB:
         limit: int = 20,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        """List sessions, optionally filtered by source."""
+        """List sessions, optionally filtered by source.
+
+        Returns rows enriched with a computed ``last_active`` column (the
+        latest message timestamp for the session, falling back to
+        ``started_at``) so callers can sort by "most recently used" instead
+        of "most recently started".
+        """
+        select_last_active = (
+            "COALESCE("
+            "(SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = s.id),"
+            " s.started_at"
+            ") AS last_active"
+        )
         with self._lock:
             if source:
                 cursor = self._conn.execute(
-                    "SELECT * FROM sessions WHERE source = ? ORDER BY started_at DESC LIMIT ? OFFSET ?",
+                    f"SELECT s.*, {select_last_active} FROM sessions s "
+                    "WHERE s.source = ? ORDER BY s.started_at DESC LIMIT ? OFFSET ?",
                     (source, limit, offset),
                 )
             else:
                 cursor = self._conn.execute(
-                    "SELECT * FROM sessions ORDER BY started_at DESC LIMIT ? OFFSET ?",
+                    f"SELECT s.*, {select_last_active} FROM sessions s "
+                    "ORDER BY s.started_at DESC LIMIT ? OFFSET ?",
                     (limit, offset),
                 )
             return [dict(row) for row in cursor.fetchall()]

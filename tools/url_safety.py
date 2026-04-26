@@ -29,6 +29,8 @@ import os
 import socket
 from urllib.parse import urlparse
 
+from utils import is_truthy_value
+
 logger = logging.getLogger(__name__)
 
 # Hostnames that should always be blocked regardless of IP resolution
@@ -107,12 +109,16 @@ def _global_allow_private_urls() -> bool:
         cfg = read_raw_config()
         # security.allow_private_urls (preferred)
         sec = cfg.get("security", {})
-        if isinstance(sec, dict) and sec.get("allow_private_urls"):
+        if isinstance(sec, dict) and is_truthy_value(
+            sec.get("allow_private_urls"), default=False
+        ):
             _cached_allow_private = True
             return _cached_allow_private
         # browser.allow_private_urls (legacy fallback)
         browser = cfg.get("browser", {})
-        if isinstance(browser, dict) and browser.get("allow_private_urls"):
+        if isinstance(browser, dict) and is_truthy_value(
+            browser.get("allow_private_urls"), default=False
+        ):
             _cached_allow_private = True
             return _cached_allow_private
     except Exception:

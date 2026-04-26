@@ -5101,6 +5101,29 @@ class GatewayRunner:
             except Exception:
                 title = None
 
+        # Get model info from config
+        from hermes_cli.config import load_config
+        try:
+            config = load_config()
+            model_cfg = config.get("model", {})
+            if isinstance(model_cfg, dict):
+                model_name = model_cfg.get("default") or model_cfg.get("name") or "unknown"
+                provider = model_cfg.get("provider") or "auto"
+            else:
+                model_name = str(model_cfg) if model_cfg else "unknown"
+                provider = "auto"
+        except Exception:
+            model_name = "unknown"
+            provider = "auto"
+
+        # Check for session override (same logic as /model command)
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        override = self._session_model_overrides.get(session_key, {})
+        if override:
+            model_name = override.get("model", model_name)
+            provider = override.get("provider", provider)
+
         lines = [
             "📊 **Hermes Gateway Status**",
             "",
@@ -5113,6 +5136,8 @@ class GatewayRunner:
             f"**Last Activity:** {session_entry.updated_at.strftime('%Y-%m-%d %H:%M')}",
             f"**Tokens:** {session_entry.total_tokens:,}",
             f"**Agent Running:** {'Yes ⚡' if is_running else 'No'}",
+            f"**Model:** {model_name}",
+            f"**Provider:** {provider}",
             "",
             f"**Connected Platforms:** {', '.join(connected_platforms)}",
         ])

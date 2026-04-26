@@ -371,6 +371,7 @@ def test_complete_slash_details_args():
     )
 
     assert resp_root["result"]["replace_from"] == len("/details")
+    assert any(item["text"] == " thinking" for item in resp_root["result"]["items"])
     assert any(item["text"] == "thinking" for item in resp_section["result"]["items"])
     assert any(item["text"] == "expanded" for item in resp_mode["result"]["items"])
 

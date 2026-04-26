@@ -472,7 +472,14 @@ export function TextInput({
     return stringWidth(current.slice(prevPos(current, cursor), cursor)) === 1
   }
 
-  const commit = (next: string, nextCur: number, track = true, syncParent = true, syncLocal = true) => {
+  const commit = (
+    next: string,
+    nextCur: number,
+    track = true,
+    syncParent = true,
+    syncLocal = true,
+    nextLineWidth?: number
+  ) => {
     const prev = vRef.current
     const c = snapPos(next, nextCur)
     editVersionRef.current += 1
@@ -501,7 +508,7 @@ export function TextInput({
 
     curRef.current = c
     vRef.current = next
-    lineWidthRef.current = stringWidth(next.includes('\n') ? next.slice(next.lastIndexOf('\n') + 1) : next)
+    lineWidthRef.current = nextLineWidth ?? stringWidth(next.includes('\n') ? next.slice(next.lastIndexOf('\n') + 1) : next)
 
     if (next !== prev) {
       if (syncParent) {
@@ -509,6 +516,7 @@ export function TextInput({
         self.current = true
         cbChange.current(next)
       } else {
+        self.current = true
         scheduleParentChange(next)
       }
     }
@@ -768,7 +776,7 @@ export function TextInput({
           v = v.slice(0, t) + v.slice(c)
           c = t
           stdout!.write('\b \b')
-          commit(v, c, true, false, false)
+          commit(v, c, true, false, false, Math.max(0, lineWidthRef.current - 1))
 
           return
         } else {
@@ -855,7 +863,7 @@ export function TextInput({
 
             if (simpleAppend) {
               stdout!.write(text)
-              commit(v, c, true, false, false)
+              commit(v, c, true, false, false, lineWidthRef.current + stringWidth(text))
 
               return
             }

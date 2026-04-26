@@ -1173,7 +1173,7 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        if hermes_slug in {"copilot", "copilot-acp"}:
+        if hermes_slug in {"copilot", "copilot-acp", "openai-codex"}:
             model_ids = provider_model_ids(hermes_slug)
         else:
             # Use curated list — look up by Hermes slug, fall back to overlay key

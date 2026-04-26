@@ -75,6 +75,29 @@ def test_normal_path_still_works(hermes_auth_only_env):
     assert "openai-codex" in slugs
 
 
+def test_codex_picker_uses_live_model_listing_when_available(hermes_auth_only_env, monkeypatch):
+    """The picker should not advertise stale fallback Codex models when live discovery works."""
+    from hermes_cli import model_switch
+
+    live_models = ["gpt-5.5", "gpt-5.4", "gpt-5.4-mini", "gpt-5.3-codex", "gpt-5.2"]
+    stale_models = {"gpt-5.2-codex", "gpt-5.1-codex-max", "gpt-5.1-codex-mini"}
+
+    monkeypatch.setattr(
+        "hermes_cli.models.provider_model_ids",
+        lambda provider: live_models if provider == "openai-codex" else [],
+    )
+
+    providers = model_switch.list_authenticated_providers(
+        current_provider="openai-codex",
+        max_models=50,
+    )
+
+    codex = next(p for p in providers if p["slug"] == "openai-codex")
+    assert codex["models"] == live_models
+    assert codex["total_models"] == len(live_models)
+    assert stale_models.isdisjoint(codex["models"])
+
+
 @pytest.fixture()
 def claude_code_only_env(tmp_path, monkeypatch):
     """Set up an environment where Anthropic credentials only exist in

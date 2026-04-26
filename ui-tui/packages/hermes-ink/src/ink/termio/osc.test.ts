@@ -26,4 +26,26 @@ describe('shouldEmitClipboardSequence', () => {
       shouldEmitClipboardSequence({ HERMES_TUI_COPY_OSC52: '0', TERM: 'xterm-256color' } as NodeJS.ProcessEnv)
     ).toBe(false)
   })
+
+  it('HERMES_TUI_FORCE_OSC52 takes precedence over TMUX suppression', () => {
+    // Without the override, local-in-tmux suppresses the OSC 52 sequence
+    // so the terminal multiplexer path wins. FORCE_OSC52=1 flips that
+    // back on for users whose tmux config supports passthrough.
+    expect(shouldEmitClipboardSequence({ TMUX: '/tmp/t,1,0' } as NodeJS.ProcessEnv)).toBe(false)
+    expect(
+      shouldEmitClipboardSequence({
+        HERMES_TUI_FORCE_OSC52: '1',
+        TMUX: '/tmp/t,1,0'
+      } as NodeJS.ProcessEnv)
+    ).toBe(true)
+  })
+
+  it('HERMES_TUI_FORCE_OSC52=0 suppresses OSC 52 even for remote or plain terminals', () => {
+    expect(
+      shouldEmitClipboardSequence({
+        HERMES_TUI_FORCE_OSC52: '0',
+        SSH_CONNECTION: '1'
+      } as NodeJS.ProcessEnv)
+    ).toBe(false)
+  })
 })

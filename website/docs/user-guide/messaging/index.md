@@ -219,6 +219,17 @@ Send any message while the agent is working to interrupt it. Key behaviors:
 - **Multiple messages are combined** — messages sent during interruption are joined into one prompt
 - **`/stop` command** — interrupts without queuing a follow-up message
 
+### Queue vs interrupt (busy-input mode)
+
+By default, messaging a busy agent interrupts it. To switch the whole install so follow-ups queue behind the current task instead, set:
+
+```yaml
+display:
+  busy_input_mode: queue   # default: interrupt
+```
+
+The first time you message a busy agent on any platform, Hermes appends a one-line reminder to the busy-ack explaining the knob (`"💡 First-time tip — …"`). The reminder fires once per install — a flag under `onboarding.seen.busy_input_prompt` latches it. Delete that key to see the tip again.
+
 ## Tool Progress Notifications
 
 Control how much tool activity is displayed in `~/.hermes/config.yaml`:

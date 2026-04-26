@@ -1903,7 +1903,7 @@ class TestPtyWebSocket:
             "_resolve_chat_argv",
             # sleep gives the test time to push the resize before tput runs
             lambda resume=None, sidecar_url=None: (
-                ["/bin/sh", "-c", "sleep 0.15; tput cols; tput lines"],
+                ["/bin/sh", "-c", "TERM=xterm; export TERM; sleep 0.15; tput cols; tput lines"],
                 None,
                 None,
             ),

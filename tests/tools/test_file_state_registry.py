@@ -216,11 +216,25 @@ class FileToolsIntegrationTests(unittest.TestCase):
 
     def setUp(self) -> None:
         file_state.get_registry().clear()
-        self._tmpdir = tempfile.mkdtemp(prefix="hermes_file_state_int_")
+        self._saved_terminal_env = {
+            "TERMINAL_ENV": os.environ.get("TERMINAL_ENV"),
+            "TERMINAL_MODAL_MODE": os.environ.get("TERMINAL_MODAL_MODE"),
+        }
+        os.environ["TERMINAL_ENV"] = "local"
+        os.environ.pop("TERMINAL_MODAL_MODE", None)
+        self._tmpdir = tempfile.mkdtemp(
+            prefix="hermes_file_state_int_",
+            dir=os.getcwd(),
+        )
 
     def tearDown(self) -> None:
         import shutil
         shutil.rmtree(self._tmpdir, ignore_errors=True)
+        for key, value in self._saved_terminal_env.items():
+            if value is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = value
         file_state.get_registry().clear()
 
     def _write_seed(self, name: str, content: str = "seed\n") -> str:

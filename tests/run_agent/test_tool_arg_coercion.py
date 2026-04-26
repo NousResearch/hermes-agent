@@ -67,7 +67,7 @@ class TestCoerceNumber:
     def test_inf_stays_string_for_integer_only(self):
         """Infinity should not be converted to int."""
         result = _coerce_number("inf")
-        assert result == float("inf")
+        assert result == "inf"
 
     def test_negative_float(self):
         assert _coerce_number("-2.5") == -2.5

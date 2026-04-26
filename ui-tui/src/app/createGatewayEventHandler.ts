@@ -372,6 +372,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
 
       case 'tool.start':
+        turnController.recordTodos(ev.payload.todos)
         turnController.recordToolStart(ev.payload.tool_id, ev.payload.name ?? 'tool', ev.payload.context ?? '')
 
         return
@@ -384,10 +385,18 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             inlineDiffText,
             ev.payload.tool_id,
             ev.payload.name,
-            ev.payload.error
+            ev.payload.error,
+            ev.payload.duration_s
           )
         } else {
-          turnController.recordToolComplete(ev.payload.tool_id, ev.payload.name, ev.payload.error, ev.payload.summary)
+          turnController.recordToolComplete(
+            ev.payload.tool_id,
+            ev.payload.name,
+            ev.payload.error,
+            ev.payload.summary,
+            ev.payload.duration_s,
+            ev.payload.todos
+          )
         }
 
         return

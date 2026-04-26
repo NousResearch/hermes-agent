@@ -58,6 +58,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
     if (!composerState.input && !composerState.inputBuf.length) {
       turnController.relaxStreaming()
+
       return
     }
 
@@ -92,9 +93,11 @@ export function useSubmission(opts: UseSubmissionOptions) {
         turnController.clearStatusTimer()
         maybeGoodVibes(submitText)
         setLastUserMsg(text)
+
         if (showUserMessage) {
           appendMessage({ role: 'user', text: displayText })
         }
+
         patchUiState({ busy: true, status: 'running…' })
         turnController.bufRef = ''
         turnController.interrupted = false

@@ -59,6 +59,54 @@ describe('createGatewayEventHandler', () => {
     patchUiState({ showReasoning: true })
   })
 
+  it('keeps todo list visible after final assistant text completes', () => {
+    const appended: Msg[] = []
+
+    const todos = [
+      { content: 'Gather ingredients', id: 'prep', status: 'completed' },
+      { content: 'Boil water', id: 'boil', status: 'in_progress' },
+      { content: 'Make sauce', id: 'sauce', status: 'pending' }
+    ]
+
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: {}, type: 'message.start' } as any)
+    onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.start' } as any)
+    expect(getTurnState().todos).toEqual(todos)
+
+    onEvent({ payload: { text: 'Started a todo list.' }, type: 'message.complete' } as any)
+
+    expect(appended[appended.length - 1]).toMatchObject({ role: 'assistant', text: 'Started a todo list.' })
+    expect(getTurnState().todos).toEqual(todos)
+  })
+
+  it('keeps the current todo list visible when the next message starts', () => {
+    const appended: Msg[] = []
+    const todos = [{ content: 'Boil water', id: 'boil', status: 'in_progress' }]
+
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.start' } as any)
+    expect(getTurnState().todos).toEqual(todos)
+
+    onEvent({ payload: {}, type: 'message.start' } as any)
+
+    expect(getTurnState().todos).toEqual(todos)
+  })
+
+  it('clears the visible todo list when the todo tool returns an empty list', () => {
+    const appended: Msg[] = []
+    const todos = [{ content: 'Boil water', id: 'boil', status: 'in_progress' }]
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.start' } as any)
+    expect(getTurnState().todos).toEqual(todos)
+
+    onEvent({ payload: { name: 'todo', todos: [], tool_id: 'todo-1' }, type: 'tool.complete' } as any)
+
+    expect(getTurnState().todos).toEqual([])
+  })
+
   it('persists completed tool rows when message.complete lands immediately after tool.complete', () => {
     const appended: Msg[] = []
 
@@ -88,6 +136,31 @@ describe('createGatewayEventHandler', () => {
     expect(appended[0]?.tools?.[0]).toContain('hero cards')
     expect(appended[0]?.toolTokens).toBeGreaterThan(0)
     expect(appended[1]).toMatchObject({ role: 'assistant', text: 'final answer' })
+  })
+
+  it('groups sequential completed tools into one trail when the turn completes', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: { context: 'alpha', name: 'search_files', tool_id: 'tool-1' }, type: 'tool.start' } as any)
+    onEvent({
+      payload: { name: 'search_files', summary: 'first done', tool_id: 'tool-1' },
+      type: 'tool.complete'
+    } as any)
+    onEvent({ payload: { context: 'beta', name: 'read_file', tool_id: 'tool-2' }, type: 'tool.start' } as any)
+    onEvent({ payload: { name: 'read_file', summary: 'second done', tool_id: 'tool-2' }, type: 'tool.complete' } as any)
+
+    expect(getTurnState().streamSegments.filter(msg => msg.kind === 'trail' && msg.tools?.length)).toHaveLength(1)
+    expect(getTurnState().streamSegments[0]?.tools).toHaveLength(2)
+    expect(getTurnState().streamPendingTools).toEqual([])
+
+    onEvent({ payload: { text: '' }, type: 'message.complete' } as any)
+
+    const toolTrails = appended.filter(msg => msg.kind === 'trail' && msg.tools?.length)
+    expect(toolTrails).toHaveLength(1)
+    expect(toolTrails[0]?.tools).toHaveLength(2)
+    expect(toolTrails[0]?.tools?.[0]).toContain('Search Files')
+    expect(toolTrails[0]?.tools?.[1]).toContain('Read File')
   })
 
   it('keeps tool tokens across handler recreation mid-turn', () => {
@@ -213,7 +286,12 @@ describe('createGatewayEventHandler', () => {
     expect(appended).toHaveLength(0)
     expect(turnController.segmentMessages).toEqual([
       { role: 'assistant', text: 'Editing the file' },
-      { kind: 'diff', role: 'assistant', text: block, tools: ['Patch("foo.ts")  ✓'] }
+      {
+        kind: 'diff',
+        role: 'assistant',
+        text: block,
+        tools: [expect.stringMatching(/^Patch\("foo\.ts"\)(?: \([^)]+\))? ✓$/)]
+      }
     ])
 
     onEvent({ payload: { text: 'patch applied' }, type: 'message.complete' } as any)

@@ -7,8 +7,6 @@ import type { ImageAttachResponse } from '../gatewayTypes.js'
 import type { RpcResult } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 import type {
-  ActiveTool,
-  ActivityItem,
   ApprovalReq,
   ClarifyReq,
   ConfirmReq,
@@ -19,7 +17,6 @@ import type {
   SectionVisibility,
   SessionInfo,
   SlashCatalog,
-  SubagentProgress,
   SudoReq,
   Usage
 } from '../types.js'
@@ -308,21 +305,7 @@ export interface AppLayoutComposerProps {
 }
 
 export interface AppLayoutProgressProps {
-  activity: ActivityItem[]
-  outcome: string
-  reasoning: string
-  reasoningActive: boolean
-  reasoningStreaming: boolean
-  reasoningTokens: number
   showProgressArea: boolean
-  showStreamingArea: boolean
-  streamPendingTools: string[]
-  streamSegments: Msg[]
-  streaming: string
-  subagents: SubagentProgress[]
-  toolTokens: number
-  tools: ActiveTool[]
-  turnTrail: string[]
 }
 
 export interface AppLayoutStatusProps {

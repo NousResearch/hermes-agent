@@ -508,7 +508,8 @@ export function TextInput({
 
     curRef.current = c
     vRef.current = next
-    lineWidthRef.current = nextLineWidth ?? stringWidth(next.includes('\n') ? next.slice(next.lastIndexOf('\n') + 1) : next)
+    lineWidthRef.current =
+      nextLineWidth ?? stringWidth(next.includes('\n') ? next.slice(next.lastIndexOf('\n') + 1) : next)
 
     if (next !== prev) {
       if (syncParent) {

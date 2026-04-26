@@ -1,6 +1,8 @@
 import { useInput } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
+import { useRef } from 'react'
 
+import { TYPING_IDLE_MS } from '../config/timing.js'
 import type {
   ApprovalRespondResponse,
   ConfigSetResponse,
@@ -26,6 +28,24 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const overlay = useStore($overlayState)
   const isBlocked = useStore($isBlocked)
   const pagerPageSize = Math.max(5, (terminal.stdout?.rows ?? 24) - 6)
+  const scrollIdleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  const scrollTranscript = (delta: number) => {
+    if (getUiState().busy) {
+      turnController.boostStreamingForScroll()
+
+      if (scrollIdleTimer.current) {
+        clearTimeout(scrollIdleTimer.current)
+      }
+
+      scrollIdleTimer.current = setTimeout(() => {
+        scrollIdleTimer.current = null
+        turnController.relaxStreaming()
+      }, TYPING_IDLE_MS)
+    }
+
+    terminal.scrollWithSelection(delta)
+  }
 
   const copySelection = () => {
     // ink's copySelection() already calls setClipboard() which handles
@@ -259,26 +279,26 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (key.wheelUp) {
-      return terminal.scrollWithSelection(-wheelStep)
+      return scrollTranscript(-wheelStep)
     }
 
     if (key.wheelDown) {
-      return terminal.scrollWithSelection(wheelStep)
+      return scrollTranscript(wheelStep)
     }
 
     if (key.shift && key.upArrow) {
-      return terminal.scrollWithSelection(-1)
+      return scrollTranscript(-1)
     }
 
     if (key.shift && key.downArrow) {
-      return terminal.scrollWithSelection(1)
+      return scrollTranscript(1)
     }
 
     if (key.pageUp || key.pageDown) {
       const viewport = terminal.scrollRef.current?.getViewportHeight() ?? Math.max(6, (terminal.stdout?.rows ?? 24) - 8)
       const step = Math.max(4, viewport - 2)
 
-      return terminal.scrollWithSelection(key.pageUp ? -step : step)
+      return scrollTranscript(key.pageUp ? -step : step)
     }
 
     if (key.escape && terminal.hasSelection) {

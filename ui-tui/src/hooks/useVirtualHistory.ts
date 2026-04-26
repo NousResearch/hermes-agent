@@ -19,13 +19,15 @@ const FREEZE_RENDERS = 2
 
 export const shouldSetVirtualClamp = ({
   itemCount,
+  liveTailActive = false,
   sticky,
   viewportHeight
 }: {
   itemCount: number
+  liveTailActive?: boolean
   sticky: boolean
   viewportHeight: number
-}) => itemCount > 0 && viewportHeight > 0 && !sticky
+}) => itemCount > 0 && viewportHeight > 0 && !sticky && !liveTailActive
 
 const upperBound = (arr: number[], target: number) => {
   let lo = 0
@@ -44,7 +46,13 @@ export function useVirtualHistory(
   scrollRef: RefObject<ScrollBoxHandle | null>,
   items: readonly { key: string }[],
   columns: number,
-  { estimate = ESTIMATE, overscan = OVERSCAN, maxMounted = MAX_MOUNTED, coldStartCount = COLD_START } = {}
+  {
+    estimate = ESTIMATE,
+    liveTailActive = false,
+    overscan = OVERSCAN,
+    maxMounted = MAX_MOUNTED,
+    coldStartCount = COLD_START
+  } = {}
 ) {
   const nodes = useRef(new Map<string, unknown>())
   const heights = useRef(new Map<string, number>())
@@ -92,7 +100,7 @@ export function useVirtualHistory(
         return NaN
       }
 
-      const b = Math.floor(s.getScrollTop() / QUANTUM)
+      const b = Math.floor((s.getScrollTop() + s.getPendingDelta()) / QUANTUM)
 
       return s.isSticky() ? -b - 1 : b
     },
@@ -131,8 +139,11 @@ export function useVirtualHistory(
   const n = items.length
   const total = offsets[n] ?? 0
   const top = Math.max(0, scrollRef.current?.getScrollTop() ?? 0)
+  const pending = scrollRef.current?.getPendingDelta() ?? 0
+  const target = Math.max(0, top + pending)
   const vp = Math.max(0, scrollRef.current?.getViewportHeight() ?? 0)
   const sticky = scrollRef.current?.isSticky() ?? true
+  const recentManual = Date.now() - (scrollRef.current?.getLastManualScrollAt() ?? 0) < 1200
 
   // During a freeze, drop the frozen range if items shrank past its start
   // (/clear, compaction) — clamping would collapse to an empty mount and
@@ -149,9 +160,19 @@ export function useVirtualHistory(
   } else if (n > 0) {
     if (vp <= 0) {
       start = Math.max(0, n - coldStartCount)
+    } else if (sticky && !recentManual) {
+      const budget = vp + overscan
+      start = n
+
+      while (start > 0 && total - offsets[start - 1]! < budget) {
+        start--
+      }
     } else {
-      start = Math.max(0, Math.min(n - 1, upperBound(offsets, Math.max(0, top - overscan)) - 1))
-      end = Math.max(start + 1, Math.min(n, upperBound(offsets, top + vp + overscan)))
+      const lo = Math.max(0, Math.min(top, target) - overscan)
+      const hi = Math.max(top, target) + vp + overscan
+
+      start = Math.max(0, Math.min(n - 1, upperBound(offsets, lo) - 1))
+      end = Math.max(start + 1, Math.min(n, upperBound(offsets, hi)))
     }
   }
 
@@ -183,7 +204,7 @@ export function useVirtualHistory(
     // Give the renderer the mounted-row coverage for passive scroll clamping.
     // Without this, burst wheel/page scroll can race past the React commit that
     // updates the virtual range and paint spacer-only frames.
-    if (s && shouldSetVirtualClamp({ itemCount: n, sticky, viewportHeight: vp })) {
+    if (s && shouldSetVirtualClamp({ itemCount: n, liveTailActive, sticky, viewportHeight: vp })) {
       const min = offsets[start] ?? 0
       const max = Math.max(min, (offsets[end] ?? total) - vp)
       s.setClampBounds(min, max)
@@ -235,7 +256,7 @@ export function useVirtualHistory(
     if (dirty) {
       setVer(v => v + 1)
     }
-  }, [end, hasScrollRef, items, n, offsets, scrollRef, start, sticky, total, vp])
+  }, [end, hasScrollRef, items, liveTailActive, n, offsets, recentManual, scrollRef, start, sticky, total, vp])
 
   return {
     bottomSpacer: Math.max(0, total - (offsets[end] ?? total)),

@@ -28,7 +28,7 @@ import { type GatewayRpc, type TranscriptRow } from './interfaces.js'
 import { $overlayState, patchOverlayState } from './overlayStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
 import { turnController } from './turnController.js'
-import { $turnState, patchTurnState } from './turnStore.js'
+import { $turnState, patchTurnState, useTurnSelector } from './turnStore.js'
 import { $uiState, getUiState, patchUiState } from './uiStore.js'
 import { useComposerState } from './useComposerState.js'
 import { useConfigSync } from './useConfigSync.js'
@@ -108,6 +108,19 @@ export function useMainApp(gw: GatewayClient) {
   const overlay = useStore($overlayState)
   const turn = useStore($turnState)
 
+  const turnLiveTailActive = useTurnSelector(state =>
+    Boolean(
+      state.streaming ||
+      state.streamPendingTools.length ||
+      state.streamSegments.length ||
+      state.reasoning.trim() ||
+      state.reasoningActive ||
+      state.tools.length ||
+      state.subagents.length ||
+      state.todos.length
+    )
+  )
+
   const slashFlightRef = useRef(0)
   const slashRef = useRef<(cmd: string) => boolean>(() => false)
   const colsRef = useRef(cols)
@@ -178,7 +191,7 @@ export function useMainApp(gw: GatewayClient) {
     [historyItems, messageId]
   )
 
-  const virtualHistory = useVirtualHistory(scrollRef, virtualRows, cols)
+  const virtualHistory = useVirtualHistory(scrollRef, virtualRows, cols, { liveTailActive: turnLiveTailActive })
 
   const scrollWithSelection = useCallback(
     (delta: number) => scrollWithSelectionBy(delta, { scrollRef, selection }),
@@ -587,7 +600,7 @@ export function useMainApp(gw: GatewayClient) {
     slashRef.current(`/model ${value} --global`)
   }, [])
 
-  const hasReasoning = Boolean(turn.reasoning.trim())
+  const hasReasoning = useTurnSelector(state => Boolean(state.reasoning.trim()))
 
   // Per-section overrides win over the global mode — when every section is
   // resolved to hidden, the only thing ToolTrail will surface is the
@@ -597,19 +610,22 @@ export function useMainApp(gw: GatewayClient) {
     s => sectionMode(s, ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
   )
 
-  const showProgressArea = anyPanelVisible
-    ? Boolean(
-        ui.busy ||
-        turn.outcome ||
-        turn.streamPendingTools.length ||
-        turn.streamSegments.length ||
-        turn.subagents.length ||
-        turn.tools.length ||
-        turn.turnTrail.length ||
-        hasReasoning ||
-        turn.activity.length
-      )
-    : turn.activity.some(item => item.tone !== 'info')
+  const showProgressArea = useTurnSelector(state =>
+    anyPanelVisible
+      ? Boolean(
+          ui.busy ||
+          state.outcome ||
+          state.streamPendingTools.length ||
+          state.streamSegments.length ||
+          state.subagents.length ||
+          state.tools.length ||
+          state.todos.length ||
+          state.turnTrail.length ||
+          hasReasoning ||
+          state.activity.length
+        )
+      : state.activity.some(item => item.tone !== 'info')
+  )
 
   const appActions = useMemo(
     () => ({
@@ -654,10 +670,7 @@ export function useMainApp(gw: GatewayClient) {
     return bottom >= scrollHeight - 3
   })()
 
-  const liveProgress = useMemo(
-    () => ({ ...turn, showProgressArea, showStreamingArea: Boolean(turn.streaming) }),
-    [turn, showProgressArea]
-  )
+  const liveProgress = useMemo(() => ({ showProgressArea }), [showProgressArea])
 
   // Always pass current progress through. Freezing this while offscreen looked
   // like a nice scroll optimization, but it also froze the live tail's

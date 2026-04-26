@@ -5,6 +5,12 @@ export interface ActiveTool {
   startedAt?: number
 }
 
+export interface TodoItem {
+  content: string
+  id: string
+  status: 'cancelled' | 'completed' | 'in_progress' | 'pending'
+}
+
 export interface ActivityItem {
   id: number
   text: string
@@ -133,8 +139,11 @@ export interface McpServerStatus {
 
 export interface SessionInfo {
   cwd?: string
+  fast?: boolean
   mcp_servers?: McpServerStatus[]
   model: string
+  reasoning_effort?: string
+  service_tier?: string
   release_date?: string
   skills: Record<string, string[]>
   tools: Record<string, string[]>

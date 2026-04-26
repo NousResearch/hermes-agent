@@ -355,15 +355,17 @@ class TestSendVideo:
 # ---------------------------------------------------------------------------
 
 class TestIncomingDocumentHandling:
-    def _make_event(self, files=None, text="hello", channel_type="im"):
+    def _make_event(self, files=None, text="hello", channel_type="im", blocks=None, attachments=None):
         """Build a mock Slack message event with file attachments."""
         return {
             "text": text,
             "user": "U_USER",
-            "channel": "C123",
+            "channel": "D123",
             "channel_type": channel_type,
             "ts": "1234567890.000001",
             "files": files or [],
+            "blocks": blocks or [],
+            "attachments": attachments or [],
         }
 
     @pytest.mark.asyncio
@@ -539,6 +541,178 @@ class TestIncomingDocumentHandling:
         assert "[Slack attachment notice]" in msg_event.text
         assert "403" in msg_event.text
         assert "what's in this?" in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_rich_text_blocks_do_not_duplicate_plain_text(self, adapter):
+        """Plain rich_text composer blocks match the plain text field exactly,
+        so the dedupe guard keeps the message clean."""
+        event = self._make_event(
+            text="hello world",
+            blocks=[
+                {
+                    "type": "rich_text",
+                    "elements": [
+                        {
+                            "type": "rich_text_section",
+                            "elements": [
+                                {"type": "text", "text": "hello world"},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        )
+
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "hello world"
+
+    @pytest.mark.asyncio
+    async def test_rich_text_quotes_and_lists_are_extracted(self, adapter):
+        """Nested quote and list content should be surfaced from rich_text blocks."""
+        event = self._make_event(
+            text="Can you summarize this?",
+            blocks=[
+                {
+                    "type": "rich_text",
+                    "elements": [
+                        {
+                            "type": "rich_text_quote",
+                            "elements": [
+                                {
+                                    "type": "rich_text_section",
+                                    "elements": [{"type": "text", "text": "Quoted line"}],
+                                }
+                            ],
+                        },
+                        {
+                            "type": "rich_text_list",
+                            "style": "bullet",
+                            "elements": [
+                                {
+                                    "type": "rich_text_section",
+                                    "elements": [{"type": "text", "text": "First bullet"}],
+                                },
+                                {
+                                    "type": "rich_text_section",
+                                    "elements": [{"type": "text", "text": "Second bullet"}],
+                                },
+                            ],
+                        },
+                    ],
+                }
+            ],
+        )
+
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert "Can you summarize this?" in msg_event.text
+        assert "> Quoted line" in msg_event.text
+        assert "• First bullet" in msg_event.text
+        assert "• Second bullet" in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_attachments_unfurl_text_is_appended_even_when_url_is_in_message(self, adapter):
+        """Shared URLs should still expose unfurl preview text to the agent."""
+        event = self._make_event(
+            text="Look at this doc https://example.com/spec",
+            attachments=[
+                {
+                    "title": "Spec",
+                    "from_url": "https://example.com/spec",
+                    "text": "The latest product spec preview",
+                    "footer": "Notion",
+                }
+            ],
+        )
+
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert "Look at this doc https://example.com/spec" in msg_event.text
+        assert "📎 [Spec](https://example.com/spec)" in msg_event.text
+        assert "The latest product spec preview" in msg_event.text
+        assert "_Notion_" in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_message_unfurl_attachments_are_skipped(self, adapter):
+        """Message unfurls should be skipped to avoid echoing Slack message copies."""
+        event = self._make_event(
+            text="https://example.com/thread",
+            attachments=[
+                {
+                    "is_msg_unfurl": True,
+                    "title": "Thread copy",
+                    "text": "This should not be appended",
+                }
+            ],
+        )
+
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "https://example.com/thread"
+
+    @pytest.mark.asyncio
+    async def test_channel_routing_ignores_bot_mentions_inside_block_text(self, adapter):
+        """Block-extracted text with a bot mention must not satisfy mention
+        gating in channels — routing decisions use the original user text so
+        quoted/forwarded content can't trick the bot into responding."""
+        event = self._make_event(
+            text="please review",
+            channel_type="channel",
+            blocks=[
+                {
+                    "type": "rich_text",
+                    "elements": [
+                        {
+                            "type": "rich_text_quote",
+                            "elements": [
+                                {
+                                    "type": "rich_text_section",
+                                    "elements": [{"type": "text", "text": "Contains <@U_BOT> in quoted text"}],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        )
+
+        await adapter._handle_slack_message(event)
+
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_quoted_slash_command_text_does_not_change_message_type(self, adapter):
+        """Quoted slash-like content should not convert a normal message into a command."""
+        event = self._make_event(
+            text="",
+            blocks=[
+                {
+                    "type": "rich_text",
+                    "elements": [
+                        {
+                            "type": "rich_text_quote",
+                            "elements": [
+                                {
+                                    "type": "rich_text_section",
+                                    "elements": [{"type": "text", "text": "/deploy now"}],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        )
+
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.TEXT
+        assert "> /deploy now" in msg_event.text
 
 
 # ---------------------------------------------------------------------------

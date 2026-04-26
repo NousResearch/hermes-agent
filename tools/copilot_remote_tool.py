@@ -181,16 +181,21 @@ def _resolve_repo(prompt: str, repo: str = "", repo_path: str = "") -> tuple[Opt
             # Surface the failure reason — swallowing it here makes routing
             # bugs (permission errors, missing HERMES_WORKSPACE_PATH, etc.)
             # impossible to diagnose from the error message alone. The text
-            # is sanitized via redact_sensitive_text() before going back to
-            # the caller in case workspace paths embed credentials.
+            # is sanitized via redact_sensitive_text() (secrets) and
+            # _sanitize_for_log() (control chars, to prevent log injection)
+            # before going back to the caller in case workspace paths embed
+            # credentials or attacker-controlled exception text embeds CR/LF.
             from agent.redact import redact_sensitive_text
+            from copilot_remote.router import _sanitize_for_log
 
             logger.warning(
-                "copilot_remote: repo discovery failed for slug=%r: %s",
-                repo,
-                redact_sensitive_text(repr(exc)),
+                "copilot_remote: repo discovery failed for slug=%s: %s",
+                _sanitize_for_log(redact_sensitive_text(repr(repo))),
+                _sanitize_for_log(redact_sensitive_text(repr(exc))),
             )
-            discover_error = redact_sensitive_text(str(exc) or exc.__class__.__name__)
+            discover_error = _sanitize_for_log(
+                redact_sensitive_text(str(exc) or exc.__class__.__name__)
+            )
             entries = []
 
     if repo:

@@ -286,9 +286,11 @@ job_id = db.create_copilot_remote(
     repo_path="/workspace/repos/proservice/fridai-backend",
     prompt="Patch the failing webhook retry path",
     signal_source="cli",
+    signal_ref="PROJ-123",       # caller-supplied metadata (e.g. Jira ticket)
 )
 
-db.update_copilot_remote_signal_ref(job_id, "task-123")
+# After the launcher extracts the Copilot reconnect handle from CLI stdout:
+db.update_copilot_remote_connect_handle(job_id, "task-123")
 
 job = db.get_copilot_remote(job_id)
 running_jobs = db.list_copilot_remote(state="running", limit=20)

@@ -150,11 +150,17 @@ def copilot_launch(args):
     except Exception as exc:
         # Redact before persisting/printing — exception text from subprocess /
         # HTTP layers can include embedded tokens, headers, or other secrets
-        # that would otherwise leak into state.db and downstream `show`/`list`.
-        redacted = redact_sensitive_text(str(exc))
+        # that would otherwise leak into state.db, downstream `show`/`list`,
+        # or uncaught CLI stderr output. Also strip CR/LF to avoid console
+        # log-injection via attacker-controlled exception text. The original
+        # exception class is preserved so callers can still distinguish error
+        # types, but its message is replaced with the redacted/sanitized text.
+        from copilot_remote.router import _sanitize_for_log
+
+        redacted = _sanitize_for_log(redact_sensitive_text(str(exc)))
         db.finish_copilot_remote(job_id, state="failed", error_text=redacted)
         db.close()
-        raise
+        raise exc.__class__(redacted).with_traceback(exc.__traceback__) from None
 
     connect_handle = result.get("connect_id") or job_id
     if connect_handle != job_id:

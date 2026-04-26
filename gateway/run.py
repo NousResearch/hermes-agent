@@ -3778,13 +3778,21 @@ class GatewayRunner:
         if canonical == "copilot_remote":
             from hermes_cli.copilot_cmd import handle_copilot_remote_slash
             import io, contextlib
-            buf = io.StringIO()
-            with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
-                try:
-                    handle_copilot_remote_slash(event.text)
-                except SystemExit:
-                    pass
-            return buf.getvalue().strip() or "Done."
+
+            # handle_copilot_remote_slash() does filesystem scans, an LLM
+            # router call, and several seconds of stdout polling/HTTP
+            # verification. Run it in a worker thread so the event loop
+            # stays responsive to other inbound messages.
+            def _run_copilot_remote_command(command_text: str) -> str:
+                buf = io.StringIO()
+                with contextlib.redirect_stdout(buf), contextlib.redirect_stderr(buf):
+                    try:
+                        handle_copilot_remote_slash(command_text)
+                    except SystemExit:
+                        pass
+                return buf.getvalue().strip() or "Done."
+
+            return await asyncio.to_thread(_run_copilot_remote_command, event.text)
 
         if canonical == "steer":
             # No active agent — /steer has no tool call to inject into.

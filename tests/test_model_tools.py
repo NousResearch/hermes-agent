@@ -1,7 +1,7 @@
 """Tests for model_tools.py — function call dispatch, agent-loop interception, legacy toolsets."""
 
 import json
-from unittest.mock import call, patch
+from unittest.mock import ANY, call, patch
 
 import pytest
 
@@ -71,6 +71,7 @@ class TestHandleFunctionCall:
                 task_id="task-1",
                 session_id="session-1",
                 tool_call_id="call-1",
+                duration_ms=ANY,
             ),
             call(
                 "transform_tool_result",
@@ -80,8 +81,36 @@ class TestHandleFunctionCall:
                 task_id="task-1",
                 session_id="session-1",
                 tool_call_id="call-1",
+                duration_ms=ANY,
             ),
         ]
+
+    def test_post_tool_call_receives_non_negative_integer_duration_ms(self):
+        """Regression: post_tool_call and transform_tool_result hooks must
+        receive a non-negative integer ``duration_ms`` kwarg measuring
+        dispatch latency.  Inspired by Claude Code 2.1.119, which added
+        ``duration_ms`` to its PostToolUse hook inputs.
+        """
+        with (
+            patch("model_tools.registry.dispatch", return_value='{"ok":true}'),
+            patch("hermes_cli.plugins.invoke_hook") as mock_invoke_hook,
+        ):
+            handle_function_call("web_search", {"q": "test"}, task_id="t1")
+
+        kwargs_by_hook = {
+            c.args[0]: c.kwargs for c in mock_invoke_hook.call_args_list
+        }
+        assert "duration_ms" in kwargs_by_hook["post_tool_call"]
+        assert "duration_ms" in kwargs_by_hook["transform_tool_result"]
+
+        post_duration = kwargs_by_hook["post_tool_call"]["duration_ms"]
+        transform_duration = kwargs_by_hook["transform_tool_result"]["duration_ms"]
+        assert isinstance(post_duration, int)
+        assert post_duration >= 0
+        # Both hooks should observe the same measured duration.
+        assert post_duration == transform_duration
+        # pre_tool_call does NOT get duration_ms (nothing has run yet).
+        assert "duration_ms" not in kwargs_by_hook["pre_tool_call"]
 
 
 # =========================================================================

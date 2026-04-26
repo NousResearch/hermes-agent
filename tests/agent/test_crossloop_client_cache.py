@@ -184,3 +184,27 @@ class TestCrossLoopCacheIsolation:
             "Client from closed loop should not be reused"
         )
         loop2.close()
+
+    def test_cold_path_applies_compat_model_for_non_openrouter_client(self):
+        """Cold-path client creation should normalize OR-style slugs too."""
+        from agent.auxiliary_client import _get_cached_client
+
+        def _stub_with_provider_slug(provider, model, async_mode, **kw):
+            client = MagicMock(name=f"client-{provider}-async={async_mode}")
+            client.api_key = "test"
+            client.base_url = "https://api.anthropic.com/v1"
+            return client, "gemini-2.5-flash"
+
+        client, effective_model = None, None
+        with patch("agent.auxiliary_client.resolve_provider_client",
+                    side_effect=_stub_with_provider_slug):
+            client, effective_model = _get_cached_client(
+                "anthropic",
+                "google/gemini-2.5-flash",
+                async_mode=False,
+            )
+
+        assert client is not None
+        assert effective_model == "gemini-2.5-flash", (
+            "Cold path should strip provider/model slugs for non-OpenRouter clients"
+        )

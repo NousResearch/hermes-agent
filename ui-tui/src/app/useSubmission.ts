@@ -1,5 +1,6 @@
-import { type MutableRefObject, useCallback, useRef } from 'react'
+import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import { TYPING_IDLE_MS } from '../config/timing.js'
 import { attachedImageNotice } from '../domain/messages.js'
 import { looksLikeSlashCommand } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
@@ -14,6 +15,9 @@ import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
 const DOUBLE_ENTER_MS = 450
+const SESSION_BUSY_RE = /session busy|waiting for model response/i
+
+const isSessionBusyError = (e: unknown) => e instanceof Error && SESSION_BUSY_RE.test(e.message)
 
 const expandSnips = (snips: PasteSnippet[]) => {
   const byLabel = new Map<string, string[]>()
@@ -44,6 +48,30 @@ export function useSubmission(opts: UseSubmissionOptions) {
   } = opts
 
   const lastEmptyAt = useRef(0)
+  const typingIdleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    if (composerState.input || composerState.inputBuf.length) {
+      if (getUiState().busy) {
+        turnController.boostStreamingForTyping()
+      }
+
+      if (typingIdleTimer.current) {
+        clearTimeout(typingIdleTimer.current)
+      }
+
+      typingIdleTimer.current = setTimeout(() => {
+        typingIdleTimer.current = null
+        turnController.relaxStreaming()
+      }, TYPING_IDLE_MS)
+    }
+
+    return () => {
+      if (typingIdleTimer.current) {
+        clearTimeout(typingIdleTimer.current)
+      }
+    }
+  }, [composerState.input, composerState.inputBuf])
 
   const send = useCallback(
     (text: string) => {
@@ -65,6 +93,13 @@ export function useSubmission(opts: UseSubmissionOptions) {
         turnController.interrupted = false
 
         gw.request<PromptSubmitResponse>('prompt.submit', { session_id: sid, text: submitText }).catch((e: Error) => {
+          if (isSessionBusyError(e)) {
+            composerActions.enqueue(text)
+            patchUiState({ busy: true, status: 'queued for next turn' })
+
+            return sys(`queued: "${text.slice(0, 50)}${text.length > 50 ? '…' : ''}"`)
+          }
+
           sys(`error: ${e.message}`)
           patchUiState({ busy: false, status: 'ready' })
         })
@@ -92,7 +127,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
         })
         .catch(() => startSubmit(text, expand(text)))
     },
-    [appendMessage, composerState.pasteSnips, gw, maybeGoodVibes, setLastUserMsg, sys]
+    [appendMessage, composerActions, composerState.pasteSnips, gw, maybeGoodVibes, setLastUserMsg, sys]
   )
 
   const shellExec = useCallback(

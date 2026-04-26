@@ -201,19 +201,45 @@ FEISHU_GROUP_POLICY=allowlist   # default
 | `allowlist` | Hermes only responds to @mentions from users listed in `FEISHU_ALLOWED_USERS`. |
 | `disabled` | Hermes ignores all group messages entirely. |
 
-In all modes, the bot must be explicitly @mentioned (or @all) in the group before the message is processed. Direct messages bypass this gate.
+In all modes, the bot must be explicitly @mentioned (or @all) in the group before the message is processed. Direct messages always bypass this gate.
 
-### Bot Identity for @Mention Gating
-
-For precise @mention detection in groups, the adapter needs to know the bot's identity. It can be provided explicitly:
+Set `FEISHU_REQUIRE_MENTION=false` to let Hermes read all group traffic without requiring an @mention:
 
 ```bash
-FEISHU_BOT_OPEN_ID=ou_xxx
-FEISHU_BOT_USER_ID=xxx
-FEISHU_BOT_NAME=MyBot
+FEISHU_REQUIRE_MENTION=false
 ```
 
-If none of these are set, the adapter will attempt to auto-discover the bot name via the Application Info API on startup. For this to work, grant the `admin:app.info:readonly` or `application:application:self_manage` permission scope.
+For per-chat control, set `require_mention` on a `group_rules` entry — see [Per-Group Access Control](#per-group-access-control) below.
+
+### Bot Identity
+
+Hermes auto-detects the bot's `open_id` and display name on startup. You only need to set these manually when auto-detection cannot reach the Feishu API, or when your app uses tenant-scoped user IDs:
+
+```bash
+FEISHU_BOT_OPEN_ID=ou_xxx     # only when auto-detection fails
+FEISHU_BOT_USER_ID=xxx        # required if your app uses sender_id_type=user_id
+FEISHU_BOT_NAME=MyBot         # only when auto-detection fails
+```
+
+## Bot-to-Bot Messaging
+
+By default Hermes ignores messages sent by other bots. Enable bot-to-bot messaging when you want Hermes to participate in A2A orchestration or receive notifications from other bots in the same group.
+
+```bash
+FEISHU_ALLOW_BOTS=mentions   # default: none
+```
+
+| Value | Behavior |
+|-------|----------|
+| `none` | Ignore all messages from other bots (default). |
+| `mentions` | Accept only when the peer bot @mentions Hermes. |
+| `all` | Accept every peer bot message. |
+
+Also configurable as `feishu.allow_bots` in `config.yaml` (env wins when both are set).
+
+Peer bots do not need to be added to `FEISHU_ALLOWED_USERS` — that allowlist applies to human senders only.
+
+Grant the `application:bot.basic_info:read` scope to display peer bot names; without it, peer bots still route correctly but appear as their `open_id`.
 
 ## Interactive Card Actions
 
@@ -426,6 +452,9 @@ platforms:
           policy: "blacklist"
           blacklist:
             - "ou_blocked_user"
+        "oc_free_chat":
+          policy: "open"
+          require_mention: false       # overrides FEISHU_REQUIRE_MENTION for this chat
 ```
 
 | Policy | Description |
@@ -435,6 +464,8 @@ platforms:
 | `blacklist` | Everyone except users in the group's `blacklist` can use the bot |
 | `admin_only` | Only users in the global `admins` list can use the bot in this group |
 | `disabled` | Bot ignores all messages in this group |
+
+Set `require_mention: false` on a `group_rules` entry to skip the @-mention requirement for that specific chat. When omitted, the chat inherits the global `FEISHU_REQUIRE_MENTION` value.
 
 Groups not listed in `group_rules` fall back to `default_group_policy` (defaults to the value of `FEISHU_GROUP_POLICY`).
 
@@ -455,6 +486,8 @@ Inbound messages are deduplicated using message IDs with a 24-hour TTL. The dedu
 | `FEISHU_DOMAIN` | — | `feishu` | `feishu` (China) or `lark` (international) |
 | `FEISHU_CONNECTION_MODE` | — | `websocket` | `websocket` or `webhook` |
 | `FEISHU_ALLOWED_USERS` | — | _(empty)_ | Comma-separated open_id list for user allowlist |
+| `FEISHU_ALLOW_BOTS` | — | `none` | Accept messages from other bots: `none`, `mentions`, or `all` |
+| `FEISHU_REQUIRE_MENTION` | — | `true` | Whether group messages must @mention the bot |
 | `FEISHU_HOME_CHANNEL` | — | — | Chat ID for cron/notification output |
 | `FEISHU_ENCRYPT_KEY` | — | _(empty)_ | Encrypt key for webhook signature verification |
 | `FEISHU_VERIFICATION_TOKEN` | — | _(empty)_ | Verification token for webhook payload auth |
@@ -487,7 +520,9 @@ WebSocket and per-group ACL settings are configured via `config.yaml` under `pla
 | `Webhook rejected: invalid signature` | Ensure `FEISHU_ENCRYPT_KEY` matches the encrypt key in your Feishu app config |
 | Post messages show as plain text | The Feishu API rejected the post payload; this is normal fallback behavior. Check logs for details. |
 | Images/files not received by bot | Grant `im:message` and `im:resource` permission scopes to your Feishu app |
-| Bot identity not auto-detected | Grant `admin:app.info:readonly` scope, or set `FEISHU_BOT_OPEN_ID` / `FEISHU_BOT_NAME` manually |
+| Bot identity not auto-detected | Usually a transient network issue reaching Feishu's bot info endpoint. Set `FEISHU_BOT_OPEN_ID` and `FEISHU_BOT_NAME` manually as a workaround. |
+| Peer bot messages still ignored after enabling `FEISHU_ALLOW_BOTS` | Hermes can't identify itself yet — set `FEISHU_BOT_OPEN_ID` (and `FEISHU_BOT_USER_ID` if your app uses `sender_id_type=user_id`). |
+| Peer bots show as `ou_xxxxxx` instead of by name | Grant the `application:bot.basic_info:read` scope. |
 | Error 200340 when clicking approval buttons | Enable **Interactive Card** capability and configure **Card Request URL** in the Feishu Developer Console. See [Required Feishu App Configuration](#required-feishu-app-configuration) above. |
 | `Webhook rate limit exceeded` | More than 120 requests/minute from the same IP. This is usually a misconfiguration or loop. |
 

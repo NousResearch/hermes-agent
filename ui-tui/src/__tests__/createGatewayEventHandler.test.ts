@@ -150,6 +150,20 @@ describe('createGatewayEventHandler', () => {
     expect(appended[appended.length - 1]).toMatchObject({ role: 'assistant', text: 'final answer' })
   })
 
+  it('filters spinner/status-only reasoning noise from completed thinking', () => {
+    const appended: Msg[] = []
+    const streamed = '(¬_¬) synthesizing...\nactual plan\n( ͡° ͜ʖ ͡°) pondering...\nnext step'
+
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: { text: streamed }, type: 'reasoning.delta' } as any)
+    onEvent({ payload: { text: 'final answer' }, type: 'message.complete' } as any)
+
+    expect(appended[0]?.thinking).toBe(streamed)
+    expect(appended[0]?.text).toBe('')
+    expect(appended[appended.length - 1]).toMatchObject({ role: 'assistant', text: 'final answer' })
+  })
+
   it('ignores fallback reasoning.available when streamed reasoning already exists', () => {
     const appended: Msg[] = []
     const streamed = 'short streamed reasoning'

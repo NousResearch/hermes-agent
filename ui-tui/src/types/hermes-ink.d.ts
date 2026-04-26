@@ -59,6 +59,7 @@ declare module '@hermes/ink' {
     readonly getViewportTop: () => number
     readonly isSticky: () => boolean
     readonly subscribe: (listener: () => void) => () => void
+    readonly setClampBounds: (min: number | undefined, max: number | undefined) => void
   }
 
   export const Box: React.ComponentType<any>

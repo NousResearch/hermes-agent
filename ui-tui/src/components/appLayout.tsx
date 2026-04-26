@@ -7,6 +7,7 @@ import type { AppLayoutProgressProps, AppLayoutProps } from '../app/interfaces.j
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
+import { inputVisualHeight, stableComposerColumns } from '../lib/inputMetrics.js'
 import type { Theme } from '../theme.js'
 import type { DetailsMode, SectionVisibility } from '../types.js'
 
@@ -171,6 +172,8 @@ const ComposerPane = memo(function ComposerPane({
   const isBlocked = useStore($isBlocked)
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
   const pw = sh ? 2 : 3
+  const inputColumns = stableComposerColumns(composer.cols, pw)
+  const inputHeight = inputVisualHeight(composer.input, inputColumns)
 
   return (
     <NoSelect flexDirection="column" flexShrink={0} fromLeftEdge paddingX={1}>
@@ -232,10 +235,10 @@ const ComposerPane = memo(function ComposerPane({
                 )}
               </Box>
 
-              <Box flexGrow={1} position="relative">
-                {/* subtract NoSelect paddingX={1} (2 cols) + pw so wrap-ansi and cursorLayout agree */}
+              <Box flexGrow={0} flexShrink={0} height={inputHeight} position="relative" width={inputColumns}>
+                {/* Reserve the transcript scrollbar gutter too so typing never rewraps when the scrollbar column repaints. */}
                 <TextInput
-                  columns={Math.max(20, composer.cols - pw - 2)}
+                  columns={inputColumns}
                   onChange={composer.updateInput}
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}

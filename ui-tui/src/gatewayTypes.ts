@@ -384,9 +384,21 @@ export type GatewayEvent =
   | { payload?: { text?: string }; session_id?: string; type: 'reasoning.delta' | 'reasoning.available' }
   | { payload: { name?: string; preview?: string }; session_id?: string; type: 'tool.progress' }
   | { payload: { name?: string }; session_id?: string; type: 'tool.generating' }
-  | { payload: { context?: string; name?: string; tool_id: string }; session_id?: string; type: 'tool.start' }
   | {
-      payload: { error?: string; inline_diff?: string; name?: string; summary?: string; tool_id: string }
+      payload: { context?: string; name?: string; tool_id: string; todos?: unknown[] }
+      session_id?: string
+      type: 'tool.start'
+    }
+  | {
+      payload: {
+        duration_s?: number
+        error?: string
+        inline_diff?: string
+        name?: string
+        summary?: string
+        tool_id: string
+        todos?: unknown[]
+      }
       session_id?: string
       type: 'tool.complete'
     }

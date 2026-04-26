@@ -1328,7 +1328,9 @@ export default class Ink {
         }
 
         if (process.env.HERMES_TUI_DEBUG_CLIPBOARD) {
-          console.error('[clipboard] no path reached the clipboard (headless + no tmux?) — set HERMES_TUI_FORCE_OSC52=1 to force the escape sequence')
+          console.error(
+            '[clipboard] no path reached the clipboard (headless + no tmux?) — set HERMES_TUI_FORCE_OSC52=1 to force the escape sequence'
+          )
         }
       } catch (err) {
         if (process.env.HERMES_TUI_DEBUG_CLIPBOARD) {
@@ -1799,6 +1801,7 @@ export default class Ink {
 
     if (this.selectionDragCell?.col === col && this.selectionDragCell.row === row) {
       this.updateSelectionAutoScroll(row)
+
       return
     }
 
@@ -1822,6 +1825,7 @@ export default class Ink {
   private updateSelectionAutoScroll(row: number): void {
     if (!this.selection.isDragging || !this.altScreenActive) {
       this.stopSelectionAutoScroll()
+
       return
     }
 
@@ -1829,6 +1833,7 @@ export default class Ink {
 
     if (dir === 0) {
       this.stopSelectionAutoScroll()
+
       return
     }
 
@@ -1844,6 +1849,7 @@ export default class Ink {
   private stepSelectionAutoScroll(): void {
     if (!this.selection.isDragging || !this.altScreenActive || this.selectionAutoScrollDir === 0) {
       this.stopSelectionAutoScroll()
+
       return
     }
 
@@ -1851,6 +1857,7 @@ export default class Ink {
 
     if (!box) {
       this.stopSelectionAutoScroll()
+
       return
     }
 
@@ -1889,7 +1896,10 @@ export default class Ink {
       }
     }
 
-    this.applySelectionDrag(this.selectionDragCell?.col ?? 0, this.selectionDragCell?.row ?? (this.selectionAutoScrollDir > 0 ? bottom : top))
+    this.applySelectionDrag(
+      this.selectionDragCell?.col ?? 0,
+      this.selectionDragCell?.row ?? (this.selectionAutoScrollDir > 0 ? bottom : top)
+    )
   }
 
   private stopSelectionAutoScroll(): void {
@@ -1908,7 +1918,11 @@ export default class Ink {
     while (stack.length) {
       const node = stack.shift()!
 
-      if (node.style.overflowY === 'scroll' && node.scrollHeight !== undefined && node.scrollViewportHeight !== undefined) {
+      if (
+        node.style.overflowY === 'scroll' &&
+        node.scrollHeight !== undefined &&
+        node.scrollViewportHeight !== undefined
+      ) {
         return node
       }
 

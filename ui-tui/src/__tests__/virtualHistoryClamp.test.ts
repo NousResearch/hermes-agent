@@ -10,4 +10,10 @@ describe('virtual history clamp bounds', () => {
   it('sets clamp bounds after manual scroll breaks sticky mode', () => {
     expect(shouldSetVirtualClamp({ itemCount: 20, sticky: false, viewportHeight: 10 })).toBe(true)
   })
+
+  it('does not clamp while a live tail is growing below virtual history', () => {
+    expect(shouldSetVirtualClamp({ itemCount: 20, liveTailActive: true, sticky: false, viewportHeight: 10 })).toBe(
+      false
+    )
+  })
 })

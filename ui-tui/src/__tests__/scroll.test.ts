@@ -21,6 +21,7 @@ describe('scrollWithSelectionBy', () => {
       getScrollTop: vi.fn(() => 9),
       getViewportHeight: vi.fn(() => 20)
     })
+
     const selection = {
       captureScrolledRows: vi.fn(),
       getState: vi.fn(() => null),
@@ -39,6 +40,7 @@ describe('scrollWithSelectionBy', () => {
       getScrollTop: vi.fn(() => 10),
       getViewportHeight: vi.fn(() => 20)
     })
+
     const selection = {
       captureScrolledRows: vi.fn(),
       getState: vi.fn(() => null),

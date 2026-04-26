@@ -57,6 +57,7 @@ declare module '@hermes/ink' {
     readonly getScrollHeight: () => number
     readonly getViewportHeight: () => number
     readonly getViewportTop: () => number
+    readonly getLastManualScrollAt: () => number
     readonly isSticky: () => boolean
     readonly subscribe: (listener: () => void) => () => void
     readonly setClampBounds: (min: number | undefined, max: number | undefined) => void

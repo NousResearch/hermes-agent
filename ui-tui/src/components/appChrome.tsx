@@ -139,6 +139,27 @@ function SessionDuration({ startedAt }: { startedAt: number }) {
   return fmtDuration(now - startedAt)
 }
 
+const effortLabel = (effort?: string) => {
+  const value = String(effort ?? '')
+    .trim()
+    .toLowerCase()
+
+  return value && value !== 'medium' && value !== 'normal' && value !== 'default' ? value : ''
+}
+
+const shortModelLabel = (model: string) =>
+  model
+    .split('/')
+    .pop()!
+    .replace(/^claude[-_]/, '')
+    .replace(/^anthropic[-_]/, '')
+    .replace(/[-_]/g, ' ')
+    .replace(/\b(\d+)\s+(\d+)\b/g, '$1.$2')
+    .trim()
+
+const modelLabel = (model: string, effort?: string, fast?: boolean) =>
+  [shortModelLabel(model), effortLabel(effort), fast ? 'fast' : ''].filter(Boolean).join(' ')
+
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
   const [color, setColor] = useState(t.color.amber)
@@ -171,6 +192,8 @@ export function StatusRule({
   status,
   statusColor,
   model,
+  modelFast,
+  modelReasoningEffort,
   usage,
   bgCount,
   sessionStartedAt,
@@ -201,7 +224,7 @@ export function StatusRule({
           ) : (
             <Text color={statusColor}>{status}</Text>
           )}
-          <Text color={t.color.dim}> │ {model}</Text>
+          <Text color={t.color.dim}> │ {modelLabel(model, modelReasoningEffort, modelFast)}</Text>
           {ctxLabel ? <Text color={t.color.dim}> │ {ctxLabel}</Text> : null}
           {bar ? (
             <Text color={t.color.dim}>
@@ -337,6 +360,8 @@ interface StatusRuleProps {
   cols: number
   cwdLabel: string
   model: string
+  modelFast?: boolean
+  modelReasoningEffort?: string
   sessionStartedAt?: null | number
   showCost: boolean
   status: string

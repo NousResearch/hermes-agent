@@ -120,11 +120,7 @@ function parseKey(keypress: ParsedKey): [Key, string] {
       // through key.return/key.escape, and processedAsSpecialSequence bypasses
       // the nonAlphanumericKeys clear below, so clear them explicitly here.
       input =
-        keypress.name === 'space'
-          ? ' '
-          : keypress.name === 'return' || keypress.name === 'escape'
-            ? ''
-            : keypress.name
+        keypress.name === 'space' ? ' ' : keypress.name === 'return' || keypress.name === 'escape' ? '' : keypress.name
     }
 
     processedAsSpecialSequence = true
@@ -143,11 +139,7 @@ function parseKey(keypress: ParsedKey): [Key, string] {
       input = ''
     } else {
       input =
-        keypress.name === 'space'
-          ? ' '
-          : keypress.name === 'return' || keypress.name === 'escape'
-            ? ''
-            : keypress.name
+        keypress.name === 'space' ? ' ' : keypress.name === 'return' || keypress.name === 'escape' ? '' : keypress.name
     }
 
     processedAsSpecialSequence = true

@@ -3,13 +3,11 @@ import { useStore } from '@nanostores/react'
 import { memo } from 'react'
 
 import { useGateway } from '../app/gatewayContext.js'
-import type { AppLayoutProgressProps, AppLayoutProps } from '../app/interfaces.js'
+import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $uiState } from '../app/uiStore.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
 import { inputVisualHeight, stableComposerColumns } from '../lib/inputMetrics.js'
-import type { Theme } from '../theme.js'
-import type { DetailsMode, SectionVisibility } from '../types.js'
 
 import { AgentsOverlay } from './agentsOverlay.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
@@ -17,68 +15,8 @@ import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
 import { MessageLine } from './messageLine.js'
 import { QueuedMessages } from './queuedMessages.js'
+import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
 import { TextInput } from './textInput.js'
-
-const StreamingAssistant = memo(function StreamingAssistant({
-  busy,
-  cols,
-  compact,
-  detailsMode,
-  detailsModeCommandOverride,
-  progress,
-  sections,
-  t
-}: StreamingAssistantProps) {
-  if (!progress.showProgressArea && !progress.showStreamingArea) {
-    return null
-  }
-
-  return (
-    <>
-      {progress.streamSegments.map((msg, i) => (
-        <MessageLine
-          cols={cols}
-          compact={compact}
-          detailsMode={detailsMode}
-          detailsModeCommandOverride={detailsModeCommandOverride}
-          key={`seg:${i}`}
-          msg={msg}
-          sections={sections}
-          t={t}
-        />
-      ))}
-
-      {progress.showStreamingArea && (
-        <MessageLine
-          cols={cols}
-          compact={compact}
-          detailsMode={detailsMode}
-          detailsModeCommandOverride={detailsModeCommandOverride}
-          isStreaming
-          msg={{
-            role: 'assistant',
-            text: progress.streaming,
-            ...(progress.streamPendingTools.length && { tools: progress.streamPendingTools })
-          }}
-          sections={sections}
-          t={t}
-        />
-      )}
-
-      {!progress.showStreamingArea && !!progress.streamPendingTools.length && (
-        <MessageLine
-          cols={cols}
-          compact={compact}
-          detailsMode={detailsMode}
-          detailsModeCommandOverride={detailsModeCommandOverride}
-          msg={{ kind: 'trail', role: 'system', text: '', tools: progress.streamPendingTools }}
-          sections={sections}
-          t={t}
-        />
-      )}
-    </>
-  )
-})
 
 const TranscriptPane = memo(function TranscriptPane({
   actions,
@@ -120,15 +58,15 @@ const TranscriptPane = memo(function TranscriptPane({
 
           {transcript.virtualHistory.bottomSpacer > 0 ? <Box height={transcript.virtualHistory.bottomSpacer} /> : null}
 
+          <LiveTodoPanel />
+
           <StreamingAssistant
-            busy={ui.busy}
             cols={composer.cols}
             compact={ui.compact}
             detailsMode={ui.detailsMode}
             detailsModeCommandOverride={ui.detailsModeCommandOverride}
             progress={progress}
             sections={ui.sections}
-            t={ui.theme}
           />
         </Box>
       </ScrollBox>
@@ -279,7 +217,9 @@ const StatusRulePane = memo(function StatusRulePane({
         busy={ui.busy}
         cols={composer.cols}
         cwdLabel={status.cwdLabel}
-        model={ui.info?.model?.split('/').pop() ?? ''}
+        model={ui.info?.model ?? ''}
+        modelFast={ui.info?.fast || ui.info?.service_tier === 'priority'}
+        modelReasoningEffort={ui.info?.reasoning_effort}
         sessionStartedAt={status.sessionStartedAt}
         showCost={ui.showCost}
         status={ui.status}
@@ -331,14 +271,3 @@ export const AppLayout = memo(function AppLayout({
     </AlternateScreen>
   )
 })
-
-interface StreamingAssistantProps {
-  busy: boolean
-  cols: number
-  compact?: boolean
-  detailsMode: DetailsMode
-  detailsModeCommandOverride: boolean
-  progress: AppLayoutProgressProps
-  sections?: SectionVisibility
-  t: Theme
-}

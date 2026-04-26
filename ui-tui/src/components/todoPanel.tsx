@@ -1,6 +1,7 @@
 import { Box, Text } from '@hermes/ink'
 import { memo } from 'react'
 
+import { countPendingTodos } from '../lib/liveProgress.js'
 import { todoGlyph, todoTone } from '../lib/todo.js'
 import type { Theme } from '../theme.js'
 import type { TodoItem } from '../types.js'
@@ -13,11 +14,13 @@ const rowColor = (t: Theme, status: TodoItem['status']) => {
 
 export const TodoPanel = memo(function TodoPanel({
   collapsed = false,
+  incomplete = false,
   onToggle,
   t,
   todos
 }: {
   collapsed?: boolean
+  incomplete?: boolean
   onToggle?: () => void
   t: Theme
   todos: TodoItem[]
@@ -27,6 +30,7 @@ export const TodoPanel = memo(function TodoPanel({
   }
 
   const done = todos.filter(todo => todo.status === 'completed').length
+  const pending = countPendingTodos(todos)
 
   return (
     <Box flexDirection="column" marginBottom={1}>
@@ -39,6 +43,12 @@ export const TodoPanel = memo(function TodoPanel({
           <Text color={t.color.statusFg} dim>
             ({done}/{todos.length})
           </Text>
+          {incomplete && pending > 0 && (
+            <Text color={t.color.dim} dim>
+              {' '}
+              · incomplete · {pending} still {pending === 1 ? 'pending' : 'pending/in_progress'}
+            </Text>
+          )}
         </Text>
       </Box>
 

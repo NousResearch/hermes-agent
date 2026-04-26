@@ -216,7 +216,11 @@ class WhatsAppAdapter(BasePlatformAdapter):
         if self._dm_policy == "disabled":
             return False
         if self._dm_policy == "allowlist":
-            return sender_id in self._allow_from
+            if os.getenv("WHATSAPP_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes"):
+                return True
+            # Normalize JID to bare phone/LID number (strip @s.whatsapp.net, @lid, etc.)
+            bare_id = re.sub(r"@.*", "", sender_id) if "@" in sender_id else sender_id
+            return sender_id in self._allow_from or bare_id in self._allow_from
         # "open" — all DMs allowed
         return True
 

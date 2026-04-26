@@ -296,3 +296,53 @@ def test_config_bridges_whatsapp_allow_from(monkeypatch, tmp_path):
     assert config.platforms[Platform.WHATSAPP].extra["allow_from"] == ["6281234567890@s.whatsapp.net"]
     assert __import__("os").environ["WHATSAPP_DM_POLICY"] == "allowlist"
     assert __import__("os").environ["WHATSAPP_ALLOWED_USERS"] == "6281234567890@s.whatsapp.net"
+
+
+# --- JID normalization regression tests (fix: allow_from with bare numbers) ---
+
+def test_dm_allowlist_matches_full_jid_sender():
+    """allow_from with full JIDs should still match."""
+    adapter = _make_adapter(dm_policy="allowlist", allow_from=["6281234567890@s.whatsapp.net"])
+
+    assert adapter._should_process_message(_dm_message("hello")) is True
+
+
+def test_dm_allowlist_matches_bare_number_in_allow_from():
+    """allow_from configured with plain phone numbers should match full JID senders.
+
+    Regression: config.yaml / WHATSAPP_ALLOWED_USERS stores plain numbers like
+    '85296456787', but Baileys delivers sender_id as '85296456787@s.whatsapp.net'.
+    The old code did a direct set-membership check and always returned False,
+    silently dropping every DM even for explicitly allowed users.
+    """
+    # allow_from contains bare number (typical real-world config)
+    adapter = _make_adapter(dm_policy="allowlist", allow_from=["6281234567890"])
+
+    # sender_id arrives as full JID from bridge
+    dm = _dm_message("hello", senderId="6281234567890@s.whatsapp.net")
+    assert adapter._should_process_message(dm) is True
+
+
+def test_dm_allowlist_bare_number_blocks_unlisted_jid():
+    """Un-listed senders are still blocked after JID normalization."""
+    adapter = _make_adapter(dm_policy="allowlist", allow_from=["6289999999999"])
+
+    dm = _dm_message("hello", senderId="6281234567890@s.whatsapp.net")
+    assert adapter._should_process_message(dm) is False
+
+
+def test_dm_allowlist_bare_number_matches_lid_jid():
+    """Bare LID numbers in allow_from should match @lid-suffixed sender_id."""
+    adapter = _make_adapter(dm_policy="allowlist", allow_from=["125619388076125"])
+
+    dm = _dm_message("hello", senderId="125619388076125@lid")
+    assert adapter._should_process_message(dm) is True
+
+
+def test_dm_allowlist_allow_all_users_env_bypasses_list(monkeypatch):
+    """WHATSAPP_ALLOW_ALL_USERS=true should bypass the allowlist entirely."""
+    monkeypatch.setenv("WHATSAPP_ALLOW_ALL_USERS", "true")
+    adapter = _make_adapter(dm_policy="allowlist", allow_from=["6289999999999"])
+
+    dm = _dm_message("hello", senderId="6281234567890@s.whatsapp.net")
+    assert adapter._should_process_message(dm) is True

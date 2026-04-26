@@ -483,6 +483,147 @@ def _is_local_backend() -> bool:
     return _is_camofox_mode() or _get_cloud_provider() is None
 
 
+_auto_local_for_private_urls_resolved = False
+_cached_auto_local_for_private_urls: bool = True
+
+
+def _auto_local_for_private_urls() -> bool:
+    """Return whether a cloud-configured install should auto-spawn a local
+    Chromium for LAN/localhost URLs.
+
+    Reads ``browser.auto_local_for_private_urls`` once (default ``True``) and
+    caches it for the process lifetime.  When enabled, ``browser_navigate``
+    routes URLs whose host resolves to a private/loopback/LAN address to a
+    local headless Chromium sidecar even when a cloud provider (Browserbase
+    / Browser-Use / Firecrawl) is configured globally.  Public URLs continue
+    to use the cloud provider in the same conversation.
+    """
+    global _auto_local_for_private_urls_resolved, _cached_auto_local_for_private_urls
+    if _auto_local_for_private_urls_resolved:
+        return _cached_auto_local_for_private_urls
+
+    _auto_local_for_private_urls_resolved = True
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        browser_cfg = cfg.get("browser", {})
+        if isinstance(browser_cfg, dict) and "auto_local_for_private_urls" in browser_cfg:
+            _cached_auto_local_for_private_urls = bool(
+                browser_cfg.get("auto_local_for_private_urls")
+            )
+    except Exception as e:
+        logger.debug("Could not read auto_local_for_private_urls from config: %s", e)
+    return _cached_auto_local_for_private_urls
+
+
+def _url_is_private(url: str) -> bool:
+    """Return True when the URL's host resolves to a private/LAN/loopback address.
+
+    Reuses ``tools.url_safety.is_safe_url`` as the oracle — if the SSRF check
+    would reject the URL, we treat it as "private" for routing purposes.  DNS
+    resolution failures are treated as NOT private (fall through to whatever
+    backend is configured, which will surface the DNS error naturally).
+    """
+    try:
+        from tools.url_safety import is_safe_url
+        # is_safe_url returns False for private/loopback/link-local/CGNAT AND
+        # for DNS failures.  We only want the private-network case here, so
+        # we parse + check the host shape as a DNS-failure sieve first.
+        from urllib.parse import urlparse
+        import ipaddress
+        import socket
+        parsed = urlparse(url)
+        hostname = (parsed.hostname or "").strip().lower().rstrip(".")
+        if not hostname:
+            return False
+        # Literal IP → check directly
+        try:
+            ip = ipaddress.ip_address(hostname)
+            return (
+                ip.is_private
+                or ip.is_loopback
+                or ip.is_link_local
+                or ip in ipaddress.ip_network("100.64.0.0/10")
+            )
+        except ValueError:
+            pass
+        # Hostname — must resolve to confirm it's private (bare "localhost"
+        # resolves to 127.0.0.1 via /etc/hosts).  Short-circuit on obvious
+        # names to avoid a DNS hop.
+        if hostname in ("localhost",) or hostname.endswith(".localhost"):
+            return True
+        if hostname.endswith(".local") or hostname.endswith(".lan") or hostname.endswith(".internal"):
+            return True
+        try:
+            addr_info = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC, socket.SOCK_STREAM)
+        except socket.gaierror:
+            return False  # DNS fail → not private, let the normal path fail
+        for _, _, _, _, sockaddr in addr_info:
+            try:
+                ip = ipaddress.ip_address(sockaddr[0])
+            except ValueError:
+                continue
+            if (
+                ip.is_private
+                or ip.is_loopback
+                or ip.is_link_local
+                or ip in ipaddress.ip_network("100.64.0.0/10")
+            ):
+                return True
+        return False
+    except Exception as exc:
+        logger.debug("URL-privacy check failed for %s: %s", url, exc)
+        return False
+
+
+def _navigation_session_key(task_id: str, url: str) -> str:
+    """Pick the session key that should handle ``url`` for ``task_id``.
+
+    Returns the bare task_id unless ALL of these are true:
+      1. A cloud provider is configured (``_get_cloud_provider()`` is not None).
+      2. Auto-local routing is enabled (``browser.auto_local_for_private_urls``,
+         default True).
+      3. The URL resolves to a private/LAN/loopback address.
+      4. A CDP override is not active (that path owns the whole session).
+      5. Camofox mode is not active (Camofox is already local-only).
+
+    When all are true, returns ``f"{task_id}::local"`` so the hybrid-routing
+    path spawns a local Chromium sidecar while the cloud session (if any)
+    continues to serve public URLs.
+    """
+    if task_id is None:
+        task_id = "default"
+    if _get_cdp_override():
+        return task_id
+    if _is_camofox_mode():
+        return task_id
+    if _get_cloud_provider() is None:
+        return task_id
+    if not _auto_local_for_private_urls():
+        return task_id
+    if not _url_is_private(url):
+        return task_id
+    return f"{task_id}{_LOCAL_SUFFIX}"
+
+
+def _is_local_sidecar_key(session_key: str) -> bool:
+    """Return True when ``session_key`` is a hybrid-routing local sidecar."""
+    return session_key.endswith(_LOCAL_SUFFIX)
+
+
+def _last_session_key(task_id: str) -> str:
+    """Return the session key to use for a non-nav browser tool call.
+
+    If a previous ``browser_navigate`` on this task_id set a last-active key,
+    use it so snapshot/click/fill/etc. hit the same session.  Otherwise fall
+    back to the bare task_id (matches original behavior for tasks that never
+    triggered hybrid routing).
+    """
+    if task_id is None:
+        task_id = "default"
+    return _last_active_session_key.get(task_id, task_id)
+
+
 def _allow_private_urls() -> bool:
     """Return whether the browser is allowed to navigate to private/internal addresses.
 
@@ -521,10 +662,25 @@ def _socket_safe_tmpdir() -> str:
     return tempfile.gettempdir()
 
 
-# Track active sessions per task
+# Track active sessions per "session key".
+#
+# A "session key" is either the bare task_id (cloud/default path) OR a composite
+# like f"{task_id}::local" when the hybrid-routing feature spawns a local sidecar
+# browser for a LAN/localhost URL while a cloud provider is configured globally.
+# Both forms flow through the same _active_sessions / _run_browser_command /
+# cleanup_browser code paths — the key is opaque to those internals.
+#
 # Stores: session_name (always), bb_session_id + cdp_url (cloud mode only)
-_active_sessions: Dict[str, Dict[str, str]] = {}  # task_id -> {session_name, ...}
-_recording_sessions: set = set()  # task_ids with active recordings
+_active_sessions: Dict[str, Dict[str, str]] = {}  # session_key -> {session_name, ...}
+_recording_sessions: set = set()  # session_keys with active recordings
+
+# Tracks the most recent session_key used per task_id. Set by browser_navigate()
+# after it chooses a backend for a URL; read by every non-nav browser tool
+# (snapshot/click/fill/eval/...) so they target the session that served the last
+# navigation.  Without this, a task that navigated to localhost on the local
+# sidecar would fall back to the cloud session on its next snapshot call.
+_last_active_session_key: Dict[str, str] = {}  # task_id -> session_key
+_LOCAL_SUFFIX = "::local"
 
 # Flag to track if cleanup has been done
 _cleanup_done = False
@@ -1014,37 +1170,48 @@ def _create_cdp_session(task_id: str, cdp_url: str) -> Dict[str, str]:
 
 def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
     """
-    Get or create session info for the given task.
-    
+    Get or create session info for the given session key.
+
     In cloud mode, creates a Browserbase session with proxies enabled.
     In local mode, generates a session name for agent-browser --session.
     Also starts the inactivity cleanup thread and updates activity tracking.
     Thread-safe: multiple subagents can call this concurrently.
-    
+
     Args:
-        task_id: Unique identifier for the task
-        
+        task_id: Session key.  Normally the task_id as-is, but may carry the
+            ``::local`` suffix for the hybrid-routing local sidecar — in that
+            case the cloud provider is skipped even when one is configured,
+            and a local Chromium session is created instead.
+
     Returns:
         Dict with session_name (always), bb_session_id + cdp_url (cloud only)
     """
     if task_id is None:
         task_id = "default"
-    
+
     # Start the cleanup thread if not running (handles inactivity timeouts)
     _start_browser_cleanup_thread()
-    
+
     # Update activity timestamp for this session
     _update_session_activity(task_id)
-    
+
     with _cleanup_lock:
         # Check if we already have a session for this task
         if task_id in _active_sessions:
             return _active_sessions[task_id]
-    
+
+    # Hybrid routing: session keys ending with ``::local`` force a local
+    # Chromium regardless of the globally-configured cloud provider.  Public
+    # URLs in the same conversation continue to use the cloud session under
+    # the bare task_id key.
+    force_local = _is_local_sidecar_key(task_id)
+
     # Create session outside the lock (network call in cloud mode)
     cdp_override = _get_cdp_override()
-    if cdp_override:
+    if cdp_override and not force_local:
         session_info = _create_cdp_session(task_id, cdp_override)
+    elif force_local:
+        session_info = _create_local_session(task_id)
     else:
         provider = _get_cloud_provider()
         if provider is None:
@@ -1081,7 +1248,7 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
                     session_info["fallback_from_cloud"] = True
                     session_info["fallback_reason"] = str(e)
                     session_info["fallback_provider"] = provider_name
-    
+
     with _cleanup_lock:
         # Double-check: another thread may have created a session while we
         # were doing the network call. Use the existing one to avoid leaking
@@ -1093,7 +1260,9 @@ def _get_session_info(task_id: Optional[str] = None) -> Dict[str, str]:
     # Lazy-start the CDP supervisor now that the session exists (if the
     # backend surfaces a CDP URL via override or session_info["cdp_url"]).
     # Idempotent; swallows errors. See _ensure_cdp_supervisor for details.
-    _ensure_cdp_supervisor(task_id)
+    # Skip for local sidecars — they have no CDP URL.
+    if not force_local:
+        _ensure_cdp_supervisor(task_id)
 
     return session_info
 
@@ -1521,9 +1690,21 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
     # SSRF protection — block private/internal addresses before navigating.
     # Skipped for local backends (Camofox, headless Chromium without a cloud
     # provider) because the agent already has full local network access via
-    # the terminal tool.  Can also be opted out for cloud mode via
-    # ``browser.allow_private_urls`` in config.
-    if not _is_local_backend() and not _allow_private_urls() and not _is_safe_url(url):
+    # the terminal tool.  Also skipped when hybrid routing will auto-spawn a
+    # local Chromium sidecar for this URL (cloud provider configured +
+    # private URL + ``browser.auto_local_for_private_urls`` enabled) — the
+    # cloud provider never sees the URL in that case.  Can also be opted
+    # out globally via ``browser.allow_private_urls`` in config.
+    effective_task_id = task_id or "default"
+    nav_session_key = _navigation_session_key(effective_task_id, url)
+    auto_local_this_nav = _is_local_sidecar_key(nav_session_key)
+
+    if (
+        not _is_local_backend()
+        and not auto_local_this_nav
+        and not _allow_private_urls()
+        and not _is_safe_url(url)
+    ):
         return json.dumps({
             "success": False,
             "error": "Blocked: URL targets a private or internal address",
@@ -1543,19 +1724,31 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         from tools.browser_camofox import camofox_navigate
         return camofox_navigate(url, task_id)
 
-    effective_task_id = task_id or "default"
-    
+    if auto_local_this_nav:
+        logger.info(
+            "browser_navigate: auto-routing %s to local Chromium sidecar "
+            "(cloud provider %s stays on cloud for public URLs; "
+            "set browser.auto_local_for_private_urls: false to disable)",
+            url,
+            type(_get_cloud_provider()).__name__ if _get_cloud_provider() else "none",
+        )
+
     # Get session info to check if this is a new session
     # (will create one with features logged if not exists)
-    session_info = _get_session_info(effective_task_id)
+    session_info = _get_session_info(nav_session_key)
     is_first_nav = session_info.get("_first_nav", True)
-    
+
     # Auto-start recording if configured and this is first navigation
     if is_first_nav:
         session_info["_first_nav"] = False
-        _maybe_start_recording(effective_task_id)
+        _maybe_start_recording(nav_session_key)
 
-    result = _run_browser_command(effective_task_id, "open", [url], timeout=max(_get_command_timeout(), 60))
+    result = _run_browser_command(nav_session_key, "open", [url], timeout=max(_get_command_timeout(), 60))
+
+    # Remember which session served this nav so snapshot/click/fill/...
+    # on the same task_id hit it (critical when hybrid routing has both a
+    # cloud session and a local sidecar alive concurrently).
+    _last_active_session_key[effective_task_id] = nav_session_key
     
     if result.get("success"):
         data = result.get("data", {})
@@ -1565,10 +1758,17 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         # Post-redirect SSRF check — if the browser followed a redirect to a
         # private/internal address, block the result so the model can't read
         # internal content via subsequent browser_snapshot calls.
-        # Skipped for local backends (same rationale as the pre-nav check).
-        if not _is_local_backend() and not _allow_private_urls() and final_url and final_url != url and not _is_safe_url(final_url):
+        # Skipped for local backends (same rationale as the pre-nav check),
+        # and for the hybrid local sidecar (we're already on a local browser
+        # hitting a private URL by design).
+        if (
+            not _is_local_backend()
+            and not auto_local_this_nav
+            and not _allow_private_urls()
+            and final_url and final_url != url and not _is_safe_url(final_url)
+        ):
             # Navigate away to a blank page to prevent snapshot leaks
-            _run_browser_command(effective_task_id, "open", ["about:blank"], timeout=10)
+            _run_browser_command(nav_session_key, "open", ["about:blank"], timeout=10)
             return json.dumps({
                 "success": False,
                 "error": "Blocked: redirect landed on a private/internal address",
@@ -1612,7 +1812,7 @@ def browser_navigate(url: str, task_id: Optional[str] = None) -> str:
         # Auto-take a compact snapshot so the model can act immediately
         # without a separate browser_snapshot call.
         try:
-            snap_result = _run_browser_command(effective_task_id, "snapshot", ["-c"])
+            snap_result = _run_browser_command(nav_session_key, "snapshot", ["-c"])
             if snap_result.get("success"):
                 snap_data = snap_result.get("data", {})
                 snapshot_text = snap_data.get("snapshot", "")
@@ -1652,7 +1852,7 @@ def browser_snapshot(
         from tools.browser_camofox import camofox_snapshot
         return camofox_snapshot(full, task_id, user_task)
 
-    effective_task_id = task_id or "default"
+    effective_task_id = _last_session_key(task_id or "default")
     
     # Build command args based on full flag
     args = []
@@ -1714,7 +1914,7 @@ def browser_click(ref: str, task_id: Optional[str] = None) -> str:
         from tools.browser_camofox import camofox_click
         return camofox_click(ref, task_id)
 
-    effective_task_id = task_id or "default"
+    effective_task_id = _last_session_key(task_id or "default")
     
     # Ensure ref starts with @
     if not ref.startswith("@"):
@@ -1750,7 +1950,7 @@ def browser_type(ref: str, text: str, task_id: Optional[str] = None) -> str:
         from tools.browser_camofox import camofox_type
         return camofox_type(ref, text, task_id)
 
-    effective_task_id = task_id or "default"
+    effective_task_id = _last_session_key(task_id or "default")
     
     # Ensure ref starts with @
     if not ref.startswith("@"):
@@ -1804,7 +2004,7 @@ def browser_scroll(direction: str, task_id: Optional[str] = None) -> str:
             result = camofox_scroll(direction, task_id)
         return result
 
-    effective_task_id = task_id or "default"
+    effective_task_id = _last_session_key(task_id or "default")
 
     result = _run_browser_command(effective_task_id, "scroll", [direction, str(_SCROLL_PIXELS)])
     if not result.get("success"):
@@ -1833,7 +2033,7 @@ def browser_back(task_id: Optional[str] = None) -> str:
         from tools.browser_camofox import camofox_back
         return camofox_back(task_id)
 
-    effective_task_id = task_id or "default"
+    effective_task_id = _last_session_key(task_id or "default")
     result = _run_browser_command(effective_task_id, "back", [])
     
     if result.get("success"):
@@ -1864,7 +2064,7 @@ def browser_press(key: str, task_id: Optional[str] = None) -> str:
         from tools.browser_camofox import camofox_press
         return camofox_press(key, task_id)
 
-    effective_task_id = task_id or "default"
+    effective_task_id = _last_session_key(task_id or "default")
     result = _run_browser_command(effective_task_id, "press", [key])
     
     if result.get("success"):
@@ -1906,7 +2106,7 @@ def browser_console(clear: bool = False, expression: Optional[str] = None, task_
         from tools.browser_camofox import camofox_console
         return camofox_console(clear, task_id)
 
-    effective_task_id = task_id or "default"
+    effective_task_id = _last_session_key(task_id or "default")
     
     console_args = ["--clear"] if clear else []
     error_args = ["--clear"] if clear else []
@@ -1945,7 +2145,7 @@ def _browser_eval(expression: str, task_id: Optional[str] = None) -> str:
     if _is_camofox_mode():
         return _camofox_eval(expression, task_id)
 
-    effective_task_id = task_id or "default"
+    effective_task_id = _last_session_key(task_id or "default")
     result = _run_browser_command(effective_task_id, "eval", [expression])
 
     if not result.get("success"):
@@ -2077,7 +2277,7 @@ def browser_get_images(task_id: Optional[str] = None) -> str:
         from tools.browser_camofox import camofox_get_images
         return camofox_get_images(task_id)
 
-    effective_task_id = task_id or "default"
+    effective_task_id = _last_session_key(task_id or "default")
     
     # Use eval to run JavaScript that extracts images
     js_code = """JSON.stringify(
@@ -2147,7 +2347,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
 
     import base64
     import uuid as uuid_mod
-    effective_task_id = task_id or "default"
+    effective_task_id = _last_session_key(task_id or "default")
     
     # Save screenshot to persistent location so it can be shared with users
     from hermes_constants import get_hermes_dir
@@ -2350,17 +2550,47 @@ def _cleanup_old_recordings(max_age_hours=72):
 
 def cleanup_browser(task_id: Optional[str] = None) -> None:
     """
-    Clean up browser session for a task.
-    
+    Clean up browser session(s) for a task.
+
     Called automatically when a task completes or when inactivity timeout is reached.
     Closes both the agent-browser/Browserbase session and Camofox sessions.
-    
+
+    When ``task_id`` is a bare task identifier (no ``::local`` suffix), reaps
+    BOTH the cloud/primary session AND any hybrid-routing local sidecar that
+    may have been spawned for LAN/localhost URLs in the same task.  When
+    ``task_id`` already carries a ``::local`` suffix (called from the inactivity
+    cleanup loop against a specific session key), reaps only that one.
+
     Args:
-        task_id: Task identifier to clean up
+        task_id: Task identifier (or explicit session key)
     """
     if task_id is None:
         task_id = "default"
 
+    # Expand to the full set of session keys to reap. For a bare task_id
+    # that includes the cloud/primary key + the local sidecar if one exists.
+    if _is_local_sidecar_key(task_id):
+        session_keys = [task_id]
+        bare_task_id = task_id[: -len(_LOCAL_SUFFIX)]
+    else:
+        session_keys = [task_id]
+        sidecar_key = f"{task_id}{_LOCAL_SUFFIX}"
+        with _cleanup_lock:
+            if sidecar_key in _active_sessions:
+                session_keys.append(sidecar_key)
+        bare_task_id = task_id
+
+    for session_key in session_keys:
+        _cleanup_single_browser_session(session_key)
+
+    # Drop the last-active pointer only when the bare task is being cleaned
+    # (i.e. not when we're only reaping a sidecar mid-task).
+    if not _is_local_sidecar_key(task_id):
+        _last_active_session_key.pop(bare_task_id, None)
+
+
+def _cleanup_single_browser_session(task_id: str) -> None:
+    """Internal: reap a single browser session by its exact session key."""
     # Stop the CDP supervisor for this task FIRST so we close our WebSocket
     # before the backend tears down the underlying CDP endpoint.
     _stop_cdp_supervisor(task_id)
@@ -2379,32 +2609,33 @@ def cleanup_browser(task_id: Optional[str] = None) -> None:
 
     logger.debug("cleanup_browser called for task_id: %s", task_id)
     logger.debug("Active sessions: %s", list(_active_sessions.keys()))
-    
+
     # Check if session exists (under lock), but don't remove yet -
     # _run_browser_command needs it to build the close command.
     with _cleanup_lock:
         session_info = _active_sessions.get(task_id)
-    
+
     if session_info:
         bb_session_id = session_info.get("bb_session_id", "unknown")
         logger.debug("Found session for task %s: bb_session_id=%s", task_id, bb_session_id)
-        
+
         # Stop auto-recording before closing (saves the file)
         _maybe_stop_recording(task_id)
-        
+
         # Try to close via agent-browser first (needs session in _active_sessions)
         try:
             _run_browser_command(task_id, "close", [], timeout=10)
             logger.debug("agent-browser close command completed for task %s", task_id)
         except Exception as e:
             logger.warning("agent-browser close failed for task %s: %s", task_id, e)
-        
+
         # Now remove from tracking under lock
         with _cleanup_lock:
             _active_sessions.pop(task_id, None)
             _session_last_activity.pop(task_id, None)
-        
-        # Cloud mode: close the cloud browser session via provider API
+
+        # Cloud mode: close the cloud browser session via provider API.
+        # Local sidecars have bb_session_id=None so this no-ops for them.
         if bb_session_id:
             provider = _get_cloud_provider()
             if provider is not None:

@@ -181,7 +181,10 @@ val prepareHermesAndroidWheel = tasks.register<Exec>("prepareHermesAndroidWheel"
     group = "python"
     description = "Build a no-deps Hermes wheel for the Android embedded runtime."
     val wheelDir = hermesWheelDir.get().asFile
+    inputs.file(repoRoot.resolve("pyproject.toml"))
+    inputs.dir(repoRoot.resolve("hermes_cli"))
     outputs.file(wheelDir.resolve(hermesWheelName()))
+    outputs.upToDateWhen { outputs.files.isEmpty() || !outputs.files.files.all { it.exists() } }
     doFirst {
         wheelDir.mkdirs()
     }
@@ -201,7 +204,9 @@ val prepareHermesAndroidLinuxAssets = tasks.register<Exec>("prepareHermesAndroid
     group = "android"
     description = "Download and normalize the Android Linux command-suite assets."
     val outputDir = generatedHermesLinuxAssetsDir.get().asFile
+    inputs.file(repoRoot.resolve("scripts/prepare_android_linux_assets.py"))
     outputs.dir(outputDir)
+    outputs.upToDateWhen { outputs.files.isEmpty() || !outputs.files.files.all { it.exists() } }
     doFirst {
         outputDir.mkdirs()
     }

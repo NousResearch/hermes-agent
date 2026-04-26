@@ -41,6 +41,10 @@ if (process.env.HERMES_HEAPDUMP_ON_START === '1') {
 
 process.on('beforeExit', () => stopMemoryMonitor())
 
-const [{ render }, { App }] = await Promise.all([import('@hermes/ink'), import('./app.js')])
+const [{ render }, { App }, { logFrameEvent }] = await Promise.all([
+  import('@hermes/ink'),
+  import('./app.js'),
+  import('./lib/perfPane.js')
+])
 
-render(<App gw={gw} />, { exitOnCtrlC: false })
+render(<App gw={gw} />, { exitOnCtrlC: false, onFrame: logFrameEvent })

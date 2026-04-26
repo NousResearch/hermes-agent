@@ -33,11 +33,35 @@ declare module '@hermes/ink' {
 
   export type InputHandler = (input: string, key: Key, event: InputEvent) => void
 
+  export type FrameEvent = {
+    readonly durationMs: number
+    readonly phases?: {
+      readonly renderer: number
+      readonly diff: number
+      readonly optimize: number
+      readonly write: number
+      readonly patches: number
+      readonly yoga: number
+      readonly commit: number
+      readonly yogaVisited: number
+      readonly yogaMeasured: number
+      readonly yogaCacheHits: number
+      readonly yogaLive: number
+    }
+    readonly flickers: ReadonlyArray<{
+      readonly desiredHeight: number
+      readonly availableHeight: number
+      readonly reason: 'resize' | 'offscreen' | 'clear'
+    }>
+  }
+
   export type RenderOptions = {
     readonly stdin?: NodeJS.ReadStream
     readonly stdout?: NodeJS.WriteStream
     readonly stderr?: NodeJS.WriteStream
     readonly exitOnCtrlC?: boolean
+    readonly patchConsole?: boolean
+    readonly onFrame?: (event: FrameEvent) => void
   }
 
   export type Instance = {

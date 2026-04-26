@@ -336,21 +336,23 @@ export function TextInput({
     active: focus && termFocus && !selected
   })
 
+  const nativeCursor = focus && termFocus && !selected
+
   const rendered = useMemo(() => {
     if (!focus) {
       return display || dim(placeholder)
     }
 
     if (!display && placeholder) {
-      return invert(placeholder[0] ?? ' ') + dim(placeholder.slice(1))
+      return nativeCursor ? dim(placeholder) : invert(placeholder[0] ?? ' ') + dim(placeholder.slice(1))
     }
 
     if (selected) {
       return renderWithSelection(display, selected.start, selected.end)
     }
 
-    return renderWithCursor(display, cur)
-  }, [cur, display, focus, placeholder, selected])
+    return nativeCursor ? display || ' ' : renderWithCursor(display, cur)
+  }, [cur, display, focus, nativeCursor, placeholder, selected])
 
   useEffect(() => {
     if (self.current) {

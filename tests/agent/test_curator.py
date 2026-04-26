@@ -62,7 +62,7 @@ def test_curator_disabled_via_config(curator_env, monkeypatch):
 
 def test_curator_defaults(curator_env):
     c = curator_env["curator"]
-    assert c.get_interval_hours() == 24
+    assert c.get_interval_hours() == 24 * 7  # 7 days
     assert c.get_min_idle_hours() == 2
     assert c.get_stale_after_days() == 30
     assert c.get_archive_after_days() == 90
@@ -101,15 +101,20 @@ def test_recent_run_blocks(curator_env):
 
 
 def test_old_run_eligible(curator_env):
+    """A run older than the configured interval should re-trigger. Use a
+    2x-interval cushion so the test doesn't become coupled to the exact
+    default — bumping DEFAULT_INTERVAL_HOURS shouldn't break it."""
     c = curator_env["curator"]
-    long_ago = datetime.now(timezone.utc) - timedelta(hours=48)
+    long_ago = datetime.now(timezone.utc) - timedelta(
+        hours=c.get_interval_hours() * 2
+    )
     c.save_state({"last_run_at": long_ago.isoformat(), "paused": False})
     assert c.should_run_now() is True
 
 
 def test_paused_blocks_even_if_stale(curator_env):
     c = curator_env["curator"]
-    long_ago = datetime.now(timezone.utc) - timedelta(days=5)
+    long_ago = datetime.now(timezone.utc) - timedelta(days=30)
     c.save_state({"last_run_at": long_ago.isoformat(), "paused": True})
     assert c.should_run_now() is False
 

@@ -927,8 +927,8 @@ DEFAULT_CONFIG = {
     # See `hermes curator status` for the last run summary.
     "curator": {
         "enabled": True,
-        # How long to wait between curator runs (hours).
-        "interval_hours": 24,
+        # How long to wait between curator runs (hours).  Default: 7 days.
+        "interval_hours": 24 * 7,
         # Only run when the agent has been idle at least this long (hours).
         "min_idle_hours": 2,
         # Mark a skill as "stale" after this many days without use.

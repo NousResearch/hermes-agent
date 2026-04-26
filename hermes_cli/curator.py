@@ -55,7 +55,12 @@ def _cmd_status(args) -> int:
     print(f"  runs:           {runs}")
     print(f"  last run:       {_fmt_ts(last_run)}")
     print(f"  last summary:   {summary}")
-    print(f"  interval:       every {curator.get_interval_hours()}h")
+    _ih = curator.get_interval_hours()
+    _interval_label = (
+        f"{_ih // 24}d" if _ih % 24 == 0 and _ih >= 24
+        else f"{_ih}h"
+    )
+    print(f"  interval:       every {_interval_label}")
     print(f"  stale after:    {curator.get_stale_after_days()}d unused")
     print(f"  archive after:  {curator.get_archive_after_days()}d unused")
 

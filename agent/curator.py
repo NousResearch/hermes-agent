@@ -36,7 +36,7 @@ from tools import skill_usage
 logger = logging.getLogger(__name__)
 
 
-DEFAULT_INTERVAL_HOURS = 24
+DEFAULT_INTERVAL_HOURS = 24 * 7  # 7 days
 DEFAULT_MIN_IDLE_HOURS = 2
 DEFAULT_STALE_AFTER_DAYS = 30
 DEFAULT_ARCHIVE_AFTER_DAYS = 90

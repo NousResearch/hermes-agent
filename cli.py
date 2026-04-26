@@ -5818,7 +5818,28 @@ class HermesCLI:
 
         print(f"(._.) Unknown cron command: {subcommand}")
         print("  Available: list, add, edit, pause, resume, run, remove")
-    
+
+    def _handle_kanban_command(self, cmd: str):
+        """Handle the /kanban command — delegate to the shared kanban CLI.
+
+        The string form passed here is the user's full ``/kanban ...``
+        including the leading slash; we strip it and hand the remainder
+        to ``kanban.run_slash`` which returns a single formatted string.
+        """
+        from hermes_cli.kanban import run_slash
+
+        rest = cmd.strip()
+        if rest.startswith("/"):
+            rest = rest.lstrip("/")
+        if rest.startswith("kanban"):
+            rest = rest[len("kanban"):].lstrip()
+        try:
+            output = run_slash(rest)
+        except Exception as exc:  # pragma: no cover - defensive
+            output = f"(._.) kanban error: {exc}"
+        if output:
+            print(output)
+
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to hermes_cli.skills_hub."""
         from hermes_cli.skills_hub import handle_skills_slash
@@ -6055,6 +6076,8 @@ class HermesCLI:
             self.save_conversation()
         elif canonical == "cron":
             self._handle_cron_command(cmd_original)
+        elif canonical == "kanban":
+            self._handle_kanban_command(cmd_original)
         elif canonical == "skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._handle_skills_command(cmd_original)

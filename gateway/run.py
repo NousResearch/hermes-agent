@@ -3503,6 +3503,14 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "background":
                 return await self._handle_background_command(event)
 
+            # /kanban must bypass the guard. It writes to a profile-agnostic
+            # DB (kanban.db), not to the running agent's state. In fact
+            # /kanban unblock is often the only way to free a worker that
+            # has blocked waiting for a peer — letting that be dispatched
+            # mid-run is the whole point of the board.
+            if _cmd_def_inner and _cmd_def_inner.name == "kanban":
+                return await self._handle_kanban_command(event)
+
             # Session-level toggles that are safe to run mid-agent —
             # /yolo can unblock a pending approval prompt, /verbose cycles
             # the tool-progress display mode for the ongoing stream.
@@ -3726,6 +3734,9 @@ class GatewayRunner:
 
         if canonical == "personality":
             return await self._handle_personality_command(event)
+
+        if canonical == "kanban":
+            return await self._handle_kanban_command(event)
 
         if canonical == "retry":
             return await self._handle_retry_command(event)
@@ -5153,6 +5164,37 @@ class GatewayRunner:
         ]
 
         return "\n".join(lines)
+
+
+    async def _handle_kanban_command(self, event: MessageEvent) -> str:
+        """Handle /kanban — delegate to the shared kanban CLI.
+
+        Run the potentially-blocking DB work in a thread pool so the
+        gateway event loop stays responsive.  Read operations (list,
+        show, context, tail) are permitted while an agent is running;
+        mutations are allowed too because the board is profile-agnostic
+        and does not touch the running agent's state.
+        """
+        import asyncio
+        from hermes_cli.kanban import run_slash
+
+        text = (event.text or "").strip()
+        # Strip the leading "/kanban" (with or without slash), leaving args.
+        if text.startswith("/"):
+            text = text.lstrip("/")
+        if text.startswith("kanban"):
+            text = text[len("kanban"):].lstrip()
+
+        try:
+            output = await asyncio.to_thread(run_slash, text)
+        except Exception as exc:  # pragma: no cover - defensive
+            return f"⚠ kanban error: {exc}"
+
+        # Gateway messages have practical length caps; truncate long
+        # listings to keep the UX reasonable.
+        if len(output) > 3800:
+            output = output[:3800] + "\n… (truncated; use `hermes kanban …` in your terminal for full output)"
+        return output or "(no output)"
 
     async def _handle_status_command(self, event: MessageEvent) -> str:
         """Handle /status command."""

@@ -41,13 +41,11 @@ COPY --chown=hermes:hermes . .
 # Build web dashboard (Vite outputs to hermes_cli/web_dist/)
 RUN cd web && npm run build
 
-# ---------- Python virtualenv ----------
+# ---------- Python virtualenv ----
 RUN chown hermes:hermes /opt/hermes
-USER hermes
 RUN uv venv && \
-    uv pip install --no-cache-dir -e ".[all]"
-
-# ---------- Runtime ----------
+    uv pip install --no-cache-dir -e ".[all]" && \
+    chown -R hermes:hermes /opt/hermes/.venv
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
 ENV HERMES_HOME=/opt/data
 ENV PATH="/opt/data/.local/bin:${PATH}"

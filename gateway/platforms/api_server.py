@@ -2314,8 +2314,8 @@ class APIServerAdapter(BasePlatformAdapter):
         if task is not None and not task.done():
             task.cancel()
             try:
-                await task
-            except (asyncio.CancelledError, Exception):
+                await asyncio.wait_for(asyncio.shield(task), 5.0)
+            except (asyncio.CancelledError, asyncio.TimeoutError, Exception):
                 pass
 
         return web.json_response({"run_id": run_id, "status": "stopping"})

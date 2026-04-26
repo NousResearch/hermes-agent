@@ -82,7 +82,8 @@ Navigate to **Features → OAuth & Permissions** in the sidebar. Scroll to **Sco
 
 :::caution Missing scopes = missing features
 Without `channels:history` and `groups:history`, the bot **will not receive messages in channels** —
-it will only work in DMs. These are the most commonly missed scopes.
+it will only work in DMs. Without `files:read`, Hermes can chat but **cannot reliably read user-uploaded attachments**.
+These are the most commonly missed scopes.
 :::
 
 **Optional scopes:**
@@ -520,7 +521,8 @@ Keys are Slack channel IDs (find them via channel details → "About" → scroll
 | "Sending messages to this app has been turned off" in DMs | Enable the **Messages Tab** in App Home settings (see Step 5) |
 | "not_authed" or "invalid_auth" errors | Regenerate your Bot Token and App Token, update `.env` |
 | Bot responds but can't post in a channel | Invite the bot to the channel with `/invite @Hermes Agent` |
-| "missing_scope" error | Add the required scope in OAuth & Permissions, then **reinstall** the app |
+| Bot can chat but can't read uploaded images/files | Add `files:read`, then **reinstall** the app. Hermes now surfaces attachment access diagnostics in-chat when Slack returns scope/auth/permission failures. |
+| `missing_scope` error | Add the required scope in OAuth & Permissions, then **reinstall** the app |
 | Socket disconnects frequently | Check your network; Bolt auto-reconnects but unstable connections cause lag |
 | Changed scopes/events but nothing changed | You **must reinstall** the app to your workspace after any scope or event subscription change |
 

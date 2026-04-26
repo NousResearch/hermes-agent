@@ -540,13 +540,46 @@ from gateway.config import Platform, PlatformConfig  # noqa: E402
 
 
 def _make_slack_adapter():
-    config = PlatformConfig(enabled=True, token="xoxb-fake-token")
+    config = PlatformConfig(enabled=True, token="***")
     adapter = SlackAdapter(config)
     adapter._app = MagicMock()
     adapter._app.client = AsyncMock()
     adapter._bot_user_id = "U_BOT"
     adapter._running = True
     return adapter
+
+
+# ---------------------------------------------------------------------------
+# SlackAdapter diagnostics helpers
+# ---------------------------------------------------------------------------
+
+class TestSlackAttachmentDiagnostics:
+    def test_missing_scope_error_returns_actionable_notice(self):
+        """_describe_slack_api_error translates a missing_scope response into
+        a user-facing notice mentioning the needed scope and the reinstall
+        step. This is the helper used by every files.info call site (Slack
+        Connect stubs + post-download failures) to surface scope problems
+        without making an extra probe call per attachment.
+        """
+        adapter = _make_slack_adapter()
+
+        response = {
+            "error": "missing_scope",
+            "needed": "files:read",
+            "provided": "chat:write,files:write",
+        }
+        detail = adapter._describe_slack_api_error(response, file_obj={"id": "F123", "name": "photo.jpg"})
+        assert detail is not None
+        assert "files:read" in detail
+        assert "reinstall" in detail.lower()
+        assert "chat:write,files:write" in detail
+
+    def test_download_failure_403_returns_permission_notice(self):
+        adapter = _make_slack_adapter()
+        exc = _make_http_status_error(403)
+        detail = adapter._describe_slack_download_failure(exc, file_obj={"name": "report.pdf"})
+        assert "403" in detail
+        assert "permission or scope" in detail
 
 
 # ---------------------------------------------------------------------------

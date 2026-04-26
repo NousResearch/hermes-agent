@@ -41,6 +41,36 @@ def test_get_platform_tools_homeassistant_platform_keeps_homeassistant_toolset()
     assert "homeassistant" in enabled
 
 
+def test_get_platform_tools_homeassistant_toolset_enabled_for_cron_when_hass_token_set(monkeypatch):
+    """HA toolset is runtime-gated by check_fn (requires HASS_TOKEN).
+
+    When HASS_TOKEN is set, the user has explicitly opted in — _DEFAULT_OFF_TOOLSETS
+    shouldn't also strip HA from platforms (like cron) that run through
+    _get_platform_tools without an explicit saved toolset list.
+
+    Regression guard for Norbert's HA cron breakage after #14798 made cron
+    honor per-platform tool config.
+    """
+    monkeypatch.setenv("HASS_TOKEN", "fake-test-token")
+
+    cron_enabled = _get_platform_tools({}, "cron")
+    assert "homeassistant" in cron_enabled
+    # moa must stay off — the original goal of #14798
+    assert "moa" not in cron_enabled
+
+    cli_enabled = _get_platform_tools({}, "cli")
+    assert "homeassistant" in cli_enabled
+
+
+def test_get_platform_tools_homeassistant_toolset_off_for_cron_when_hass_token_missing(monkeypatch):
+    """Without HASS_TOKEN, HA stays off by default — preserves #14798's behavior
+    for users who never configured HA."""
+    monkeypatch.delenv("HASS_TOKEN", raising=False)
+
+    cron_enabled = _get_platform_tools({}, "cron")
+    assert "homeassistant" not in cron_enabled
+
+
 def test_get_platform_tools_preserves_explicit_empty_selection():
     config = {"platform_toolsets": {"cli": []}}
 

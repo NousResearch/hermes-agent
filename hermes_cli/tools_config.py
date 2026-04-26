@@ -11,6 +11,7 @@ the `platform_toolsets` key.
 
 import json as _json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set
@@ -676,6 +677,15 @@ def _get_platform_tools(
         # their own platform (e.g. `discord` + `discord` should stay OFF).
         if platform in default_off and platform not in _TOOLSET_PLATFORM_RESTRICTIONS:
             default_off.remove(platform)
+        # Home Assistant is already runtime-gated by its check_fn (requires
+        # HASS_TOKEN to register any tools). When a user has configured
+        # HASS_TOKEN, they've explicitly opted in — don't also strip it via
+        # _DEFAULT_OFF_TOOLSETS, which would silently drop HA from platforms
+        # (e.g. cron) that run through _get_platform_tools without an
+        # explicit saved toolset list. Without this, Norbert's HA cron jobs
+        # regressed after #14798 made cron honor per-platform tool config.
+        if "homeassistant" in default_off and os.getenv("HASS_TOKEN"):
+            default_off.remove("homeassistant")
         enabled_toolsets -= default_off
 
     # Recover non-configurable platform toolsets (e.g. discord, feishu_doc,

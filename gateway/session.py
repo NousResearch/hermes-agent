@@ -1085,6 +1085,39 @@ class SessionStore:
                 self._save()
         return count
 
+    def mark_recently_active_resume_pending(
+        self,
+        max_age_seconds: int = 120,
+        reason: str = "unexpected_restart",
+    ) -> int:
+        """Mark recently-active sessions for automatic resume on startup.
+
+        Called after an unclean gateway exit. A session updated shortly
+        before the previous process disappeared was likely in-flight; instead
+        of forcing a fresh session, preserve its transcript and let the
+        gateway auto-inject a continuation turn after adapters reconnect.
+
+        Explicitly suspended sessions are skipped so /stop and stuck-loop
+        escalation still win.
+        """
+        from datetime import timedelta
+
+        cutoff = _now() - timedelta(seconds=max_age_seconds)
+        count = 0
+        with self._lock:
+            self._ensure_loaded_locked()
+            for entry in self._entries.values():
+                if entry.suspended:
+                    continue
+                if entry.updated_at >= cutoff and not entry.resume_pending:
+                    entry.resume_pending = True
+                    entry.resume_reason = reason
+                    entry.last_resume_marked_at = _now()
+                    count += 1
+            if count:
+                self._save()
+        return count
+
     def reset_session(self, session_key: str) -> Optional[SessionEntry]:
         """Force reset a session, creating a new session ID."""
         db_end_session_id = None

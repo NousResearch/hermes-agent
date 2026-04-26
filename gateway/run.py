@@ -1645,8 +1645,7 @@ class GatewayRunner:
 
         action = "restarting" if self._restart_requested else "shutting down"
         hint = (
-            "Your current task will be interrupted. "
-            "Send any message after restart and I'll try to resume where you left off."
+            "Your current task will be interrupted and automatically resumed after restart."
             if self._restart_requested
             else "Your current task will be interrupted."
         )
@@ -1992,29 +1991,32 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("Process checkpoint recovery: %s", e)
 
-        # Suspend sessions that were active when the gateway last exited.
-        # This prevents stuck sessions from being blindly resumed on restart,
-        # which can create an unrecoverable loop (#7536).  Suspended sessions
-        # auto-reset on the next incoming message, giving the user a clean start.
+        # Mark sessions that were active when the gateway last exited for
+        # automatic continuation.  Previously these were suspended/reset to
+        # avoid stuck loops (#7536); stuck-loop protection still runs below,
+        # but the normal case now preserves the transcript and auto-injects a
+        # continuation turn after adapters reconnect.
         #
-        # SKIP suspension after a clean (graceful) shutdown — the previous
+        # SKIP marking after a clean (graceful) shutdown — the previous
         # process already drained active agents, so sessions aren't stuck.
-        # This prevents unwanted auto-resets after `hermes update`,
-        # `hermes gateway restart`, or `/restart`.
+        # This prevents unwanted auto-resumes after `hermes update`,
+        # `hermes gateway restart`, or `/restart` when no turn was interrupted.
         _clean_marker = _hermes_home / ".clean_shutdown"
         if _clean_marker.exists():
-            logger.info("Previous gateway exited cleanly — skipping session suspension")
+            logger.info("Previous gateway exited cleanly — skipping in-flight session auto-resume marking")
             try:
                 _clean_marker.unlink()
             except Exception:
                 pass
         else:
             try:
-                suspended = self.session_store.suspend_recently_active()
-                if suspended:
-                    logger.info("Suspended %d in-flight session(s) from previous run", suspended)
+                resumable = self.session_store.mark_recently_active_resume_pending(
+                    reason="unexpected_restart"
+                )
+                if resumable:
+                    logger.info("Marked %d in-flight session(s) for automatic resume", resumable)
             except Exception as e:
-                logger.warning("Session suspension on startup failed: %s", e)
+                logger.warning("Session auto-resume marking on startup failed: %s", e)
 
         # Stuck-loop detection (#7536): if a session has been active across
         # 3+ consecutive restarts, it's probably stuck in a loop (the same
@@ -2202,6 +2204,11 @@ class GatewayRunner:
 
         # Notify the chat that initiated /restart that the gateway is back.
         await self._send_restart_notification()
+
+        # Automatically continue sessions that were interrupted by a prior
+        # restart/shutdown after all adapters are connected.  This is
+        # fire-and-forget so gateway startup is not blocked by long agent work.
+        self._schedule_auto_resume_pending_sessions()
 
         # Drain any recovered process watchers (from crash recovery checkpoint)
         try:
@@ -2717,8 +2724,8 @@ class GatewayRunner:
             else:
                 logger.info(
                     "Skipping .clean_shutdown marker — drain timed out with "
-                    "interrupted agents; next startup will suspend recently "
-                    "active sessions."
+                    "interrupted agents; next startup will mark recently "
+                    "active sessions for auto-resume."
                 )
 
             # Track sessions that were active at shutdown for stuck-loop
@@ -8173,6 +8180,87 @@ class GatewayRunner:
             logger.warning("Restart notification failed: %s", e)
         finally:
             notify_path.unlink(missing_ok=True)
+
+    def _schedule_auto_resume_pending_sessions(self) -> None:
+        """Schedule automatic continuation for sessions marked resume_pending.
+
+        ``resume_pending`` is persisted in sessions.json before a forced
+        shutdown, or marked on startup after an unclean exit.  Once platform
+        adapters are connected, inject a synthetic internal text event through
+        the normal adapter pipeline so the final response is delivered to the
+        original chat/thread without requiring the user to send a nudge.
+        """
+        try:
+            self.session_store._ensure_loaded()
+            candidates = []
+            for session_key, entry in list(self.session_store._entries.items()):
+                if not getattr(entry, "resume_pending", False):
+                    continue
+                if getattr(entry, "suspended", False):
+                    continue
+                source = getattr(entry, "origin", None)
+                if source is None or source.platform not in self.adapters:
+                    logger.debug(
+                        "Auto-resume skipped for %s: no connected adapter/source",
+                        session_key[:30],
+                    )
+                    continue
+                if not getattr(source, "chat_id", None):
+                    logger.debug(
+                        "Auto-resume skipped for %s: missing chat_id",
+                        session_key[:30],
+                    )
+                    continue
+                if session_key in self._running_agents:
+                    continue
+                candidates.append((session_key, entry, source))
+        except Exception as e:
+            logger.warning("Auto-resume scan failed: %s", e)
+            return
+
+        for session_key, entry, source in candidates:
+            task = asyncio.create_task(
+                self._auto_resume_pending_session(session_key, entry.session_id, source)
+            )
+            self._background_tasks.add(task)
+            task.add_done_callback(self._background_tasks.discard)
+
+        if candidates:
+            logger.info("Scheduled auto-resume for %d interrupted session(s)", len(candidates))
+
+    async def _auto_resume_pending_session(self, session_key: str, session_id: str, source: SessionSource) -> None:
+        await asyncio.sleep(1.0)
+        if not self._running:
+            return
+        if session_key in self._running_agents:
+            return
+        adapter = self.adapters.get(source.platform)
+        if not adapter:
+            return
+        text = (
+            "[SYSTEM: The gateway restarted while this task was in progress. "
+            "Automatically continue the interrupted task now, without asking "
+            "the user for confirmation. Use the existing transcript and any "
+            "pending tool results, proceed with the next required steps, and "
+            "send the final report when done.]"
+        )
+        event = MessageEvent(
+            text=text,
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id=f"auto-resume:{session_id}",
+            internal=True,
+        )
+        logger.info(
+            "Auto-resuming interrupted gateway session %s for %s:%s",
+            session_key[:30],
+            source.platform.value if source.platform else "unknown",
+            source.chat_id,
+        )
+        try:
+            await adapter.handle_message(event)
+        except Exception as e:
+            logger.warning("Auto-resume failed for %s: %s", session_key[:30], e)
 
     def _set_session_env(self, context: SessionContext) -> list:
         """Set session context variables for the current async task.

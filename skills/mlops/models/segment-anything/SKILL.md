@@ -134,6 +134,7 @@ masks = processor.image_processor.post_process_masks(
 
 ### Model architecture
 
+<!-- ascii-guard-ignore -->
 ```
 SAM Architecture:
 ┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
@@ -144,6 +145,7 @@ SAM Architecture:
    Image Embeddings      Prompt Embeddings         Masks + IoU
    (computed once)       (per prompt)             predictions
 ```
+<!-- ascii-guard-ignore-end -->
 
 ### Model variants
 

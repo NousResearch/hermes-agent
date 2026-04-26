@@ -29,6 +29,7 @@ Remote execution additionally requires Python 3 in the terminal backend.
 """
 
 import base64
+import functools
 import json
 import logging
 import os
@@ -978,6 +979,7 @@ def execute_code(
         # --- Start UDS server ---
         server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server_sock.bind(sock_path)
+        os.chmod(sock_path, 0o600)
         server_sock.listen(1)
 
         rpc_thread = threading.Thread(
@@ -1022,10 +1024,15 @@ def execute_code(
         child_env["HERMES_RPC_SOCKET"] = sock_path
         child_env["PYTHONDONTWRITEBYTECODE"] = "1"
         # Ensure the hermes-agent root is importable in the sandbox so
-        # repo-root modules are available to child scripts.
+        # repo-root modules are available to child scripts.  We also prepend
+        # the staging tmpdir so ``from hermes_tools import ...`` resolves even
+        # when the subprocess CWD is not tmpdir (project mode).
         _hermes_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
         _existing_pp = child_env.get("PYTHONPATH", "")
-        child_env["PYTHONPATH"] = _hermes_root + (os.pathsep + _existing_pp if _existing_pp else "")
+        _pp_parts = [tmpdir, _hermes_root]
+        if _existing_pp:
+            _pp_parts.append(_existing_pp)
+        child_env["PYTHONPATH"] = os.pathsep.join(_pp_parts)
         # Inject user's configured timezone so datetime.now() in sandboxed
         # code reflects the correct wall-clock time.  Only TZ is set —
         # HERMES_TIMEZONE is an internal Hermes setting and must not leak
@@ -1042,9 +1049,19 @@ def execute_code(
         if _profile_home:
             child_env["HOME"] = _profile_home
 
+        # Resolve interpreter + CWD based on execute_code mode.
+        #   - strict : today's behavior (sys.executable + tmpdir CWD).
+        #   - project: user's venv python + session's working directory, so
+        #              project deps like pandas and user files resolve.
+        # Env scrubbing and tool whitelist apply identically in both modes.
+        _mode = _get_execution_mode()
+        _child_python = _resolve_child_python(_mode)
+        _child_cwd = _resolve_child_cwd(_mode, tmpdir)
+        _script_path = os.path.join(tmpdir, "script.py")
+
         proc = subprocess.Popen(
-            [sys.executable, "script.py"],
-            cwd=tmpdir,
+            [_child_python, _script_path],
+            cwd=_child_cwd,
             env=child_env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
@@ -1300,6 +1317,127 @@ def _load_config() -> dict:
 
 
 # ---------------------------------------------------------------------------
+# Execution mode resolution (strict vs project)
+# ---------------------------------------------------------------------------
+
+# Valid values for code_execution.mode. Kept as a module constant so tests
+# and the config layer can reference the canonical set.
+EXECUTION_MODES = ("project", "strict")
+DEFAULT_EXECUTION_MODE = "project"
+
+
+def _get_execution_mode() -> str:
+    """Return the active execute_code mode — 'project' or 'strict'.
+
+    Reads ``code_execution.mode`` from config.yaml; invalid values fall back
+    to ``DEFAULT_EXECUTION_MODE`` ('project') with a log warning.
+
+    Mode semantics:
+      - ``project`` (default): scripts run in the session's working directory
+        with the active virtual environment's python, so project dependencies
+        (pandas, torch, project packages) and files resolve naturally.
+      - ``strict``: scripts run in an isolated temp directory with
+        ``sys.executable`` (hermes-agent's python). Reproducible and the
+        interpreter is guaranteed to work, but project deps and relative paths
+        won't resolve.
+
+    Env scrubbing and tool whitelist apply identically in both modes.
+    """
+    cfg_value = str(_load_config().get("mode", DEFAULT_EXECUTION_MODE)).strip().lower()
+    if cfg_value in EXECUTION_MODES:
+        return cfg_value
+    logger.warning(
+        "Ignoring code_execution.mode=%r (expected one of %s), falling back to %r",
+        cfg_value, EXECUTION_MODES, DEFAULT_EXECUTION_MODE,
+    )
+    return DEFAULT_EXECUTION_MODE
+
+
+@functools.lru_cache(maxsize=32)
+def _is_usable_python(python_path: str) -> bool:
+    """Check whether a candidate Python interpreter is usable for execute_code.
+
+    Requires Python 3.8+ (f-strings and stdlib modules the RPC stubs need).
+    Cached so we don't fork a subprocess on every execute_code call.
+    """
+    try:
+        result = subprocess.run(
+            [python_path, "-c",
+             "import sys; sys.exit(0 if sys.version_info >= (3, 8) else 1)"],
+            timeout=5,
+            capture_output=True,
+        )
+        return result.returncode == 0
+    except (OSError, subprocess.TimeoutExpired, subprocess.SubprocessError):
+        return False
+
+
+def _resolve_child_python(mode: str) -> str:
+    """Pick the Python interpreter for the execute_code subprocess.
+
+    In ``strict`` mode, always ``sys.executable`` — guaranteed to work and
+    keeps behavior fully reproducible across sessions.
+
+    In ``project`` mode, prefer the user's active virtualenv/conda env's
+    python so ``import pandas`` etc. work. Falls back to ``sys.executable``
+    if no venv is detected, the candidate binary is missing/not executable,
+    or it fails a Python 3.8+ version check.
+    """
+    if mode != "project":
+        return sys.executable
+
+    if _IS_WINDOWS:
+        exe_names = ("python.exe", "python3.exe")
+        subdirs = ("Scripts",)
+    else:
+        exe_names = ("python", "python3")
+        subdirs = ("bin",)
+
+    for var in ("VIRTUAL_ENV", "CONDA_PREFIX"):
+        root = os.environ.get(var, "").strip()
+        if not root:
+            continue
+        for subdir in subdirs:
+            for exe in exe_names:
+                candidate = os.path.join(root, subdir, exe)
+                if not (os.path.isfile(candidate) and os.access(candidate, os.X_OK)):
+                    continue
+                if _is_usable_python(candidate):
+                    return candidate
+                # Found the interpreter but it failed the version check —
+                # log once and fall through to sys.executable.
+                logger.info(
+                    "execute_code: skipping %s=%s (Python version < 3.8 or broken). "
+                    "Using sys.executable instead.", var, candidate,
+                )
+                return sys.executable
+
+    return sys.executable
+
+
+def _resolve_child_cwd(mode: str, staging_dir: str) -> str:
+    """Resolve the working directory for the execute_code subprocess.
+
+    - ``strict``: the staging tmpdir (today's behavior).
+    - ``project``: the session's TERMINAL_CWD (same as the terminal tool), or
+      ``os.getcwd()`` if TERMINAL_CWD is unset or doesn't point at a real dir.
+      Falls back to the staging tmpdir as a last resort so we never invoke
+      Popen with a nonexistent cwd.
+    """
+    if mode != "project":
+        return staging_dir
+    raw = os.environ.get("TERMINAL_CWD", "").strip()
+    if raw:
+        expanded = os.path.expanduser(raw)
+        if os.path.isdir(expanded):
+            return expanded
+    here = os.getcwd()
+    if os.path.isdir(here):
+        return here
+    return staging_dir
+
+
+# ---------------------------------------------------------------------------
 # OpenAI Function-Calling Schema
 # ---------------------------------------------------------------------------
 
@@ -1330,15 +1468,24 @@ _TOOL_DOC_LINES = [
 ]
 
 
-def build_execute_code_schema(enabled_sandbox_tools: set = None) -> dict:
+def build_execute_code_schema(enabled_sandbox_tools: set = None,
+                              mode: str = None) -> dict:
     """Build the execute_code schema with description listing only enabled tools.
 
     When tools are disabled via ``hermes tools`` (e.g. web is turned off),
     the schema description should NOT mention web_search / web_extract —
     otherwise the model thinks they are available and keeps trying to use them.
+
+    ``mode`` controls the working-directory sentence in the description:
+      - ``'strict'``: scripts run in a temp dir (not the session's CWD)
+      - ``'project'`` (default): scripts run in the session's CWD with the
+        active venv's python
+    If ``mode`` is None, the current ``code_execution.mode`` config is read.
     """
     if enabled_sandbox_tools is None:
         enabled_sandbox_tools = SANDBOX_ALLOWED_TOOLS
+    if mode is None:
+        mode = _get_execution_mode()
 
     # Build tool documentation lines for only the enabled tools
     tool_lines = "\n".join(
@@ -1354,6 +1501,20 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None) -> dict:
     else:
         import_str = "..."
 
+    # Mode-specific CWD guidance. Project mode is the default and matches
+    # terminal()'s filesystem/interpreter; strict mode retains the isolated
+    # temp-dir staging and hermes-agent's own python.
+    if mode == "strict":
+        cwd_note = (
+            "Scripts run in their own temp dir, not the session's CWD — use absolute paths "
+            "(os.path.expanduser('~/.hermes/.env')) or terminal()/read_file() for user files."
+        )
+    else:
+        cwd_note = (
+            "Scripts run in the session's working directory with the active venv's python, "
+            "so project deps (pandas, etc.) and relative paths work like in terminal()."
+        )
+
     description = (
         "Run a Python script that can call Hermes tools programmatically. "
         "Use this when you need 3+ tool calls with processing logic between them, "
@@ -1367,6 +1528,7 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None) -> dict:
         f"{tool_lines}\n\n"
         "Limits: 5-minute timeout, 50KB stdout cap, max 50 tool calls per script. "
         "terminal() is foreground-only (no background or pty).\n\n"
+        f"{cwd_note}\n\n"
         "Print your final result to stdout. Use Python stdlib (json, re, math, csv, "
         "datetime, collections, etc.) for processing between tool calls.\n\n"
         "Also available (no import needed — built into hermes_tools):\n"
@@ -1395,7 +1557,8 @@ def build_execute_code_schema(enabled_sandbox_tools: set = None) -> dict:
     }
 
 
-# Default schema used at registration time (all sandbox tools listed)
+# Default schema used at registration time (all sandbox tools listed,
+# current configured mode).  model_tools.py rebuilds per-session anyway.
 EXECUTE_CODE_SCHEMA = build_execute_code_schema()
 
 

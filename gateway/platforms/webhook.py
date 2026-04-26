@@ -142,6 +142,8 @@ class WebhookAdapter(BasePlatformAdapter):
         app = web.Application()
         app.router.add_get("/health", self._handle_health)
         app.router.add_post("/webhooks/{route_name}", self._handle_webhook)
+        # Hermes interactive message approval callback (Mattermost buttons POST here)
+        app.router.add_post("/hermes-approval", self._handle_mattermost_approval)
 
         # Port conflict detection — fail fast if port is already in use
         import socket as _socket
@@ -247,6 +249,138 @@ class WebhookAdapter(BasePlatformAdapter):
         for k in stale:
             self._delivery_info.pop(k, None)
             self._delivery_info_created.pop(k, None)
+
+    async def _handle_mattermost_approval(self, request: "web.Request") -> "web.Response":
+        """Handle Mattermost interactive message button clicks for command approval.
+        
+        Mattermost POSTs here when a user clicks an approval button.
+        Payload contains: user_id, channel_id, post_id, team_id, context (action + session_key).
+        """
+        try:
+            raw_body = await request.read()
+            payload = json.loads(raw_body)
+        except Exception as e:
+            logger.warning("[mattermost-approval] Failed to parse button click: %s", e)
+            return web.json_response({"error": "Bad request"}, status=400)
+
+        logger.info("[mattermost-approval] Received button click — keys: %s", list(payload.keys()))
+
+        # Mattermost interactive message POST sends integration context
+        # in various fields depending on version. Try all known locations:
+        
+        # 1. Direct "context" key (Mattermost >= 5.0)
+        context = payload.get("context", {})
+        if not context:
+            # 2. dataset field — URL-encoded JSON containing integration context
+            from urllib.parse import unquote
+            dataset = payload.get("dataset", "")
+            if dataset:
+                try:
+                    decoded = unquote(dataset)
+                    dataset_obj = json.loads(decoded)
+                    # dataset may contain "context" or be the context itself
+                    context = dataset_obj.get("context", dataset_obj)
+                except (json.JSONDecodeError, Exception):
+                    pass
+        if not context:
+            # 3. dataset might be a raw JSON string (not URL-encoded)
+            dataset = payload.get("dataset", "")
+            if dataset:
+                try:
+                    context = json.loads(dataset)
+                except json.JSONDecodeError:
+                    pass
+        if not context:
+            # 4. Check if "context" was passed as integration.context in the button
+            # Mattermost sends it as top-level "context" in the integration POST
+            # but might nest it differently
+            context = payload.get("data", {}).get("context", {})
+
+        session_key = context.get("session_key", "")
+        action = context.get("action", "")
+        logger.info("[mattermost-approval] Extracted session_key='%s', action='%s', context_keys=%s",
+                     session_key, action, list(context.keys()) if context else "none")
+
+        post_id = payload.get("post_id", "")
+        channel_id = payload.get("channel_id", "")
+        user_id = payload.get("user_id", "")
+        callback_id = payload.get("callback_id", "")
+
+        if not session_key:
+            logger.warning("[mattermost-approval] No session_key in payload: %s", payload)
+            return web.json_response({"error": "Missing session_key"}, status=400)
+
+        # Map action to choice
+        choice_map = {
+            "approve_once": "once",
+            "approve_session": "session",
+            "approve_always": "always",
+            "deny": "deny",
+            # Fallback for legacy action_ids
+            "hermes_approve_once": "once",
+            "hermes_approve_session": "session",
+            "hermes_approve_always": "always",
+            "hermes_deny": "deny",
+        }
+        choice = choice_map.get(action, "deny")
+        if choice not in ("once", "session", "always", "deny"):
+            choice = "deny"
+
+        # No user-level auth check for button clicks — the approval mechanism
+        # already isolates each request by session_key. The user clicking
+        # must be able to see the message in Mattermost to click the button.
+        # (MATTERMOST_ALLOWED_USERS controls who can chat with the bot, not
+        # approvals for commands originated by the bot.)
+
+        # Resolve the approval — unblocks the waiting agent thread
+        try:
+            from tools.approval import resolve_gateway_approval
+            count = resolve_gateway_approval(session_key, choice)
+            logger.info(
+                "[mattermost-approval] Resolved %d approval(s) for session %s (choice=%s, user=%s)",
+                count, session_key, choice, user_id
+            )
+        except Exception as exc:
+            logger.error("[mattermost-approval] Failed to resolve approval: %s", exc)
+            return web.json_response({"error": "Resolution failed"}, status=500)
+
+        # Update the post in Mattermost to show the result
+        label_map = {"once": "Approved once", "session": "Approved for session",
+                     "always": "Approved permanently", "deny": "Denied"}
+        label = label_map.get(choice, "Resolved")
+        try:
+            await self._api_update_mattermost_post(channel_id, post_id, user_id, choice)
+        except Exception as exc:
+            logger.warning("[mattermost-approval] Failed to update post (non-fatal): %s", exc)
+
+        # Return Mattermost interactive message response format.
+        # This tells the Mattermost client to dismiss/update the action buttons
+        # immediately, providing visual feedback that the click was processed.
+        # The ephemeral message appears only to the clicking user.
+        return web.json_response({
+            "ephemeral_text": f"✅ {label} — approval sent.",
+        })
+
+    async def _api_update_mattermost_post(
+        self, channel_id: str, post_id: str, user_id: str, choice: str
+    ) -> None:
+        """Update the Mattermost post to show approval status."""
+        if not self.gateway_runner:
+            return
+        from gateway.config import Platform
+        mm_adapter = self.gateway_runner.adapters.get(Platform.MATTERMOST)
+        if not mm_adapter:
+            return
+
+        label_map = {"once": "Approved once", "session": "Approved for session",
+                     "always": "Approved permanently", "deny": "Denied"}
+        label = label_map.get(choice, "Resolved")
+        updated_text = f"✅ {label} by {user_id}"
+
+        await mm_adapter._api_put(
+            f"posts/{post_id}",
+            {"id": post_id, "message": updated_text},
+        )
 
     async def get_chat_info(self, chat_id: str) -> Dict[str, Any]:
         return {"name": chat_id, "type": "webhook"}

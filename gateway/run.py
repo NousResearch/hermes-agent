@@ -9476,6 +9476,13 @@ class GatewayRunner:
 
                     raw = progress_queue.get_nowait()
 
+                    # Skip progress callbacks during user approval (prevents duplicate display)
+                    from tools.approval import _lock as _a_lock
+                    from tools.approval import _pending_approval_tools
+                    with _a_lock:
+                        if session_key in _pending_approval_tools:
+                            continue
+
                     # Handle dedup messages: update last line with repeat counter
                     if isinstance(raw, tuple) and len(raw) == 3 and raw[0] == "__dedup__":
                         _, base_msg, count = raw

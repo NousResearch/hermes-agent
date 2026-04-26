@@ -214,6 +214,11 @@ _pending: dict[str, dict] = {}
 _session_approved: dict[str, set] = {}
 _session_yolo: set[str] = set()
 _permanent_approved: set = set()
+_pending_approval_tools: set = set()  # session_keys waiting for user approval
+
+def has_pending_approval(session_key: str) -> bool:
+    with _lock:
+        return session_key in _pending_approval_tools
 
 # =========================================================================
 # Blocking gateway approval (mirrors CLI's synchronous input() flow)
@@ -860,6 +865,7 @@ def check_all_command_guards(command: str, env_type: str,
             entry = _ApprovalEntry(approval_data)
             with _lock:
                 _gateway_queues.setdefault(session_key, []).append(entry)
+            _pending_approval_tools.add(session_key)
 
             # Notify the user (bridges sync agent thread → async gateway)
             try:
@@ -924,9 +930,10 @@ def check_all_command_guards(command: str, env_type: str,
                     queue.remove(entry)
                 if not queue:
                     _gateway_queues.pop(session_key, None)
+                _pending_approval_tools.discard(session_key)
 
-            choice = entry.result
-            if not resolved or choice is None or choice == "deny":
+            choice = entry.result or "deny"
+            if not resolved or choice == "deny":
                 reason = "timed out" if not resolved else "denied by user"
                 return {
                     "approved": False,

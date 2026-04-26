@@ -19,7 +19,7 @@ import logging
 import os
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.helpers import MessageDeduplicator
@@ -98,6 +98,13 @@ class MattermostAdapter(BasePlatformAdapter):
 
         # Dedup cache (prevent reprocessing)
         self._dedup = MessageDeduplicator()
+
+        # Callback URL for interactive approval buttons (Mattermost POSTs here)
+        self._callback_url: str = config.extra.get("callback_url", "")
+
+    def _set_callback_url(self, url: str) -> None:
+        """Override callback URL at runtime (set by webhook adapter on startup)."""
+        self._callback_url = url
 
     # ------------------------------------------------------------------
     # HTTP helpers
@@ -736,4 +743,126 @@ class MattermostAdapter(BasePlatformAdapter):
 
         await self.handle_message(msg_event)
 
+    # ------------------------------------------------------------------
+    # Interactive command approval (Mattermost interactive messages)
+    # ------------------------------------------------------------------
+
+    async def send_exec_approval(
+        self, chat_id: str, command: str, session_key: str,
+        description: str = "dangerous command",
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> "SendResult":
+        """Send a command approval card with interactive buttons.
+
+        Buttons POST to the webhook callback URL (_handle_mattermost_approval)
+        which resolves the approval via resolve_gateway_approval().
+        """
+        from gateway.platforms.base import SendResult
+
+        if not self._session:
+            return SendResult(success=False, error="Not connected")
+
+        try:
+            import itertools
+            if not hasattr(self, "_approval_counter"):
+                self._approval_counter = itertools.count(1)
+            approval_id = next(self._approval_counter)
+
+            # Build approval message text
+            cmd_preview = command[:3800] + "..." if len(command) > 3800 else command
+            text = (
+                f"⚠️ \u200b**Command Approval Required**\n\n"
+                f"```\n{cmd_preview}\n```\n\n"
+                f"**Reason:** {description}"
+            )
+
+            # Build the post payload
+            payload: Dict[str, Any] = {
+                "channel_id": chat_id,
+                "message": text,
+                "props": {
+                    "attachments": [{
+                        "text": "Choose an action:",
+                        "actions": [
+                            {
+                                "id": "approve_once",
+                                "type": "button",
+                                "name": "✅ Allow Once",
+                                "style": "primary",
+                                "integration": {
+                                    "url": self._callback_url,
+                                    "context": {
+                                        "action": "approve_once",
+                                        "session_key": session_key,
+                                    },
+                                },
+                            },
+                            {
+                                "id": "approve_session",
+                                "type": "button",
+                                "name": "✅ Approve Session",
+                                "style": "primary",
+                                "integration": {
+                                    "url": self._callback_url,
+                                    "context": {
+                                        "action": "approve_session",
+                                        "session_key": session_key,
+                                    },
+                                },
+                            },
+                            {
+                                "id": "approve_always",
+                                "type": "button",
+                                "name": "✅ Always Allow",
+                                "style": "primary",
+                                "integration": {
+                                    "url": self._callback_url,
+                                    "context": {
+                                        "action": "approve_always",
+                                        "session_key": session_key,
+                                    },
+                                },
+                            },
+                            {
+                                "id": "deny",
+                                "type": "button",
+                                "name": "❌ Deny",
+                                "style": "danger",
+                                "integration": {
+                                    "url": self._callback_url,
+                                    "context": {
+                                        "action": "deny",
+                                        "session_key": session_key,
+                                    },
+                                },
+                            },
+                        ],
+                    }],
+                },
+            }
+
+            # Thread/reply context
+            if metadata:
+                root_id = metadata.get("root_id") or metadata.get("message_id")
+                if root_id:
+                    payload["root_id"] = root_id
+
+            data = await self._api_post("posts", payload)
+            if not data or "id" not in data:
+                return SendResult(success=False, error="Failed to post approval card")
+
+            # Track the approval for deduplication
+            try:
+                from tools.approval import _pending_approval_tools, _lock
+                with _lock:
+                    _pending_approval_tools.add(session_key)
+            except Exception:
+                pass
+
+            return SendResult(success=True, message_id=data["id"])
+
+        except Exception as e:
+            logger.warning("[%s] send_exec_approval failed: %s", self.name, e)
+            from gateway.platforms.base import SendResult
+            return SendResult(success=False, error=str(e))
 

@@ -169,23 +169,22 @@ async def test_reasoning_rejected_mid_run():
 
 @pytest.mark.asyncio
 async def test_btw_dispatches_mid_run():
-    """/btw mid-run must dispatch to its handler, not hit the catch-all.
+    """/btw mid-run must dispatch to /background's handler, not hit the catch-all.
 
-    /btw spawns a parallel ephemeral side-question task that does NOT
-    interrupt the active conversation (see _handle_btw_command). It's the
-    whole point of the command — asking a side question while the main
-    turn is still working. Before the mid-turn bypass was added, /btw
-    fell through to the "Agent is running — wait or /stop first" catch-all,
-    making it useless in exactly the scenario it was designed for.
+    /btw is an alias of /background (see hermes_cli/commands.py). Typing
+    /btw mid-turn must spawn a parallel background task — that's the whole
+    point of the command. Before the mid-turn bypass was added for
+    /background, /btw fell through to the "Agent is running — wait or
+    /stop first" catch-all, making it useless in exactly the scenario it
+    was designed for. The alias and the bypass together make it work.
     """
     runner = _make_runner()
-    runner._handle_btw_command = AsyncMock(
-        return_value='💬 /btw: "what module owns titles?"\nReply will appear here shortly.'
+    runner._handle_background_command = AsyncMock(
+        return_value='🚀 Background task started: "what module owns titles?"'
     )
 
     result = await runner._handle_message(_make_event("/btw what module owns titles?"))
 
-    runner._handle_btw_command.assert_awaited_once()
+    runner._handle_background_command.assert_awaited_once()
     assert result is not None
-    assert "💬 /btw" in result
     assert "can't run mid-turn" not in result

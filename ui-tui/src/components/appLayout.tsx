@@ -36,21 +36,8 @@ const StreamingAssistant = memo(function StreamingAssistant({
 
   return (
     <>
-      {progress.streamSegments.map((msg, i) => (
-        <MessageLine
-          cols={cols}
-          compact={compact}
-          detailsMode={detailsMode}
-          detailsModeCommandOverride={detailsModeCommandOverride}
-          key={`seg:${i}`}
-          msg={msg}
-          sections={sections}
-          t={t}
-        />
-      ))}
-
       {progress.showProgressArea && (
-        <Box flexDirection="column" marginBottom={progress.showStreamingArea ? 1 : 0}>
+        <Box flexDirection="column" marginBottom={progress.streamSegments.length || progress.showStreamingArea ? 1 : 0}>
           <ToolTrail
             activity={progress.activity}
             busy={busy}
@@ -70,6 +57,19 @@ const StreamingAssistant = memo(function StreamingAssistant({
           />
         </Box>
       )}
+
+      {progress.streamSegments.map((msg, i) => (
+        <MessageLine
+          cols={cols}
+          compact={compact}
+          detailsMode={detailsMode}
+          detailsModeCommandOverride={detailsModeCommandOverride}
+          key={`seg:${i}`}
+          msg={msg}
+          sections={sections}
+          t={t}
+        />
+      ))}
 
       {progress.showStreamingArea && (
         <MessageLine

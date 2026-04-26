@@ -30,6 +30,8 @@ _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # downstream adapters (signal, etc.) expect.
 _PHONE_PLATFORMS = frozenset({"signal", "sms", "whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
+_SLACK_THREAD_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]+):([0-9]+(?:\.[0-9]+)?)\s*$")
+_SLACK_LISTING_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]+)\s*/\s*topic\s*([0-9]+(?:\.[0-9]+)?)\s*$", re.IGNORECASE)
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a"}
@@ -306,6 +308,13 @@ def _handle_send(args):
 
 def _parse_target_ref(platform_name: str, target_ref: str):
     """Parse a tool target into chat_id/thread_id and whether it is explicit."""
+    if platform_name == "slack":
+        match = _SLACK_THREAD_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), match.group(2), True
+        match = _SLACK_LISTING_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), match.group(2), True
     if platform_name == "telegram":
         match = _TELEGRAM_TOPIC_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -546,7 +555,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     last_result = None
     for chunk in chunks:
         if platform == Platform.SLACK:
-            result = await _send_slack(pconfig.token, chat_id, chunk)
+            result = await _send_slack(pconfig.token, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.WHATSAPP:
             result = await _send_whatsapp(pconfig.extra, chat_id, chunk)
         elif platform == Platform.SIGNAL:
@@ -935,7 +944,7 @@ async def _send_discord(token, chat_id, message, thread_id=None, media_files=Non
         return _error(f"Discord send failed: {e}")
 
 
-async def _send_slack(token, chat_id, message):
+async def _send_slack(token, chat_id, message, thread_id=None):
     """Send via Slack Web API."""
     try:
         import aiohttp
@@ -949,10 +958,15 @@ async def _send_slack(token, chat_id, message):
         headers = {"Authorization": f"Bearer {token}", "Content-Type": "application/json"}
         async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30), **_sess_kw) as session:
             payload = {"channel": chat_id, "text": message, "mrkdwn": True}
+            if thread_id:
+                payload["thread_ts"] = str(thread_id)
             async with session.post(url, headers=headers, json=payload, **_req_kw) as resp:
                 data = await resp.json()
                 if data.get("ok"):
-                    return {"success": True, "platform": "slack", "chat_id": chat_id, "message_id": data.get("ts")}
+                    result = {"success": True, "platform": "slack", "chat_id": chat_id, "message_id": data.get("ts")}
+                    if thread_id:
+                        result["thread_id"] = str(thread_id)
+                    return result
                 return _error(f"Slack API error: {data.get('error', 'unknown')}")
     except Exception as e:
         return _error(f"Slack send failed: {e}")

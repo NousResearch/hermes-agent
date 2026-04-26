@@ -25,7 +25,14 @@ describe('viewportStore', () => {
 
     const snap = getViewportSnapshot(handle as any)
 
-    expect(snap).toMatchObject({ atBottom: false, bottom: 18, pending: 3, scrollHeight: 40, top: 13, viewportHeight: 5 })
+    expect(snap).toMatchObject({
+      atBottom: false,
+      bottom: 18,
+      pending: 3,
+      scrollHeight: 40,
+      top: 13,
+      viewportHeight: 5
+    })
     expect(viewportSnapshotKey(snap)).toBe('0:13:5:40:3')
   })
 })

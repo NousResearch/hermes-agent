@@ -467,13 +467,10 @@ def _resolve_api_key_provider_secret(
             pass
         return "", ""
 
+    from hermes_cli.config import get_env_value
     for env_var in pconfig.api_key_env_vars:
         # Check both os.environ and ~/.hermes/.env file
-        try:
-            from hermes_cli.config import get_env_value
-            val = (get_env_value(env_var) or "").strip()
-        except Exception:
-            val = os.getenv(env_var, "").strip()
+        val = (get_env_value(env_var) or "").strip()
         if has_usable_secret(val):
             return val, env_var
 

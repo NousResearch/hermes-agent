@@ -127,19 +127,21 @@ class TestCmdUpdateBranchFallback:
         # cmd_update runs npm commands in three locations:
         #   1. repo root  — slash-command / TUI bridge deps
         #   2. ui-tui/    — Ink TUI deps
-        #   3. web/       — install + "npm run build" for the web frontend
-        full_flags = [
+        #   3. web/       — "npm ci" + "npm run build" for the web frontend
+        # Use npm ci when package-lock.json exists so update/build does not
+        # rewrite lockfiles as a side effect of installing dependencies.
+        ci_flags = [
             "/usr/bin/npm",
-            "install",
+            "ci",
             "--silent",
             "--no-fund",
             "--no-audit",
             "--progress=false",
         ]
         assert npm_calls == [
-            (full_flags, PROJECT_ROOT),
-            (full_flags, PROJECT_ROOT / "ui-tui"),
-            (["/usr/bin/npm", "install", "--silent"], PROJECT_ROOT / "web"),
+            (ci_flags, PROJECT_ROOT),
+            (ci_flags, PROJECT_ROOT / "ui-tui"),
+            (["/usr/bin/npm", "ci", "--silent"], PROJECT_ROOT / "web"),
             (["/usr/bin/npm", "run", "build"], PROJECT_ROOT / "web"),
         ]
 

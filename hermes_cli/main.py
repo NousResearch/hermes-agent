@@ -4973,14 +4973,17 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             print("Install Node.js, then run:  cd web && npm install && npm run build")
         return not fatal
     print("→ Building web UI...")
-    r1 = subprocess.run([npm, "install", "--silent"], cwd=web_dir, capture_output=True)
+    has_lockfile = (web_dir / "package-lock.json").exists()
+    install_cmd = "ci" if has_lockfile else "install"
+    install_args = [install_cmd, "--silent"]
+    r1 = subprocess.run([npm, *install_args], cwd=web_dir, capture_output=True)
     if r1.returncode != 0:
         print(
             f"  {'✗' if fatal else '⚠'} Web UI npm install failed"
             + ("" if fatal else " (hermes web will not be available)")
         )
         if fatal:
-            print("  Run manually:  cd web && npm install && npm run build")
+            print(f"  Run manually:  cd web && npm {install_cmd} && npm run build")
         return False
     r2 = subprocess.run([npm, "run", "build"], cwd=web_dir, capture_output=True)
     if r2.returncode != 0:
@@ -4989,7 +4992,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             + ("" if fatal else " (hermes web will not be available)")
         )
         if fatal:
-            print("  Run manually:  cd web && npm install && npm run build")
+            print(f"  Run manually:  cd web && npm {install_cmd} && npm run build")
         return False
     print("  ✓ Web UI built")
     return True
@@ -5684,8 +5687,9 @@ def _update_node_dependencies() -> None:
         if not (path / "package.json").exists():
             continue
 
+        install_args = ["ci"] if (path / "package-lock.json").exists() else ["install"]
         result = subprocess.run(
-            [npm, "install", "--silent", "--no-fund", "--no-audit", "--progress=false"],
+            [npm, *install_args, "--silent", "--no-fund", "--no-audit", "--progress=false"],
             cwd=path,
             capture_output=True,
             text=True,

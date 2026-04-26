@@ -700,6 +700,17 @@ def skill_manage(
             clear_skills_system_prompt_cache(clear_snapshot=True)
         except Exception:
             pass
+        # Curator telemetry: bump patch_count on edit/patch/write_file (the actions
+        # that mutate an existing skill's guidance), drop the record on delete.
+        # Best-effort; telemetry failures never break the tool.
+        try:
+            from tools.skill_usage import bump_patch, forget
+            if action in ("patch", "edit", "write_file", "remove_file"):
+                bump_patch(name)
+            elif action == "delete":
+                forget(name)
+        except Exception:
+            pass
 
     return json.dumps(result, ensure_ascii=False)
 

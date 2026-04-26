@@ -1,6 +1,7 @@
 import { atom } from 'nanostores'
 import { useSyncExternalStore } from 'react'
 
+import { appendToolShelfMessage, isTodoDone } from '../lib/liveProgress.js'
 import type { ActiveTool, ActivityItem, Msg, SubagentProgress, TodoItem } from '../types.js'
 
 const buildTurnState = (): TurnState => ({
@@ -14,6 +15,7 @@ const buildTurnState = (): TurnState => ({
   streamSegments: [],
   streaming: '',
   subagents: [],
+  todoCollapsed: false,
   todos: [],
   toolTokens: 0,
   tools: [],
@@ -36,6 +38,25 @@ export const useTurnSelector = <T>(selector: (state: TurnState) => T): T =>
 export const patchTurnState = (next: Partial<TurnState> | ((state: TurnState) => TurnState)) =>
   $turnState.set(typeof next === 'function' ? next($turnState.get()) : { ...$turnState.get(), ...next })
 
+export const toggleTodoCollapsed = () => patchTurnState(state => ({ ...state, todoCollapsed: !state.todoCollapsed }))
+
+export const archiveDoneTodos = () => {
+  const state = $turnState.get()
+
+  if (!isTodoDone(state.todos)) {
+    return []
+  }
+
+  const msg: Msg = { kind: 'trail', role: 'system', text: '', todos: state.todos }
+
+  patchTurnState({ todoCollapsed: false, todos: [] })
+
+  return [msg]
+}
+
+export const appendTurnSegment = (msg: Msg) =>
+  patchTurnState(state => ({ ...state, streamSegments: appendToolShelfMessage(state.streamSegments, msg) }))
+
 export const resetTurnState = () => $turnState.set(buildTurnState())
 
 export interface TurnState {
@@ -49,6 +70,7 @@ export interface TurnState {
   streamSegments: Msg[]
   streaming: string
   subagents: SubagentProgress[]
+  todoCollapsed: boolean
   todos: TodoItem[]
   toolTokens: number
   tools: ActiveTool[]

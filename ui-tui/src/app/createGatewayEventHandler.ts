@@ -11,6 +11,7 @@ import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
+import { archiveDoneTodos } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
 const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
@@ -538,6 +539,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         if (!wasInterrupted) {
           const msgs: Msg[] = finalMessages.length ? finalMessages : [{ role: 'assistant', text: finalText }]
           msgs.forEach(appendMessage)
+          archiveDoneTodos().forEach(appendMessage)
 
           if (bellOnComplete && stdout?.isTTY) {
             stdout.write('\x07')

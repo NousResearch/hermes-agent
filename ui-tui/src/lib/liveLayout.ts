@@ -1,1 +1,1 @@
-export const liveTailOrder = () => ['todo', 'scroll-history', 'assistant'] as const
+export const liveTailOrder = () => ['scroll-history', 'assistant', 'live-todo'] as const

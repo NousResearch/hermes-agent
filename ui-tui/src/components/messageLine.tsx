@@ -10,6 +10,7 @@ import type { Theme } from '../theme.js'
 import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
 
 import { Md } from './markdown.js'
+import { TodoPanel } from './todoPanel.js'
 import { ToolTrail } from './thinking.js'
 
 export const MessageLine = memo(function MessageLine({
@@ -34,6 +35,10 @@ export const MessageLine = memo(function MessageLine({
   const toolsMode = sectionMode('tools', detailsMode, sections, detailsModeCommandOverride)
   const activityMode = sectionMode('activity', detailsMode, sections, detailsModeCommandOverride)
   const thinking = msg.thinking?.trim() ?? ''
+
+  if (msg.kind === 'trail' && msg.todos?.length) {
+    return <TodoPanel t={t} todos={msg.todos} />
+  }
 
   if (msg.kind === 'trail' && (msg.tools?.length || tools.length || thinking)) {
     return thinkingMode !== 'hidden' || toolsMode !== 'hidden' || activityMode !== 'hidden' ? (

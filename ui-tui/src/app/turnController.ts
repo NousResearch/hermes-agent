@@ -7,6 +7,7 @@ import {
 } from '../config/timing.js'
 import type { SessionInterruptResponse, SubagentEventPayload } from '../gatewayTypes.js'
 import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
+import { appendToolShelfMessage, isToolShelfMessage } from '../lib/liveProgress.js'
 import {
   boundedLiveRenderText,
   buildToolTrailLine,
@@ -19,7 +20,7 @@ import type { ActiveTool, ActivityItem, Msg, SubagentProgress, TodoItem } from '
 
 import { resetFlowOverlays } from './overlayStore.js'
 import { pushSnapshot } from './spawnHistoryStore.js'
-import { getTurnState, patchTurnState, resetTurnState } from './turnStore.js'
+import { archiveDoneTodos, getTurnState, patchTurnState, resetTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
 const INTERRUPT_COOLDOWN_MS = 1500
@@ -41,20 +42,6 @@ const diffSegmentBody = (msg: Msg): null | string => {
 }
 
 const hasDetails = (msg: Msg): boolean => Boolean(msg.thinking || msg.tools?.length || msg.toolTokens)
-
-const isToolOnly = (msg: Msg | undefined) =>
-  Boolean(msg && msg.kind === 'trail' && !msg.thinking?.trim() && !msg.text && msg.tools?.length)
-
-const mergeSequentialToolOnly = (segments: Msg[]) =>
-  segments.reduce<Msg[]>((acc, msg) => {
-    if (isToolOnly(msg) && isToolOnly(acc.at(-1))) {
-      const prev = acc.at(-1)!
-
-      return [...acc.slice(0, -1), { ...prev, tools: [...(prev.tools ?? []), ...(msg.tools ?? [])] }]
-    }
-
-    return [...acc, msg]
-  }, [])
 
 const isTodoStatus = (status: unknown): status is TodoItem['status'] =>
   status === 'pending' || status === 'in_progress' || status === 'completed' || status === 'cancelled'
@@ -281,17 +268,7 @@ class TurnController {
   }
 
   private pushSegment(msg: Msg) {
-    if (isToolOnly(msg) && isToolOnly(this.segmentMessages.at(-1)!)) {
-      const prev = this.segmentMessages.at(-1)!
-      this.segmentMessages = [
-        ...this.segmentMessages.slice(0, -1),
-        { ...prev, tools: [...(prev.tools ?? []), ...(msg.tools ?? [])] }
-      ]
-
-      return
-    }
-
-    this.segmentMessages = [...this.segmentMessages, msg]
+    this.segmentMessages = appendToolShelfMessage(this.segmentMessages, msg)
   }
 
   flushStreamingSegment() {
@@ -347,16 +324,22 @@ class TurnController {
   }
 
   private flushPendingToolsIntoLastSegment() {
-    const last = this.segmentMessages[this.segmentMessages.length - 1]
-
-    if (!this.pendingSegmentTools.length || !isToolOnly(last)) {
+    if (!this.pendingSegmentTools.length) {
       return false
     }
 
-    this.segmentMessages = [
-      ...this.segmentMessages.slice(0, -1),
-      { ...last, tools: [...(last.tools ?? []), ...this.pendingSegmentTools] }
-    ]
+    const next = appendToolShelfMessage(this.segmentMessages, {
+      kind: 'trail',
+      role: 'system',
+      text: '',
+      tools: this.pendingSegmentTools
+    })
+
+    if (next.length === this.segmentMessages.length + 1) {
+      return false
+    }
+
+    this.segmentMessages = next
     this.pendingSegmentTools = []
     patchTurnState({ streamPendingTools: [], streamSegments: this.segmentMessages })
 
@@ -449,7 +432,7 @@ class TurnController {
     let tools = this.pendingSegmentTools
     const last = this.segmentMessages[this.segmentMessages.length - 1]
 
-    if (tools.length && isToolOnly(last)) {
+    if (tools.length && isToolShelfMessage(last)) {
       this.segmentMessages = [
         ...this.segmentMessages.slice(0, -1),
         { ...last, tools: [...(last.tools ?? []), ...tools] }
@@ -465,13 +448,11 @@ class TurnController {
     // assistant narration stays put.
     const finalHasOwnDiffFence = /```(?:diff|patch)\b/i.test(finalText)
 
-    const segments = mergeSequentialToolOnly(
-      this.segmentMessages.filter(msg => {
-        const body = diffSegmentBody(msg)
+    const segments = this.segmentMessages.filter(msg => {
+      const body = diffSegmentBody(msg)
 
-        return body === null || (!finalHasOwnDiffFence && !finalText.includes(body))
-      })
-    )
+      return body === null || (!finalHasOwnDiffFence && !finalText.includes(body))
+    })
 
     const hasReasoningSegment =
       this.reasoningSegmentIndex !== null || segments.some(msg => Boolean(msg.thinking?.trim()))
@@ -489,6 +470,8 @@ class TurnController {
     }
 
     const finalMessages = hasDetails(finalDetails) ? [...segments, finalDetails] : [...segments]
+
+    finalMessages.push(...archiveDoneTodos())
 
     if (finalText) {
       finalMessages.push({ role: 'assistant', text: finalText })

@@ -2,7 +2,7 @@ import { useStore } from '@nanostores/react'
 import { memo } from 'react'
 
 import type { AppLayoutProgressProps } from '../app/interfaces.js'
-import { useTurnSelector } from '../app/turnStore.js'
+import { toggleTodoCollapsed, useTurnSelector } from '../app/turnStore.js'
 import { $uiState } from '../app/uiStore.js'
 import type { DetailsMode, Msg, SectionVisibility } from '../types.js'
 
@@ -105,8 +105,9 @@ export const StreamingAssistant = memo(function StreamingAssistant({
 export const LiveTodoPanel = memo(function LiveTodoPanel() {
   const ui = useStore($uiState)
   const todos = useTurnSelector(state => state.todos)
+  const collapsed = useTurnSelector(state => state.todoCollapsed)
 
-  return <TodoPanel t={ui.theme} todos={todos} />
+  return <TodoPanel collapsed={collapsed} onToggle={toggleTodoCollapsed} t={ui.theme} todos={todos} />
 })
 
 interface StreamingAssistantProps {

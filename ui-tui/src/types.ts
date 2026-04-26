@@ -116,6 +116,7 @@ export interface Msg {
   thinkingTokens?: number
   toolTokens?: number
   tools?: string[]
+  todos?: TodoItem[]
 }
 
 export type Role = 'assistant' | 'system' | 'tool' | 'user'

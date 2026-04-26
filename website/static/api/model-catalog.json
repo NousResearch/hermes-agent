@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "updated_at": "2026-04-26T12:34:42Z",
+  "updated_at": "2026-04-26T19:27:12Z",
   "metadata": {
     "source": "hermes-agent repo",
     "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
@@ -15,14 +15,6 @@
         {
           "id": "moonshotai/kimi-k2.6",
           "description": "recommended"
-        },
-        {
-          "id": "deepseek/deepseek-v4-pro",
-          "description": ""
-        },
-        {
-          "id": "deepseek/deepseek-v4-flash",
-          "description": ""
         },
         {
           "id": "anthropic/claude-opus-4.7",
@@ -162,12 +154,6 @@
       "models": [
         {
           "id": "moonshotai/kimi-k2.6"
-        },
-        {
-          "id": "deepseek/deepseek-v4-pro"
-        },
-        {
-          "id": "deepseek/deepseek-v4-flash"
         },
         {
           "id": "xiaomi/mimo-v2.5-pro"

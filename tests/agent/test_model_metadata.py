@@ -340,7 +340,9 @@ class TestCodexOAuthContextLength:
         from agent.model_metadata import get_model_context_length
 
         # OpenRouter — should hit its own catalog path first; when mocked
-        # empty, falls through to hardcoded DEFAULT_CONTEXT_LENGTHS (400k).
+        # empty, falls through to hardcoded DEFAULT_CONTEXT_LENGTHS (1.05M,
+        # matching the real direct-API value — Codex OAuth's 272k cap is
+        # provider-specific and must not leak here).
         with patch("agent.model_metadata.fetch_model_metadata", return_value={}), \
              patch("agent.model_metadata.fetch_endpoint_model_metadata", return_value={}), \
              patch("agent.model_metadata.get_cached_context_length", return_value=None), \
@@ -351,7 +353,7 @@ class TestCodexOAuthContextLength:
                 api_key="",
                 provider="openrouter",
             )
-        assert ctx == 400_000, (
+        assert ctx == 1_050_000, (
             f"Non-Codex gpt-5.5 resolved to {ctx}; Codex 272k override "
             "leaked outside openai-codex provider"
         )

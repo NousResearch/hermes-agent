@@ -5153,27 +5153,29 @@ class HermesCLI:
         _cprint(f"  ✓ Model switched: {result.new_model}")
         _cprint(f"    Provider: {provider_label}")
 
+        # Context: always resolve via the provider-aware chain so Codex OAuth,
+        # Copilot, and Nous-enforced caps win over the raw models.dev entry
+        # (e.g. gpt-5.5 is 1.05M on openai but 272K on Codex OAuth).
         mi = result.model_info
+        try:
+            from hermes_cli.model_switch import resolve_display_context_length
+            ctx = resolve_display_context_length(
+                result.new_model,
+                result.target_provider,
+                base_url=result.base_url or self.base_url or "",
+                api_key=result.api_key or self.api_key or "",
+                model_info=mi,
+            )
+            if ctx:
+                _cprint(f"    Context: {ctx:,} tokens")
+        except Exception:
+            pass
         if mi:
-            if mi.context_window:
-                _cprint(f"    Context: {mi.context_window:,} tokens")
             if mi.max_output:
                 _cprint(f"    Max output: {mi.max_output:,} tokens")
             if mi.has_cost_data():
                 _cprint(f"    Cost: {mi.format_cost()}")
             _cprint(f"    Capabilities: {mi.format_capabilities()}")
-        else:
-            try:
-                from agent.model_metadata import get_model_context_length
-                ctx = get_model_context_length(
-                    result.new_model,
-                    base_url=result.base_url or self.base_url,
-                    api_key=result.api_key or self.api_key,
-                    provider=result.target_provider,
-                )
-                _cprint(f"    Context: {ctx:,} tokens")
-            except Exception:
-                pass
 
         cache_enabled = (
             (base_url_host_matches(result.base_url or "", "openrouter.ai") and "claude" in result.new_model.lower())

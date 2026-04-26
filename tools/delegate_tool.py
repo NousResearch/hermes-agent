@@ -273,10 +273,11 @@ def _extract_output_tail(
 def _looks_like_error_output(content: str) -> bool:
     """Conservative stderr/error detector for tool-result previews.
 
-    The old heuristic flagged any preview containing the substring "error",
-    which painted perfectly normal terminal/json output red.  We now only
-    mark output as an error when there is stronger evidence:
-      - structured JSON with an ``error`` key
+    Terminal-style JSON that includes ``exit_code`` is judged by that exit
+    code, not by whether stdout/stderr happens to contain the word "error".
+    Other tool output is only marked as an error when there is stronger
+    evidence:
+      - structured JSON with a truthy ``error`` key
       - structured JSON with ``status`` of error/failed
       - first line starts with a classic error marker
     """
@@ -288,6 +289,8 @@ def _looks_like_error_output(content: str) -> bool:
         try:
             parsed = json.loads(content)
             if isinstance(parsed, dict):
+                if parsed.get("exit_code") is not None:
+                    return parsed.get("exit_code") != 0
                 if parsed.get("error"):
                     return True
                 status = str(parsed.get("status") or "").strip().lower()
@@ -1568,7 +1571,7 @@ def _run_single_child(
                             trace_by_id[tc_id] = entry_t
                 elif msg.get("role") == "tool":
                     content = msg.get("content", "")
-                    is_error = bool(content and "error" in content[:80].lower())
+                    is_error = _looks_like_error_output(content)
                     result_meta = {
                         "result_bytes": len(content),
                         "status": "error" if is_error else "ok",

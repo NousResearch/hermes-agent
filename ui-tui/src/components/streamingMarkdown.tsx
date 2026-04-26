@@ -19,11 +19,16 @@
 // flips off → message moves to history and renders via <Md> directly), so
 // the ref resets naturally.
 //
-// See src/app/useMainApp.ts for the reasoning on why we don't memoize the
-// whole Md text during streaming: that cache never hits because `text` is
-// growing. Mirror claude-code's `StreamingMarkdown` approach adapted to
-// our line-based tokenizer.
+// Layout: the two <Md> subtrees MUST render stacked (column). The parent
+// container in messageLine.tsx is a default `flexDirection: 'row'` Box
+// (Ink's default), so returning a bare Fragment of two <Md> siblings
+// laid them out side-by-side — producing the "two jumbled columns while
+// streaming" rendering bug. Wrapping in a flexDirection="column" Box
+// here localizes the fix to the streaming path; the non-streaming <Md>
+// already returns its own column Box, so its single-child case was never
+// affected.
 
+import { Box } from '@hermes/ink'
 import { memo, useRef } from 'react'
 
 import type { Theme } from '../theme.js'
@@ -113,10 +118,10 @@ export const StreamingMd = memo(function StreamingMd({ compact, t, text }: Strea
   }
 
   return (
-    <>
+    <Box flexDirection="column">
       <Md compact={compact} t={t} text={stablePrefix} />
       <Md compact={compact} t={t} text={unstableSuffix} />
-    </>
+    </Box>
   )
 })
 

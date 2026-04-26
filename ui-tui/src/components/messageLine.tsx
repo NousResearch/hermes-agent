@@ -10,6 +10,7 @@ import type { Theme } from '../theme.js'
 import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
 
 import { Md } from './markdown.js'
+import { StreamingMd } from './streamingMarkdown.js'
 import { ToolTrail } from './thinking.js'
 import { TodoPanel } from './todoPanel.js'
 
@@ -94,7 +95,10 @@ export const MessageLine = memo(function MessageLine({
 
     if (msg.role === 'assistant') {
       return isStreaming ? (
-        <Text color={body}>{boundedLiveRenderText(msg.text)}</Text>
+        // Incremental markdown: split at the last stable block boundary so
+        // only the in-flight tail re-tokenizes per delta. See
+        // streamingMarkdown.tsx for the cost model.
+        <StreamingMd compact={compact} t={t} text={boundedLiveRenderText(msg.text)} />
       ) : (
         <Md compact={compact} t={t} text={msg.text} />
       )

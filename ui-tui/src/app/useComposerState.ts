@@ -257,13 +257,14 @@ export function useComposerState({
   const openEditor = useCallback(async () => {
     const dir = mkdtempSync(join(tmpdir(), 'hermes-'))
     const file = join(dir, 'prompt.md')
+    const [cmd, ...args] = resolveEditor()
 
     writeFileSync(file, [...inputBuf, input].join('\n'))
 
     let exitCode: null | number = null
 
     await withInkSuspended(async () => {
-      exitCode = spawnSync(resolveEditor(), [file], { stdio: 'inherit' }).status
+      exitCode = spawnSync(cmd!, [...args, file], { stdio: 'inherit' }).status
     })
 
     try {

@@ -2,7 +2,6 @@ import { useEffect, useRef } from 'react'
 
 import { LONG_RUN_CHARMS } from '../content/charms.js'
 import { pick, toolTrailLabel } from '../lib/text.js'
-import type { ActiveTool } from '../types.js'
 
 import { turnController } from './turnController.js'
 import { useTurnSelector } from './turnStore.js'

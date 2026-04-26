@@ -117,14 +117,15 @@ def show_status(args):
     print()
     print(color("◆ API Keys", Colors.CYAN, Colors.BOLD))
     
-    keys = {
+    # Values may be a single env var name (str) or a tuple of alternates (first found wins).
+    keys: dict[str, str | tuple[str, ...]] = {
         "OpenRouter": "OPENROUTER_API_KEY",
         "OpenAI": "OPENAI_API_KEY",
-        "Google/Gemini": "GOOGLE_API_KEY",
+        "Google / Gemini": ("GOOGLE_API_KEY", "GEMINI_API_KEY"),
         "DeepSeek": "DEEPSEEK_API_KEY",
         "xAI / Grok": "XAI_API_KEY",
         "NVIDIA NIM": "NVIDIA_API_KEY",
-        "Z.AI/GLM": "GLM_API_KEY",
+        "Z.AI / GLM": "GLM_API_KEY",
         "Kimi": "KIMI_API_KEY",
         "StepFun Step Plan": "STEPFUN_API_KEY",
         "MiniMax": "MINIMAX_API_KEY",
@@ -139,9 +140,12 @@ def show_status(args):
         "ElevenLabs": "ELEVENLABS_API_KEY",
         "GitHub": "GITHUB_TOKEN",
     }
-    
-    for name, env_var in keys.items():
-        value = get_env_value(env_var) or ""
+
+    for name, env_var_spec in keys.items():
+        if isinstance(env_var_spec, tuple):
+            value = next((get_env_value(ev) or "" for ev in env_var_spec if get_env_value(ev)), "")
+        else:
+            value = get_env_value(env_var_spec) or ""
         has_key = bool(value)
         display = redact_key(value) if not show_all else value
         print(f"  {name:<12}  {check_mark(has_key)} {display}")

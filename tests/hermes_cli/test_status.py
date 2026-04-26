@@ -3,6 +3,38 @@ from types import SimpleNamespace
 from hermes_cli.status import show_status
 
 
+def test_show_status_new_api_key_providers_appear(monkeypatch, capsys, tmp_path):
+    """New provider rows added in #16082 must appear in the API Keys section."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-abcdef1234567890")
+    monkeypatch.setenv("XAI_API_KEY", "xai-abcdef1234567890")
+    monkeypatch.setenv("NVIDIA_API_KEY", "nvapi-abcdef1234567890abcdef")
+
+    show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "DeepSeek" in output
+    assert "xAI / Grok" in output
+    assert "NVIDIA NIM" in output
+    # Redacted key values must appear
+    assert "sk-d" in output
+    assert "xai-" in output
+
+
+def test_show_status_gemini_api_key_fallback(monkeypatch, capsys, tmp_path):
+    """GEMINI_API_KEY should satisfy the Google/Gemini row when GOOGLE_API_KEY is absent."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    monkeypatch.setenv("GEMINI_API_KEY", "AIzaSy-gemini-testkey1234567890ab")
+
+    show_status(SimpleNamespace(all=False, deep=False))
+
+    output = capsys.readouterr().out
+    assert "Google / Gemini" in output
+    # The key is present so the row should show a redacted value, not be blank
+    assert "AIza" in output
+
+
 def test_show_status_includes_tavily_key(monkeypatch, capsys, tmp_path):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.setenv("TAVILY_API_KEY", "tvly-1234567890abcdef")

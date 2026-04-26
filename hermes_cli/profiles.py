@@ -149,6 +149,8 @@ def _get_active_profile_path() -> Path:
 
 def _get_wrapper_dir() -> Path:
     """Return the directory for wrapper scripts."""
+    if sys.platform == "win32":
+        return _get_default_hermes_home() / "bin"
     return Path.home() / ".local" / "bin"
 
 
@@ -236,10 +238,13 @@ def create_wrapper_script(name: str) -> Optional[Path]:
         print(f"⚠ Could not create {wrapper_dir}: {e}")
         return None
 
-    wrapper_path = wrapper_dir / name
+    wrapper_path = wrapper_dir / (f"{name}.cmd" if sys.platform == "win32" else name)
     try:
-        wrapper_path.write_text(f'#!/bin/sh\nexec hermes -p {name} "$@"\n')
-        wrapper_path.chmod(wrapper_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+        if sys.platform == "win32":
+            wrapper_path.write_text(f'@echo off\nhermes -p {name} %*\n')
+        else:
+            wrapper_path.write_text(f'#!/bin/sh\nexec hermes -p {name} "$@"\n')
+            wrapper_path.chmod(wrapper_path.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
         return wrapper_path
     except OSError as e:
         print(f"⚠ Could not create wrapper at {wrapper_path}: {e}")

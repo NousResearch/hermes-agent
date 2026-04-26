@@ -71,6 +71,8 @@ def _system_package_install_cmd(pkg: str) -> str:
         return f"pkg install {pkg}"
     if sys.platform == "darwin":
         return f"brew install {pkg}"
+    if sys.platform == "win32":
+        return f"choco install {pkg} (or winget install {pkg})"
     return f"sudo apt install {pkg}"
 
 
@@ -639,8 +641,18 @@ def run_doctor(args):
     # =========================================================================
     # Check: Command installation (hermes bin symlink)
     # =========================================================================
-    if sys.platform != "win32":
-        print()
+    if sys.platform == "win32":
+        print(color("◆ Command Installation", Colors.CYAN, Colors.BOLD))
+        # Windows command check
+        hermes_cmd = shutil.which("hermes")
+        if hermes_cmd:
+            check_ok(f"Hermes command found: {hermes_cmd}")
+        else:
+            check_fail("Hermes command ('hermes' or 'hermes.cmd') not found in PATH.")
+            check_info("Add the project directory or your hermes wrapper dir to PATH.")
+            issues.append("Add 'hermes' command to PATH")
+    else:
+        # Unix command check
         print(color("◆ Command Installation", Colors.CYAN, Colors.BOLD))
 
         # Determine the venv entry point location

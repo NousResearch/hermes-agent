@@ -172,6 +172,12 @@ def is_termux() -> bool:
 _wsl_detected: bool | None = None
 
 
+def is_windows() -> bool:
+    """Return True if running on native Windows (nt)."""
+    import sys
+    return sys.platform == "win32"
+
+
 def is_wsl() -> bool:
     """Return True when running inside WSL (Windows Subsystem for Linux).
 

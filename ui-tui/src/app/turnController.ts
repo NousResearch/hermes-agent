@@ -1,4 +1,4 @@
-import { REASONING_PULSE_MS, STREAM_BATCH_MS } from '../config/timing.js'
+import { REASONING_PULSE_MS, STREAM_BATCH_MS, STREAM_IDLE_BATCH_MS, STREAM_TYPING_BATCH_MS } from '../config/timing.js'
 import type { SessionInterruptResponse, SubagentEventPayload } from '../gatewayTypes.js'
 import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
 import {
@@ -75,7 +75,16 @@ class TurnController {
   private reasoningStreamingTimer: Timer = null
   private reasoningTimer: Timer = null
   private streamTimer: Timer = null
+  private streamDelay = STREAM_IDLE_BATCH_MS
   private toolProgressTimer: Timer = null
+
+  boostStreamingForTyping() {
+    this.streamDelay = STREAM_TYPING_BATCH_MS
+  }
+
+  relaxStreaming() {
+    this.streamDelay = STREAM_IDLE_BATCH_MS
+  }
 
   clearReasoning() {
     this.reasoningTimer = clear(this.reasoningTimer)
@@ -493,7 +502,7 @@ class TurnController {
       const raw = this.bufRef.trimStart()
       const visible = hasReasoningTag(raw) ? splitReasoning(raw).text : raw
       patchTurnState({ streaming: visible })
-    }, STREAM_BATCH_MS)
+    }, this.streamDelay)
   }
 
   startMessage() {

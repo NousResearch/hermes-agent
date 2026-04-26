@@ -21,7 +21,7 @@ const GLOBAL_MODEL_FLAG_RE = /(?:^|\s)--global(?:\s|$)/
 const persistedModelArg = (arg: string) => {
   const trimmed = arg.trim()
 
-  return GLOBAL_MODEL_FLAG_RE.test(trimmed) ? trimmed : `${trimmed} --global`
+  return !trimmed || GLOBAL_MODEL_FLAG_RE.test(trimmed) ? trimmed : `${trimmed} --global`
 }
 
 export const sessionCommands: SlashCommand[] = [
@@ -73,7 +73,7 @@ export const sessionCommands: SlashCommand[] = [
         return
       }
 
-      if (!arg) {
+      if (!arg.trim()) {
         return patchOverlayState({ modelPicker: true })
       }
 

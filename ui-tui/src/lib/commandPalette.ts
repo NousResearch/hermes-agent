@@ -11,6 +11,8 @@ export interface CommandPaletteItem {
   aliases: string[]
   command: string
   description: string
+  lane: 'catalog' | 'core'
+  rune: '☤' | '◇'
   searchText: string
   usage: string
 }
@@ -51,6 +53,8 @@ export function buildCommandPaletteItems(
       aliases,
       command,
       description,
+      lane: 'core',
+      rune: '☤',
       searchText: unique([command, cmd.name, description, usage, ...aliases]).join(' ').toLowerCase(),
       usage
     })
@@ -67,6 +71,8 @@ export function buildCommandPaletteItems(
         aliases,
         command,
         description: desc,
+        lane: 'catalog',
+        rune: '◇',
         searchText: unique([command, name, desc, command, ...aliases]).join(' ').toLowerCase(),
         usage: command
       })

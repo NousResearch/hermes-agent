@@ -89,7 +89,13 @@ export function CommandPalette({ catalog, initialQuery = '', onClose, onSelect, 
                   </Text>
                 </Box>
 
-                <Box width={24}>
+                <Box width={3}>
+                  <Text color={item.lane === 'core' ? t.color.gold : t.color.dim} inverse={selected}>
+                    {item.rune}{' '}
+                  </Text>
+                </Box>
+
+                <Box width={23}>
                   <Text bold={selected} color={selected ? t.color.amber : t.color.label} inverse={selected} wrap="truncate-end">
                     {item.command}
                   </Text>

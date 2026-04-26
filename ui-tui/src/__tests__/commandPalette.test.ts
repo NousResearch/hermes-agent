@@ -26,6 +26,8 @@ describe('command palette helpers', () => {
         aliases: ['m', 'models'],
         command: '/model',
         description: 'open model picker',
+        lane: 'core',
+        rune: '☤',
         searchText: '/model model open model picker /model [name] m models',
         usage: '/model [name]'
       },
@@ -33,6 +35,8 @@ describe('command palette helpers', () => {
         aliases: [],
         command: '/details',
         description: 'toggle details',
+        lane: 'core',
+        rune: '☤',
         searchText: '/details details toggle details',
         usage: '/details'
       }
@@ -44,6 +48,22 @@ describe('command palette helpers', () => {
 
     expect(items.map(item => item.command)).toEqual(['/model', '/resume'])
     expect(items.find(item => item.command === '/resume')?.description).toBe('resume a prior session')
+  })
+
+  it('labels local and catalog commands with cockpit lanes', () => {
+    const items = buildCommandPaletteItems([{ help: 'open model picker', name: 'model' }], catalog)
+
+    expect(items.find(item => item.command === '/model')).toMatchObject({ lane: 'core', rune: '☤' })
+    expect(items.find(item => item.command === '/resume')).toMatchObject({ lane: 'catalog', rune: '◇' })
+  })
+
+  it('keeps local commands ahead of catalog-only skill commands when filtered', () => {
+    const items = buildCommandPaletteItems(
+      [{ help: 'open the Aurora command palette', name: 'palette' }],
+      { ...catalog, pairs: [...catalog.pairs, ['/parallel-cli', 'Optional vendor skill for Parallel CLI']] }
+    )
+
+    expect(filterCommandPaletteItems(items, 'pa').map(item => item.command)).toEqual(['/palette', '/parallel-cli'])
   })
 
   it('filters by command, description, usage, and alias text', () => {

@@ -922,6 +922,21 @@ class TestTokenBudgetTailProtection:
         assert isinstance(cut, int)
         assert 0 <= cut <= len(messages)
 
+    def test_mixed_list_with_bare_strings_does_not_crash(self, budget_compressor):
+        """Content list may contain bare strings (not dicts) — must not raise AttributeError."""
+        c = budget_compressor
+        c.tail_token_budget = 500
+        # Bare string item alongside a dict item — normalisation elsewhere allows this.
+        mixed_content = ["Hello, world!", {"type": "text", "text": "extra text"}]
+        messages = [
+            {"role": "user", "content": mixed_content},
+            {"role": "assistant", "content": "ok"},
+        ]
+        head_end = 0
+        cut = c._find_tail_cut_by_tokens(messages, head_end)
+        assert isinstance(cut, int)
+        assert 0 <= cut <= len(messages)
+
 
 class TestUpdateModelBudgets:
     """Regression: update_model() must recalculate token budgets."""

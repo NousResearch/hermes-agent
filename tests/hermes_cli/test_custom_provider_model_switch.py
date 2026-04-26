@@ -257,3 +257,68 @@ class TestCustomProviderModelSwitch:
         assert config["model"]["api_key"] == "${EXAMPLE_PROVIDER_API_KEY}"
         assert config["custom_providers"][0]["key_env"] == "EXAMPLE_PROVIDER_API_KEY"
         assert "sk-live-example-provider" not in config_path.read_text()
+
+    def test_env_ref_base_url_preserves_api_key_ref_through_picker(
+        self, config_home, monkeypatch
+    ):
+        """Integration regression: when BOTH ``base_url`` and ``api_key`` use
+        ``${VAR}`` templates (the Discord-reported NeuralWatt case), the picker
+        must still preserve the env reference in ``model.api_key``.
+
+        The earlier lookup went through ``get_compatible_custom_providers``
+        which dropped entries whose ``base_url`` was an env-ref template
+        (``urlparse("${NEURALWATT_API_BASE}")`` has no scheme/netloc), causing
+        ``api_key_ref`` to stay empty and the resolved secret to be written to
+        ``config.yaml``. This test drives the real picker-callsite code path.
+        """
+        import yaml
+        from hermes_cli.main import select_provider_and_model
+
+        config_path = config_home / "config.yaml"
+        config_path.write_text(
+            "model:\n"
+            "  default: old-model\n"
+            "  provider: openrouter\n"
+            "custom_providers:\n"
+            "- name: NeuralWatt\n"
+            "  base_url: ${NEURALWATT_API_BASE}\n"
+            "  api_key: ${NEURALWATT_API_KEY}\n"
+            "  model: qwen3.6-35b-fast\n"
+            "  models: []\n"
+        )
+        monkeypatch.setenv("NEURALWATT_API_BASE", "https://api.neuralwatt.com/v1")
+        monkeypatch.setenv("NEURALWATT_API_KEY", "sk-live-neuralwatt-secret")
+
+        # Exercise the real picker: select "custom:neuralwatt" from the
+        # provider menu. ``select_provider_and_model`` prompts for a provider
+        # choice (returns an index), then hands off to
+        # ``_model_flow_named_custom`` with the provider_info built by
+        # ``_named_custom_provider_map``.
+        def _pick_neuralwatt(labels, default=0):
+            for i, label in enumerate(labels):
+                if "NeuralWatt" in label:
+                    return i
+            raise AssertionError(
+                f"NeuralWatt entry missing from provider menu: {labels}"
+            )
+
+        with patch("hermes_cli.main._prompt_provider_choice",
+                   side_effect=_pick_neuralwatt), \
+             patch("hermes_cli.models.fetch_api_models",
+                   return_value=["qwen3.6-35b-fast"]) as mock_fetch, \
+             patch.dict("sys.modules", {"simple_term_menu": None}), \
+             patch("builtins.input", return_value="1"), \
+             patch("builtins.print"):
+            select_provider_and_model()
+
+        # The live probe must still use the resolved secret.
+        mock_fetch.assert_called_once()
+        probe_args, probe_kwargs = mock_fetch.call_args
+        assert probe_args[0] == "sk-live-neuralwatt-secret"
+
+        # But config.yaml must keep the env reference, not the plaintext secret.
+        saved = config_path.read_text()
+        config = yaml.safe_load(saved) or {}
+        assert config["model"]["api_key"] == "${NEURALWATT_API_KEY}"
+        assert config["custom_providers"][0]["api_key"] == "${NEURALWATT_API_KEY}"
+        assert "sk-live-neuralwatt-secret" not in saved

@@ -328,6 +328,10 @@ def _member_info(token: str, guild_id: str, user_id: str, **_kwargs: Any) -> str
 
 def _search_members(token: str, guild_id: str, query: str, limit: int = 20, **_kwargs: Any) -> str:
     """Search for guild members by name."""
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 20
     params = {"query": query, "limit": str(min(limit, 100))}
     members = _discord_request("GET", f"/guilds/{guild_id}/members/search", token, params=params)
     result = []
@@ -350,6 +354,10 @@ def _fetch_messages(
     **_kwargs: Any,
 ) -> str:
     """Fetch recent messages from a channel."""
+    try:
+        limit = int(limit)
+    except (TypeError, ValueError):
+        limit = 50
     params: Dict[str, str] = {"limit": str(min(limit, 100))}
     if before:
         params["before"] = before

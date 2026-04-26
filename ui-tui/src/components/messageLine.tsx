@@ -9,7 +9,7 @@ import { boundedLiveRenderText, compactPreview, hasAnsi, isPasteBackedText, stri
 import type { Theme } from '../theme.js'
 import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
 
-import { DeferredMd } from './deferredMarkdown.js'
+import { Md } from './markdown.js'
 import { StreamingMd } from './streamingMarkdown.js'
 import { ToolTrail } from './thinking.js'
 import { TodoPanel } from './todoPanel.js'
@@ -107,12 +107,7 @@ export const MessageLine = memo(function MessageLine({
         // streamingMarkdown.tsx for the cost model.
         <StreamingMd compact={compact} t={t} text={boundedLiveRenderText(msg.text)} />
       ) : (
-        // Deferred markdown: plain-text placeholder on first mount, upgrade
-        // to full Md on a queued microtask. Spreads the tokenizer + syntax
-        // cost off the scroll critical path so hold-PageUp doesn't hitch
-        // on fresh assistant rows entering overscan. See
-        // deferredMarkdown.tsx for the trade-offs.
-        <DeferredMd color={body} compact={compact} t={t} text={msg.text} />
+        <Md compact={compact} t={t} text={msg.text} />
       )
     }
 

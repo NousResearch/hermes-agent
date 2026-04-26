@@ -899,7 +899,7 @@ export const ToolTrail = memo(function ToolTrail({
     return duration ? (
       <>
         {label}
-        <Text color={t.color.dim} dim>
+        <Text color={t.color.statusFg} dim>
           {duration}
         </Text>
       </>

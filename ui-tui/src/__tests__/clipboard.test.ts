@@ -100,11 +100,22 @@ describe('isUsableClipboardText', () => {
 })
 
 describe('writeClipboardText', () => {
-  it('does nothing off macOS', async () => {
-    const start = vi.fn()
+  it('does nothing off macOS when no tools are available', async () => {
+    const child = {
+      once: vi.fn((event: string, cb: (code?: number) => void) => {
+        if (event === 'close') {
+          cb(1) // non-zero exit = failure
+        }
 
-    await expect(writeClipboardText('hello', 'linux', start)).resolves.toBe(false)
-    expect(start).not.toHaveBeenCalled()
+        return child
+      }),
+      stdin: { end: vi.fn() }
+    }
+
+    const start = vi.fn().mockReturnValue(child)
+
+    // Linux with no WAYLAND_DISPLAY / no WSL_INTEROP — falls through xclip then xsel, both fail
+    await expect(writeClipboardText('hello', 'linux', start, {})).resolves.toBe(false)
   })
 
   it('writes text to pbcopy on macOS', async () => {
@@ -147,5 +158,172 @@ describe('writeClipboardText', () => {
     const start = vi.fn().mockReturnValue(child)
 
     await expect(writeClipboardText('hello world', 'darwin', start as any)).resolves.toBe(false)
+  })
+
+  it('uses wl-copy on Wayland Linux', async () => {
+    const stdin = { end: vi.fn() }
+
+    const child = {
+      once: vi.fn((event: string, cb: (code?: number) => void) => {
+        if (event === 'close') {
+          cb(0)
+        }
+
+        return child
+      }),
+      stdin
+    }
+
+    const start = vi.fn().mockReturnValue(child)
+
+    await expect(
+      writeClipboardText('wayland text', 'linux', start as any, { WAYLAND_DISPLAY: 'wayland-1' })
+    ).resolves.toBe(true)
+    expect(start).toHaveBeenCalledWith(
+      'wl-copy',
+      ['--type', 'text/plain'],
+      expect.objectContaining({ stdio: ['pipe', 'ignore', 'ignore'], windowsHide: true })
+    )
+    expect(stdin.end).toHaveBeenCalledWith('wayland text')
+  })
+
+  it('falls back to xclip when wl-copy fails on Wayland', async () => {
+    let callCount = 0
+    const stdin = { end: vi.fn() }
+
+    const child = {
+      once: vi.fn((event: string, cb: (code?: number) => void) => {
+        if (event === 'close') {
+          callCount++
+          // wl-copy fails, xclip succeeds
+          cb(callCount === 1 ? 1 : 0)
+        }
+
+        return child
+      }),
+      stdin
+    }
+
+    const start = vi.fn().mockReturnValue(child)
+
+    await expect(
+      writeClipboardText('x11 text', 'linux', start as any, { WAYLAND_DISPLAY: 'wayland-1' })
+    ).resolves.toBe(true)
+    expect(start).toHaveBeenNthCalledWith(
+      1,
+      'wl-copy',
+      ['--type', 'text/plain'],
+      expect.anything()
+    )
+    expect(start).toHaveBeenNthCalledWith(
+      2,
+      'xclip',
+      ['-selection', 'clipboard', '-in'],
+      expect.anything()
+    )
+  })
+
+  it('falls back to xsel when both wl-copy and xclip fail', async () => {
+    let callCount = 0
+    const stdin = { end: vi.fn() }
+
+    const child = {
+      once: vi.fn((event: string, cb: (code?: number) => void) => {
+        if (event === 'close') {
+          callCount++
+          cb(callCount < 3 ? 1 : 0) // first two fail, third (xsel) succeeds
+        }
+
+        return child
+      }),
+      stdin
+    }
+
+    const start = vi.fn().mockReturnValue(child)
+
+    await expect(
+      writeClipboardText('xsel text', 'linux', start as any, { WAYLAND_DISPLAY: 'wayland-1' })
+    ).resolves.toBe(true)
+    expect(start).toHaveBeenNthCalledWith(3, 'xsel', ['--clipboard', '--input'], expect.anything())
+  })
+
+  it('uses PowerShell on WSL2 when WSL_DISTRO_NAME is set', async () => {
+    const stdin = { end: vi.fn() }
+
+    const child = {
+      once: vi.fn((event: string, cb: (code?: number) => void) => {
+        if (event === 'close') {
+          cb(0)
+        }
+
+        return child
+      }),
+      stdin
+    }
+
+    const start = vi.fn().mockReturnValue(child)
+
+    await expect(writeClipboardText('wsl text', 'linux', start as any, { WSL_DISTRO_NAME: 'Ubuntu' })).resolves.toBe(true)
+    expect(start).toHaveBeenCalledWith(
+      'powershell.exe',
+      expect.arrayContaining(['-NoProfile', '-NonInteractive']),
+      expect.anything()
+    )
+    expect(stdin.end).toHaveBeenCalledWith('wsl text')
+  })
+
+  it('prefers the Windows clipboard path over wl-copy inside WSLg', async () => {
+    const stdin = { end: vi.fn() }
+
+    const child = {
+      once: vi.fn((event: string, cb: (code?: number) => void) => {
+        if (event === 'close') {
+          cb(0)
+        }
+
+        return child
+      }),
+      stdin
+    }
+
+    const start = vi.fn().mockReturnValue(child)
+
+    await expect(
+      writeClipboardText('wslg text', 'linux', start as any, {
+        WAYLAND_DISPLAY: 'wayland-0',
+        WSL_DISTRO_NAME: 'Ubuntu'
+      })
+    ).resolves.toBe(true)
+    expect(start).toHaveBeenNthCalledWith(
+      1,
+      'powershell.exe',
+      expect.arrayContaining(['-NoProfile', '-NonInteractive']),
+      expect.anything()
+    )
+    expect(stdin.end).toHaveBeenCalledWith('wslg text')
+  })
+
+  it('uses PowerShell on Windows', async () => {
+    const stdin = { end: vi.fn() }
+
+    const child = {
+      once: vi.fn((event: string, cb: (code?: number) => void) => {
+        if (event === 'close') {
+          cb(0)
+        }
+
+        return child
+      }),
+      stdin
+    }
+
+    const start = vi.fn().mockReturnValue(child)
+
+    await expect(writeClipboardText('windows text', 'win32', start as any)).resolves.toBe(true)
+    expect(start).toHaveBeenCalledWith(
+      'powershell',
+      expect.arrayContaining(['-NoProfile', '-NonInteractive']),
+      expect.anything()
+    )
   })
 })

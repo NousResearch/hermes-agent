@@ -7391,31 +7391,12 @@ For more help on a command:
         default=argparse.SUPPRESS,
         help="Preload one or more skills for the session (repeat flag or comma-separate)",
     )
+    from hermes_cli.models import CANONICAL_PROVIDERS
+
+    chat_provider_choices = ["auto", *[p.slug for p in CANONICAL_PROVIDERS]]
     chat_parser.add_argument(
         "--provider",
-        choices=[
-            "auto",
-            "openrouter",
-            "nous",
-            "openai-codex",
-            "copilot-acp",
-            "copilot",
-            "anthropic",
-            "gemini",
-            "xai",
-            "ollama-cloud",
-            "huggingface",
-            "zai",
-            "kimi-coding",
-            "kimi-coding-cn",
-            "stepfun",
-            "minimax",
-            "minimax-cn",
-            "kilocode",
-            "xiaomi",
-            "arcee",
-            "nvidia",
-        ],
+        choices=chat_provider_choices,
         default=None,
         help="Inference provider (default: auto)",
     )

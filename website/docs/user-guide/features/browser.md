@@ -86,6 +86,40 @@ FIRECRAWL_API_URL=http://localhost:3002
 FIRECRAWL_BROWSER_TTL=600
 ```
 
+### Hybrid routing: cloud for public URLs, local for LAN/localhost
+
+When a cloud provider is configured, Hermes auto-spawns a **local Chromium sidecar**
+for URLs that resolve to a private/loopback/LAN address (`localhost`, `127.0.0.1`,
+`192.168.x.x`, `10.x.x.x`, `172.16-31.x.x`, `*.local`, `*.lan`, `*.internal`,
+IPv6 loopback `::1`, link-local `169.254.x.x`). Public URLs continue to use the
+cloud provider in the same conversation.
+
+This solves the common "I'm developing locally but using Browserbase" workflow —
+the agent can screenshot your dashboard at `http://localhost:3000` AND scrape
+`https://github.com` without you switching providers or disabling the SSRF guard.
+The cloud provider never sees the private URL.
+
+The feature is **on by default**. To disable it (all URLs go to the configured
+cloud provider, as before):
+
+```yaml
+# ~/.hermes/config.yaml
+browser:
+  cloud_provider: browserbase
+  auto_local_for_private_urls: false
+```
+
+With auto-routing disabled, private URLs are rejected with
+`"Blocked: URL targets a private or internal address"` unless you also set
+`browser.allow_private_urls: true` (which lets the cloud provider attempt them —
+usually won't work since Browserbase etc. can't reach your LAN).
+
+Requirements: the local sidecar uses the same `agent-browser` CLI as pure local
+mode, so you need it installed (`hermes setup tools → Browser Automation`
+auto-installs it). Post-navigation redirects from a public URL onto a private
+address are still blocked (you can't use a redirect-to-internal trick to reach
+your LAN through the public path).
+
 ### Camofox local mode
 
 [Camofox](https://github.com/jo-inc/camofox-browser) is a self-hosted Node.js server wrapping Camoufox (a Firefox fork with C++ fingerprint spoofing). It provides local anti-detection browsing without cloud dependencies.

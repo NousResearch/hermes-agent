@@ -349,3 +349,121 @@ class TestBusySessionAck:
 
         result = await runner._handle_active_session_busy_message(event, sk)
         assert result is False  # not handled, let default path try
+
+
+class TestBusySessionOnboardingHint:
+    """First-touch hint appended to the busy-ack the first time it fires."""
+
+    @pytest.mark.asyncio
+    async def test_first_busy_ack_appends_interrupt_hint(self, tmp_path, monkeypatch):
+        """First busy-while-running message gets an extra hint about /busy."""
+        import gateway.run as _gr
+
+        monkeypatch.setattr(_gr, "_hermes_home", tmp_path)
+        # mark_seen imports utils.atomic_yaml_write; make sure it resolves
+        # against a writable dir by pointing _hermes_home at tmp_path.
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+
+        event = _make_event(text="ping")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 3, "max_iterations": 60,
+            "current_tool": None, "last_activity_ts": time.time(),
+            "last_activity_desc": "api", "seconds_since_activity": 0.1,
+        }
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time() - 5
+        runner.adapters[event.source.platform] = adapter
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        call_kwargs = adapter._send_with_retry.call_args
+        content = call_kwargs.kwargs.get("content", "")
+
+        # Normal ack body
+        assert "Interrupting" in content
+        # First-touch hint appended
+        assert "First-time tip" in content
+        assert "/busy queue" in content
+
+        # The flag is now persisted to tmp_path/config.yaml
+        import yaml
+        cfg = yaml.safe_load((tmp_path / "config.yaml").read_text())
+        assert cfg["onboarding"]["seen"]["busy_input_prompt"] is True
+
+    @pytest.mark.asyncio
+    async def test_second_busy_ack_omits_hint(self, tmp_path, monkeypatch):
+        """Once the flag is marked, the hint never appears again."""
+        import gateway.run as _gr
+        import yaml
+
+        monkeypatch.setattr(_gr, "_hermes_home", tmp_path)
+        # Pre-populate the config so is_seen() returns True from the start.
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+            "onboarding": {"seen": {"busy_input_prompt": True}},
+        }))
+        monkeypatch.setattr(
+            _gr, "_load_gateway_config",
+            lambda: yaml.safe_load((tmp_path / "config.yaml").read_text()),
+        )
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter()
+
+        event = _make_event(text="ping again")
+        sk = build_session_key(event.source)
+
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 3, "max_iterations": 60,
+            "current_tool": None, "last_activity_ts": time.time(),
+            "last_activity_desc": "api", "seconds_since_activity": 0.1,
+        }
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time() - 5
+        runner.adapters[event.source.platform] = adapter
+
+        await runner._handle_active_session_busy_message(event, sk)
+
+        call_kwargs = adapter._send_with_retry.call_args
+        content = call_kwargs.kwargs.get("content", "")
+
+        assert "Interrupting" in content
+        assert "First-time tip" not in content
+        assert "/busy queue" not in content
+
+    @pytest.mark.asyncio
+    async def test_queue_mode_hint_points_to_interrupt(self, tmp_path, monkeypatch):
+        """In queue mode the hint should suggest /busy interrupt, not /busy queue."""
+        import gateway.run as _gr
+
+        monkeypatch.setattr(_gr, "_hermes_home", tmp_path)
+        monkeypatch.setattr(_gr, "_load_gateway_config", lambda: {})
+
+        runner, _sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _make_adapter()
+
+        event = _make_event(text="queue me")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+
+        with patch("gateway.run.merge_pending_message_event"):
+            await runner._handle_active_session_busy_message(event, sk)
+
+        content = adapter._send_with_retry.call_args.kwargs.get("content", "")
+        assert "Queued for the next turn" in content
+        assert "First-time tip" in content
+        assert "/busy interrupt" in content
+        # Must NOT tell the user to /busy queue when they're already on queue.
+        assert "/busy queue" not in content

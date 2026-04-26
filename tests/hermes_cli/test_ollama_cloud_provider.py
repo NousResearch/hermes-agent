@@ -1,6 +1,7 @@
 """Tests for Ollama Cloud provider integration."""
 
 import os
+import time
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -408,3 +409,182 @@ class TestOllamaCloudAuxiliary:
         from agent.auxiliary_client import _API_KEY_PROVIDER_AUX_MODELS
         assert "ollama-cloud" in _API_KEY_PROVIDER_AUX_MODELS
         assert _API_KEY_PROVIDER_AUX_MODELS["ollama-cloud"] == "nemotron-3-nano:30b"
+
+
+# ── Suffix Sanitization (Issue #16179) ──
+
+class TestStripOllamaCloudSuffix:
+    """Unit tests for _strip_ollama_cloud_suffix."""
+
+    def test_strip_suffix_helper(self):
+        from hermes_cli.models import _strip_ollama_cloud_suffix
+        assert _strip_ollama_cloud_suffix("kimi-k2.6:cloud") == "kimi-k2.6"
+        assert _strip_ollama_cloud_suffix("glm-5.1-cloud") == "glm-5.1"
+        assert _strip_ollama_cloud_suffix("qwen3-coder:480b-cloud") == "qwen3-coder:480b"
+        assert _strip_ollama_cloud_suffix("llama3.1") == "llama3.1"
+        assert _strip_ollama_cloud_suffix(":cloud") == ""
+        assert _strip_ollama_cloud_suffix("") == ""
+
+
+class TestOllamaCloudSuffixSanitization:
+    """Integration tests for suffix stripping in fetch_ollama_cloud_models."""
+
+    def test_strips_colon_cloud_suffix(self, tmp_path, monkeypatch):
+        from hermes_cli.models import fetch_ollama_cloud_models
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+
+        mock_mdev = {
+            "ollama-cloud": {
+                "models": {
+                    "kimi-k2.6:cloud": {"tool_call": True},
+                }
+            }
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
+            result = fetch_ollama_cloud_models(force_refresh=True)
+
+        assert result == ["kimi-k2.6"]
+        assert "kimi-k2.6:cloud" not in result
+
+    def test_strips_dash_cloud_suffix(self, tmp_path, monkeypatch):
+        from hermes_cli.models import fetch_ollama_cloud_models
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+
+        mock_mdev = {
+            "ollama-cloud": {
+                "models": {
+                    "glm-5.1-cloud": {"tool_call": True},
+                }
+            }
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
+            result = fetch_ollama_cloud_models(force_refresh=True)
+
+        assert result == ["glm-5.1"]
+        assert "glm-5.1-cloud" not in result
+
+    def test_unsuffixed_model_id_unchanged(self, tmp_path, monkeypatch):
+        from hermes_cli.models import fetch_ollama_cloud_models
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+
+        mock_mdev = {
+            "ollama-cloud": {
+                "models": {
+                    "qwen3.5:397b": {"tool_call": True},
+                }
+            }
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
+            result = fetch_ollama_cloud_models(force_refresh=True)
+
+        assert result == ["qwen3.5:397b"]
+
+    def test_no_duplicate_when_live_clean_and_mdev_suffixed(self, tmp_path, monkeypatch):
+        """Live API returns clean IDs; models.dev returns suffixed IDs for same models.
+
+        The suffixed versions must be stripped and deduplicated so only the
+        clean live ID remains.
+        """
+        from hermes_cli.models import fetch_ollama_cloud_models
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
+
+        mock_mdev = {
+            "ollama-cloud": {
+                "models": {
+                    "kimi-k2.6:cloud": {"tool_call": True},
+                    "glm-5.1-cloud": {"tool_call": True},
+                    "qwen3-coder:480b-cloud": {"tool_call": True},
+                }
+            }
+        }
+        with patch("hermes_cli.models.fetch_api_models", return_value=["kimi-k2.6", "glm-5.1"]), \
+             patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
+            result = fetch_ollama_cloud_models(force_refresh=True)
+
+        assert result == ["kimi-k2.6", "glm-5.1", "qwen3-coder:480b"]
+        assert "kimi-k2.6:cloud" not in result
+        assert "glm-5.1-cloud" not in result
+        assert "qwen3-coder:480b-cloud" not in result
+
+    def test_dedupes_multiple_suffixed_variants(self, tmp_path, monkeypatch):
+        """Both :cloud and -cloud variants of the same base ID must collapse."""
+        from hermes_cli.models import fetch_ollama_cloud_models
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+
+        mock_mdev = {
+            "ollama-cloud": {
+                "models": {
+                    "kimi-k2.6:cloud": {"tool_call": True},
+                    "kimi-k2.6-cloud": {"tool_call": True},
+                    "glm-5.1-cloud": {"tool_call": True},
+                }
+            }
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
+            result = fetch_ollama_cloud_models(force_refresh=True)
+
+        assert result.count("kimi-k2.6") == 1
+        assert result == ["kimi-k2.6", "glm-5.1"]
+
+    def test_skips_empty_sanitized_result(self, tmp_path, monkeypatch):
+        """A raw :cloud suffix (empty after strip) must not leak into results."""
+        from hermes_cli.models import fetch_ollama_cloud_models
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.delenv("OLLAMA_API_KEY", raising=False)
+
+        mock_mdev = {
+            "ollama-cloud": {
+                "models": {
+                    ":cloud": {"tool_call": True},
+                    "-cloud": {"tool_call": True},
+                    "glm-5.1-cloud": {"tool_call": True},
+                }
+            }
+        }
+        with patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev):
+            result = fetch_ollama_cloud_models(force_refresh=True)
+
+        assert "" not in result
+        assert result == ["glm-5.1"]
+
+    def test_repairs_legacy_cached_suffixed_models(self, tmp_path, monkeypatch):
+        """Existing on-disk caches with :cloud / -cloud suffixes are repaired on read."""
+        import json
+        from hermes_cli.models import (
+            fetch_ollama_cloud_models,
+            _ollama_cloud_cache_path,
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
+
+        # Pre-populate a cache with bad suffixed IDs (simulating pre-fix state)
+        cache_path = _ollama_cloud_cache_path()
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(cache_path, "w") as f:
+            json.dump(
+                {
+                    "models": ["kimi-k2.6:cloud", "glm-5.1-cloud", "qwen3.5:397b"],
+                    "cached_at": time.time(),
+                },
+                f,
+            )
+
+        with patch("hermes_cli.models.fetch_api_models", return_value=[]), \
+             patch("agent.models_dev.fetch_models_dev", return_value={}):
+            result = fetch_ollama_cloud_models(force_refresh=False)
+
+        assert result == ["kimi-k2.6", "glm-5.1", "qwen3.5:397b"]
+        assert "kimi-k2.6:cloud" not in result
+        assert "glm-5.1-cloud" not in result

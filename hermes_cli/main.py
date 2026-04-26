@@ -1624,9 +1624,10 @@ def select_provider_and_model(args=None):
         _model_flow_stepfun(config, current_model)
     elif selected_provider == "bedrock":
         _model_flow_bedrock(config, current_model)
+    elif selected_provider == "vertex":
+        _model_flow_vertex(config, current_model)
     elif selected_provider in (
         "gemini",
-        "vertex",
         "deepseek",
         "xai",
         "zai",
@@ -3964,6 +3965,81 @@ def _model_flow_bedrock(config, current_model=""):
         print(f"  Default model set to: {selected} (via AWS Bedrock, {region})")
     else:
         print("  No change.")
+
+
+def _model_flow_vertex(config, current_model=""):
+    """Google Vertex AI provider flow.
+
+    Credentials come from a service account JSON file or ADC — no API key
+    prompt. Region is the only optional override.
+    """
+    from hermes_cli.auth import (
+        _prompt_model_selection,
+        _save_model_choice,
+        deactivate_provider,
+    )
+    from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
+    from hermes_cli.models import _PROVIDER_MODELS
+    from hermes_cli.vertex_adapter import get_vertex_config, DEFAULT_REGION
+
+    # 1. Resolve credentials (SA file or ADC) — just show status, don't prompt
+    creds_path = (
+        get_env_value("VERTEX_CREDENTIALS_PATH")
+        or os.getenv("VERTEX_CREDENTIALS_PATH", "")
+        or get_env_value("GOOGLE_APPLICATION_CREDENTIALS")
+        or os.getenv("GOOGLE_APPLICATION_CREDENTIALS", "")
+    )
+    if creds_path:
+        short = creds_path if len(creds_path) <= 40 else f"...{creds_path[-37:]}"
+        print(f"  Credentials: {short} ✓")
+    else:
+        print("  Credentials: Application Default Credentials (ADC)")
+        print("  (Set VERTEX_CREDENTIALS_PATH or GOOGLE_APPLICATION_CREDENTIALS")
+        print("   to a service account JSON file, or run")
+        print("   `gcloud auth application-default login`.)")
+    print()
+
+    # Quick probe to catch missing google-auth or invalid creds early
+    token, _ = get_vertex_config(credentials_path=creds_path or None)
+    if not token:
+        print("  ✗ Could not obtain a Vertex AI access token.")
+        print("    Check that google-auth is installed and credentials are valid.")
+        return
+
+    # 2. Optional region override
+    current_region = (
+        get_env_value("VERTEX_REGION")
+        or os.getenv("VERTEX_REGION", "")
+        or get_env_value("VERTEX_LOCATION")
+        or os.getenv("VERTEX_LOCATION", "")
+        or DEFAULT_REGION
+    )
+    try:
+        region_input = input(f"  Region [{current_region}]: ").strip()
+    except (KeyboardInterrupt, EOFError):
+        print()
+        return
+    region = region_input or current_region
+    if region != current_region:
+        save_env_value("VERTEX_REGION", region)
+        print(f"  Region saved: {region}")
+        print()
+
+    # 3. Model selection
+    model_list = _PROVIDER_MODELS.get("vertex", [])
+    if not model_list:
+        model_list = ["gemini-2.5-pro", "gemini-2.5-flash"]
+
+    selected = _prompt_model_selection(model_list, current_model, provider_id="vertex")
+    if not selected:
+        print("  No change.")
+        return
+
+    cfg = load_config()
+    _save_model_choice(cfg, "vertex", selected)
+    save_config(cfg)
+    deactivate_provider()
+    print(f"  Default model set to: {selected} (via Google Vertex AI, {region})")
 
 
 def _model_flow_api_key_provider(config, provider_id, current_model=""):

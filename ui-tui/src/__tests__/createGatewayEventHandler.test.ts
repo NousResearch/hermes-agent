@@ -198,6 +198,22 @@ describe('createGatewayEventHandler', () => {
     expect(appended[3]?.text).not.toContain('```diff')
   })
 
+  it('keeps full final responses from duplicating flushed pre-diff narration', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+    const diff = '--- a/foo.ts\n+++ b/foo.ts\n@@\n-old\n+new'
+    const block = `\`\`\`diff\n${diff}\n\`\`\``
+
+    onEvent({ payload: { text: 'Before edit. ' }, type: 'message.delta' } as any)
+    onEvent({ payload: { context: 'foo.ts', name: 'patch', tool_id: 'tool-1' }, type: 'tool.start' } as any)
+    onEvent({ payload: { inline_diff: diff, summary: 'patched', tool_id: 'tool-1' }, type: 'tool.complete' } as any)
+    onEvent({ payload: { text: 'After edit.' }, type: 'message.delta' } as any)
+    onEvent({ payload: { text: 'Before edit. After edit.' }, type: 'message.complete' } as any)
+
+    expect(appended.map(msg => msg.text.trim()).filter(Boolean)).toEqual(['Before edit.', block, 'After edit.'])
+    expect(appended[1]?.tools?.[0]).toContain('Patch')
+  })
+
   it('drops the diff segment when the final assistant text narrates the same diff', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))

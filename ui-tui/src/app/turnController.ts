@@ -40,6 +40,22 @@ const diffSegmentBody = (msg: Msg): null | string => {
 
 const hasDetails = (msg: Msg): boolean => Boolean(msg.thinking || msg.tools?.length || msg.toolTokens)
 
+const textSegments = (segments: Msg[]) => segments.filter(msg => msg.role === 'assistant' && msg.kind !== 'diff').map(msg => msg.text)
+
+const finalTail = (finalText: string, segments: Msg[]) => {
+  let tail = finalText
+
+  for (const text of textSegments(segments)) {
+    const trimmed = text.trim()
+
+    if (trimmed && tail.startsWith(trimmed)) {
+      tail = tail.slice(trimmed.length).trimStart()
+    }
+  }
+
+  return tail
+}
+
 export interface InterruptDeps {
   appendMessage: (msg: Msg) => void
   gw: { request: <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T> }
@@ -294,7 +310,7 @@ class TurnController {
   recordMessageComplete(payload: { rendered?: string; reasoning?: string; text?: string }) {
     const rawText = (payload.rendered ?? payload.text ?? this.bufRef).trimStart()
     const split = splitReasoning(rawText)
-    const finalText = split.text
+    const finalText = finalTail(split.text, this.segmentMessages)
     const existingReasoning = this.reasoningText.trim() || String(payload.reasoning ?? '').trim()
     const savedReasoning = [existingReasoning, existingReasoning ? '' : split.reasoning].filter(Boolean).join('\n\n')
     const savedToolTokens = this.toolTokenAcc

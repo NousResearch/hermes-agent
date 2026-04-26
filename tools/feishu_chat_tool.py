@@ -8,13 +8,34 @@ Uses FeishuClient.for_user() with UAT (user_access_token) identity.
 Requires scope: im:chat:readonly
 """
 
-import json
 import logging
 
+from tools.feishu_oapi_client import (
+    AppScopeMissingError,
+    FeishuClient,
+    NeedAuthorizationError,
+    TOOLS_METADATA,
+    UserAuthRequiredError,
+    UserScopeInsufficientError,
+    raise_for_feishu_errcode,
+)
 from tools.registry import registry, tool_error, tool_result
-from tools.feishu_oapi_client import TOOLS_METADATA, FeishuClient, NeedAuthorizationError
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# TOOLS_METADATA entries
+# ---------------------------------------------------------------------------
+
+TOOLS_METADATA["feishu_chat_get_info"] = {
+    "identity": "user",
+    "scopes": ["im:chat:readonly"],
+}
+
+TOOLS_METADATA["feishu_chat_list_members"] = {
+    "identity": "user",
+    "scopes": ["im:chat:readonly"],
+}
 
 
 def _check_feishu():
@@ -23,6 +44,19 @@ def _check_feishu():
         return True
     except ImportError:
         return False
+
+
+def _auth_error_message(exc: Exception) -> str:
+    """Format semantic auth exceptions as tool_error strings."""
+    if isinstance(exc, NeedAuthorizationError):
+        return f"Need Feishu authorization: {exc}. Run 'hermes feishu-uat' to authorize."
+    if isinstance(exc, AppScopeMissingError):
+        return f"App scope missing: {exc}"
+    if isinstance(exc, UserAuthRequiredError):
+        return f"User authorization required: {exc}"
+    if isinstance(exc, UserScopeInsufficientError):
+        return f"User scope insufficient: {exc}"
+    return str(exc)
 
 
 # ---------------------------------------------------------------------------
@@ -69,12 +103,14 @@ def _handle_chat_get_info(args: dict, **kwargs) -> str:
     if not chat_id:
         return tool_error("chat_id is required")
 
+    logger.info("feishu_chat_get_info: chat_id=%s", chat_id)
+
     user_id_type = args.get("user_id_type", "open_id") or "open_id"
 
     try:
         client = FeishuClient.for_user()
     except NeedAuthorizationError as exc:
-        return tool_error(f"Feishu user authorization required: {exc}")
+        return tool_error(_auth_error_message(exc))
     except ValueError as exc:
         return tool_error(f"Feishu configuration error: {exc}")
 
@@ -90,7 +126,11 @@ def _handle_chat_get_info(args: dict, **kwargs) -> str:
         return tool_error(str(exc))
 
     if code != 0:
-        logger.error("feishu_chat_get_info failed: code=%d msg=%s", code, msg)
+        try:
+            raise_for_feishu_errcode(code, msg or "", api_name="feishu.chat.get_info")
+        except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+            return tool_error(_auth_error_message(e))
+        logger.warning("feishu_chat_get_info failed: code=%d msg=%s", code, msg)
         return tool_error(f"Get chat info failed: code={code} msg={msg}")
 
     logger.info("feishu_chat_get_info: retrieved info for chat_id=%s", chat_id)
@@ -150,6 +190,8 @@ def _handle_chat_list_members(args: dict, **kwargs) -> str:
     if not chat_id:
         return tool_error("chat_id is required")
 
+    logger.info("feishu_chat_list_members: chat_id=%s", chat_id)
+
     page_size = args.get("page_size", 20)
     page_token = args.get("page_token", "")
     member_id_type = args.get("member_id_type", "open_id") or "open_id"
@@ -157,7 +199,7 @@ def _handle_chat_list_members(args: dict, **kwargs) -> str:
     try:
         client = FeishuClient.for_user()
     except NeedAuthorizationError as exc:
-        return tool_error(f"Feishu user authorization required: {exc}")
+        return tool_error(_auth_error_message(exc))
     except ValueError as exc:
         return tool_error(f"Feishu configuration error: {exc}")
 
@@ -180,31 +222,20 @@ def _handle_chat_list_members(args: dict, **kwargs) -> str:
         return tool_error(str(exc))
 
     if code != 0:
-        logger.error("feishu_chat_list_members failed: code=%d msg=%s", code, msg)
+        try:
+            raise_for_feishu_errcode(code, msg or "", api_name="feishu.chat.list_members")
+        except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+            return tool_error(_auth_error_message(e))
+        logger.warning("feishu_chat_list_members failed: code=%d msg=%s", code, msg)
         return tool_error(f"List chat members failed: code={code} msg={msg}")
 
     member_count = len(data.get("items", []))
     logger.info(
         "feishu_chat_list_members: found %d members for chat_id=%s",
-        member_count,
-        chat_id,
+        member_count, chat_id,
     )
     return tool_result(data)
 
-
-# ---------------------------------------------------------------------------
-# TOOLS_METADATA entries
-# ---------------------------------------------------------------------------
-
-TOOLS_METADATA["feishu_chat_get_info"] = {
-    "identity": "user",
-    "scopes": ["im:chat:readonly"],
-}
-
-TOOLS_METADATA["feishu_chat_list_members"] = {
-    "identity": "user",
-    "scopes": ["im:chat:readonly"],
-}
 
 # ---------------------------------------------------------------------------
 # Registration

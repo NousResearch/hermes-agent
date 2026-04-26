@@ -2,30 +2,33 @@
 
 Provides ``feishu_get_my_user_info`` for fetching the authenticated user's
 basic profile using a user_access_token (UAT).
-Uses the same lazy-import + BaseRequest pattern as existing tools.
-The lark client is injected per-thread by the comment event handler.
+Uses FeishuClient.for_user() (UAT) identity.
 """
 
 import json
 import logging
-import threading
 
+from tools.feishu_oapi_client import (
+    AppScopeMissingError,
+    FeishuClient,
+    NeedAuthorizationError,
+    TOOLS_METADATA,
+    UserAuthRequiredError,
+    UserScopeInsufficientError,
+    raise_for_feishu_errcode,
+)
 from tools.registry import registry, tool_error, tool_result
 
 logger = logging.getLogger(__name__)
 
-# Thread-local storage for the lark client injected by feishu_comment handler.
-_local = threading.local()
+# ---------------------------------------------------------------------------
+# TOOLS_METADATA entries
+# ---------------------------------------------------------------------------
 
-
-def set_client(client):
-    """Store a lark client for the current thread (called by feishu_comment)."""
-    _local.client = client
-
-
-def get_client():
-    """Return the lark client for the current thread, or None."""
-    return getattr(_local, "client", None)
+TOOLS_METADATA["feishu_get_my_user_info"] = {
+    "identity": "user",
+    "scopes": ["contact:user.base:readonly"],
+}
 
 
 def _check_feishu():
@@ -34,6 +37,19 @@ def _check_feishu():
         return True
     except ImportError:
         return False
+
+
+def _auth_error_message(exc: Exception) -> str:
+    """Format semantic auth exceptions as tool_error strings."""
+    if isinstance(exc, NeedAuthorizationError):
+        return f"Need Feishu authorization: {exc}. Run 'hermes feishu-uat' to authorize."
+    if isinstance(exc, AppScopeMissingError):
+        return f"App scope missing: {exc}"
+    if isinstance(exc, UserAuthRequiredError):
+        return f"User authorization required: {exc}"
+    if isinstance(exc, UserScopeInsufficientError):
+        return f"User scope insufficient: {exc}"
+    return str(exc)
 
 
 # ---------------------------------------------------------------------------
@@ -63,21 +79,18 @@ def _handle_feishu_get_my_user_info(args: dict, **kwargs) -> str:
     FeishuClient.for_user(). No additional parameters needed.
 
     Args:
-        args: Tool arguments (unused — no parameters).
+        args: Tool arguments (unused -- no parameters).
         **kwargs: Additional keyword arguments.
 
     Returns:
         JSON string (tool_error or tool_result).
     """
-    try:
-        from tools.feishu_oapi_client import FeishuClient, NeedAuthorizationError
-    except ImportError:
-        return tool_error("feishu_oapi_client not available")
+    logger.info("feishu_get_my_user_info: fetching current user info")
 
     try:
         fc = FeishuClient.for_user()
     except NeedAuthorizationError as exc:
-        return tool_error(f"UAT not available: {exc}")
+        return tool_error(_auth_error_message(exc))
     except ValueError as exc:
         return tool_error(f"Feishu client config error: {exc}")
 
@@ -122,7 +135,11 @@ def _handle_feishu_get_my_user_info(args: dict, **kwargs) -> str:
             pass
 
     if code != 0:
-        logger.error("feishu_get_my_user_info failed: code=%s msg=%s", code, msg)
+        try:
+            raise_for_feishu_errcode(code, msg or "", api_name="feishu.authen.user_info")
+        except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+            return tool_error(_auth_error_message(e))
+        logger.warning("feishu_get_my_user_info failed: code=%s msg=%s", code, msg)
         return tool_error(f"Get user info failed: code={code} msg={msg}")
 
     if not data:

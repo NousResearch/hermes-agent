@@ -14,13 +14,31 @@ import json
 import logging
 
 from tools.feishu_oapi_client import (
+    AppScopeMissingError,
     FeishuClient,
     NeedAuthorizationError,
     TOOLS_METADATA,
+    UserAuthRequiredError,
+    UserScopeInsufficientError,
+    raise_for_feishu_errcode,
 )
 from tools.registry import registry, tool_error, tool_result
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# TOOLS_METADATA entries
+# ---------------------------------------------------------------------------
+
+TOOLS_METADATA["feishu_im_send_message_as_user"] = {
+    "identity": "user",
+    "scopes": ["im:message:send_as_user"],
+}
+
+TOOLS_METADATA["feishu_im_reply_message_as_user"] = {
+    "identity": "user",
+    "scopes": ["im:message:send_as_user"],
+}
 
 
 def _check_feishu():
@@ -29,6 +47,19 @@ def _check_feishu():
         return True
     except ImportError:
         return False
+
+
+def _auth_error_message(exc: Exception) -> str:
+    """Format semantic auth exceptions as tool_error strings."""
+    if isinstance(exc, NeedAuthorizationError):
+        return f"Need Feishu authorization: {exc}. Run 'hermes feishu-uat' to authorize."
+    if isinstance(exc, AppScopeMissingError):
+        return f"App scope missing: {exc}"
+    if isinstance(exc, UserAuthRequiredError):
+        return f"User authorization required: {exc}"
+    if isinstance(exc, UserScopeInsufficientError):
+        return f"User scope insufficient: {exc}"
+    return str(exc)
 
 
 def _do_user_request(method, uri, *, paths=None, queries=None, body=None):
@@ -124,6 +155,11 @@ def _handle_send_message_as_user(args: dict, **kwargs) -> str:
     msg_type = args.get("msg_type", "").strip()
     content = args.get("content", "").strip()
 
+    logger.info(
+        "feishu_im_send_message_as_user: receive_id_type=%s receive_id=%s msg_type=%s",
+        receive_id_type, receive_id, msg_type,
+    )
+
     if not receive_id_type:
         return tool_error("receive_id_type is required")
     if not receive_id:
@@ -145,13 +181,6 @@ def _handle_send_message_as_user(args: dict, **kwargs) -> str:
         "content": content,
     }
 
-    logger.debug(
-        "Sending IM message as user: receive_id_type=%s receive_id=%s msg_type=%s",
-        receive_id_type,
-        receive_id,
-        msg_type,
-    )
-
     try:
         code, msg, data = _do_user_request(
             "POST",
@@ -160,17 +189,19 @@ def _handle_send_message_as_user(args: dict, **kwargs) -> str:
             body=body,
         )
     except NeedAuthorizationError as exc:
-        return tool_error(f"UAT not available: {exc}")
+        return tool_error(_auth_error_message(exc))
     except RuntimeError as exc:
         return tool_error(str(exc))
 
     if code != 0:
-        logger.error(
-            "Send message as user failed: code=%s msg=%s", code, msg
-        )
+        try:
+            raise_for_feishu_errcode(code, msg or "", api_name="feishu.im.send_message_as_user")
+        except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+            return tool_error(_auth_error_message(e))
+        logger.warning("feishu_im_send_message_as_user failed: code=%d msg=%s", code, msg)
         return tool_error(f"Send message failed: code={code} msg={msg}")
 
-    logger.info("Successfully sent IM message as user to %s", receive_id)
+    logger.info("feishu_im_send_message_as_user: sent message to %s", receive_id)
     return tool_result(success=True, data=data)
 
 
@@ -231,6 +262,11 @@ def _handle_reply_message_as_user(args: dict, **kwargs) -> str:
     msg_type = args.get("msg_type", "").strip()
     content = args.get("content", "").strip()
 
+    logger.info(
+        "feishu_im_reply_message_as_user: message_id=%s msg_type=%s",
+        message_id, msg_type,
+    )
+
     if not message_id:
         return tool_error("message_id is required")
     if not msg_type:
@@ -249,12 +285,6 @@ def _handle_reply_message_as_user(args: dict, **kwargs) -> str:
         "content": content,
     }
 
-    logger.debug(
-        "Replying to IM message as user: message_id=%s msg_type=%s",
-        message_id,
-        msg_type,
-    )
-
     try:
         code, msg, data = _do_user_request(
             "POST",
@@ -263,33 +293,20 @@ def _handle_reply_message_as_user(args: dict, **kwargs) -> str:
             body=body,
         )
     except NeedAuthorizationError as exc:
-        return tool_error(f"UAT not available: {exc}")
+        return tool_error(_auth_error_message(exc))
     except RuntimeError as exc:
         return tool_error(str(exc))
 
     if code != 0:
-        logger.error(
-            "Reply message as user failed: code=%s msg=%s", code, msg
-        )
+        try:
+            raise_for_feishu_errcode(code, msg or "", api_name="feishu.im.reply_message_as_user")
+        except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+            return tool_error(_auth_error_message(e))
+        logger.warning("feishu_im_reply_message_as_user failed: code=%d msg=%s", code, msg)
         return tool_error(f"Reply message failed: code={code} msg={msg}")
 
-    logger.info("Successfully replied to IM message %s as user", message_id)
+    logger.info("feishu_im_reply_message_as_user: replied to message %s", message_id)
     return tool_result(success=True, data=data)
-
-
-# ---------------------------------------------------------------------------
-# TOOLS_METADATA entries
-# ---------------------------------------------------------------------------
-
-TOOLS_METADATA["feishu_im_send_message_as_user"] = {
-    "identity": "user",
-    "scopes": ["im:message:send_as_user"],
-}
-
-TOOLS_METADATA["feishu_im_reply_message_as_user"] = {
-    "identity": "user",
-    "scopes": ["im:message:send_as_user"],
-}
 
 
 # ---------------------------------------------------------------------------

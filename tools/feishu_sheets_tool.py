@@ -1,20 +1,44 @@
 """Feishu Sheets Tool -- spreadsheet read/write/append via Feishu/Lark API.
 
 Provides three tools for operating on Feishu spreadsheets:
-  - ``feishu_sheets_read_range``   — read cell values from a range
-  - ``feishu_sheets_write_range``  — overwrite cell values in a range
-  - ``feishu_sheets_append_rows``  — append rows after existing data
+  - ``feishu_sheets_read_range``   -- read cell values from a range
+  - ``feishu_sheets_write_range``  -- overwrite cell values in a range
+  - ``feishu_sheets_append_rows``  -- append rows after existing data
 
 Uses FeishuClient.for_user() (UAT) for all operations; scope: sheets:spreadsheet.
 """
 
-import json
 import logging
 
-from tools.feishu_oapi_client import FeishuClient, NeedAuthorizationError, TOOLS_METADATA
+from tools.feishu_oapi_client import (
+    AppScopeMissingError,
+    FeishuClient,
+    NeedAuthorizationError,
+    TOOLS_METADATA,
+    UserAuthRequiredError,
+    UserScopeInsufficientError,
+    raise_for_feishu_errcode,
+)
 from tools.registry import registry, tool_error, tool_result
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# TOOLS_METADATA entries (scope declarations)
+# ---------------------------------------------------------------------------
+
+TOOLS_METADATA["feishu_sheets_read_range"] = {
+    "identity": "user",
+    "scopes": ["sheets:spreadsheet"],
+}
+TOOLS_METADATA["feishu_sheets_write_range"] = {
+    "identity": "user",
+    "scopes": ["sheets:spreadsheet"],
+}
+TOOLS_METADATA["feishu_sheets_append_rows"] = {
+    "identity": "user",
+    "scopes": ["sheets:spreadsheet"],
+}
 
 
 def _check_feishu():
@@ -23,6 +47,19 @@ def _check_feishu():
         return True
     except ImportError:
         return False
+
+
+def _auth_error_message(exc: Exception) -> str:
+    """Format semantic auth exceptions as tool_error strings."""
+    if isinstance(exc, NeedAuthorizationError):
+        return f"Need Feishu authorization: {exc}. Run 'hermes feishu-uat' to authorize."
+    if isinstance(exc, AppScopeMissingError):
+        return f"App scope missing: {exc}"
+    if isinstance(exc, UserAuthRequiredError):
+        return f"User authorization required: {exc}"
+    if isinstance(exc, UserScopeInsufficientError):
+        return f"User scope insufficient: {exc}"
+    return str(exc)
 
 
 def _get_user_client():
@@ -98,6 +135,11 @@ def _handle_sheets_read_range(args: dict, **kwargs) -> str:
 
     value_render_option = args.get("value_render_option", "ToString") or "ToString"
 
+    logger.info(
+        "sheets_read_range: token=%s range=%s render=%s",
+        spreadsheet_token, range_val, value_render_option,
+    )
+
     client = _get_user_client()
     if client is None:
         return tool_error(
@@ -109,13 +151,6 @@ def _handle_sheets_read_range(args: dict, **kwargs) -> str:
         ("dateTimeRenderOption", "FormattedString"),
     ]
 
-    logger.info(
-        "sheets_read_range: token=%s, range=%s, render=%s",
-        spreadsheet_token,
-        range_val,
-        value_render_option,
-    )
-
     code, msg, data = client.do_request(
         "GET",
         _READ_URI,
@@ -125,9 +160,11 @@ def _handle_sheets_read_range(args: dict, **kwargs) -> str:
     )
 
     if code != 0:
-        logger.error(
-            "sheets_read_range failed: code=%d msg=%s", code, msg
-        )
+        try:
+            raise_for_feishu_errcode(code, msg or "", api_name="feishu.sheets.read_range")
+        except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+            return tool_error(_auth_error_message(e))
+        logger.warning("sheets_read_range failed: code=%d msg=%s", code, msg)
         return tool_error(f"Read range failed: code={code} msg={msg}")
 
     value_range = data.get("valueRange", {})
@@ -153,7 +190,7 @@ FEISHU_SHEETS_WRITE_RANGE_SCHEMA = {
     "name": "feishu_sheets_write_range",
     "description": (
         "Overwrite cell values in a Feishu spreadsheet range. "
-        "WARNING: this is a destructive operation — existing data in the range "
+        "WARNING: this is a destructive operation -- existing data in the range "
         "will be replaced. range format: <sheetId>!A1:D10. "
         "Requires sheets:spreadsheet scope."
     ),
@@ -209,6 +246,11 @@ def _handle_sheets_write_range(args: dict, **kwargs) -> str:
     if not isinstance(values, list) or not values:
         return tool_error("values must be a non-empty 2D array")
 
+    logger.info(
+        "sheets_write_range: token=%s range=%s rows=%d",
+        spreadsheet_token, range_val, len(values),
+    )
+
     client = _get_user_client()
     if client is None:
         return tool_error(
@@ -216,13 +258,6 @@ def _handle_sheets_write_range(args: dict, **kwargs) -> str:
         )
 
     body = {"valueRange": {"range": range_val, "values": values}}
-
-    logger.info(
-        "sheets_write_range: token=%s, range=%s, rows=%d",
-        spreadsheet_token,
-        range_val,
-        len(values),
-    )
 
     code, msg, data = client.do_request(
         "PUT",
@@ -233,9 +268,11 @@ def _handle_sheets_write_range(args: dict, **kwargs) -> str:
     )
 
     if code != 0:
-        logger.error(
-            "sheets_write_range failed: code=%d msg=%s", code, msg
-        )
+        try:
+            raise_for_feishu_errcode(code, msg or "", api_name="feishu.sheets.write_range")
+        except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+            return tool_error(_auth_error_message(e))
+        logger.warning("sheets_write_range failed: code=%d msg=%s", code, msg)
         return tool_error(f"Write range failed: code={code} msg={msg}")
 
     logger.info(
@@ -319,6 +356,11 @@ def _handle_sheets_append_rows(args: dict, **kwargs) -> str:
     if not isinstance(values, list) or not values:
         return tool_error("values must be a non-empty 2D array")
 
+    logger.info(
+        "sheets_append_rows: token=%s range=%s rows=%d",
+        spreadsheet_token, range_val, len(values),
+    )
+
     client = _get_user_client()
     if client is None:
         return tool_error(
@@ -326,13 +368,6 @@ def _handle_sheets_append_rows(args: dict, **kwargs) -> str:
         )
 
     body = {"valueRange": {"range": range_val, "values": values}}
-
-    logger.info(
-        "sheets_append_rows: token=%s, range=%s, rows=%d",
-        spreadsheet_token,
-        range_val,
-        len(values),
-    )
 
     code, msg, data = client.do_request(
         "POST",
@@ -343,9 +378,11 @@ def _handle_sheets_append_rows(args: dict, **kwargs) -> str:
     )
 
     if code != 0:
-        logger.error(
-            "sheets_append_rows failed: code=%d msg=%s", code, msg
-        )
+        try:
+            raise_for_feishu_errcode(code, msg or "", api_name="feishu.sheets.append_rows")
+        except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+            return tool_error(_auth_error_message(e))
+        logger.warning("sheets_append_rows failed: code=%d msg=%s", code, msg)
         return tool_error(f"Append rows failed: code={code} msg={msg}")
 
     updates = data.get("updates", {})
@@ -363,24 +400,6 @@ def _handle_sheets_append_rows(args: dict, **kwargs) -> str:
             "revision": updates.get("revision"),
         },
     )
-
-
-# ---------------------------------------------------------------------------
-# TOOLS_METADATA entries (scope declarations)
-# ---------------------------------------------------------------------------
-
-TOOLS_METADATA["feishu_sheets_read_range"] = {
-    "identity": "user",
-    "scopes": ["sheets:spreadsheet"],
-}
-TOOLS_METADATA["feishu_sheets_write_range"] = {
-    "identity": "user",
-    "scopes": ["sheets:spreadsheet"],
-}
-TOOLS_METADATA["feishu_sheets_append_rows"] = {
-    "identity": "user",
-    "scopes": ["sheets:spreadsheet"],
-}
 
 
 # ---------------------------------------------------------------------------

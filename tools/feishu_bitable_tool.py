@@ -12,18 +12,20 @@ All tools use UAT (user_access_token) via FeishuClient.for_user() and require
 the bitable:app scope.
 """
 
-import json
 import logging
 
-from tools.registry import registry, tool_error, tool_result
 from tools.feishu_oapi_client import (
+    AppScopeMissingError,
     FeishuClient,
     NeedAuthorizationError,
     TOOLS_METADATA,
+    UserAuthRequiredError,
+    UserScopeInsufficientError,
+    raise_for_feishu_errcode,
 )
+from tools.registry import registry, tool_error, tool_result
 
 logger = logging.getLogger(__name__)
-
 
 # ---------------------------------------------------------------------------
 # TOOLS_METADATA — declare scopes and identity for all bitable tools
@@ -58,14 +60,27 @@ def _check_feishu():
         return False
 
 
+def _auth_error_message(exc: Exception) -> str:
+    """Format semantic auth exceptions as tool_error strings."""
+    if isinstance(exc, NeedAuthorizationError):
+        return f"Need Feishu authorization: {exc}. Run 'hermes feishu-uat' to authorize."
+    if isinstance(exc, AppScopeMissingError):
+        return f"App scope missing: {exc}"
+    if isinstance(exc, UserAuthRequiredError):
+        return f"User authorization required: {exc}"
+    if isinstance(exc, UserScopeInsufficientError):
+        return f"User scope insufficient: {exc}"
+    return str(exc)
+
+
 def _get_user_client():
-    """Return a FeishuClient configured with UAT, or None on auth failure."""
+    """Return (client, error_str). error_str is None on success."""
     try:
-        return FeishuClient.for_user()
+        return FeishuClient.for_user(), None
     except NeedAuthorizationError as exc:
-        return None, str(exc)
+        return None, _auth_error_message(exc)
     except ValueError as exc:
-        return None, str(exc)
+        return None, f"Feishu configuration error: {exc}"
 
 
 # ---------------------------------------------------------------------------
@@ -104,10 +119,10 @@ FEISHU_BITABLE_LIST_APPS_SCHEMA = {
 
 def _handle_bitable_list_apps(args: dict, **kwargs) -> str:
     """Handler for feishu_bitable_list_apps."""
-    result = _get_user_client()
-    if isinstance(result, tuple):
-        return tool_error(f"Feishu UAT not available: {result[1]}")
-    client = result
+    logger.info("feishu_bitable_list_apps: folder_token=%s", args.get("folder_token", ""))
+    client, err = _get_user_client()
+    if err:
+        return tool_error(err)
 
     folder_token = args.get("folder_token", "") or ""
     page_size = args.get("page_size", 50) or 50
@@ -125,6 +140,11 @@ def _handle_bitable_list_apps(args: dict, **kwargs) -> str:
         use_uat=True,
     )
     if code != 0:
+        try:
+            raise_for_feishu_errcode(code, msg or "", api_name="feishu.bitable.list_apps")
+        except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+            return tool_error(_auth_error_message(e))
+        logger.warning("feishu_bitable_list_apps failed: code=%d msg=%s", code, msg)
         return tool_error(f"List bitable apps failed: code={code} msg={msg}")
 
     files = data.get("files", [])
@@ -171,12 +191,12 @@ FEISHU_BITABLE_LIST_TABLES_SCHEMA = {
 
 def _handle_bitable_list_tables(args: dict, **kwargs) -> str:
     """Handler for feishu_bitable_list_tables."""
-    result = _get_user_client()
-    if isinstance(result, tuple):
-        return tool_error(f"Feishu UAT not available: {result[1]}")
-    client = result
-
     app_token = args.get("app_token", "").strip()
+    logger.info("feishu_bitable_list_tables: app_token=%s", app_token)
+    client, err = _get_user_client()
+    if err:
+        return tool_error(err)
+
     if not app_token:
         return tool_error("app_token is required")
 
@@ -194,6 +214,11 @@ def _handle_bitable_list_tables(args: dict, **kwargs) -> str:
         use_uat=True,
     )
     if code != 0:
+        try:
+            raise_for_feishu_errcode(code, msg or "", api_name="feishu.bitable.list_tables")
+        except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+            return tool_error(_auth_error_message(e))
+        logger.warning("feishu_bitable_list_tables failed: code=%d msg=%s", code, msg)
         return tool_error(f"List tables failed: code={code} msg={msg}")
 
     tables = data.get("items", [])
@@ -247,13 +272,13 @@ FEISHU_BITABLE_LIST_RECORDS_SCHEMA = {
 
 def _handle_bitable_list_records(args: dict, **kwargs) -> str:
     """Handler for feishu_bitable_list_records."""
-    result = _get_user_client()
-    if isinstance(result, tuple):
-        return tool_error(f"Feishu UAT not available: {result[1]}")
-    client = result
-
     app_token = args.get("app_token", "").strip()
     table_id = args.get("table_id", "").strip()
+    logger.info("feishu_bitable_list_records: app_token=%s table_id=%s", app_token, table_id)
+    client, err = _get_user_client()
+    if err:
+        return tool_error(err)
+
     if not app_token or not table_id:
         return tool_error("app_token and table_id are required")
 
@@ -275,6 +300,11 @@ def _handle_bitable_list_records(args: dict, **kwargs) -> str:
         use_uat=True,
     )
     if code != 0:
+        try:
+            raise_for_feishu_errcode(code, msg or "", api_name="feishu.bitable.list_records")
+        except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+            return tool_error(_auth_error_message(e))
+        logger.warning("feishu_bitable_list_records failed: code=%d msg=%s", code, msg)
         return tool_error(f"List records failed: code={code} msg={msg}")
 
     records = data.get("items", [])
@@ -338,13 +368,13 @@ FEISHU_BITABLE_SEARCH_RECORDS_SCHEMA = {
 
 def _handle_bitable_search_records(args: dict, **kwargs) -> str:
     """Handler for feishu_bitable_search_records."""
-    result = _get_user_client()
-    if isinstance(result, tuple):
-        return tool_error(f"Feishu UAT not available: {result[1]}")
-    client = result
-
     app_token = args.get("app_token", "").strip()
     table_id = args.get("table_id", "").strip()
+    logger.info("feishu_bitable_search_records: app_token=%s table_id=%s", app_token, table_id)
+    client, err = _get_user_client()
+    if err:
+        return tool_error(err)
+
     if not app_token or not table_id:
         return tool_error("app_token and table_id are required")
 
@@ -384,6 +414,11 @@ def _handle_bitable_search_records(args: dict, **kwargs) -> str:
         use_uat=True,
     )
     if code != 0:
+        try:
+            raise_for_feishu_errcode(code, msg or "", api_name="feishu.bitable.search_records")
+        except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+            return tool_error(_auth_error_message(e))
+        logger.warning("feishu_bitable_search_records failed: code=%d msg=%s", code, msg)
         return tool_error(f"Search records failed: code={code} msg={msg}")
 
     records = data.get("items", [])
@@ -440,13 +475,13 @@ FEISHU_BITABLE_CREATE_RECORD_SCHEMA = {
 
 def _handle_bitable_create_record(args: dict, **kwargs) -> str:
     """Handler for feishu_bitable_create_record."""
-    result = _get_user_client()
-    if isinstance(result, tuple):
-        return tool_error(f"Feishu UAT not available: {result[1]}")
-    client = result
-
     app_token = args.get("app_token", "").strip()
     table_id = args.get("table_id", "").strip()
+    logger.info("feishu_bitable_create_record: app_token=%s table_id=%s", app_token, table_id)
+    client, err = _get_user_client()
+    if err:
+        return tool_error(err)
+
     if not app_token or not table_id:
         return tool_error("app_token and table_id are required")
 
@@ -464,6 +499,11 @@ def _handle_bitable_create_record(args: dict, **kwargs) -> str:
         use_uat=True,
     )
     if code != 0:
+        try:
+            raise_for_feishu_errcode(code, msg or "", api_name="feishu.bitable.create_record")
+        except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+            return tool_error(_auth_error_message(e))
+        logger.warning("feishu_bitable_create_record failed: code=%d msg=%s", code, msg)
         return tool_error(f"Create record failed: code={code} msg={msg}")
 
     record = data.get("record", {})
@@ -517,14 +557,17 @@ FEISHU_BITABLE_UPDATE_RECORD_SCHEMA = {
 
 def _handle_bitable_update_record(args: dict, **kwargs) -> str:
     """Handler for feishu_bitable_update_record."""
-    result = _get_user_client()
-    if isinstance(result, tuple):
-        return tool_error(f"Feishu UAT not available: {result[1]}")
-    client = result
-
     app_token = args.get("app_token", "").strip()
     table_id = args.get("table_id", "").strip()
     record_id = args.get("record_id", "").strip()
+    logger.info(
+        "feishu_bitable_update_record: app_token=%s table_id=%s record_id=%s",
+        app_token, table_id, record_id,
+    )
+    client, err = _get_user_client()
+    if err:
+        return tool_error(err)
+
     if not app_token or not table_id or not record_id:
         return tool_error("app_token, table_id, and record_id are required")
 
@@ -542,6 +585,11 @@ def _handle_bitable_update_record(args: dict, **kwargs) -> str:
         use_uat=True,
     )
     if code != 0:
+        try:
+            raise_for_feishu_errcode(code, msg or "", api_name="feishu.bitable.update_record")
+        except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+            return tool_error(_auth_error_message(e))
+        logger.warning("feishu_bitable_update_record failed: code=%d msg=%s", code, msg)
         return tool_error(f"Update record failed: code={code} msg={msg}")
 
     record = data.get("record", {})

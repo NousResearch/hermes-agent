@@ -11,34 +11,25 @@ Coverage targets:
 All SDK calls are mocked — no network I/O.
 """
 
-import importlib
 import json
 import time
 import unittest
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
-
 # Force all feishu tool modules to register entries
-for _mod in [
-    "tools.feishu_calendar_tool",
-    "tools.feishu_bitable_tool",
-    "tools.feishu_im_user_tool",
-    "tools.feishu_user_info_tool",
-    "tools.feishu_doc_tool",
-    "tools.feishu_drive_tool",
-    "tools.feishu_chat_tool",
-    "tools.feishu_sheets_tool",
-    "tools.feishu_task_tool",
-    "tools.feishu_wiki_tool",
-    "tools.feishu_search_tool",
-]:
-    try:
-        importlib.import_module(_mod)
-    except Exception:
-        pass
+import tools.feishu_bitable_tool
+import tools.feishu_calendar_tool
+import tools.feishu_chat_tool
+import tools.feishu_doc_tool
+import tools.feishu_drive_tool
+import tools.feishu_im_user_tool
+import tools.feishu_search_tool
+import tools.feishu_sheets_tool
+import tools.feishu_task_tool
+import tools.feishu_user_info_tool
+import tools.feishu_wiki_tool
 
 from tools.feishu_oapi_client import (
     NeedAuthorizationError,

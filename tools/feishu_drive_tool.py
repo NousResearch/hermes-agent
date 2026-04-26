@@ -9,9 +9,38 @@ import json
 import logging
 import threading
 
+from tools.feishu_oapi_client import (
+    AppScopeMissingError,
+    NeedAuthorizationError,
+    TOOLS_METADATA,
+    UserAuthRequiredError,
+    UserScopeInsufficientError,
+    raise_for_feishu_errcode,
+)
 from tools.registry import registry, tool_error, tool_result
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# TOOLS_METADATA entries
+# ---------------------------------------------------------------------------
+
+TOOLS_METADATA["feishu_drive_list_comments"] = {
+    "identity": "user",
+    "scopes": ["drive:drive:readonly"],
+}
+TOOLS_METADATA["feishu_drive_list_comment_replies"] = {
+    "identity": "user",
+    "scopes": ["drive:drive:readonly"],
+}
+TOOLS_METADATA["feishu_drive_reply_comment"] = {
+    "identity": "user",
+    "scopes": ["drive:drive"],
+}
+TOOLS_METADATA["feishu_drive_add_comment"] = {
+    "identity": "user",
+    "scopes": ["drive:drive"],
+}
 
 # Thread-local storage for the lark client injected by feishu_comment handler.
 _local = threading.local()
@@ -33,6 +62,19 @@ def _check_feishu():
         return True
     except ImportError:
         return False
+
+
+def _auth_error_message(exc: Exception) -> str:
+    """Format semantic auth exceptions as tool_error strings."""
+    if isinstance(exc, NeedAuthorizationError):
+        return f"Need Feishu authorization: {exc}. Run 'hermes feishu-uat' to authorize."
+    if isinstance(exc, AppScopeMissingError):
+        return f"App scope missing: {exc}"
+    if isinstance(exc, UserAuthRequiredError):
+        return f"User authorization required: {exc}"
+    if isinstance(exc, UserScopeInsufficientError):
+        return f"User scope insufficient: {exc}"
+    return str(exc)
 
 
 def _do_request(client, method, uri, paths=None, queries=None, body=None):
@@ -230,11 +272,12 @@ FEISHU_DRIVE_LIST_COMMENTS_SCHEMA = {
 
 def _handle_list_comments(args: dict, **kwargs) -> str:
     use_uat = bool(args.get("use_uat", False))
+    file_token = args.get("file_token", "").strip()
+    logger.info("feishu_drive_list_comments: file_token=%s use_uat=%s", file_token, use_uat)
     resolved, err = _resolve_client_for_uat(use_uat)
     if err:
         return tool_error(err)
 
-    file_token = args.get("file_token", "").strip()
     if not file_token:
         return tool_error("file_token is required")
 
@@ -266,6 +309,11 @@ def _handle_list_comments(args: dict, **kwargs) -> str:
             queries=queries,
         )
     if code != 0:
+        try:
+            raise_for_feishu_errcode(code, msg or "", api_name="feishu.drive.list_comments")
+        except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+            return tool_error(_auth_error_message(e))
+        logger.warning("feishu_drive_list_comments failed: code=%d msg=%s", code, msg)
         return tool_error(f"List comments failed: code={code} msg={msg}")
 
     return tool_result(data)
@@ -321,12 +369,13 @@ FEISHU_DRIVE_LIST_REPLIES_SCHEMA = {
 
 def _handle_list_replies(args: dict, **kwargs) -> str:
     use_uat = bool(args.get("use_uat", False))
+    file_token = args.get("file_token", "").strip()
+    comment_id = args.get("comment_id", "").strip()
+    logger.info("feishu_drive_list_comment_replies: file_token=%s comment_id=%s use_uat=%s", file_token, comment_id, use_uat)
     resolved, err = _resolve_client_for_uat(use_uat)
     if err:
         return tool_error(err)
 
-    file_token = args.get("file_token", "").strip()
-    comment_id = args.get("comment_id", "").strip()
     if not file_token or not comment_id:
         return tool_error("file_token and comment_id are required")
 
@@ -355,6 +404,11 @@ def _handle_list_replies(args: dict, **kwargs) -> str:
             queries=queries,
         )
     if code != 0:
+        try:
+            raise_for_feishu_errcode(code, msg or "", api_name="feishu.drive.list_comment_replies")
+        except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+            return tool_error(_auth_error_message(e))
+        logger.warning("feishu_drive_list_comment_replies failed: code=%d msg=%s", code, msg)
         return tool_error(f"List replies failed: code={code} msg={msg}")
 
     return tool_result(data)
@@ -409,12 +463,13 @@ FEISHU_DRIVE_REPLY_SCHEMA = {
 
 def _handle_reply_comment(args: dict, **kwargs) -> str:
     use_uat = bool(args.get("use_uat", False))
+    file_token = args.get("file_token", "").strip()
+    comment_id = args.get("comment_id", "").strip()
+    logger.info("feishu_drive_reply_comment: file_token=%s comment_id=%s use_uat=%s", file_token, comment_id, use_uat)
     resolved, err = _resolve_client_for_uat(use_uat)
     if err:
         return tool_error(err)
 
-    file_token = args.get("file_token", "").strip()
-    comment_id = args.get("comment_id", "").strip()
     content = args.get("content", "").strip()
     if not file_token or not comment_id or not content:
         return tool_error("file_token, comment_id, and content are required")
@@ -447,6 +502,11 @@ def _handle_reply_comment(args: dict, **kwargs) -> str:
             body=body,
         )
     if code != 0:
+        try:
+            raise_for_feishu_errcode(code, msg or "", api_name="feishu.drive.reply_comment")
+        except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+            return tool_error(_auth_error_message(e))
+        logger.warning("feishu_drive_reply_comment failed: code=%d msg=%s", code, msg)
         return tool_error(f"Reply comment failed: code={code} msg={msg}")
 
     return tool_result(success=True, data=data)
@@ -497,11 +557,12 @@ FEISHU_DRIVE_ADD_COMMENT_SCHEMA = {
 
 def _handle_add_comment(args: dict, **kwargs) -> str:
     use_uat = bool(args.get("use_uat", False))
+    file_token = args.get("file_token", "").strip()
+    logger.info("feishu_drive_add_comment: file_token=%s use_uat=%s", file_token, use_uat)
     resolved, err = _resolve_client_for_uat(use_uat)
     if err:
         return tool_error(err)
 
-    file_token = args.get("file_token", "").strip()
     content = args.get("content", "").strip()
     if not file_token or not content:
         return tool_error("file_token and content are required")
@@ -528,6 +589,11 @@ def _handle_add_comment(args: dict, **kwargs) -> str:
             body=body,
         )
     if code != 0:
+        try:
+            raise_for_feishu_errcode(code, msg or "", api_name="feishu.drive.add_comment")
+        except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+            return tool_error(_auth_error_message(e))
+        logger.warning("feishu_drive_add_comment failed: code=%d msg=%s", code, msg)
         return tool_error(f"Add comment failed: code={code} msg={msg}")
 
     return tool_result(success=True, data=data)

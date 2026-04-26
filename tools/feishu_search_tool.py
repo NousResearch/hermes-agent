@@ -8,14 +8,34 @@ Uses FeishuClient.for_user() with UAT (user_access_token) identity.
 Requires scope: search:search
 """
 
-import json
 import logging
-from typing import Optional
 
+from tools.feishu_oapi_client import (
+    AppScopeMissingError,
+    FeishuClient,
+    NeedAuthorizationError,
+    TOOLS_METADATA,
+    UserAuthRequiredError,
+    UserScopeInsufficientError,
+    raise_for_feishu_errcode,
+)
 from tools.registry import registry, tool_error, tool_result
-from tools.feishu_oapi_client import TOOLS_METADATA, FeishuClient, NeedAuthorizationError
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# TOOLS_METADATA entries
+# ---------------------------------------------------------------------------
+
+TOOLS_METADATA["feishu_search_message"] = {
+    "identity": "user",
+    "scopes": ["search:search"],
+}
+
+TOOLS_METADATA["feishu_search_global"] = {
+    "identity": "user",
+    "scopes": ["search:search"],
+}
 
 
 def _check_feishu():
@@ -24,6 +44,19 @@ def _check_feishu():
         return True
     except ImportError:
         return False
+
+
+def _auth_error_message(exc: Exception) -> str:
+    """Format semantic auth exceptions as tool_error strings."""
+    if isinstance(exc, NeedAuthorizationError):
+        return f"Need Feishu authorization: {exc}. Run 'hermes feishu-uat' to authorize."
+    if isinstance(exc, AppScopeMissingError):
+        return f"App scope missing: {exc}"
+    if isinstance(exc, UserAuthRequiredError):
+        return f"User authorization required: {exc}"
+    if isinstance(exc, UserScopeInsufficientError):
+        return f"User scope insufficient: {exc}"
+    return str(exc)
 
 
 # ---------------------------------------------------------------------------
@@ -92,6 +125,8 @@ def _handle_search_message(args: dict, **kwargs) -> str:
     if not query:
         return tool_error("query is required")
 
+    logger.info("feishu_search_message: query=%r", query)
+
     from_ids = args.get("from_ids") or []
     chat_ids = args.get("chat_ids") or []
     start_time = args.get("start_time", "")
@@ -102,7 +137,7 @@ def _handle_search_message(args: dict, **kwargs) -> str:
     try:
         client = FeishuClient.for_user()
     except NeedAuthorizationError as exc:
-        return tool_error(f"Feishu user authorization required: {exc}")
+        return tool_error(_auth_error_message(exc))
     except ValueError as exc:
         return tool_error(f"Feishu configuration error: {exc}")
 
@@ -121,11 +156,6 @@ def _handle_search_message(args: dict, **kwargs) -> str:
     if page_token:
         body["page_token"] = page_token
 
-    logger.debug(
-        "feishu_search_message: query=%r from_ids=%s chat_ids=%s",
-        query, from_ids, chat_ids,
-    )
-
     try:
         code, msg, data = client.do_request(
             "POST",
@@ -137,7 +167,11 @@ def _handle_search_message(args: dict, **kwargs) -> str:
         return tool_error(str(exc))
 
     if code != 0:
-        logger.error("feishu_search_message failed: code=%d msg=%s", code, msg)
+        try:
+            raise_for_feishu_errcode(code, msg or "", api_name="feishu.search.message")
+        except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+            return tool_error(_auth_error_message(e))
+        logger.warning("feishu_search_message failed: code=%d msg=%s", code, msg)
         return tool_error(f"Search message failed: code={code} msg={msg}")
 
     result_count = len(data.get("items", []))
@@ -196,10 +230,12 @@ def _handle_search_global(args: dict, **kwargs) -> str:
     page_size = args.get("page_size", 20)
     page_token = args.get("page_token", "")
 
+    logger.info("feishu_search_global: query=%r page_size=%d", query, page_size)
+
     try:
         client = FeishuClient.for_user()
     except NeedAuthorizationError as exc:
-        return tool_error(f"Feishu user authorization required: {exc}")
+        return tool_error(_auth_error_message(exc))
     except ValueError as exc:
         return tool_error(f"Feishu configuration error: {exc}")
 
@@ -209,8 +245,6 @@ def _handle_search_global(args: dict, **kwargs) -> str:
     }
     if page_token:
         body["page_token"] = page_token
-
-    logger.debug("feishu_search_global: query=%r page_size=%d", query, page_size)
 
     try:
         code, msg, data = client.do_request(
@@ -223,27 +257,17 @@ def _handle_search_global(args: dict, **kwargs) -> str:
         return tool_error(str(exc))
 
     if code != 0:
-        logger.error("feishu_search_global failed: code=%d msg=%s", code, msg)
+        try:
+            raise_for_feishu_errcode(code, msg or "", api_name="feishu.search.global")
+        except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+            return tool_error(_auth_error_message(e))
+        logger.warning("feishu_search_global failed: code=%d msg=%s", code, msg)
         return tool_error(f"Global search failed: code={code} msg={msg}")
 
     result_count = len(data.get("items", []))
     logger.info("feishu_search_global: found %d results for query=%r", result_count, query)
     return tool_result(data)
 
-
-# ---------------------------------------------------------------------------
-# TOOLS_METADATA entries
-# ---------------------------------------------------------------------------
-
-TOOLS_METADATA["feishu_search_message"] = {
-    "identity": "user",
-    "scopes": ["search:search"],
-}
-
-TOOLS_METADATA["feishu_search_global"] = {
-    "identity": "user",
-    "scopes": ["search:search"],
-}
 
 # ---------------------------------------------------------------------------
 # Registration

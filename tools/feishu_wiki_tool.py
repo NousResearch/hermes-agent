@@ -5,13 +5,34 @@ Provides ``feishu_wiki_search`` for searching wiki nodes and
 Uses FeishuClient.for_user() (UAT) with scope wiki:wiki:readonly.
 """
 
-import json
 import logging
 
-from tools.feishu_oapi_client import FeishuClient, TOOLS_METADATA
+from tools.feishu_oapi_client import (
+    AppScopeMissingError,
+    FeishuClient,
+    NeedAuthorizationError,
+    TOOLS_METADATA,
+    UserAuthRequiredError,
+    UserScopeInsufficientError,
+    raise_for_feishu_errcode,
+)
 from tools.registry import registry, tool_error, tool_result
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# TOOLS_METADATA entries
+# ---------------------------------------------------------------------------
+
+TOOLS_METADATA["feishu_wiki_search"] = {
+    "identity": "user",
+    "scopes": ["wiki:wiki:readonly"],
+}
+
+TOOLS_METADATA["feishu_wiki_get_node"] = {
+    "identity": "user",
+    "scopes": ["wiki:wiki:readonly"],
+}
 
 
 def _check_feishu():
@@ -20,6 +41,19 @@ def _check_feishu():
         return True
     except ImportError:
         return False
+
+
+def _auth_error_message(exc: Exception) -> str:
+    """Format semantic auth exceptions as tool_error strings."""
+    if isinstance(exc, NeedAuthorizationError):
+        return f"Need Feishu authorization: {exc}. Run 'hermes feishu-uat' to authorize."
+    if isinstance(exc, AppScopeMissingError):
+        return f"App scope missing: {exc}"
+    if isinstance(exc, UserAuthRequiredError):
+        return f"User authorization required: {exc}"
+    if isinstance(exc, UserScopeInsufficientError):
+        return f"User scope insufficient: {exc}"
+    return str(exc)
 
 
 # ---------------------------------------------------------------------------
@@ -72,8 +106,12 @@ def _handle_wiki_search(args: dict, **kwargs) -> str:
     if page_size > 50:
         page_size = 50
 
+    logger.info("feishu_wiki_search: query=%r page_size=%d", query, page_size)
+
     try:
         feishu = FeishuClient.for_user()
+    except NeedAuthorizationError as exc:
+        return tool_error(_auth_error_message(exc))
     except Exception as exc:
         return tool_error(f"Feishu client unavailable: {exc}")
 
@@ -81,8 +119,6 @@ def _handle_wiki_search(args: dict, **kwargs) -> str:
         "query": query,
         "page_size": page_size,
     }
-
-    logger.debug("feishu_wiki_search: query=%r page_size=%d", query, page_size)
 
     try:
         code, msg, data = feishu.do_request(
@@ -95,7 +131,11 @@ def _handle_wiki_search(args: dict, **kwargs) -> str:
         return tool_error(f"Request failed: {exc}")
 
     if code != 0:
-        logger.error("feishu_wiki_search failed: code=%d msg=%s", code, msg)
+        try:
+            raise_for_feishu_errcode(code, msg or "", api_name="feishu.wiki.search")
+        except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+            return tool_error(_auth_error_message(e))
+        logger.warning("feishu_wiki_search failed: code=%d msg=%s", code, msg)
         return tool_error(f"Wiki search failed: code={code} msg={msg}")
 
     logger.info(
@@ -144,14 +184,16 @@ def _handle_wiki_get_node(args: dict, **kwargs) -> str:
     if not node_token:
         return tool_error("node_token is required")
 
+    logger.info("feishu_wiki_get_node: node_token=%r", node_token)
+
     try:
         feishu = FeishuClient.for_user()
+    except NeedAuthorizationError as exc:
+        return tool_error(_auth_error_message(exc))
     except Exception as exc:
         return tool_error(f"Feishu client unavailable: {exc}")
 
     queries = [("token", node_token), ("obj_type", "wiki")]
-
-    logger.debug("feishu_wiki_get_node: node_token=%r", node_token)
 
     try:
         code, msg, data = feishu.do_request(
@@ -164,26 +206,15 @@ def _handle_wiki_get_node(args: dict, **kwargs) -> str:
         return tool_error(f"Request failed: {exc}")
 
     if code != 0:
-        logger.error("feishu_wiki_get_node failed: code=%d msg=%s", code, msg)
+        try:
+            raise_for_feishu_errcode(code, msg or "", api_name="feishu.wiki.get_node")
+        except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+            return tool_error(_auth_error_message(e))
+        logger.warning("feishu_wiki_get_node failed: code=%d msg=%s", code, msg)
         return tool_error(f"Get wiki node failed: code={code} msg={msg}")
 
     logger.info("feishu_wiki_get_node: retrieved node %r", node_token)
     return tool_result(data)
-
-
-# ---------------------------------------------------------------------------
-# TOOLS_METADATA entries
-# ---------------------------------------------------------------------------
-
-TOOLS_METADATA["feishu_wiki_search"] = {
-    "identity": "user",
-    "scopes": ["wiki:wiki:readonly"],
-}
-
-TOOLS_METADATA["feishu_wiki_get_node"] = {
-    "identity": "user",
-    "scopes": ["wiki:wiki:readonly"],
-}
 
 
 # ---------------------------------------------------------------------------

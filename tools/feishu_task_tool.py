@@ -1,11 +1,11 @@
 """Feishu Task Tool -- task management via Feishu Task v2 API.
 
 Provides five tools for managing Feishu tasks:
-  - ``feishu_task_list``        — list tasks (optionally filtered by tasklist/completion)
-  - ``feishu_task_get``         — get a single task by GUID
-  - ``feishu_task_create``      — create a new task
-  - ``feishu_task_update``      — update summary, due time, or completion state
-  - ``feishu_task_add_comment`` — add a comment to a task
+  - ``feishu_task_list``        -- list tasks (optionally filtered by tasklist/completion)
+  - ``feishu_task_get``         -- get a single task by GUID
+  - ``feishu_task_create``      -- create a new task
+  - ``feishu_task_update``      -- update summary, due time, or completion state
+  - ``feishu_task_add_comment`` -- add a comment to a task
 
 Uses FeishuClient.for_user() (UAT) with scope ``task:task``.
 """
@@ -13,7 +13,15 @@ Uses FeishuClient.for_user() (UAT) with scope ``task:task``.
 import json
 import logging
 
-from tools.feishu_oapi_client import FeishuClient, NeedAuthorizationError, TOOLS_METADATA
+from tools.feishu_oapi_client import (
+    AppScopeMissingError,
+    FeishuClient,
+    NeedAuthorizationError,
+    TOOLS_METADATA,
+    UserAuthRequiredError,
+    UserScopeInsufficientError,
+    raise_for_feishu_errcode,
+)
 from tools.registry import registry, tool_error, tool_result
 
 logger = logging.getLogger(__name__)
@@ -37,12 +45,25 @@ def _check_feishu():
         return False
 
 
+def _auth_error_message(exc: Exception) -> str:
+    """Format semantic auth exceptions as tool_error strings."""
+    if isinstance(exc, NeedAuthorizationError):
+        return f"Need Feishu authorization: {exc}. Run 'hermes feishu-uat' to authorize."
+    if isinstance(exc, AppScopeMissingError):
+        return f"App scope missing: {exc}"
+    if isinstance(exc, UserAuthRequiredError):
+        return f"User authorization required: {exc}"
+    if isinstance(exc, UserScopeInsufficientError):
+        return f"User scope insufficient: {exc}"
+    return str(exc)
+
+
 def _get_user_client():
     """Return (client, error_str). error_str is None on success."""
     try:
         return FeishuClient.for_user(), None
     except NeedAuthorizationError as exc:
-        return None, f"Feishu user authorization required: {exc}"
+        return None, _auth_error_message(exc)
     except ValueError as exc:
         return None, f"Feishu configuration error: {exc}"
 
@@ -153,6 +174,7 @@ FEISHU_TASK_LIST_SCHEMA = {
 
 
 def _handle_task_list(args: dict, **kwargs) -> str:
+    logger.info("feishu_task_list: tasklist_id=%s", args.get("tasklist_id", ""))
     client, err = _get_user_client()
     if err:
         return tool_error(err)
@@ -176,7 +198,11 @@ def _handle_task_list(args: dict, **kwargs) -> str:
 
     code, msg, data = _do_request(client, "GET", _TASK_LIST_URI, queries=queries)
     if code != 0:
-        logger.error("feishu_task_list failed: code=%d msg=%s", code, msg)
+        try:
+            raise_for_feishu_errcode(code, msg or "", api_name="feishu.task.list")
+        except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+            return tool_error(_auth_error_message(e))
+        logger.warning("feishu_task_list failed: code=%d msg=%s", code, msg)
         return tool_error(f"List tasks failed: code={code} msg={msg}")
 
     logger.info("feishu_task_list: returned %d tasks", len((data or {}).get("items", [])))
@@ -206,11 +232,12 @@ FEISHU_TASK_GET_SCHEMA = {
 
 
 def _handle_task_get(args: dict, **kwargs) -> str:
+    task_id = (args.get("task_id") or "").strip()
+    logger.info("feishu_task_get: task_id=%s", task_id)
     client, err = _get_user_client()
     if err:
         return tool_error(err)
 
-    task_id = (args.get("task_id") or "").strip()
     if not task_id:
         return tool_error("task_id is required")
 
@@ -220,7 +247,11 @@ def _handle_task_get(args: dict, **kwargs) -> str:
         queries=[("user_id_type", "open_id")],
     )
     if code != 0:
-        logger.error("feishu_task_get failed: code=%d msg=%s", code, msg)
+        try:
+            raise_for_feishu_errcode(code, msg or "", api_name="feishu.task.get")
+        except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+            return tool_error(_auth_error_message(e))
+        logger.warning("feishu_task_get failed: code=%d msg=%s", code, msg)
         return tool_error(f"Get task failed: code={code} msg={msg}")
 
     logger.info("feishu_task_get: fetched task %s", task_id)
@@ -263,11 +294,12 @@ FEISHU_TASK_CREATE_SCHEMA = {
 
 
 def _handle_task_create(args: dict, **kwargs) -> str:
+    summary = (args.get("summary") or "").strip()
+    logger.info("feishu_task_create: summary=%r", summary)
     client, err = _get_user_client()
     if err:
         return tool_error(err)
 
-    summary = (args.get("summary") or "").strip()
     if not summary:
         return tool_error("summary is required")
 
@@ -295,7 +327,11 @@ def _handle_task_create(args: dict, **kwargs) -> str:
         body=body,
     )
     if code != 0:
-        logger.error("feishu_task_create failed: code=%d msg=%s", code, msg)
+        try:
+            raise_for_feishu_errcode(code, msg or "", api_name="feishu.task.create")
+        except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+            return tool_error(_auth_error_message(e))
+        logger.warning("feishu_task_create failed: code=%d msg=%s", code, msg)
         return tool_error(f"Create task failed: code={code} msg={msg}")
 
     logger.info("feishu_task_create: created task summary=%r", summary)
@@ -340,11 +376,12 @@ FEISHU_TASK_UPDATE_SCHEMA = {
 
 
 def _handle_task_update(args: dict, **kwargs) -> str:
+    task_id = (args.get("task_id") or "").strip()
+    logger.info("feishu_task_update: task_id=%s", task_id)
     client, err = _get_user_client()
     if err:
         return tool_error(err)
 
-    task_id = (args.get("task_id") or "").strip()
     if not task_id:
         return tool_error("task_id is required")
 
@@ -378,7 +415,11 @@ def _handle_task_update(args: dict, **kwargs) -> str:
         body=body,
     )
     if code != 0:
-        logger.error("feishu_task_update failed: code=%d msg=%s", code, msg)
+        try:
+            raise_for_feishu_errcode(code, msg or "", api_name="feishu.task.update")
+        except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+            return tool_error(_auth_error_message(e))
+        logger.warning("feishu_task_update failed: code=%d msg=%s", code, msg)
         return tool_error(f"Update task failed: code={code} msg={msg}")
 
     logger.info("feishu_task_update: updated task %s fields=%s", task_id, update_fields)
@@ -412,11 +453,12 @@ FEISHU_TASK_ADD_COMMENT_SCHEMA = {
 
 
 def _handle_task_add_comment(args: dict, **kwargs) -> str:
+    task_id = (args.get("task_id") or "").strip()
+    logger.info("feishu_task_add_comment: task_id=%s", task_id)
     client, err = _get_user_client()
     if err:
         return tool_error(err)
 
-    task_id = (args.get("task_id") or "").strip()
     content = (args.get("content") or "").strip()
     if not task_id:
         return tool_error("task_id is required")
@@ -432,7 +474,11 @@ def _handle_task_add_comment(args: dict, **kwargs) -> str:
         body=body,
     )
     if code != 0:
-        logger.error("feishu_task_add_comment failed: code=%d msg=%s", code, msg)
+        try:
+            raise_for_feishu_errcode(code, msg or "", api_name="feishu.task.add_comment")
+        except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+            return tool_error(_auth_error_message(e))
+        logger.warning("feishu_task_add_comment failed: code=%d msg=%s", code, msg)
         return tool_error(f"Add comment failed: code={code} msg={msg}")
 
     logger.info("feishu_task_add_comment: commented on task %s", task_id)

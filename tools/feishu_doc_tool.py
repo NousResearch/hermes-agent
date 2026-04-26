@@ -8,9 +8,26 @@ import json
 import logging
 import threading
 
+from tools.feishu_oapi_client import (
+    AppScopeMissingError,
+    NeedAuthorizationError,
+    TOOLS_METADATA,
+    UserAuthRequiredError,
+    UserScopeInsufficientError,
+    raise_for_feishu_errcode,
+)
 from tools.registry import registry, tool_error, tool_result
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# TOOLS_METADATA entries
+# ---------------------------------------------------------------------------
+
+TOOLS_METADATA["feishu_doc_read"] = {
+    "identity": "user",
+    "scopes": ["docx:document:readonly"],
+}
 
 # Thread-local storage for the lark client injected by feishu_comment handler.
 _local = threading.local()
@@ -24,6 +41,19 @@ def set_client(client):
 def get_client():
     """Return the lark client for the current thread, or None."""
     return getattr(_local, "client", None)
+
+
+def _auth_error_message(exc: Exception) -> str:
+    """Format semantic auth exceptions as tool_error strings."""
+    if isinstance(exc, NeedAuthorizationError):
+        return f"Need Feishu authorization: {exc}. Run 'hermes feishu-uat' to authorize."
+    if isinstance(exc, AppScopeMissingError):
+        return f"App scope missing: {exc}"
+    if isinstance(exc, UserAuthRequiredError):
+        return f"User authorization required: {exc}"
+    if isinstance(exc, UserScopeInsufficientError):
+        return f"User scope insufficient: {exc}"
+    return str(exc)
 
 
 # ---------------------------------------------------------------------------
@@ -73,6 +103,7 @@ def _handle_feishu_doc_read(args: dict, **kwargs) -> str:
         return tool_error("doc_token is required")
 
     use_uat = bool(args.get("use_uat", False))
+    logger.info("feishu_doc_read: doc_token=%s use_uat=%s", doc_token, use_uat)
 
     try:
         from lark_oapi import AccessTokenType, RequestOption
@@ -84,13 +115,13 @@ def _handle_feishu_doc_read(args: dict, **kwargs) -> str:
     if use_uat:
         # UAT path: build client from disk token
         try:
-            from tools.feishu_oapi_client import FeishuClient, NeedAuthorizationError
+            from tools.feishu_oapi_client import FeishuClient
         except ImportError:
             return tool_error("feishu_oapi_client not available")
         try:
             fc = FeishuClient.for_user()
         except NeedAuthorizationError as exc:
-            return tool_error(f"UAT not available: {exc}")
+            return tool_error(_auth_error_message(exc))
         except ValueError as exc:
             return tool_error(f"Feishu client config error: {exc}")
 
@@ -127,8 +158,14 @@ def _handle_feishu_doc_read(args: dict, **kwargs) -> str:
         response = client.request(request)
 
     code = getattr(response, "code", None)
+    msg = getattr(response, "msg", "unknown error")
+
     if code != 0:
-        msg = getattr(response, "msg", "unknown error")
+        try:
+            raise_for_feishu_errcode(code, msg or "", api_name="feishu.docx.raw_content")
+        except (AppScopeMissingError, UserAuthRequiredError, UserScopeInsufficientError, NeedAuthorizationError) as e:
+            return tool_error(_auth_error_message(e))
+        logger.warning("feishu_doc_read failed: code=%s msg=%s", code, msg)
         return tool_error(f"Failed to read document: code={code} msg={msg}")
 
     raw = getattr(response, "raw", None)
@@ -136,6 +173,7 @@ def _handle_feishu_doc_read(args: dict, **kwargs) -> str:
         try:
             body = json.loads(raw.content)
             content = body.get("data", {}).get("content", "")
+            logger.info("feishu_doc_read: read %d chars from doc_token=%s", len(content), doc_token)
             return tool_result(success=True, content=content)
         except (json.JSONDecodeError, AttributeError):
             pass
@@ -147,6 +185,7 @@ def _handle_feishu_doc_read(args: dict, **kwargs) -> str:
             content = data.get("content", "")
         else:
             content = getattr(data, "content", str(data))
+        logger.info("feishu_doc_read: read %d chars (fallback) from doc_token=%s", len(content), doc_token)
         return tool_result(success=True, content=content)
 
     return tool_error("No content returned from document API")

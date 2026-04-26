@@ -366,7 +366,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return voiceRecordToggle()
     }
 
-    if (isAction(key, ch, 'g')) {
+    // Alt+G is the escape hatch for terminals that swallow Ctrl+G — VSCode and
+    // Cursor bind it to "Find Next" by default, so the keystroke never reaches
+    // the embedded TUI. Alt+G arrives as `\x1bg` → meta+g across platforms.
+    if (isAction(key, ch, 'g') || (key.meta && ch.toLowerCase() === 'g')) {
       return cActions.openEditor()
     }
 

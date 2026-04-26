@@ -106,9 +106,11 @@ _endpoint_model_metadata_cache_time: Dict[str, float] = {}
 _ENDPOINT_MODEL_CACHE_TTL = 300
 
 # Descending tiers for context length probing when the model is unknown.
-# We start at 128K (a safe default for most modern models) and step down
-# on context-length errors until one works.
+# We start at 256K (covers GPT-5.x, many current large-context models) and
+# step down on context-length errors until one works.  Tier[0] is also the
+# default fallback when no detection method succeeds.
 CONTEXT_PROBE_TIERS = [
+    256_000,
     128_000,
     64_000,
     32_000,
@@ -1193,6 +1195,7 @@ def get_model_context_length(
     api_key: str = "",
     config_context_length: int | None = None,
     provider: str = "",
+    custom_providers: list | None = None,
 ) -> int:
     """Get the context length for a model.
 
@@ -1212,6 +1215,23 @@ def get_model_context_length(
     # 0. Explicit config override — user knows best
     if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
         return config_context_length
+
+    # 0b. custom_providers per-model override — check before any probe.
+    # This closes the gap where /model switch and display paths used to fall
+    # back to 128K despite the user having a per-model context_length set.
+    # See #15779.
+    if custom_providers and base_url and model:
+        try:
+            from hermes_cli.config import get_custom_provider_context_length
+            cp_ctx = get_custom_provider_context_length(
+                model=model,
+                base_url=base_url,
+                custom_providers=custom_providers,
+            )
+            if cp_ctx:
+                return cp_ctx
+        except Exception:
+            pass  # fall through to probing
 
     # Normalise provider-prefixed model names (e.g. "local:model-name" →
     # "model-name") so cache lookups and server queries use the bare ID that
@@ -1352,7 +1372,7 @@ def get_model_context_length(
     # 6. OpenRouter live API metadata (provider-unaware fallback)
     metadata = fetch_model_metadata()
     if model in metadata:
-        return metadata[model].get("context_length", 128000)
+        return metadata[model].get("context_length", DEFAULT_FALLBACK_CONTEXT)
 
     # 8. Hardcoded defaults (fuzzy match — longest key first for specificity)
     # Only check `default_model in model` (is the key a substring of the input).

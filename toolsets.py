@@ -53,7 +53,7 @@ _HERMES_CORE_TOOLS = [
     # Clarifying questions
     "clarify",
     # Code execution + delegation
-    "execute_code", "delegate_task", "delegate_bridge_check",
+    "execute_code", "delegate_task", "delegate_list_personas", "delegate_bridge_check",
     "delegate_bridge_reply", "delegate_bridge_result", "delegate_bridge_kill",
     # Cronjob management
     "cronjob",
@@ -192,6 +192,7 @@ TOOLSETS = {
         "description": "Spawn subagents with isolated context for complex subtasks",
         "tools": [
             "delegate_task",
+            "delegate_list_personas",
             "delegate_bridge_check",
             "delegate_bridge_reply",
             "delegate_bridge_result",
@@ -281,7 +282,7 @@ TOOLSETS = {
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             "todo", "memory",
             "session_search",
-            "execute_code", "delegate_task",
+            "execute_code", "delegate_task", "delegate_list_personas",
         ],
         "includes": []
     },
@@ -309,7 +310,7 @@ TOOLSETS = {
             # Session history search
             "session_search",
             # Code execution + delegation
-            "execute_code", "delegate_task",
+            "execute_code", "delegate_task", "delegate_list_personas",
             # Cronjob management
             "cronjob",
             # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)

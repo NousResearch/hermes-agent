@@ -805,6 +805,12 @@ delegation:
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.
   #                                           # Supported: openrouter, nous, zai, kimi-coding, minimax
+  # persona_dirs:                             # Optional native delegate_task persona pools.
+  #   project: "~/.hermes/personas/project"   # Defaults stay under HERMES_HOME; add external collections explicitly.
+  #   shared:
+  #     - "~/.hermes/personas/shared"
+  # persona_provider: "claude"                # Default provider for persona-backed local CLI children.
+  # persona_workdir: "~/code/project"         # Optional default workdir for persona-backed bridge workers.
 
 # =============================================================================
 # Honcho Integration (Cross-Session User Modeling)

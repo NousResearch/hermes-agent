@@ -81,6 +81,7 @@ class TestDelegateRequirements(unittest.TestCase):
         from toolsets import TOOLSETS, _HERMES_CORE_TOOLS
 
         expected = {
+            "delegate_list_personas",
             "delegate_bridge_check",
             "delegate_bridge_reply",
             "delegate_bridge_result",

@@ -41,6 +41,7 @@ from tools.delegate_bridge_transport import (
     spawn_bridge_session,
     terminate_bridge_session,
 )
+from tools.delegate_personas import apply_persona_to_task
 from tools.terminal_tool import set_approval_callback as _set_subagent_approval_cb
 from utils import base_url_hostname, is_truthy_value
 
@@ -1859,6 +1860,11 @@ def delegate_task(
     transport: Optional[str] = None,
     bridge_initial_wait_seconds: Optional[int] = None,
     role: Optional[str] = None,
+    persona: Optional[str] = None,
+    persona_provider: Optional[str] = None,
+    persona_model: Optional[str] = None,
+    workdir: Optional[str] = None,
+    compress_persona: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -1933,10 +1939,20 @@ def delegate_task(
                 f"delegate_task calls, or increase "
                 f"delegation.max_concurrent_children in config.yaml."
             )
-        task_list = tasks
+        task_list = [dict(t) for t in tasks]
     elif goal and isinstance(goal, str) and goal.strip():
         task_list = [
-            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+            {
+                "goal": goal,
+                "context": context,
+                "toolsets": toolsets,
+                "role": top_role,
+                "persona": persona,
+                "persona_provider": persona_provider,
+                "persona_model": persona_model,
+                "workdir": workdir,
+                "compress_persona": compress_persona,
+            }
         ]
     else:
         return tool_error("Provide either 'goal' (single task) or 'tasks' (batch).")
@@ -1948,6 +1964,28 @@ def delegate_task(
     for i, task in enumerate(task_list):
         if not task.get("goal", "").strip():
             return tool_error(f"Task {i} is missing a 'goal'.")
+
+    # Optional native persona support.  This is intentionally additive:
+    # without persona=... the task is unchanged, preserving all existing
+    # embedded, simple-pipe, bridge, role, SOUL.md, and /personality behavior.
+    try:
+        task_list = [
+            apply_persona_to_task(
+                task,
+                cfg=cfg,
+                top_level_persona=persona,
+                top_level_provider=persona_provider,
+                top_level_model=persona_model,
+                top_level_workdir=workdir,
+                top_level_compress=compress_persona or "auto",
+                top_level_transport=transport,
+                top_level_acp_command=acp_command,
+                top_level_acp_args=acp_args,
+            )
+            for task in task_list
+        ]
+    except ValueError as exc:
+        return tool_error(str(exc))
 
     task_transports = [
         _infer_delegate_transport(
@@ -2667,6 +2705,28 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "persona": {
+                            "type": "string",
+                            "description": "Optional native delegation persona for this child. This is per-child identity/context and does not modify SOUL.md or /personality.",
+                        },
+                        "persona_provider": {
+                            "type": "string",
+                            "enum": ["claude", "cursor-agent"],
+                            "description": "Provider for a persona-backed external CLI child. Defaults to claude.",
+                        },
+                        "persona_model": {
+                            "type": "string",
+                            "description": "Optional model override for this persona-backed child.",
+                        },
+                        "workdir": {
+                            "type": "string",
+                            "description": "Working directory for a persona-backed external CLI child.",
+                        },
+                        "compress_persona": {
+                            "type": "string",
+                            "enum": ["auto", "always", "never"],
+                            "description": "Whether to compress large persona files before injecting them into child context.",
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -2696,9 +2756,8 @@ DELEGATE_TASK_SCHEMA = {
                 "type": "string",
                 "description": (
                     "Override child subprocess command (e.g. 'claude', 'cursor-agent', "
-                    "'copilot'). For named personas, prefer the subagents MCP "
-                    "recipe tool instead of filling this manually; the recipe provides "
-                    "the correct command and acp_args for the selected Claude/Cursor CLI model."
+                    "'copilot'). For named delegation personas, prefer the native "
+                    "'persona' field so Hermes can fill the command and acp_args safely."
                 ),
             },
             "acp_args": {
@@ -2706,8 +2765,8 @@ DELEGATE_TASK_SCHEMA = {
                 "items": {"type": "string"},
                 "description": (
                     "Arguments for the child subprocess command. Only used when "
-                    "acp_command is set. For named personas, prefer the subagents "
-                    "MCP recipe tool and pass its returned acp_args verbatim. "
+                    "acp_command is set. For named delegation personas, prefer "
+                    "the native 'persona' field so Hermes can fill acp_args safely. "
                     "Unrestricted write flags require unsafe_allow_writes=true."
                 ),
             },
@@ -2737,6 +2796,32 @@ DELEGATE_TASK_SCHEMA = {
                     "first report_to_orchestrator message before returning."
                 ),
             },
+            "persona": {
+                "type": "string",
+                "description": (
+                    "Optional native delegation persona for the child. This is "
+                    "per-child context/model/CLI routing and does not modify "
+                    "SOUL.md, /personality, or role='leaf|orchestrator'."
+                ),
+            },
+            "persona_provider": {
+                "type": "string",
+                "enum": ["claude", "cursor-agent"],
+                "description": "Provider for a persona-backed external CLI child. Defaults to claude.",
+            },
+            "persona_model": {
+                "type": "string",
+                "description": "Optional model override for a persona-backed external CLI child.",
+            },
+            "workdir": {
+                "type": "string",
+                "description": "Working directory for a persona-backed external CLI child.",
+            },
+            "compress_persona": {
+                "type": "string",
+                "enum": ["auto", "always", "never"],
+                "description": "Whether to compress large persona files before injecting them into child context.",
+            },
         },
         "required": [],
     },
@@ -2762,6 +2847,11 @@ registry.register(
         transport=args.get("transport"),
         bridge_initial_wait_seconds=args.get("bridge_initial_wait_seconds"),
         role=args.get("role"),
+        persona=args.get("persona"),
+        persona_provider=args.get("persona_provider"),
+        persona_model=args.get("persona_model"),
+        workdir=args.get("workdir"),
+        compress_persona=args.get("compress_persona"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

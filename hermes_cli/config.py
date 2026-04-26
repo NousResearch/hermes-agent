@@ -21,6 +21,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Any, Optional, List, Tuple
@@ -42,6 +43,14 @@ _LOAD_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
 # _LOAD_CONFIG_CACHE but for read_raw_config() — used when callers want
 # the user's on-disk values without defaults merged in.
 _RAW_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
+# Serializes all config read/write paths. libyaml's C extension is not
+# thread-safe for concurrent safe_load() on the same file, and multiple
+# tool threads (approval.py, browser_tool.py, setup flows) hit
+# load_config / read_raw_config / save_config from different threads
+# during long agent runs. RLock (not Lock) because save_config internally
+# calls read_raw_config. Also covers mutation of the module-level cache
+# dicts above.
+_CONFIG_LOCK = threading.RLock()
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS
 # (managed by setup/provider flows directly).
 _EXTRA_ENV_KEYS = frozenset({
@@ -3941,28 +3950,29 @@ def read_raw_config() -> Dict[str, Any]:
     ``load_config()``. Returns a deepcopy on every call since some callers
     mutate the result before passing to ``save_config()``.
     """
-    try:
-        config_path = get_config_path()
-        st = config_path.stat()
-        cache_key = (st.st_mtime_ns, st.st_size)
-    except (FileNotFoundError, OSError):
-        return {}
+    with _CONFIG_LOCK:
+        try:
+            config_path = get_config_path()
+            st = config_path.stat()
+            cache_key = (st.st_mtime_ns, st.st_size)
+        except (FileNotFoundError, OSError):
+            return {}
 
-    path_key = str(config_path)
-    cached = _RAW_CONFIG_CACHE.get(path_key)
-    if cached is not None and cached[:2] == cache_key:
-        return copy.deepcopy(cached[2])
+        path_key = str(config_path)
+        cached = _RAW_CONFIG_CACHE.get(path_key)
+        if cached is not None and cached[:2] == cache_key:
+            return copy.deepcopy(cached[2])
 
-    try:
-        with open(config_path, encoding="utf-8") as f:
-            data = yaml.safe_load(f) or {}
-    except Exception:
-        return {}
+        try:
+            with open(config_path, encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+        except Exception:
+            return {}
 
-    if not isinstance(data, dict):
-        data = {}
-    _RAW_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], copy.deepcopy(data))
-    return data
+        if not isinstance(data, dict):
+            data = {}
+        _RAW_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], copy.deepcopy(data))
+        return data
 
 
 def load_config() -> Dict[str, Any]:
@@ -3975,46 +3985,47 @@ def load_config() -> Dict[str, Any]:
     (which change ``HERMES_HOME`` and therefore ``get_config_path()``)
     don't collide.
     """
-    ensure_hermes_home()
-    config_path = get_config_path()
-    path_key = str(config_path)
+    with _CONFIG_LOCK:
+        ensure_hermes_home()
+        config_path = get_config_path()
+        path_key = str(config_path)
 
-    try:
-        st = config_path.stat()
-        cache_key: Optional[Tuple[int, int]] = (st.st_mtime_ns, st.st_size)
-    except FileNotFoundError:
-        cache_key = None
-
-    cached = _LOAD_CONFIG_CACHE.get(path_key)
-    if cached is not None and cache_key is not None and cached[:2] == cache_key:
-        return copy.deepcopy(cached[2])
-
-    config = copy.deepcopy(DEFAULT_CONFIG)
-
-    if cache_key is not None:
         try:
-            with open(config_path, encoding="utf-8") as f:
-                user_config = yaml.safe_load(f) or {}
+            st = config_path.stat()
+            cache_key: Optional[Tuple[int, int]] = (st.st_mtime_ns, st.st_size)
+        except FileNotFoundError:
+            cache_key = None
 
-            if "max_turns" in user_config:
-                agent_user_config = dict(user_config.get("agent") or {})
-                if agent_user_config.get("max_turns") is None:
-                    agent_user_config["max_turns"] = user_config["max_turns"]
-                user_config["agent"] = agent_user_config
-                user_config.pop("max_turns", None)
+        cached = _LOAD_CONFIG_CACHE.get(path_key)
+        if cached is not None and cache_key is not None and cached[:2] == cache_key:
+            return copy.deepcopy(cached[2])
 
-            config = _deep_merge(config, user_config)
-        except Exception as e:
-            print(f"Warning: Failed to load config: {e}")
+        config = copy.deepcopy(DEFAULT_CONFIG)
 
-    normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
-    expanded = _expand_env_vars(normalized)
-    _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
-    if cache_key is not None:
-        _LOAD_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], copy.deepcopy(expanded))
-    else:
-        _LOAD_CONFIG_CACHE.pop(path_key, None)
-    return expanded
+        if cache_key is not None:
+            try:
+                with open(config_path, encoding="utf-8") as f:
+                    user_config = yaml.safe_load(f) or {}
+
+                if "max_turns" in user_config:
+                    agent_user_config = dict(user_config.get("agent") or {})
+                    if agent_user_config.get("max_turns") is None:
+                        agent_user_config["max_turns"] = user_config["max_turns"]
+                    user_config["agent"] = agent_user_config
+                    user_config.pop("max_turns", None)
+
+                config = _deep_merge(config, user_config)
+            except Exception as e:
+                print(f"Warning: Failed to load config: {e}")
+
+        normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
+        expanded = _expand_env_vars(normalized)
+        _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
+        if cache_key is not None:
+            _LOAD_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], copy.deepcopy(expanded))
+        else:
+            _LOAD_CONFIG_CACHE.pop(path_key, None)
+        return expanded
 
 
 _SECURITY_COMMENT = """
@@ -4094,45 +4105,46 @@ _COMMENTED_SECTIONS = """
 
 def save_config(config: Dict[str, Any]):
     """Save configuration to ~/.hermes/config.yaml."""
-    if is_managed():
-        managed_error("save configuration")
-        return
-    from utils import atomic_yaml_write
+    with _CONFIG_LOCK:
+        if is_managed():
+            managed_error("save configuration")
+            return
+        from utils import atomic_yaml_write
 
-    ensure_hermes_home()
-    config_path = get_config_path()
-    current_normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
-    normalized = current_normalized
-    raw_existing = _normalize_root_model_keys(_normalize_max_turns_config(read_raw_config()))
-    if raw_existing:
-        normalized = _preserve_env_ref_templates(
+        ensure_hermes_home()
+        config_path = get_config_path()
+        current_normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
+        normalized = current_normalized
+        raw_existing = _normalize_root_model_keys(_normalize_max_turns_config(read_raw_config()))
+        if raw_existing:
+            normalized = _preserve_env_ref_templates(
+                normalized,
+                raw_existing,
+                _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)),
+            )
+
+        # Build optional commented-out sections for features that are off by
+        # default or only relevant when explicitly configured.
+        parts = []
+        sec = normalized.get("security", {})
+        if not sec or sec.get("redact_secrets") is None:
+            parts.append(_SECURITY_COMMENT)
+        fb = normalized.get("fallback_model", {})
+        fb_is_valid = False
+        if isinstance(fb, list):
+            fb_is_valid = any(isinstance(e, dict) and e.get("provider") and e.get("model") for e in fb)
+        elif isinstance(fb, dict):
+            fb_is_valid = bool(fb.get("provider") and fb.get("model"))
+        if not fb_is_valid:
+            parts.append(_FALLBACK_COMMENT)
+
+        atomic_yaml_write(
+            config_path,
             normalized,
-            raw_existing,
-            _LAST_EXPANDED_CONFIG_BY_PATH.get(str(config_path)),
+            extra_content="".join(parts) if parts else None,
         )
-
-    # Build optional commented-out sections for features that are off by
-    # default or only relevant when explicitly configured.
-    parts = []
-    sec = normalized.get("security", {})
-    if not sec or sec.get("redact_secrets") is None:
-        parts.append(_SECURITY_COMMENT)
-    fb = normalized.get("fallback_model", {})
-    fb_is_valid = False
-    if isinstance(fb, list):
-        fb_is_valid = any(isinstance(e, dict) and e.get("provider") and e.get("model") for e in fb)
-    elif isinstance(fb, dict):
-        fb_is_valid = bool(fb.get("provider") and fb.get("model"))
-    if not fb_is_valid:
-        parts.append(_FALLBACK_COMMENT)
-
-    atomic_yaml_write(
-        config_path,
-        normalized,
-        extra_content="".join(parts) if parts else None,
-    )
-    _secure_file(config_path)
-    _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
+        _secure_file(config_path)
+        _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
 
 
 def load_env() -> Dict[str, str]:

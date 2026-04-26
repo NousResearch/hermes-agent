@@ -1273,7 +1273,12 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         def _is_source_suppressed(_p, _s):  # type: ignore[misc]
             return False
     if provider == "openrouter":
-        token = os.getenv("OPENROUTER_API_KEY", "").strip()
+        # Check both os.environ and ~/.hermes/.env file
+        try:
+            from hermes_cli.config import get_env_value
+            token = (get_env_value("OPENROUTER_API_KEY") or "").strip()
+        except Exception:
+            token = os.getenv("OPENROUTER_API_KEY", "").strip()
         if token:
             source = "env:OPENROUTER_API_KEY"
             if _is_source_suppressed(provider, source):
@@ -1299,7 +1304,11 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
 
     env_url = ""
     if pconfig.base_url_env_var:
-        env_url = os.getenv(pconfig.base_url_env_var, "").strip().rstrip("/")
+        try:
+            from hermes_cli.config import get_env_value
+            env_url = (get_env_value(pconfig.base_url_env_var) or "").strip().rstrip("/")
+        except Exception:
+            env_url = os.getenv(pconfig.base_url_env_var, "").strip().rstrip("/")
 
     env_vars = list(pconfig.api_key_env_vars)
     if provider == "anthropic":
@@ -1310,7 +1319,12 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
         ]
 
     for env_var in env_vars:
-        token = os.getenv(env_var, "").strip()
+        # Check both os.environ and ~/.hermes/.env file
+        try:
+            from hermes_cli.config import get_env_value
+            token = (get_env_value(env_var) or "").strip()
+        except Exception:
+            token = os.getenv(env_var, "").strip()
         if not token:
             continue
         source = f"env:{env_var}"

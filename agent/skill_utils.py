@@ -9,6 +9,7 @@ import logging
 import os
 import re
 import sys
+import threading
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Set, Tuple
 
@@ -44,6 +45,64 @@ def yaml_load(content: str):
 
         _yaml_load_fn = _load
     return _yaml_load_fn(content)
+
+
+# ── Cached config.yaml read ──────────────────────────────────────────────
+#
+# ``get_disabled_skill_names`` and ``get_external_skills_dirs`` are called on
+# every ``build_skills_system_prompt()`` invocation — including before the
+# in-process LRU prompt cache lookup — so each call would otherwise re-read
+# and re-parse ~/.hermes/config.yaml.  In gateway mode that adds disk reads
+# and a YAML parse on every session.  Cache the parsed dict keyed by path,
+# invalidated by ``(st_mtime_ns, st_size)`` so user edits still take effect.
+
+_CONFIG_CACHE_LOCK = threading.Lock()
+_CONFIG_CACHE: Dict[str, Tuple[Optional[Tuple[int, int]], Dict[str, Any]]] = {}
+_CONFIG_CACHE_MAX_ENTRIES = 32
+
+
+def _read_config_cached() -> Dict[str, Any]:
+    """Return a parsed snapshot of ``~/.hermes/config.yaml`` (cached by mtime+size).
+
+    Returns an empty dict when the file is missing or unparsable.  The
+    returned dict is shared across callers — treat it as read-only.
+    """
+    config_path = get_config_path()
+    path_str = str(config_path)
+    try:
+        st = config_path.stat()
+        sig: Optional[Tuple[int, int]] = (st.st_mtime_ns, st.st_size)
+    except OSError:
+        sig = None
+
+    with _CONFIG_CACHE_LOCK:
+        cached = _CONFIG_CACHE.get(path_str)
+        if cached is not None and cached[0] == sig:
+            return cached[1]
+
+    if sig is None:
+        data: Dict[str, Any] = {}
+    else:
+        try:
+            parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+            data = parsed if isinstance(parsed, dict) else {}
+        except Exception as e:
+            logger.debug("Could not read skill config %s: %s", config_path, e)
+            data = {}
+
+    with _CONFIG_CACHE_LOCK:
+        if len(_CONFIG_CACHE) >= _CONFIG_CACHE_MAX_ENTRIES and path_str not in _CONFIG_CACHE:
+            # Drop an arbitrary entry to bound memory in pathological test
+            # runs that monkeypatch HERMES_HOME to many distinct tmpdirs.
+            _CONFIG_CACHE.pop(next(iter(_CONFIG_CACHE)))
+        _CONFIG_CACHE[path_str] = (sig, data)
+    return data
+
+
+def _clear_config_cache() -> None:
+    """Drop the cached config snapshot.  Test helper."""
+    with _CONFIG_CACHE_LOCK:
+        _CONFIG_CACHE.clear()
 
 
 # ── Frontmatter parsing ──────────────────────────────────────────────────
@@ -128,19 +187,11 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
             global disabled list when no platform is determined.
 
     Reads the config file directly (no CLI config imports) to stay
-    lightweight.
+    lightweight.  The parsed config is cached in-process and invalidated
+    whenever ``config.yaml``'s mtime or size changes, so user edits still
+    take effect immediately.
     """
-    config_path = get_config_path()
-    if not config_path.exists():
-        return set()
-    try:
-        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
-    except Exception as e:
-        logger.debug("Could not read skill config %s: %s", config_path, e)
-        return set()
-    if not isinstance(parsed, dict):
-        return set()
-
+    parsed = _read_config_cached()
     skills_cfg = parsed.get("skills")
     if not isinstance(skills_cfg, dict):
         return set()
@@ -177,17 +228,11 @@ def get_external_skills_dirs() -> List[Path]:
     Each entry is expanded (``~`` and ``${VAR}``) and resolved to an absolute
     path.  Only directories that actually exist are returned.  Duplicates and
     paths that resolve to the local ``~/.hermes/skills/`` are silently skipped.
-    """
-    config_path = get_config_path()
-    if not config_path.exists():
-        return []
-    try:
-        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-    if not isinstance(parsed, dict):
-        return []
 
+    Uses the in-process config cache (invalidated by mtime/size) so repeated
+    calls in the same process don't re-parse the YAML.
+    """
+    parsed = _read_config_cached()
     skills_cfg = parsed.get("skills")
     if not isinstance(skills_cfg, dict):
         return []

@@ -1971,6 +1971,15 @@ def systemd_uninstall(system: bool = False):
     print(f"✓ {_service_scope_label(system).capitalize()} service uninstalled")
 
 
+def _require_service_installed(action: str, system: bool = False) -> None:
+    unit_path = get_systemd_unit_path(system=system)
+    if not unit_path.exists():
+        scope_flag = " --system" if system else ""
+        print(f"✗ Gateway service is not installed")
+        print(f"  Run: {'sudo ' if system else ''}hermes gateway install{scope_flag}")
+        sys.exit(1)
+
+
 def systemd_start(system: bool = False):
     system = _select_systemd_scope(system)
     if system:
@@ -1980,6 +1989,7 @@ def systemd_start(system: bool = False):
         # reachable (common on fresh RHEL/Debian SSH sessions without linger).
         # Raises UserSystemdUnavailableError with a remediation message.
         _preflight_user_systemd()
+    _require_service_installed("start", system=system)
     refresh_systemd_unit_if_needed(system=system)
     _run_systemctl(["start", get_service_name()], system=system, check=True, timeout=30)
     print(f"✓ {_service_scope_label(system).capitalize()} service started")
@@ -1990,6 +2000,7 @@ def systemd_stop(system: bool = False):
     system = _select_systemd_scope(system)
     if system:
         _require_root_for_system_service("stop")
+    _require_service_installed("stop", system=system)
     _run_systemctl(["stop", get_service_name()], system=system, check=True, timeout=90)
     print(f"✓ {_service_scope_label(system).capitalize()} service stopped")
 
@@ -2001,6 +2012,7 @@ def systemd_restart(system: bool = False):
         _require_root_for_system_service("restart")
     else:
         _preflight_user_systemd()
+    _require_service_installed("restart", system=system)
     refresh_systemd_unit_if_needed(system=system)
     from gateway.status import get_running_pid
 

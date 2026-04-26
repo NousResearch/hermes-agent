@@ -69,6 +69,8 @@ class TestDelegateRequirements(unittest.TestCase):
         self.assertIn("tasks", props)
         self.assertIn("context", props)
         self.assertIn("toolsets", props)
+        self.assertIn("model", props)
+        self.assertIn("model", props["tasks"]["items"]["properties"])
         # max_iterations is intentionally NOT exposed to the model — it's
         # config-authoritative via delegation.max_iterations so users get
         # predictable budgets.
@@ -611,6 +613,49 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["api_key"])
 
     @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_model_override_beats_configured_model_and_provider(self, mock_resolve):
+        """Explicit override object should replace delegation config model/provider."""
+        mock_resolve.return_value = {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "***",
+            "api_mode": "codex_responses",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "google/gemini-3-flash-preview", "provider": "openrouter"}
+
+        creds = _resolve_delegation_credentials(
+            cfg,
+            parent,
+            {"model": "gpt-5.4", "provider": "openai-codex"},
+        )
+
+        self.assertEqual(creds["model"], "gpt-5.4")
+        self.assertEqual(creds["provider"], "openai-codex")
+        self.assertEqual(creds["base_url"], "https://chatgpt.com/backend-api/codex")
+        self.assertEqual(creds["api_mode"], "codex_responses")
+        mock_resolve.assert_called_once_with(requested="openai-codex")
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_string_model_override_keeps_configured_provider(self, mock_resolve):
+        """Bare string override should replace only the model and preserve config provider."""
+        mock_resolve.return_value = {
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "***",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        cfg = {"model": "google/gemini-3-flash-preview", "provider": "openrouter"}
+
+        creds = _resolve_delegation_credentials(cfg, parent, "gpt-5.4")
+
+        self.assertEqual(creds["model"], "gpt-5.4")
+        self.assertEqual(creds["provider"], "openrouter")
+        self.assertEqual(creds["base_url"], "https://openrouter.ai/api/v1")
+        mock_resolve.assert_called_once_with(requested="openrouter")
+
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
     def test_provider_resolves_full_credentials(self, mock_resolve):
         """When delegation.provider is set, full credentials are resolved."""
         mock_resolve.return_value = {
@@ -955,6 +1000,91 @@ class TestDelegationProviderIntegration(unittest.TestCase):
             self.assertEqual(kwargs.get("override_api_mode"), "chat_completions")
             self.assertEqual(kwargs.get("override_acp_command"), "custom-copilot")
             self.assertEqual(kwargs.get("override_acp_args"), ["--stdio-custom"])
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_top_level_model_override_is_passed_to_credential_resolution(self, mock_creds, mock_cfg):
+        """Top-level delegate model override should be passed through unchanged."""
+        mock_cfg.return_value = {"max_iterations": 45, "model": "", "provider": ""}
+        mock_creds.return_value = {
+            "model": "gpt-5.4",
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "***",
+            "api_mode": "codex_responses",
+        }
+        parent = _make_mock_parent(depth=0)
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_build.return_value = MagicMock()
+            mock_run.return_value = {
+                "task_index": 0, "status": "completed",
+                "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
+            }
+
+            delegate_task(
+                goal="Top-level override",
+                model={"model": "gpt-5.4", "provider": "openai-codex"},
+                parent_agent=parent,
+            )
+
+            mock_creds.assert_called_once_with(
+                mock_cfg.return_value,
+                parent,
+                {"model": "gpt-5.4", "provider": "openai-codex"},
+            )
+            self.assertEqual(mock_build.call_args.kwargs.get("model"), "gpt-5.4")
+            self.assertEqual(mock_build.call_args.kwargs.get("override_provider"), "openai-codex")
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_per_task_model_override_beats_top_level_override(self, mock_creds, mock_cfg):
+        """Per-task model override should take precedence over top-level override."""
+        mock_cfg.return_value = {"max_iterations": 45, "model": "", "provider": ""}
+        mock_creds.side_effect = [
+            {
+                "model": "gpt-5.5",
+                "provider": "openai-codex",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "api_key": "***",
+                "api_mode": "codex_responses",
+            },
+            {
+                "model": "gpt-5.4",
+                "provider": "openai-codex",
+                "base_url": "https://chatgpt.com/backend-api/codex",
+                "api_key": "***",
+                "api_mode": "codex_responses",
+            },
+        ]
+        parent = _make_mock_parent(depth=0)
+        tasks = [
+            {"goal": "Task A", "model": {"model": "gpt-5.5", "provider": "openai-codex"}},
+            {"goal": "Task B"},
+        ]
+
+        with patch("tools.delegate_tool._build_child_agent") as mock_build, \
+             patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_build.return_value = MagicMock()
+            mock_run.return_value = {
+                "task_index": 0, "status": "completed",
+                "summary": "Done", "api_calls": 1, "duration_seconds": 1.0
+            }
+
+            delegate_task(
+                tasks=tasks,
+                model={"model": "gpt-5.4", "provider": "openai-codex"},
+                parent_agent=parent,
+            )
+
+            self.assertEqual(mock_creds.call_args_list[0].args[2], tasks[0]["model"])
+            self.assertEqual(
+                mock_creds.call_args_list[1].args[2],
+                {"model": "gpt-5.4", "provider": "openai-codex"},
+            )
+            self.assertEqual(mock_build.call_args_list[0].kwargs.get("model"), "gpt-5.5")
+            self.assertEqual(mock_build.call_args_list[1].kwargs.get("model"), "gpt-5.4")
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")

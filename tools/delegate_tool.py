@@ -1794,6 +1794,7 @@ def delegate_task(
     context: Optional[str] = None,
     toolsets: Optional[List[str]] = None,
     tasks: Optional[List[Dict[str, Any]]] = None,
+    model: Optional[Dict[str, Any] | str] = None,
     max_iterations: Optional[int] = None,
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
@@ -1866,11 +1867,6 @@ def delegate_task(
     # bundle (base_url, api_key, api_mode) via the same runtime provider system
     # used by CLI/gateway startup.  When unconfigured, returns None values so
     # children inherit from the parent.
-    try:
-        creds = _resolve_delegation_credentials(cfg, parent_agent)
-    except ValueError as exc:
-        return tool_error(str(exc))
-
     # Normalize to task list
     max_children = _get_max_concurrent_children()
     if tasks and isinstance(tasks, list):
@@ -1918,6 +1914,11 @@ def delegate_task(
     children = []
     try:
         for i, t in enumerate(task_list):
+            try:
+                # Per-task model override > top-level model override > delegation config > parent.
+                creds = _resolve_delegation_credentials(cfg, parent_agent, t.get("model") or model)
+            except ValueError as exc:
+                return tool_error(str(exc))
             task_acp_args = t.get("acp_args") if "acp_args" in t else None
             # Per-task role beats top-level; normalise again so unknown
             # per-task values warn and degrade to leaf uniformly.
@@ -2172,7 +2173,29 @@ def _resolve_child_credential_pool(effective_provider: Optional[str], parent_age
     return None
 
 
-def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
+def _normalize_model_override(model_override: Optional[Dict[str, Any] | str]) -> tuple[Optional[str], Optional[str]]:
+    """Return (model, provider) from a per-call delegate model override.
+
+    The public tool schema accepts a structured object like
+    {"provider": "openai-codex", "model": "gpt-5.5"}. Internal callers may
+    also pass a bare model string to override only the model while preserving
+    the configured/inherited provider.
+    """
+    if isinstance(model_override, str):
+        value = model_override.strip()
+        return (value or None), None
+    if isinstance(model_override, dict):
+        model = str(model_override.get("model") or "").strip() or None
+        provider = str(model_override.get("provider") or "").strip() or None
+        return model, provider
+    return None, None
+
+
+def _resolve_delegation_credentials(
+    cfg: dict,
+    parent_agent,
+    model_override: Optional[Dict[str, Any] | str] = None,
+) -> dict:
     """Resolve credentials for subagent delegation.
 
     If ``delegation.base_url`` is configured, subagents use that direct
@@ -2187,8 +2210,9 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
     Raises ValueError with a user-friendly message on credential failure.
     """
-    configured_model = str(cfg.get("model") or "").strip() or None
-    configured_provider = str(cfg.get("provider") or "").strip() or None
+    override_model, override_provider = _normalize_model_override(model_override)
+    configured_model = override_model or str(cfg.get("model") or "").strip() or None
+    configured_provider = override_provider or str(cfg.get("provider") or "").strip() or None
     configured_base_url = str(cfg.get("base_url") or "").strip() or None
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
 
@@ -2373,6 +2397,15 @@ DELEGATE_TASK_SCHEMA = {
                             "items": {"type": "string"},
                             "description": f"Toolsets for this specific task. Available: {_TOOLSET_LIST_STR}. Use 'web' for network access, 'terminal' for shell, 'browser' for web interaction.",
                         },
+                        "model": {
+                            "type": "object",
+                            "properties": {
+                                "provider": {"type": "string", "description": "Provider name (e.g. openai-codex, openrouter, anthropic)."},
+                                "model": {"type": "string", "description": "Model name/ID for this task (e.g. gpt-5.5)."},
+                            },
+                            "required": ["model"],
+                            "description": "Per-task model/provider override. Overrides top-level model and delegation config.",
+                        },
                         "acp_command": {
                             "type": "string",
                             "description": "Per-task ACP command override (e.g. 'claude'). Overrides the top-level acp_command for this task only.",
@@ -2397,6 +2430,18 @@ DELEGATE_TASK_SCHEMA = {
                     "Batch mode: tasks to run in parallel (limit configurable via delegation.max_concurrent_children, default 3). Each gets "
                     "its own subagent with isolated context and terminal session. "
                     "When provided, top-level goal/context/toolsets are ignored."
+                ),
+            },
+            "model": {
+                "type": "object",
+                "properties": {
+                    "provider": {"type": "string", "description": "Provider name (e.g. openai-codex, openrouter, anthropic). Omit to inherit the parent/configured provider."},
+                    "model": {"type": "string", "description": "Model name/ID for child agents (e.g. gpt-5.5)."},
+                },
+                "required": ["model"],
+                "description": (
+                    "Model/provider override for child agents. This is independent of the "
+                    "parent/default model; per-task model overrides take precedence in batch mode."
                 ),
             },
             "role": {
@@ -2447,6 +2492,7 @@ registry.register(
         context=args.get("context"),
         toolsets=args.get("toolsets"),
         tasks=args.get("tasks"),
+        model=args.get("model"),
         max_iterations=args.get("max_iterations"),
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),

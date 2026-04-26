@@ -1913,6 +1913,24 @@ class TestConcurrentToolExecution:
         assert {entry[0] for entry in completes} == {"c1", "c2"}
         assert {entry[3] for entry in completes} == {'{"id":1}', '{"id":2}'}
 
+    def test_invoke_tool_forwards_delegate_model_override(self, agent):
+        """delegate_task dispatch should pass model override through the central helper."""
+        args = {
+            "goal": "model override smoke",
+            "model": {"provider": "openai-codex", "model": "gpt-5.4"},
+            "acp_command": "codex",
+            "acp_args": ["--acp", "--stdio", "--model", "gpt-5.4"],
+        }
+        with patch("tools.delegate_tool.delegate_task", return_value='{"results":[]}') as mock_delegate:
+            result = agent._invoke_tool("delegate_task", args, "task-1")
+
+        assert result == '{"results":[]}'
+        _, kwargs = mock_delegate.call_args
+        assert kwargs["model"] == args["model"]
+        assert kwargs["acp_command"] == "codex"
+        assert kwargs["acp_args"] == ["--acp", "--stdio", "--model", "gpt-5.4"]
+        assert kwargs["parent_agent"] is agent
+
     def test_invoke_tool_handles_agent_level_tools(self, agent):
         """_invoke_tool should handle todo tool directly."""
         with patch("tools.todo_tool.todo_tool", return_value='{"ok":true}') as mock_todo:

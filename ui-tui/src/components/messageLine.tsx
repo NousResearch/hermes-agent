@@ -10,8 +10,8 @@ import type { Theme } from '../theme.js'
 import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
 
 import { Md } from './markdown.js'
-import { TodoPanel } from './todoPanel.js'
 import { ToolTrail } from './thinking.js'
+import { TodoPanel } from './todoPanel.js'
 
 export const MessageLine = memo(function MessageLine({
   cols,

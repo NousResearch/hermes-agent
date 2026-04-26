@@ -364,3 +364,124 @@ def test_agent_created_report_excludes_bundled_and_hub(skills_home):
     assert "mine" in names
     assert "bundled" not in names
     assert "hubbed" not in names
+
+
+
+# ---------------------------------------------------------------------------
+# Provenance guard — telemetry must not leak records for bundled/hub skills
+# ---------------------------------------------------------------------------
+
+def test_bump_view_no_op_for_bundled_skill(skills_home):
+    """Telemetry bumps on bundled skills are dropped — the sidecar must stay
+    focused on agent-created skills only."""
+    from tools.skill_usage import bump_view, load_usage
+    skills_dir = skills_home / "skills"
+    (skills_dir / ".bundled_manifest").write_text(
+        "ship-bundled:abc\n", encoding="utf-8",
+    )
+
+    bump_view("ship-bundled")
+    assert "ship-bundled" not in load_usage(), (
+        "bundled skill leaked into .usage.json"
+    )
+
+
+def test_bump_patch_no_op_for_hub_skill(skills_home):
+    from tools.skill_usage import bump_patch, load_usage
+    skills_dir = skills_home / "skills"
+    hub = skills_dir / ".hub"
+    hub.mkdir()
+    (hub / "lock.json").write_text(
+        json.dumps({"installed": {"from-hub": {}}}), encoding="utf-8",
+    )
+
+    bump_patch("from-hub")
+    assert "from-hub" not in load_usage()
+
+
+def test_bump_use_no_op_for_hub_skill(skills_home):
+    from tools.skill_usage import bump_use, load_usage
+    skills_dir = skills_home / "skills"
+    hub = skills_dir / ".hub"
+    hub.mkdir()
+    (hub / "lock.json").write_text(
+        json.dumps({"installed": {"from-hub": {}}}), encoding="utf-8",
+    )
+
+    bump_use("from-hub")
+    assert "from-hub" not in load_usage()
+
+
+def test_set_state_no_op_for_bundled_skill(skills_home):
+    """State transitions on bundled skills must not land in the sidecar."""
+    from tools.skill_usage import set_state, load_usage, STATE_ARCHIVED
+    skills_dir = skills_home / "skills"
+    (skills_dir / ".bundled_manifest").write_text(
+        "locked:abc\n", encoding="utf-8",
+    )
+    set_state("locked", STATE_ARCHIVED)
+    assert "locked" not in load_usage()
+
+
+def test_restore_refuses_to_shadow_bundled_skill(skills_home):
+    """If a bundled skill now occupies the name, refuse to restore."""
+    from tools.skill_usage import archive_skill, restore_skill
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "shared-name")
+    archive_skill("shared-name")
+
+    # Now a bundled skill appears with the same name
+    (skills_dir / ".bundled_manifest").write_text(
+        "shared-name:abc\n", encoding="utf-8",
+    )
+    _write_skill(skills_dir, "shared-name")  # bundled install landed
+
+    ok, msg = restore_skill("shared-name")
+    assert not ok
+    assert "bundled" in msg.lower() or "shadow" in msg.lower()
+
+
+def test_end_to_end_no_code_path_mutates_bundled_skill(skills_home):
+    """The combined guarantee: no curator code path can archive, mark stale,
+    set-state, or persist telemetry for a bundled or hub-installed skill."""
+    from tools.skill_usage import (
+        bump_view, bump_use, bump_patch, set_state, set_pinned,
+        archive_skill, load_usage, STATE_STALE, STATE_ARCHIVED,
+    )
+    skills_dir = skills_home / "skills"
+    _write_skill(skills_dir, "bundled-one")
+    _write_skill(skills_dir, "hub-one")
+    _write_skill(skills_dir, "mine")
+
+    (skills_dir / ".bundled_manifest").write_text(
+        "bundled-one:abc\n", encoding="utf-8",
+    )
+    hub = skills_dir / ".hub"
+    hub.mkdir()
+    (hub / "lock.json").write_text(
+        json.dumps({"installed": {"hub-one": {}}}), encoding="utf-8",
+    )
+
+    # Hammer every mutator at the bundled/hub names
+    for name in ("bundled-one", "hub-one"):
+        bump_view(name)
+        bump_use(name)
+        bump_patch(name)
+        set_state(name, STATE_STALE)
+        set_state(name, STATE_ARCHIVED)
+        set_pinned(name, True)
+        ok, _msg = archive_skill(name)
+        assert not ok, f"archive_skill(\"{name}\") should refuse"
+
+    # Sidecar must be clean of all three
+    data = load_usage()
+    assert "bundled-one" not in data
+    assert "hub-one" not in data
+
+    # Directories must still be in place on disk
+    assert (skills_dir / "bundled-one" / "SKILL.md").exists()
+    assert (skills_dir / "hub-one" / "SKILL.md").exists()
+
+    # The agent-created skill can still be mutated normally
+    bump_view("mine")
+    assert load_usage()["mine"]["view_count"] == 1

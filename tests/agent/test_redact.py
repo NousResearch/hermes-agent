@@ -145,6 +145,23 @@ class TestAuthHeaders:
         assert "mytoken12345" not in result
 
 
+class TestPrivateKeyBlocks:
+    def test_standard_pem_private_key_redacted(self):
+        text = (
+            "-----BEGIN RSA PRIVATE KEY-----\n"
+            "MIIEpAIBAAKCAQEAwouldbeprivate\n"
+            "-----END RSA PRIVATE KEY-----"
+        )
+        result = redact_sensitive_text(text)
+        assert result == "[REDACTED PRIVATE KEY]"
+
+    def test_malformed_private_key_block_redacted(self):
+        text = "BEGIN RSA PRIVATE KEY-----\nCANARY-PRIVATEKEY-XYZ\n-----END"
+        result = redact_sensitive_text(text)
+        assert "CANARY-PRIVATEKEY-XYZ" not in result
+        assert "[REDACTED PRIVATE KEY]" in result
+
+
 class TestTelegramTokens:
     def test_bot_token(self):
         text = "bot123456789:ABCDEfghij-KLMNopqrst_UVWXyz12345"

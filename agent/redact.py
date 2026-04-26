@@ -125,7 +125,18 @@ _TELEGRAM_RE = re.compile(
 
 # Private key blocks: -----BEGIN RSA PRIVATE KEY----- ... -----END RSA PRIVATE KEY-----
 _PRIVATE_KEY_RE = re.compile(
-    r"-----BEGIN[A-Z ]*PRIVATE KEY-----[\s\S]*?-----END[A-Z ]*PRIVATE KEY-----"
+    r"-{2,}BEGIN[A-Z ]*PRIVATE KEY-{2,}[\s\S]*?-{2,}END[A-Z ]*PRIVATE KEY-{2,}",
+    re.IGNORECASE,
+)
+
+# LLMs and logs can mangle PEM sentinels by dropping dashes or truncating the
+# END label. Treat any BEGIN ... PRIVATE KEY block as sensitive even when the
+# PEM framing is imperfect.
+_LOOSE_PRIVATE_KEY_RE = re.compile(
+    r"-{0,5}\s*BEGIN[^\n\r]{0,80}PRIVATE KEY-{0,5}"
+    r"[\s\S]{0,8192}?"
+    r"-{0,5}\s*END(?:[^\n\r]{0,80}PRIVATE KEY)?-{0,5}",
+    re.IGNORECASE,
 )
 
 # Database connection strings: protocol://user:PASSWORD@host
@@ -298,6 +309,7 @@ def redact_sensitive_text(text: str) -> str:
 
     # Private key blocks
     text = _PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", text)
+    text = _LOOSE_PRIVATE_KEY_RE.sub("[REDACTED PRIVATE KEY]", text)
 
     # Database connection string passwords
     text = _DB_CONNSTR_RE.sub(lambda m: f"{m.group(1)}***{m.group(3)}", text)

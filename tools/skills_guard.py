@@ -44,9 +44,8 @@ INSTALL_POLICY = {
     "trusted":       ("allow",  "allow",   "block"),
     "community":     ("allow",  "block",   "block"),
     # Agent-created: "ask" on dangerous surfaces as an error to the agent,
-    # which can retry without the flagged content. This gate only runs when
-    # skills.guard_agent_created is enabled (off by default) — see
-    # tools/skill_manager_tool.py::_guard_agent_created_enabled.
+    # which can retry without the flagged content. This gate runs by default
+    # and can be disabled only by explicitly setting skills.guard_agent_created.
     "agent-created": ("allow",  "allow",   "ask"),
 }
 
@@ -660,6 +659,12 @@ def should_allow_install(result: ScanResult, force: bool = False) -> Tuple[bool,
 
     if decision == "allow":
         return True, f"Allowed ({result.trust_level} source, {result.verdict} verdict)"
+
+    if force and result.verdict == "dangerous":
+        return False, (
+            f"Blocked ({result.trust_level} source + dangerous verdict, "
+            f"{len(result.findings)} findings). --force cannot override dangerous findings."
+        )
 
     if force:
         return True, (

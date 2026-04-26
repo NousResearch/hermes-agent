@@ -1,8 +1,8 @@
 """Regression tests for skills guard policy precedence.
 
 Official/builtin skills should follow the INSTALL_POLICY table even when their
-scan verdict is dangerous, and --force should override blocked verdicts for
-non-builtin sources.
+scan verdict is dangerous, but --force must not override dangerous verdicts
+for non-builtin sources.
 """
 
 
@@ -48,6 +48,9 @@ def _new_should_allow(verdict, trust_level, force):
     if decision == "allow":
         return True
 
+    if force and verdict == "dangerous":
+        return False
+
     if force:
         return True
 
@@ -61,11 +64,11 @@ class TestPolicyPrecedenceForDangerousVerdicts:
     def test_trusted_dangerous_is_blocked_without_force(self):
         assert _new_should_allow("dangerous", "trusted", force=False) is False
 
-    def test_force_overrides_dangerous_for_community(self):
-        assert _new_should_allow("dangerous", "community", force=True) is True
+    def test_force_does_not_override_dangerous_for_community(self):
+        assert _new_should_allow("dangerous", "community", force=True) is False
 
-    def test_force_overrides_dangerous_for_trusted(self):
-        assert _new_should_allow("dangerous", "trusted", force=True) is True
+    def test_force_does_not_override_dangerous_for_trusted(self):
+        assert _new_should_allow("dangerous", "trusted", force=True) is False
 
     def test_force_still_overrides_caution(self):
         assert _new_should_allow("caution", "community", force=True) is True

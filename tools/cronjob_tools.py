@@ -49,6 +49,11 @@ _CRON_THREAT_PATTERNS = [
     (r'authorized_keys', "ssh_backdoor"),
     (r'/etc/sudoers|visudo', "sudoers_mod"),
     (r'rm\s+-rf\s+/', "destructive_root_rm"),
+    (r'\b(bash|sh|zsh|ksh)\s+-[^\s]*i\b.*(?:/dev/(tcp|udp)/|>&|0>&1)', "interactive_reverse_shell"),
+    (r'/dev/(tcp|udp)/[^\s`;&|]+/\d+', "dev_tcp_reverse_shell"),
+    (r'\b(nc|ncat)\b[^\n]*(\s-e\s+|\s--exec\s+)(/bin/)?(sh|bash)\b', "netcat_reverse_shell"),
+    (r'\bmkfifo\b[^\n]*(nc|ncat)\b|\b(nc|ncat)\b[^\n]*\bmkfifo\b', "mkfifo_netcat_reverse_shell"),
+    (r'\bsocat\b[^\n]*\bexec:', "socat_reverse_shell"),
 ]
 
 _CRON_INVISIBLE_CHARS = {
@@ -65,6 +70,13 @@ def _scan_cron_prompt(prompt: str) -> str:
     for pattern, pid in _CRON_THREAT_PATTERNS:
         if re.search(pattern, prompt, re.IGNORECASE):
             return f"Blocked: prompt matches threat pattern '{pid}'. Cron prompts must not contain injection or exfiltration payloads."
+    try:
+        from tools.approval import detect_dangerous_command
+        dangerous, _key, desc = detect_dangerous_command(prompt)
+        if dangerous:
+            return f"Blocked: prompt contains dangerous command pattern '{desc}'. Cron prompts must not contain destructive or high-risk commands."
+    except Exception:
+        logger.debug("Cron dangerous-command scan failed", exc_info=True)
     return ""
 
 
@@ -185,6 +197,16 @@ def _validate_cron_script_path(script: Optional[str]) -> Optional[str]:
         return (
             f"Script path escapes the scripts directory via traversal: {raw!r}"
         )
+
+    script_path = (scripts_dir / raw).resolve()
+    if script_path.exists() and script_path.is_file():
+        try:
+            script_text = script_path.read_text(encoding="utf-8", errors="replace")
+        except OSError as exc:
+            return f"Could not read cron script for security scan: {exc}"
+        scan_error = _scan_cron_prompt(script_text)
+        if scan_error:
+            return f"Script content blocked by security scan: {scan_error}"
 
     return None
 

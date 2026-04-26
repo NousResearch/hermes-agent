@@ -545,24 +545,27 @@ class TestSecurityScanGate:
         assert result is not None
         assert "Security scan blocked" in result
 
-    def test_guard_flag_reads_config_default_false(self):
-        """_guard_agent_created_enabled returns False when config doesn't set it."""
+    def test_guard_flag_reads_config_default_true(self):
+        """_guard_agent_created_enabled returns True when config doesn't set it."""
         from tools.skill_manager_tool import _guard_agent_created_enabled
 
         with patch("hermes_cli.config.load_config", return_value={"skills": {}}):
-            assert _guard_agent_created_enabled() is False
+            assert _guard_agent_created_enabled() is True
 
     def test_guard_flag_reads_config_when_set(self):
-        """_guard_agent_created_enabled returns True when user explicitly enables."""
+        """_guard_agent_created_enabled honors explicit config."""
         from tools.skill_manager_tool import _guard_agent_created_enabled
 
         with patch("hermes_cli.config.load_config",
                    return_value={"skills": {"guard_agent_created": True}}):
             assert _guard_agent_created_enabled() is True
+        with patch("hermes_cli.config.load_config",
+                   return_value={"skills": {"guard_agent_created": False}}):
+            assert _guard_agent_created_enabled() is False
 
     def test_guard_flag_handles_config_error(self):
-        """If load_config raises, _guard_agent_created_enabled defaults to False (fail-safe off)."""
+        """If load_config raises, _guard_agent_created_enabled defaults to True."""
         from tools.skill_manager_tool import _guard_agent_created_enabled
 
         with patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")):
-            assert _guard_agent_created_enabled() is False
+            assert _guard_agent_created_enabled() is True

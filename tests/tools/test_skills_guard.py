@@ -145,21 +145,21 @@ class TestShouldAllowInstall:
         allowed, _ = should_allow_install(self._result("community", "dangerous", f), force=False)
         assert allowed is False
 
-    def test_force_overrides_dangerous_for_community(self):
+    def test_force_does_not_override_dangerous_for_community(self):
         f = [Finding("x", "critical", "c", "f", 1, "m", "d")]
         allowed, reason = should_allow_install(
             self._result("community", "dangerous", f), force=True
         )
-        assert allowed is True
-        assert "Force-installed" in reason
+        assert allowed is False
+        assert "cannot override dangerous" in reason
 
-    def test_force_overrides_dangerous_for_trusted(self):
+    def test_force_does_not_override_dangerous_for_trusted(self):
         f = [Finding("x", "critical", "c", "f", 1, "m", "d")]
         allowed, reason = should_allow_install(
             self._result("trusted", "dangerous", f), force=True
         )
-        assert allowed is True
-        assert "Force-installed" in reason
+        assert allowed is False
+        assert "cannot override dangerous" in reason
 
     # -- agent-created policy --
 
@@ -185,13 +185,13 @@ class TestShouldAllowInstall:
         assert allowed is None
         assert "Requires confirmation" in reason
 
-    def test_force_overrides_dangerous_for_agent_created(self):
+    def test_force_does_not_override_dangerous_for_agent_created(self):
         f = [Finding("x", "critical", "c", "f", 1, "m", "d")]
         allowed, reason = should_allow_install(
             self._result("agent-created", "dangerous", f), force=True
         )
-        assert allowed is True
-        assert "Force-installed" in reason
+        assert allowed is False
+        assert "cannot override dangerous" in reason
 
 
 # ---------------------------------------------------------------------------

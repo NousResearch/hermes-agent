@@ -381,16 +381,42 @@ class _CodexCompletionsAdapter:
         # API format (input_text / input_image instead of text / image_url).
         instructions = "You are a helpful assistant."
         input_msgs: List[Dict[str, Any]] = []
+        allowed_input_roles = {"user", "assistant", "developer"}
         for msg in messages:
             role = msg.get("role", "user")
             content = msg.get("content") or ""
             if role == "system":
                 instructions = content if isinstance(content, str) else str(content)
-            else:
-                input_msgs.append({
-                    "role": role,
-                    "content": _convert_content_for_responses(content),
-                })
+                continue
+
+            if role == "tool":
+                # The Codex Responses endpoint used for auxiliary tasks does
+                # not accept chat-completions ``tool`` messages in ``input``
+                # (HTTP 400: supported roles are assistant/system/developer/user).
+                # Preserve the useful transcript content for summarisation /
+                # memory flush, but present it as a user-readable transcript
+                # note instead of an invalid role.
+                tool_name = msg.get("name") or msg.get("tool_name") or "tool"
+                tool_call_id = msg.get("tool_call_id")
+                if not isinstance(content, str):
+                    try:
+                        content = json.dumps(content, ensure_ascii=False)
+                    except Exception:
+                        content = str(content)
+                label = f"Tool result from {tool_name}"
+                if tool_call_id:
+                    label += f" ({tool_call_id})"
+                role = "user"
+                content = f"[{label}:\n{content}]"
+            elif role not in allowed_input_roles:
+                # Be conservative for transcript-only auxiliary calls: keep
+                # unknown-role content, but remap it to a legal user message.
+                role = "user"
+
+            input_msgs.append({
+                "role": role,
+                "content": _convert_content_for_responses(content),
+            })
 
         resp_kwargs: Dict[str, Any] = {
             "model": model,

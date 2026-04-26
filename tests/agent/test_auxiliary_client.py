@@ -517,6 +517,72 @@ class TestGetTextAuxiliaryClient:
         assert model == "gpt-5.2-codex"
 
 
+class TestCodexAuxiliaryAdapterRoleNormalization:
+    def test_tool_messages_are_remapped_before_responses_call(self):
+        """Codex auxiliary calls use Responses API, which rejects role='tool'.
+
+        Memory flush passes full chat transcripts that can include tool-result
+        messages. The adapter should preserve those results as transcript text
+        while sending only roles accepted by the backend.
+        """
+        captured = {}
+
+        class _FakeStream:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def __iter__(self):
+                return iter([])
+
+            def get_final_response(self):
+                return MagicMock(
+                    output=[
+                        MagicMock(
+                            type="message",
+                            content=[MagicMock(type="output_text", text="ok")],
+                        )
+                    ],
+                    usage=None,
+                )
+
+        class _FakeResponses:
+            def stream(self, **kwargs):
+                captured.update(kwargs)
+                return _FakeStream()
+
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+
+        adapter = _CodexCompletionsAdapter(
+            MagicMock(responses=_FakeResponses()),
+            "gpt-5.2-codex",
+        )
+        adapter.create(
+            messages=[
+                {"role": "system", "content": "sys"},
+                {"role": "user", "content": "hello"},
+                {"role": "assistant", "content": "I will call a tool"},
+                {
+                    "role": "tool",
+                    "tool_name": "browser_console",
+                    "tool_call_id": "call_1",
+                    "content": {"result": 42},
+                },
+                {"role": "narrator", "content": "custom role text"},
+            ],
+        )
+
+        assert captured["instructions"] == "sys"
+        roles = [msg["role"] for msg in captured["input"]]
+        assert roles == ["user", "assistant", "user", "user"]
+        assert "tool" not in roles
+        assert "Tool result from browser_console (call_1)" in captured["input"][2]["content"]
+        assert '"result": 42' in captured["input"][2]["content"]
+        assert "custom role text" == captured["input"][3]["content"]
+
+
 class TestNousAuxiliaryRefresh:
     def test_try_nous_prefers_runtime_credentials(self):
         fresh_base = "https://inference-api.nousresearch.com/v1"

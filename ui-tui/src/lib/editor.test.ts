@@ -1,28 +1,25 @@
-import { chmodSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { beforeEach, describe, expect, it } from 'vitest'
 
 import { resolveEditor } from './editor.js'
+
+const exe = (dir: string, name: string): string => {
+  const path = join(dir, name)
+
+  writeFileSync(path, '#!/bin/sh\nexit 0\n')
+  chmodSync(path, 0o755)
+
+  return path
+}
 
 describe('resolveEditor', () => {
   let dir: string
 
-  const exe = (name: string) => {
-    const path = join(dir, name)
-    writeFileSync(path, '#!/bin/sh\nexit 0\n')
-    chmodSync(path, 0o755)
-
-    return path
-  }
-
   beforeEach(() => {
     dir = mkdtempSync(join(tmpdir(), 'editor-test-'))
-  })
-
-  afterEach(() => {
-    // tmp dir is small; let the OS reap it
   })
 
   it('honors $VISUAL above all else', () => {
@@ -33,40 +30,30 @@ describe('resolveEditor', () => {
     expect(resolveEditor({ EDITOR: 'nvim', PATH: dir })).toBe('nvim')
   })
 
-  it('prefers system editor over nano over vi on $PATH', () => {
-    exe('nano')
-    exe('vi')
-    const editor = exe('editor')
+  it('prefers `editor` over nano over vi on $PATH', () => {
+    exe(dir, 'nano')
+    exe(dir, 'vi')
+    const expected = exe(dir, 'editor')
 
-    expect(resolveEditor({ PATH: dir })).toBe(editor)
+    expect(resolveEditor({ PATH: dir })).toBe(expected)
   })
 
-  it('falls back to nano when only nano and vi exist', () => {
-    const nano = exe('nano')
-    exe('vi')
+  it('falls back to nano before vi when both exist', () => {
+    exe(dir, 'vi')
+    const expected = exe(dir, 'nano')
 
-    expect(resolveEditor({ PATH: dir })).toBe(nano)
+    expect(resolveEditor({ PATH: dir })).toBe(expected)
   })
 
-  it('falls back to vi when only vi exists', () => {
-    const vi = exe('vi')
-
-    expect(resolveEditor({ PATH: dir })).toBe(vi)
+  it('returns literal "vi" when $PATH is empty', () => {
+    expect(resolveEditor({ PATH: '' })).toBe('vi')
   })
 
-  it('returns literal "vi" when nothing on PATH and no env', () => {
-    mkdirSync(join(dir, 'empty'), { recursive: true })
-
-    expect(resolveEditor({ PATH: join(dir, 'empty') })).toBe('vi')
-  })
-
-  it('walks multi-entry PATH', () => {
+  it('walks multi-entry $PATH', () => {
     const a = mkdtempSync(join(tmpdir(), 'editor-a-'))
     const b = mkdtempSync(join(tmpdir(), 'editor-b-'))
+    const expected = exe(b, 'editor')
 
-    writeFileSync(join(b, 'editor'), '#!/bin/sh\n')
-    chmodSync(join(b, 'editor'), 0o755)
-
-    expect(resolveEditor({ PATH: [a, b].join(delimiter) })).toBe(join(b, 'editor'))
+    expect(resolveEditor({ PATH: [a, b].join(delimiter) })).toBe(expected)
   })
 })

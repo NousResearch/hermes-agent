@@ -255,27 +255,34 @@ export function useComposerState({
   )
 
   const openEditor = useCallback(async () => {
-    const editor = resolveEditor()
-    const file = join(mkdtempSync(join(tmpdir(), 'hermes-')), 'prompt.md')
-    let code: null | number = null
+    const dir = mkdtempSync(join(tmpdir(), 'hermes-'))
+    const file = join(dir, 'prompt.md')
 
     writeFileSync(file, [...inputBuf, input].join('\n'))
 
+    let exitCode: null | number = null
+
     await withInkSuspended(async () => {
-      code = spawnSync(editor, [file], { stdio: 'inherit' }).status
+      exitCode = spawnSync(resolveEditor(), [file], { stdio: 'inherit' }).status
     })
 
-    if (code === 0) {
+    try {
+      if (exitCode !== 0) {
+        return
+      }
+
       const text = readFileSync(file, 'utf8').trimEnd()
 
-      if (text) {
-        setInput('')
-        setInputBuf([])
-        submitRef.current(text)
+      if (!text) {
+        return
       }
-    }
 
-    rmSync(file, { force: true })
+      setInput('')
+      setInputBuf([])
+      submitRef.current(text)
+    } finally {
+      rmSync(dir, { force: true, recursive: true })
+    }
   }, [input, inputBuf, submitRef])
 
   const actions = useMemo(

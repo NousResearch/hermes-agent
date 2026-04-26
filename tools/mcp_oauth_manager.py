@@ -362,7 +362,6 @@ class MCPOAuthManager:
             _configure_callback_port,
             _is_interactive,
             _maybe_preregister_client,
-            _parse_base_url,
             _redirect_handler,
             _wait_for_callback,
         )
@@ -387,7 +386,7 @@ class MCPOAuthManager:
 
         return _HERMES_PROVIDER_CLS(
             server_name=server_name,
-            server_url=_parse_base_url(entry.server_url),
+            server_url=entry.server_url,
             client_metadata=client_metadata,
             storage=storage,
             redirect_handler=_redirect_handler,

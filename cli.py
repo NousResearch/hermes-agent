@@ -1378,7 +1378,7 @@ def _resolve_attachment_path(raw_path: str) -> Path | None:
 
 
 def _format_process_notification(evt: dict) -> "str | None":
-    """Format a process notification event into a [SYSTEM: ...] message.
+    """Format a process notification event into a [IMPORTANT: ...] message.
 
     Handles both completion events (notify_on_complete) and watch pattern
     match events from the unified completion_queue.
@@ -1388,14 +1388,14 @@ def _format_process_notification(evt: dict) -> "str | None":
     _cmd = evt.get("command", "unknown")
 
     if evt_type == "watch_disabled":
-        return f"[SYSTEM: {evt.get('message', '')}]"
+        return f"[IMPORTANT: {evt.get('message', '')}]"
 
     if evt_type == "watch_match":
         _pat = evt.get("pattern", "?")
         _out = evt.get("output", "")
         _sup = evt.get("suppressed", 0)
         text = (
-            f"[SYSTEM: Background process {_sid} matched "
+            f"[IMPORTANT: Background process {_sid} matched "
             f"watch pattern \"{_pat}\".\n"
             f"Command: {_cmd}\n"
             f"Matched output:\n{_out}"
@@ -1409,7 +1409,7 @@ def _format_process_notification(evt: dict) -> "str | None":
     _exit = evt.get("exit_code", "?")
     _out = evt.get("output", "")
     return (
-        f"[SYSTEM: Background process {_sid} completed "
+        f"[IMPORTANT: Background process {_sid} completed "
         f"(exit code {_exit}).\n"
         f"Command: {_cmd}\n"
         f"Output:\n{_out}]"
@@ -7217,7 +7217,7 @@ class HermesCLI:
             change_detail = ". ".join(change_parts) + ". " if change_parts else ""
             self.conversation_history.append({
                 "role": "user",
-                "content": f"[SYSTEM: MCP servers have been reloaded. {change_detail}{tool_summary}. The tool list for this conversation has been updated accordingly.]",
+                "content": f"[IMPORTANT: MCP servers have been reloaded. {change_detail}{tool_summary}. The tool list for this conversation has been updated accordingly.]",
             })
 
             # Persist session immediately so the session log reflects the

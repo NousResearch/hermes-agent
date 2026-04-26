@@ -6,8 +6,8 @@ import {
   STREAM_TYPING_BATCH_MS
 } from '../config/timing.js'
 import type { SessionInterruptResponse, SubagentEventPayload } from '../gatewayTypes.js'
-import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
 import { appendToolShelfMessage, isToolShelfMessage } from '../lib/liveProgress.js'
+import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
 import {
   boundedLiveRenderText,
   buildToolTrailLine,

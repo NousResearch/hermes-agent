@@ -480,6 +480,28 @@ export default function ProfilesPage() {
                       <Badge variant="outline">{t.profiles.hasEnv}</Badge>
                     )}
                   </div>
+                  {isRenaming &&
+                    (() => {
+                      const trimmed = renameTo.trim();
+                      const invalid =
+                        trimmed !== "" &&
+                        trimmed !== p.name &&
+                        !PROFILE_NAME_RE.test(trimmed);
+                      return (
+                        <p
+                          className={
+                            "text-xs mb-1 " +
+                            (invalid
+                              ? "text-destructive"
+                              : "text-muted-foreground")
+                          }
+                        >
+                          {invalid
+                            ? `${t.profiles.invalidName}: ${t.profiles.nameRule}`
+                            : t.profiles.nameRule}
+                        </p>
+                      );
+                    })()}
                   <div className="flex items-center gap-4 text-xs text-muted-foreground flex-wrap">
                     {p.model && (
                       <span>

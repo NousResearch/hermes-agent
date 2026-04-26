@@ -1102,3 +1102,22 @@ class TestSharedEventLoopLifecycle:
 
         mock_client.aclose.assert_called_once()
         assert provider._client is None
+
+
+class TestShutdown:
+    def test_local_embedded_shutdown_closes_inner_async_client_on_shared_loop(self, provider):
+        inner_client = _make_mock_client()
+        embedded = MagicMock()
+        embedded._client = inner_client
+        embedded.close = MagicMock()
+
+        provider._mode = "local_embedded"
+        provider._client = embedded
+
+        provider.shutdown()
+
+        inner_client.aclose.assert_awaited_once()
+        embedded.close.assert_called_once()
+        assert embedded._client is None
+        assert provider._client is None
+

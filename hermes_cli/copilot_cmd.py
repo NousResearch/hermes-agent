@@ -1,10 +1,15 @@
 """``hermes copilot`` CLI subcommand — launch and list Copilot sessions.
 
 Simplified interface: launch routes a prompt to a repo, spawns copilot
-with ``--remote``, captures the session ID, and logs it.  Sessions are
-cloud-managed — use ``copilot --connect=<session_id>`` from any
-authenticated terminal to attach, and ``copilot --resume=<session_id>``
-to resume a completed session.
+with ``--remote``, captures the Hermes job/session ID, and logs it.
+Sessions are cloud-managed — when a dedicated Copilot reconnect handle
+is available, use ``copilot --connect=<connect_handle>`` from any
+authenticated terminal to attach, and
+``copilot --resume=<connect_handle>`` to resume a completed session.
+The Hermes job UUID is *not* a valid Copilot connect/resume handle; if
+the handle could not be extracted, ``hermes copilot show <job_id>`` and
+the launcher log under ``~/.hermes/logs/copilot-<job_id>.log`` are the
+correct places to look.
 """
 
 import sys
@@ -305,10 +310,20 @@ def handle_copilot_remote_slash(raw_command: str) -> None:
     """Handle /copilot_remote slash command from an interactive Hermes session.
 
     Parses the raw command text and dispatches to the appropriate handler.
+    Uses ``shlex.split`` so quoted prompts (and any path argument containing
+    spaces) are preserved as a single token instead of being shattered on
+    whitespace.
     """
+    import shlex
     from types import SimpleNamespace
 
-    parts = raw_command.strip().split()
+    try:
+        parts = shlex.split(raw_command.strip())
+    except ValueError as exc:
+        # Unbalanced quote / malformed escape — surface a clear error
+        # instead of silently parsing a partial command.
+        print(f"Error: could not parse /copilot_remote command: {exc}", file=sys.stderr)
+        return
     subcmd = parts[1] if len(parts) > 1 else "list"
     args_rest = parts[2:]
 

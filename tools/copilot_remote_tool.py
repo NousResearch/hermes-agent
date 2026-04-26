@@ -174,12 +174,50 @@ def _route_repo(prompt: str) -> Optional[RepoEntry]:
     return route_repo(prompt)
 
 
+def _resolve_repo_slug_cheap(slug: str) -> Optional[RepoEntry]:
+    """Cheap slug-only lookup under ``$HERMES_WORKSPACE_PATH/repos/*/<slug>``.
+
+    Avoids the full ``_discover_repos()`` walk (which reads every README and
+    runs a git command per repo) when the caller already supplied an exact
+    slug. Returns ``None`` if the env var is unset or no matching directory
+    exists, so the caller can fall back to full discovery.
+    """
+    import os
+    from pathlib import Path
+
+    ws = os.environ.get("HERMES_WORKSPACE_PATH", "")
+    if not ws or not slug:
+        return None
+    repos_dir = Path(ws) / "repos"
+    if not repos_dir.is_dir():
+        return None
+    try:
+        for org_dir in repos_dir.iterdir():
+            if not org_dir.is_dir():
+                continue
+            candidate = org_dir / slug
+            if candidate.is_dir():
+                return RepoEntry(slug=slug, path=str(candidate))
+    except OSError:
+        return None
+    return None
+
+
 def _resolve_repo(prompt: str, repo: str = "", repo_path: str = "") -> tuple[Optional[RepoEntry], Optional[str]]:
     repo = (repo or "").strip()
     repo_path = (repo_path or "").strip()
 
     if repo and repo_path:
         return RepoEntry(slug=repo, path=repo_path), None
+
+    if repo and not repo_path:
+        # Fast path: try a direct ``repos/*/<slug>`` lookup before falling
+        # back to ``_discover_repos()`` which reads every README and runs
+        # ``git symbolic-ref`` per repo. Large workspaces make that walk
+        # noticeably slow when all we need is a slug \u2192 path mapping.
+        cheap = _resolve_repo_slug_cheap(repo)
+        if cheap is not None:
+            return cheap, None
 
     entries: list[RepoEntry] = []
     discover_error: Optional[str] = None

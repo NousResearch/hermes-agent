@@ -85,6 +85,17 @@ def auto_title_session(
     if not title:
         return
 
+    # Re-check before writing: the LLM call above can take 1-30s, and during
+    # that window the user (e.g. via Scarf's pencil button or `hermes sessions
+    # rename`) may have set a title themselves. Without this re-check the
+    # auto-titler races and silently overwrites the user's choice.
+    try:
+        if session_db.get_session_title(session_id):
+            logger.debug("Skipping auto-title: user-set title appeared during generation")
+            return
+    except Exception:
+        return
+
     try:
         session_db.set_session_title(session_id, title)
         logger.debug("Auto-generated session title: %s", title)

@@ -113,6 +113,23 @@ class TestAutoTitleSession:
             auto_title_session(db, "sess-1", "hi", "hello")
             db.set_session_title.assert_not_called()
 
+    def test_skips_if_user_set_title_during_generation(self):
+        """Race regression: title was empty when the worker started, so the
+        existing-title guard at the top let it through. The LLM call took 1-30s,
+        and during that window the user renamed the chat (Scarf pencil or
+        `hermes sessions rename`). The re-check between generate_title and
+        set_session_title must catch this and skip the write — otherwise the
+        auto-titler silently overwrites the user's choice."""
+        db = MagicMock()
+        # First call (top-of-function guard): empty → proceed.
+        # Second call (re-check after LLM): user just set a title → skip.
+        db.get_session_title.side_effect = [None, "User Set This"]
+
+        with patch("agent.title_generator.generate_title", return_value="LLM Title"):
+            auto_title_session(db, "sess-1", "hi", "hello")
+            db.set_session_title.assert_not_called()
+        assert db.get_session_title.call_count == 2
+
 
 class TestMaybeAutoTitle:
     """Tests for maybe_auto_title() — the fire-and-forget entry point."""

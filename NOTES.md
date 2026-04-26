@@ -105,3 +105,11 @@ Extend existing Hermes primitives with small opt-in modules and thin integration
 
 ## Next validation step
 Commit, push, and fast-forward the VPS checkout after one final `git diff --check` audit.
+
+## Post-mortem 2026-04-26 — auto-titler race overwrote user rename
+- **Trigger:** User renamed a freshly-created chat from Scarf's pencil button. Title flipped to the user's value briefly, then was overwritten with an LLM-generated title within seconds.
+- **Symptom:** End-to-end smoke test of the new pencil button typed "Rename smoke test ✓"; a few seconds later the chat title in the list was "test 123" (LLM output, not user input).
+- **Root cause:** `agent/title_generator.py:auto_title_session` checked `get_session_title` ONLY at the top of the worker thread. The `generate_title` LLM call below it takes 1–30s. Any title set during that window — Scarf pencil, `/title` slash, `hermes sessions rename` — was unconditionally overwritten when the LLM call returned.
+- **Fix:** Re-check `get_session_title` between the LLM return and the `set_session_title` write. If a title now exists, skip. ~10 LoC.
+- **Prevention:** Regression test `test_skips_if_user_set_title_during_generation` mocks `get_session_title.side_effect = [None, "User Set This"]` so the worker only writes when both the pre-check AND the post-check see no user title.
+- **Considered alternative:** `UPDATE sessions SET title = ? WHERE id = ? AND (title IS NULL OR title = '')` is atomic but would also block intentional overwrites from CLI rename and `/title`. Worker-side guard is the smaller blast radius.

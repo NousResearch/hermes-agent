@@ -202,6 +202,18 @@ TOOLSETS = {
         "includes": []
     },
 
+    "discord": {
+        "description": "Discord read and participate tools (fetch messages, search members, create threads)",
+        "tools": ["discord"],
+        "includes": [],
+    },
+
+    "discord_admin": {
+        "description": "Discord server management (list channels/roles, pin messages, assign roles)",
+        "tools": ["discord_admin"],
+        "includes": [],
+    },
+
     "feishu_doc": {
         "description": "Read Feishu/Lark document content",
         "tools": ["feishu_doc_read"],
@@ -326,8 +338,8 @@ TOOLSETS = {
     "hermes-discord": {
         "description": "Discord bot toolset - full access (terminal has safety checks via dangerous command approval)",
         "tools": _HERMES_CORE_TOOLS + [
-            # Discord server introspection & management (gated on DISCORD_BOT_TOKEN via check_fn)
-            "discord_server",
+            "discord",
+            "discord_admin",
         ],
         "includes": []
     },
@@ -388,7 +400,13 @@ TOOLSETS = {
 
     "hermes-feishu": {
         "description": "Feishu/Lark bot toolset - enterprise messaging via Feishu/Lark (full access)",
-        "tools": _HERMES_CORE_TOOLS,
+        "tools": _HERMES_CORE_TOOLS + [
+            "feishu_doc_read",
+            "feishu_drive_list_comments",
+            "feishu_drive_list_comment_replies",
+            "feishu_drive_reply_comment",
+            "feishu_drive_add_comment",
+        ],
         "includes": []
     },
 

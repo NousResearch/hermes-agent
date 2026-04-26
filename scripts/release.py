@@ -92,6 +92,7 @@ AUTHOR_MAP = {
     "104278804+Sertug17@users.noreply.github.com": "Sertug17",
     "112503481+caentzminger@users.noreply.github.com": "caentzminger",
     "258577966+voidborne-d@users.noreply.github.com": "voidborne-d",
+    "xydarcher@uestc.edu.cn": "Readon",
     "sir_even@icloud.com": "sirEven",
     "36056348+sirEven@users.noreply.github.com": "sirEven",
     "70424851+insecurejezza@users.noreply.github.com": "insecurejezza",
@@ -504,6 +505,7 @@ AUTHOR_MAP = {
     "screenmachine@gmail.com": "teknium1",
     "chenzeshi@live.com": "chen1749144759",
     "mor.aleksandr@yahoo.com": "MorAlekss",
+    "ash@users.noreply.github.com": "ash",
 }
 
 

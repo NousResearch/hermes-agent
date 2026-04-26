@@ -323,27 +323,39 @@ const measureTextNode = function (
   widthMode: LayoutMeasureMode
 ): { width: number; height: number } {
   const elem = node.nodeName !== '#text' ? (node as DOMElement) : node.parentNode
+
   if (elem && elem.nodeName === 'ink-text') {
     let cache = elem._textMeasureCache
+
     if (!cache) {
       cache = { gen: 0, entries: new Map() }
       elem._textMeasureCache = cache
     }
+
     const key = `${width}|${widthMode}`
     const hit = cache.entries.get(key)
+
     if (hit && hit._gen === cache.gen) {
       return hit.result
     }
+
     const result = computeTextMeasure(node, width, widthMode)
+
     // Enforce cap with FIFO eviction to avoid unbounded growth during
     // pathological frames where yoga probes many widths.
     if (cache.entries.size >= MEASURE_CACHE_CAP) {
       const firstKey = cache.entries.keys().next().value
-      cache.entries.delete(firstKey)
+
+      if (firstKey !== undefined) {
+        cache.entries.delete(firstKey)
+      }
     }
+
     cache.entries.set(key, { _gen: cache.gen, result })
+
     return result
   }
+
   return computeTextMeasure(node, width, widthMode)
 }
 
@@ -475,6 +487,7 @@ export const clearYogaNodeReferences = (node: DOMElement | TextNode): void => {
     for (const child of node.childNodes) {
       clearYogaNodeReferences(child)
     }
+
     node._textMeasureCache = undefined
   }
 

@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectOption } from "@/components/ui/select";
 import { useI18n } from "@/i18n";
+import { PluginSlot } from "@/plugins";
 
 function formatTime(iso?: string | null): string {
   if (!iso) return "—";
@@ -149,6 +150,7 @@ export default function CronPage() {
 
   return (
     <div className="flex flex-col gap-6">
+      <PluginSlot name="cron:top" />
       <Toast toast={toast} />
 
       <DeleteConfirmDialog
@@ -346,6 +348,7 @@ export default function CronPage() {
           </Card>
         ))}
       </div>
+      <PluginSlot name="cron:bottom" />
     </div>
   );
 }

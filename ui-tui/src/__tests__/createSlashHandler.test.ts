@@ -17,6 +17,14 @@ describe('createSlashHandler', () => {
     expect(getOverlayState().picker).toBe(true)
   })
 
+  it('treats /provider as a local /model alias', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/provider')).toBe(true)
+    expect(getOverlayState().modelPicker).toBe(true)
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
   it('opens the skills hub locally for bare /skills', () => {
     const ctx = buildCtx()
 
@@ -118,9 +126,7 @@ describe('createSlashHandler', () => {
     const ctx = buildCtx()
     createSlashHandler(ctx)('/details tools blink')
     expect(getUiState().sections.tools).toBeUndefined()
-    expect(ctx.transcript.sys).toHaveBeenCalledWith(
-      'usage: /details <section> [hidden|collapsed|expanded|reset]'
-    )
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('usage: /details <section> [hidden|collapsed|expanded|reset]')
   })
 
   it('shows tool enable usage when names are missing', () => {

@@ -2796,6 +2796,122 @@ def _convert_openai_images_to_anthropic(messages: list) -> list:
     return converted
 
 
+def _extract_minimax_vlm_payload(messages: list) -> Tuple[str, Optional[str]]:
+    """Extract prompt text and image data URI from OpenAI-format vision messages."""
+    prompt_parts: list[str] = []
+    image_url: Optional[str] = None
+    for msg in messages:
+        content = msg.get("content")
+        if isinstance(content, str):
+            prompt_parts.append(content)
+        elif isinstance(content, list):
+            for block in content:
+                if block.get("type") == "text":
+                    prompt_parts.append(block.get("text", ""))
+                elif block.get("type") == "image_url" and image_url is None:
+                    image_url = (block.get("image_url") or {}).get("url", "")
+    return "\n".join(prompt_parts).strip(), image_url
+
+
+def _build_minimax_vlm_response(content: str) -> SimpleNamespace:
+    """Build a mock response compatible with extract_content_or_reasoning."""
+    return SimpleNamespace(
+        choices=[
+            SimpleNamespace(
+                message=SimpleNamespace(content=content)
+            )
+        ]
+    )
+
+
+def _call_minimax_vlm_endpoint(
+    provider: str,
+    messages: list,
+    client: Any,
+    timeout: float,
+) -> Any:
+    """Call MiniMax's dedicated VLM endpoint for vision tasks.
+
+    The Anthropic-compatible chat endpoint silently ignores image blocks.
+    Vision must go through /v1/coding_plan/vlm instead.
+    """
+    import httpx
+
+    prompt, image_url = _extract_minimax_vlm_payload(messages)
+    if not image_url:
+        raise RuntimeError(
+            f"MiniMax VLM ({provider}): no image found in messages"
+        )
+
+    base = str(client.base_url).rstrip("/")
+    vlm_url = base + "/coding_plan/vlm"
+    api_key = client.api_key
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {"prompt": prompt, "image_url": image_url}
+
+    logger.info("MiniMax VLM: POST %s (prompt=%d chars)", vlm_url, len(prompt))
+
+    resp = httpx.post(vlm_url, json=payload, headers=headers, timeout=timeout)
+    resp.raise_for_status()
+    data = resp.json()
+
+    base_resp = data.get("base_resp", {})
+    if base_resp.get("status_code", -1) != 0:
+        raise RuntimeError(
+            f"MiniMax VLM ({provider}): API error: "
+            f"{base_resp.get('status_msg', 'unknown')}"
+        )
+
+    return _build_minimax_vlm_response(data.get("content", ""))
+
+
+async def _async_call_minimax_vlm_endpoint(
+    provider: str,
+    messages: list,
+    client: Any,
+    timeout: float,
+) -> Any:
+    """Async variant of _call_minimax_vlm_endpoint."""
+    import httpx
+
+    prompt, image_url = _extract_minimax_vlm_payload(messages)
+    if not image_url:
+        raise RuntimeError(
+            f"MiniMax VLM ({provider}): no image found in messages"
+        )
+
+    base = str(client.base_url).rstrip("/")
+    vlm_url = base + "/coding_plan/vlm"
+    api_key = client.api_key
+
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
+    }
+    payload = {"prompt": prompt, "image_url": image_url}
+
+    logger.info("MiniMax VLM: POST %s (prompt=%d chars)", vlm_url, len(prompt))
+
+    async with httpx.AsyncClient() as http_client:
+        resp = await http_client.post(
+            vlm_url, json=payload, headers=headers, timeout=timeout,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+    base_resp = data.get("base_resp", {})
+    if base_resp.get("status_code", -1) != 0:
+        raise RuntimeError(
+            f"MiniMax VLM ({provider}): API error: "
+            f"{base_resp.get('status_msg', 'unknown')}"
+        )
+
+    return _build_minimax_vlm_response(data.get("content", ""))
+
 
 def _build_call_kwargs(
     provider: str,
@@ -2999,6 +3115,10 @@ def call_llm(
         logger.info("Auxiliary %s: using %s (%s)%s",
                      task, resolved_provider or "auto", final_model or "default",
                      f" at {_base_info}" if _base_info and "openrouter" not in _base_info else "")
+
+    if task == "vision" and resolved_provider in _ANTHROPIC_COMPAT_PROVIDERS:
+        return _call_minimax_vlm_endpoint(
+            resolved_provider, messages, client, effective_timeout)
 
     # Pass the client's actual base_url (not just resolved_base_url) so
     # endpoint-specific temperature overrides can distinguish
@@ -3296,6 +3416,10 @@ async def async_call_llm(
                 f"Run: hermes setup")
 
     effective_timeout = timeout if timeout is not None else _get_task_timeout(task)
+
+    if task == "vision" and resolved_provider in _ANTHROPIC_COMPAT_PROVIDERS:
+        return await _async_call_minimax_vlm_endpoint(
+            resolved_provider, messages, client, effective_timeout)
 
     # Pass the client's actual base_url (not just resolved_base_url) so
     # endpoint-specific temperature overrides can distinguish

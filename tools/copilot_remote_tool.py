@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import uuid
 from typing import Any, Dict, Optional
 
@@ -174,28 +175,65 @@ def _route_repo(prompt: str) -> Optional[RepoEntry]:
     return route_repo(prompt)
 
 
+# A repo slug is a directory basename under ``$HERMES_WORKSPACE_PATH/repos/<org>/``.
+# Restrict to a conservative character class so caller-supplied input cannot
+# escape the repos tree via path separators, ``..``, NUL bytes, absolute
+# paths, or any other shell/path metacharacters. Matches what GitHub itself
+# allows for repository names.
+_VALID_SLUG_RE = re.compile(r"^[A-Za-z0-9._-]{1,100}$")
+
+
+def _is_safe_slug(slug: str) -> bool:
+    """Return True iff ``slug`` is a safe single-segment repo basename.
+
+    Rejects empty strings, anything containing ``/``, ``\\``, ``..``, NUL,
+    leading dots (``.``/``..``), or characters outside ``[A-Za-z0-9._-]``.
+    Used as a guard before any filesystem lookup that interpolates the slug
+    into a path under the workspace.
+    """
+    if not slug or slug in (".", ".."):
+        return False
+    if not _VALID_SLUG_RE.match(slug):
+        return False
+    # Defense in depth against path-segment escapes even if the regex above
+    # ever loosens.
+    return "/" not in slug and "\\" not in slug and "\x00" not in slug and ".." not in slug
+
+
 def _resolve_repo_slug_cheap(slug: str) -> Optional[RepoEntry]:
     """Cheap slug-only lookup under ``$HERMES_WORKSPACE_PATH/repos/*/<slug>``.
 
     Avoids the full ``_discover_repos()`` walk (which reads every README and
     runs a git command per repo) when the caller already supplied an exact
-    slug. Returns ``None`` if the env var is unset or no matching directory
+    slug. Returns ``None`` if the env var is unset, the slug fails the
+    safety check (path separators / ``..`` / etc.), or no matching directory
     exists, so the caller can fall back to full discovery.
     """
     import os
     from pathlib import Path
 
     ws = os.environ.get("HERMES_WORKSPACE_PATH", "")
-    if not ws or not slug:
+    if not ws or not _is_safe_slug(slug):
         return None
-    repos_dir = Path(ws) / "repos"
+    repos_root = Path(ws) / "repos"
+    try:
+        repos_dir = repos_root.resolve(strict=False)
+    except OSError:
+        return None
     if not repos_dir.is_dir():
         return None
     try:
         for org_dir in repos_dir.iterdir():
             if not org_dir.is_dir():
                 continue
-            candidate = org_dir / slug
+            candidate = (org_dir / slug).resolve(strict=False)
+            # Final guard: even with a safe slug, refuse anything that
+            # somehow resolves outside the repos tree (e.g. via a
+            # malicious symlink under repos/<org>/).
+            try:
+                candidate.relative_to(repos_dir)
+            except ValueError:
+                continue
             if candidate.is_dir():
                 return RepoEntry(slug=slug, path=str(candidate))
     except OSError:
@@ -306,10 +344,17 @@ def _launch(args: Dict[str, Any]) -> str:
         # the launch still succeeds.
         hermes_session_id = str(args.get("hermes_session_id") or "") or None
         if hermes_session_id and db.get_session(hermes_session_id) is None:
+            from copilot_remote.router import _sanitize_for_log
+
+            # ``hermes_session_id`` originates from tool args and could in
+            # principle contain CR/LF or other control chars; sanitize
+            # before logging to prevent log-injection / multiline spoofing
+            # (CWE-117). The DB insert below is unaffected because the
+            # value is being replaced with NULL anyway.
             logger.warning(
                 "copilot_remote: hermes_session_id=%s has no sessions row; "
                 "inserting copilot_remote with NULL FK to avoid IntegrityError",
-                hermes_session_id,
+                _sanitize_for_log(hermes_session_id),
             )
             hermes_session_id = None
 

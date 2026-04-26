@@ -118,6 +118,7 @@ AUTHOR_MAP = {
     "Mibayy@users.noreply.github.com": "Mibayy",
     "mibayy@users.noreply.github.com": "Mibayy",
     "135070653+sgaofen@users.noreply.github.com": "sgaofen",
+    "lzy.dev@gmail.com": "zhiyanliu",
     "nocoo@users.noreply.github.com": "nocoo",
     "30841158+n-WN@users.noreply.github.com": "n-WN",
     "tsuijinglei@gmail.com": "hiddenpuppy",

@@ -119,6 +119,7 @@ AUTHOR_MAP = {
     "nocoo@users.noreply.github.com": "nocoo",
     "30841158+n-WN@users.noreply.github.com": "n-WN",
     "tsuijinglei@gmail.com": "hiddenpuppy",
+    "buraysandro9@gmail.com": "ygd58",
     "jerome@clawwork.ai": "HiddenPuppy",
     "jerome.benoit@sap.com": "jerome-benoit",
     "wysie@users.noreply.github.com": "Wysie",

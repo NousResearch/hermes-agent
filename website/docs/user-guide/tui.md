@@ -106,18 +106,6 @@ The TUI's status line tracks agent state in real time:
 
 The per-skin status-bar colors and thresholds are shared with the classic CLI — see [Skins](features/skins.md) for customization.
 
-## Interrupting and queueing
-
-The TUI's busy-input model is different from the classic CLI's `display.busy_input_mode` knob. There is no mode to configure — both behaviors are always available:
-
-- **Single Enter while busy** — message is **queued** and sent as the next turn after the agent finishes.
-- **Double Enter on an empty line while busy** — **interrupts** the current turn.
-- **Double Enter on an empty line with queued messages and no running turn** — drains the next queued message.
-
-The first time you send a message while the agent is working, the TUI prints a one-time `(tip)` line explaining the double-Enter gesture. It fires once per install — the same `onboarding.seen.busy_input_prompt` latch used by the classic CLI and the gateway. Delete that key from `~/.hermes/config.yaml` to see the tip again.
-
-Similarly, the first time a tool runs for 30 seconds or longer while you're in the noisiest `tool_progress: all` mode, the TUI prints a one-time `(tip)` about `/verbose` for cycling display modes. Latched under `onboarding.seen.tool_progress_prompt`.
-
 ## Configuration
 
 The TUI respects all standard Hermes config: `~/.hermes/config.yaml`, profiles, personalities, skins, quick commands, credential pools, memory providers, tool/skill enablement. No TUI-specific config file exists.

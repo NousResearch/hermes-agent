@@ -10,12 +10,10 @@ from agent.onboarding import (
     TOOL_PROGRESS_FLAG,
     busy_input_hint_cli,
     busy_input_hint_gateway,
-    busy_input_hint_tui,
     is_seen,
     mark_seen,
     tool_progress_hint_cli,
     tool_progress_hint_gateway,
-    tool_progress_hint_tui,
 )
 
 
@@ -130,14 +128,6 @@ class TestHintMessages:
     def test_tool_progress_hints_mention_verbose(self):
         assert "/verbose" in tool_progress_hint_gateway()
         assert "/verbose" in tool_progress_hint_cli()
-        assert "/verbose" in tool_progress_hint_tui()
-
-    def test_busy_input_hint_tui_teaches_double_enter(self):
-        msg = busy_input_hint_tui()
-        # TUI uses double-Enter as the interrupt gesture, not /busy.
-        assert "Enter" in msg
-        assert "queued" in msg.lower()
-        assert "/busy" not in msg
 
     def test_hints_are_not_empty(self):
         for hint in (
@@ -145,10 +135,8 @@ class TestHintMessages:
             busy_input_hint_gateway("interrupt"),
             busy_input_hint_cli("queue"),
             busy_input_hint_cli("interrupt"),
-            busy_input_hint_tui(),
             tool_progress_hint_gateway(),
             tool_progress_hint_cli(),
-            tool_progress_hint_tui(),
         ):
             assert hint.strip()
 

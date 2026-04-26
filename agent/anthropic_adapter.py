@@ -341,13 +341,17 @@ def _requires_bearer_auth(base_url: str | None) -> bool:
 
     Some third-party /anthropic endpoints implement Anthropic's Messages API but
     require Authorization: Bearer *** of Anthropic's native x-api-key header.
-    MiniMax's global and China Anthropic-compatible endpoints follow this pattern.
+    MiniMax, LongCat, and similar providers follow this pattern.
     """
     normalized = _normalize_base_url_text(base_url)
     if not normalized:
         return False
     normalized = normalized.rstrip("/").lower()
-    return normalized.startswith(("https://api.minimax.io/anthropic", "https://api.minimaxi.com/anthropic"))
+    return normalized.startswith((
+        "https://api.minimax.io/anthropic",
+        "https://api.minimaxi.com/anthropic",
+        "https://api.longcat.chat/anthropic",
+    ))
 
 
 def _common_betas_for_base_url(base_url: str | None) -> list[str]:

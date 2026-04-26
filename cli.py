@@ -4323,6 +4323,7 @@ class HermesCLI:
                 )
 
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
+        _cprint(f"  {_DIM}Shell: !<command> to run a shell command (e.g. !ls, !git status){_RST}")
         _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
         _cprint(f"  {_DIM}Draft editor: Ctrl+G (Alt+G in VSCode/Cursor){_RST}")
         if _is_termux_environment():
@@ -9191,7 +9192,7 @@ class HermesCLI:
                 event.app.invalidate()
                 # Bundle text + images as a tuple when images are present
                 payload = (text, images) if images else text
-                if self._agent_running and not (text and _looks_like_slash_command(text)):
+                if self._agent_running and not (text and (_looks_like_slash_command(text) or text.startswith("!"))):
                     if self.busy_input_mode == "queue":
                         # Queue for the next turn instead of interrupting
                         self._pending_input.put(payload)
@@ -10537,6 +10538,38 @@ class HermesCLI:
                                 f"[User attached file: {_drop_path}]"
                                 + (f"\n{_remainder}" if _remainder else "")
                             )
+
+                    # Bang (!) prefix — run shell command directly without LLM
+                    if not _file_drop and isinstance(user_input, str) and user_input.startswith("!"):
+                        _shell_cmd = user_input[1:].strip()
+                        if _shell_cmd == "!" and hasattr(self, "_last_bang_cmd") and self._last_bang_cmd:
+                            # !! re-runs the last bang command
+                            _shell_cmd = self._last_bang_cmd
+                        if _shell_cmd:
+                            self._last_bang_cmd = _shell_cmd
+                            _cprint(f"\n\033[90m$ {_shell_cmd}\033[0m")
+                            try:
+                                import subprocess  # noqa: F811
+                                _cwd = os.getenv("TERMINAL_CWD", os.getcwd())
+                                _result = subprocess.run(
+                                    _shell_cmd,
+                                    shell=True,
+                                    capture_output=True,
+                                    text=True,
+                                    cwd=_cwd,
+                                    timeout=120,
+                                )
+                                if _result.stdout:
+                                    _cprint(_result.stdout.rstrip("\n"))
+                                if _result.stderr:
+                                    _cprint(f"\033[31m{_result.stderr.rstrip(chr(10))}\033[0m")
+                                if _result.returncode != 0:
+                                    _cprint(f"\033[90mexit code {_result.returncode}\033[0m")
+                            except subprocess.TimeoutExpired:
+                                _cprint("\033[31mCommand timed out after 120 seconds\033[0m")
+                            except Exception as _e:
+                                _cprint(f"\033[31mError: {_e}\033[0m")
+                        continue
 
                     if not _file_drop and isinstance(user_input, str) and _looks_like_slash_command(user_input):
                         _cprint(f"\n⚙️  {user_input}")

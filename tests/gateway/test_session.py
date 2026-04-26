@@ -245,6 +245,7 @@ class TestBuildSessionContextPrompt:
         assert "Slack" in prompt
         assert "cannot search" in prompt.lower()
         assert "pin" in prompt.lower()
+        assert "current message's slack block/attachment payload" in prompt.lower()
 
     def test_discord_prompt_with_channel_topic(self):
         """Channel topic should appear in the session context prompt."""

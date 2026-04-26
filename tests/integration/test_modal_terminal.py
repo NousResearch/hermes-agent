@@ -74,14 +74,15 @@ def test_modal_requirements():
     print(f"  ~/.modal.toml file: {'✅ Exists' if modal_toml.exists() else '❌ Not found'}")
     
     if config['env_type'] != 'modal':
-        print(f"\n⚠️  TERMINAL_ENV is '{config['env_type']}', not 'modal'")
-        print("   Set TERMINAL_ENV=modal in .env or export it to test Modal backend")
-        return False
-    
+        pytest.skip(
+            f"TERMINAL_ENV is '{config['env_type']}', not 'modal'. "
+            "Set TERMINAL_ENV=modal in .env or export it to test Modal backend."
+        )
+
     requirements_met = check_terminal_requirements()
     print(f"\nRequirements check: {'✅ Passed' if requirements_met else '❌ Failed'}")
-    
-    return requirements_met
+
+    assert requirements_met, "Modal requirements check failed (check_terminal_requirements returned False)"
 
 
 def test_simple_command():
@@ -103,11 +104,14 @@ def test_simple_command():
     
     success = result_json.get('exit_code') == 0 and 'Hello from Modal!' in result_json.get('output', '')
     print(f"\nTest: {'✅ Passed' if success else '❌ Failed'}")
-    
+
     # Cleanup
     cleanup_vm(test_task_id)
-    
-    return success
+
+    assert success, (
+        f"Simple command failed: exit_code={result_json.get('exit_code')}, "
+        f"output={result_json.get('output', '')[:200]!r}, error={result_json.get('error')!r}"
+    )
 
 
 def test_python_execution():
@@ -131,11 +135,14 @@ def test_python_execution():
     
     success = result_json.get('exit_code') == 0 and 'Python' in result_json.get('output', '')
     print(f"\nTest: {'✅ Passed' if success else '❌ Failed'}")
-    
+
     # Cleanup
     cleanup_vm(test_task_id)
-    
-    return success
+
+    assert success, (
+        f"Python execution failed: exit_code={result_json.get('exit_code')}, "
+        f"output={result_json.get('output', '')[:200]!r}, error={result_json.get('error')!r}"
+    )
 
 
 def test_pip_install():
@@ -164,11 +171,14 @@ def test_pip_install():
     
     success = result_json.get('exit_code') == 0 and 'Modal works!' in result_json.get('output', '')
     print(f"\nTest: {'✅ Passed' if success else '❌ Failed'}")
-    
+
     # Cleanup
     cleanup_vm(test_task_id)
-    
-    return success
+
+    assert success, (
+        f"Pip install failed: exit_code={result_json.get('exit_code')}, "
+        f"error={result_json.get('error')!r}"
+    )
 
 
 def test_filesystem_persistence():
@@ -198,11 +208,15 @@ def test_filesystem_persistence():
         'persistence test' in result2_json.get('output', '')
     )
     print(f"\nTest: {'✅ Passed' if success else '❌ Failed'}")
-    
+
     # Cleanup
     cleanup_vm(test_task_id)
-    
-    return success
+
+    assert success, (
+        f"Filesystem persistence failed: write exit={result1_json.get('exit_code')}, "
+        f"read exit={result2_json.get('exit_code')}, "
+        f"read output={result2_json.get('output', '')[:200]!r}"
+    )
 
 
 def test_environment_isolation():
@@ -229,26 +243,43 @@ def test_environment_isolation():
     
     print(f"  Task2 output: {output[:200]}")
     print(f"\nTest: {'✅ Passed (environments isolated)' if isolated else '❌ Failed (environments NOT isolated)'}")
-    
+
     # Cleanup
     cleanup_vm(task1)
     cleanup_vm(task2)
-    
-    return isolated
+
+    assert isolated, f"Environments not isolated: task2 saw task1 data in output: {output[:200]!r}"
+
+
+def _run_for_main(fn):
+    """Run a pytest-style test function from the manual main() runner.
+
+    The test functions raise AssertionError on failure and pytest.skip.Exception
+    when prerequisites are missing; both should be reported as not-passed without
+    aborting the whole script so the SUMMARY can still be printed.
+    """
+    try:
+        fn()
+        return True
+    except (KeyboardInterrupt, SystemExit):
+        raise
+    except BaseException as e:
+        print(f"   ⚠️  {type(e).__name__}: {e}")
+        return False
 
 
 def main():
     """Run all Modal terminal tests."""
     print("🧪 Modal Terminal Tool Test Suite")
     print("=" * 60)
-    
+
     # Check current config
     config = _get_env_config()
     print(f"\nCurrent configuration:")
     print(f"  TERMINAL_ENV: {config['env_type']}")
     print(f"  TERMINAL_MODAL_IMAGE: {config['modal_image']}")
     print(f"  TERMINAL_TIMEOUT: {config['timeout']}s")
-    
+
     if config['env_type'] != 'modal':
         print(f"\n⚠️  WARNING: TERMINAL_ENV is set to '{config['env_type']}', not 'modal'")
         print("   To test Modal specifically, set TERMINAL_ENV=modal")
@@ -256,21 +287,21 @@ def main():
         if response.lower() != 'y':
             print("Aborting.")
             return
-    
+
     results = {}
-    
+
     # Run tests
-    results['requirements'] = test_modal_requirements()
-    
+    results['requirements'] = _run_for_main(test_modal_requirements)
+
     if not results['requirements']:
         print("\n❌ Requirements not met. Cannot continue with other tests.")
         return
-    
-    results['simple_command'] = test_simple_command()
-    results['python_execution'] = test_python_execution()
-    results['pip_install'] = test_pip_install()
-    results['filesystem_persistence'] = test_filesystem_persistence()
-    results['environment_isolation'] = test_environment_isolation()
+
+    results['simple_command'] = _run_for_main(test_simple_command)
+    results['python_execution'] = _run_for_main(test_python_execution)
+    results['pip_install'] = _run_for_main(test_pip_install)
+    results['filesystem_persistence'] = _run_for_main(test_filesystem_persistence)
+    results['environment_isolation'] = _run_for_main(test_environment_isolation)
     
     # Summary
     print("\n" + "=" * 60)

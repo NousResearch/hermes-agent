@@ -11,6 +11,12 @@ def _bare_agent() -> AIAgent:
     agent.model = "fake-model"
     agent.platform = "telegram"
     agent.provider = "openai"
+    agent.base_url = ""
+    agent.api_key = ""
+    agent.api_mode = ""
+    agent.session_id = "test-session"
+    agent._parent_session_id = ""
+    agent._credential_pool = None
     agent._memory_store = object()
     agent._memory_enabled = True
     agent._user_profile_enabled = False
@@ -18,6 +24,7 @@ def _bare_agent() -> AIAgent:
     agent._SKILL_REVIEW_PROMPT = "review skills"
     agent._COMBINED_REVIEW_PROMPT = "review both"
     agent.background_review_callback = None
+    agent.status_callback = None
     agent._safe_print = lambda *_args, **_kwargs: None
     return agent
 

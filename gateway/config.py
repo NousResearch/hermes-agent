@@ -67,6 +67,7 @@ class Platform(Enum):
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
+    TWITTER = "twitter"
 
 
 @dataclass
@@ -1275,6 +1276,25 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 chat_id=qq_home,
                 name=os.getenv("QQBOT_HOME_CHANNEL_NAME") or os.getenv(qq_home_name_env, "Home"),
             )
+
+    # Twitter / X
+    twitter_refresh_token = os.getenv("TWITTER_REFRESH_TOKEN")
+    twitter_access_token = os.getenv("TWITTER_ACCESS_TOKEN")
+    if twitter_refresh_token or twitter_access_token:
+        if Platform.TWITTER not in config.platforms:
+            config.platforms[Platform.TWITTER] = PlatformConfig()
+        config.platforms[Platform.TWITTER].enabled = True
+        extra = config.platforms[Platform.TWITTER].extra
+        if twitter_refresh_token:
+            extra["refresh_token"] = twitter_refresh_token
+        if twitter_access_token:
+            extra["access_token"] = twitter_access_token
+        client_id = os.getenv("TWITTER_CLIENT_ID", "")
+        if client_id:
+            extra["client_id"] = client_id
+        client_secret = os.getenv("TWITTER_CLIENT_SECRET", "")
+        if client_secret:
+            extra["client_secret"] = client_secret
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

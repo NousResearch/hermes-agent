@@ -199,9 +199,9 @@ export function useSubmission(opts: UseSubmissionOptions) {
         return interpolate(text, send)
       }
 
-      send(text, composerRefs.queueRef.current.length === 0)
+      send(text)
     },
-    [composerRefs, interpolate, send, shellExec]
+    [interpolate, send, shellExec]
   )
 
   const dispatchSubmission = useCallback(

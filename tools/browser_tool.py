@@ -2148,6 +2148,7 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
     import base64
     import uuid as uuid_mod
     effective_task_id = task_id or "default"
+    cloud_provider = _get_cloud_provider()
     
     # Save screenshot to persistent location so it can be shared with users
     from hermes_constants import get_hermes_dir
@@ -2165,30 +2166,48 @@ def browser_vision(question: str, annotate: bool = False, task_id: Optional[str]
         if annotate:
             screenshot_args.append("--annotate")
         screenshot_args.append("--full")
-        screenshot_args.append(str(screenshot_path))
+        if cloud_provider is None:
+            screenshot_args.append(str(screenshot_path))
         result = _run_browser_command(
             effective_task_id, 
             "screenshot", 
             screenshot_args,
         )
-        
+
         if not result.get("success"):
             error_detail = result.get("error", "Unknown error")
-            _cp = _get_cloud_provider()
-            mode = "local" if _cp is None else f"cloud ({_cp.provider_name()})"
+            mode = "local" if cloud_provider is None else f"cloud ({cloud_provider.provider_name()})"
             return json.dumps({
                 "success": False,
                 "error": f"Failed to take screenshot ({mode} mode): {error_detail}"
             }, ensure_ascii=False)
 
         actual_screenshot_path = result.get("data", {}).get("path")
-        if actual_screenshot_path:
+        if cloud_provider is not None:
+            if not actual_screenshot_path:
+                return json.dumps({
+                    "success": False,
+                    "error": (
+                        f"Failed to resolve screenshot file in cloud ({cloud_provider.provider_name()}) mode. "
+                        "agent-browser did not return a local temp path."
+                    ),
+                }, ensure_ascii=False)
+            actual_path = Path(actual_screenshot_path)
+            if not actual_path.exists():
+                return json.dumps({
+                    "success": False,
+                    "error": (
+                        f"Cloud screenshot file was not created at {actual_path} "
+                        f"({cloud_provider.provider_name()} mode)."
+                    ),
+                }, ensure_ascii=False)
+            shutil.copy2(actual_path, screenshot_path)
+        elif actual_screenshot_path:
             screenshot_path = Path(actual_screenshot_path)
 
         # Check if screenshot file was created
         if not screenshot_path.exists():
-            _cp = _get_cloud_provider()
-            mode = "local" if _cp is None else f"cloud ({_cp.provider_name()})"
+            mode = "local" if cloud_provider is None else f"cloud ({cloud_provider.provider_name()})"
             return json.dumps({
                 "success": False,
                 "error": (

@@ -145,6 +145,16 @@ class TestBrowserConsoleToolsetWiring:
 class TestBrowserVisionAnnotate:
     """browser_vision supports annotate parameter."""
 
+    @staticmethod
+    def _png_bytes() -> bytes:
+        return (
+            b"\x89PNG\r\n\x1a\n"
+            b"\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+            b"\x08\x02\x00\x00\x00\x90wS\xde"
+            b"\x00\x00\x00\x0cIDAT\x08\x99c``\x00\x00\x00\x04\x00\x01"
+            b"\x0b\xe7\x02\x9d\x00\x00\x00\x00IEND\xaeB`\x82"
+        )
+
     def test_schema_has_annotate_param(self):
         from tools.browser_tool import BROWSER_TOOL_SCHEMAS
 
@@ -193,6 +203,94 @@ class TestBrowserVisionAnnotate:
                 args = mock_cmd.call_args[0]
                 cmd_args = args[2] if len(args) > 2 else []
                 assert "--annotate" in cmd_args
+
+    def test_cloud_mode_uses_temp_screenshot_and_copies_to_cache(self, tmp_path):
+        """Cloud backends should not be asked to write to a local Hermes path."""
+        from tools.browser_tool import browser_vision
+
+        remote_png = tmp_path / "remote-browserbase.png"
+        remote_png.write_bytes(self._png_bytes())
+        cache_dir = tmp_path / "cache" / "screenshots"
+
+        provider = MagicMock()
+        provider.provider_name.return_value = "Browserbase"
+
+        llm_response = MagicMock()
+        llm_response.choices = [MagicMock(message=MagicMock(content="The page shows a login form."))]
+
+        observed_args = {}
+
+        def fake_run_browser_command(task_id, command, args, timeout=None):
+            observed_args["task_id"] = task_id
+            observed_args["command"] = command
+            observed_args["args"] = list(args)
+            return {
+                "success": True,
+                "data": {
+                    "path": str(remote_png),
+                    "annotations": [{"index": 1, "label": "Submit"}],
+                },
+            }
+
+        with (
+            patch("tools.browser_tool._get_cloud_provider", return_value=provider),
+            patch("tools.browser_tool._run_browser_command", side_effect=fake_run_browser_command),
+            patch("tools.browser_tool.call_llm", return_value=llm_response),
+            patch("tools.browser_tool._get_vision_model", return_value="test-model"),
+            patch("hermes_constants.get_hermes_dir", return_value=cache_dir),
+            patch("agent.redact.redact_sensitive_text", side_effect=lambda text: text),
+        ):
+            result = json.loads(browser_vision("What is on the page?", annotate=True, task_id="cloud"))
+
+        assert observed_args["task_id"] == "cloud"
+        assert observed_args["command"] == "screenshot"
+        assert observed_args["args"] == ["--annotate", "--full"]
+        assert result["success"] is True
+        assert result["analysis"] == "The page shows a login form."
+        assert result["annotations"] == [{"index": 1, "label": "Submit"}]
+
+        screenshot_path = Path(result["screenshot_path"])
+        assert screenshot_path.parent == cache_dir
+        assert screenshot_path.exists() is True
+        assert screenshot_path.read_bytes() == remote_png.read_bytes()
+
+    def test_local_mode_still_passes_explicit_output_path(self, tmp_path):
+        """Local browser sessions should keep writing directly into Hermes cache."""
+        from tools.browser_tool import browser_vision
+
+        cache_dir = tmp_path / "cache" / "screenshots"
+
+        llm_response = MagicMock()
+        llm_response.choices = [MagicMock(message=MagicMock(content="Looks good."))]
+
+        observed_args = {}
+
+        def fake_run_browser_command(task_id, command, args, timeout=None):
+            observed_args["task_id"] = task_id
+            observed_args["command"] = command
+            observed_args["args"] = list(args)
+            screenshot_path = Path(args[-1])
+            screenshot_path.write_bytes(self._png_bytes())
+            return {"success": True, "data": {}}
+
+        with (
+            patch("tools.browser_tool._get_cloud_provider", return_value=None),
+            patch("tools.browser_tool._run_browser_command", side_effect=fake_run_browser_command),
+            patch("tools.browser_tool.call_llm", return_value=llm_response),
+            patch("tools.browser_tool._get_vision_model", return_value="test-model"),
+            patch("hermes_constants.get_hermes_dir", return_value=cache_dir),
+            patch("agent.redact.redact_sensitive_text", side_effect=lambda text: text),
+        ):
+            result = json.loads(browser_vision("What is on the page?", annotate=False, task_id="local"))
+
+        assert observed_args["task_id"] == "local"
+        assert observed_args["command"] == "screenshot"
+        assert observed_args["args"][0] == "--full"
+        assert observed_args["args"][-1].endswith(".png")
+        assert Path(observed_args["args"][-1]).parent == cache_dir
+        assert result["success"] is True
+        assert result["analysis"] == "Looks good."
+        assert result["screenshot_path"] == observed_args["args"][-1]
 
 
 class TestBrowserVisionConfig:

@@ -478,14 +478,21 @@ export default function ProfilesPage() {
                     {isActive && (
                       <Badge variant="success">{t.profiles.activeBadge}</Badge>
                     )}
-                    <Badge variant={p.gateway_running ? "success" : "outline"}>
+                    <Badge
+                      variant={p.gateway_running ? "success" : "outline"}
+                      className={
+                        p.gateway_running
+                          ? ""
+                          : "text-foreground/80 border-foreground/30"
+                      }
+                    >
                       <span
                         aria-hidden
                         className={
-                          "mr-1 inline-block h-1.5 w-1.5 rounded-full " +
+                          "mr-1 inline-block h-2 w-2 rounded-full " +
                           (p.gateway_running
                             ? "bg-emerald-400"
-                            : "bg-muted-foreground/50")
+                            : "bg-foreground/40")
                         }
                       />
                       {p.gateway_running

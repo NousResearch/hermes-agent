@@ -59,6 +59,8 @@ const TranscriptPane = memo(function TranscriptPane({
 
           {transcript.virtualHistory.bottomSpacer > 0 ? <Box height={transcript.virtualHistory.bottomSpacer} /> : null}
 
+          <LiveTodoPanel />
+
           <StreamingAssistant
             cols={composer.cols}
             compact={ui.compact}
@@ -67,8 +69,6 @@ const TranscriptPane = memo(function TranscriptPane({
             progress={progress}
             sections={ui.sections}
           />
-
-          <LiveTodoPanel />
         </Box>
       </ScrollBox>
 

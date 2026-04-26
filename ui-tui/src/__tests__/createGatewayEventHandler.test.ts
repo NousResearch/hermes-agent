@@ -81,6 +81,9 @@ describe('createGatewayEventHandler', () => {
 
     expect(finalText).toBeDefined()
     expect(trail).toMatchObject({ kind: 'trail', role: 'system', todos, todoIncomplete: true })
+    // Todo archive must sit ABOVE the final assistant text so the panel
+    // doesn't visibly jump across the final answer at end-of-turn.
+    expect(appended.indexOf(trail!)).toBeLessThan(appended.indexOf(finalText!))
     expect(getTurnState().todos).toEqual([])
   })
 

@@ -118,6 +118,7 @@ export interface Msg {
   tools?: string[]
   todos?: TodoItem[]
   todoIncomplete?: boolean
+  todoCollapsedByDefault?: boolean
 }
 
 export type Role = 'assistant' | 'system' | 'tool' | 'user'

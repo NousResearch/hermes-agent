@@ -49,12 +49,13 @@ export const archiveTodosAtTurnEnd = () => {
     return []
   }
 
+  const done = isTodoDone(state.todos)
   const msg: Msg = {
     kind: 'trail',
     role: 'system',
     text: '',
     todos: state.todos,
-    ...(isTodoDone(state.todos) ? {} : { todoIncomplete: true })
+    ...(done ? { todoCollapsedByDefault: true } : { todoIncomplete: true })
   }
 
   patchTurnState({ todoCollapsed: false, todos: [] })

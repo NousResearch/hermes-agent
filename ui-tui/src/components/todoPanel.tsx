@@ -14,12 +14,14 @@ const rowColor = (t: Theme, status: TodoItem['status']) => {
 
 export const TodoPanel = memo(function TodoPanel({
   collapsed,
+  defaultCollapsed = false,
   incomplete = false,
   onToggle,
   t,
   todos
 }: {
   collapsed?: boolean
+  defaultCollapsed?: boolean
   incomplete?: boolean
   onToggle?: () => void
   t: Theme
@@ -28,7 +30,7 @@ export const TodoPanel = memo(function TodoPanel({
   // Fallback local state for archived todos in transcript where there's no
   // external controller. Live TodoPanel passes collapsed+onToggle from the
   // turn store so clicks still work there.
-  const [localCollapsed, setLocalCollapsed] = useState(false)
+  const [localCollapsed, setLocalCollapsed] = useState(defaultCollapsed)
   const isControlled = typeof collapsed === 'boolean'
   const effectiveCollapsed = isControlled ? collapsed : localCollapsed
 

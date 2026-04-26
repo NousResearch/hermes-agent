@@ -110,6 +110,7 @@ CREATE TABLE IF NOT EXISTS copilot_remote (
     prompt TEXT,
     signal_source TEXT,
     signal_ref TEXT,
+    connect_handle TEXT,
     state TEXT NOT NULL DEFAULT 'running',
     exit_code INTEGER,
     created_at REAL NOT NULL,
@@ -123,7 +124,8 @@ CREATE INDEX IF NOT EXISTS idx_copilot_remote_repo ON copilot_remote(repo_slug, 
 
 Notes:
 - `id` is the Hermes-side job ID and primary lookup key
-- `signal_ref` stores an external reconnect handle when Hermes resolves Copilot's remote task ID
+- `connect_handle` stores the reconnect handle that Hermes extracts from the Copilot CLI's stdout/log output (used by `hermes copilot show` to emit `copilot --connect=<handle>`)
+- `signal_source` and `signal_ref` are caller-supplied metadata only (e.g. `--signal-source=jira`, `--signal-ref=PROJ-123`); they are never used as the reconnect handle
 - `hermes_session_id` can link a launch back to the Hermes chat session that created it
 - This table stores lifecycle metadata only; Copilot transcripts remain outside `state.db`
 
@@ -160,7 +162,7 @@ END;
 
 ## Schema Version and Migrations
 
-Current schema version: **9**
+Current schema version: **12**
 
 The `schema_version` table stores a single integer. On initialization,
 `_init_schema()` checks the current version and applies migrations sequentially:
@@ -178,6 +180,7 @@ The `schema_version` table stores a single integer. On initialization,
 | 9 | Add `codex_message_items` column to messages for Codex Responses message id/phase replay |
 | 10 | Remove `copilot_session_id`; Hermes job IDs become the canonical Copilot remote key |
 | 11 | Rename legacy `copilot_jobs` storage to `copilot_remote` |
+| 12 | Add `connect_handle` column to `copilot_remote` and split it from `signal_ref` (caller metadata vs. launcher-extracted reconnect handle); best-effort backfill from `signal_ref` for in-flight rows |
 
 Each migration uses `ALTER TABLE ADD COLUMN` wrapped in try/except to handle
 the column-already-exists case (idempotent). The version number is bumped after

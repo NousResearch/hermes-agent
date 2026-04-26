@@ -1825,7 +1825,7 @@ class TestConcurrentWriteSafety:
 # =========================================================================
 
 class TestCopilotRemoteLifecycle:
-    def test_schema_version_is_11(self, db):
+    def test_schema_version_is_12(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         assert cursor.fetchone()[0] == 12
 

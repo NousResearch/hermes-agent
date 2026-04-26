@@ -8,6 +8,7 @@ without asking the model to improvise shell commands or ACP provider usage.
 from __future__ import annotations
 
 import json
+import logging
 import uuid
 from typing import Any, Dict, Optional
 
@@ -15,6 +16,9 @@ from agent.redact import redact_sensitive_text
 from copilot_remote.models import RepoEntry
 from hermes_state import SessionDB
 from tools.registry import registry
+
+
+logger = logging.getLogger(__name__)
 
 
 COPILOT_REMOTE_SCHEMA = {
@@ -169,19 +173,34 @@ def _resolve_repo(prompt: str, repo: str = "", repo_path: str = "") -> tuple[Opt
         return RepoEntry(slug=repo, path=repo_path), None
 
     entries: list[RepoEntry] = []
+    discover_error: Optional[str] = None
     if repo:
         try:
             entries = _discover_repos()
-        except Exception:
+        except Exception as exc:
+            # Surface the failure reason — swallowing it here makes routing
+            # bugs (permission errors, missing HERMES_WORKSPACE_PATH, etc.)
+            # impossible to diagnose from the error message alone. The text
+            # is sanitized via redact_sensitive_text() before going back to
+            # the caller in case workspace paths embed credentials.
+            from agent.redact import redact_sensitive_text
+
+            logger.warning(
+                "copilot_remote: repo discovery failed for slug=%r: %s",
+                repo,
+                redact_sensitive_text(repr(exc)),
+            )
+            discover_error = redact_sensitive_text(str(exc) or exc.__class__.__name__)
             entries = []
 
     if repo:
         for entry in entries:
             if entry.slug.lower() == repo.lower():
                 return RepoEntry(slug=entry.slug, path=repo_path or entry.path), None
+        suffix = f" (discovery error: {discover_error})" if discover_error else ""
         return None, (
             f"Could not find repo slug '{repo}'. Provide repo_path or use a "
-            "slug under HERMES_WORKSPACE_PATH/repos."
+            f"slug under HERMES_WORKSPACE_PATH/repos.{suffix}"
         )
 
     if repo_path:

@@ -16,6 +16,14 @@ import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
 
+const GLOBAL_MODEL_FLAG_RE = /(?:^|\s)--global(?:\s|$)/
+
+const persistedModelArg = (arg: string) => {
+  const trimmed = arg.trim()
+
+  return GLOBAL_MODEL_FLAG_RE.test(trimmed) ? trimmed : `${trimmed} --global`
+}
+
 export const sessionCommands: SlashCommand[] = [
   {
     aliases: ['bg'],
@@ -69,21 +77,23 @@ export const sessionCommands: SlashCommand[] = [
         return patchOverlayState({ modelPicker: true })
       }
 
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'model', session_id: ctx.sid, value: arg.trim() }).then(
-        ctx.guarded<ConfigSetResponse>(r => {
-          if (!r.value) {
-            return ctx.transcript.sys('error: invalid response: model switch')
-          }
+      ctx.gateway
+        .rpc<ConfigSetResponse>('config.set', { key: 'model', session_id: ctx.sid, value: persistedModelArg(arg) })
+        .then(
+          ctx.guarded<ConfigSetResponse>(r => {
+            if (!r.value) {
+              return ctx.transcript.sys('error: invalid response: model switch')
+            }
 
-          ctx.transcript.sys(`model → ${r.value}`)
-          ctx.local.maybeWarn(r)
+            ctx.transcript.sys(`model → ${r.value}`)
+            ctx.local.maybeWarn(r)
 
-          patchUiState(state => ({
-            ...state,
-            info: state.info ? { ...state.info, model: r.value! } : { model: r.value!, skills: {}, tools: {} }
-          }))
-        })
-      )
+            patchUiState(state => ({
+              ...state,
+              info: state.info ? { ...state.info, model: r.value! } : { model: r.value!, skills: {}, tools: {} }
+            }))
+          })
+        )
     }
   },
 

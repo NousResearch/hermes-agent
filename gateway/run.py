@@ -4957,21 +4957,129 @@ class GatewayRunner:
             # Restore session context variables to their pre-handler state
             self._clear_session_env(_session_env_tokens)
     
-    def _format_session_info(self) -> str:
+    def _resolve_display_context_length_for_gateway(
+        self,
+        model: str,
+        provider: str = "",
+        base_url: str = "",
+        api_key: str = "",
+        *,
+        model_info=None,
+        cfg: Optional[dict] = None,
+    ) -> tuple[Optional[int], Optional[int]]:
+        """Return (resolved_context, config_override_context) for gateway displays.
+
+        Gateway surfaces model context in three places: direct `/model`, the
+        interactive model picker callback, and `/new` session reset banners.
+        All three must prefer the same provider-aware config sources:
+
+        1. `model.context_length`
+        2. `providers.<provider>.models.<model>.context_length`
+        3. legacy/custom provider entries returned by `get_compatible_custom_providers()`
+        4. provider-aware runtime detection/fallbacks via `resolve_display_context_length()`
+        """
+        from hermes_cli.model_switch import resolve_display_context_length
+
+        _display_ctx = None
+        try:
+            _cfg = cfg if isinstance(cfg, dict) else load_config()
+        except Exception:
+            _cfg = {}
+
+        try:
+            _model_cfg = _cfg.get("model", {}) if isinstance(_cfg, dict) else {}
+            _raw_ctx = _model_cfg.get("context_length") if isinstance(_model_cfg, dict) else None
+            if _raw_ctx is not None:
+                try:
+                    _display_ctx = int(_raw_ctx)
+                except (TypeError, ValueError):
+                    _display_ctx = None
+
+            if _display_ctx is None and isinstance(_cfg, dict):
+                _providers = _cfg.get("providers", {}) or {}
+                if isinstance(_providers, dict):
+                    _provider_cfg = _providers.get(provider, {}) if provider else {}
+                    if isinstance(_provider_cfg, dict):
+                        _provider_models = _provider_cfg.get("models", {}) or {}
+                        if isinstance(_provider_models, dict):
+                            _provider_model_cfg = _provider_models.get(model, {}) or {}
+                            if isinstance(_provider_model_cfg, dict):
+                                _provider_ctx = _provider_model_cfg.get("context_length")
+                                if _provider_ctx is not None:
+                                    try:
+                                        _display_ctx = int(_provider_ctx)
+                                    except (TypeError, ValueError):
+                                        _display_ctx = None
+
+            if _display_ctx is None and isinstance(_cfg, dict):
+                try:
+                    from hermes_cli.config import get_compatible_custom_providers
+                    _custom_providers = get_compatible_custom_providers(_cfg)
+                except Exception:
+                    _custom_providers = _cfg.get("custom_providers") or []
+
+                _normalized_base_url = (base_url or "").rstrip("/")
+                _normalized_provider = (provider or "").strip().lower()
+                for _cp_entry in _custom_providers:
+                    if not isinstance(_cp_entry, dict):
+                        continue
+                    _cp_url = str(_cp_entry.get("base_url", "") or "").rstrip("/")
+                    if _cp_url and _cp_url != _normalized_base_url:
+                        continue
+                    _cp_provider_key = str(_cp_entry.get("provider_key", "") or "").strip().lower()
+                    if _normalized_provider and _cp_provider_key and _cp_provider_key != _normalized_provider:
+                        continue
+                    _cp_models = _cp_entry.get("models", {})
+                    if not isinstance(_cp_models, dict):
+                        continue
+                    _cp_model_cfg = _cp_models.get(model, {})
+                    if not isinstance(_cp_model_cfg, dict):
+                        continue
+                    _cp_ctx = _cp_model_cfg.get("context_length")
+                    if _cp_ctx is None:
+                        continue
+                    try:
+                        _display_ctx = int(_cp_ctx)
+                    except (TypeError, ValueError):
+                        _display_ctx = None
+                    else:
+                        break
+        except Exception:
+            _display_ctx = None
+
+        try:
+            ctx = resolve_display_context_length(
+                model,
+                provider,
+                base_url=base_url or "",
+                api_key=api_key or "",
+                model_info=model_info,
+                config_context_length=_display_ctx,
+            )
+        except Exception:
+            ctx = None
+
+        return ctx, _display_ctx
+
+    def _format_session_info(
+        self,
+        source: Optional[SessionSource] = None,
+        session_key: Optional[str] = None,
+    ) -> str:
         """Resolve current model config and return a formatted info block.
 
         Surfaces model, provider, context length, and endpoint so gateway
         users can immediately see if context detection went wrong (e.g.
         local models falling to the 128K default).
         """
-        from agent.model_metadata import get_model_context_length, DEFAULT_FALLBACK_CONTEXT
+        from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT
 
         model = _resolve_gateway_model()
-        config_context_length = None
         provider = None
         base_url = None
         api_key = None
         custom_provs = None
+        data = {}
 
         try:
             cfg_path = _hermes_home / "config.yaml"
@@ -4981,12 +5089,6 @@ class GatewayRunner:
                     data = _info_yaml.safe_load(f) or {}
                 model_cfg = data.get("model", {})
                 if isinstance(model_cfg, dict):
-                    raw_ctx = model_cfg.get("context_length")
-                    if raw_ctx is not None:
-                        try:
-                            config_context_length = int(raw_ctx)
-                        except (TypeError, ValueError):
-                            pass
                     provider = model_cfg.get("provider") or None
                     base_url = model_cfg.get("base_url") or None
                 try:
@@ -4995,7 +5097,7 @@ class GatewayRunner:
                 except Exception:
                     custom_provs = data.get("custom_providers")
         except Exception:
-            pass
+            data = {}
 
         # Resolve runtime credentials for probing
         try:
@@ -5006,14 +5108,31 @@ class GatewayRunner:
         except Exception:
             pass
 
-        context_length = get_model_context_length(
-            model,
-            base_url=base_url or "",
-            api_key=api_key or "",
-            config_context_length=config_context_length,
-            provider=provider or "",
-            custom_providers=custom_provs,
+        resolved_session_key = session_key
+        if not resolved_session_key and source is not None:
+            try:
+                resolved_session_key = self._session_key_for_source(source)
+            except Exception:
+                resolved_session_key = None
+
+        override = (
+            self._session_model_overrides.get(resolved_session_key, {})
+            if resolved_session_key else {}
         )
+        if override:
+            model = override.get("model", model)
+            provider = override.get("provider", provider)
+            base_url = override.get("base_url", base_url)
+            api_key = override.get("api_key", api_key)
+
+        context_length, config_context_length = self._resolve_display_context_length_for_gateway(
+            model,
+            provider or "",
+            base_url or "",
+            api_key or "",
+            cfg=data,
+        )
+        context_length = context_length or DEFAULT_FALLBACK_CONTEXT
 
         # Format context source hint
         if config_context_length is not None:
@@ -5637,47 +5756,13 @@ class GatewayRunner:
                         if not result.success:
                             return f"Error: {result.error_message}"
 
-                        _display_ctx = None
-                        try:
-                            _cfg = load_config()
-                            _model_cfg = _cfg.get("model", {}) if isinstance(_cfg, dict) else {}
-                            _raw_ctx = _model_cfg.get("context_length") if isinstance(_model_cfg, dict) else None
-                            if _raw_ctx is not None:
-                                try:
-                                    _display_ctx = int(_raw_ctx)
-                                except (TypeError, ValueError):
-                                    _display_ctx = None
-                            if _display_ctx is None:
-                                from hermes_cli.config import get_compatible_custom_providers
-                                _custom_providers = get_compatible_custom_providers(_cfg)
-                                _normalized_base_url = (result.base_url or current_base_url or "").rstrip("/")
-                                _normalized_provider = (result.target_provider or "").strip().lower()
-                                for _cp_entry in _custom_providers:
-                                    if not isinstance(_cp_entry, dict):
-                                        continue
-                                    _cp_url = str(_cp_entry.get("base_url", "") or "").rstrip("/")
-                                    if _cp_url and _cp_url != _normalized_base_url:
-                                        continue
-                                    _cp_provider_key = str(_cp_entry.get("provider_key", "") or "").strip().lower()
-                                    if _normalized_provider and _cp_provider_key and _cp_provider_key != _normalized_provider:
-                                        continue
-                                    _cp_models = _cp_entry.get("models", {})
-                                    if not isinstance(_cp_models, dict):
-                                        continue
-                                    _cp_model_cfg = _cp_models.get(result.new_model, {})
-                                    if not isinstance(_cp_model_cfg, dict):
-                                        continue
-                                    _cp_ctx = _cp_model_cfg.get("context_length")
-                                    if _cp_ctx is None:
-                                        continue
-                                    try:
-                                        _display_ctx = int(_cp_ctx)
-                                    except (TypeError, ValueError):
-                                        _display_ctx = None
-                                    else:
-                                        break
-                        except Exception:
-                            _display_ctx = None
+                        _, _display_ctx = _self._resolve_display_context_length_for_gateway(
+                            result.new_model,
+                            result.target_provider,
+                            result.base_url or current_base_url or "",
+                            result.api_key or current_api_key or "",
+                            cfg=cfg,
+                        )
 
                         # Update cached agent in-place
                         cached_entry = None
@@ -5725,56 +5810,13 @@ class GatewayRunner:
                         lines = [f"Model switched to `{result.new_model}`"]
                         lines.append(f"Provider: {plabel}")
                         mi = result.model_info
-                        from hermes_cli.model_switch import resolve_display_context_length
-                        _display_ctx = None
-                        try:
-                            _cfg = load_config()
-                            _model_cfg = _cfg.get("model", {}) if isinstance(_cfg, dict) else {}
-                            _raw_ctx = _model_cfg.get("context_length") if isinstance(_model_cfg, dict) else None
-                            if _raw_ctx is not None:
-                                try:
-                                    _display_ctx = int(_raw_ctx)
-                                except (TypeError, ValueError):
-                                    _display_ctx = None
-                            if _display_ctx is None:
-                                from hermes_cli.config import get_compatible_custom_providers
-                                _custom_providers = get_compatible_custom_providers(_cfg)
-                                _normalized_base_url = (result.base_url or current_base_url or "").rstrip("/")
-                                _normalized_provider = (result.target_provider or "").strip().lower()
-                                for _cp_entry in _custom_providers:
-                                    if not isinstance(_cp_entry, dict):
-                                        continue
-                                    _cp_url = str(_cp_entry.get("base_url", "") or "").rstrip("/")
-                                    if _cp_url and _cp_url != _normalized_base_url:
-                                        continue
-                                    _cp_provider_key = str(_cp_entry.get("provider_key", "") or "").strip().lower()
-                                    if _normalized_provider and _cp_provider_key and _cp_provider_key != _normalized_provider:
-                                        continue
-                                    _cp_models = _cp_entry.get("models", {})
-                                    if not isinstance(_cp_models, dict):
-                                        continue
-                                    _cp_model_cfg = _cp_models.get(result.new_model, {})
-                                    if not isinstance(_cp_model_cfg, dict):
-                                        continue
-                                    _cp_ctx = _cp_model_cfg.get("context_length")
-                                    if _cp_ctx is None:
-                                        continue
-                                    try:
-                                        _display_ctx = int(_cp_ctx)
-                                    except (TypeError, ValueError):
-                                        _display_ctx = None
-                                    else:
-                                        break
-                        except Exception:
-                            _display_ctx = None
-                        ctx = resolve_display_context_length(
+                        ctx, _ = _self._resolve_display_context_length_for_gateway(
                             result.new_model,
                             result.target_provider,
-                            base_url=result.base_url or current_base_url or "",
-                            api_key=result.api_key or current_api_key or "",
+                            result.base_url or current_base_url or "",
+                            result.api_key or current_api_key or "",
                             model_info=mi,
-                            custom_providers=custom_provs,
-                            config_context_length=_display_ctx,
+                            cfg=cfg,
                         )
                         if ctx:
                             lines.append(f"Context: {ctx:,} tokens")

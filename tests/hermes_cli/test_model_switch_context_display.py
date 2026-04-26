@@ -96,6 +96,7 @@ class TestResolveDisplayContextLength:
             api_key="sk-test",
             config_context_length=204_800,
             provider="provider-b",
+            custom_providers=None,
         )
 
     def test_custom_providers_override_honored(self):

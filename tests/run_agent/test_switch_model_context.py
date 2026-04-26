@@ -34,8 +34,23 @@ def _make_agent_with_compressor(config_context_length=None) -> AIAgent:
     )
     agent.context_compressor = compressor
 
-    # For switch_model
+    # Minimal state expected by switch_model
     agent._primary_runtime = {}
+    agent._fallback_chain = []
+    agent._fallback_model = None
+    agent._fallback_activated = False
+    agent._fallback_index = 0
+    agent._cached_system_prompt = None
+    agent._use_prompt_caching = False
+    agent._use_native_cache_layout = False
+    agent._anthropic_api_key = ""
+    agent._anthropic_base_url = ""
+    agent._is_anthropic_oauth = False
+    agent._client_kwargs = {}
+    agent._transport_cache = {}
+    agent._vprint = lambda *args, **kwargs: None
+    agent._create_openai_client = MagicMock(return_value=MagicMock())
+    agent._anthropic_prompt_cache_policy = MagicMock(return_value=(False, False))
 
     return agent
 

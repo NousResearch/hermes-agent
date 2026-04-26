@@ -533,6 +533,7 @@ def resolve_display_context_length(
     base_url: str = "",
     api_key: str = "",
     model_info: Optional[ModelInfo] = None,
+    config_context_length: Optional[int] = None,
 ) -> Optional[int]:
     """Resolve the context length to show in /model output.
 
@@ -552,6 +553,7 @@ def resolve_display_context_length(
             model,
             base_url=base_url or "",
             api_key=api_key or "",
+            config_context_length=config_context_length,
             provider=provider or None,
         )
         if ctx:

@@ -290,7 +290,9 @@ export default function ChatPage() {
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
 
-      const copyModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
+      // Copy: Cmd+C on macOS, Ctrl+C on other platforms (when selection exists)
+      // Paste: Cmd+Shift+V on macOS, Ctrl+Shift+V on others
+      const copyModifier = isMac ? ev.metaKey : ev.ctrlKey;
       const pasteModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
 
       if (copyModifier && ev.key.toLowerCase() === "c") {
@@ -299,9 +301,12 @@ export default function ChatPage() {
           navigator.clipboard.writeText(sel).catch((err) => {
             console.warn("[dashboard clipboard] direct copy failed:", err.message);
           });
+          // Send Escape to the TUI to clear its selection overlay
+          term.write("\x1b");
           ev.preventDefault();
           return false;
         }
+        // No selection → let Ctrl+C pass through as interrupt
       }
 
       if (pasteModifier && ev.key.toLowerCase() === "v") {

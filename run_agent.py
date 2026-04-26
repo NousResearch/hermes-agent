@@ -7856,8 +7856,15 @@ class AIAgent:
         # etc.) left them empty. DeepSeek returns HTTP 400 if reasoning_content
         # is absent on replay; inject "" to satisfy the provider's requirement
         # without forwarding any cross-provider reasoning content.
+        # However, if there IS actual reasoning content in the "reasoning"
+        # field, skip this guard — step 3 below will promote it.
+        has_reasoning_content = bool(
+            isinstance(source_msg.get("reasoning"), str)
+            and source_msg.get("reasoning")
+        )
         needs_empty_reasoning = (
             source_msg.get("tool_calls")
+            and not has_reasoning_content
             and (
                 self._needs_kimi_tool_reasoning()
                 or self._needs_deepseek_tool_reasoning()

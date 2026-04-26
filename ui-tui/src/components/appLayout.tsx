@@ -28,10 +28,10 @@ const TranscriptPane = memo(function TranscriptPane({
 
   return (
     <>
+      <LiveTodoPanel />
+
       <ScrollBox flexDirection="column" flexGrow={1} flexShrink={1} ref={transcript.scrollRef} stickyScroll>
         <Box flexDirection="column" paddingX={1}>
-          <LiveTodoPanel />
-
           {transcript.virtualHistory.topSpacer > 0 ? <Box height={transcript.virtualHistory.topSpacer} /> : null}
 
           {transcript.virtualRows.slice(transcript.virtualHistory.start, transcript.virtualHistory.end).map(row => (

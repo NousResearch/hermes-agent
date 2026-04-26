@@ -16,6 +16,7 @@ import type {
 } from '../gatewayTypes.js'
 import { useGitBranch } from '../hooks/useGitBranch.js'
 import { useVirtualHistory } from '../hooks/useVirtualHistory.js'
+import { appendTranscriptMessage } from '../lib/messages.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
 import { buildToolTrailLine, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
@@ -198,7 +199,10 @@ export function useMainApp(gw: GatewayClient) {
     [selection]
   )
 
-  const appendMessage = useCallback((msg: Msg) => setHistoryItems(prev => capHistory([...prev, msg])), [])
+  const appendMessage = useCallback(
+    (msg: Msg) => setHistoryItems(prev => capHistory(appendTranscriptMessage(prev, msg))),
+    []
+  )
 
   const sys = useCallback((text: string) => appendMessage({ role: 'system', text }), [appendMessage])
 

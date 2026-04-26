@@ -935,6 +935,8 @@ def run_doctor(args):
         agent_browser_path = PROJECT_ROOT / "node_modules" / "agent-browser"
         if agent_browser_path.exists():
             check_ok("agent-browser (Node.js)", "(browser automation)")
+        elif shutil.which("agent-browser"):
+            check_ok("agent-browser", "(browser automation)")
         else:
             if _is_termux():
                 check_info("agent-browser is not installed (expected in the tested Termux path)")

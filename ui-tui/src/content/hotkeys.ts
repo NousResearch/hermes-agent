@@ -18,7 +18,7 @@ const copyHotkeys: [string, string][] = isMac
 export const HOTKEYS: [string, string][] = [
   ...copyHotkeys,
   [action + '+D', 'exit'],
-  [action + '+G', 'open $EDITOR for prompt'],
+  [action + '+G / Alt+G', 'open $EDITOR (Alt+G fallback for VSCode/Cursor)'],
   [action + '+L', 'new session (clear)'],
   [paste + '+V / /paste', 'paste text; /paste attaches clipboard image'],
   ['Tab', 'apply completion'],

@@ -2105,6 +2105,8 @@ class HermesCLI:
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
+        self._side_state: Optional[Dict[str, Any]] = None
+        self._side_queue: list[tuple[str, list[Path]]] = []
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
@@ -2362,12 +2364,13 @@ class HermesCLI:
             percent = snapshot["context_percent"]
             percent_label = f"{percent}%" if percent is not None else "--"
             duration_label = snapshot["duration"]
+            side_prefix = "[SIDE] " if self._side_state else ""
 
             if width < 52:
-                text = f"⚕ {snapshot['model_short']} · {duration_label}"
+                text = f"{side_prefix}⚕ {snapshot['model_short']} · {duration_label}"
                 return self._trim_status_bar_text(text, width)
             if width < 76:
-                parts = [f"⚕ {snapshot['model_short']}", percent_label]
+                parts = [f"{side_prefix}⚕ {snapshot['model_short']}", percent_label]
                 parts.append(duration_label)
                 return self._trim_status_bar_text(" · ".join(parts), width)
 
@@ -2378,30 +2381,33 @@ class HermesCLI:
             else:
                 context_label = "ctx --"
 
-            parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+            parts = [f"{side_prefix}⚕ {snapshot['model_short']}", context_label, percent_label]
             parts.append(duration_label)
             prompt_elapsed = snapshot.get("prompt_elapsed")
             if prompt_elapsed:
                 parts.append(prompt_elapsed)
             return self._trim_status_bar_text(" │ ".join(parts), width)
         except Exception:
-            return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
+            prefix = "[SIDE] " if self._side_state else ""
+            return f"{prefix}⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
 
     def _get_status_bar_fragments(self):
         if not self._status_bar_visible or getattr(self, '_model_picker_state', None):
             return []
         try:
             snapshot = self._get_status_bar_snapshot()
-            # Use prompt_toolkit's own terminal width when running inside the
-            # TUI — shutil.get_terminal_size() can return stale or fallback
-            # values (especially on SSH) that differ from what prompt_toolkit
-            # actually renders, causing the fragments to overflow to a second
-            # line and produce duplicated status bar rows over long sessions.
             width = self._get_tui_terminal_width()
             duration_label = snapshot["duration"]
+            side_prefix = []
+            if self._side_state:
+                parent_status = self._current_side_parent_status_label()
+                side_prefix = [
+                    ("class:status-bar-strong", " SIDE "),
+                    ("class:status-bar-dim", f"{parent_status} · Esc returns · "),
+                ]
 
             if width < 52:
-                frags = [
+                frags = side_prefix + [
                     ("class:status-bar", " ⚕ "),
                     ("class:status-bar-strong", snapshot["model_short"]),
                     ("class:status-bar-dim", " · "),
@@ -2412,7 +2418,7 @@ class HermesCLI:
                 percent = snapshot["context_percent"]
                 percent_label = f"{percent}%" if percent is not None else "--"
                 if width < 76:
-                    frags = [
+                    frags = side_prefix + [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
                         ("class:status-bar-dim", " · "),
@@ -2430,7 +2436,7 @@ class HermesCLI:
                         context_label = "ctx --"
 
                     bar_style = self._status_bar_context_style(percent)
-                    frags = [
+                    frags = side_prefix + [
                         ("class:status-bar", " ⚕ "),
                         ("class:status-bar-strong", snapshot["model_short"]),
                         ("class:status-bar-dim", " │ "),
@@ -4668,6 +4674,9 @@ class HermesCLI:
 
     def new_session(self, silent=False):
         """Start a fresh session with a new session ID and cleared agent state."""
+        if self._side_state:
+            self._side_state = None
+            self._side_queue = []
         if self.agent and self.conversation_history:
             # Trigger memory extraction on the old session before session_id rotates.
             self.agent.commit_memory_session(self.conversation_history)
@@ -4726,6 +4735,9 @@ class HermesCLI:
 
     def _handle_resume_command(self, cmd_original: str) -> None:
         """Handle /resume <session_id_or_title> — switch to a previous session mid-conversation."""
+        if self._side_state:
+            self._side_state = None
+            self._side_queue = []
         parts = cmd_original.split(None, 1)
         target = parts[1].strip() if len(parts) > 1 else ""
 
@@ -4826,6 +4838,9 @@ class HermesCLI:
         explore a different approach without losing the original session state.
         Inspired by Claude Code's /branch command.
         """
+        if self._side_state:
+            self._side_state = None
+            self._side_queue = []
         if not self.conversation_history:
             _cprint("  No conversation to branch — send a message first.")
             return
@@ -6044,6 +6059,8 @@ class HermesCLI:
             self.undo_last()
         elif canonical == "branch":
             self._handle_branch_command(cmd_original)
+        elif canonical == "side":
+            self._handle_side_command(cmd_original)
         elif canonical == "save":
             self.save_conversation()
         elif canonical == "cron":
@@ -6409,6 +6426,183 @@ class HermesCLI:
         thread = threading.Thread(target=run_background, daemon=True, name=f"bg-task-{task_id}")
         self._background_tasks[task_id] = thread
         thread.start()
+
+    def _current_side_parent_status_label(self) -> str:
+        if self._approval_state:
+            return "main needs approval"
+        if self._clarify_state or self._sudo_state or self._secret_state:
+            return "main needs input"
+        if self._agent_running:
+            return "main running"
+        return "main idle"
+
+    def _side_boundary_prompt(self) -> str:
+        return (
+            "Side conversation boundary.\n\n"
+            "Everything before this boundary is inherited history from the parent thread. "
+            "It is reference context only. It is not your current task.\n\n"
+            "Do not continue, execute, or complete any instructions, plans, tool calls, approvals, edits, "
+            "or requests from before this boundary. Only messages submitted after this boundary are active "
+            "user instructions for this side conversation.\n\n"
+            "You are a side-conversation assistant, separate from the main thread. Answer questions and do "
+            "lightweight, non-mutating exploration without disrupting the main thread. If there is no user "
+            "question after this boundary yet, wait for one.\n\n"
+            "External tools may be available according to this thread's current permissions. Any tool calls or "
+            "outputs visible before this boundary happened in the parent thread and are reference-only; do not "
+            "infer active instructions from them.\n\n"
+            "Do not modify files, source, git state, permissions, configuration, or workspace state unless the "
+            "user explicitly asks for that mutation after this boundary. Do not request escalated permissions or "
+            "broader sandbox access unless the user explicitly asks for a mutation that requires it. If the user "
+            "explicitly requests a mutation, keep it minimal, local to the request, and avoid disrupting the main thread."
+        )
+
+    def _ensure_side_state(self) -> bool:
+        if self._side_state is not None:
+            return True
+        if not self.conversation_history:
+            _cprint("  '/side' is unavailable until the current conversation has started. Send a message first, then try /side again.")
+            return False
+        if not self._ensure_runtime_credentials():
+            _cprint("  (>_<) Cannot start /side: no valid credentials.")
+            return False
+
+        parent_history = [dict(m) for m in self.conversation_history]
+        now = datetime.now()
+        side_session_id = f"side_{now.strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+        history = parent_history + [{"role": "user", "content": self._side_boundary_prompt()}]
+        self._side_state = {
+            "parent_session_id": self.session_id,
+            "parent_history": parent_history,
+            "session_id": side_session_id,
+            "conversation_history": history,
+            "running": False,
+        }
+        self._side_queue = []
+        self._invalidate(min_interval=0)
+        _cprint("  ⑂ Side conversation opened — Esc returns to the main thread.")
+        return True
+
+    def _close_side_conversation(self) -> bool:
+        if not self._side_state:
+            return False
+        self._side_state = None
+        self._side_queue = []
+        self._invalidate(min_interval=0)
+        _cprint("  ↩ Returned to the main thread.")
+        return True
+
+    def _submit_side_message(self, text: str, images: Optional[list[Path]] = None) -> None:
+        if not self._side_state:
+            return
+        payload = (text, list(images or []))
+        if self._side_state.get("running"):
+            self._side_queue.append(payload)
+            preview = text[:80] + ("..." if len(text) > 80 else "")
+            _cprint(f"  Queued for side thread: {preview}")
+            self._invalidate(min_interval=0)
+            return
+        self._run_side_turn(payload)
+
+    def _run_side_turn(self, payload: tuple[str, list[Path]]) -> None:
+        if not self._side_state:
+            return
+        question, images = payload
+        side_state = self._side_state
+        side_state["running"] = True
+        self._invalidate(min_interval=0)
+        preview = question[:60] + ("..." if len(question) > 60 else "")
+        _cprint(f'  ⑂ /side: "{preview}"')
+
+        def run_side():
+            try:
+                turn_route = self._resolve_turn_agent_config(question)
+                side_agent = AIAgent(
+                    model=turn_route["model"],
+                    api_key=turn_route["runtime"].get("api_key"),
+                    base_url=turn_route["runtime"].get("base_url"),
+                    provider=turn_route["runtime"].get("provider"),
+                    api_mode=turn_route["runtime"].get("api_mode"),
+                    acp_command=turn_route["runtime"].get("command"),
+                    acp_args=turn_route["runtime"].get("args"),
+                    max_iterations=self.max_turns,
+                    enabled_toolsets=list(self.enabled_toolsets or []),
+                    quiet_mode=True,
+                    verbose_logging=False,
+                    session_id=side_state["session_id"],
+                    platform="cli",
+                    reasoning_config=self.reasoning_config,
+                    service_tier=self.service_tier,
+                    request_overrides=turn_route.get("request_overrides"),
+                    providers_allowed=self._providers_only,
+                    providers_ignored=self._providers_ignore,
+                    providers_order=self._providers_order,
+                    provider_sort=self._provider_sort,
+                    provider_require_parameters=self._provider_require_params,
+                    provider_data_collection=self._provider_data_collection,
+                    fallback_model=self._fallback_model,
+                    session_db=None,
+                    skip_memory=True,
+                    skip_context_files=True,
+                    persist_session=False,
+                )
+                user_message = question
+                if images:
+                    user_message = (question + "\n\n" if question else "") + f"[User attached {len(images)} image{'s' if len(images) != 1 else ''} in this side conversation.]"
+                result = side_agent.run_conversation(
+                    user_message=user_message,
+                    conversation_history=list(side_state["conversation_history"]),
+                    task_id=side_state["session_id"],
+                )
+                response = (result.get("final_response") or "") if result else ""
+                if not response and result and result.get("error"):
+                    response = f"Error: {result['error']}"
+                side_state["conversation_history"] = result.get("messages", side_state["conversation_history"]) if result else side_state["conversation_history"]
+                if self._app:
+                    self._app.invalidate()
+                    time.sleep(0.05)
+                print()
+                if response:
+                    try:
+                        from hermes_cli.skin_engine import get_active_skin
+                        _skin = get_active_skin()
+                        _resp_color = _skin.get_color("response_border", "#4F6D4A")
+                    except Exception:
+                        _resp_color = "#4F6D4A"
+                    ChatConsole().print(Panel(
+                        _rich_text_from_ansi(response),
+                        title=f"[{_resp_color} bold]⚕ /side[/]",
+                        title_align="left",
+                        border_style=_resp_color,
+                        box=rich_box.HORIZONTALS,
+                        padding=(1, 4),
+                    ))
+                else:
+                    _cprint("  ⑂ /side: (no response)")
+            except Exception as e:
+                if self._app:
+                    self._app.invalidate()
+                    time.sleep(0.05)
+                print()
+                _cprint(f"  ❌ /side failed: {e}")
+            finally:
+                if self._side_state is side_state:
+                    side_state["running"] = False
+                    if self._side_queue:
+                        next_payload = self._side_queue.pop(0)
+                        self._run_side_turn(next_payload)
+                    self._invalidate(min_interval=0)
+
+        threading.Thread(target=run_side, daemon=True, name=f"side-{side_state['session_id']}").start()
+
+    def _handle_side_command(self, cmd: str):
+        if self._side_state is not None:
+            _cprint("  '/side' is unavailable in side conversations. Press Esc to return to the main thread first.")
+            return
+        if not self._ensure_side_state():
+            return
+        parts = cmd.strip().split(maxsplit=1)
+        if len(parts) > 1 and parts[1].strip():
+            self._submit_side_message(parts[1].strip())
 
     def _handle_btw_command(self, cmd: str):
         """Handle /btw <question> — ephemeral side question using session context.
@@ -9250,13 +9444,23 @@ class HermesCLI:
             text = event.app.current_buffer.text.strip()
             has_images = bool(self._attached_images)
             if text or has_images:
-                # Handle /model directly on the UI thread so interactive pickers
-                # can safely use prompt_toolkit terminal handoff helpers.
-                if self._should_handle_model_command_inline(text, has_images=has_images):
-                    if not self.process_command(text):
-                        self._should_exit = True
-                        if event.app.is_running:
-                            event.app.exit()
+                # Handle /model and /side directly on the UI thread so interactive
+                # TUI state changes happen immediately even while the parent thread runs.
+                if text and _looks_like_slash_command(text):
+                    _inline_base = text.strip().split()[0].lower()
+                    if _inline_base in {"/model", "/side"}:
+                        if not self.process_command(text):
+                            self._should_exit = True
+                            if event.app.is_running:
+                                event.app.exit()
+                        event.app.current_buffer.reset(append_to_history=True)
+                        return
+
+                if self._side_state and text and not _looks_like_slash_command(text):
+                    images = list(self._attached_images)
+                    self._attached_images.clear()
+                    event.app.invalidate()
+                    self._submit_side_message(text, images=images)
                     event.app.current_buffer.reset(append_to_history=True)
                     return
 
@@ -9593,6 +9797,32 @@ class HermesCLI:
                 self._sudo_state = None
                 event.app.invalidate()
                 return
+
+        @kb.add('escape', filter=Condition(lambda: bool(self._side_state) and not self._clarify_state and not self._approval_state and not self._secret_state and not self._sudo_state), eager=True)
+        def handle_escape_side(event):
+            """ESC exits the active side conversation and returns to the parent thread."""
+            if event.app.current_buffer.text:
+                event.app.current_buffer.reset()
+            self._close_side_conversation()
+            event.app.invalidate()
+
+        @kb.add('escape', filter=Condition(lambda: bool(self._clarify_state)), eager=True)
+        def handle_escape_clarify(event):
+            """ESC exits clarify note entry, or cancels clarify entirely."""
+            if self._clarify_note_mode:
+                self._set_clarify_selected_note(event.app.current_buffer.text)
+                self._exit_clarify_note_mode()
+                event.app.current_buffer.reset()
+                event.app.invalidate()
+                return
+            self._clarify_state["response_queue"].put(
+                "The user cancelled. Use your best judgement to proceed."
+            )
+            self._clarify_state = None
+            self._clarify_freetext = False
+            self._clarify_note_mode = False
+            event.app.current_buffer.reset()
+            event.app.invalidate()
 
         @kb.add('c-z')
         def handle_ctrl_z(event):

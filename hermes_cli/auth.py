@@ -408,6 +408,22 @@ def _resolve_api_key_provider_secret(
         if has_usable_secret(val):
             return val, env_var
 
+    # Fallback: try credential_pool (auth.json) when env var is absent.
+    # This handles the case where keys are stored in ~/.hermes/.env or
+    # ~/.hermes/auth.json but never loaded into os.environ (e.g. ACP
+    # entry point missing project_env, or keys added after session start).
+    try:
+        from hermes_cli.auth import read_credential_pool
+
+        pool_entries = read_credential_pool(provider_id)
+        for entry in pool_entries:
+            token = entry.get("access_token", "")
+            if has_usable_secret(token):
+                source = f"credential_pool:{entry.get('id', 'unknown')}"
+                return token, source
+    except Exception:
+        pass  # credential_pool unavailable — don't break auth
+
     return "", ""
 
 

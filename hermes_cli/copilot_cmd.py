@@ -330,9 +330,28 @@ def handle_copilot_remote_slash(raw_command: str) -> None:
     try:
         if subcmd == "list":
             ns = SimpleNamespace(state=None, limit=20)
-            for i, a in enumerate(args_rest):
+            i = 0
+            while i < len(args_rest):
+                a = args_rest[i]
                 if a == "--state" and i + 1 < len(args_rest):
                     ns.state = args_rest[i + 1]
+                    i += 2
+                elif a == "--limit" and i + 1 < len(args_rest):
+                    raw = args_rest[i + 1]
+                    try:
+                        parsed = int(raw)
+                    except ValueError:
+                        print(
+                            f"Error: --limit requires an integer (got {raw!r})",
+                            file=sys.stderr,
+                        )
+                        return
+                    # Clamp to a sane range so a bogus value cannot ask the
+                    # DB for an unbounded slice or a non-positive count.
+                    ns.limit = max(1, min(parsed, 1000))
+                    i += 2
+                else:
+                    i += 1
             copilot_list(ns)
 
         elif subcmd == "launch":

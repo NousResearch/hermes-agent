@@ -86,8 +86,12 @@ def _parse_line_for_session_id(line: str) -> Optional[str]:
 def parse_copilot_output(output: str) -> Dict[str, Optional[str]]:
     """Parse copilot stdout for session handles.
 
-    Checks JSONL lines first (``--output-format json``), then falls back
-    to regex matching on plain text.
+    Inspects each output line and tries to parse a session ID from JSON
+    content when present, falling back to regex matching on plain text.
+    ``build_copilot_command()`` does not pass ``--output-format json``
+    (interactive ``--remote`` does not support it), so in practice the
+    regex path is what fires — the JSON branch only matters if a
+    future Copilot release prints structured lines unprompted.
 
     Returns ``{"session_id": ... or None}``.
     """

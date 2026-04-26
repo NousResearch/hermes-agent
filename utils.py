@@ -15,6 +15,7 @@ logger = logging.getLogger(__name__)
 
 
 TRUTHY_STRINGS = frozenset({"1", "true", "yes", "on"})
+FALSY_STRINGS = frozenset({"0", "false", "no", "off"})
 
 
 def is_truthy_value(value: Any, default: bool = False) -> bool:
@@ -25,6 +26,28 @@ def is_truthy_value(value: Any, default: bool = False) -> bool:
         return value
     if isinstance(value, str):
         return value.strip().lower() in TRUTHY_STRINGS
+    return bool(value)
+
+
+def coerce_bool(value: Any, default: bool = False) -> bool:
+    """Coerce bool-ish config values while preserving the caller's default.
+
+    Unlike ``bool(value)``, this treats quoted config strings like
+    ``"false"`` and ``"0"`` as ``False`` instead of truthy non-empty
+    strings. Unrecognized strings fall back to ``default`` so malformed
+    YAML values don't silently flip behavior.
+    """
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in TRUTHY_STRINGS:
+            return True
+        if lowered in FALSY_STRINGS:
+            return False
+        return default
     return bool(value)
 
 

@@ -89,7 +89,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent))
 
 # Resolve Hermes home directory (respects HERMES_HOME override)
 from hermes_constants import get_hermes_home
-from utils import atomic_yaml_write, base_url_host_matches, is_truthy_value
+from utils import atomic_yaml_write, base_url_host_matches, coerce_bool, is_truthy_value
 _hermes_home = get_hermes_home()
 
 # Load environment variables from ~/.hermes/.env first.
@@ -752,7 +752,7 @@ class GatewayRunner:
                     self._session_db.maybe_auto_prune_and_vacuum(
                         retention_days=int(_sess_cfg.get("retention_days", 90)),
                         min_interval_hours=int(_sess_cfg.get("min_interval_hours", 24)),
-                        vacuum=bool(_sess_cfg.get("vacuum_after_prune", True)),
+                        vacuum=coerce_bool(_sess_cfg.get("vacuum_after_prune", True), default=True),
                     )
             except Exception as exc:
                 logger.debug("state.db auto-maintenance skipped: %s", exc)

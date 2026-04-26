@@ -17,23 +17,14 @@ from typing import Dict, List, Optional, Any
 from enum import Enum
 
 from hermes_cli.config import get_hermes_home
-from utils import is_truthy_value
+from utils import coerce_bool
 
 logger = logging.getLogger(__name__)
 
 
 def _coerce_bool(value: Any, default: bool = True) -> bool:
     """Coerce bool-ish config values, preserving a caller-provided default."""
-    if value is None:
-        return default
-    if isinstance(value, str):
-        lowered = value.strip().lower()
-        if lowered in ("true", "1", "yes", "on"):
-            return True
-        if lowered in ("false", "0", "no", "off"):
-            return False
-        return default
-    return is_truthy_value(value, default=default)
+    return coerce_bool(value, default=default)
 
 
 def _normalize_unauthorized_dm_behavior(value: Any, default: str = "pair") -> str:

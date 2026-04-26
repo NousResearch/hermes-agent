@@ -1309,11 +1309,11 @@ export default class Ink {
     const text = getSelectedText(this.selection, this.frontFrame.screen)
 
     if (text) {
-      // Raw OSC 52, or DCS-passthrough-wrapped OSC 52 inside tmux (tmux
-      // drops it silently unless allow-passthrough is on — no regression).
       void setClipboard(text).then(raw => {
         if (raw) {
           this.options.stdout.write(raw)
+        } else if (process.env.HERMES_TUI_DEBUG_CLIPBOARD) {
+          console.error('[clipboard] [osc52] no sequence emitted — native clipboard or tmux buffer path in use')
         }
       })
     }

@@ -269,17 +269,17 @@ export default function ChatPage() {
       const payload = data.slice(semi + 1);
       if (payload === "?" || payload === "") return false; // read/clear — ignore
       try {
-        // atob returns a binary string (one byte per char); we need UTF-8
-        // decode so multi-byte codepoints (≥, →, emoji, CJK) round-trip
-        // correctly.  Without this step, the three UTF-8 bytes of `≥`
-        // would land in the clipboard as the three separate Latin-1
-        // characters `â‰¥`.
         const binary = atob(payload);
         const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
         const text = new TextDecoder("utf-8").decode(bytes);
-        navigator.clipboard.writeText(text).catch(() => {});
-      } catch {
-        // Malformed base64 — silently drop.
+        navigator.clipboard.writeText(text).catch((err) => {
+          // Most common reason: the Clipboard API requires a user gesture.
+          // This can fail when the OSC 52 response arrives outside the
+          // original keydown event's activation. Log to aid debugging.
+          console.warn("[dashboard clipboard] OSC 52 write failed:", err.message);
+        });
+      } catch (e) {
+        console.warn("[dashboard clipboard] malformed OSC 52 payload");
       }
       return true;
     });
@@ -296,7 +296,9 @@ export default function ChatPage() {
       if (copyModifier && ev.key.toLowerCase() === "c") {
         const sel = term.getSelection();
         if (sel) {
-          navigator.clipboard.writeText(sel).catch(() => {});
+          navigator.clipboard.writeText(sel).catch((err) => {
+            console.warn("[dashboard clipboard] direct copy failed:", err.message);
+          });
           ev.preventDefault();
           return false;
         }
@@ -308,7 +310,9 @@ export default function ChatPage() {
           .then((text) => {
             if (text) term.paste(text);
           })
-          .catch(() => {});
+          .catch((err) => {
+            console.warn("[dashboard clipboard] paste failed:", err.message);
+          });
         ev.preventDefault();
         return false;
       }

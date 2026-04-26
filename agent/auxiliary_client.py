@@ -1328,6 +1328,144 @@ def _is_payment_error(exc: Exception) -> bool:
     return False
 
 
+def _is_usage_limit_error(exc: Exception) -> bool:
+    """Detect rate-limit / usage-cap errors that aren't about billing.
+
+    Returns True for HTTP 429 responses whose message indicates the provider
+    rejected the request because of a rate limit, usage cap, or quota — i.e.
+    the provider is reachable and authenticated, but cannot serve the request
+    *right now*.  Distinct from :func:`_is_payment_error` which fires only on
+    402 / credit-exhaustion bodies.
+
+    Used by ``call_llm`` for ``task="compression"`` so that when the active
+    main model is rate-limited, compression can fall through to the user's
+    configured ``fallback_providers`` list instead of dropping the summary.
+    See issue #15714.
+    """
+    status = getattr(exc, "status_code", None)
+    err_lower = str(exc).lower()
+    rate_keywords = (
+        "usage_limit",
+        "usage_limit_reached",
+        "rate limit",
+        "rate_limit",
+        "rate-limit",
+        "quota",
+        "too many requests",
+        "tpm",
+        "rpm",
+        "tokens per minute",
+        "requests per minute",
+    )
+    if status == 429:
+        return True
+    if any(kw in err_lower for kw in rate_keywords):
+        return True
+    return False
+
+
+def _load_fallback_providers() -> List[Dict[str, Any]]:
+    """Read ``fallback_providers`` (or legacy ``fallback_model``) from config.yaml.
+
+    Returns a normalized list of ``{provider, model, base_url?, api_key?, key_env?}``
+    dicts.  Empty list when no fallback chain is configured.
+
+    Mirrors the loading logic in ``cli.py`` (``CLI_CONFIG.get('fallback_providers')
+    or CLI_CONFIG.get('fallback_model')``) so auxiliary callers see the same
+    chain the main agent uses.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+    except Exception:
+        return []
+    if not isinstance(cfg, dict):
+        return []
+    fb = cfg.get("fallback_providers")
+    if not fb:
+        fb = cfg.get("fallback_model")
+    if isinstance(fb, dict):
+        if fb.get("provider") and fb.get("model"):
+            return [fb]
+        return []
+    if not isinstance(fb, list):
+        return []
+    return [
+        entry for entry in fb
+        if isinstance(entry, dict) and entry.get("provider") and entry.get("model")
+    ]
+
+
+def _build_compression_fallback_attempts(
+    failed_provider: str,
+    messages: list,
+    *,
+    temperature: Optional[float],
+    max_tokens: Optional[int],
+    tools: Optional[list],
+    timeout: float,
+    extra_body: Optional[dict],
+    async_mode: bool = False,
+) -> List[Tuple[Any, Dict[str, Any], str]]:
+    """Build (client, call_kwargs, label) attempts from ``fallback_providers``.
+
+    Used by compression's ``call_llm`` when the active main model returns a
+    usage-limit / rate-limit 429.  This is the auxiliary-side mirror of the
+    main agent's ``_try_activate_fallback`` chain — when the main model is
+    rate-limited, compression should fall through to the same configured
+    backups instead of giving up.  Returning a list lets the caller try each
+    entry in order, so a fallback that itself 429s rolls forward to the next.
+    """
+    chain = _load_fallback_providers()
+    if not chain:
+        return []
+    skip = (failed_provider or "").strip().lower()
+    attempts: List[Tuple[Any, Dict[str, Any], str]] = []
+    for entry in chain:
+        fb_provider = (entry.get("provider") or "").strip().lower()
+        fb_model = (entry.get("model") or "").strip()
+        if not fb_provider or not fb_model:
+            continue
+        # Don't loop back to the same provider that just failed.
+        if fb_provider == skip:
+            continue
+        fb_base_url = (entry.get("base_url") or "").strip() or None
+        fb_api_key = (entry.get("api_key") or "").strip() or None
+        if not fb_api_key:
+            fb_key_env = (entry.get("key_env") or "").strip()
+            if fb_key_env:
+                fb_api_key = os.getenv(fb_key_env, "").strip() or None
+        try:
+            fb_client, fb_resolved_model = resolve_provider_client(
+                fb_provider,
+                model=fb_model,
+                async_mode=async_mode,
+                explicit_base_url=fb_base_url,
+                explicit_api_key=fb_api_key,
+            )
+        except Exception as exc:
+            logger.debug(
+                "Compression fallback: could not build client for %s/%s: %s",
+                fb_provider, fb_model, exc,
+            )
+            continue
+        if fb_client is None:
+            continue
+        fb_kwargs = _build_call_kwargs(
+            fb_provider,
+            fb_resolved_model or fb_model,
+            messages,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            tools=tools,
+            timeout=timeout,
+            extra_body=extra_body,
+            base_url=str(getattr(fb_client, "base_url", "") or ""),
+        )
+        attempts.append((fb_client, fb_kwargs, fb_provider))
+    return attempts
+
+
 def _is_connection_error(exc: Exception) -> bool:
     """Detect connection/network errors that warrant provider fallback.
 
@@ -3163,6 +3301,55 @@ def call_llm(
                     base_url=str(getattr(fb_client, "base_url", "") or ""))
                 return _validate_llm_response(
                     fb_client.chat.completions.create(**fb_kwargs), task)
+
+        # ── Compression usage-limit fallback to config.fallback_providers ──
+        # When the active main model is rate-limited (429 / usage_limit_reached)
+        # and the user has configured fallback_providers, retry compression
+        # against the same chain the main agent uses.  Limited to compression
+        # to keep blast radius small — vision / web_extract / summarization
+        # still need their own auto-resolution.  See issue #15714.
+        #
+        # Gated on ``is_auto`` so an explicit ``auxiliary.compression.provider``
+        # pin is honored even on failure — mirrors the payment-fallback guard
+        # above (#7559).  Explicit provider = hard constraint; auto = best-effort.
+        if (
+            task == "compression"
+            and is_auto
+            and _is_usage_limit_error(first_err)
+            and not _is_payment_error(first_err)
+        ):
+            attempts = _build_compression_fallback_attempts(
+                resolved_provider or "",
+                messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                tools=tools,
+                timeout=effective_timeout,
+                extra_body=effective_extra_body,
+                async_mode=False,
+            )
+            last_err: Optional[Exception] = first_err
+            for fb_client, fb_kwargs, fb_label in attempts:
+                logger.info(
+                    "Auxiliary compression: usage limit on %s, retrying via "
+                    "fallback_providers entry %s",
+                    resolved_provider or "main",
+                    fb_label,
+                )
+                try:
+                    return _validate_llm_response(
+                        fb_client.chat.completions.create(**fb_kwargs), task)
+                except Exception as fb_err:
+                    if not _is_usage_limit_error(fb_err):
+                        # Non-rate-limit error from the fallback — stop trying
+                        # further fallbacks and surface this fresh failure.
+                        raise
+                    last_err = fb_err
+            # Exhausted the configured fallback_providers chain — re-raise
+            # the original (or last) error so the compressor inserts its
+            # static fallback marker as before.
+            if last_err is not first_err:
+                raise last_err
         raise
 
 
@@ -3442,4 +3629,43 @@ async def async_call_llm(
                     fb_kwargs["model"] = async_fb_model
                 return _validate_llm_response(
                     await async_fb.chat.completions.create(**fb_kwargs), task)
+
+        # ── Compression usage-limit fallback to config.fallback_providers ──
+        # Mirrors the sync call_llm path so async consumers (gateway,
+        # session_search, etc.) get the same compression fallback when the
+        # main model is rate-limited.  ``is_auto`` gate honors explicit
+        # ``auxiliary.compression.provider`` pins.  See issue #15714.
+        if (
+            task == "compression"
+            and is_auto
+            and _is_usage_limit_error(first_err)
+            and not _is_payment_error(first_err)
+        ):
+            attempts = _build_compression_fallback_attempts(
+                resolved_provider or "",
+                messages,
+                temperature=temperature,
+                max_tokens=max_tokens,
+                tools=tools,
+                timeout=effective_timeout,
+                extra_body=effective_extra_body,
+                async_mode=True,
+            )
+            last_err: Optional[Exception] = first_err
+            for fb_client, fb_kwargs, fb_label in attempts:
+                logger.info(
+                    "Auxiliary compression (async): usage limit on %s, retrying via "
+                    "fallback_providers entry %s",
+                    resolved_provider or "main",
+                    fb_label,
+                )
+                try:
+                    return _validate_llm_response(
+                        await fb_client.chat.completions.create(**fb_kwargs), task)
+                except Exception as fb_err:
+                    if not _is_usage_limit_error(fb_err):
+                        raise
+                    last_err = fb_err
+            if last_err is not first_err:
+                raise last_err
         raise

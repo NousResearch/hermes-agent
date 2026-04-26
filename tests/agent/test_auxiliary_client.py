@@ -775,6 +775,472 @@ class TestCallLlmPaymentFallback:
                     messages=[{"role": "user", "content": "hello"}],
                 )
 
+
+# ---------------------------------------------------------------------------
+# Compression usage_limit fallback to config.fallback_providers — #15714
+# ---------------------------------------------------------------------------
+
+
+class TestIsUsageLimitError:
+    """_is_usage_limit_error catches usage_limit_reached / quota / rate-limit 429s."""
+
+    def test_429_usage_limit_reached(self):
+        from agent.auxiliary_client import _is_usage_limit_error
+        exc = Exception(
+            "Error code: 429 - {'error': {'type': 'usage_limit_reached', "
+            "'message': 'The usage limit has been reached'}}"
+        )
+        exc.status_code = 429
+        assert _is_usage_limit_error(exc) is True
+
+    def test_429_plain_rate_limit(self):
+        from agent.auxiliary_client import _is_usage_limit_error
+        exc = Exception("Rate limit exceeded")
+        exc.status_code = 429
+        assert _is_usage_limit_error(exc) is True
+
+    def test_429_quota_exceeded(self):
+        from agent.auxiliary_client import _is_usage_limit_error
+        exc = Exception("quota exceeded for this minute")
+        exc.status_code = 429
+        assert _is_usage_limit_error(exc) is True
+
+    def test_500_is_not_usage_limit(self):
+        from agent.auxiliary_client import _is_usage_limit_error
+        exc = Exception("Internal Server Error")
+        exc.status_code = 500
+        assert _is_usage_limit_error(exc) is False
+
+    def test_no_status_with_usage_limit_message(self):
+        """Some providers wrap 429 inside a generic exception body."""
+        from agent.auxiliary_client import _is_usage_limit_error
+        exc = Exception("usage_limit_reached: please wait")
+        assert _is_usage_limit_error(exc) is True
+
+
+class TestCompressionFallbackProviders:
+    """call_llm(task='compression') retries against config.fallback_providers on 429/usage_limit.
+
+    Regression for #15714: when the main model 429s during compression and the
+    user has fallback_providers configured, the compression call must retry
+    against the fallback chain — not just give up and lose the summary.
+    """
+
+    def _make_429(self, msg="usage_limit_reached"):
+        exc = Exception(
+            f"Error code: 429 - {{'error': {{'type': 'usage_limit_reached', "
+            f"'message': '{msg}'}}}}"
+        )
+        exc.status_code = 429
+        return exc
+
+    def test_compression_retries_against_fallback_providers_on_usage_limit(self, monkeypatch):
+        """Main provider 429s during compression → retry against configured fallback_providers."""
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_429()
+        primary_client.base_url = "https://chatgpt.com/backend-api/codex"
+
+        fb_client = MagicMock()
+        fb_response = MagicMock()
+        fb_response.choices = [MagicMock(message=MagicMock(content="summary text"))]
+        fb_client.chat.completions.create.return_value = fb_response
+        fb_client.base_url = "https://api.deepseek.example/v1"
+
+        fallback_providers = [
+            {"provider": "deepseek-v4", "model": "deepseek-v4-flash"},
+        ]
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "gpt-5.5")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("auto", None, None, None, None)), \
+             patch("agent.auxiliary_client._load_fallback_providers",
+                    return_value=fallback_providers), \
+             patch("agent.auxiliary_client.resolve_provider_client",
+                    return_value=(fb_client, "deepseek-v4-flash")):
+            response = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "summarize"}],
+            )
+
+        assert response is fb_response
+        # Primary was tried once; fallback was tried once.
+        assert primary_client.chat.completions.create.call_count == 1
+        assert fb_client.chat.completions.create.call_count == 1
+
+    def test_compression_with_no_fallback_providers_re_raises(self, monkeypatch):
+        """Without fallback_providers configured, compression 429 should still raise."""
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_429()
+        primary_client.base_url = "https://api.example/v1"
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "gpt-5.5")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("auto", None, None, None, None)), \
+             patch("agent.auxiliary_client._load_fallback_providers",
+                    return_value=[]):
+            with pytest.raises(Exception) as excinfo:
+                call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "summarize"}],
+                )
+            assert "usage_limit_reached" in str(excinfo.value) or "429" in str(excinfo.value)
+
+    def test_non_compression_task_skips_fallback_providers(self, monkeypatch):
+        """Only compression triggers fallback_providers retry — other tasks are unchanged."""
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_429()
+        primary_client.base_url = "https://api.example/v1"
+
+        fb_client = MagicMock()  # would be used if fallback fired
+
+        load_called = []
+
+        def fake_load_fbp():
+            load_called.append(True)
+            return [{"provider": "deepseek-v4", "model": "deepseek-v4-flash"}]
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "gpt-5.5")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("auto", None, None, None, None)), \
+             patch("agent.auxiliary_client._load_fallback_providers",
+                    side_effect=fake_load_fbp), \
+             patch("agent.auxiliary_client.resolve_provider_client",
+                    return_value=(fb_client, "deepseek-v4-flash")):
+            with pytest.raises(Exception):
+                call_llm(
+                    task="web_extract",
+                    messages=[{"role": "user", "content": "summarize"}],
+                )
+        # _load_fallback_providers should not be called for non-compression tasks.
+        assert load_called == []
+        assert fb_client.chat.completions.create.call_count == 0
+
+    def test_compression_falls_through_to_second_fallback_provider(self, monkeypatch):
+        """If the first fallback also 429s, try the next entry in fallback_providers."""
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_429()
+        primary_client.base_url = "https://api.primary/v1"
+
+        fb1_client = MagicMock()
+        fb1_client.chat.completions.create.side_effect = self._make_429("rate limit on fb1")
+        fb1_client.base_url = "https://api.fb1/v1"
+
+        fb2_client = MagicMock()
+        fb2_response = MagicMock()
+        fb2_response.choices = [MagicMock(message=MagicMock(content="summary"))]
+        fb2_client.chat.completions.create.return_value = fb2_response
+        fb2_client.base_url = "https://api.fb2/v1"
+
+        fallback_providers = [
+            {"provider": "fb1-prov", "model": "fb1-model"},
+            {"provider": "fb2-prov", "model": "fb2-model"},
+        ]
+
+        def fake_resolve(provider, **kwargs):
+            if provider == "fb1-prov":
+                return fb1_client, "fb1-model"
+            if provider == "fb2-prov":
+                return fb2_client, "fb2-model"
+            return None, None
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "primary-model")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("auto", None, None, None, None)), \
+             patch("agent.auxiliary_client._load_fallback_providers",
+                    return_value=fallback_providers), \
+             patch("agent.auxiliary_client.resolve_provider_client",
+                    side_effect=fake_resolve):
+            response = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "x"}],
+            )
+
+        assert response is fb2_response
+        assert fb1_client.chat.completions.create.call_count == 1
+        assert fb2_client.chat.completions.create.call_count == 1
+
+    def test_compression_happy_path_unaffected(self, monkeypatch):
+        """When primary succeeds, fallback_providers should not be touched."""
+        primary_client = MagicMock()
+        primary_response = MagicMock()
+        primary_response.choices = [MagicMock(message=MagicMock(content="summary"))]
+        primary_client.chat.completions.create.return_value = primary_response
+        primary_client.base_url = "https://api.primary/v1"
+
+        load_called = []
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "primary-model")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("auto", None, None, None, None)), \
+             patch("agent.auxiliary_client._load_fallback_providers",
+                    side_effect=lambda: load_called.append(True) or []):
+            response = call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "x"}],
+            )
+
+        assert response is primary_response
+        assert load_called == []  # Never loaded — happy path
+
+    def test_compression_explicit_provider_pin_skips_fallback_chain(self, monkeypatch):
+        """Explicit ``auxiliary.compression.provider`` pin must be honored on 429.
+
+        When the user pins a specific provider (non-auto), a 429 from that
+        provider should NOT silently reroute to fallback_providers — that would
+        violate the explicit override.  Mirrors the payment-fallback gate (#7559).
+        """
+        primary_client = MagicMock()
+        primary_client.chat.completions.create.side_effect = self._make_429()
+        primary_client.base_url = "https://api.deepseek.example/v1"
+
+        fb_client = MagicMock()  # would be used if fallback erroneously fired
+
+        load_called = []
+
+        def fake_load_fbp():
+            load_called.append(True)
+            return [{"provider": "openrouter", "model": "openai/gpt-5.5"}]
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "deepseek-v4-flash")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("deepseek", "deepseek-v4-flash", None, None, None)), \
+             patch("agent.auxiliary_client._load_fallback_providers",
+                    side_effect=fake_load_fbp), \
+             patch("agent.auxiliary_client.resolve_provider_client",
+                    return_value=(fb_client, "openai/gpt-5.5")):
+            with pytest.raises(Exception) as excinfo:
+                call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "x"}],
+                )
+            # Original 429 must surface, not a fallback result or fallback error.
+            assert "usage_limit_reached" in str(excinfo.value) or "429" in str(excinfo.value)
+
+        # Fallback chain must not have been loaded or invoked.
+        assert load_called == [], "Explicit provider pin must skip fallback chain"
+        assert fb_client.chat.completions.create.call_count == 0
+
+    def test_compression_re_raises_when_all_fallbacks_also_usage_limit(self, monkeypatch):
+        """If every fallback_providers entry also 429s, re-raise the LAST 429 (not the first).
+
+        Exercises the ``last_err is not first_err: raise last_err`` path —
+        the sync code at auxiliary_client.py ~line 3349.
+        """
+        primary_client = MagicMock()
+        first_err = self._make_429("primary 429")
+        primary_client.chat.completions.create.side_effect = first_err
+        primary_client.base_url = "https://api.primary/v1"
+
+        fb1_err = self._make_429("fb1 429")
+        fb1_client = MagicMock()
+        fb1_client.chat.completions.create.side_effect = fb1_err
+        fb1_client.base_url = "https://api.fb1/v1"
+
+        fb2_err = self._make_429("fb2 429")
+        fb2_client = MagicMock()
+        fb2_client.chat.completions.create.side_effect = fb2_err
+        fb2_client.base_url = "https://api.fb2/v1"
+
+        fallback_providers = [
+            {"provider": "fb1-prov", "model": "fb1-model"},
+            {"provider": "fb2-prov", "model": "fb2-model"},
+        ]
+
+        def fake_resolve(provider, **kwargs):
+            if provider == "fb1-prov":
+                return fb1_client, "fb1-model"
+            if provider == "fb2-prov":
+                return fb2_client, "fb2-model"
+            return None, None
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "primary-model")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("auto", None, None, None, None)), \
+             patch("agent.auxiliary_client._load_fallback_providers",
+                    return_value=fallback_providers), \
+             patch("agent.auxiliary_client.resolve_provider_client",
+                    side_effect=fake_resolve):
+            with pytest.raises(Exception) as excinfo:
+                call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "x"}],
+                )
+
+        # Both fallbacks were attempted before re-raising.
+        assert fb1_client.chat.completions.create.call_count == 1
+        assert fb2_client.chat.completions.create.call_count == 1
+        # The re-raised error is the LAST 429 (fb2_err), not the original
+        # first_err — proving the ``raise last_err`` branch fired.
+        assert excinfo.value is fb2_err
+        assert excinfo.value is not first_err
+
+
+class TestAsyncCompressionFallbackProviders:
+    """async_call_llm(task='compression') mirrors the sync fallback behavior — #15714."""
+
+    def _make_429(self, msg="usage_limit_reached"):
+        exc = Exception(f"Error code: 429 - {msg}")
+        exc.status_code = 429
+        return exc
+
+    @pytest.mark.asyncio
+    async def test_async_compression_retries_against_fallback_providers(self, monkeypatch):
+        """Async path: primary 429 → retry against configured fallback_providers.
+
+        ``_build_compression_fallback_attempts(async_mode=True)`` calls
+        ``resolve_provider_client`` which itself produces an async client —
+        so the test patches ``resolve_provider_client`` to return an async-mock
+        client and verifies it was awaited.  No outer ``_to_async_client`` patch
+        (that helper isn't called on this code path).
+        """
+        primary_client = MagicMock()
+        primary_client.chat.completions.create = AsyncMock(side_effect=self._make_429())
+        primary_client.base_url = "https://api.primary/v1"
+
+        fb_client = MagicMock()
+        fb_response = MagicMock()
+        fb_response.choices = [MagicMock(message=MagicMock(content="summary"))]
+        fb_create = AsyncMock(return_value=fb_response)
+        fb_client.chat.completions.create = fb_create
+        fb_client.base_url = "https://api.fb/v1"
+
+        fallback_providers = [
+            {"provider": "fb-prov", "model": "fb-model"},
+        ]
+
+        resolve_calls = []
+
+        def fake_resolve(provider, **kwargs):
+            resolve_calls.append((provider, kwargs.get("async_mode")))
+            return fb_client, "fb-model"
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "primary-model")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("auto", None, None, None, None)), \
+             patch("agent.auxiliary_client._load_fallback_providers",
+                    return_value=fallback_providers), \
+             patch("agent.auxiliary_client.resolve_provider_client",
+                    side_effect=fake_resolve):
+            response = await async_call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "x"}],
+            )
+
+        assert response is fb_response
+        # Critical: resolve_provider_client must be invoked with async_mode=True
+        # so the returned client is genuinely async — not sync-wrapped post-hoc.
+        assert resolve_calls == [("fb-prov", True)], \
+            f"Expected async_mode=True on resolve, got {resolve_calls}"
+        # And the async create was actually awaited.
+        fb_create.assert_awaited_once()
+
+    @pytest.mark.asyncio
+    async def test_async_compression_with_no_fallback_providers_re_raises(self, monkeypatch):
+        """Async parity for sync no-fallback re-raise."""
+        primary_client = MagicMock()
+        primary_client.chat.completions.create = AsyncMock(side_effect=self._make_429())
+        primary_client.base_url = "https://api.example/v1"
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "primary-model")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("auto", None, None, None, None)), \
+             patch("agent.auxiliary_client._load_fallback_providers",
+                    return_value=[]):
+            with pytest.raises(Exception) as excinfo:
+                await async_call_llm(
+                    task="compression",
+                    messages=[{"role": "user", "content": "x"}],
+                )
+            assert "usage_limit_reached" in str(excinfo.value) or "429" in str(excinfo.value)
+
+    @pytest.mark.asyncio
+    async def test_async_non_compression_task_skips_fallback_providers(self, monkeypatch):
+        """Async parity: non-compression tasks must not hit the fallback chain."""
+        primary_client = MagicMock()
+        primary_client.chat.completions.create = AsyncMock(side_effect=self._make_429())
+        primary_client.base_url = "https://api.example/v1"
+
+        fb_client = MagicMock()
+        fb_client.chat.completions.create = AsyncMock()
+
+        load_called = []
+
+        def fake_load_fbp():
+            load_called.append(True)
+            return [{"provider": "fb-prov", "model": "fb-model"}]
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "primary-model")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("auto", None, None, None, None)), \
+             patch("agent.auxiliary_client._load_fallback_providers",
+                    side_effect=fake_load_fbp), \
+             patch("agent.auxiliary_client.resolve_provider_client",
+                    return_value=(fb_client, "fb-model")):
+            with pytest.raises(Exception):
+                await async_call_llm(
+                    task="web_extract",
+                    messages=[{"role": "user", "content": "x"}],
+                )
+        assert load_called == []
+        fb_client.chat.completions.create.assert_not_awaited()
+
+    @pytest.mark.asyncio
+    async def test_async_compression_falls_through_to_second_fallback(self, monkeypatch):
+        """Async parity for two-entry roll-through: fb1 429s → fb2 succeeds."""
+        primary_client = MagicMock()
+        primary_client.chat.completions.create = AsyncMock(side_effect=self._make_429("primary"))
+        primary_client.base_url = "https://api.primary/v1"
+
+        fb1_client = MagicMock()
+        fb1_client.chat.completions.create = AsyncMock(side_effect=self._make_429("fb1"))
+        fb1_client.base_url = "https://api.fb1/v1"
+
+        fb2_client = MagicMock()
+        fb2_response = MagicMock()
+        fb2_response.choices = [MagicMock(message=MagicMock(content="summary"))]
+        fb2_client.chat.completions.create = AsyncMock(return_value=fb2_response)
+        fb2_client.base_url = "https://api.fb2/v1"
+
+        fallback_providers = [
+            {"provider": "fb1-prov", "model": "fb1-model"},
+            {"provider": "fb2-prov", "model": "fb2-model"},
+        ]
+
+        def fake_resolve(provider, **kwargs):
+            if provider == "fb1-prov":
+                return fb1_client, "fb1-model"
+            if provider == "fb2-prov":
+                return fb2_client, "fb2-model"
+            return None, None
+
+        with patch("agent.auxiliary_client._get_cached_client",
+                    return_value=(primary_client, "primary-model")), \
+             patch("agent.auxiliary_client._resolve_task_provider_model",
+                    return_value=("auto", None, None, None, None)), \
+             patch("agent.auxiliary_client._load_fallback_providers",
+                    return_value=fallback_providers), \
+             patch("agent.auxiliary_client.resolve_provider_client",
+                    side_effect=fake_resolve):
+            response = await async_call_llm(
+                task="compression",
+                messages=[{"role": "user", "content": "x"}],
+            )
+
+        assert response is fb2_response
+        fb1_client.chat.completions.create.assert_awaited_once()
+        fb2_client.chat.completions.create.assert_awaited_once()
+
+
 # ---------------------------------------------------------------------------
 # Gate: _resolve_api_key_provider must skip anthropic when not configured
 # ---------------------------------------------------------------------------

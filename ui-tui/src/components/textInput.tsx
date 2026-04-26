@@ -307,6 +307,7 @@ export function TextInput({
   const editVersionRef = useRef(0)
   const parentChangeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingParentValue = useRef<string | null>(null)
+  const localRenderTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lineWidthRef = useRef(stringWidth(value.includes('\n') ? value.slice(value.lastIndexOf('\n') + 1) : value))
   const undo = useRef<{ cursor: number; value: string }[]>([])
   const redo = useRef<{ cursor: number; value: string }[]>([])
@@ -395,6 +396,10 @@ export function TextInput({
       if (parentChangeTimer.current) {
         clearTimeout(parentChangeTimer.current)
       }
+
+      if (localRenderTimer.current) {
+        clearTimeout(localRenderTimer.current)
+      }
     },
     []
   )
@@ -424,6 +429,23 @@ export function TextInput({
     parentChangeTimer.current = setTimeout(flushParentChange, 16)
   }
 
+  const flushLocalRender = () => {
+    if (localRenderTimer.current) {
+      clearTimeout(localRenderTimer.current)
+      localRenderTimer.current = null
+    }
+
+    setCur(curRef.current)
+  }
+
+  const scheduleLocalRender = () => {
+    if (localRenderTimer.current) {
+      return
+    }
+
+    localRenderTimer.current = setTimeout(flushLocalRender, 16)
+  }
+
   const canFastEchoBase = () => focus && termFocus && !selected && !mask && !!stdout?.isTTY
 
   const canFastAppend = (current: string, cursor: number, text: string) => {
@@ -449,7 +471,7 @@ export function TextInput({
     return !!prev && stringWidth(prev) === 1
   }
 
-  const commit = (next: string, nextCur: number, track = true, syncParent = true) => {
+  const commit = (next: string, nextCur: number, track = true, syncParent = true, syncLocal = true) => {
     const prev = vRef.current
     const c = snapPos(next, nextCur)
     editVersionRef.current += 1
@@ -469,7 +491,13 @@ export function TextInput({
       redo.current = []
     }
 
-    setCur(c)
+    if (syncLocal) {
+      flushLocalRender()
+      setCur(c)
+    } else {
+      scheduleLocalRender()
+    }
+
     curRef.current = c
     vRef.current = next
     lineWidthRef.current = stringWidth(next.includes('\n') ? next.slice(next.lastIndexOf('\n') + 1) : next)
@@ -739,7 +767,7 @@ export function TextInput({
           v = v.slice(0, t) + v.slice(c)
           c = t
           stdout!.write('\b \b')
-          commit(v, c, true, false)
+          commit(v, c, true, false, false)
 
           return
         } else {
@@ -826,7 +854,7 @@ export function TextInput({
 
             if (simpleAppend) {
               stdout!.write(text)
-              commit(v, c, true, false)
+              commit(v, c, true, false, false)
 
               return
             }

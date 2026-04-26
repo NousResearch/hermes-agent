@@ -5984,7 +5984,35 @@ class HermesCLI:
             parts = cmd_original.split(maxsplit=1)
             if len(parts) > 1:
                 raw_title = parts[1].strip()
-                if raw_title:
+                if raw_title and raw_title.lower() == "!new":
+                    # Force re-generate title from conversation history
+                    if self._session_db and self.conversation_history:
+                        _cprint("  Generating new title...")
+                        try:
+                            from agent.title_generator import generate_title_from_history
+                            title = generate_title_from_history(self.conversation_history)
+                            if title:
+                                from hermes_state import SessionDB
+                                sanitized = SessionDB.sanitize_title(title)
+                                if sanitized:
+                                    if self._session_db.get_session(self.session_id):
+                                        self._session_db.set_session_title(self.session_id, sanitized)
+                                        _cprint(f"  ✏️ Title regenerated: {sanitized}")
+                                    else:
+                                        self._pending_title = sanitized
+                                        _cprint(f"  ✏️ Title regenerated (pending): {sanitized}")
+                                else:
+                                    _cprint("  Could not generate a title.")
+                            else:
+                                _cprint("  Could not generate a title.")
+                        except Exception as e:
+                            logger.debug("Title regeneration failed: %s", e)
+                            _cprint(f"  Could not generate a title ({type(e).__name__}: {e})")
+                    elif not self.conversation_history:
+                        _cprint("  No conversation yet to generate a title from.")
+                    else:
+                        _cprint("  Session database not available.")
+                elif raw_title:
                     if self._session_db:
                         # Sanitize the title early so feedback matches what gets stored
                         try:
@@ -6018,16 +6046,42 @@ class HermesCLI:
                 else:
                     _cprint("  Usage: /title <your session title>")
             else:
-                # Show current title and session ID if no argument given
+                # Show current title and session ID if no argument given.
+                # If no title exists, auto-generate one from conversation history.
                 if self._session_db:
                     _cprint(f"  Session ID: {self.session_id}")
                     session = self._session_db.get_session(self.session_id)
-                    if session and session.get("title"):
-                        _cprint(f"  Title: {session['title']}")
+                    existing_title = (session.get("title") or "").strip() if session else ""
+                    if existing_title:
+                        _cprint(f"  Title: {existing_title}")
+                        _cprint("  To regenerate: /title !new")
                     elif self._pending_title:
                         _cprint(f"  Title (pending): {self._pending_title}")
+                    elif self.conversation_history:
+                        # Auto-generate a title from conversation history
+                        _cprint("  Generating title...")
+                        try:
+                            from agent.title_generator import generate_title_from_history
+                            title = generate_title_from_history(self.conversation_history)
+                            if title:
+                                from hermes_state import SessionDB
+                                sanitized = SessionDB.sanitize_title(title)
+                                if sanitized:
+                                    if self._session_db.get_session(self.session_id):
+                                        self._session_db.set_session_title(self.session_id, sanitized)
+                                        _cprint(f"  ✏️ Title auto-generated: {sanitized}")
+                                    else:
+                                        self._pending_title = sanitized
+                                        _cprint(f"  ✏️ Title auto-generated (pending): {sanitized}")
+                                else:
+                                    _cprint("  Could not generate a title. Usage: /title <your session title>")
+                            else:
+                                _cprint("  Could not generate a title. Usage: /title <your session title>")
+                        except Exception as e:
+                            logger.debug("Auto-title generation failed: %s", e)
+                            _cprint(f"  Could not generate a title ({type(e).__name__}: {e}). Usage: /title <your session title>")
                     else:
-                        _cprint("  No title set. Usage: /title <your session title>")
+                        _cprint("  No conversation yet. Usage: /title <your session title>")
                 else:
                     _cprint("  Session database not available.")
         elif canonical == "new":

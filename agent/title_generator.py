@@ -13,9 +13,9 @@ from agent.auxiliary_client import call_llm
 logger = logging.getLogger(__name__)
 
 _TITLE_PROMPT = (
-    "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
-    "following exchange. The title should capture the main topic or intent. "
-    "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
+    "Generate a concise 3-word title for this conversation, with words separated by dashes. "
+    "Examples: setup-docker-compose, fix-login-bug, hermes-title-feature, deploy-staging-server. "
+    "Return ONLY the 3-word-dash-separated title, nothing else. No quotes, no prefixes, lowercase."
 )
 
 
@@ -47,13 +47,73 @@ def generate_title(user_message: str, assistant_response: str, timeout: float = 
         title = title.strip('"\'')
         if title.lower().startswith("title:"):
             title = title[6:].strip()
+        # Normalize to lowercase-dashed format
+        import re
+        title = re.sub(r'[^a-zA-Z0-9\s-]', '', title)
+        title = re.sub(r'\s+', '-', title.strip()).lower()
+        # Enforce max 3 words (dashed segments)
+        parts = [p for p in title.split('-') if p]
+        if len(parts) > 3:
+            parts = parts[:3]
+        title = '-'.join(parts)
         # Enforce reasonable length
         if len(title) > 80:
             title = title[:77] + "..."
         return title if title else None
     except Exception as e:
-        logger.debug("Title generation failed: %s", e)
+        logger.warning("Title generation failed: %s: %s", type(e).__name__, e)
         return None
+
+
+def generate_title_from_history(conversation_history: list, timeout: float = 30.0) -> Optional[str]:
+    """Generate a session title from conversation history (any point in the session).
+
+    Extracts the most recent user and assistant messages to build context,
+    then asks the auxiliary LLM for a short title.  Used by ``/title`` when
+    called without arguments mid-conversation.
+
+    Falls back to a truncated first user message if the LLM call fails.
+    """
+    if not conversation_history:
+        return None
+
+    # Collect recent user and assistant messages (last 3 of each, for context)
+    user_msgs = [m["content"] for m in conversation_history
+                 if m.get("role") == "user" and m.get("content")]
+    assistant_msgs = [m["content"] for m in conversation_history
+                      if m.get("role") == "assistant" and m.get("content")]
+
+    if not user_msgs:
+        return None
+
+    # Use last few messages to capture the session's topic
+    user_snippet = "\n".join(msg[:200] for msg in user_msgs[-3:])[:500]
+    assistant_snippet = "\n".join(msg[:200] for msg in assistant_msgs[-3:])[:500] if assistant_msgs else ""
+
+    title = generate_title(user_snippet, assistant_snippet, timeout=timeout)
+
+    # Fallback: truncate first user message if LLM title generation failed
+    if not title and user_msgs:
+        first_msg = user_msgs[0].strip()
+        # Remove system prefixes like "[SYSTEM: ...]"
+        if first_msg.startswith("[SYSTEM:"):
+            # Try next user message
+            for msg in user_msgs[1:]:
+                if not msg.strip().startswith("[SYSTEM:"):
+                    first_msg = msg.strip()
+                    break
+            else:
+                first_msg = ""
+        if first_msg:
+            import re
+            # Extract first 3 meaningful words, dashed
+            words = re.sub(r'[^a-zA-Z0-9\s]', '', first_msg).split()
+            words = [w.lower() for w in words[:3] if w]
+            title = '-'.join(words) if words else None
+            if title:
+                logger.info("Title generation fell back to truncated user message")
+
+    return title
 
 
 def auto_title_session(

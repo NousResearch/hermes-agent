@@ -7053,7 +7053,21 @@ class GatewayRunner:
                 pass  # Session might already exist, ignore errors
 
         title_arg = event.get_command_args().strip()
-        if title_arg:
+        if title_arg and title_arg.lower() == "!new":
+            # Force re-generate title from conversation history
+            try:
+                history = self._session_db.get_messages_as_conversation(session_id)
+                if history:
+                    from agent.title_generator import generate_title_from_history
+                    generated = generate_title_from_history(history)
+                    if generated:
+                        sanitized = self._session_db.sanitize_title(generated)
+                        if sanitized and self._session_db.set_session_title(session_id, sanitized):
+                            return f"✏️ Title regenerated: **{sanitized}**"
+            except Exception:
+                pass
+            return "Could not regenerate title."
+        elif title_arg:
             # Sanitize the title before setting
             try:
                 sanitized = self._session_db.sanitize_title(title_arg)
@@ -7070,11 +7084,27 @@ class GatewayRunner:
             except ValueError as e:
                 return f"⚠️ {e}"
         else:
-            # Show the current title and session ID
+            # Show the current title and session ID.
+            # If no title exists, auto-generate one from conversation history.
             title = self._session_db.get_session_title(session_id)
             if title:
-                return f"📌 Session: `{session_id}`\nTitle: **{title}**"
+                return (
+                    f"📌 Session: `{session_id}`\nTitle: **{title}**\n"
+                    f"_To regenerate: `/title !new`_"
+                )
             else:
+                # Try to auto-generate from conversation history
+                try:
+                    history = self._session_db.get_messages_as_conversation(session_id)
+                    if history:
+                        from agent.title_generator import generate_title_from_history
+                        generated = generate_title_from_history(history)
+                        if generated:
+                            sanitized = self._session_db.sanitize_title(generated)
+                            if sanitized and self._session_db.set_session_title(session_id, sanitized):
+                                return f"✏️ Title auto-generated: **{sanitized}**"
+                except Exception:
+                    pass
                 return f"📌 Session: `{session_id}`\nNo title set. Usage: `/title My Session Name`"
 
     async def _handle_resume_command(self, event: MessageEvent) -> str:

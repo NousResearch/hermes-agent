@@ -7,6 +7,7 @@ import pytest
 
 from agent.title_generator import (
     generate_title,
+    generate_title_from_history,
     auto_title_session,
     maybe_auto_title,
 )
@@ -22,7 +23,7 @@ class TestGenerateTitle:
 
         with patch("agent.title_generator.call_llm", return_value=mock_response):
             title = generate_title("help me fix this import", "Sure, let me check...")
-            assert title == "Debugging Python Import Errors"
+            assert title == "debugging-python-import"
 
     def test_strips_quotes(self):
         mock_response = MagicMock()
@@ -31,7 +32,7 @@ class TestGenerateTitle:
 
         with patch("agent.title_generator.call_llm", return_value=mock_response):
             title = generate_title("how do I set up docker", "First install...")
-            assert title == "Setting Up Docker Environment"
+            assert title == "setting-up-docker"
 
     def test_strips_title_prefix(self):
         mock_response = MagicMock()
@@ -40,7 +41,7 @@ class TestGenerateTitle:
 
         with patch("agent.title_generator.call_llm", return_value=mock_response):
             title = generate_title("my pod keeps crashing", "Let me look...")
-            assert title == "Kubernetes Pod Debugging"
+            assert title == "kubernetes-pod-debugging"
 
     def test_truncates_long_titles(self):
         mock_response = MagicMock()
@@ -81,6 +82,71 @@ class TestGenerateTitle:
         # The user content in the messages should be truncated
         user_content = captured_kwargs["messages"][1]["content"]
         assert len(user_content) < 1100  # 500 + 500 + formatting
+
+
+class TestGenerateTitleFromHistory:
+    """Tests for generate_title_from_history() — mid-conversation title generation."""
+
+    def test_returns_title_from_history(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "GitHub PR Workflow"
+
+        history = [
+            {"role": "user", "content": "help me create a PR"},
+            {"role": "assistant", "content": "Sure, let me set up the branch..."},
+            {"role": "user", "content": "push it to origin"},
+            {"role": "assistant", "content": "Done, PR created."},
+        ]
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title_from_history(history)
+            assert title == "github-pr-workflow"
+
+    def test_returns_none_for_empty_history(self):
+        assert generate_title_from_history([]) is None
+        assert generate_title_from_history(None) is None
+
+    def test_returns_none_for_no_user_messages(self):
+        history = [
+            {"role": "system", "content": "You are helpful"},
+            {"role": "assistant", "content": "Hello!"},
+        ]
+        assert generate_title_from_history(history) is None
+
+    def test_uses_last_messages_for_context(self):
+        """Should use last 3 user + last 3 assistant messages, not all."""
+        captured_kwargs = {}
+
+        def mock_call_llm(**kwargs):
+            captured_kwargs.update(kwargs)
+            resp = MagicMock()
+            resp.choices = [MagicMock()]
+            resp.choices[0].message.content = "Recent Topic"
+            return resp
+
+        history = [
+            {"role": "user", "content": f"msg-{i}"} if i % 2 == 0
+            else {"role": "assistant", "content": f"reply-{i}"}
+            for i in range(10)
+        ]
+
+        with patch("agent.title_generator.call_llm", side_effect=mock_call_llm):
+            title = generate_title_from_history(history)
+            assert title == "recent-topic"
+
+        # The LLM should have been called with truncated content
+        user_content = captured_kwargs["messages"][1]["content"]
+        # Should contain recent messages, not all 5 user messages
+        assert "msg-8" in user_content  # last user msg
+
+    def test_handles_llm_failure_gracefully(self):
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+        with patch("agent.title_generator.call_llm", side_effect=RuntimeError("fail")):
+            assert generate_title_from_history(history) == "hello"
 
 
 class TestAutoTitleSession:

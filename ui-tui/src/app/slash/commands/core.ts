@@ -1,10 +1,11 @@
 import { NO_CONFIRM_DESTRUCTIVE } from '../../../config/env.js'
 import { dailyFortune, randomFortune } from '../../../content/fortunes.js'
 import { HOTKEYS } from '../../../content/hotkeys.js'
-import { SECTION_NAMES, isSectionName, nextDetailsMode, parseDetailsMode } from '../../../domain/details.js'
+import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from '../../../domain/details.js'
 import type {
   ConfigGetValueResponse,
   ConfigSetResponse,
+  SessionSaveResponse,
   SessionSteerResponse,
   SessionUndoResponse
 } from '../../../gatewayTypes.js'
@@ -40,8 +41,10 @@ const flagFromArg = (arg: string, current: boolean): boolean | null => {
 
 const RESET_WORDS = new Set(['reset', 'clear', 'default'])
 const CYCLE_WORDS = new Set(['cycle', 'toggle'])
+
 const DETAILS_USAGE =
   'usage: /details [hidden|collapsed|expanded|cycle]  or  /details <section> [hidden|collapsed|expanded|reset]'
+
 const DETAILS_SECTION_USAGE = 'usage: /details <section> [hidden|collapsed|expanded|reset]'
 
 export const coreCommands: SlashCommand[] = [
@@ -97,9 +100,7 @@ export const coreCommands: SlashCommand[] = [
       }
 
       patchUiState({ mouseTracking: next })
-      ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { key: 'mouse', value: next ? 'on' : 'off' })
-        .catch(() => {})
+      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'mouse', value: next ? 'on' : 'off' }).catch(() => {})
 
       queueMicrotask(() => ctx.transcript.sys(`mouse tracking ${next ? 'on' : 'off'}`))
     }
@@ -178,7 +179,9 @@ export const coreCommands: SlashCommand[] = [
         gateway
           .rpc<ConfigGetValueResponse>('config.get', { key: 'details_mode' })
           .then(r => {
-            if (ctx.stale()) return
+            if (ctx.stale()) {
+              return
+            }
 
             const mode = parseDetailsMode(r?.value) ?? ui.detailsMode
             patchUiState({ detailsMode: mode })
@@ -267,7 +270,6 @@ export const coreCommands: SlashCommand[] = [
       }
 
       writeOsc52Clipboard(target.text)
-      sys(`copied ${target.text.length} chars`)
     }
   },
 
@@ -347,6 +349,39 @@ export const coreCommands: SlashCommand[] = [
       })
 
       ctx.transcript.page(lines.join('\n\n'), 'History')
+    }
+  },
+
+  {
+    help: 'save the current transcript to JSON',
+    name: 'save',
+    run: (_arg, ctx) => {
+      const hasConversation = ctx.local
+        .getHistoryItems()
+        .some(m => m.role === 'user' || m.role === 'assistant' || m.role === 'tool')
+
+      if (!hasConversation) {
+        return ctx.transcript.sys('no conversation yet')
+      }
+
+      if (!ctx.sid) {
+        return ctx.transcript.sys('no active session — nothing to save')
+      }
+
+      ctx.gateway
+        .rpc<SessionSaveResponse>('session.save', { session_id: ctx.sid })
+        .then(
+          ctx.guarded<SessionSaveResponse>(r => {
+            const file = r?.file
+
+            if (file) {
+              ctx.transcript.sys(`conversation saved to: ${file}`)
+            } else {
+              ctx.transcript.sys('failed to save')
+            }
+          })
+        )
+        .catch(ctx.guardedErr)
     }
   },
 

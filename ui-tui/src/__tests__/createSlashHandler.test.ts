@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
-import { getUiState, resetUiState } from '../app/uiStore.js'
+import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 
 describe('createSlashHandler', () => {
   beforeEach(() => {
@@ -15,6 +15,14 @@ describe('createSlashHandler', () => {
 
     expect(createSlashHandler(ctx)('/resume')).toBe(true)
     expect(getOverlayState().picker).toBe(true)
+  })
+
+  it('treats /provider as a local /model alias', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/provider')).toBe(true)
+    expect(getOverlayState().modelPicker).toBe(true)
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
   it('opens the skills hub locally for bare /skills', () => {
@@ -118,9 +126,7 @@ describe('createSlashHandler', () => {
     const ctx = buildCtx()
     createSlashHandler(ctx)('/details tools blink')
     expect(getUiState().sections.tools).toBeUndefined()
-    expect(ctx.transcript.sys).toHaveBeenCalledWith(
-      'usage: /details <section> [hidden|collapsed|expanded|reset]'
-    )
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('usage: /details <section> [hidden|collapsed|expanded|reset]')
   })
 
   it('shows tool enable usage when names are missing', () => {
@@ -280,6 +286,64 @@ describe('createSlashHandler', () => {
     createSlashHandler(ctx)('/history')
     expect(ctx.transcript.page).not.toHaveBeenCalled()
     expect(ctx.transcript.sys).toHaveBeenCalledWith('no conversation yet')
+  })
+
+  it('/save forwards to session.save RPC and reports the returned file', async () => {
+    patchUiState({ sid: 'sid-abc' })
+
+    const rpc = vi.fn(() => Promise.resolve({ file: '/tmp/hermes_conversation_test.json' }))
+
+    const ctx = buildCtx({
+      gateway: { ...buildGateway(), rpc },
+      local: {
+        ...buildLocal(),
+        getHistoryItems: vi.fn(() => [
+          { role: 'system', text: 'intro' },
+          { role: 'user', text: 'hello' },
+          { role: 'assistant', text: 'hi there' }
+        ])
+      }
+    })
+
+    createSlashHandler(ctx)('/save')
+
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(rpc).toHaveBeenCalledWith('session.save', { session_id: 'sid-abc' })
+
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(
+        'conversation saved to: /tmp/hermes_conversation_test.json'
+      )
+    })
+  })
+
+  it('/save reports empty state without calling the RPC or slash worker', () => {
+    const rpc = vi.fn(() => Promise.resolve({}))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    createSlashHandler(ctx)('/save')
+
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(rpc).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('no conversation yet')
+  })
+
+  it('/save without an active session tells the user instead of hitting the RPC', () => {
+    // sid stays null (default) but there IS visible conversation
+    const rpc = vi.fn(() => Promise.resolve({}))
+
+    const ctx = buildCtx({
+      gateway: { ...buildGateway(), rpc },
+      local: {
+        ...buildLocal(),
+        getHistoryItems: vi.fn(() => [{ role: 'user', text: 'hello' }])
+      }
+    })
+
+    createSlashHandler(ctx)('/save')
+
+    expect(rpc).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('no active session — nothing to save')
   })
 })
 

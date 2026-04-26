@@ -24,6 +24,7 @@ import json
 import asyncio
 import logging
 import threading
+import time
 from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import discover_builtin_tools, registry
@@ -288,30 +289,34 @@ def get_tool_definitions(
                 filtered_tools[i] = {"type": "function", "function": dynamic_schema}
                 break
 
-    # Rebuild discord_server schema based on the bot's privileged intents
-    # (detected from GET /applications/@me) and the user's action allowlist
-    # in config.  Hides actions the bot's intents don't support so the
-    # model never attempts them, and annotates fetch_messages when the
+    # Rebuild discord / discord_admin schemas based on the bot's privileged
+    # intents (detected from GET /applications/@me) and the user's action
+    # allowlist in config.  Hides actions the bot's intents don't support so
+    # the model never attempts them, and annotates fetch_messages when the
     # MESSAGE_CONTENT intent is missing.
-    if "discord_server" in available_tool_names:
-        try:
-            from tools.discord_tool import get_dynamic_schema
-            dynamic = get_dynamic_schema()
-        except Exception:  # pragma: no cover — defensive, fall back to static
-            dynamic = None
-        if dynamic is None:
-            # Tool filtered out entirely (empty allowlist or detection disabled
-            # the only remaining actions).  Drop it from the schema list.
-            filtered_tools = [
-                t for t in filtered_tools
-                if t.get("function", {}).get("name") != "discord_server"
-            ]
-            available_tool_names.discard("discord_server")
-        else:
-            for i, td in enumerate(filtered_tools):
-                if td.get("function", {}).get("name") == "discord_server":
-                    filtered_tools[i] = {"type": "function", "function": dynamic}
-                    break
+    _discord_schema_fns = {
+        "discord": "get_dynamic_schema_core",
+        "discord_admin": "get_dynamic_schema_admin",
+    }
+    for discord_tool_name in _discord_schema_fns:
+        if discord_tool_name in available_tool_names:
+            try:
+                from tools import discord_tool as _dt
+                schema_fn = getattr(_dt, _discord_schema_fns[discord_tool_name])
+                dynamic = schema_fn()
+            except Exception:
+                dynamic = None
+            if dynamic is None:
+                filtered_tools = [
+                    t for t in filtered_tools
+                    if t.get("function", {}).get("name") != discord_tool_name
+                ]
+                available_tool_names.discard(discord_tool_name)
+            else:
+                for i, td in enumerate(filtered_tools):
+                    if td.get("function", {}).get("name") == discord_tool_name:
+                        filtered_tools[i] = {"type": "function", "function": dynamic}
+                        break
 
     # Strip web tool cross-references from browser_navigate description when
     # web_search / web_extract are not available.  The static schema says
@@ -563,6 +568,14 @@ def handle_function_call(
             except Exception:
                 pass  # file_tools may not be loaded yet
 
+        # Measure tool dispatch latency so post_tool_call and
+        # transform_tool_result hooks can observe per-tool duration.
+        # Inspired by Claude Code 2.1.119, which added ``duration_ms`` to
+        # PostToolUse hook inputs so plugin authors can build latency
+        # dashboards, budget alerts, and regression canaries without having
+        # to wrap every tool manually.  We use monotonic() so the value is
+        # unaffected by wall-clock adjustments during the call.
+        _dispatch_start = time.monotonic()
         if function_name == "execute_code":
             # Prefer the caller-provided list so subagents can't overwrite
             # the parent's tool set via the process-global.
@@ -578,6 +591,7 @@ def handle_function_call(
                 task_id=task_id,
                 user_task=user_task,
             )
+        duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
 
         try:
             from hermes_cli.plugins import invoke_hook
@@ -589,6 +603,7 @@ def handle_function_call(
                 task_id=task_id or "",
                 session_id=session_id or "",
                 tool_call_id=tool_call_id or "",
+                duration_ms=duration_ms,
             )
         except Exception:
             pass
@@ -609,6 +624,7 @@ def handle_function_call(
                 task_id=task_id or "",
                 session_id=session_id or "",
                 tool_call_id=tool_call_id or "",
+                duration_ms=duration_ms,
             )
             for hook_result in hook_results:
                 if isinstance(hook_result, str):

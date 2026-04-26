@@ -81,7 +81,7 @@ const sidebars: SidebarsConfig = {
           label: 'Management',
           items: [
             'user-guide/features/web-dashboard',
-            'user-guide/features/dashboard-plugins',
+            'user-guide/features/extending-the-dashboard',
           ],
         },
         {
@@ -554,6 +554,7 @@ const sidebars: SidebarsConfig = {
         'guides/webhook-github-pr-review',
         'guides/migrate-from-openclaw',
         'guides/aws-bedrock',
+        'guides/azure-foundry',
       ],
     },
     {

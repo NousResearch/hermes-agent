@@ -612,14 +612,6 @@ DEFAULT_CONFIG = {
             "timeout": 30,
             "extra_body": {},
         },
-        "flush_memories": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 30,
-            "extra_body": {},
-        },
         "title_generation": {
             "provider": "auto",
             "model": "",
@@ -783,6 +775,15 @@ DEFAULT_CONFIG = {
         # warning log if out of range.
         "max_spawn_depth": 1,        # depth cap (1 = flat [default], 2 = orchestrator→leaf, 3 = three-level)
         "orchestrator_enabled": True,  # kill switch for role="orchestrator"
+        # When a subagent hits a dangerous-command approval prompt, the parent's
+        # prompt_toolkit TUI owns stdin — a thread-local input() call from the
+        # subagent worker would deadlock the parent UI. To avoid the deadlock,
+        # subagent threads ALWAYS resolve approvals non-interactively:
+        #   false (default) → auto-deny with a logger.warning audit line (safe)
+        #   true             → auto-approve "once" with a logger.warning audit line
+        # Flip to true only if you trust delegated work to run dangerous cmds
+        # without human review (cron pipelines, batch automation, etc.).
+        "subagent_auto_approve": False,
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
@@ -839,7 +840,7 @@ DEFAULT_CONFIG = {
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
         "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
         "channel_prompts": {},         # Per-channel ephemeral system prompts (forum parents apply to child threads)
-        # discord_server tool: restrict which actions the agent may call.
+        # discord / discord_admin tools: restrict which actions the agent may call.
         # Default (empty) = all actions allowed (subject to bot privileged intents).
         # Accepts comma-separated string ("list_guilds,list_channels,fetch_messages")
         # or YAML list. Unknown names are dropped with a warning at load time.
@@ -1365,6 +1366,21 @@ OPTIONAL_ENV_VARS = {
     "AWS_PROFILE": {
         "description": "AWS named profile for Bedrock authentication (from ~/.aws/credentials)",
         "prompt": "AWS Profile",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "AZURE_FOUNDRY_API_KEY": {
+        "description": "Azure Foundry API key for custom Azure endpoints",
+        "prompt": "Azure Foundry API Key",
+        "url": "https://ai.azure.com/",
+        "password": True,
+        "category": "provider",
+    },
+    "AZURE_FOUNDRY_BASE_URL": {
+        "description": "Azure Foundry base URL (set via 'hermes model' for endpoint-specific config)",
+        "prompt": "Azure Foundry base URL",
         "url": None,
         "password": False,
         "category": "provider",
@@ -2203,6 +2219,71 @@ def get_compatible_custom_providers(
         _append_if_new(entry)
 
     return compatible
+
+
+def get_custom_provider_context_length(
+    model: str,
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[int]:
+    """Look up a per-model ``context_length`` override from ``custom_providers``.
+
+    Matches any entry whose ``base_url`` equals ``base_url`` (trailing-slash
+    insensitive) and returns ``custom_providers[i].models.<model>.context_length``
+    if present and valid.  Returns ``None`` when no override applies.
+
+    This is the single source of truth for custom-provider context overrides,
+    used by:
+      * ``AIAgent.__init__`` (startup resolution)
+      * ``AIAgent.switch_model`` (mid-session ``/model`` switch)
+      * ``hermes_cli.model_switch.resolve_display_context_length`` (``/model`` confirmation display)
+      * ``gateway.run._format_session_info`` (``/info`` display)
+      * ``agent.model_metadata.get_model_context_length`` (when custom_providers is threaded through)
+
+    Before this helper existed, the lookup was duplicated in ``run_agent.py``'s
+    startup path only; every other path (notably ``/model`` switch) fell back
+    to the 128K default.  See #15779.
+    """
+    if not model or not base_url:
+        return None
+    if custom_providers is None:
+        try:
+            custom_providers = get_compatible_custom_providers(config)
+        except Exception:
+            if config is None:
+                return None
+            raw = config.get("custom_providers")
+            custom_providers = raw if isinstance(raw, list) else []
+    if not isinstance(custom_providers, list):
+        return None
+
+    target_url = (base_url or "").rstrip("/")
+    if not target_url:
+        return None
+
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        entry_url = (entry.get("base_url") or "").rstrip("/")
+        if not entry_url or entry_url != target_url:
+            continue
+        models = entry.get("models")
+        if not isinstance(models, dict):
+            continue
+        model_cfg = models.get(model)
+        if not isinstance(model_cfg, dict):
+            continue
+        raw_ctx = model_cfg.get("context_length")
+        if raw_ctx is None:
+            continue
+        try:
+            ctx = int(raw_ctx)
+        except (TypeError, ValueError):
+            continue
+        if ctx > 0:
+            return ctx
+    return None
 
 
 def check_config_version() -> Tuple[int, int]:

@@ -839,6 +839,8 @@ def _find_bundled_tui(tui_dir: Path) -> Optional[Path]:
 
 
 def _tui_build_needed(tui_dir: Path) -> bool:
+    if _hermes_ink_bundle_stale(tui_dir):
+        return True
     entry = tui_dir / "dist" / "entry.js"
     if not entry.exists():
         return True
@@ -1026,7 +1028,12 @@ def _make_tui_argv(tui_dir: Path, tui_dev: bool) -> tuple[list[str], Path]:
     return [node, str(root / "dist" / "entry.js")], root
 
 
-def _launch_tui(resume_session_id: Optional[str] = None, tui_dev: bool = False):
+def _launch_tui(
+    resume_session_id: Optional[str] = None,
+    tui_dev: bool = False,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+):
     """Replace current process with the TUI."""
     tui_dir = PROJECT_ROOT / "ui-tui"
 
@@ -1036,6 +1043,12 @@ def _launch_tui(resume_session_id: Optional[str] = None, tui_dev: bool = False):
     )
     env.setdefault("HERMES_PYTHON", sys.executable)
     env.setdefault("HERMES_CWD", os.getcwd())
+    if model:
+        env["HERMES_MODEL"] = model
+        env["HERMES_INFERENCE_MODEL"] = model
+    if provider:
+        env["HERMES_TUI_PROVIDER"] = provider
+        env["HERMES_INFERENCE_PROVIDER"] = provider
     # Guarantee an 8GB V8 heap + exposed GC for the TUI. Default node cap is
     # ~1.5–4GB depending on version and can fatal-OOM on long sessions with
     # large transcripts / reasoning blobs. Token-level merge: respect any
@@ -1174,6 +1187,8 @@ def cmd_chat(args):
         _launch_tui(
             getattr(args, "resume", None),
             tui_dev=getattr(args, "tui_dev", False),
+            model=getattr(args, "model", None),
+            provider=getattr(args, "provider", None),
         )
 
     # Import and run the CLI
@@ -1512,6 +1527,83 @@ def select_provider_and_model(args=None):
     all_providers = [(p.slug, p.tui_desc) for p in CANONICAL_PROVIDERS]
 
     def _named_custom_provider_map(cfg) -> dict[str, dict[str, str]]:
+        from hermes_cli.config import read_raw_config
+
+        # Build a lookup of raw (un-expanded) api_key templates keyed by a
+        # stable identity. We intentionally bypass
+        # ``get_compatible_custom_providers(read_raw_config())`` here because
+        # its ``_normalize_custom_provider_entry`` step calls ``urlparse()``
+        # on ``base_url`` and drops any entry whose ``base_url`` is itself an
+        # env-ref template (e.g. ``${NEURALWATT_API_BASE}``). Dropping those
+        # entries is exactly how env-ref preservation fails for the user
+        # config that motivated this fix.
+        raw_api_key_refs: dict[tuple, str] = {}
+        raw_cfg = read_raw_config()
+
+        def _record_raw(
+            name: str,
+            provider_key: str,
+            model: str,
+            api_key: str,
+        ) -> None:
+            template = str(api_key or "").strip()
+            if "${" not in template:
+                return
+            name = str(name or "").strip()
+            provider_key = str(provider_key or "").strip()
+            model = str(model or "").strip()
+            # Index by every plausible identity the loaded (expanded) config
+            # might present: (name), (name, model), (provider_key), and
+            # (provider_key, model). Case-insensitive on name/provider_key so
+            # the loaded entry matches regardless of display casing.
+            if name:
+                raw_api_key_refs.setdefault((name.lower(),), template)
+                raw_api_key_refs.setdefault((name.lower(), model), template)
+            if provider_key:
+                raw_api_key_refs.setdefault((provider_key.lower(),), template)
+                raw_api_key_refs.setdefault(
+                    (provider_key.lower(), model), template
+                )
+
+        raw_list = raw_cfg.get("custom_providers")
+        if isinstance(raw_list, list):
+            for raw_entry in raw_list:
+                if not isinstance(raw_entry, dict):
+                    continue
+                _record_raw(
+                    raw_entry.get("name", ""),
+                    "",
+                    raw_entry.get("model", "")
+                    or raw_entry.get("default_model", ""),
+                    raw_entry.get("api_key", ""),
+                )
+        raw_providers = raw_cfg.get("providers")
+        if isinstance(raw_providers, dict):
+            for raw_key, raw_entry in raw_providers.items():
+                if not isinstance(raw_entry, dict):
+                    continue
+                _record_raw(
+                    raw_entry.get("name", "") or raw_key,
+                    raw_key,
+                    raw_entry.get("model", "")
+                    or raw_entry.get("default_model", ""),
+                    raw_entry.get("api_key", ""),
+                )
+
+        def _lookup_ref(name: str, provider_key: str, model: str) -> str:
+            name_lc = str(name or "").strip().lower()
+            pkey_lc = str(provider_key or "").strip().lower()
+            model = str(model or "").strip()
+            for identity in (
+                (pkey_lc, model),
+                (pkey_lc,),
+                (name_lc, model),
+                (name_lc,),
+            ):
+                if identity[0] and identity in raw_api_key_refs:
+                    return raw_api_key_refs[identity]
+            return ""
+
         custom_provider_map = {}
         for entry in get_compatible_custom_providers(cfg):
             if not isinstance(entry, dict):
@@ -1535,6 +1627,9 @@ def select_provider_and_model(args=None):
                 "model": entry.get("model", ""),
                 "api_mode": entry.get("api_mode", ""),
                 "provider_key": provider_key,
+                "api_key_ref": _lookup_ref(
+                    name, provider_key, entry.get("model", "")
+                ),
             }
         return custom_provider_map
 
@@ -1624,6 +1719,8 @@ def select_provider_and_model(args=None):
         _model_flow_stepfun(config, current_model)
     elif selected_provider == "bedrock":
         _model_flow_bedrock(config, current_model)
+    elif selected_provider == "azure-foundry":
+        _model_flow_azure_foundry(config, current_model)
     elif selected_provider in (
         "gemini",
         "deepseek",
@@ -1707,7 +1804,6 @@ _AUX_TASKS: list[tuple[str, str, str]] = [
     ("session_search",   "Session search",   "past-conversation recall"),
     ("approval",         "Approval",         "smart command approval"),
     ("mcp",              "MCP",              "MCP tool reasoning"),
-    ("flush_memories",   "Flush memories",   "memory consolidation"),
     ("title_generation", "Title generation", "session titles"),
     ("skills_hub",       "Skills hub",       "skills search/install"),
 ]
@@ -2768,6 +2864,19 @@ def _auto_provider_name(base_url: str) -> str:
     return name
 
 
+def _custom_provider_api_key_config_value(provider_info, resolved_api_key=""):
+    """Return the value that should be persisted for a custom provider key."""
+    api_key_ref = str(provider_info.get("api_key_ref", "") or "").strip()
+    if api_key_ref:
+        return api_key_ref
+
+    key_env = str(provider_info.get("key_env", "") or "").strip()
+    if key_env and not str(provider_info.get("api_key", "") or "").strip():
+        return f"${{{key_env}}}"
+
+    return str(resolved_api_key or "").strip()
+
+
 def _save_custom_provider(
     base_url, api_key="", model="", context_length=None, name=None
 ):
@@ -2821,6 +2930,203 @@ def _save_custom_provider(
     cfg["custom_providers"] = providers
     save_config(cfg)
     print(f'  💾 Saved to custom providers as "{name}" (edit in config.yaml)')
+
+
+def _model_flow_azure_foundry(config, current_model=""):
+    """Azure Foundry provider: configure endpoint, API mode, API key, and model.
+
+    Azure Foundry supports both OpenAI-style (``/v1/chat/completions``) and
+    Anthropic-style (``/v1/messages``) endpoints.  The wizard auto-detects
+    the transport and available models when possible:
+
+    * URLs ending in ``/anthropic`` → Anthropic Messages API.
+    * Successful ``GET <base>/models`` probe → OpenAI-style + populates
+      a picker with the returned deployment / model IDs.
+    * Anthropic Messages probe fallback when ``/models`` fails.
+    * Manual entry when every probe fails (private endpoints, etc.).
+
+    Context lengths for the chosen model are resolved via the standard
+    :func:`agent.model_metadata.get_model_context_length` chain
+    (models.dev, provider metadata, hardcoded family fallbacks).
+    """
+    from hermes_cli.auth import _save_model_choice, deactivate_provider  # noqa: F401
+    from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
+    from hermes_cli import azure_detect
+    import getpass
+
+    # ── Load current Azure Foundry configuration ─────────────────────
+    model_cfg = config.get("model", {})
+    if isinstance(model_cfg, dict) and model_cfg.get("provider") == "azure-foundry":
+        current_base_url = str(model_cfg.get("base_url", "") or "")
+        current_api_mode = str(model_cfg.get("api_mode", "") or "")
+    else:
+        current_base_url = ""
+        current_api_mode = ""
+
+    current_api_key = get_env_value("AZURE_FOUNDRY_API_KEY") or ""
+
+    print()
+    print("Azure Foundry Configuration")
+    print("=" * 50)
+    print()
+    print("Azure Foundry can host models with either OpenAI-style or")
+    print("Anthropic-style API endpoints.  Hermes will probe your")
+    print("endpoint to auto-detect the transport and the deployed")
+    print("models when possible.")
+    print()
+
+    if current_base_url:
+        print(f"  Current endpoint: {current_base_url}")
+    if current_api_mode:
+        _lbl = "OpenAI-style" if current_api_mode == "chat_completions" else "Anthropic-style"
+        print(f"  Current API mode: {_lbl}")
+    if current_api_key:
+        print(f"  Current API key:  {current_api_key[:8]}...")
+    print()
+
+    # ── Step 1: endpoint URL ─────────────────────────────────────────
+    try:
+        base_url = input(
+            f"API endpoint URL [{current_base_url or 'e.g. https://your-resource.openai.azure.com/openai/v1'}]: "
+        ).strip()
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+        return
+
+    effective_url = (base_url or current_base_url).rstrip("/")
+    if not effective_url:
+        print("No endpoint URL provided. Cancelled.")
+        return
+    if not effective_url.startswith(("http://", "https://")):
+        print(f"Invalid URL: {effective_url} (must start with http:// or https://)")
+        return
+
+    # ── Step 2: API key ──────────────────────────────────────────────
+    print()
+    try:
+        api_key = getpass.getpass(
+            f"API key [{current_api_key[:8] + '...' if current_api_key else 'required'}]: "
+        ).strip()
+    except (KeyboardInterrupt, EOFError):
+        print("\nCancelled.")
+        return
+
+    effective_key = api_key or current_api_key
+    if not effective_key:
+        print("No API key provided. Cancelled.")
+        return
+
+    # ── Step 3: auto-detect transport + models ───────────────────────
+    print()
+    print("◐ Probing endpoint to auto-detect transport and models...")
+    detection = azure_detect.detect(effective_url, effective_key)
+
+    discovered_models: list[str] = list(detection.models)
+    api_mode: str = detection.api_mode or ""
+
+    if api_mode:
+        mode_label = "OpenAI-style" if api_mode == "chat_completions" else "Anthropic-style"
+        print(f"✓ Detected API transport: {mode_label}")
+        if detection.reason:
+            print(f"    ({detection.reason})")
+        if discovered_models:
+            print(f"✓ Found {len(discovered_models)} deployed model(s) on this endpoint")
+    else:
+        print(f"⚠ Auto-detection incomplete: {detection.reason}")
+        print()
+        print("Select the API format your Azure Foundry endpoint uses:")
+        print("  1. OpenAI-style  (POST /v1/chat/completions)")
+        print("     For: GPT models, Llama, Mistral, and most open models")
+        print("  2. Anthropic-style  (POST /v1/messages)")
+        print("     For: Claude models deployed via Anthropic API format")
+        try:
+            default_choice = "2" if current_api_mode == "anthropic_messages" else "1"
+            mode_choice = input(f"API format [1/2] ({default_choice}): ").strip() or default_choice
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled.")
+            return
+        api_mode = "anthropic_messages" if mode_choice == "2" else "chat_completions"
+
+    # ── Step 4: model name ───────────────────────────────────────────
+    print()
+    effective_model = ""
+    if discovered_models:
+        print("Available models on this endpoint:")
+        for i, mid in enumerate(discovered_models[:30], start=1):
+            print(f"  {i:>2}. {mid}")
+        if len(discovered_models) > 30:
+            print(f"  ... and {len(discovered_models) - 30} more (type name manually if not shown)")
+        print()
+        try:
+            pick = input(
+                f"Pick by number, or type a deployment name [{current_model or discovered_models[0]}]: "
+            ).strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled.")
+            return
+        if not pick:
+            effective_model = current_model or discovered_models[0]
+        elif pick.isdigit() and 1 <= int(pick) <= min(len(discovered_models), 30):
+            effective_model = discovered_models[int(pick) - 1]
+        else:
+            effective_model = pick
+    else:
+        try:
+            model_name = input(
+                f"Model / deployment name [{current_model or 'e.g. gpt-5.4, claude-sonnet-4-6'}]: "
+            ).strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled.")
+            return
+        effective_model = model_name or current_model
+
+    if not effective_model:
+        print("No model name provided. Cancelled.")
+        return
+
+    # ── Step 5: context-length lookup ────────────────────────────────
+    ctx_len = azure_detect.lookup_context_length(
+        effective_model, effective_url, effective_key,
+    )
+
+    # ── Step 6: persist ──────────────────────────────────────────────
+    save_env_value("AZURE_FOUNDRY_API_KEY", effective_key)
+
+    cfg = load_config()
+    model = cfg.get("model")
+    if not isinstance(model, dict):
+        model = {"default": model} if model else {}
+        cfg["model"] = model
+
+    model["provider"] = "azure-foundry"
+    model["base_url"] = effective_url
+    model["api_mode"] = api_mode
+    model["default"] = effective_model
+    if ctx_len:
+        model["context_length"] = ctx_len
+
+    save_config(cfg)
+    deactivate_provider()
+    config["model"] = dict(model)
+
+    # Clear any conflicting env vars so auxiliary clients don't poison
+    # themselves with a stale OpenAI base URL / key.
+    if get_env_value("OPENAI_BASE_URL"):
+        save_env_value("OPENAI_BASE_URL", "")
+    if get_env_value("OPENAI_API_KEY"):
+        save_env_value("OPENAI_API_KEY", "")
+
+    mode_label = "OpenAI-style" if api_mode == "chat_completions" else "Anthropic-style"
+    print()
+    print("✓ Azure Foundry configured:")
+    print(f"    Endpoint:       {effective_url}")
+    print(f"    API mode:       {mode_label}")
+    print(f"    Model:          {effective_model}")
+    if ctx_len:
+        print(f"    Context length: {ctx_len:,} tokens")
+    else:
+        print("    Context length: not auto-detected (will fall back at runtime)")
+    print()
 
 
 def _remove_custom_provider(config):
@@ -2909,6 +3215,7 @@ def _model_flow_named_custom(config, provider_info):
     # Resolve key from env var if api_key not set directly
     if not api_key and key_env:
         api_key = os.environ.get(key_env, "")
+    config_api_key = _custom_provider_api_key_config_value(provider_info, api_key)
 
     print(f"  Provider: {name}")
     print(f"  URL:      {base_url}")
@@ -3005,8 +3312,8 @@ def _model_flow_named_custom(config, provider_info):
     else:
         model["provider"] = "custom"
         model["base_url"] = base_url
-        if api_key:
-            model["api_key"] = api_key
+        if config_api_key:
+            model["api_key"] = config_api_key
     # Apply api_mode from custom_providers entry, or clear stale value
     custom_api_mode = provider_info.get("api_mode", "")
     if custom_api_mode:
@@ -3024,15 +3331,15 @@ def _model_flow_named_custom(config, provider_info):
             provider_entry = providers_cfg.get(provider_key)
             if isinstance(provider_entry, dict):
                 provider_entry["default_model"] = model_name
-                if api_key and not str(provider_entry.get("api_key", "") or "").strip():
-                    provider_entry["api_key"] = api_key
+                if config_api_key and not str(provider_entry.get("api_key", "") or "").strip():
+                    provider_entry["api_key"] = config_api_key
                 if key_env and not str(provider_entry.get("key_env", "") or "").strip():
                     provider_entry["key_env"] = key_env
                 cfg["providers"] = providers_cfg
                 save_config(cfg)
     else:
         # Save model name to the custom_providers entry for next time
-        _save_custom_provider(base_url, api_key, model_name)
+        _save_custom_provider(base_url, config_api_key, model_name)
 
     print(f"\n✅ Model set to: {model_name}")
     print(f"   Provider: {name} ({base_url})")
@@ -5570,6 +5877,54 @@ def _finalize_update_output(state):
             pass
 
 
+def _cmd_update_check():
+    """Implement ``hermes update --check``: fetch and report without installing."""
+    git_dir = PROJECT_ROOT / ".git"
+    if not git_dir.exists():
+        print("✗ Not a git repository — cannot check for updates.")
+        sys.exit(1)
+
+    git_cmd = ["git"]
+    if sys.platform == "win32":
+        git_cmd = ["git", "-c", "windows.appendAtomically=false"]
+
+    print("→ Fetching from origin...")
+    fetch_result = subprocess.run(
+        git_cmd + ["fetch", "origin"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+    )
+    if fetch_result.returncode != 0:
+        stderr = fetch_result.stderr.strip()
+        if "Could not resolve host" in stderr or "unable to access" in stderr:
+            print("✗ Network error — cannot reach the remote repository.")
+        elif "Authentication failed" in stderr or "could not read Username" in stderr:
+            print("✗ Authentication failed — check your git credentials or SSH key.")
+        else:
+            print("✗ Failed to fetch from origin.")
+            if stderr:
+                print(f"  {stderr.splitlines()[0]}")
+        sys.exit(1)
+
+    rev_result = subprocess.run(
+        git_cmd + ["rev-list", "HEAD..origin/main", "--count"],
+        cwd=PROJECT_ROOT,
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    behind = int(rev_result.stdout.strip())
+
+    if behind == 0:
+        print("✓ Already up to date.")
+    else:
+        commits_word = "commit" if behind == 1 else "commits"
+        print(f"⚕ Update available: {behind} {commits_word} behind origin/main.")
+        from hermes_cli.config import recommended_update_command
+        print(f"  Run '{recommended_update_command()}' to install.")
+
+
 def cmd_update(args):
     """Update Hermes Agent to the latest version.
 
@@ -5581,6 +5936,10 @@ def cmd_update(args):
 
     if is_managed():
         managed_error("update Hermes Agent")
+        return
+
+    if getattr(args, "check", False):
+        _cmd_update_check()
         return
 
     gateway_mode = getattr(args, "gateway", False)
@@ -6046,6 +6405,75 @@ def _cmd_update_impl(args, gateway_mode: bool):
             )
             import signal as _signal
 
+            def _wait_for_service_active(
+                scope_cmd_: list, svc_name_: str, timeout: float = 10.0,
+            ) -> bool:
+                """Poll ``systemctl is-active`` until the unit reports active.
+
+                systemd's Stopped -> Started transition after a graceful exit
+                (or a hard restart) is not instantaneous; a one-shot check
+                races that window and falsely reports the unit as down.
+                Poll every 0.5s up to ``timeout`` seconds before giving up.
+                """
+                deadline = _time.monotonic() + max(timeout, 0.5)
+                while True:
+                    try:
+                        _verify = subprocess.run(
+                            scope_cmd_ + ["is-active", svc_name_],
+                            capture_output=True, text=True, timeout=5,
+                        )
+                        if _verify.stdout.strip() == "active":
+                            return True
+                    except (FileNotFoundError, subprocess.TimeoutExpired):
+                        pass
+                    if _time.monotonic() >= deadline:
+                        return False
+                    _time.sleep(0.5)
+
+            def _service_restart_sec(
+                scope_cmd_: list, svc_name_: str, default: float = 0.0,
+            ) -> float:
+                """Read the unit's ``RestartUSec`` (RestartSec) in seconds.
+
+                After a graceful exit-75, systemd waits ``RestartSec`` before
+                respawning the unit.  Callers that poll for ``is-active``
+                must use a timeout >= ``RestartSec`` + transition slack, or
+                they'll give up *during* the cooldown window and wrongly
+                conclude the unit didn't relaunch.
+                """
+                try:
+                    _show = subprocess.run(
+                        scope_cmd_ + [
+                            "show", svc_name_,
+                            "--property=RestartUSec", "--value",
+                        ],
+                        capture_output=True, text=True, timeout=5,
+                    )
+                except (FileNotFoundError, subprocess.TimeoutExpired):
+                    return default
+                raw = (_show.stdout or "").strip()
+                # systemd emits values like "30s", "100ms", "1min 30s", or
+                # "infinity".  Parse conservatively; on any miss return default.
+                if not raw or raw == "infinity":
+                    return default
+                total = 0.0
+                matched = False
+                for part in raw.split():
+                    for _suf, _mult in (
+                        ("ms", 0.001),
+                        ("us", 0.000001),
+                        ("min", 60.0),
+                        ("s", 1.0),
+                    ):
+                        if part.endswith(_suf):
+                            try:
+                                total += float(part[: -len(_suf)]) * _mult
+                                matched = True
+                            except ValueError:
+                                pass
+                            break
+                return total if matched else default
+
             # Drain budget for graceful SIGUSR1 restarts.  The gateway drains
             # for up to ``agent.restart_drain_timeout`` (default 60s) before
             # exiting with code 75; we wait slightly longer so the drain
@@ -6152,14 +6580,23 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
                             if _graceful_ok:
                                 # Gateway exited 75; systemd should relaunch
-                                # via Restart=on-failure.  Verify the new
-                                # process came up.
-                                _time.sleep(3)
-                                verify = subprocess.run(
-                                    scope_cmd + ["is-active", svc_name],
-                                    capture_output=True, text=True, timeout=5,
+                                # via Restart=on-failure.  The unit's
+                                # RestartSec (default 30s on ours) gates the
+                                # respawn — poll past that + slack so we
+                                # don't give up mid-cooldown and falsely
+                                # print "drained but didn't relaunch".  For
+                                # units without RestartSec set we fall back
+                                # to the original 10s budget.
+                                _restart_sec = _service_restart_sec(
+                                    scope_cmd, svc_name, default=0.0,
                                 )
-                                if verify.stdout.strip() == "active":
+                                _post_drain_timeout = max(
+                                    10.0, _restart_sec + 10.0,
+                                )
+                                if _wait_for_service_active(
+                                    scope_cmd, svc_name,
+                                    timeout=_post_drain_timeout,
+                                ):
                                     restarted_services.append(svc_name)
                                     continue
                                 # Process exited but wasn't respawned (older
@@ -6185,14 +6622,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                 # Verify the service actually survived the
                                 # restart.  systemctl restart returns 0 even
                                 # if the new process crashes immediately.
-                                _time.sleep(3)
-                                verify = subprocess.run(
-                                    scope_cmd + ["is-active", svc_name],
-                                    capture_output=True,
-                                    text=True,
-                                    timeout=5,
-                                )
-                                if verify.stdout.strip() == "active":
+                                if _wait_for_service_active(
+                                    scope_cmd, svc_name, timeout=10.0,
+                                ):
                                     restarted_services.append(svc_name)
                                 else:
                                     # Retry once — transient startup failures
@@ -6207,14 +6639,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                                         text=True,
                                         timeout=15,
                                     )
-                                    _time.sleep(3)
-                                    verify2 = subprocess.run(
-                                        scope_cmd + ["is-active", svc_name],
-                                        capture_output=True,
-                                        text=True,
-                                        timeout=5,
-                                    )
-                                    if verify2.stdout.strip() == "active":
+                                    if _wait_for_service_active(
+                                        scope_cmd, svc_name, timeout=10.0,
+                                    ):
                                         restarted_services.append(svc_name)
                                         print(f"  ✓ {svc_name} recovered on retry")
                                     else:
@@ -6822,6 +7249,40 @@ For more help on a command:
         "--version", "-V", action="store_true", help="Show version and exit"
     )
     parser.add_argument(
+        "-z",
+        "--oneshot",
+        metavar="PROMPT",
+        default=None,
+        help=(
+            "One-shot mode: send a single prompt and print ONLY the final "
+            "response text to stdout. No banner, no spinner, no tool "
+            "previews, no session_id line. Tools, memory, rules, and "
+            "AGENTS.md in the CWD are loaded as normal; approvals are "
+            "auto-bypassed. Intended for scripts / pipes."
+        ),
+    )
+    # --model / --provider are accepted at the top level so they can pair
+    # with -z without needing the `chat` subcommand.  If neither -z nor a
+    # subcommand consumes them, they fall through harmlessly as None.
+    # Mirrors `hermes chat --model ... --provider ...` semantics.
+    parser.add_argument(
+        "-m",
+        "--model",
+        default=None,
+        help=(
+            "Model override for this invocation (e.g. anthropic/claude-sonnet-4.6). "
+            "Applies to -z/--oneshot and --tui. Also settable via HERMES_INFERENCE_MODEL env var."
+        ),
+    )
+    parser.add_argument(
+        "--provider",
+        default=None,
+        help=(
+            "Provider override for this invocation (e.g. openrouter, anthropic). "
+            "Applies to -z/--oneshot and --tui. Also settable via HERMES_INFERENCE_PROVIDER env var."
+        ),
+    )
+    parser.add_argument(
         "--resume",
         "-r",
         metavar="SESSION",
@@ -7272,6 +7733,19 @@ For more help on a command:
     )
     setup_parser.add_argument(
         "--reset", action="store_true", help="Reset configuration to defaults"
+    )
+    setup_parser.add_argument(
+        "--reconfigure",
+        action="store_true",
+        help="(Default on existing installs.) Re-run the full wizard, "
+             "showing current values as defaults. Kept for backwards "
+             "compatibility — a bare 'hermes setup' now does this.",
+    )
+    setup_parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="On existing installs: only prompt for items that are missing "
+             "or unset, instead of running the full reconfigure wizard.",
     )
     setup_parser.set_defaults(func=cmd_setup)
 
@@ -8755,6 +9229,12 @@ Examples:
         default=False,
         help="Gateway mode: use file-based IPC for prompts instead of stdin (used internally by /update)",
     )
+    update_parser.add_argument(
+        "--check",
+        action="store_true",
+        default=False,
+        help="Check whether an update is available without installing anything",
+    )
     update_parser.set_defaults(func=cmd_update)
 
     # =========================================================================
@@ -9100,6 +9580,17 @@ Examples:
                 "shell-hook registration failed at CLI startup",
                 exc_info=True,
             )
+
+    # Handle top-level --oneshot / -z: single-shot mode, stdout = final
+    # response only, nothing else. Bypasses cli.py entirely.
+    if getattr(args, "oneshot", None):
+        from hermes_cli.oneshot import run_oneshot
+
+        sys.exit(run_oneshot(
+            args.oneshot,
+            model=getattr(args, "model", None),
+            provider=getattr(args, "provider", None),
+        ))
 
     # Handle top-level --resume / --continue as shortcut to chat
     if (args.resume or args.continue_last) and args.command is None:

@@ -380,18 +380,14 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           ev.payload.inline_diff && getUiState().inlineDiffs ? stripAnsi(String(ev.payload.inline_diff)).trim() : ''
 
         if (inlineDiffText) {
-          turnController.flushStreamingSegment()
-        }
-
-        turnController.recordToolComplete(
-          ev.payload.tool_id,
-          ev.payload.name,
-          ev.payload.error,
-          inlineDiffText ? '' : ev.payload.summary
-        )
-
-        if (inlineDiffText) {
-          turnController.pushInlineDiffSegment(inlineDiffText)
+          turnController.recordInlineDiffToolComplete(
+            inlineDiffText,
+            ev.payload.tool_id,
+            ev.payload.name,
+            ev.payload.error
+          )
+        } else {
+          turnController.recordToolComplete(ev.payload.tool_id, ev.payload.name, ev.payload.error, ev.payload.summary)
         }
 
         return

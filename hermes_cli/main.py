@@ -6495,13 +6495,29 @@ def _cmd_update_check():
     if sys.platform == "win32":
         git_cmd = ["git", "-c", "windows.appendAtomically=false"]
 
-    print("→ Fetching from origin...")
+    # Fetch both origin and upstream; prefer upstream as the canonical reference
+    print("→ Fetching from upstream...")
     fetch_result = subprocess.run(
-        git_cmd + ["fetch", "origin"],
+        git_cmd + ["fetch", "upstream"],
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
     )
+    if fetch_result.returncode != 0:
+        # Fallback to origin if upstream doesn't exist
+        print("→ Fetching from origin...")
+        fetch_result = subprocess.run(
+            git_cmd + ["fetch", "origin"],
+            cwd=PROJECT_ROOT,
+            capture_output=True,
+            text=True,
+        )
+        upstream_exists = False
+        compare_branch = "origin/main"
+    else:
+        upstream_exists = True
+        compare_branch = "upstream/main"
+
     if fetch_result.returncode != 0:
         stderr = fetch_result.stderr.strip()
         if "Could not resolve host" in stderr or "unable to access" in stderr:
@@ -6509,13 +6525,13 @@ def _cmd_update_check():
         elif "Authentication failed" in stderr or "could not read Username" in stderr:
             print("✗ Authentication failed — check your git credentials or SSH key.")
         else:
-            print("✗ Failed to fetch from origin.")
+            print("✗ Failed to fetch.")
             if stderr:
                 print(f"  {stderr.splitlines()[0]}")
         sys.exit(1)
 
     rev_result = subprocess.run(
-        git_cmd + ["rev-list", "HEAD..origin/main", "--count"],
+        git_cmd + ["rev-list", f"HEAD..{compare_branch}", "--count"],
         cwd=PROJECT_ROOT,
         capture_output=True,
         text=True,
@@ -6527,7 +6543,7 @@ def _cmd_update_check():
         print("✓ Already up to date.")
     else:
         commits_word = "commit" if behind == 1 else "commits"
-        print(f"⚕ Update available: {behind} {commits_word} behind origin/main.")
+        print(f"⚕ Update available: {behind} {commits_word} behind {compare_branch}.")
         from hermes_cli.config import recommended_update_command
         print(f"  Run '{recommended_update_command()}' to install.")
 

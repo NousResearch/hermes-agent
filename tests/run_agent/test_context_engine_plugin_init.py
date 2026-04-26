@@ -57,6 +57,59 @@ class LegacyEngine:
 
 
 class TestContextEnginePluginInit:
+    def test_default_compressor_ignores_external_plugin_engine(self):
+        config = {
+            "context": {"engine": "compressor"},
+            "model": {"context_length": 131072},
+            "compression": {"enabled": True},
+        }
+
+        with (
+            patch("hermes_cli.config.load_config", return_value=config),
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("hermes_cli.plugins.discover_plugins") as mock_discover_plugins,
+            patch("hermes_cli.plugins.get_plugin_context_engine"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        mock_discover_plugins.assert_not_called()
+        assert agent.context_compressor.name == "compressor"
+        assert "lcm_grep" not in agent.valid_tool_names
+
+    def test_missing_external_engine_falls_back_to_builtin_compressor(self):
+        config = {
+            "context": {"engine": "lcm"},
+            "model": {"context_length": 131072},
+            "compression": {"enabled": True},
+        }
+
+        with (
+            patch("hermes_cli.config.load_config", return_value=config),
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("plugins.context_engine.load_context_engine", return_value=None),
+            patch("hermes_cli.plugins.discover_plugins") as mock_discover_plugins,
+            patch("hermes_cli.plugins.get_plugin_context_engine", return_value=None),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+
+        mock_discover_plugins.assert_called_once()
+        assert agent.context_compressor.name == "compressor"
+        assert agent._context_engine_tool_names == set()
+
     def test_aiagent_initializes_external_context_engine_plugin(self):
         config = {
             "context": {"engine": "lcm"},

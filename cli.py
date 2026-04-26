@@ -22,6 +22,7 @@ import re
 import concurrent.futures
 import base64
 import atexit
+import errno
 import tempfile
 import time
 import uuid
@@ -415,6 +416,11 @@ def load_cli_config() -> Dict[str, Any]:
             "provider": "",    # Subagent provider override (empty = inherit parent provider)
             "base_url": "",    # Direct OpenAI-compatible endpoint for subagents
             "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
+        },
+        "onboarding": {
+            # First-touch hint flags (see agent/onboarding.py).  Each hint is
+            # shown once per install then latched here.
+            "seen": {},
         },
     }
     
@@ -1372,7 +1378,7 @@ def _resolve_attachment_path(raw_path: str) -> Path | None:
 
 
 def _format_process_notification(evt: dict) -> "str | None":
-    """Format a process notification event into a [SYSTEM: ...] message.
+    """Format a process notification event into a [IMPORTANT: ...] message.
 
     Handles both completion events (notify_on_complete) and watch pattern
     match events from the unified completion_queue.
@@ -1382,14 +1388,14 @@ def _format_process_notification(evt: dict) -> "str | None":
     _cmd = evt.get("command", "unknown")
 
     if evt_type == "watch_disabled":
-        return f"[SYSTEM: {evt.get('message', '')}]"
+        return f"[IMPORTANT: {evt.get('message', '')}]"
 
     if evt_type == "watch_match":
         _pat = evt.get("pattern", "?")
         _out = evt.get("output", "")
         _sup = evt.get("suppressed", 0)
         text = (
-            f"[SYSTEM: Background process {_sid} matched "
+            f"[IMPORTANT: Background process {_sid} matched "
             f"watch pattern \"{_pat}\".\n"
             f"Command: {_cmd}\n"
             f"Matched output:\n{_out}"
@@ -1403,7 +1409,7 @@ def _format_process_notification(evt: dict) -> "str | None":
     _exit = evt.get("exit_code", "?")
     _out = evt.get("output", "")
     return (
-        f"[SYSTEM: Background process {_sid} completed "
+        f"[IMPORTANT: Background process {_sid} completed "
         f"(exit code {_exit}).\n"
         f"Command: {_cmd}\n"
         f"Output:\n{_out}]"
@@ -4318,7 +4324,7 @@ class HermesCLI:
 
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
         _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
-        _cprint(f"  {_DIM}Draft editor: Ctrl+G{_RST}")
+        _cprint(f"  {_DIM}Draft editor: Ctrl+G (Alt+G in VSCode/Cursor){_RST}")
         if _is_termux_environment():
             _cprint(f"  {_DIM}Attach image: /image {_termux_example_image_path()} or start your prompt with a local image path{_RST}\n")
         else:
@@ -4668,10 +4674,6 @@ class HermesCLI:
     def new_session(self, silent=False):
         """Start a fresh session with a new session ID and cleared agent state."""
         if self.agent and self.conversation_history:
-            try:
-                self.agent.flush_memories(self.conversation_history)
-            except (Exception, KeyboardInterrupt):
-                pass
             # Trigger memory extraction on the old session before session_id rotates.
             self.agent.commit_memory_session(self.conversation_history)
             self._notify_session_boundary("on_session_finalize")
@@ -4913,6 +4915,12 @@ class HermesCLI:
         if self.agent:
             self.agent.session_id = new_session_id
             self.agent.session_start = now
+            # Redirect the JSON session log to the new branch session file so
+            # messages written after branching land in the correct file.
+            if hasattr(self.agent, "session_log_file") and hasattr(self.agent, "logs_dir"):
+                self.agent.session_log_file = (
+                    self.agent.logs_dir / f"session_{new_session_id}.json"
+                )
             self.agent.reset_session_state()
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = len(self.conversation_history)
@@ -5156,27 +5164,29 @@ class HermesCLI:
         _cprint(f"  ✓ Model switched: {result.new_model}")
         _cprint(f"    Provider: {provider_label}")
 
+        # Context: always resolve via the provider-aware chain so Codex OAuth,
+        # Copilot, and Nous-enforced caps win over the raw models.dev entry
+        # (e.g. gpt-5.5 is 1.05M on openai but 272K on Codex OAuth).
         mi = result.model_info
+        try:
+            from hermes_cli.model_switch import resolve_display_context_length
+            ctx = resolve_display_context_length(
+                result.new_model,
+                result.target_provider,
+                base_url=result.base_url or self.base_url or "",
+                api_key=result.api_key or self.api_key or "",
+                model_info=mi,
+            )
+            if ctx:
+                _cprint(f"    Context: {ctx:,} tokens")
+        except Exception:
+            pass
         if mi:
-            if mi.context_window:
-                _cprint(f"    Context: {mi.context_window:,} tokens")
             if mi.max_output:
                 _cprint(f"    Max output: {mi.max_output:,} tokens")
             if mi.has_cost_data():
                 _cprint(f"    Cost: {mi.format_cost()}")
             _cprint(f"    Capabilities: {mi.format_capabilities()}")
-        else:
-            try:
-                from agent.model_metadata import get_model_context_length
-                ctx = get_model_context_length(
-                    result.new_model,
-                    base_url=result.base_url or self.base_url,
-                    api_key=result.api_key or self.api_key,
-                    provider=result.target_provider,
-                )
-                _cprint(f"    Context: {ctx:,} tokens")
-            except Exception:
-                pass
 
         cache_enabled = (
             (base_url_host_matches(result.base_url or "", "openrouter.ai") and "claude" in result.new_model.lower())
@@ -5277,23 +5287,21 @@ class HermesCLI:
         # Parse --provider and --global flags
         model_input, explicit_provider, persist_global = parse_model_flags(raw_args)
 
+        # Load providers for switch_model (picker path needs them below)
         user_provs = None
         custom_provs = None
+        try:
+            from hermes_cli.config import get_compatible_custom_providers, load_config
+            cfg = load_config()
+            user_provs = cfg.get("providers")
+            custom_provs = get_compatible_custom_providers(cfg)
+        except Exception:
+            pass
 
         # No args at all: open prompt_toolkit-native picker modal
         if not model_input and not explicit_provider:
             model_display = self.model or "unknown"
             provider_display = get_label(self.provider) if self.provider else "unknown"
-
-            user_provs = None
-            custom_provs = None
-            try:
-                from hermes_cli.config import get_compatible_custom_providers, load_config
-                cfg = load_config()
-                user_provs = cfg.get("providers")
-                custom_provs = get_compatible_custom_providers(cfg)
-            except Exception:
-                pass
 
             try:
                 providers = list_authenticated_providers(
@@ -6127,8 +6135,6 @@ class HermesCLI:
             self._handle_agents_command()
         elif canonical == "background":
             self._handle_background_command(cmd_original)
-        elif canonical == "btw":
-            self._handle_btw_command(cmd_original)
         elif canonical == "queue":
             # Extract prompt after "/queue " or "/q "
             parts = cmd_original.split(None, 1)
@@ -6307,6 +6313,12 @@ class HermesCLI:
         turn_route = self._resolve_turn_agent_config(prompt)
 
         def run_background():
+            set_sudo_password_callback(self._sudo_password_callback)
+            set_approval_callback(self._approval_callback)
+            try:
+                set_secret_capture_callback(self._secret_capture_callback)
+            except Exception:
+                pass
             try:
                 bg_agent = AIAgent(
                     model=turn_route["model"],
@@ -6404,6 +6416,12 @@ class HermesCLI:
                 print()
                 _cprint(f"  ❌ Background task #{task_num} failed: {e}")
             finally:
+                try:
+                    set_sudo_password_callback(None)
+                    set_approval_callback(None)
+                    set_secret_capture_callback(None)
+                except Exception:
+                    pass
                 self._background_tasks.pop(task_id, None)
                 # Clear spinner only if no foreground agent owns it
                 if not self._agent_running:
@@ -6413,122 +6431,6 @@ class HermesCLI:
 
         thread = threading.Thread(target=run_background, daemon=True, name=f"bg-task-{task_id}")
         self._background_tasks[task_id] = thread
-        thread.start()
-
-    def _handle_btw_command(self, cmd: str):
-        """Handle /btw <question> — ephemeral side question using session context.
-
-        Snapshots the current conversation history, spawns a no-tools agent in
-        a background thread, and prints the answer without persisting anything
-        to the main session.
-        """
-        parts = cmd.strip().split(maxsplit=1)
-        if len(parts) < 2 or not parts[1].strip():
-            _cprint("  Usage: /btw <question>")
-            _cprint("  Example: /btw what module owns session title sanitization?")
-            _cprint("  Answers using session context. No tools, not persisted.")
-            return
-
-        question = parts[1].strip()
-        task_id = f"btw_{datetime.now().strftime('%H%M%S')}_{uuid.uuid4().hex[:6]}"
-
-        if not self._ensure_runtime_credentials():
-            _cprint("  (>_<) Cannot start /btw: no valid credentials.")
-            return
-
-        turn_route = self._resolve_turn_agent_config(question)
-        history_snapshot = list(self.conversation_history)
-
-        preview = question[:60] + ("..." if len(question) > 60 else "")
-        _cprint(f'  💬 /btw: "{preview}"')
-
-        def run_btw():
-            try:
-                btw_agent = AIAgent(
-                    model=turn_route["model"],
-                    api_key=turn_route["runtime"].get("api_key"),
-                    base_url=turn_route["runtime"].get("base_url"),
-                    provider=turn_route["runtime"].get("provider"),
-                    api_mode=turn_route["runtime"].get("api_mode"),
-                    acp_command=turn_route["runtime"].get("command"),
-                    acp_args=turn_route["runtime"].get("args"),
-                    max_iterations=8,
-                    enabled_toolsets=[],
-                    quiet_mode=True,
-                    verbose_logging=False,
-                    session_id=task_id,
-                    platform="cli",
-                    reasoning_config=self.reasoning_config,
-                    service_tier=self.service_tier,
-                    request_overrides=turn_route.get("request_overrides"),
-                    providers_allowed=self._providers_only,
-                    providers_ignored=self._providers_ignore,
-                    providers_order=self._providers_order,
-                    provider_sort=self._provider_sort,
-                    provider_require_parameters=self._provider_require_params,
-                    provider_data_collection=self._provider_data_collection,
-                    fallback_model=self._fallback_model,
-                    session_db=None,
-                    skip_memory=True,
-                    skip_context_files=True,
-                    persist_session=False,
-                )
-
-                btw_prompt = (
-                    "[Ephemeral /btw side question. Answer using the conversation "
-                    "context. No tools available. Be direct and concise.]\n\n"
-                    + question
-                )
-                result = btw_agent.run_conversation(
-                    user_message=btw_prompt,
-                    conversation_history=history_snapshot,
-                    task_id=task_id,
-                )
-
-                response = (result.get("final_response") or "") if result else ""
-                if not response and result and result.get("error"):
-                    response = f"Error: {result['error']}"
-
-                # TUI refresh before printing
-                if self._app:
-                    self._app.invalidate()
-                    time.sleep(0.05)
-                print()
-
-                if response:
-                    try:
-                        from hermes_cli.skin_engine import get_active_skin
-                        _skin = get_active_skin()
-                        _resp_color = _skin.get_color("response_border", "#4F6D4A")
-                    except Exception:
-                        _resp_color = "#4F6D4A"
-
-                    ChatConsole().print(Panel(
-                        _render_final_assistant_content(response, mode=self.final_response_markdown),
-                        title=f"[{_resp_color} bold]⚕ /btw[/]",
-                        title_align="left",
-                        border_style=_resp_color,
-                        box=rich_box.HORIZONTALS,
-                        padding=(1, 4),
-                    ))
-                else:
-                    _cprint("  💬 /btw: (no response)")
-
-                if self.bell_on_complete:
-                    sys.stdout.write("\a")
-                    sys.stdout.flush()
-
-            except Exception as e:
-                if self._app:
-                    self._app.invalidate()
-                    time.sleep(0.05)
-                print()
-                _cprint(f"  ❌ /btw failed: {e}")
-            finally:
-                if self._app:
-                    self._invalidate(min_interval=0)
-
-        thread = threading.Thread(target=run_btw, daemon=True, name=f"btw-{task_id}")
         thread.start()
 
     @staticmethod
@@ -7333,7 +7235,7 @@ class HermesCLI:
             change_detail = ". ".join(change_parts) + ". " if change_parts else ""
             self.conversation_history.append({
                 "role": "user",
-                "content": f"[SYSTEM: MCP servers have been reloaded. {change_detail}{tool_summary}. The tool list for this conversation has been updated accordingly.]",
+                "content": f"[IMPORTANT: MCP servers have been reloaded. {change_detail}{tool_summary}. The tool list for this conversation has been updated accordingly.]",
             })
 
             # Persist session immediately so the session log reflects the
@@ -7413,6 +7315,31 @@ class HermesCLI:
                     if is_error:
                         line = f"{line} [error]"
                     _cprint(f"  {line}")
+                except Exception:
+                    pass
+                # First-touch onboarding: on the first tool in this process
+                # that takes longer than the threshold while we're in the
+                # noisiest progress mode, print a one-time hint about
+                # /verbose.  Latched on self so it fires at most once per
+                # process; persisted to config.yaml so it never fires again
+                # across processes either.
+                try:
+                    if (
+                        not getattr(self, "_long_tool_hint_fired", False)
+                        and self.tool_progress_mode == "all"
+                        and duration >= 30.0
+                    ):
+                        from agent.onboarding import (
+                            TOOL_PROGRESS_FLAG,
+                            is_seen,
+                            mark_seen,
+                            tool_progress_hint_cli,
+                        )
+                        if not is_seen(CLI_CONFIG, TOOL_PROGRESS_FLAG):
+                            self._long_tool_hint_fired = True
+                            _cprint(f"  {_DIM}{tool_progress_hint_cli()}{_RST}")
+                            mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
+                            CLI_CONFIG.setdefault("onboarding", {}).setdefault("seen", {})[TOOL_PROGRESS_FLAG] = True
                 except Exception:
                     pass
             self._invalidate()
@@ -9298,6 +9225,24 @@ class HermesCLI:
                                          f"agent_running={self._agent_running}\n")
                         except Exception:
                             pass
+                    # First-touch onboarding: on the very first busy-while-running
+                    # event for this install, print a one-line tip explaining the
+                    # /busy knob.  Flag persists to config.yaml and never fires
+                    # again.  Guarded for exceptions so onboarding can't break
+                    # the input loop.
+                    try:
+                        from agent.onboarding import (
+                            BUSY_INPUT_FLAG,
+                            busy_input_hint_cli,
+                            is_seen,
+                            mark_seen,
+                        )
+                        if not is_seen(CLI_CONFIG, BUSY_INPUT_FLAG):
+                            _cprint(f"  {_DIM}{busy_input_hint_cli(self.busy_input_mode)}{_RST}")
+                            mark_seen(_hermes_home / "config.yaml", BUSY_INPUT_FLAG)
+                            CLI_CONFIG.setdefault("onboarding", {}).setdefault("seen", {})[BUSY_INPUT_FLAG] = True
+                    except Exception:
+                        pass
                 else:
                     self._pending_input.put(payload)
                 event.app.current_buffer.reset(append_to_history=True)
@@ -9312,14 +9257,18 @@ class HermesCLI:
             """Ctrl+Enter (c-j) inserts a newline. Most terminals send c-j for Ctrl+Enter."""
             event.current_buffer.insert_text('\n')
 
-        @kb.add(
-            'c-g',
-            filter=Condition(
-                lambda: not self._clarify_state and not self._approval_state and not self._sudo_state and not self._secret_state
-            ),
+        # VSCode/Cursor bind Ctrl+G to "Find Next" at the editor level, so
+        # the keystroke never reaches the embedded terminal. Alt+G is unbound
+        # in those IDEs and arrives here as ('escape', 'g') — register it as
+        # a fallback so the editor handoff works inside Cursor/VSCode too.
+        _editor_filter = Condition(
+            lambda: not self._clarify_state and not self._approval_state and not self._sudo_state and not self._secret_state
         )
+
+        @kb.add('c-g', filter=_editor_filter)
+        @kb.add('escape', 'g', filter=_editor_filter)
         def handle_open_in_editor(event):
-            """Ctrl+G opens the current draft in an external editor."""
+            """Ctrl+G (or Alt+G in VSCode/Cursor) opens the current draft in an external editor."""
             cli_ref._open_external_editor(event.current_buffer)
 
         @kb.add('tab', eager=True)
@@ -9783,6 +9732,11 @@ class HermesCLI:
                 completer=_completer,
             ),
         )
+        # Keep prompt_toolkit on its simple tempfile path. Setting
+        # buffer.tempfile = "prompt.md" triggers its complex-tempfile branch,
+        # which tries to mkdir() the mkdtemp() directory again and raises
+        # EEXIST. The suffix keeps markdown highlighting without that bug.
+        input_area.buffer.tempfile_suffix = '.md'
 
         # Dynamic height: accounts for both explicit newlines AND visual
         # wrapping of long lines so the input area always fits its content.
@@ -9905,7 +9859,7 @@ class HermesCLI:
                 status = cli_ref._command_status or "Processing command..."
                 return f"{frame} {status}"
             if cli_ref._agent_running:
-                return "type a message + Enter to interrupt, Ctrl+C to cancel"
+                return "msg=interrupt · /queue · /bg · /steer · Ctrl+C cancel"
             if cli_ref._voice_mode:
                 return "type or Ctrl+B to record"
             return ""
@@ -10735,6 +10689,8 @@ class HermesCLI:
                 return  # silently suppress
             if isinstance(exc, KeyError) and "is not registered" in str(exc):
                 return  # suppress selector registration failures (#6393)
+            if isinstance(exc, OSError) and getattr(exc, "errno", None) == errno.EIO:
+                return  # suppress I/O errors from broken stdout on interrupt (#13710)
             # Fall back to default handler for everything else
             loop.default_exception_handler(context)
 
@@ -10767,9 +10723,11 @@ class HermesCLI:
         except (EOFError, KeyboardInterrupt, BrokenPipeError):
             pass
         except (KeyError, OSError) as _stdin_err:
-            # Catch selector registration failures from broken stdin (#6393).
-            # This is the fallback for cases that slip past the fstat() guard.
-            if "is not registered" in str(_stdin_err) or "Bad file descriptor" in str(_stdin_err):
+            # Catch selector registration failures from broken stdin (#6393)
+            # and I/O errors from broken stdout during interrupt (#13710).
+            if isinstance(_stdin_err, OSError) and getattr(_stdin_err, "errno", None) == errno.EIO:
+                pass  # suppress broken-stdout I/O errors on interrupt (#13710)
+            elif "is not registered" in str(_stdin_err) or "Bad file descriptor" in str(_stdin_err):
                 print(
                     f"\nError: stdin is not usable ({_stdin_err}).\n"
                     "This can happen with certain Python installations (e.g. uv-managed cPython on macOS).\n"
@@ -10787,12 +10745,6 @@ class HermesCLI:
                 try:
                     self.agent.interrupt()
                 except Exception:
-                    pass
-            # Flush memories before exit (only for substantial conversations)
-            if self.agent and self.conversation_history:
-                try:
-                    self.agent.flush_memories(self.conversation_history)
-                except (Exception, KeyboardInterrupt):
                     pass
             # Shut down voice recorder (release persistent audio stream)
             if hasattr(self, '_voice_recorder') and self._voice_recorder:

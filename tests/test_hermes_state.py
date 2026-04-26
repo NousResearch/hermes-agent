@@ -308,6 +308,33 @@ class TestMessageStorage:
         assert "reasoning_content" in conv[0]
         assert conv[0]["reasoning_content"] == ""
 
+    def test_codex_message_items_persisted_and_restored(self, db):
+        """codex_message_items must round-trip through JSON serialization."""
+        db.create_session(session_id="s1", source="cli")
+        items = [
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "id": "msg_123",
+                "phase": "commentary",
+                "content": [{"type": "output_text", "text": "Thinking..."}],
+            },
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "id": "msg_456",
+                "phase": "final_answer",
+                "content": [{"type": "output_text", "text": "Done!"}],
+            },
+        ]
+        db.append_message("s1", role="assistant", content="Done!", codex_message_items=items)
+
+        conv = db.get_messages_as_conversation("s1")
+        assert len(conv) == 1
+        assert conv[0].get("codex_message_items") == items
+
     def test_reasoning_not_set_for_non_assistant(self, db):
         """reasoning is never leaked onto user or tool messages."""
         db.create_session(session_id="s1", source="telegram")
@@ -1173,7 +1200,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 8
+        assert version == 9
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -1229,12 +1256,12 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v8
+        # Open with SessionDB — should migrate to v9
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 8
+        assert cursor.fetchone()[0] == 9
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
@@ -1457,6 +1484,48 @@ class TestListSessionsRich:
         sessions = db.list_sessions_rich()
         assert "\n" not in sessions[0]["preview"]
         assert "Line one Line two" in sessions[0]["preview"]
+
+    def test_branch_session_visible_in_list(self, db):
+        """Branch sessions (parent ended with 'branched') must appear in list_sessions_rich."""
+        db.create_session("parent", "cli")
+        db.end_session("parent", "branched")
+        db.create_session("branch", "cli", parent_session_id="parent")
+        db.append_message("branch", "user", "Exploring the alternative approach")
+
+        sessions = db.list_sessions_rich()
+        ids = [s["id"] for s in sessions]
+        assert "branch" in ids, "Branch session should be visible in default list"
+
+    def test_subagent_session_still_hidden(self, db):
+        """Sub-agent children (parent NOT ended with 'branched') remain hidden."""
+        db.create_session("root", "cli")
+        db.create_session("delegate", "cli", parent_session_id="root")
+
+        sessions = db.list_sessions_rich()
+        ids = [s["id"] for s in sessions]
+        assert "delegate" not in ids, "Delegate sub-agent should not appear in default list"
+        assert "root" in ids
+
+    def test_compression_child_still_hidden(self, db):
+        """Compression continuation sessions remain hidden (parent ended with 'compression')."""
+        import time as _time
+        t0 = _time.time()
+        db.create_session("root", "cli")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "root"))
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?",
+            (t0 + 1800, "root"),
+        )
+        db._conn.commit()
+        db.create_session("continuation", "cli", parent_session_id="root")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?", (t0 + 1801, "continuation")
+        )
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(project_compression_tips=False)
+        ids = [s["id"] for s in sessions]
+        assert "continuation" not in ids, "Compression continuation should stay hidden"
 
 
 class TestCompressionChainProjection:

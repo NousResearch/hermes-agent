@@ -554,6 +554,7 @@ const sidebars: SidebarsConfig = {
         'guides/webhook-github-pr-review',
         'guides/migrate-from-openclaw',
         'guides/aws-bedrock',
+        'guides/azure-foundry',
       ],
     },
     {
@@ -612,6 +613,7 @@ const sidebars: SidebarsConfig = {
         'reference/tools-reference',
         'reference/toolsets-reference',
         'reference/mcp-config-reference',
+        'reference/model-catalog',
         'reference/skills-catalog',
         'reference/optional-skills-catalog',
         'reference/faq',

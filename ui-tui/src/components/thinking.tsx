@@ -1,5 +1,5 @@
 import { Box, NoSelect, Text } from '@hermes/ink'
-import { memo, useEffect, useMemo, useState, type ReactNode } from 'react'
+import { memo, type ReactNode, useEffect, useMemo, useState } from 'react'
 import spinners, { type BrailleSpinnerName } from 'unicode-animations'
 
 import { THINKING_COT_MAX } from '../config/limits.js'
@@ -919,13 +919,22 @@ export const ToolTrail = memo(function ToolTrail({
   // hidden sections stay hidden so the override is honoured.
 
   const expandAll = () => {
-    if (visible.thinking !== 'hidden') setOpenThinking(true)
-    if (visible.tools !== 'hidden') setOpenTools(true)
+    if (visible.thinking !== 'hidden') {
+      setOpenThinking(true)
+    }
+
+    if (visible.tools !== 'hidden') {
+      setOpenTools(true)
+    }
+
     if (visible.subagents !== 'hidden') {
       setOpenSubagents(true)
       setDeepSubagents(true)
     }
-    if (visible.activity !== 'hidden') setOpenMeta(true)
+
+    if (visible.activity !== 'hidden') {
+      setOpenMeta(true)
+    }
   }
 
   const metaTone: 'dim' | 'error' | 'warn' = activity.some(i => i.tone === 'error')

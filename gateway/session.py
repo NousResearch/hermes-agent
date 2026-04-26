@@ -310,8 +310,9 @@ def build_session_context_prompt(
             "**Platform notes:** You are running inside Slack. "
             "You do NOT have access to Slack-specific APIs — you cannot search "
             "channel history, pin/unpin messages, manage channels, or list users. "
-            "Do not promise to perform these actions. If the user asks, explain "
-            "that you can only read messages sent directly to you and respond."
+            "Do not promise to perform these actions. The gateway may inline the "
+            "current message's Slack block/attachment payload when available, but "
+            "you still cannot call Slack APIs yourself."
         )
     elif context.source.platform == Platform.DISCORD:
         # Inject the Discord IDs block only when the agent actually has
@@ -439,11 +440,11 @@ class SessionEntry:
     auto_reset_reason: Optional[str] = None  # "idle" or "daily"
     reset_had_activity: bool = False  # whether the expired session had any messages
     
-    # Set by the background expiry watcher after it successfully flushes
-    # memories for this session.  Persisted to sessions.json so the flag
-    # survives gateway restarts (the old in-memory _pre_flushed_sessions
-    # set was lost on restart, causing redundant re-flushes).
-    memory_flushed: bool = False
+    # Set by the background expiry watcher after it finalizes an expired
+    # session (invoking on_session_finalize hooks and evicting the cached
+    # agent).  Persisted to sessions.json so the flag survives gateway
+    # restarts — prevents redundant finalization runs.
+    expiry_finalized: bool = False
 
     # When True the next call to get_or_create_session() will auto-reset
     # this session (create a new session_id) so the user starts fresh.
@@ -479,7 +480,7 @@ class SessionEntry:
             "last_prompt_tokens": self.last_prompt_tokens,
             "estimated_cost_usd": self.estimated_cost_usd,
             "cost_status": self.cost_status,
-            "memory_flushed": self.memory_flushed,
+            "expiry_finalized": self.expiry_finalized,
             "suspended": self.suspended,
             "resume_pending": self.resume_pending,
             "resume_reason": self.resume_reason,
@@ -531,7 +532,7 @@ class SessionEntry:
             last_prompt_tokens=data.get("last_prompt_tokens", 0),
             estimated_cost_usd=data.get("estimated_cost_usd", 0.0),
             cost_status=data.get("cost_status", "unknown"),
-            memory_flushed=data.get("memory_flushed", False),
+            expiry_finalized=data.get("expiry_finalized", data.get("memory_flushed", False)),
             suspended=data.get("suspended", False),
             resume_pending=data.get("resume_pending", False),
             resume_reason=data.get("resume_reason"),
@@ -1232,6 +1233,7 @@ class SessionStore:
                     reasoning_content=message.get("reasoning_content") if message.get("role") == "assistant" else None,
                     reasoning_details=message.get("reasoning_details") if message.get("role") == "assistant" else None,
                     codex_reasoning_items=message.get("codex_reasoning_items") if message.get("role") == "assistant" else None,
+                    codex_message_items=message.get("codex_message_items") if message.get("role") == "assistant" else None,
                 )
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
@@ -1264,6 +1266,7 @@ class SessionStore:
                         reasoning_content=msg.get("reasoning_content") if role == "assistant" else None,
                         reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                         codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
+                        codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
                     )
             except Exception as e:
                 logger.debug("Failed to rewrite transcript in DB: %s", e)

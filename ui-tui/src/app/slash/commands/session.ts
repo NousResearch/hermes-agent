@@ -1,7 +1,6 @@
 import { attachedImageNotice, introMsg, toTranscriptMessages } from '../../../domain/messages.js'
 import type {
   BackgroundStartResponse,
-  BtwStartResponse,
   ConfigGetValueResponse,
   ConfigSetResponse,
   ImageAttachResponse,
@@ -18,7 +17,7 @@ import type { SlashCommand } from '../types.js'
 
 export const sessionCommands: SlashCommand[] = [
   {
-    aliases: ['bg'],
+    aliases: ['bg', 'btw'],
     help: 'launch a background prompt',
     name: 'background',
     run: (arg, ctx) => {
@@ -40,24 +39,8 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
-    help: 'by-the-way follow-up',
-    name: 'btw',
-    run: (arg, ctx) => {
-      if (!arg) {
-        return ctx.transcript.sys('/btw <question>')
-      }
-
-      ctx.gateway.rpc<BtwStartResponse>('prompt.btw', { session_id: ctx.sid, text: arg }).then(
-        ctx.guarded(() => {
-          patchUiState(state => ({ ...state, bgTasks: new Set(state.bgTasks).add('btw:x') }))
-          ctx.transcript.sys('btw running…')
-        })
-      )
-    }
-  },
-
-  {
     help: 'change or show model',
+    aliases: ['provider'],
     name: 'model',
     run: (arg, ctx) => {
       if (ctx.session.guardBusySessionSwitch('change models')) {

@@ -1,7 +1,7 @@
 """Regression tests for approval-state cleanup on session boundaries."""
 
 from datetime import datetime
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -72,7 +72,6 @@ def _make_resume_runner():
     runner = object.__new__(GatewayRunner)
     runner.adapters = {}
     runner._background_tasks = set()
-    runner._async_flush_memories = AsyncMock()
     runner._running_agents = {}
     runner._running_agents_ts = {}
     runner._busy_ack_ts = {}

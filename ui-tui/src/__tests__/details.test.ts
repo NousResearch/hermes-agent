@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { isSectionName, parseDetailsMode, resolveSections, sectionMode, SECTION_NAMES } from '../domain/details.js'
+import { isSectionName, parseDetailsMode, resolveSections, SECTION_NAMES, sectionMode } from '../domain/details.js'
 
 describe('parseDetailsMode', () => {
   it('accepts the canonical modes case-insensitively', () => {

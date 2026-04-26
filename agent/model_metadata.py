@@ -106,9 +106,11 @@ _endpoint_model_metadata_cache_time: Dict[str, float] = {}
 _ENDPOINT_MODEL_CACHE_TTL = 300
 
 # Descending tiers for context length probing when the model is unknown.
-# We start at 128K (a safe default for most modern models) and step down
-# on context-length errors until one works.
+# We start at 256K (covers GPT-5.x, many current large-context models) and
+# step down on context-length errors until one works.  Tier[0] is also the
+# default fallback when no detection method succeeds.
 CONTEXT_PROBE_TIERS = [
+    256_000,
     128_000,
     64_000,
     32_000,
@@ -143,10 +145,11 @@ DEFAULT_CONTEXT_LENGTHS = {
     "claude": 200000,
     # OpenAI — GPT-5 family (most have 400k; specific overrides first)
     # Source: https://developers.openai.com/api/docs/models
-    # GPT-5.5 (launched Apr 23 2026). 400k is the fallback for providers we
-    # can't probe live. ChatGPT Codex OAuth actually caps lower (272k as of
-    # Apr 2026) and is resolved via _resolve_codex_oauth_context_length().
-    "gpt-5.5": 400000,
+    # GPT-5.5 (launched Apr 23 2026) is 1.05M on the direct OpenAI API and
+    # ChatGPT Codex OAuth caps it at 272K; both paths resolve via their own
+    # provider-aware branches (_resolve_codex_oauth_context_length + models.dev).
+    # This hardcoded value is only reached when every probe misses.
+    "gpt-5.5": 1050000,
     "gpt-5.4-nano": 400000,           # 400k (not 1.05M like full 5.4)
     "gpt-5.4-mini": 400000,           # 400k (not 1.05M like full 5.4)
     "gpt-5.4": 1050000,               # GPT-5.4, GPT-5.4 Pro (1.05M context)
@@ -162,7 +165,17 @@ DEFAULT_CONTEXT_LENGTHS = {
     "gemma-4-31b": 256000,
     "gemma-3": 131072,
     "gemma": 8192,  # fallback for older gemma models
-    # DeepSeek
+    # DeepSeek — V4 family ships with a 1M context window. The legacy
+    # aliases ``deepseek-chat`` / ``deepseek-reasoner`` are server-side
+    # mapped to the non-thinking / thinking modes of ``deepseek-v4-flash``
+    # and inherit the same 1M window. The ``deepseek`` substring entry
+    # below remains as a 128K fallback for older / unknown DeepSeek model
+    # ids (e.g. via custom endpoints).
+    # https://api-docs.deepseek.com/zh-cn/quick_start/pricing
+    "deepseek-v4-pro": 1_000_000,
+    "deepseek-v4-flash": 1_000_000,
+    "deepseek-chat": 1_000_000,
+    "deepseek-reasoner": 1_000_000,
     "deepseek": 128000,
     # Meta
     "llama": 131072,
@@ -1193,6 +1206,7 @@ def get_model_context_length(
     api_key: str = "",
     config_context_length: int | None = None,
     provider: str = "",
+    custom_providers: list | None = None,
 ) -> int:
     """Get the context length for a model.
 
@@ -1212,6 +1226,23 @@ def get_model_context_length(
     # 0. Explicit config override — user knows best
     if config_context_length is not None and isinstance(config_context_length, int) and config_context_length > 0:
         return config_context_length
+
+    # 0b. custom_providers per-model override — check before any probe.
+    # This closes the gap where /model switch and display paths used to fall
+    # back to 128K despite the user having a per-model context_length set.
+    # See #15779.
+    if custom_providers and base_url and model:
+        try:
+            from hermes_cli.config import get_custom_provider_context_length
+            cp_ctx = get_custom_provider_context_length(
+                model=model,
+                base_url=base_url,
+                custom_providers=custom_providers,
+            )
+            if cp_ctx:
+                return cp_ctx
+        except Exception:
+            pass  # fall through to probing
 
     # Normalise provider-prefixed model names (e.g. "local:model-name" →
     # "model-name") so cache lookups and server queries use the bare ID that
@@ -1352,7 +1383,7 @@ def get_model_context_length(
     # 6. OpenRouter live API metadata (provider-unaware fallback)
     metadata = fetch_model_metadata()
     if model in metadata:
-        return metadata[model].get("context_length", 128000)
+        return metadata[model].get("context_length", DEFAULT_FALLBACK_CONTEXT)
 
     # 8. Hardcoded defaults (fuzzy match — longest key first for specificity)
     # Only check `default_model in model` (is the key a substring of the input).

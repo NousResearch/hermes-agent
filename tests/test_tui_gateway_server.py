@@ -83,6 +83,100 @@ def test_status_callback_accepts_single_message_argument():
     )
 
 
+def test_resolve_model_uses_inference_model_env(monkeypatch):
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    monkeypatch.setenv("HERMES_INFERENCE_MODEL", " anthropic/claude-sonnet-4.6\n")
+
+    assert server._resolve_model() == "anthropic/claude-sonnet-4.6"
+
+
+def test_resolve_model_strips_config_model(monkeypatch):
+    monkeypatch.delenv("HERMES_MODEL", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_MODEL", raising=False)
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"model": {"default": " nous/hermes-test "}}
+    )
+
+    assert server._resolve_model() == "nous/hermes-test"
+
+
+def test_startup_runtime_uses_tui_provider_env(monkeypatch):
+    monkeypatch.setenv("HERMES_MODEL", "nous/hermes-test")
+    monkeypatch.setenv("HERMES_TUI_PROVIDER", "nous")
+    monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
+
+    assert server._resolve_startup_runtime() == ("nous/hermes-test", "nous")
+
+
+def test_startup_runtime_does_not_treat_inference_provider_as_explicit(monkeypatch):
+    monkeypatch.setenv("HERMES_MODEL", "nous/hermes-test")
+    monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
+    monkeypatch.setenv("HERMES_INFERENCE_PROVIDER", "nous")
+    monkeypatch.setattr(
+        "hermes_cli.models.detect_static_provider_for_model",
+        lambda model, provider: None,
+    )
+
+    assert server._resolve_startup_runtime() == ("nous/hermes-test", None)
+
+
+def test_startup_runtime_detects_provider_for_model_env(monkeypatch):
+    monkeypatch.setenv("HERMES_MODEL", "sonnet")
+    monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"model": {"provider": "auto"}})
+
+    def fake_detect(model, current_provider):
+        assert model == "sonnet"
+        assert current_provider == "auto"
+        return "anthropic", "anthropic/claude-sonnet-4.6"
+
+    monkeypatch.setattr(
+        "hermes_cli.models.detect_static_provider_for_model", fake_detect
+    )
+
+    assert server._resolve_startup_runtime() == (
+        "anthropic/claude-sonnet-4.6",
+        "anthropic",
+    )
+
+
+def test_startup_runtime_resolves_short_alias_without_network(monkeypatch):
+    monkeypatch.setenv("HERMES_MODEL", "sonnet")
+    monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"model": {"provider": "auto"}})
+    monkeypatch.setattr(
+        "hermes_cli.models.fetch_openrouter_models",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("network lookup should not run")
+        ),
+    )
+
+    model, provider = server._resolve_startup_runtime()
+
+    assert provider == "anthropic"
+    assert model.startswith("claude-sonnet")
+
+
+def test_startup_runtime_does_not_call_network_detector(monkeypatch):
+    monkeypatch.setenv("HERMES_MODEL", "sonnet")
+    monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"model": {"provider": "auto"}})
+    monkeypatch.setattr(
+        "hermes_cli.models.detect_provider_for_model",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("network detector called")
+        ),
+    )
+
+    model, provider = server._resolve_startup_runtime()
+
+    assert model
+    assert provider in {None, "anthropic"}
+
+
 def _session(agent=None, **extra):
     return {
         "agent": agent if agent is not None else types.SimpleNamespace(),
@@ -243,6 +337,14 @@ def test_setup_status_reports_provider_config(monkeypatch):
     resp = server.handle_request({"id": "1", "method": "setup.status", "params": {}})
 
     assert resp["result"]["provider_configured"] is False
+
+
+def test_complete_slash_includes_provider_alias():
+    resp = server.handle_request(
+        {"id": "1", "method": "complete.slash", "params": {"text": "/pro"}}
+    )
+
+    assert any(item["text"] == "provider" for item in resp["result"]["items"])
 
 
 def test_config_set_reasoning_updates_live_session_and_agent(tmp_path, monkeypatch):
@@ -413,6 +515,57 @@ def test_config_set_model_syncs_inference_provider_env(monkeypatch):
     )
 
     assert os.environ["HERMES_INFERENCE_PROVIDER"] == "anthropic"
+
+
+def test_config_set_model_syncs_tui_provider_env(monkeypatch):
+    class Agent:
+        model = "gpt-5.3-codex"
+        provider = "openai-codex"
+        base_url = ""
+        api_key = ""
+
+        def switch_model(self, **kwargs):
+            self.model = kwargs["new_model"]
+            self.provider = kwargs["new_provider"]
+
+    agent = Agent()
+    server._sessions["sid"] = _session(agent=agent)
+    monkeypatch.setenv("HERMES_TUI_PROVIDER", "openai-codex")
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+
+    def fake_switch_model(**kwargs):
+        return types.SimpleNamespace(
+            success=True,
+            new_model="anthropic/claude-sonnet-4.6",
+            target_provider="anthropic",
+            api_key="key",
+            base_url="https://api.anthropic.com",
+            api_mode="anthropic_messages",
+            warning_message="",
+        )
+
+    monkeypatch.setattr("hermes_cli.model_switch.switch_model", fake_switch_model)
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {
+                    "session_id": "sid",
+                    "key": "model",
+                    "value": "anthropic/claude-sonnet-4.6 --provider anthropic",
+                },
+            }
+        )
+
+        assert resp["result"]["value"] == "anthropic/claude-sonnet-4.6"
+        assert os.environ["HERMES_TUI_PROVIDER"] == "anthropic"
+        assert os.environ["HERMES_MODEL"] == "anthropic/claude-sonnet-4.6"
+        assert os.environ["HERMES_INFERENCE_MODEL"] == "anthropic/claude-sonnet-4.6"
+    finally:
+        server._sessions.clear()
 
 
 def test_config_set_personality_rejects_unknown_name(monkeypatch):
@@ -1654,3 +1807,112 @@ def test_model_options_propagates_list_exception(monkeypatch):
     assert "error" in resp
     assert resp["error"]["code"] == 5033
     assert "catalog blew up" in resp["error"]["message"]
+
+
+# ---------------------------------------------------------------------------
+# prompt.submit — auto-title
+# ---------------------------------------------------------------------------
+
+class _ImmediateThread:
+    """Runs the target callable synchronously so assertions can follow."""
+
+    def __init__(self, target=None, daemon=None):
+        self._target = target
+
+    def start(self):
+        self._target()
+
+
+def test_prompt_submit_auto_titles_session_on_complete(monkeypatch):
+    """maybe_auto_title is called after a successful (complete) prompt."""
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            return {
+                "final_response": "Rome was founded in 753 BC.",
+                "messages": [
+                    {"role": "user", "content": "Tell me about Rome"},
+                    {"role": "assistant", "content": "Rome was founded in 753 BC."},
+                ],
+            }
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    with patch("agent.title_generator.maybe_auto_title") as mock_title:
+        server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "Tell me about Rome"},
+            }
+        )
+
+    mock_title.assert_called_once()
+    args = mock_title.call_args.args
+    assert args[1] == "session-key"
+    assert args[2] == "Tell me about Rome"
+    assert args[3] == "Rome was founded in 753 BC."
+
+
+def test_prompt_submit_skips_auto_title_when_interrupted(monkeypatch):
+    """maybe_auto_title must NOT be called when the agent was interrupted."""
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            return {
+                "final_response": "partial answer",
+                "interrupted": True,
+                "messages": [],
+            }
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    with patch("agent.title_generator.maybe_auto_title") as mock_title:
+        server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "Tell me about Rome"},
+            }
+        )
+
+    mock_title.assert_not_called()
+
+
+def test_prompt_submit_skips_auto_title_when_response_empty(monkeypatch):
+    """maybe_auto_title must NOT be called when the agent returns an empty reply."""
+
+    class _Agent:
+        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+            return {
+                "final_response": "",
+                "messages": [],
+            }
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    monkeypatch.setattr(server.threading, "Thread", _ImmediateThread)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "make_stream_renderer", lambda cols: None)
+    monkeypatch.setattr(server, "render_message", lambda raw, cols: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+
+    with patch("agent.title_generator.maybe_auto_title") as mock_title:
+        server.handle_request(
+            {
+                "id": "1",
+                "method": "prompt.submit",
+                "params": {"session_id": "sid", "text": "Tell me about Rome"},
+            }
+        )
+
+    mock_title.assert_not_called()

@@ -123,6 +123,13 @@ class TestBusyInputMode:
         cli.process_command("/queue follow up")
         assert cli._pending_input.get_nowait() == "follow up"
 
+    def test_q_alias_queues_prompt(self):
+        """The /q alias should resolve to /queue, not /quit."""
+        cli = _make_cli()
+        cli._agent_running = False
+        assert cli.process_command("/q follow up") is True
+        assert cli._pending_input.get_nowait() == "follow up"
+
     def test_queue_mode_routes_busy_enter_to_pending(self):
         """In queue mode, Enter while busy should go to _pending_input, not _interrupt_queue."""
         cli = _make_cli(config_overrides={"display": {"busy_input_mode": "queue"}})

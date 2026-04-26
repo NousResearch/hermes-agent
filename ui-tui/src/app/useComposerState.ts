@@ -14,6 +14,7 @@ import { useCompletion } from '../hooks/useCompletion.js'
 import { useInputHistory } from '../hooks/useInputHistory.js'
 import { useQueue } from '../hooks/useQueue.js'
 import { isUsableClipboardText, readClipboardText } from '../lib/clipboard.js'
+import { resolveEditor } from '../lib/editor.js'
 import { readOsc52Clipboard } from '../lib/osc52.js'
 import { isRemoteShellSession } from '../lib/terminalSetup.js'
 import { pasteTokenLabel, stripTrailingPasteNewlines } from '../lib/text.js'
@@ -254,7 +255,7 @@ export function useComposerState({
   )
 
   const openEditor = useCallback(async () => {
-    const editor = process.env.EDITOR || process.env.VISUAL || 'vi'
+    const editor = resolveEditor()
     const file = join(mkdtempSync(join(tmpdir(), 'hermes-')), 'prompt.md')
     let code: null | number = null
 

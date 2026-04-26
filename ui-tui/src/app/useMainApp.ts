@@ -107,6 +107,7 @@ export function useMainApp(gw: GatewayClient) {
 
   const ui = useStore($uiState)
   const overlay = useStore($overlayState)
+
   const turnLiveTailActive = useTurnSelector(state =>
     Boolean(
       state.streaming ||

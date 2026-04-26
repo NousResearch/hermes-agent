@@ -11,6 +11,7 @@ import type {
   VoiceRecordResponse
 } from '../gatewayTypes.js'
 import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platform.js'
+import { computeWheelStep, initWheelAccelForHost } from '../lib/wheelAccel.js'
 
 import { getInputSelection } from './inputSelectionStore.js'
 import type { InputHandlerContext, InputHandlerResult } from './interfaces.js'
@@ -29,6 +30,15 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const isBlocked = useStore($isBlocked)
   const pagerPageSize = Math.max(5, (terminal.stdout?.rows ?? 24) - 6)
   const scrollIdleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  // Wheel acceleration state machine (ported from claude-code).  Adapts
+  // step size per wheel event based on inter-event timing: fast flicks
+  // ramp up, slow clicks stay at 1 row, direction flips reset.  See
+  // lib/wheelAccel.ts for the full tuning rationale.  The accel state
+  // mutates in place and is kept across renders via a ref.  wheelStep
+  // (passed from useMainApp / the WHEEL_SCROLL_STEP constant) is used
+  // as the BASE — final rows = wheelStep × accelMult.
+  const wheelAccelRef = useRef(initWheelAccelForHost())
 
   const scrollTranscript = (delta: number) => {
     if (getUiState().busy) {
@@ -278,12 +288,18 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return
     }
 
-    if (key.wheelUp) {
-      return scrollTranscript(-wheelStep)
-    }
+    if (key.wheelUp || key.wheelDown) {
+      const dir: -1 | 1 = key.wheelUp ? -1 : 1
+      const accelRows = computeWheelStep(wheelAccelRef.current, dir, Date.now())
 
-    if (key.wheelDown) {
-      return scrollTranscript(wheelStep)
+      // computeWheelStep returns 0 when a direction flip is deferred for
+      // bounce detection — scrollBy(0) is a no-op; skip the call to avoid
+      // needless render scheduling.
+      if (accelRows === 0) {
+        return
+      }
+
+      return scrollTranscript(dir * accelRows * wheelStep)
     }
 
     if (key.shift && key.upArrow) {

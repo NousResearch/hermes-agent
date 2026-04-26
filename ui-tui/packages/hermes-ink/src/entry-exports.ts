@@ -20,6 +20,7 @@ export { useTabStatus } from './ink/hooks/use-tab-status.js'
 export { useTerminalFocus } from './ink/hooks/use-terminal-focus.js'
 export { useTerminalTitle } from './ink/hooks/use-terminal-title.js'
 export { useTerminalViewport } from './ink/hooks/use-terminal-viewport.js'
+export { isXtermJs } from './ink/terminal.js'
 export { default as measureElement } from './ink/measure-element.js'
 export {
   resetScrollFastPathStats,

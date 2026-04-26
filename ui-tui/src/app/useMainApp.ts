@@ -29,7 +29,7 @@ import { type GatewayRpc, type TranscriptRow } from './interfaces.js'
 import { $overlayState, patchOverlayState } from './overlayStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
 import { turnController } from './turnController.js'
-import { $turnState, patchTurnState, useTurnSelector } from './turnStore.js'
+import { patchTurnState, useTurnSelector } from './turnStore.js'
 import { $uiState, getUiState, patchUiState } from './uiStore.js'
 import { useComposerState } from './useComposerState.js'
 import { useConfigSync } from './useConfigSync.js'
@@ -107,8 +107,6 @@ export function useMainApp(gw: GatewayClient) {
 
   const ui = useStore($uiState)
   const overlay = useStore($overlayState)
-  const turn = useStore($turnState)
-
   const turnLiveTailActive = useTurnSelector(state =>
     Boolean(
       state.streaming ||
@@ -503,7 +501,7 @@ export function useMainApp(gw: GatewayClient) {
     }
   }, [gw, sys])
 
-  useLongRunToolCharms(ui.busy, turn.tools)
+  useLongRunToolCharms()
 
   const slash = useMemo(
     () =>

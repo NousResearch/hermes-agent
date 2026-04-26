@@ -421,6 +421,53 @@ class TestDeliverResultWrapping:
         voice_call = adapter.send_voice.call_args
         assert voice_call[1]["audio_path"] == "/tmp/cron-voice.mp3"
 
+    def test_live_adapter_media_failure_returns_delivery_error(self):
+        """A native media-send failure must surface as delivery_error, not as ok."""
+        from gateway.config import Platform
+        from concurrent.futures import Future
+
+        adapter = AsyncMock()
+        adapter.send.return_value = MagicMock(success=True)
+        adapter.send_document.return_value = MagicMock(success=False, error="missing file_key")
+
+        pconfig = MagicMock()
+        pconfig.enabled = True
+        mock_cfg = MagicMock()
+        mock_cfg.platforms = {Platform.FEISHU: pconfig}
+
+        loop = MagicMock()
+        loop.is_running.return_value = True
+
+        results = [
+            MagicMock(success=True),
+            MagicMock(success=False, error="missing file_key"),
+        ]
+
+        def fake_run_coro(coro, _loop):
+            future = Future()
+            future.set_result(results.pop(0))
+            coro.close()
+            return future
+
+        job = {
+            "id": "xlsx-job",
+            "deliver": "feishu:oc_chat",
+        }
+
+        with patch("gateway.config.load_gateway_config", return_value=mock_cfg), \
+             patch("cron.scheduler.load_config", return_value={"cron": {"wrap_response": False}}), \
+             patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
+            result = _deliver_result(
+                job,
+                "Report\nMEDIA:/tmp/report.xlsx",
+                adapters={Platform.FEISHU: adapter},
+                loop=loop,
+            )
+
+        assert result is not None
+        assert "media send failed" in result
+        assert "missing file_key" in result
+
     def test_live_adapter_routes_image_to_send_image_file(self):
         """Image MEDIA files should be routed to send_image_file, not send_voice."""
         from gateway.config import Platform

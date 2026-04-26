@@ -455,6 +455,39 @@ class TestSendToPlatformChunking:
         assert all(call == [] for call in sent_calls[:-1])
         assert sent_calls[-1] == media
 
+    def test_feishu_media_is_forwarded_to_native_helper(self, tmp_path):
+        doc_path = tmp_path / "report.xlsx"
+        doc_path.write_bytes(b"PK\x03\x04 test workbook")
+
+        media = [(str(doc_path), False)]
+        helper = AsyncMock(
+            return_value={
+                "success": True,
+                "platform": "feishu",
+                "chat_id": "oc_chat",
+                "message_id": "om_file",
+            }
+        )
+        with patch("tools.send_message_tool._send_feishu", helper):
+            result = asyncio.run(
+                _send_to_platform(
+                    Platform.FEISHU,
+                    SimpleNamespace(enabled=True, token="tok", extra={}),
+                    "oc_chat",
+                    "report attached",
+                    media_files=media,
+                    thread_id="omt-thread",
+                )
+            )
+
+        assert result["success"] is True
+        helper.assert_awaited_once()
+        call = helper.await_args
+        assert call.args[1] == "oc_chat"
+        assert call.args[2] == "report attached"
+        assert call.kwargs["media_files"] == media
+        assert call.kwargs["thread_id"] == "omt-thread"
+
     def test_matrix_media_uses_native_adapter_helper(self):
 
         doc_path = Path("/tmp/test-send-message-matrix.pdf")

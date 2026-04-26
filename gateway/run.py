@@ -15,6 +15,7 @@ Usage:
 
 import asyncio
 import json
+import hashlib
 import logging
 import os
 import re
@@ -101,6 +102,94 @@ load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).resolve(
 
 _DOCKER_VOLUME_SPEC_RE = re.compile(r"^(?P<host>.+):(?P<container>/[^:]+?)(?::(?P<options>[^:]+))?$")
 _DOCKER_MEDIA_OUTPUT_CONTAINER_PATHS = {"/output", "/outputs"}
+
+
+_GATEWAY_MEDIA_GUARD_EXTS = {
+    ".png", ".jpg", ".jpeg", ".gif", ".webp", ".mp4", ".mov",
+    ".avi", ".mkv", ".webm", ".ogg", ".opus", ".mp3", ".wav",
+    ".m4a", ".epub", ".pdf", ".zip", ".rar", ".7z", ".doc",
+    ".docx", ".xls", ".xlsx", ".ppt", ".pptx", ".txt", ".csv",
+    ".apk", ".ipa",
+}
+_GATEWAY_MEDIA_TAG_RE = re.compile(
+    r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
+)
+
+
+def _gateway_normalize_media_path(raw_path: str) -> str:
+    """Normalize a MEDIA: path captured from model/tool text."""
+    path = (raw_path or "").strip()
+    if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
+        path = path[1:-1].strip()
+    path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+    return os.path.expanduser(path)
+
+
+def _gateway_extract_media_paths_for_guard(text: str) -> List[str]:
+    """Return normalized MEDIA: paths from arbitrary transcript text."""
+    if not text or "MEDIA:" not in text:
+        return []
+    paths: List[str] = []
+    for match in _GATEWAY_MEDIA_TAG_RE.finditer(text):
+        path = _gateway_normalize_media_path(match.group("path"))
+        if path:
+            paths.append(path)
+    return paths
+
+
+def _gateway_media_file_sha256(path: str, *, max_bytes: int = 128 * 1024 * 1024) -> Optional[str]:
+    """Hash an existing local media file, returning None for unsafe/non-media paths."""
+    try:
+        p = Path(path).expanduser()
+        if p.suffix.lower() not in _GATEWAY_MEDIA_GUARD_EXTS:
+            return None
+        if not p.is_file():
+            return None
+        if p.stat().st_size > max_bytes:
+            return None
+        h = hashlib.sha256()
+        with p.open("rb") as f:
+            for chunk in iter(lambda: f.read(1024 * 1024), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return None
+
+
+def _gateway_strip_stale_media_tags(
+    response: str,
+    *,
+    history_media_paths: set,
+    history_media_hashes: set,
+) -> tuple[str, List[str]]:
+    """Remove MEDIA tags that point to a media artifact already present in history.
+
+    This protects group/thread gateway sessions from accidentally re-delivering
+    an old generated image when a new generation failed and the agent reused or
+    copied the previous file path/content under a new name.
+    """
+    if not response or "MEDIA:" not in response:
+        return response, []
+
+    skipped: List[str] = []
+
+    def repl(match: re.Match) -> str:
+        path = _gateway_normalize_media_path(match.group("path"))
+        if not path:
+            return ""
+        stale = path in history_media_paths
+        if not stale and history_media_hashes:
+            digest = _gateway_media_file_sha256(path)
+            stale = bool(digest and digest in history_media_hashes)
+        if stale:
+            skipped.append(path)
+            return ""
+        return match.group(0)
+
+    cleaned = _GATEWAY_MEDIA_TAG_RE.sub(repl, response)
+    if skipped:
+        cleaned = re.sub(r"\n{3,}", "\n\n", cleaned).strip()
+    return cleaned, skipped
 
 # Bridge config.yaml values into the environment so os.getenv() picks them up.
 # config.yaml is authoritative for terminal settings — overrides .env.
@@ -1572,6 +1661,22 @@ class GatewayRunner:
                 running_agent.interrupt(event.text)
             except Exception:
                 pass  # don't let interrupt failure block the ack
+
+        # Optional per-platform busy acknowledgment. Feishu/group channels can
+        # keep interrupt/queue semantics without leaking a permanent technical
+        # "Interrupting current task..." status message into the chat.
+        try:
+            from gateway.display_config import resolve_display_setting as _resolve_display_setting
+            _busy_ack_enabled = _resolve_display_setting(
+                _load_gateway_config(),
+                _platform_config_key(event.source.platform),
+                "busy_ack",
+                True,
+            )
+        except Exception:
+            _busy_ack_enabled = True
+        if not is_truthy_value(_busy_ack_enabled, default=True):
+            return True
 
         # Debounce: only send an acknowledgment once every 30 seconds per session
         # to avoid spamming the user when they send multiple messages quickly
@@ -10001,15 +10106,23 @@ class GatewayRunner:
             # Collect MEDIA paths already in history so we can exclude them
             # from the current turn's extraction. This is compression-safe:
             # even if the message list shrinks, we know which paths are old.
+            # Scan every role, not only tool/function messages: final assistant
+            # replies can also contain MEDIA tags, and models may later echo
+            # those old paths or copy the same bytes into a new filename.
             _history_media_paths: set = set()
+            _history_media_hashes: set = set()
             for _hm in agent_history:
-                if _hm.get("role") in ("tool", "function"):
-                    _hc = _hm.get("content", "")
-                    if "MEDIA:" in _hc:
-                        for _match in re.finditer(r'MEDIA:(\S+)', _hc):
-                            _p = _match.group(1).strip().rstrip('",}')
-                            if _p:
-                                _history_media_paths.add(_p)
+                _hc = _hm.get("content", "")
+                if isinstance(_hc, list):
+                    _hc = json.dumps(_hc, ensure_ascii=False)
+                if not isinstance(_hc, str):
+                    _hc = str(_hc or "")
+                for _p in _gateway_extract_media_paths_for_guard(_hc):
+                    if _p:
+                        _history_media_paths.add(_p)
+                        _digest = _gateway_media_file_sha256(_p)
+                        if _digest:
+                            _history_media_hashes.add(_digest)
             
             # Register per-session gateway approval callback so dangerous
             # command approval blocks the agent thread (mirrors CLI input()).
@@ -10187,6 +10300,22 @@ class GatewayRunner:
                     "model": _resolved_model,
                 }
             
+            # Drop MEDIA tags that point back to prior-session artifacts before
+            # any extraction/delivery path can send them. This catches both exact
+            # old paths and newly-copied files with identical content.
+            final_response, _stale_media_skipped = _gateway_strip_stale_media_tags(
+                final_response,
+                history_media_paths=_history_media_paths,
+                history_media_hashes=_history_media_hashes,
+            )
+            if _stale_media_skipped:
+                logger.warning(
+                    "Suppressed %d stale historical MEDIA attachment(s) in session %s: %s",
+                    len(_stale_media_skipped),
+                    session_key[:30] if session_key else "?",
+                    ", ".join(_stale_media_skipped[:3]),
+                )
+
             # Scan tool results for MEDIA:<path> tags that need to be delivered
             # as native audio/file attachments.  The TTS tool embeds MEDIA: tags
             # in its JSON response, but the model's final text reply usually
@@ -10206,7 +10335,21 @@ class GatewayRunner:
                         if "MEDIA:" in content:
                             for match in re.finditer(r'MEDIA:(\S+)', content):
                                 path = match.group(1).strip().rstrip('",}')
-                                if path and path not in _history_media_paths:
+                                path = _gateway_normalize_media_path(path)
+                                if not path:
+                                    continue
+                                # Tool outputs often include documentation examples like
+                                # MEDIA:/absolute/path/to/file.jpg from skill/runbook text.
+                                # Only promote real local files to delivery tags; otherwise
+                                # the gateway tries to upload placeholder paths after a
+                                # perfectly valid text/gate-reject reply.
+                                if not os.path.exists(os.path.expanduser(path)):
+                                    continue
+                                _digest = _gateway_media_file_sha256(path)
+                                if (
+                                    path not in _history_media_paths
+                                    and not (_digest and _digest in _history_media_hashes)
+                                ):
                                     media_tags.append(f"MEDIA:{path}")
                             if "[[audio_as_voice]]" in content:
                                 has_voice_directive = True

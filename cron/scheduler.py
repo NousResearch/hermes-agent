@@ -261,15 +261,19 @@ _VIDEO_EXTS = frozenset({'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'})
 _IMAGE_EXTS = frozenset({'.jpg', '.jpeg', '.png', '.webp', '.gif'})
 
 
-def _send_media_via_adapter(adapter, chat_id: str, media_files: list, metadata: dict | None, loop, job: dict) -> None:
+def _send_media_via_adapter(adapter, chat_id: str, media_files: list, metadata: dict | None, loop, job: dict) -> list[str]:
     """Send extracted MEDIA files as native platform attachments via a live adapter.
 
     Routes each file to the appropriate adapter method (send_voice, send_image_file,
     send_video, send_document) based on file extension — mirroring the routing logic
     in ``BasePlatformAdapter._process_message_background``.
+
+    Returns a list of error strings so cron delivery metadata does not report
+    success when only the text body was delivered and native media failed.
     """
     from pathlib import Path
 
+    errors: list[str] = []
     for media_path, _is_voice in media_files:
         try:
             ext = Path(media_path).suffix.lower()
@@ -289,12 +293,16 @@ def _send_media_via_adapter(adapter, chat_id: str, media_files: list, metadata: 
                 future.cancel()
                 raise
             if result and not getattr(result, "success", True):
+                error = getattr(result, "error", "unknown")
+                errors.append(f"media send failed for {media_path}: {error}")
                 logger.warning(
                     "Job '%s': media send failed for %s: %s",
-                    job.get("id", "?"), media_path, getattr(result, "error", "unknown"),
+                    job.get("id", "?"), media_path, error,
                 )
         except Exception as e:
+            errors.append(f"failed to send media {media_path}: {e}")
             logger.warning("Job '%s': failed to send media %s: %s", job.get("id", "?"), media_path, e)
+    return errors
 
 
 def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Optional[str]:
@@ -432,7 +440,17 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
 
                 # Send extracted media files as native attachments via the live adapter
                 if adapter_ok and media_files:
-                    _send_media_via_adapter(runtime_adapter, chat_id, media_files, send_metadata, loop, job)
+                    media_errors = _send_media_via_adapter(runtime_adapter, chat_id, media_files, send_metadata, loop, job)
+                    if media_errors:
+                        for media_error in media_errors:
+                            msg = f"media delivery to {platform_name}:{chat_id} failed: {media_error}"
+                            logger.warning("Job '%s': %s", job["id"], msg)
+                            delivery_errors.append(msg)
+                        # Text may already have been sent through the live adapter. Do not fall
+                        # back to standalone delivery, or the chat gets a duplicate text-only
+                        # report while the real attachment failure is hidden again.
+                        delivered = True
+                        continue
 
                 if adapter_ok:
                     logger.info("Job '%s': delivered to %s:%s via live adapter", job["id"], platform_name, chat_id)

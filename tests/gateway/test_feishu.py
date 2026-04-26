@@ -702,6 +702,60 @@ class TestAdapterBehavior(unittest.TestCase):
         message_with_mention = SimpleNamespace(mentions=[SimpleNamespace(key="@_user_1")])
         self.assertFalse(adapter._should_accept_group_message(message_with_mention, sender_id, ""))
 
+    @patch.dict(
+        os.environ,
+        {
+            "FEISHU_GROUP_POLICY": "open",
+            "FEISHU_REQUIRE_MENTION": "false",
+            "FEISHU_MENTION_POLICY": "optional",
+        },
+        clear=True,
+    )
+    def test_group_message_optional_mention_accepts_plain_text(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        message = SimpleNamespace(message_type="text", content='{"text":"hello"}', mentions=[])
+        sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
+
+        self.assertTrue(adapter._should_accept_group_message(message, sender_id, ""))
+
+    @patch.dict(
+        os.environ,
+        {
+            "FEISHU_GROUP_POLICY": "open",
+            "FEISHU_REQUIRE_MENTION": "false",
+            "FEISHU_MENTION_POLICY": "bot_or_none",
+            "FEISHU_BOT_OPEN_ID": "ou_hermes",
+            "FEISHU_BOT_USER_ID": "u_hermes",
+        },
+        clear=True,
+    )
+    def test_group_message_bot_or_none_policy_accepts_plain_bot_and_all_only(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
+        plain = SimpleNamespace(message_type="text", content='{"text":"hello"}', mentions=[])
+        bot_mention = SimpleNamespace(
+            message_type="text",
+            content='{"text":"@_user_1 hello"}',
+            mentions=[SimpleNamespace(name="Hermes", id=SimpleNamespace(open_id="ou_hermes", user_id="u_hermes"))],
+        )
+        other_mention = SimpleNamespace(
+            message_type="text",
+            content='{"text":"@_user_1 hello"}',
+            mentions=[SimpleNamespace(name="Other User", id=SimpleNamespace(open_id="ou_other", user_id="u_other"))],
+        )
+        at_all = SimpleNamespace(message_type="text", content='{"text":"@_all hello"}', mentions=[])
+
+        self.assertTrue(adapter._should_accept_group_message(plain, sender_id, ""))
+        self.assertTrue(adapter._should_accept_group_message(bot_mention, sender_id, ""))
+        self.assertFalse(adapter._should_accept_group_message(other_mention, sender_id, ""))
+        self.assertTrue(adapter._should_accept_group_message(at_all, sender_id, ""))
+
     @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
     def test_group_message_with_other_user_mention_is_rejected_when_bot_identity_unknown(self):
         from gateway.config import PlatformConfig
@@ -1899,6 +1953,71 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(result.message_id, "om_retry")
         self.assertEqual(captured["attempts"], 2)
         self.assertEqual(sleeps, [1])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_interactive_card_marker_sends_card_without_wrapper_or_marker(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_card"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+        card = {
+            "config": {"wide_screen_mode": True},
+            "header": {
+                "template": "blue",
+                "title": {"tag": "plain_text", "content": "分时段同比表"},
+            },
+            "elements": [
+                {"tag": "markdown", "content": "**范围**：北京首都机场授权门店"},
+                {"tag": "markdown", "content": "| 时段 | 昨日实际 | 同比 |\n| --- | ---: | ---: |\n| 早餐 | ¥1,000 | +3.2% |"},
+            ],
+        }
+        content = "\n".join(
+            [
+                "Cronjob Response: hzstore-daypart-sales-daily",
+                "(job_id: job_123)",
+                "-------------",
+                "",
+                "<!-- HERMES_FEISHU_INTERACTIVE_CARD_JSON_START -->",
+                json.dumps(card, ensure_ascii=False),
+                "<!-- HERMES_FEISHU_INTERACTIVE_CARD_JSON_END -->",
+                "",
+                "MEDIA:/tmp/分时段同比表_北京首都机场授权门店_20260423.xlsx",
+                "",
+                "To stop or manage this job, send me a new message.",
+            ]
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content=content))
+
+        self.assertTrue(result.success)
+        self.assertEqual(result.message_id, "om_card")
+        self.assertEqual(captured["request"].request_body.msg_type, "interactive")
+        sent_content = captured["request"].request_body.content
+        self.assertEqual(json.loads(sent_content), card)
+        self.assertNotIn("HERMES_FEISHU_INTERACTIVE_CARD_JSON", sent_content)
+        self.assertNotIn("Cronjob Response", sent_content)
+        self.assertNotIn("MEDIA:/tmp", sent_content)
 
     @patch.dict(os.environ, {}, clear=True)
     def test_send_does_not_retry_deterministic_api_failure(self):

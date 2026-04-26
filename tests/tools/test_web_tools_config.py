@@ -259,6 +259,13 @@ class TestBackendSelection:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
+        "GEMINI_SEARCH_API_KEY",
+        "GEMINI_SEARCH_BASE_URL",
+        "GEMINI_SEARCH_MODEL",
+        "SEARXNG_BASE_URL",
+        "SEARXNG_CATEGORIES",
+        "SEARXNG_LANGUAGE",
+        "SEARXNG_ENGINES",
     )
 
     def setup_method(self):
@@ -489,6 +496,13 @@ class TestCheckWebApiKey:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "TAVILY_API_KEY",
+        "GEMINI_SEARCH_API_KEY",
+        "GEMINI_SEARCH_BASE_URL",
+        "GEMINI_SEARCH_MODEL",
+        "SEARXNG_BASE_URL",
+        "SEARXNG_CATEGORIES",
+        "SEARXNG_LANGUAGE",
+        "SEARXNG_ENGINES",
     )
 
     def setup_method(self):
@@ -577,3 +591,114 @@ def test_web_requires_env_includes_exa_key():
     from tools.web_tools import _web_requires_env
 
     assert "EXA_API_KEY" in _web_requires_env()
+
+
+class TestImportedSearchBackends:
+    def setup_method(self):
+        for key in (
+            "GEMINI_SEARCH_API_KEY",
+            "GEMINI_SEARCH_BASE_URL",
+            "GEMINI_SEARCH_MODEL",
+            "SEARXNG_BASE_URL",
+            "SEARXNG_CATEGORIES",
+            "SEARXNG_LANGUAGE",
+        ):
+            os.environ.pop(key, None)
+
+    def teardown_method(self):
+        for key in (
+            "GEMINI_SEARCH_API_KEY",
+            "GEMINI_SEARCH_BASE_URL",
+            "GEMINI_SEARCH_MODEL",
+            "SEARXNG_BASE_URL",
+            "SEARXNG_CATEGORIES",
+            "SEARXNG_LANGUAGE",
+        ):
+            os.environ.pop(key, None)
+
+    def test_config_gemini_search_backend(self):
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "Gemini-Search"}):
+            assert _get_backend() == "gemini-search"
+
+    def test_config_searxng_backend(self):
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "searxng"}):
+            assert _get_backend() == "searxng"
+
+    def test_check_gemini_search_available_from_env(self):
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "gemini-search"}):
+            with patch.dict(os.environ, {
+                "GEMINI_SEARCH_API_KEY": "test-key",
+                "GEMINI_SEARCH_BASE_URL": "http://127.0.0.1:8000/v1",
+                "GEMINI_SEARCH_MODEL": "gemini-2.5-flash-search",
+            }):
+                from tools.web_tools import check_web_api_key
+                assert check_web_api_key() is True
+
+    def test_check_searxng_available_from_env(self):
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "searxng"}):
+            with patch.dict(os.environ, {"SEARXNG_BASE_URL": "http://127.0.0.1:18081"}):
+                from tools.web_tools import check_web_api_key
+                assert check_web_api_key() is True
+
+    def test_searxng_search_normalizes_json_results(self):
+        class Response:
+            def raise_for_status(self):
+                return None
+            def json(self):
+                return {"results": [
+                    {"title": "One", "url": "https://one.example", "content": "First", "engine": "startpage"},
+                    {"title": "Two", "url": "https://two.example", "content": "Second", "engine": "duckduckgo"},
+                ]}
+        class Client:
+            def __init__(self, *args, **kwargs):
+                self.kwargs = kwargs
+            def __enter__(self):
+                return self
+            def __exit__(self, *exc):
+                return False
+            def get(self, url, params):
+                assert url == "http://searx.local/search"
+                assert params["q"] == "query"
+                assert params["format"] == "json"
+                return Response()
+        with patch.dict(os.environ, {"SEARXNG_BASE_URL": "http://searx.local"}):
+            with patch("tools.web_tools.httpx.Client", Client):
+                from tools.web_tools import _searxng_search
+                result = _searxng_search("query", limit=2)
+        assert result["success"] is True
+        assert [r["title"] for r in result["data"]["web"]] == ["One", "Two"]
+        assert result["data"]["web"][0]["description"] == "First"
+        assert result["data"]["web"][0]["engine"] == "startpage"
+
+    def test_gemini_search_wraps_openai_compatible_chat_response(self):
+        class Response:
+            def raise_for_status(self):
+                return None
+            def json(self):
+                return {"choices": [{"message": {"content": "summary with citations"}}]}
+        class Client:
+            def __init__(self, *args, **kwargs):
+                pass
+            def __enter__(self):
+                return self
+            def __exit__(self, *exc):
+                return False
+            def post(self, url, json, headers):
+                assert url == "http://gemini.local/v1/chat/completions"
+                assert json["model"] == "gemini-search"
+                assert "query" in json["messages"][0]["content"]
+                assert headers["Authorization"] == "Bearer test-key"
+                return Response()
+        with patch.dict(os.environ, {
+            "GEMINI_SEARCH_BASE_URL": "http://gemini.local/v1",
+            "GEMINI_SEARCH_MODEL": "gemini-search",
+            "GEMINI_SEARCH_API_KEY": "test-key",
+        }):
+            with patch("tools.web_tools.httpx.Client", Client):
+                from tools.web_tools import _gemini_search
+                result = _gemini_search("query", limit=3)
+        assert result["success"] is True
+        assert result["data"]["web"][0]["title"] == "Gemini Search synthesis"
+        assert "summary with citations" in result["data"]["web"][0]["description"]

@@ -35,6 +35,7 @@ _GLOBAL_DEFAULTS: dict[str, Any] = {
     "show_reasoning": False,
     "tool_preview_length": 0,
     "streaming": None,  # None = follow top-level streaming config
+    "busy_ack": True,
 }
 
 # ---------------------------------------------------------------------------
@@ -176,6 +177,10 @@ def resolve_display_setting(
 
 def _normalise(setting: str, value: Any) -> Any:
     """Normalise YAML quirks (bare ``off`` → False in YAML 1.1)."""
+    if setting == "busy_ack":
+        if isinstance(value, str):
+            return value.strip().lower() in {"true", "1", "yes", "on"}
+        return bool(value)
     if setting == "tool_progress":
         if value is False:
             return "off"

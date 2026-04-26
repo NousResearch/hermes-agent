@@ -1287,6 +1287,56 @@ class BasePlatformAdapter(ABC):
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
 
+    async def send_file(
+        self,
+        chat_id: str,
+        file_path: str,
+        caption: Optional[str] = None,
+        file_name: Optional[str] = None,
+        reply_to: Optional[str] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Send a local file using the best native method for its extension.
+
+        This is used by generic gateway code paths such as /btw.  Adapters may
+        override it, but the default router prevents platforms like Feishu from
+        silently losing media when they implement send_image_file/send_document
+        but not a catch-all send_file method.
+        """
+        ext = os.path.splitext(str(file_path or ""))[1].lower()
+        if ext in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".ico", ".tif", ".tiff", ".heic"}:
+            return await self.send_image_file(
+                chat_id=chat_id,
+                image_path=file_path,
+                caption=caption,
+                reply_to=reply_to,
+                **kwargs,
+            )
+        if ext in {".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"}:
+            return await self.send_video(
+                chat_id=chat_id,
+                video_path=file_path,
+                caption=caption,
+                reply_to=reply_to,
+                **kwargs,
+            )
+        if ext in {".mp3", ".ogg", ".oga", ".wav", ".m4a", ".aac", ".flac"}:
+            return await self.send_voice(
+                chat_id=chat_id,
+                audio_path=file_path,
+                caption=caption,
+                reply_to=reply_to,
+                **kwargs,
+            )
+        return await self.send_document(
+            chat_id=chat_id,
+            file_path=file_path,
+            caption=caption,
+            file_name=file_name,
+            reply_to=reply_to,
+            **kwargs,
+        )
+
     async def send_document(
         self,
         chat_id: str,

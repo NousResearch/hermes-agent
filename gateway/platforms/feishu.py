@@ -152,6 +152,10 @@ _MARKDOWN_HINT_RE = re.compile(
     r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
     re.MULTILINE,
 )
+_FEISHU_INTERACTIVE_CARD_BLOCK_RE = re.compile(
+    r"<!--\s*HERMES_FEISHU_INTERACTIVE_CARD_JSON_START\s*-->\s*(?P<payload>.+?)\s*<!--\s*HERMES_FEISHU_INTERACTIVE_CARD_JSON_END\s*-->",
+    re.DOTALL,
+)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
@@ -363,6 +367,8 @@ class FeishuAdapterSettings:
     encrypt_key: str
     verification_token: str
     group_policy: str
+    require_mention: bool
+    mention_policy: str
     allowed_group_users: frozenset[str]
     # Bot's own open_id (app-scoped) — returned by /bot/v3/info.  Used only for
     # @mention matching: Feishu puts this value in mentions[].id.open_id when
@@ -416,6 +422,18 @@ def _escape_markdown_text(text: str) -> str:
 
 def _to_boolean(value: Any) -> bool:
     return value is True or value == 1 or value == "true"
+
+
+def _parse_falsey_env(value: Any) -> bool:
+    """Parse legacy env booleans where only explicit false-like values disable."""
+    return str(value if value is not None else "").strip().lower() not in {"false", "0", "no", "off"}
+
+
+def _normalize_feishu_mention_policy(value: Any, *, require_mention: bool) -> str:
+    raw = str(value or "").strip().lower()
+    if raw in {"required", "optional", "bot_or_none"}:
+        return raw
+    return "required" if require_mention else "optional"
 
 
 def _is_style_enabled(style: Dict[str, Any] | None, key: str) -> bool:
@@ -484,6 +502,32 @@ def _strip_markdown_to_plain_text(text: str) -> str:
     plain = re.sub(r"<u>([\s\S]*?)</u>", r"\1", plain)
     plain = strip_markdown(plain)
     return plain
+
+
+def _extract_feishu_interactive_card_payload(text: str) -> Optional[str]:
+    """Return a validated Feishu interactive-card JSON payload embedded in text.
+
+    The marker can be surrounded by cron wrapper text or MEDIA lines. Only the JSON
+    between markers is sent to Feishu; wrapper/marker/media text must never leak as
+    visible chat content.
+    """
+
+    match = _FEISHU_INTERACTIVE_CARD_BLOCK_RE.search(text or "")
+    if not match:
+        return None
+
+    raw_payload = match.group("payload").strip()
+    try:
+        card = json.loads(raw_payload)
+    except Exception as exc:  # noqa: BLE001 - convert all parse failures to a clear send error
+        raise ValueError("Invalid Feishu interactive card marker JSON") from exc
+
+    if not isinstance(card, dict):
+        raise ValueError("Feishu interactive card marker JSON must be an object")
+    if not card.get("elements") and not card.get("i18n_elements"):
+        raise ValueError("Feishu interactive card marker JSON must contain elements")
+
+    return json.dumps(card, ensure_ascii=False)
 
 
 def _coerce_int(value: Any, default: Optional[int] = None, min_value: int = 0) -> Optional[int]:
@@ -1390,6 +1434,14 @@ class FeishuAdapter(BasePlatformAdapter):
         # Default group policy (for groups not in group_rules)
         default_group_policy = str(extra.get("default_group_policy", "")).strip().lower()
 
+        require_mention = _parse_falsey_env(
+            extra.get("require_mention", os.getenv("FEISHU_REQUIRE_MENTION", "true"))
+        )
+        mention_policy = _normalize_feishu_mention_policy(
+            extra.get("mention_policy", os.getenv("FEISHU_MENTION_POLICY", "")),
+            require_mention=require_mention,
+        )
+
         return FeishuAdapterSettings(
             app_id=str(extra.get("app_id") or os.getenv("FEISHU_APP_ID", "")).strip(),
             app_secret=str(extra.get("app_secret") or os.getenv("FEISHU_APP_SECRET", "")).strip(),
@@ -1400,6 +1452,8 @@ class FeishuAdapter(BasePlatformAdapter):
             encrypt_key=os.getenv("FEISHU_ENCRYPT_KEY", "").strip(),
             verification_token=os.getenv("FEISHU_VERIFICATION_TOKEN", "").strip(),
             group_policy=os.getenv("FEISHU_GROUP_POLICY", "allowlist").strip().lower(),
+            require_mention=require_mention,
+            mention_policy=mention_policy,
             allowed_group_users=frozenset(
                 item.strip()
                 for item in os.getenv("FEISHU_ALLOWED_USERS", "").split(",")
@@ -1456,6 +1510,8 @@ class FeishuAdapter(BasePlatformAdapter):
         self._encrypt_key = settings.encrypt_key
         self._verification_token = settings.verification_token
         self._group_policy = settings.group_policy
+        self._require_mention = settings.require_mention
+        self._mention_policy = settings.mention_policy
         self._allowed_group_users = set(settings.allowed_group_users)
         self._admins = set(settings.admins)
         self._default_group_policy = settings.default_group_policy or settings.group_policy
@@ -1641,6 +1697,26 @@ class FeishuAdapter(BasePlatformAdapter):
         """Send a Feishu message."""
         if not self._client:
             return SendResult(success=False, error="Not connected")
+
+        try:
+            interactive_payload = _extract_feishu_interactive_card_payload(content)
+        except ValueError as exc:
+            logger.error("[Feishu] Invalid interactive card marker: %s", exc, exc_info=True)
+            return SendResult(success=False, error=str(exc))
+
+        if interactive_payload is not None:
+            try:
+                response = await self._feishu_send_with_retry(
+                    chat_id=chat_id,
+                    msg_type="interactive",
+                    payload=interactive_payload,
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+                return self._finalize_send_result(response, "send failed")
+            except Exception as exc:
+                logger.error("[Feishu] Send interactive card error: %s", exc, exc_info=True)
+                return SendResult(success=False, error=str(exc))
 
         formatted = self.format_message(content)
         chunks = self.truncate_message(formatted, self.MAX_MESSAGE_LENGTH)
@@ -2702,6 +2778,15 @@ class FeishuAdapter(BasePlatformAdapter):
             or getattr(message, "upper_message_id", None)
             or None
         )
+        # Feishu topic/thread messages can expose both thread_id and root_id.
+        # Use root_id first as the canonical topic/session id; thread_id alone
+        # may point at an individual reply and can make one visible topic split
+        # across multiple Hermes sessions.
+        thread_root_id = (
+            getattr(message, "root_id", None)
+            or getattr(message, "thread_id", None)
+            or None
+        )
         reply_to_text = await self._fetch_message_text(reply_to_message_id) if reply_to_message_id else None
 
         logger.info(
@@ -2723,7 +2808,7 @@ class FeishuAdapter(BasePlatformAdapter):
             chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=chat_type),
             user_id=sender_profile["user_id"],
             user_name=sender_profile["user_name"],
-            thread_id=getattr(message, "thread_id", None) or None,
+            thread_id=thread_root_id,
             user_id_alt=sender_profile["user_id_alt"],
         )
         normalized = MessageEvent(
@@ -3626,23 +3711,39 @@ class FeishuAdapter(BasePlatformAdapter):
         return bool(sender_ids and (sender_ids & self._allowed_group_users))
 
     def _should_accept_group_message(self, message: Any, sender_id: Any, chat_id: str = "") -> bool:
-        """Require an explicit @mention before group messages enter the agent."""
+        """Apply group sender gates and mention policy before routing to the agent."""
         if not self._allow_group_message(sender_id, chat_id):
             return False
+
+        policy = getattr(self, "_mention_policy", "required") or "required"
+        if policy == "optional":
+            return True
+
         # @_all is Feishu's @everyone placeholder — always route to the bot.
         raw_content = getattr(message, "content", "") or ""
         if "@_all" in raw_content:
             return True
+
         mentions = getattr(message, "mentions", None) or []
         if mentions:
-            return self._message_mentions_bot(mentions)
+            mentions_bot = self._message_mentions_bot(mentions)
+            if policy == "bot_or_none":
+                return mentions_bot
+            return mentions_bot
+
         normalized = normalize_feishu_message(
             message_type=getattr(message, "message_type", "") or "",
             raw_content=raw_content,
             mentions=getattr(message, "mentions", None),
             bot=self._bot_identity(),
         )
-        return self._post_mentions_bot(normalized.mentions)
+        if self._post_mentions_bot(normalized.mentions):
+            return True
+        if any(m.is_all for m in normalized.mentions):
+            return True
+        if policy == "bot_or_none":
+            return not normalized.mentions
+        return False
 
     def _is_self_sent_bot_message(self, event: Any) -> bool:
         """Return True only for Feishu events emitted by this Hermes bot."""

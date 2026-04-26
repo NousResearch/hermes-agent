@@ -160,6 +160,35 @@ class TestBusySessionAck:
         assert "Interrupting" not in content
 
     @pytest.mark.asyncio
+    async def test_per_platform_busy_ack_false_suppresses_ack_but_interrupts(self):
+        """Feishu can stay quiet while preserving interrupt semantics."""
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
+        adapter = _make_adapter(platform_val="feishu")
+
+        event = _make_event(text="new input", platform_val="feishu")
+        sk = build_session_key(event.source)
+        agent = MagicMock()
+        agent.get_activity_summary.return_value = {
+            "api_call_count": 2,
+            "max_iterations": 60,
+            "current_tool": "terminal",
+        }
+        runner._running_agents[sk] = agent
+        runner._running_agents_ts[sk] = time.time() - 60
+        runner.adapters[event.source.platform] = adapter
+
+        with patch(
+            "gateway.run._load_gateway_config",
+            return_value={"display": {"platforms": {"feishu": {"busy_ack": False}}}},
+        ):
+            result = await runner._handle_active_session_busy_message(event, sk)
+
+        assert result is True
+        agent.interrupt.assert_called_once_with("new input")
+        adapter._send_with_retry.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_debounce_suppresses_rapid_acks(self):
         """Second message within 30s should NOT send another ack."""
         runner, sentinel = _make_runner()

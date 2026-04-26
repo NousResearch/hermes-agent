@@ -88,7 +88,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa"):
+    if configured in ("parallel", "firecrawl", "tavily", "exa", "gemini-search", "searxng"):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -99,6 +99,8 @@ def _get_backend() -> str:
         ("parallel", _has_env("PARALLEL_API_KEY")),
         ("tavily", _has_env("TAVILY_API_KEY")),
         ("exa", _has_env("EXA_API_KEY")),
+        ("gemini-search", _has_env("GEMINI_SEARCH_BASE_URL") and _has_env("GEMINI_SEARCH_MODEL")),
+        ("searxng", _has_env("SEARXNG_BASE_URL")),
     )
     for backend, available in backend_candidates:
         if available:
@@ -117,6 +119,10 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "gemini-search":
+        return _has_env("GEMINI_SEARCH_BASE_URL") and _has_env("GEMINI_SEARCH_MODEL")
+    if backend == "searxng":
+        return _has_env("SEARXNG_BASE_URL")
     return False
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
@@ -189,6 +195,13 @@ def _web_requires_env() -> list[str]:
         "TAVILY_API_KEY",
         "FIRECRAWL_API_KEY",
         "FIRECRAWL_API_URL",
+        "GEMINI_SEARCH_API_KEY",
+        "GEMINI_SEARCH_BASE_URL",
+        "GEMINI_SEARCH_MODEL",
+        "SEARXNG_BASE_URL",
+        "SEARXNG_CATEGORIES",
+        "SEARXNG_LANGUAGE",
+        "SEARXNG_ENGINES",
     ]
     if managed_nous_tools_enabled():
         requires.extend(
@@ -989,6 +1002,148 @@ def _parallel_search(query: str, limit: int = 5) -> dict:
     return {"success": True, "data": {"web": web_results}}
 
 
+# ─── Imported Gemini Search / SearXNG Helpers ────────────────────────────────
+
+def _gemini_search(query: str, limit: int = 5) -> dict:
+    """Search via an OpenAI-compatible Gemini Search endpoint.
+
+    The endpoint returns synthesized web-grounded content rather than raw URL
+    rows.  We expose that synthesis as one web result so Hermes can use the
+    same web_search schema across all backends.
+    """
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return {"error": "Interrupted", "success": False}
+
+    base_url = os.getenv("GEMINI_SEARCH_BASE_URL", "").strip().rstrip("/")
+    model = os.getenv("GEMINI_SEARCH_MODEL", "gemini-2.5-flash-search").strip()
+    api_key = os.getenv("GEMINI_SEARCH_API_KEY", "").strip()
+    if not base_url:
+        raise ValueError("GEMINI_SEARCH_BASE_URL environment variable not set")
+    if not model:
+        raise ValueError("GEMINI_SEARCH_MODEL environment variable not set")
+
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    payload = {
+        "model": model,
+        "messages": [
+            {
+                "role": "user",
+                "content": (
+                    "Search the web for the query below. Return a concise, grounded summary "
+                    "with important source names and URLs when available.\n\n"
+                    f"Query: {query}"
+                ),
+            }
+        ],
+        "temperature": 0,
+    }
+
+    with httpx.Client(timeout=45.0, follow_redirects=True) as client:
+        response = client.post(f"{base_url}/chat/completions", json=payload, headers=headers)
+        response.raise_for_status()
+        data = response.json()
+
+    content = (
+        data.get("choices", [{}])[0]
+        .get("message", {})
+        .get("content", "")
+        .strip()
+    )
+    return {
+        "success": True,
+        "data": {
+            "web": [
+                {
+                    "title": "Gemini Search synthesis",
+                    "url": base_url,
+                    "description": content,
+                    "position": 1,
+                }
+            ]
+        },
+    }
+
+
+def _searxng_search(query: str, limit: int = 5) -> dict:
+    """Search a self-hosted SearXNG JSON endpoint and normalize result rows.
+
+    SearXNG can return HTTP 200 with zero rows when its default engines are
+    temporarily suspended/rate-limited.  When that happens, retry a small set of
+    explicit engines instead of treating the query as empty evidence.
+    """
+    from tools.interrupt import is_interrupted
+    if is_interrupted():
+        return {"error": "Interrupted", "success": False}
+
+    base_url = os.getenv("SEARXNG_BASE_URL", "").strip().rstrip("/")
+    if not base_url:
+        raise ValueError("SEARXNG_BASE_URL environment variable not set")
+
+    categories = os.getenv("SEARXNG_CATEGORIES", "").strip()
+    language = os.getenv("SEARXNG_LANGUAGE", "").strip()
+    engine_env = os.getenv("SEARXNG_ENGINES", "").strip()
+    fallback_engines = [e.strip() for e in (engine_env or "baidu,sogou,360search,quark,bing").split(",") if e.strip()]
+
+    def build_params(engine: str | None = None) -> dict:
+        params = {"q": query, "format": "json"}
+        if categories:
+            params["categories"] = categories
+        if language:
+            params["language"] = language
+        if engine:
+            params["engines"] = engine
+        return params
+
+    def append_rows(data: dict, engine_hint: str | None, out: list[dict], seen: set[str]) -> None:
+        for result in data.get("results") or []:
+            url = result.get("url") or ""
+            if not url or url in seen:
+                continue
+            seen.add(url)
+            engines = result.get("engines") or []
+            out.append({
+                "url": url,
+                "title": result.get("title") or "",
+                "description": result.get("content") or result.get("description") or "",
+                "position": len(out) + 1,
+                "engine": result.get("engine") or (",".join(engines) if engines else (engine_hint or "")),
+            })
+            if len(out) >= max(0, limit):
+                break
+
+    web_results: list[dict] = []
+    seen_urls: set[str] = set()
+    route_notes: list[str] = []
+
+    with httpx.Client(timeout=20.0, follow_redirects=True) as client:
+        response = client.get(f"{base_url}/search", params=build_params())
+        response.raise_for_status()
+        data = response.json()
+        append_rows(data, None, web_results, seen_urls)
+        if data.get("unresponsive_engines"):
+            route_notes.append(f"default_unresponsive={data.get('unresponsive_engines')}")
+
+        if not web_results:
+            for engine in fallback_engines:
+                response = client.get(f"{base_url}/search", params=build_params(engine))
+                response.raise_for_status()
+                engine_data = response.json()
+                before = len(web_results)
+                append_rows(engine_data, engine, web_results, seen_urls)
+                route_notes.append(f"{engine}:{len(web_results) - before}")
+                if len(web_results) >= max(0, limit):
+                    break
+
+    response_data = {"success": True, "data": {"web": web_results}}
+    if route_notes:
+        response_data["meta"] = {"route_notes": route_notes, "fallback_engines_used": not bool(data.get("results"))}
+    return response_data
+
+
 async def _parallel_extract(urls: List[str]) -> List[Dict[str, Any]]:
     """Extract content from URLs using the Parallel async SDK.
 
@@ -1084,6 +1239,32 @@ def web_search_tool(query: str, limit: int = 5) -> str:
 
         # Dispatch to the configured backend
         backend = _get_backend()
+        if backend == "gemini-search":
+            try:
+                response_data = _gemini_search(query, limit)
+            except Exception as gemini_exc:
+                if not _has_env("SEARXNG_BASE_URL"):
+                    raise
+                logger.warning("gemini-search failed; falling back to searxng: %s", gemini_exc)
+                response_data = _searxng_search(query, limit)
+                response_data.setdefault("meta", {})["primary_backend_error"] = f"gemini-search failed: {type(gemini_exc).__name__}"
+                response_data.setdefault("meta", {})["fallback_backend"] = "searxng"
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
+        if backend == "searxng":
+            response_data = _searxng_search(query, limit)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
         if backend == "parallel":
             response_data = _parallel_search(query, limit)
             debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
@@ -1922,9 +2103,9 @@ def check_firecrawl_api_key() -> bool:
 def check_web_api_key() -> bool:
     """Check whether the configured web backend is available."""
     configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("exa", "parallel", "firecrawl", "tavily"):
+    if configured in ("exa", "parallel", "firecrawl", "tavily", "gemini-search", "searxng"):
         return _is_backend_available(configured)
-    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily"))
+    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily", "gemini-search", "searxng"))
 
 
 def check_auxiliary_model() -> bool:

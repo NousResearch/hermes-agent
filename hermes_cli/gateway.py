@@ -6,6 +6,7 @@ Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
 
 import asyncio
 import os
+import plistlib
 import shutil
 import signal
 import subprocess
@@ -2006,7 +2007,57 @@ def get_launchd_label() -> str:
 
 
 def _launchd_domain() -> str:
+    import os
     return f"gui/{os.getuid()}"
+
+
+def _macos_gateway_launch_wrapper() -> Path | None:
+    if not is_macos():
+        return None
+    candidates = [
+        _launchd_user_home() / "ops" / "network" / "scripts" / "hermes_gateway_launch.py",
+        _launchd_user_home() / "Ops" / "scripts" / "hermes_gateway_launch.py",
+    ]
+    for wrapper in candidates:
+        if wrapper.exists():
+            return wrapper
+    return None
+
+
+def _launchd_env_vars(
+    *,
+    python_path: str,
+    sane_path: str,
+    venv_dir: str,
+    hermes_home: str,
+    wrapper: Path | None,
+) -> dict[str, str]:
+    env = {
+        "PATH": sane_path,
+        "VIRTUAL_ENV": venv_dir,
+        "HERMES_HOME": hermes_home,
+    }
+    if wrapper is not None:
+        env.update({
+            "HERMES_GATEWAY_PYTHON": python_path,
+            "HERMES_TELEGRAM_HTTP_POOL_SIZE": "16",
+            "HERMES_TELEGRAM_HTTP_POOL_TIMEOUT": "30",
+            "HERMES_TELEGRAM_BOOTSTRAP_RETRIES": "5",
+            "HERMES_PROXY_PRIMARY_HTTP": "http://127.0.0.1:8888",
+            "HERMES_PROXY_PRIMARY_TELEGRAM": "http://127.0.0.1:8888",
+            "HERMES_PROXY_FALLBACK_HTTP": "http://127.0.0.1:7890",
+            "HERMES_PROXY_FALLBACK_TELEGRAM": "http://127.0.0.1:7890",
+            "HERMES_PROXY_TELEGRAM_PROBE_URL": "https://api.telegram.org/bot000000:INVALID/getMe",
+            "HERMES_PROXY_CODEX_PROBE_URL": "https://chatgpt.com/backend-api/codex",
+            "HERMES_PROXY_GITHUB_PROBE_URL": "https://github.com",
+            "HERMES_PROXY_NO_PROXY": "localhost,127.0.0.1,::1,feishu.cn,.feishu.cn,open.feishu.cn,open.larksuite.com,.larksuite.com,larkoffice.com,.larkoffice.com",
+            "HERMES_PROXY_STATE_FILE": str(get_hermes_home() / "runtime" / "gateway-proxy-route.json"),
+            "HERMES_PROXY_PROBE_TIMEOUT_S": "8",
+            "HERMES_PROXY_PRIMARY_WAIT_S": "25",
+            "HERMES_PROXY_PRIMARY_RETRY_S": "3",
+            "HERMES_PROXY_FALLBACK_ATTEMPTS": "2",
+        })
+    return env
 
 
 def generate_launchd_plist() -> str:
@@ -2017,17 +2068,10 @@ def generate_launchd_plist() -> str:
     log_dir.mkdir(parents=True, exist_ok=True)
     label = get_launchd_label()
     profile_arg = _profile_arg(hermes_home)
-    # Build a sane PATH for the launchd plist.  launchd provides only a
-    # minimal default (/usr/bin:/bin:/usr/sbin:/sbin) which misses Homebrew,
-    # nvm, cargo, etc.  We prepend venv/bin and node_modules/.bin (matching
-    # the systemd unit), then capture the user's full shell PATH so every
-    # user-installed tool (node, ffmpeg, …) is reachable.
     detected_venv = _detect_venv_dir()
     venv_bin = str(detected_venv / "bin") if detected_venv else str(PROJECT_ROOT / "venv" / "bin")
     venv_dir = str(detected_venv) if detected_venv else str(PROJECT_ROOT / "venv")
     node_bin = str(PROJECT_ROOT / "node_modules" / ".bin")
-    # Resolve the directory containing the node binary (e.g. Homebrew, nvm)
-    # so it's explicitly in PATH even if the user's shell PATH changes later.
     priority_dirs = [venv_bin, node_bin]
     resolved_node = shutil.which("node")
     if resolved_node:
@@ -2038,64 +2082,35 @@ def generate_launchd_plist() -> str:
         dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p])
     )
 
-    # Build ProgramArguments array, including --profile when using a named profile
-    prog_args = [
-        f"<string>{python_path}</string>",
-        "<string>-m</string>",
-        "<string>hermes_cli.main</string>",
-    ]
-    if profile_arg:
-        for part in profile_arg.split():
-            prog_args.append(f"<string>{part}</string>")
-    prog_args.extend([
-        "<string>gateway</string>",
-        "<string>run</string>",
-        "<string>--replace</string>",
-    ])
-    prog_args_xml = "\n        ".join(prog_args)
+    wrapper = _macos_gateway_launch_wrapper()
+    if wrapper is not None:
+        program_args = [python_path, str(wrapper)]
+    else:
+        program_args = [python_path, "-m", "hermes_cli.main"]
+        if profile_arg:
+            program_args.extend(profile_arg.split())
+        program_args.extend(["gateway", "run", "--replace"])
 
-    return f"""<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0">
-<dict>
-    <key>Label</key>
-    <string>{label}</string>
+    plist = {
+        "Label": label,
+        "ProgramArguments": program_args,
+        "WorkingDirectory": working_dir,
+        "EnvironmentVariables": _launchd_env_vars(
+            python_path=python_path,
+            sane_path=sane_path,
+            venv_dir=venv_dir,
+            hermes_home=hermes_home,
+            wrapper=wrapper,
+        ),
+        "RunAtLoad": True,
+        "KeepAlive": {"SuccessfulExit": False},
+        "StandardOutPath": f"{log_dir}/gateway.log",
+        "StandardErrorPath": f"{log_dir}/gateway.error.log",
+    }
+    if wrapper is not None:
+        plist["ThrottleInterval"] = 30
+    return plistlib.dumps(plist, fmt=plistlib.FMT_XML).decode("utf-8")
 
-    <key>ProgramArguments</key>
-    <array>
-        {prog_args_xml}
-    </array>
-    
-    <key>WorkingDirectory</key>
-    <string>{working_dir}</string>
-    
-    <key>EnvironmentVariables</key>
-    <dict>
-        <key>PATH</key>
-        <string>{sane_path}</string>
-        <key>VIRTUAL_ENV</key>
-        <string>{venv_dir}</string>
-        <key>HERMES_HOME</key>
-        <string>{hermes_home}</string>
-    </dict>
-    
-    <key>RunAtLoad</key>
-    <true/>
-    
-    <key>KeepAlive</key>
-    <dict>
-        <key>SuccessfulExit</key>
-        <false/>
-    </dict>
-    
-    <key>StandardOutPath</key>
-    <string>{log_dir}/gateway.log</string>
-    
-    <key>StandardErrorPath</key>
-    <string>{log_dir}/gateway.error.log</string>
-</dict>
-</plist>
-"""
 
 def launchd_plist_is_current() -> bool:
     """Check if the installed launchd plist matches the currently generated one."""

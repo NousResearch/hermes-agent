@@ -158,6 +158,7 @@ def _discover_tools():
         "tools.send_message_tool",
         # "tools.honcho_tools",  # Removed — Honcho is now a memory provider plugin
         "tools.homeassistant_tool",
+        "tools.manim_data_viz_bridge_tool",
     ]
     import importlib
     for mod_name in _modules:
@@ -207,6 +208,7 @@ _LEGACY_TOOLSET_MAP = {
     "vision_tools": ["vision_analyze"],
     "moa_tools": ["mixture_of_agents"],
     "image_tools": ["image_generate"],
+    "data_viz_tools": ["manim_data_viz_bridge"],
     "skills_tools": ["skills_list", "skill_view", "skill_manage"],
     "browser_tools": [
         "browser_navigate", "browser_snapshot", "browser_click",

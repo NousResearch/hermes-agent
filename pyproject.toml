@@ -63,6 +63,15 @@ homeassistant = ["aiohttp>=3.9.0,<4"]
 sms = ["aiohttp>=3.9.0,<4"]
 acp = ["agent-client-protocol>=0.9.0,<1.0"]
 mistral = ["mistralai>=2.3.0,<3"]
+# Matplotlib / seaborn / pandas — Manim data-viz bridge tool (optional).
+data-viz = [
+  "matplotlib>=3.8.0,<4",
+  "seaborn>=0.13.0,<1",
+  "pandas>=2.1.0,<3",
+]
+creative = [
+  "hermes-agent[data-viz]",
+]
 termux = [
   # Tested Android / Termux path: keeps the core CLI feature-rich while
   # avoiding extras that currently depend on non-Android wheels (notably
@@ -118,7 +127,22 @@ hermes-acp = "acp_adapter.entry:main"
 py-modules = ["run_agent", "model_tools", "toolsets", "batch_runner", "trajectory_compressor", "toolset_distributions", "cli", "hermes_constants", "hermes_state", "hermes_time", "hermes_logging", "rl_cli", "utils"]
 
 [tool.setuptools.packages.find]
-include = ["agent", "tools", "tools.*", "hermes_cli", "gateway", "gateway.*", "cron", "acp_adapter", "plugins", "plugins.*"]
+include = [
+  "agent",
+  "tools",
+  "tools.*",
+  "hermes_cli",
+  "gateway",
+  "gateway.*",
+  "cron",
+  "acp_adapter",
+  "plugins",
+  "plugins.*",
+  "src",
+  "src.skills",
+  "src.skills.creative",
+  "src.skills.creative.manim_data_viz_bridge",
+]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

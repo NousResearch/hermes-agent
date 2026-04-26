@@ -35,8 +35,8 @@ _HERMES_CORE_TOOLS = [
     "terminal", "process",
     # File manipulation
     "read_file", "write_file", "patch", "search_files",
-    # Vision + image generation
-    "vision_analyze", "image_generate",
+    # Vision + image generation + Manim data-viz bridge (optional deps)
+    "vision_analyze", "image_generate", "manim_data_viz_bridge",
     # Skills
     "skills_list", "skill_view", "skill_manage",
     # Browser automation
@@ -88,6 +88,12 @@ TOOLSETS = {
     "image_gen": {
         "description": "Creative generation tools (images)",
         "tools": ["image_generate"],
+        "includes": []
+    },
+    
+    "data_viz": {
+        "description": "Matplotlib/seaborn chart + Manim CE scene bridge for explainer videos",
+        "tools": ["manim_data_viz_bridge"],
         "includes": []
     },
     
@@ -253,6 +259,7 @@ TOOLSETS = {
             "read_file", "write_file", "patch", "search_files",
             # Vision + image generation
             "vision_analyze", "image_generate",
+            "manim_data_viz_bridge",
             # Skills
             "skills_list", "skill_view", "skill_manage",
             # Browser automation

@@ -889,30 +889,59 @@ def _searxng_search(query: str, limit: int = 10) -> dict:
     if not base_url:
         return {"error": "SearXNG base_url not configured", "success": False}
 
+    import time as _time
     encoded_query = urllib.parse.quote(query)
     url = f"{base_url}/search?q={encoded_query}&format=json"
 
-    try:
-        response = requests.get(url, timeout=30)
-        response.raise_for_status()
-        data = response.json()
-        
-        web_results = []
-        for i, item in enumerate(data.get("results", [])[:limit]):
-            web_results.append({
-                "title": item.get("title", ""),
-                "url": item.get("url", ""),
-                "description": item.get("content", ""),
-                "position": i + 1
-            })
-            
-        return {
-            "success": True,
-            "data": {"web": web_results}
-        }
-    except Exception as e:
-        logger.error(f"SearXNG search failed: {e}")
-        return {"error": str(e), "success": False}
+    max_attempts = 2
+    last_error = None
+
+    for attempt in range(1, max_attempts + 1):
+        if is_interrupted():
+            return {"error": "Interrupted", "success": False}
+
+        try:
+            client_timeout = 45 if attempt > 1 else 30
+            response = requests.get(url, timeout=client_timeout)
+            response.raise_for_status()
+            data = response.json()
+
+            web_results = []
+            for i, item in enumerate(data.get("results", [])[:limit]):
+                web_results.append({
+                    "title": item.get("title", ""),
+                    "url": item.get("url", ""),
+                    "description": item.get("content", ""),
+                    "position": i + 1
+                })
+
+            if web_results:
+                return {
+                    "success": True,
+                    "data": {"web": web_results}
+                }
+
+            # Empty results — engines may have timed out; retry after delay
+            if attempt < max_attempts:
+                logger.warning(
+                    "SearXNG returned 0 results for '%s' (attempt %d), retrying in 2s...",
+                    query[:80], attempt
+                )
+                _time.sleep(2)
+
+        except Exception as e:
+            last_error = str(e)
+            if attempt < max_attempts:
+                logger.warning(
+                    "SearXNG attempt %d failed for '%s': %s, retrying in 2s...",
+                    attempt, query[:80], last_error
+                )
+                _time.sleep(2)
+
+    # All attempts exhausted
+    err_msg = last_error or f"0 results after {max_attempts} attempts"
+    logger.error(f"SearXNG search failed: {err_msg}")
+    return {"error": err_msg, "success": False}
 
 
 # ─── Exa Client ──────────────────────────────────────────────────────────────

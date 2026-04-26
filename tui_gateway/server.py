@@ -2321,6 +2321,26 @@ def _(rid, params: dict) -> dict:
                 payload["rendered"] = rendered
             _emit("message.complete", sid, payload)
 
+            if (
+                status == "complete"
+                and isinstance(raw, str)
+                and raw.strip()
+                and isinstance(text, str)
+                and text.strip()
+            ):
+                try:
+                    from agent.title_generator import maybe_auto_title
+
+                    maybe_auto_title(
+                        _get_db(),
+                        session.get("session_key") or sid,
+                        text,
+                        raw,
+                        session.get("history", []),
+                    )
+                except Exception:
+                    pass
+
             # CLI parity: when voice-mode TTS is on, speak the agent reply
             # (cli.py:_voice_speak_response).  Only the final text — tool
             # calls / reasoning already stream separately and would be

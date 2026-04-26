@@ -1323,7 +1323,9 @@ def _is_payment_error(exc: Exception) -> bool:
     if status in (402, 429, None):
         if any(kw in err_lower for kw in ("credits", "insufficient funds",
                                            "can only afford", "billing",
-                                           "payment required")):
+                                           "payment required",
+                                           "usage_limit_reached",
+                                           "usage limit")):
             return True
     return False
 
@@ -1468,6 +1470,24 @@ def _refresh_provider_credentials(provider: str) -> bool:
     return False
 
 
+def _read_config_fallback_providers() -> List[Dict[str, Any]]:
+    """Read user-configured fallback_providers from config.yaml.
+
+    Returns the list of dicts with at least 'provider' and 'model' keys,
+    skipping any malformed entries.
+    """
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config()
+        entries = cfg.get("fallback_providers") or []
+        return [
+            p for p in entries
+            if isinstance(p, dict) and p.get("provider") and p.get("model")
+        ]
+    except Exception:
+        return []
+
+
 def _try_payment_fallback(
     failed_provider: str,
     task: str = None,
@@ -1507,6 +1527,28 @@ def _try_payment_fallback(
             )
             return client, model, label
         tried.append(label)
+
+    # Also try user-configured fallback_providers (config.yaml fallback_providers list).
+    # These are checked after the standard chain because they require specific API keys
+    # that the standard chain entries may also satisfy.
+    for fb_entry in _read_config_fallback_providers():
+        fb_provider = str(fb_entry.get("provider", "")).strip()
+        fb_model = str(fb_entry.get("model", "")).strip()
+        if not fb_provider or fb_provider.lower() in skip_labels:
+            tried.append(fb_provider)
+            continue
+        try:
+            fb_client, fb_resolved = resolve_provider_client(fb_provider, fb_model)
+        except Exception:
+            tried.append(fb_provider)
+            continue
+        if fb_client is not None:
+            logger.info(
+                "Auxiliary %s: %s on %s — falling back to config fallback_providers entry %s (%s)",
+                task or "call", reason, failed_provider, fb_provider, fb_resolved or fb_model,
+            )
+            return fb_client, fb_resolved or fb_model, fb_provider
+        tried.append(fb_provider)
 
     logger.warning(
         "Auxiliary %s: %s on %s and no fallback available (tried: %s)",

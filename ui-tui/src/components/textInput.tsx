@@ -623,7 +623,19 @@ export function TextInput({
         return
       }
 
-      if ((k.ctrl && inp === 'c') || k.tab || (k.shift && k.tab) || k.pageUp || k.pageDown || k.escape) {
+      // Ctrl+B is the documented voice-recording toggle (see platform.ts →
+      // isVoiceToggleKey). Pass it through so the app-level handler in
+      // useInputHandlers receives it instead of being swallowed here as
+      // either backward-word nav (line below) or a literal 'b' insertion.
+      if (
+        (k.ctrl && inp === 'c') ||
+        (k.ctrl && inp === 'b') ||
+        k.tab ||
+        (k.shift && k.tab) ||
+        k.pageUp ||
+        k.pageDown ||
+        k.escape
+      ) {
         return
       }
 

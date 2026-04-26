@@ -29,6 +29,7 @@ if _env_path.exists():
 load_dotenv(PROJECT_ROOT / ".env", override=False, encoding="utf-8")
 
 from hermes_cli.colors import Colors, color
+from hermes_cli.models import _HERMES_USER_AGENT
 from hermes_constants import OPENROUTER_MODELS_URL
 from utils import base_url_host_matches
 
@@ -295,16 +296,37 @@ def run_doctor(args):
             except Exception:
                 pass
             try:
-                from hermes_cli.auth import resolve_provider as _resolve_provider
+                from hermes_cli.config import get_compatible_custom_providers as _compatible_custom_providers
+                from hermes_cli.providers import resolve_provider_full as _resolve_provider_full
             except Exception:
-                _resolve_provider = None
+                _compatible_custom_providers = None
+                _resolve_provider_full = None
+
+            custom_providers = []
+            if _compatible_custom_providers is not None:
+                try:
+                    custom_providers = _compatible_custom_providers(cfg)
+                except Exception:
+                    custom_providers = []
+
+            user_providers = cfg.get("providers")
+            if isinstance(user_providers, dict):
+                known_providers.update(str(name).strip().lower() for name in user_providers if str(name).strip())
+            for entry in custom_providers:
+                if not isinstance(entry, dict):
+                    continue
+                name = str(entry.get("name") or "").strip()
+                if name:
+                    known_providers.add("custom:" + name.lower().replace(" ", "-"))
 
             canonical_provider = provider
-            if provider and _resolve_provider is not None and provider != "auto":
-                try:
-                    canonical_provider = _resolve_provider(provider)
-                except Exception:
-                    canonical_provider = None
+            if (
+                provider
+                and _resolve_provider_full is not None
+                and provider not in ("auto", "custom")
+            ):
+                provider_def = _resolve_provider_full(provider, user_providers, custom_providers)
+                canonical_provider = provider_def.id if provider_def is not None else None
 
             if provider and provider != "auto":
                 if canonical_provider is None or (known_providers and canonical_provider not in known_providers):
@@ -957,7 +979,10 @@ def run_doctor(args):
                 if base_url_host_matches(_base, "api.kimi.com") and _base.rstrip("/").endswith("/coding"):
                     _base = _base.rstrip("/") + "/v1"
                 _url = (_base.rstrip("/") + "/models") if _base else _default_url
-                _headers = {"Authorization": f"Bearer {_key}"}
+                _headers = {
+                    "Authorization": f"Bearer {_key}",
+                    "User-Agent": _HERMES_USER_AGENT,
+                }
                 if base_url_host_matches(_base, "api.kimi.com"):
                     _headers["User-Agent"] = "claude-code/0.1.0"
                 _resp = httpx.get(

@@ -1,5 +1,6 @@
 import atexit
 import concurrent.futures
+import contextvars
 import copy
 import json
 import logging
@@ -12,9 +13,17 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 from hermes_constants import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
+from tui_gateway.transport import (
+    StdioTransport,
+    Transport,
+    bind_transport,
+    current_transport,
+    reset_transport,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +31,79 @@ _hermes_home = get_hermes_home()
 load_hermes_dotenv(
     hermes_home=_hermes_home, project_env=Path(__file__).parent.parent / ".env"
 )
+
+
+# ── Panic logger ─────────────────────────────────────────────────────
+# Gateway crashes in a TUI session leave no forensics: stdout is the
+# JSON-RPC pipe (TUI side parses it, doesn't log raw), the root logger
+# only catches handled warnings, and the subprocess exits before stderr
+# flushes through the stderr->gateway.stderr event pump. This hook
+# appends every unhandled exception to ~/.hermes/logs/tui_gateway_crash.log
+# AND re-emits a one-line summary to stderr so the TUI can surface it in
+# Activity — exactly what was missing when the voice-mode turns started
+# exiting the gateway mid-TTS.
+_CRASH_LOG = os.path.join(_hermes_home, "logs", "tui_gateway_crash.log")
+
+
+def _panic_hook(exc_type, exc_value, exc_tb):
+    import traceback
+
+    trace = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+    try:
+        os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
+        with open(_CRASH_LOG, "a", encoding="utf-8") as f:
+            f.write(
+                f"\n=== unhandled exception · {time.strftime('%Y-%m-%d %H:%M:%S')} ===\n"
+            )
+            f.write(trace)
+    except Exception:
+        pass
+    # Stderr goes through to the TUI as a gateway.stderr Activity line —
+    # the first line here is what the user will see without opening any
+    # log files.  Rest of the stack is still in the log for full context.
+    first = (
+        str(exc_value).strip().splitlines()[0]
+        if str(exc_value).strip()
+        else exc_type.__name__
+    )
+    print(f"[gateway-crash] {exc_type.__name__}: {first}", file=sys.stderr, flush=True)
+    # Chain to the default hook so the process still terminates normally.
+    sys.__excepthook__(exc_type, exc_value, exc_tb)
+
+
+sys.excepthook = _panic_hook
+
+
+def _thread_panic_hook(args):
+    # threading.excepthook signature: SimpleNamespace(exc_type, exc_value, exc_traceback, thread)
+    import traceback
+
+    trace = "".join(
+        traceback.format_exception(args.exc_type, args.exc_value, args.exc_traceback)
+    )
+    try:
+        os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
+        with open(_CRASH_LOG, "a", encoding="utf-8") as f:
+            f.write(
+                f"\n=== thread exception · {time.strftime('%Y-%m-%d %H:%M:%S')} "
+                f"· thread={args.thread.name} ===\n"
+            )
+            f.write(trace)
+    except Exception:
+        pass
+    first_line = (
+        str(args.exc_value).strip().splitlines()[0]
+        if str(args.exc_value).strip()
+        else args.exc_type.__name__
+    )
+    print(
+        f"[gateway-crash] thread {args.thread.name} raised {args.exc_type.__name__}: {first_line}",
+        file=sys.stderr,
+        flush=True,
+    )
+
+
+threading.excepthook = _thread_panic_hook
 
 try:
     from hermes_cli.banner import prefetch_update_check
@@ -77,6 +159,11 @@ atexit.register(lambda: _pool.shutdown(wait=False, cancel_futures=True))
 # of corrupting the JSON protocol.
 _real_stdout = sys.stdout
 sys.stdout = sys.stderr
+
+# Module-level stdio transport — fallback sink when no transport is bound via
+# contextvar or session. Stream resolved through a lambda so runtime monkey-
+# patches of `_real_stdout` (used extensively in tests) still land correctly.
+_stdio_transport = StdioTransport(lambda: _real_stdout, _stdout_lock)
 
 
 class _SlashWorker:
@@ -197,14 +284,24 @@ def _db_unavailable_error(rid, *, code: int):
 
 
 def write_json(obj: dict) -> bool:
-    line = json.dumps(obj, ensure_ascii=False) + "\n"
-    try:
-        with _stdout_lock:
-            _real_stdout.write(line)
-            _real_stdout.flush()
-        return True
-    except BrokenPipeError:
-        return False
+    """Emit one JSON frame. Routes via the most-specific transport available.
+
+    Precedence:
+
+    1. Event frames with a session id → the transport stored on that session,
+       so async events land with the client that owns the session even if
+       the emitting thread has no contextvar binding.
+    2. Otherwise the transport bound on the current context (set by
+       :func:`dispatch` for the lifetime of a request).
+    3. Otherwise the module-level stdio transport, matching the historical
+       behaviour and keeping tests that monkey-patch ``_real_stdout`` green.
+    """
+    if obj.get("method") == "event":
+        sid = ((obj.get("params") or {}).get("session_id")) or ""
+        if sid and (t := (_sessions.get(sid) or {}).get("transport")) is not None:
+            return t.write(obj)
+
+    return (current_transport() or _stdio_transport).write(obj)
 
 
 def _emit(event: str, sid: str, payload: dict | None = None):
@@ -274,27 +371,40 @@ def handle_request(req: dict) -> dict | None:
     return fn(req.get("id"), req.get("params", {}))
 
 
-def dispatch(req: dict) -> dict | None:
+def dispatch(req: dict, transport: Optional[Transport] = None) -> dict | None:
     """Route inbound RPCs — long handlers to the pool, everything else inline.
 
     Returns a response dict when handled inline. Returns None when the
-    handler was scheduled on the pool; the worker writes its own
-    response via write_json when done.
+    handler was scheduled on the pool; the worker writes its own response
+    via the bound transport when done.
+
+    *transport* (optional): pins every write produced by this request —
+    including any events emitted by the handler — to the given transport.
+    Omitting it falls back to the module-level stdio transport, preserving
+    the original behaviour for ``tui_gateway.entry``.
     """
-    if req.get("method") not in _LONG_HANDLERS:
-        return handle_request(req)
+    t = transport or _stdio_transport
+    token = bind_transport(t)
+    try:
+        if req.get("method") not in _LONG_HANDLERS:
+            return handle_request(req)
 
-    def run():
-        try:
-            resp = handle_request(req)
-        except Exception as exc:
-            resp = _err(req.get("id"), -32000, f"handler error: {exc}")
-        if resp is not None:
-            write_json(resp)
+        # Snapshot the context so the pool worker sees the bound transport.
+        ctx = contextvars.copy_context()
 
-    _pool.submit(run)
+        def run():
+            try:
+                resp = handle_request(req)
+            except Exception as exc:
+                resp = _err(req.get("id"), -32000, f"handler error: {exc}")
+            if resp is not None:
+                t.write(resp)
 
-    return None
+        _pool.submit(lambda: ctx.run(run))
+
+        return None
+    finally:
+        reset_transport(token)
 
 
 def _wait_agent(session: dict, rid: str, timeout: float = 30.0) -> dict | None:
@@ -450,15 +560,53 @@ def resolve_skin() -> dict:
 
 
 def _resolve_model() -> str:
-    env = os.environ.get("HERMES_MODEL", "")
+    env = (
+        os.environ.get("HERMES_MODEL", "")
+        or os.environ.get("HERMES_INFERENCE_MODEL", "")
+    ).strip()
     if env:
         return env
     m = _load_cfg().get("model", "")
     if isinstance(m, dict):
-        return m.get("default", "")
+        return str(m.get("default", "") or "").strip()
     if isinstance(m, str) and m:
-        return m
+        return m.strip()
     return "anthropic/claude-sonnet-4"
+
+
+def _resolve_startup_runtime() -> tuple[str, str | None]:
+    model = _resolve_model()
+    explicit_provider = os.environ.get("HERMES_TUI_PROVIDER", "").strip()
+    if explicit_provider:
+        return model, explicit_provider
+
+    explicit_model = (
+        os.environ.get("HERMES_MODEL", "")
+        or os.environ.get("HERMES_INFERENCE_MODEL", "")
+    ).strip()
+    if not explicit_model:
+        return model, None
+
+    try:
+        from hermes_cli.models import detect_static_provider_for_model
+
+        cfg = _load_cfg().get("model") or {}
+        current_provider = (
+            (
+                str(cfg.get("provider") or "").strip().lower()
+                if isinstance(cfg, dict)
+                else ""
+            )
+            or os.environ.get("HERMES_INFERENCE_PROVIDER", "").strip().lower()
+            or "auto"
+        )
+        detected = detect_static_provider_for_model(explicit_model, current_provider)
+        if detected:
+            provider, detected_model = detected
+            return detected_model, provider
+    except Exception:
+        pass
+    return model, None
 
 
 def _write_config_key(key_path: str, value):
@@ -487,13 +635,17 @@ def _coerce_statusbar(raw) -> str:
 def _load_reasoning_config() -> dict | None:
     from hermes_constants import parse_reasoning_effort
 
-    effort = str(_load_cfg().get("agent", {}).get("reasoning_effort", "") or "").strip()
+    effort = str(
+        (_load_cfg().get("agent") or {}).get("reasoning_effort", "") or ""
+    ).strip()
     return parse_reasoning_effort(effort)
 
 
 def _load_service_tier() -> str | None:
     raw = (
-        str(_load_cfg().get("agent", {}).get("service_tier", "") or "").strip().lower()
+        str((_load_cfg().get("agent") or {}).get("service_tier", "") or "")
+        .strip()
+        .lower()
     )
     if not raw or raw in {"normal", "default", "standard", "off", "none"}:
         return None
@@ -503,11 +655,11 @@ def _load_service_tier() -> str | None:
 
 
 def _load_show_reasoning() -> bool:
-    return bool(_load_cfg().get("display", {}).get("show_reasoning", False))
+    return bool((_load_cfg().get("display") or {}).get("show_reasoning", False))
 
 
 def _load_tool_progress_mode() -> str:
-    raw = _load_cfg().get("display", {}).get("tool_progress", "all")
+    raw = (_load_cfg().get("display") or {}).get("tool_progress", "all")
     if raw is False:
         return "off"
     if raw is True:
@@ -521,8 +673,14 @@ def _load_enabled_toolsets() -> list[str] | None:
         from hermes_cli.config import load_config
         from hermes_cli.tools_config import _get_platform_tools
 
+        # Runtime toolset resolution must include default MCP servers so the
+        # agent can actually call them. Passing ``False`` here is the
+        # config-editing variant — used when we need to persist a toolset
+        # list without baking in implicit MCP defaults. Using the wrong
+        # variant at agent creation time makes MCP tools silently missing
+        # from the TUI. See PR #3252 for the original design split.
         enabled = sorted(
-            _get_platform_tools(load_config(), "cli", include_default_mcp_servers=False)
+            _get_platform_tools(load_config(), "cli", include_default_mcp_servers=True)
         )
         return enabled or None
     except Exception:
@@ -592,6 +750,18 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
         current_base_url = str(runtime.get("base_url", "") or "")
         current_api_key = str(runtime.get("api_key", "") or "")
 
+    # Load user-defined providers so switch_model can resolve named custom
+    # endpoints (e.g. "ollama-launch") and validate against saved model lists.
+    user_provs = None
+    custom_provs = None
+    try:
+        from hermes_cli.config import get_compatible_custom_providers, load_config
+        cfg = load_config()
+        user_provs = [{"provider": k, **v} for k, v in (cfg.get("providers") or {}).items()]
+        custom_provs = get_compatible_custom_providers(cfg)
+    except Exception:
+        pass
+
     result = switch_model(
         raw_input=model_input,
         current_provider=current_provider,
@@ -600,6 +770,8 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
         current_api_key=current_api_key,
         is_global=persist_global,
         explicit_provider=explicit_provider,
+        user_providers=user_provs,
+        custom_providers=custom_provs,
     )
     if not result.success:
         raise ValueError(result.error_message or "model switch failed")
@@ -616,12 +788,15 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
         _emit("session.info", sid, _session_info(agent))
 
     os.environ["HERMES_MODEL"] = result.new_model
+    os.environ["HERMES_INFERENCE_MODEL"] = result.new_model
     # Keep the process-level provider env var in sync with the user's explicit
     # choice so any ambient re-resolution (credential pool refresh, compressor
     # rebuild, aux clients) resolves to the new provider instead of the
     # original one persisted in config or env.
     if result.target_provider:
         os.environ["HERMES_INFERENCE_PROVIDER"] = result.target_provider
+        if os.environ.get("HERMES_TUI_PROVIDER"):
+            os.environ["HERMES_TUI_PROVIDER"] = result.target_provider
     if persist_global:
         _persist_model_switch(result)
     return {"value": result.new_model, "warning": result.warning_message or ""}
@@ -702,6 +877,39 @@ def _probe_credentials(agent) -> str:
     except Exception:
         pass
     return ""
+
+
+def _probe_config_health(cfg: dict) -> str:
+    """Flag bare YAML keys (`agent:` with no value → None) that silently
+    drop nested settings. Returns warning or ''."""
+    if not isinstance(cfg, dict):
+        return ""
+    warnings: list[str] = []
+    null_keys = sorted(k for k, v in cfg.items() if v is None)
+    if not null_keys:
+        pass
+    else:
+        keys = ", ".join(f"`{k}`" for k in null_keys)
+        warnings.append(
+            f"config.yaml has empty section(s): {keys}. "
+            f"Remove the line(s) or set them to `{{}}` — "
+            f"empty sections silently drop nested settings."
+        )
+    display_cfg = cfg.get("display")
+    agent_cfg = cfg.get("agent")
+    if isinstance(display_cfg, dict):
+        personality = str(display_cfg.get("personality", "") or "").strip().lower()
+        if (
+            personality
+            and personality not in {"default", "none", "neutral"}
+            and isinstance(agent_cfg, dict)
+            and agent_cfg.get("personalities") is None
+        ):
+            warnings.append(
+                "`display.personality` is set but `agent.personalities` is empty/null; "
+                "personality overlay will be skipped."
+            )
+    return " ".join(warnings).strip()
 
 
 def _session_info(agent) -> dict:
@@ -990,28 +1198,6 @@ def _wire_callbacks(sid: str):
     set_secret_capture_callback(secret_cb)
 
 
-def _resolve_personality_prompt(cfg: dict) -> str:
-    """Resolve the active personality into a system prompt string."""
-    name = (cfg.get("display", {}).get("personality", "") or "").strip().lower()
-    if not name or name in ("default", "none", "neutral"):
-        return ""
-    try:
-        from cli import load_cli_config
-
-        personalities = load_cli_config().get("agent", {}).get("personalities", {})
-    except Exception:
-        try:
-            from hermes_cli.config import load_config as _load_full_cfg
-
-            personalities = _load_full_cfg().get("agent", {}).get("personalities", {})
-        except Exception:
-            personalities = cfg.get("agent", {}).get("personalities", {})
-    pval = personalities.get(name)
-    if pval is None:
-        return ""
-    return _render_personality_prompt(pval)
-
-
 def _render_personality_prompt(value) -> str:
     if isinstance(value, dict):
         parts = [value.get("system_prompt", "")]
@@ -1027,15 +1213,15 @@ def _available_personalities(cfg: dict | None = None) -> dict:
     try:
         from cli import load_cli_config
 
-        return load_cli_config().get("agent", {}).get("personalities", {}) or {}
+        return (load_cli_config().get("agent") or {}).get("personalities", {}) or {}
     except Exception:
         try:
             from hermes_cli.config import load_config as _load_full_cfg
 
-            return _load_full_cfg().get("agent", {}).get("personalities", {}) or {}
+            return (_load_full_cfg().get("agent") or {}).get("personalities", {}) or {}
         except Exception:
             cfg = cfg or _load_cfg()
-            return cfg.get("agent", {}).get("personalities", {}) or {}
+            return (cfg.get("agent") or {}).get("personalities", {}) or {}
 
 
 def _validate_personality(value: str, cfg: dict | None = None) -> tuple[str, str]:
@@ -1145,12 +1331,14 @@ def _make_agent(sid: str, key: str, session_id: str | None = None):
     from hermes_cli.runtime_provider import resolve_runtime_provider
 
     cfg = _load_cfg()
-    system_prompt = cfg.get("agent", {}).get("system_prompt", "") or ""
-    if not system_prompt:
-        system_prompt = _resolve_personality_prompt(cfg)
-    runtime = resolve_runtime_provider(requested=None)
+    system_prompt = ((cfg.get("agent") or {}).get("system_prompt", "") or "").strip()
+    model, requested_provider = _resolve_startup_runtime()
+    runtime = resolve_runtime_provider(
+        requested=requested_provider,
+        target_model=model or None,
+    )
     return AIAgent(
-        model=_resolve_model(),
+        model=model,
         provider=runtime.get("provider"),
         base_url=runtime.get("base_url"),
         api_key=runtime.get("api_key"),
@@ -1187,6 +1375,9 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
         "tool_progress_mode": _load_tool_progress_mode(),
         "edit_snapshots": {},
         "tool_started_at": {},
+        # Pin async event emissions to whichever transport created the
+        # session (stdio for Ink, JSON-RPC WS for the dashboard sidebar).
+        "transport": current_transport() or _stdio_transport,
     }
     try:
         _sessions[sid]["slash_worker"] = _SlashWorker(
@@ -1329,6 +1520,7 @@ def _(rid, params: dict) -> dict:
         "slash_worker": None,
         "tool_progress_mode": _load_tool_progress_mode(),
         "tool_started_at": {},
+        "transport": current_transport() or _stdio_transport,
     }
 
     def _build() -> None:
@@ -1387,6 +1579,10 @@ def _(rid, params: dict) -> dict:
             warn = _probe_credentials(agent)
             if warn:
                 info["credential_warning"] = warn
+            cfg_warn = _probe_config_health(_load_cfg())
+            if cfg_warn:
+                info["config_warning"] = cfg_warn
+                logger.warning(cfg_warn)
             _emit("session.info", sid, info)
         except Exception as e:
             session["agent_error"] = str(e)
@@ -1533,9 +1729,7 @@ def _(rid, params: dict) -> dict:
         return _db_unavailable_error(rid, code=5007)
     title, key = params.get("title", ""), session["session_key"]
     if not title:
-        return _ok(
-            rid, {"title": db.get_session_title(key) or "", "session_key": key}
-        )
+        return _ok(rid, {"title": db.get_session_title(key) or "", "session_key": key})
     try:
         db.set_session_title(key, title)
         return _ok(rid, {"title": title})
@@ -2126,7 +2320,45 @@ def _(rid, params: dict) -> dict:
             if rendered:
                 payload["rendered"] = rendered
             _emit("message.complete", sid, payload)
+
+            # CLI parity: when voice-mode TTS is on, speak the agent reply
+            # (cli.py:_voice_speak_response).  Only the final text — tool
+            # calls / reasoning already stream separately and would be
+            # noisy to read aloud.
+            if (
+                status == "complete"
+                and isinstance(raw, str)
+                and raw.strip()
+                and _voice_tts_enabled()
+            ):
+                try:
+                    from hermes_cli.voice import speak_text
+
+                    spoken = raw
+                    threading.Thread(
+                        target=speak_text, args=(spoken,), daemon=True
+                    ).start()
+                except ImportError:
+                    logger.warning("voice TTS skipped: hermes_cli.voice unavailable")
+                except Exception as e:
+                    logger.warning("voice TTS dispatch failed: %s", e)
         except Exception as e:
+            import traceback
+
+            trace = traceback.format_exc()
+            try:
+                os.makedirs(os.path.dirname(_CRASH_LOG), exist_ok=True)
+                with open(_CRASH_LOG, "a", encoding="utf-8") as f:
+                    f.write(
+                        f"\n=== turn-dispatcher exception · "
+                        f"{time.strftime('%Y-%m-%d %H:%M:%S')} · sid={sid} ===\n"
+                    )
+                    f.write(trace)
+            except Exception:
+                pass
+            print(
+                f"[gateway-turn] {type(e).__name__}: {e}", file=sys.stderr, flush=True
+            )
             _emit("error", sid, {"message": str(e)})
         finally:
             try:
@@ -2537,6 +2769,39 @@ def _(rid, params: dict) -> dict:
         _write_config_key("display.details_mode", nv)
         return _ok(rid, {"key": key, "value": nv})
 
+    if key.startswith("details_mode."):
+        # Per-section override: `details_mode.<section>` writes to
+        # `display.sections.<section>`.  Empty value clears the override
+        # and lets the section fall back to the global details_mode.
+        section = key.split(".", 1)[1]
+        allowed_sections = frozenset({"thinking", "tools", "subagents", "activity"})
+        if section not in allowed_sections:
+            return _err(rid, 4002, f"unknown section: {section}")
+
+        cfg = _load_cfg()
+        display = cfg.get("display") if isinstance(cfg.get("display"), dict) else {}
+        sections_cfg = (
+            display.get("sections") if isinstance(display.get("sections"), dict) else {}
+        )
+
+        nv = str(value or "").strip().lower()
+        if not nv:
+            sections_cfg.pop(section, None)
+            display["sections"] = sections_cfg
+            cfg["display"] = display
+            _save_cfg(cfg)
+            return _ok(rid, {"key": key, "value": ""})
+
+        allowed_dm = frozenset({"hidden", "collapsed", "expanded"})
+        if nv not in allowed_dm:
+            return _err(rid, 4002, f"unknown details_mode: {value}")
+
+        sections_cfg[section] = nv
+        display["sections"] = sections_cfg
+        cfg["display"] = display
+        _save_cfg(cfg)
+        return _ok(rid, {"key": key, "value": nv})
+
     if key == "thinking_mode":
         nv = str(value or "").strip().lower()
         allowed_tm = frozenset({"collapsed", "truncated", "full"})
@@ -2582,6 +2847,23 @@ def _(rid, params: dict) -> dict:
 
         _write_config_key("display.tui_statusbar", nv)
         return _ok(rid, {"key": key, "value": nv})
+
+    if key == "mouse":
+        raw = str(value or "").strip().lower()
+        display = _load_cfg().get("display") if isinstance(_load_cfg().get("display"), dict) else {}
+        current = bool(display.get("tui_mouse", True))
+
+        if raw in ("", "toggle"):
+            nv = not current
+        elif raw == "on":
+            nv = True
+        elif raw == "off":
+            nv = False
+        else:
+            return _err(rid, 4002, f"unknown mouse value: {value}")
+
+        _write_config_key("display.tui_mouse", nv)
+        return _ok(rid, {"key": key, "value": "on" if nv else "off"})
 
     if key in ("prompt", "personality", "skin"):
         try:
@@ -2651,18 +2933,21 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"prompt": _load_cfg().get("custom_prompt", "")})
     if key == "skin":
         return _ok(
-            rid, {"value": _load_cfg().get("display", {}).get("skin", "default")}
+            rid, {"value": (_load_cfg().get("display") or {}).get("skin", "default")}
         )
     if key == "personality":
         return _ok(
-            rid, {"value": _load_cfg().get("display", {}).get("personality", "default")}
+            rid,
+            {"value": (_load_cfg().get("display") or {}).get("personality", "default")},
         )
     if key == "reasoning":
         cfg = _load_cfg()
-        effort = str(cfg.get("agent", {}).get("reasoning_effort", "medium") or "medium")
+        effort = str(
+            (cfg.get("agent") or {}).get("reasoning_effort", "medium") or "medium"
+        )
         display = (
             "show"
-            if bool(cfg.get("display", {}).get("show_reasoning", False))
+            if bool((cfg.get("display") or {}).get("show_reasoning", False))
             else "hide"
         )
         return _ok(rid, {"value": effort, "display": display})
@@ -2670,7 +2955,7 @@ def _(rid, params: dict) -> dict:
         allowed_dm = frozenset({"hidden", "collapsed", "expanded"})
         raw = (
             str(
-                _load_cfg().get("display", {}).get("details_mode", "collapsed")
+                (_load_cfg().get("display") or {}).get("details_mode", "collapsed")
                 or "collapsed"
             )
             .strip()
@@ -2681,13 +2966,17 @@ def _(rid, params: dict) -> dict:
     if key == "thinking_mode":
         allowed_tm = frozenset({"collapsed", "truncated", "full"})
         cfg = _load_cfg()
-        raw = str(cfg.get("display", {}).get("thinking_mode", "") or "").strip().lower()
+        raw = (
+            str((cfg.get("display") or {}).get("thinking_mode", "") or "")
+            .strip()
+            .lower()
+        )
         if raw in allowed_tm:
             nv = raw
         else:
             dm = (
                 str(
-                    cfg.get("display", {}).get("details_mode", "collapsed")
+                    (cfg.get("display") or {}).get("details_mode", "collapsed")
                     or "collapsed"
                 )
                 .strip()
@@ -2696,7 +2985,7 @@ def _(rid, params: dict) -> dict:
             nv = "full" if dm == "expanded" else "collapsed"
         return _ok(rid, {"value": nv})
     if key == "compact":
-        on = bool(_load_cfg().get("display", {}).get("tui_compact", False))
+        on = bool((_load_cfg().get("display") or {}).get("tui_compact", False))
         return _ok(rid, {"value": "on" if on else "off"})
     if key == "statusbar":
         display = _load_cfg().get("display")
@@ -2704,6 +2993,10 @@ def _(rid, params: dict) -> dict:
             display.get("tui_statusbar", "top") if isinstance(display, dict) else "top"
         )
         return _ok(rid, {"value": _coerce_statusbar(raw)})
+    if key == "mouse":
+        display = _load_cfg().get("display")
+        on = display.get("tui_mouse", True) if isinstance(display, dict) else True
+        return _ok(rid, {"value": "on" if on else "off"})
     if key == "mtime":
         cfg_path = _hermes_home / "config.yaml"
         try:
@@ -3091,29 +3384,6 @@ def _(rid, params: dict) -> dict:
         # Fallback: no active run, treat as next-turn message
         return _ok(rid, {"type": "send", "message": arg})
 
-    if name == "plan":
-        try:
-            from agent.skill_commands import (
-                build_skill_invocation_message as _bsim,
-                build_plan_path,
-            )
-
-            user_instruction = arg or ""
-            plan_path = build_plan_path(user_instruction)
-            msg = _bsim(
-                "/plan",
-                user_instruction,
-                task_id=session.get("session_key", "") if session else "",
-                runtime_note=(
-                    "Save the markdown plan with write_file to this exact relative path "
-                    f"inside the active workspace/backend cwd: {plan_path}"
-                ),
-            )
-            if msg:
-                return _ok(rid, {"type": "send", "message": msg})
-        except Exception as e:
-            return _err(rid, 5030, f"plan skill failed: {e}")
-
     return _err(rid, 4018, f"not a quick/plugin/skill command: {name}")
 
 
@@ -3151,6 +3421,173 @@ def _(rid, params: dict) -> dict:
 
 # ── Methods: complete ─────────────────────────────────────────────────
 
+_FUZZY_CACHE_TTL_S = 5.0
+_FUZZY_CACHE_MAX_FILES = 20000
+_FUZZY_FALLBACK_EXCLUDES = frozenset(
+    {
+        ".git",
+        ".hg",
+        ".svn",
+        ".next",
+        ".cache",
+        ".venv",
+        "venv",
+        "node_modules",
+        "__pycache__",
+        "dist",
+        "build",
+        "target",
+        ".mypy_cache",
+        ".pytest_cache",
+        ".ruff_cache",
+    }
+)
+_fuzzy_cache_lock = threading.Lock()
+_fuzzy_cache: dict[str, tuple[float, list[str]]] = {}
+
+
+def _list_repo_files(root: str) -> list[str]:
+    """Return file paths relative to ``root``.
+
+    Uses ``git ls-files`` from the repo top (resolved via
+    ``rev-parse --show-toplevel``) so the listing covers tracked + untracked
+    files anywhere in the repo, then converts each path back to be relative
+    to ``root``. Files outside ``root`` (parent directories of cwd, sibling
+    subtrees) are excluded so the picker stays scoped to what's reachable
+    from the gateway's cwd. Falls back to a bounded ``os.walk(root)`` when
+    ``root`` isn't inside a git repo. Result cached per-root for
+    ``_FUZZY_CACHE_TTL_S`` so rapid keystrokes don't respawn git processes.
+    """
+    now = time.monotonic()
+    with _fuzzy_cache_lock:
+        cached = _fuzzy_cache.get(root)
+        if cached and now - cached[0] < _FUZZY_CACHE_TTL_S:
+            return cached[1]
+
+    files: list[str] = []
+    try:
+        top_result = subprocess.run(
+            ["git", "-C", root, "rev-parse", "--show-toplevel"],
+            capture_output=True,
+            timeout=2.0,
+            check=False,
+        )
+        if top_result.returncode == 0:
+            top = top_result.stdout.decode("utf-8", "replace").strip()
+            list_result = subprocess.run(
+                [
+                    "git",
+                    "-C",
+                    top,
+                    "ls-files",
+                    "-z",
+                    "--cached",
+                    "--others",
+                    "--exclude-standard",
+                ],
+                capture_output=True,
+                timeout=2.0,
+                check=False,
+            )
+            if list_result.returncode == 0:
+                for p in list_result.stdout.decode("utf-8", "replace").split("\0"):
+                    if not p:
+                        continue
+                    rel = os.path.relpath(os.path.join(top, p), root).replace(
+                        os.sep, "/"
+                    )
+                    # Skip parents/siblings of cwd — keep the picker scoped
+                    # to root-and-below, matching Cmd-P workspace semantics.
+                    if rel.startswith("../"):
+                        continue
+                    files.append(rel)
+                    if len(files) >= _FUZZY_CACHE_MAX_FILES:
+                        break
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+    if not files:
+        # Fallback walk: skip vendor/build dirs + dot-dirs so the walk stays
+        # tractable. Dotfiles themselves survive — the ranker decides based
+        # on whether the query starts with `.`.
+        try:
+            for dirpath, dirnames, filenames in os.walk(root, followlinks=False):
+                dirnames[:] = [
+                    d
+                    for d in dirnames
+                    if d not in _FUZZY_FALLBACK_EXCLUDES and not d.startswith(".")
+                ]
+                rel_dir = os.path.relpath(dirpath, root)
+                for f in filenames:
+                    rel = f if rel_dir == "." else f"{rel_dir}/{f}"
+                    files.append(rel.replace(os.sep, "/"))
+                    if len(files) >= _FUZZY_CACHE_MAX_FILES:
+                        break
+                if len(files) >= _FUZZY_CACHE_MAX_FILES:
+                    break
+        except OSError:
+            pass
+
+    with _fuzzy_cache_lock:
+        _fuzzy_cache[root] = (now, files)
+
+    return files
+
+
+def _fuzzy_basename_rank(name: str, query: str) -> tuple[int, int] | None:
+    """Rank ``name`` against ``query``; lower is better. Returns None to reject.
+
+    Tiers (kind):
+      0 — exact basename
+      1 — basename prefix (e.g. `app` → `appChrome.tsx`)
+      2 — word-boundary / camelCase hit (e.g. `chrome` → `appChrome.tsx`)
+      3 — substring anywhere in basename
+      4 — subsequence match (every query char appears in order)
+
+    Secondary key is `len(name)` so shorter names win ties.
+    """
+    if not query:
+        return (3, len(name))
+
+    nl = name.lower()
+    ql = query.lower()
+
+    if nl == ql:
+        return (0, len(name))
+
+    if nl.startswith(ql):
+        return (1, len(name))
+
+    # Word-boundary split: `foo-bar_baz.qux` → ["foo","bar","baz","qux"].
+    # camelCase split: `appChrome` → ["app","Chrome"]. Cheap approximation;
+    # falls through to substring/subsequence if it misses.
+    parts: list[str] = []
+    buf = ""
+    for ch in name:
+        if ch in "-_." or (ch.isupper() and buf and not buf[-1].isupper()):
+            if buf:
+                parts.append(buf)
+            buf = ch if ch not in "-_." else ""
+        else:
+            buf += ch
+    if buf:
+        parts.append(buf)
+    for p in parts:
+        if p.lower().startswith(ql):
+            return (2, len(name))
+
+    if ql in nl:
+        return (3, len(name))
+
+    i = 0
+    for ch in nl:
+        if ch == ql[i]:
+            i += 1
+            if i == len(ql):
+                return (4, len(name))
+
+    return None
+
 
 @method("complete.path")
 def _(rid, params: dict) -> dict:
@@ -3185,6 +3622,37 @@ def _(rid, params: dict) -> dict:
         else:
             prefix_tag = ""
             path_part = query if is_context else query
+
+        # Fuzzy basename search across the repo when the user types a bare
+        # name with no path separator — `@appChrome` surfaces every file
+        # whose basename matches, regardless of directory depth. Matches what
+        # editors like Cursor / VS Code do for Cmd-P. Path-ish queries (with
+        # `/`, `./`, `~/`, `/abs`) fall through to the directory-listing
+        # path so explicit navigation intent is preserved.
+        if is_context and path_part and "/" not in path_part and prefix_tag != "folder":
+            root = os.getcwd()
+            ranked: list[tuple[tuple[int, int], str, str]] = []
+            for rel in _list_repo_files(root):
+                basename = os.path.basename(rel)
+                if basename.startswith(".") and not path_part.startswith("."):
+                    continue
+                rank = _fuzzy_basename_rank(basename, path_part)
+                if rank is None:
+                    continue
+                ranked.append((rank, rel, basename))
+
+            ranked.sort(key=lambda r: (r[0], len(r[1]), r[1]))
+            tag = prefix_tag or "file"
+            for _, rel, basename in ranked[:30]:
+                items.append(
+                    {
+                        "text": f"@{tag}:{rel}",
+                        "display": basename,
+                        "meta": os.path.dirname(rel),
+                    }
+                )
+
+            return _ok(rid, {"items": items})
 
         expanded = _normalize_completion_path(path_part) if path_part else "."
         if expanded == "." or not expanded:
@@ -3365,7 +3833,7 @@ def _mirror_slash_side_effects(sid: str, session: dict, command: str) -> str:
             _apply_personality_to_session(sid, session, new_prompt)
         elif name == "prompt" and agent:
             cfg = _load_cfg()
-            new_prompt = cfg.get("agent", {}).get("system_prompt", "") or ""
+            new_prompt = (cfg.get("agent") or {}).get("system_prompt", "") or ""
             agent.ephemeral_system_prompt = new_prompt or None
             agent._cached_system_prompt = None
         elif name == "compress" and agent:
@@ -3455,43 +3923,153 @@ def _(rid, params: dict) -> dict:
 # ── Methods: voice ───────────────────────────────────────────────────
 
 
+_voice_sid_lock = threading.Lock()
+_voice_event_sid: str = ""
+
+
+def _voice_emit(event: str, payload: dict | None = None) -> None:
+    """Emit a voice event toward the session that most recently turned the
+    mode on. Voice is process-global (one microphone), so there's only ever
+    one sid to target; the TUI handler treats an empty sid as "active
+    session". Kept separate from _emit to make the lack of per-call sid
+    argument explicit."""
+    with _voice_sid_lock:
+        sid = _voice_event_sid
+    _emit(event, sid, payload)
+
+
+def _voice_mode_enabled() -> bool:
+    """Current voice-mode flag (runtime-only, CLI parity).
+
+    cli.py initialises ``_voice_mode = False`` at startup and only flips
+    it via ``/voice on``; it never reads a persisted enable bit from
+    config.yaml.  We match that: no config lookup, env var only.  This
+    avoids the TUI auto-starting in REC the next time the user opens it
+    just because they happened to enable voice in a prior session.
+    """
+    return os.environ.get("HERMES_VOICE", "").strip() == "1"
+
+
+def _voice_tts_enabled() -> bool:
+    """Whether agent replies should be spoken back via TTS (runtime only)."""
+    return os.environ.get("HERMES_VOICE_TTS", "").strip() == "1"
+
+
 @method("voice.toggle")
 def _(rid, params: dict) -> dict:
+    """CLI parity for the ``/voice`` slash command.
+
+    Subcommands:
+
+    * ``status`` — report mode + TTS flags (default when action is unknown).
+    * ``on`` / ``off`` — flip voice *mode* (the umbrella bit). Turning it
+      off also tears down any active continuous recording loop. Does NOT
+      start recording on its own; recording is driven by ``voice.record``
+      (Ctrl+B) after mode is on, matching cli.py's enable/Ctrl+B split.
+    * ``tts`` — toggle speech-output of agent replies. Requires mode on
+      (mirrors CLI's _toggle_voice_tts guard).
+    """
     action = params.get("action", "status")
+
     if action == "status":
-        env = os.environ.get("HERMES_VOICE", "").strip()
-        if env in {"0", "1"}:
-            return _ok(rid, {"enabled": env == "1"})
-        return _ok(
-            rid,
-            {
-                "enabled": bool(
-                    _load_cfg().get("display", {}).get("voice_enabled", False)
-                )
-            },
-        )
+        # Mirror CLI's _show_voice_status: include STT/TTS provider
+        # availability so the user can tell at a glance *why* voice mode
+        # isn't working ("STT provider: MISSING ..." is the common case).
+        payload: dict = {
+            "enabled": _voice_mode_enabled(),
+            "tts": _voice_tts_enabled(),
+        }
+        try:
+            from tools.voice_mode import check_voice_requirements
+
+            reqs = check_voice_requirements()
+            payload["available"] = bool(reqs.get("available"))
+            payload["audio_available"] = bool(reqs.get("audio_available"))
+            payload["stt_available"] = bool(reqs.get("stt_available"))
+            payload["details"] = reqs.get("details") or ""
+        except Exception as e:
+            # check_voice_requirements pulls optional transcription deps —
+            # swallow so /voice status always returns something useful.
+            logger.warning("voice.toggle status: requirements probe failed: %s", e)
+
+        return _ok(rid, payload)
+
     if action in ("on", "off"):
         enabled = action == "on"
+        # Runtime-only flag (CLI parity) — no _write_config_key, so the
+        # next TUI launch starts with voice OFF instead of auto-REC from a
+        # persisted stale toggle.
         os.environ["HERMES_VOICE"] = "1" if enabled else "0"
-        _write_config_key("display.voice_enabled", enabled)
-        return _ok(rid, {"enabled": action == "on"})
+
+        if not enabled:
+            # Disabling the mode must tear the continuous loop down; the
+            # loop holds the microphone and would otherwise keep running.
+            try:
+                from hermes_cli.voice import stop_continuous
+
+                stop_continuous()
+            except ImportError:
+                pass
+            except Exception as e:
+                logger.warning("voice: stop_continuous failed during toggle off: %s", e)
+
+        return _ok(rid, {"enabled": enabled, "tts": _voice_tts_enabled()})
+
+    if action == "tts":
+        if not _voice_mode_enabled():
+            return _err(rid, 4014, "enable voice mode first: /voice on")
+        new_value = not _voice_tts_enabled()
+        # Runtime-only flag (CLI parity) — see voice.toggle on/off above.
+        os.environ["HERMES_VOICE_TTS"] = "1" if new_value else "0"
+        return _ok(rid, {"enabled": True, "tts": new_value})
+
     return _err(rid, 4013, f"unknown voice action: {action}")
 
 
 @method("voice.record")
 def _(rid, params: dict) -> dict:
+    """VAD-driven continuous record loop, CLI-parity.
+
+    ``start`` turns on a VAD loop that emits ``voice.transcript`` events
+    for each detected utterance and auto-restarts for the next turn.
+    ``stop`` halts the loop (manual stop; matches cli.py's Ctrl+B-while-
+    recording branch clearing ``_voice_continuous``). Three consecutive
+    silent cycles stop the loop automatically and emit a
+    ``voice.transcript`` with ``no_speech_limit=True``.
+    """
     action = params.get("action", "start")
+
+    if action not in {"start", "stop"}:
+        return _err(rid, 4019, f"unknown voice action: {action}")
+
     try:
         if action == "start":
-            from hermes_cli.voice import start_recording
+            if not _voice_mode_enabled():
+                return _err(rid, 4015, "voice mode is off — enable with /voice on")
 
-            start_recording()
+            with _voice_sid_lock:
+                global _voice_event_sid
+                _voice_event_sid = params.get("session_id") or _voice_event_sid
+
+            from hermes_cli.voice import start_continuous
+
+            voice_cfg = _load_cfg().get("voice", {})
+            start_continuous(
+                on_transcript=lambda t: _voice_emit("voice.transcript", {"text": t}),
+                on_status=lambda s: _voice_emit("voice.status", {"state": s}),
+                on_silent_limit=lambda: _voice_emit(
+                    "voice.transcript", {"no_speech_limit": True}
+                ),
+                silence_threshold=voice_cfg.get("silence_threshold", 200),
+                silence_duration=voice_cfg.get("silence_duration", 3.0),
+            )
             return _ok(rid, {"status": "recording"})
-        if action == "stop":
-            from hermes_cli.voice import stop_and_transcribe
 
-            return _ok(rid, {"text": stop_and_transcribe() or ""})
-        return _err(rid, 4019, f"unknown voice action: {action}")
+        # action == "stop"
+        from hermes_cli.voice import stop_continuous
+
+        stop_continuous()
+        return _ok(rid, {"status": "stopped"})
     except ImportError:
         return _err(
             rid, 5025, "voice module not available — install audio dependencies"
@@ -3991,11 +4569,7 @@ def _(rid, params: dict) -> dict:
 
             return _ok(rid, {"skills": get_available_skills()})
         if action == "search":
-            from hermes_cli.skills_hub import (
-                unified_search,
-                GitHubAuth,
-                create_source_router,
-            )
+            from tools.skills_hub import GitHubAuth, create_source_router, unified_search
 
             raw = (
                 unified_search(

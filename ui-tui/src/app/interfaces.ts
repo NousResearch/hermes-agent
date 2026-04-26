@@ -16,6 +16,7 @@ import type {
   Msg,
   PanelSection,
   SecretReq,
+  SectionVisibility,
   SessionInfo,
   SlashCatalog,
   SubagentProgress,
@@ -87,6 +88,8 @@ export interface UiState {
   detailsMode: DetailsMode
   info: null | SessionInfo
   inlineDiffs: boolean
+  mouseTracking: boolean
+  sections: SectionVisibility
   showCost: boolean
   showReasoning: boolean
   sid: null | string
@@ -118,7 +121,7 @@ export interface ComposerActions {
   dequeue: () => string | undefined
   enqueue: (text: string) => void
   handleTextPaste: (event: PasteEvent) => MaybePromise<ComposerPasteResult | null>
-  openEditor: () => void
+  openEditor: () => Promise<void>
   pushHistory: (text: string) => void
   replaceQueue: (index: number, text: string) => void
   setCompIdx: StateSetter<number>
@@ -189,9 +192,11 @@ export interface InputHandlerContext {
     stdout?: NodeJS.WriteStream
   }
   voice: {
+    enabled: boolean
     recording: boolean
     setProcessing: StateSetter<boolean>
     setRecording: StateSetter<boolean>
+    setVoiceEnabled: StateSetter<boolean>
   }
   wheelStep: number
 }
@@ -201,6 +206,9 @@ export interface InputHandlerResult {
 }
 
 export interface GatewayEventHandlerContext {
+  composer: {
+    setInput: StateSetter<string>
+  }
   gateway: GatewayServices
   session: {
     STARTUP_RESUME_ID: string
@@ -209,6 +217,9 @@ export interface GatewayEventHandlerContext {
     resetSession: () => void
     resumeById: (id: string) => void
     setCatalog: StateSetter<null | SlashCatalog>
+  }
+  submission: {
+    submitRef: MutableRefObject<(value: string) => void>
   }
   system: {
     bellOnComplete: boolean
@@ -219,6 +230,11 @@ export interface GatewayEventHandlerContext {
     appendMessage: (msg: Msg) => void
     panel: (title: string, sections: PanelSection[]) => void
     setHistoryItems: StateSetter<Msg[]>
+  }
+  voice: {
+    setProcessing: StateSetter<boolean>
+    setRecording: StateSetter<boolean>
+    setVoiceEnabled: StateSetter<boolean>
   }
 }
 

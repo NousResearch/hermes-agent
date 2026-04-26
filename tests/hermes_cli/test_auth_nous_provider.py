@@ -19,6 +19,12 @@ from hermes_cli.auth import AuthError, get_provider_auth_state, resolve_nous_run
 class TestResolveVerifyFallback:
     """Verify _resolve_verify falls back to True when CA bundle path doesn't exist."""
 
+    @pytest.fixture(autouse=True)
+    def _pin_platform_to_linux(self, monkeypatch):
+        """Pin sys.platform so the macOS certifi fallback doesn't alter the
+        generic "default trust" return value asserted by these tests."""
+        monkeypatch.setattr("sys.platform", "linux")
+
     def test_missing_ca_bundle_in_auth_state_falls_back(self):
         from hermes_cli.auth import _resolve_verify
 
@@ -192,9 +198,79 @@ def test_get_nous_auth_status_auth_store_fallback(tmp_path, monkeypatch):
     hermes_home = tmp_path / "hermes"
     _setup_nous_auth(hermes_home, access_token="at-123")
     monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_nous_runtime_credentials",
+        lambda min_key_ttl_seconds=60: {
+            "base_url": "https://inference.example.com/v1",
+            "expires_at": "2099-01-01T00:00:00+00:00",
+            "key_id": "key-1",
+            "source": "cache",
+        },
+    )
 
     status = get_nous_auth_status()
     assert status["logged_in"] is True
+    assert status["portal_base_url"] == "https://portal.example.com"
+
+
+def test_get_nous_auth_status_prefers_runtime_auth_store_over_stale_pool(tmp_path, monkeypatch):
+    from hermes_cli.auth import get_nous_auth_status
+    from agent.credential_pool import PooledCredential, load_pool
+
+    hermes_home = tmp_path / "hermes"
+    _setup_nous_auth(hermes_home, access_token="at-fresh")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    pool = load_pool("nous")
+    stale = PooledCredential.from_dict("nous", {
+        "access_token": "at-stale",
+        "refresh_token": "rt-stale",
+        "portal_base_url": "https://portal.stale.example.com",
+        "inference_base_url": "https://inference.stale.example.com/v1",
+        "agent_key": "agent-stale",
+        "agent_key_expires_at": "2020-01-01T00:00:00+00:00",
+        "expires_at": "2020-01-01T00:00:00+00:00",
+        "label": "dashboard device_code",
+        "auth_type": "oauth",
+        "source": "manual:dashboard_device_code",
+        "base_url": "https://inference.stale.example.com/v1",
+        "priority": 0,
+    })
+    pool.add_entry(stale)
+
+    monkeypatch.setattr(
+        "hermes_cli.auth.resolve_nous_runtime_credentials",
+        lambda min_key_ttl_seconds=60: {
+            "base_url": "https://inference.example.com/v1",
+            "expires_at": "2099-01-01T00:00:00+00:00",
+            "key_id": "key-fresh",
+            "source": "portal",
+        },
+    )
+
+    status = get_nous_auth_status()
+    assert status["logged_in"] is True
+    assert status["portal_base_url"] == "https://portal.example.com"
+    assert status["inference_base_url"] == "https://inference.example.com/v1"
+    assert status["source"] == "runtime:portal"
+
+
+def test_get_nous_auth_status_reports_revoked_refresh_session(tmp_path, monkeypatch):
+    from hermes_cli.auth import get_nous_auth_status
+
+    hermes_home = tmp_path / "hermes"
+    _setup_nous_auth(hermes_home, access_token="at-123")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    def _boom(min_key_ttl_seconds=60):
+        raise AuthError("Refresh session has been revoked", provider="nous", relogin_required=True)
+
+    monkeypatch.setattr("hermes_cli.auth.resolve_nous_runtime_credentials", _boom)
+
+    status = get_nous_auth_status()
+    assert status["logged_in"] is False
+    assert status["relogin_required"] is True
+    assert "revoked" in status["error"].lower()
     assert status["portal_base_url"] == "https://portal.example.com"
 
 
@@ -726,3 +802,83 @@ def test_persist_nous_credentials_no_label_uses_auto_derived(tmp_path, monkeypat
     # No "label" key embedded in providers.nous when the caller didn't supply one.
     payload = json.loads((hermes_home / "auth.json").read_text())
     assert "label" not in payload["providers"]["nous"]
+
+
+def test_refresh_token_reuse_detection_surfaces_actionable_message():
+    """Regression for #15099.
+
+    When the Nous Portal server returns ``invalid_grant`` with
+    ``error_description`` containing "reuse detected", Hermes must surface an
+    actionable message explaining that an external process consumed the
+    refresh token.  The default opaque "Refresh token reuse detected; please
+    re-authenticate" string led users to report this as a Hermes persistence
+    bug when the true cause is external RT consumption (monitoring scripts,
+    custom self-heal hooks).
+    """
+    from hermes_cli.auth import _refresh_access_token
+
+    class _FakeResponse:
+        status_code = 400
+
+        def json(self):
+            return {
+                "error": "invalid_grant",
+                "error_description": "Refresh token reuse detected; please re-authenticate",
+            }
+
+    class _FakeClient:
+        def post(self, *args, **kwargs):
+            return _FakeResponse()
+
+    with pytest.raises(AuthError) as exc_info:
+        _refresh_access_token(
+            client=_FakeClient(),
+            portal_base_url="https://portal.nousresearch.com",
+            client_id="hermes-cli",
+            refresh_token="rt_consumed_elsewhere",
+        )
+
+    message = str(exc_info.value)
+    assert "refresh-token reuse" in message.lower() or "refresh token reuse" in message.lower()
+    # The message must mention the external-process cause and give next steps.
+    assert "external process" in message.lower() or "monitoring script" in message.lower()
+    assert "hermes auth add nous" in message.lower()
+    # Must still be classified as invalid_grant + relogin_required.
+    assert exc_info.value.code == "invalid_grant"
+    assert exc_info.value.relogin_required is True
+
+
+def test_refresh_non_reuse_error_keeps_original_description():
+    """Non-reuse invalid_grant errors must keep their original description untouched.
+
+    Only the "reuse detected" signature should trigger the actionable message;
+    generic ``invalid_grant: Refresh session has been revoked`` (the
+    downstream consequence) keeps its original text so we don't overwrite
+    useful server context for unrelated failure modes.
+    """
+    from hermes_cli.auth import _refresh_access_token
+
+    class _FakeResponse:
+        status_code = 400
+
+        def json(self):
+            return {
+                "error": "invalid_grant",
+                "error_description": "Refresh session has been revoked",
+            }
+
+    class _FakeClient:
+        def post(self, *args, **kwargs):
+            return _FakeResponse()
+
+    with pytest.raises(AuthError) as exc_info:
+        _refresh_access_token(
+            client=_FakeClient(),
+            portal_base_url="https://portal.nousresearch.com",
+            client_id="hermes-cli",
+            refresh_token="rt_anything",
+        )
+
+    assert "Refresh session has been revoked" in str(exc_info.value)
+    # Must not have been rewritten with the reuse message.
+    assert "external process" not in str(exc_info.value).lower()

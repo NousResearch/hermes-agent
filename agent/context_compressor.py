@@ -294,6 +294,7 @@ class ContextCompressor(ContextEngine):
         self._context_probed = False
         self._context_probe_persistable = False
         self._previous_summary = None
+        self._last_summary_error = None
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
 
@@ -316,6 +317,13 @@ class ContextCompressor(ContextEngine):
         self.threshold_tokens = max(
             int(context_length * self.threshold_percent),
             MINIMUM_CONTEXT_LENGTH,
+        )
+        # Recalculate token budgets for the new context length so the
+        # compressor stays calibrated after a model switch (e.g. 200K → 32K).
+        target_tokens = int(self.threshold_tokens * self.summary_target_ratio)
+        self.tail_token_budget = target_tokens
+        self.max_summary_tokens = min(
+            int(context_length * 0.05), _SUMMARY_TOKENS_CEILING,
         )
 
     def __init__(
@@ -389,6 +397,7 @@ class ContextCompressor(ContextEngine):
         self._last_compression_savings_pct: float = 100.0
         self._ineffective_compression_count: int = 0
         self._summary_failure_cooldown_until: float = 0.0
+        self._last_summary_error: Optional[str] = None
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -812,10 +821,12 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             self._previous_summary = summary
             self._summary_failure_cooldown_until = 0.0
             self._summary_model_fallen_back = False
+            self._last_summary_error = None
             return self._with_summary_prefix(summary)
         except RuntimeError:
             # No provider configured — long cooldown, unlikely to self-resolve
             self._summary_failure_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
+            self._last_summary_error = "no auxiliary LLM provider configured"
             logging.warning("Context compression: no provider available for "
                             "summary. Middle turns will be dropped without summary "
                             "for %d seconds.",
@@ -853,6 +864,10 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             # Transient errors (timeout, rate limit, network) — shorter cooldown
             _transient_cooldown = 60
             self._summary_failure_cooldown_until = time.monotonic() + _transient_cooldown
+            err_text = str(e).strip() or e.__class__.__name__
+            if len(err_text) > 220:
+                err_text = err_text[:217].rstrip() + "..."
+            self._last_summary_error = err_text
             logging.warning(
                 "Failed to generate context summary: %s. "
                 "Further summary attempts paused for %d seconds.",
@@ -1098,6 +1113,21 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         cut_idx = self._ensure_last_user_message_in_tail(messages, cut_idx, head_end)
 
         return max(cut_idx, head_end + 1)
+
+    # ------------------------------------------------------------------
+    # ContextEngine: manual /compress preflight
+    # ------------------------------------------------------------------
+
+    def has_content_to_compress(self, messages: List[Dict[str, Any]]) -> bool:
+        """Return True if there is a non-empty middle region to compact.
+
+        Overrides the ABC default so the gateway ``/compress`` guard can
+        skip the LLM call when the transcript is still entirely inside
+        the protected head/tail.
+        """
+        compress_start = self._align_boundary_forward(messages, self.protect_first_n)
+        compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
+        return compress_start < compress_end
 
     # ------------------------------------------------------------------
     # Main compression entry point

@@ -70,6 +70,9 @@ def _make_runner():
     runner.session_store = None
     runner.hooks = MagicMock()
     runner.hooks.emit = AsyncMock()
+    runner.pairing_store = MagicMock()
+    runner.pairing_store.is_approved.return_value = True
+    runner._is_user_authorized = lambda _source: True
     return runner, _AGENT_PENDING_SENTINEL
 
 
@@ -92,9 +95,34 @@ class TestBusySessionAck:
     """User sends a message while agent is running — should get acknowledgment."""
 
     @pytest.mark.asyncio
+    async def test_handle_message_queue_mode_queues_without_interrupt(self):
+        """Runner queue mode must not interrupt an active agent for text follow-ups."""
+        from gateway.run import GatewayRunner
+
+        runner, _sentinel = _make_runner()
+        adapter = _make_adapter()
+
+        event = _make_event(text="follow up in queue mode")
+        sk = build_session_key(event.source)
+
+        running_agent = MagicMock()
+        runner._busy_input_mode = "queue"
+        runner._running_agents[sk] = running_agent
+        runner.adapters[event.source.platform] = adapter
+
+        result = await GatewayRunner._handle_message(runner, event)
+
+        assert result is None
+        assert sk in adapter._pending_messages
+        assert adapter._pending_messages[sk] is event
+        assert sk not in runner._pending_messages
+        running_agent.interrupt.assert_not_called()
+
+    @pytest.mark.asyncio
     async def test_sends_ack_when_agent_running(self):
         """First message during busy session should get a status ack."""
         runner, sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
         adapter = _make_adapter()
 
         event = _make_event(text="Are you working?")
@@ -127,16 +155,42 @@ class TestBusySessionAck:
         assert "Interrupting" in content or "respond" in content
         assert "/stop" not in content  # no need — we ARE interrupting
 
-        # Verify message was queued in adapter pending
-        assert sk in adapter._pending_messages
-
         # Verify agent interrupt was called
         agent.interrupt.assert_called_once_with("Are you working?")
+
+    @pytest.mark.asyncio
+    async def test_queue_mode_suppresses_interrupt_and_updates_ack(self):
+        """When busy_input_mode is 'queue', message is queued WITHOUT interrupt."""
+        runner, sentinel = _make_runner()
+        runner._busy_input_mode = "queue"
+        adapter = _make_adapter()
+
+        event = _make_event(text="Add this to queue")
+        sk = build_session_key(event.source)
+        runner.adapters[event.source.platform] = adapter
+
+        agent = MagicMock()
+        runner._running_agents[sk] = agent
+
+        with patch("gateway.run.merge_pending_message_event"):
+            await runner._handle_active_session_busy_message(event, sk)
+
+        # VERIFY: Agent was NOT interrupted
+        agent.interrupt.assert_not_called()
+
+        # VERIFY: Ack sent with queue-specific wording
+        adapter._send_with_retry.assert_called_once()
+        call_kwargs = adapter._send_with_retry.call_args
+        content = call_kwargs.kwargs.get("content") or call_kwargs[1].get("content", "")
+        assert "Queued for the next turn" in content
+        assert "respond once the current task finishes" in content
+        assert "Interrupting" not in content
 
     @pytest.mark.asyncio
     async def test_debounce_suppresses_rapid_acks(self):
         """Second message within 30s should NOT send another ack."""
         runner, sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
         adapter = _make_adapter()
 
         event1 = _make_event(text="hello?")
@@ -172,13 +226,14 @@ class TestBusySessionAck:
         assert result2 is True
         assert adapter._send_with_retry.call_count == 1  # still 1, no new ack
 
-        # But interrupt should still be called for both
+        # But interrupt should still be called for both (since we are in interrupt mode)
         assert agent.interrupt.call_count == 2
 
     @pytest.mark.asyncio
     async def test_ack_after_cooldown_expires(self):
         """After 30s cooldown, a new message should send a fresh ack."""
         runner, sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
         adapter = _make_adapter()
 
         event = _make_event(text="hello?")
@@ -212,6 +267,7 @@ class TestBusySessionAck:
     async def test_includes_status_detail(self):
         """Ack message should include iteration and tool info when available."""
         runner, sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
         adapter = _make_adapter()
 
         event = _make_event(text="yo")
@@ -243,6 +299,7 @@ class TestBusySessionAck:
         """Draining case should still produce the drain-specific message."""
         runner, sentinel = _make_runner()
         runner._draining = True
+        runner._busy_input_mode = "interrupt"
         adapter = _make_adapter()
 
         event = _make_event(text="hello")
@@ -264,6 +321,7 @@ class TestBusySessionAck:
     async def test_pending_sentinel_no_interrupt(self):
         """When agent is PENDING_SENTINEL, don't call interrupt (it has no method)."""
         runner, sentinel = _make_runner()
+        runner._busy_input_mode = "interrupt"
         adapter = _make_adapter()
 
         event = _make_event(text="hey")

@@ -434,6 +434,76 @@ class TestSensitiveRedirectPattern:
         assert dangerous is False
         assert key is None
 
+    def test_redirect_to_local_dotenv_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("echo TOKEN=x > .env")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_redirect_to_nested_config_yaml_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("echo mode: prod > deploy/config.yaml")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_redirect_from_local_dotenv_source_is_safe(self):
+        dangerous, key, desc = detect_dangerous_command("cat .env > backup.txt")
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+
+class TestProjectSensitiveCopyPattern:
+    def test_cp_to_local_dotenv_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("cp .env.local .env")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_cp_absolute_path_to_dotenv_requires_approval(self):
+        # Regression: the real-world bug report was `cp /opt/data/.env.local /opt/data/.env`.
+        # The regex must cover absolute paths, not just `./` / bare relative paths.
+        dangerous, key, desc = detect_dangerous_command(
+            "cp /opt/data/.env.local /opt/data/.env"
+        )
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_redirect_absolute_path_to_dotenv_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "cat /opt/data/.env.local > /opt/data/.env"
+        )
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_mv_to_nested_config_yaml_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("mv tmp/generated.yaml config/config.yaml")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_install_to_dotenv_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("install -m 600 template.env .env.production")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_cp_from_config_yaml_source_is_safe(self):
+        dangerous, key, desc = detect_dangerous_command("cp config.yaml backup.yaml")
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+
+class TestProjectSensitiveTeePattern:
+    def test_tee_to_local_dotenv_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("printenv | tee .env.local")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
 
 class TestPatternKeyUniqueness:
     """Bug: pattern_key is derived by splitting on \\b and taking [1], so
@@ -836,4 +906,3 @@ class TestChmodExecuteCombo:
         cmd = "chmod +x script.sh"
         dangerous, _, _ = detect_dangerous_command(cmd)
         assert dangerous is False
-

@@ -23,6 +23,11 @@ class TestCLIQuickCommands:
         cli.console = MagicMock()
         cli.agent = None
         cli.conversation_history = []
+        # session_id is accessed by the fallback skill/fuzzy-match path in
+        # process_command; without it, tests that exercise `/alias args`
+        # can trip an AttributeError when cross-test state leaks a skill
+        # command matching the alias target.
+        cli.session_id = "test-session"
         return cli
 
     def test_exec_command_runs_and_prints_output(self):

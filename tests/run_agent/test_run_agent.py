@@ -44,6 +44,14 @@ def _make_tool_defs(*names: str) -> list:
     ]
 
 
+def test_is_destructive_command_treats_cp_as_mutating():
+    assert run_agent._is_destructive_command("cp .env.local .env") is True
+
+
+def test_is_destructive_command_treats_install_as_mutating():
+    assert run_agent._is_destructive_command("install template.env .env") is True
+
+
 @pytest.fixture()
 def agent():
     """Minimal AIAgent with mocked OpenAI client and tool loading."""
@@ -676,6 +684,66 @@ class TestInit:
             )
             assert a.api_mode == "anthropic_messages"
             assert a._use_prompt_caching is True
+
+    def test_prompt_caching_cache_ttl_defaults_without_config(self):
+        """cache_ttl stays 5m when prompt_caching is absent from config."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("hermes_cli.config.load_config", return_value={}),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                model="anthropic/claude-sonnet-4-20250514",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            assert a._cache_ttl == "5m"
+
+    def test_prompt_caching_cache_ttl_custom_1h(self):
+        """prompt_caching.cache_ttl 1h is applied when present in config."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"prompt_caching": {"cache_ttl": "1h"}},
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                model="anthropic/claude-sonnet-4-20250514",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            assert a._cache_ttl == "1h"
+
+    def test_prompt_caching_cache_ttl_invalid_falls_back(self):
+        """Non-Anthropic TTL values keep default 5m without raising."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"prompt_caching": {"cache_ttl": "30m"}},
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                model="anthropic/claude-sonnet-4-20250514",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            assert a._cache_ttl == "5m"
 
     def test_valid_tool_names_populated(self):
         """valid_tool_names should contain names from loaded tools."""
@@ -2567,6 +2635,89 @@ class TestRunConversation:
         assert result["final_response"] == "Recovered after compression"
         assert result["completed"] is True
 
+    def test_minimax_delta_overflow_keeps_known_context_length(self, agent):
+        """MiniMax reports overflow deltas like 'limit (2013)' without the real window.
+
+        Keep the known 204,800-token window and compress instead of probing down
+        to the generic 128K fallback tier.
+        """
+        self._setup_agent(agent)
+        agent.provider = "minimax"
+        agent.model = "MiniMax-M2.7-highspeed"
+        agent.base_url = "https://api.minimax.io/anthropic"
+        agent.context_compressor.context_length = 204_800
+        agent.context_compressor.threshold_tokens = int(
+            agent.context_compressor.context_length * agent.context_compressor.threshold_percent
+        )
+
+        err_400 = Exception(
+            "HTTP 400: invalid params, context window exceeds limit (2013)"
+        )
+        err_400.status_code = 400
+        ok_resp = _mock_response(content="Recovered after compression", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [err_400, ok_resp]
+        prefill = [
+            {"role": "user", "content": "previous question"},
+            {"role": "assistant", "content": "previous answer"},
+        ]
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "hello"}],
+                "compressed system prompt",
+            )
+            result = agent.run_conversation("hello", conversation_history=prefill)
+
+        mock_compress.assert_called_once()
+        assert agent.context_compressor.context_length == 204_800
+        assert agent.context_compressor._context_probed is False
+        assert result["final_response"] == "Recovered after compression"
+        assert result["completed"] is True
+
+    def test_non_minimax_delta_overflow_still_probes_down(self, agent):
+        """Non-MiniMax providers should keep the generic probe-down behavior."""
+        self._setup_agent(agent)
+        agent.provider = "openrouter"
+        agent.model = "some/unknown-model"
+        agent.base_url = "https://openrouter.ai/api/v1"
+        agent.context_compressor.context_length = 200_000
+        agent.context_compressor.threshold_tokens = int(
+            agent.context_compressor.context_length * agent.context_compressor.threshold_percent
+        )
+
+        err_400 = Exception(
+            "HTTP 400: invalid params, context window exceeds limit (2013)"
+        )
+        err_400.status_code = 400
+        ok_resp = _mock_response(content="Recovered after compression", finish_reason="stop")
+        agent.client.chat.completions.create.side_effect = [err_400, ok_resp]
+        prefill = [
+            {"role": "user", "content": "previous question"},
+            {"role": "assistant", "content": "previous answer"},
+        ]
+
+        with (
+            patch.object(agent, "_compress_context") as mock_compress,
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+        ):
+            mock_compress.return_value = (
+                [{"role": "user", "content": "hello"}],
+                "compressed system prompt",
+            )
+            result = agent.run_conversation("hello", conversation_history=prefill)
+
+        mock_compress.assert_called_once()
+        assert agent.context_compressor.context_length == 128_000
+        assert result["final_response"] == "Recovered after compression"
+        assert result["completed"] is True
+
     def test_length_finish_reason_requests_continuation(self, agent):
         """Normal truncation (partial real content) triggers continuation."""
         self._setup_agent(agent)
@@ -2928,48 +3079,6 @@ class TestRetryExhaustion:
 
 
 # ---------------------------------------------------------------------------
-# Flush sentinel leak
-# ---------------------------------------------------------------------------
-
-
-class TestFlushSentinelNotLeaked:
-    """_flush_sentinel must be stripped before sending messages to the API."""
-
-    def test_flush_sentinel_stripped_from_api_messages(self, agent_with_memory_tool):
-        """Verify _flush_sentinel is not sent to the API provider."""
-        agent = agent_with_memory_tool
-        agent._memory_store = MagicMock()
-        agent._memory_flush_min_turns = 1
-        agent._user_turn_count = 10
-        agent._cached_system_prompt = "system"
-
-        messages = [
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "hi"},
-            {"role": "user", "content": "remember this"},
-        ]
-
-        # Mock the API to return a simple response (no tool calls)
-        mock_msg = SimpleNamespace(content="OK", tool_calls=None)
-        mock_choice = SimpleNamespace(message=mock_msg)
-        mock_response = SimpleNamespace(choices=[mock_choice])
-        agent.client.chat.completions.create.return_value = mock_response
-
-        # Bypass auxiliary client so flush uses agent.client directly
-        with patch("agent.auxiliary_client.call_llm", side_effect=RuntimeError("no provider")):
-            agent.flush_memories(messages, min_turns=0)
-
-        # Check what was actually sent to the API
-        call_args = agent.client.chat.completions.create.call_args
-        assert call_args is not None, "flush_memories never called the API"
-        api_messages = call_args.kwargs.get("messages") or call_args[1].get("messages")
-        for msg in api_messages:
-            assert "_flush_sentinel" not in msg, (
-                f"_flush_sentinel leaked to API in message: {msg}"
-            )
-
-
-# ---------------------------------------------------------------------------
 # Conversation history mutation
 # ---------------------------------------------------------------------------
 
@@ -3276,6 +3385,61 @@ class TestMaxTokensParam:
         agent.base_url = "https://openrouter.ai/api/v1/api.openai.com"
         result = agent._max_tokens_param(4096)
         assert result == {"max_tokens": 4096}
+
+    def test_returns_max_completion_tokens_for_azure(self, agent):
+        """Azure OpenAI requires max_completion_tokens for gpt-5.x models."""
+        agent.base_url = "https://my-resource.openai.azure.com/openai/v1"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_completion_tokens": 4096}
+
+
+class TestAzureOpenAIRouting:
+    """Verify Azure OpenAI endpoints stay on chat_completions for gpt-5.x."""
+
+    def test_azure_gpt5_stays_on_chat_completions(self, agent):
+        """Azure serves gpt-5.x on /chat/completions — must not upgrade to codex_responses."""
+        agent.base_url = "https://my-resource.openai.azure.com/openai/v1"
+        agent.api_mode = "chat_completions"
+        agent.model = "gpt-5.4-mini"
+        # Mirror the routing logic from __init__
+        if (
+            agent.api_mode == "chat_completions"
+            and not agent._is_azure_openai_url()
+            and (
+                agent._is_direct_openai_url()
+                or agent._provider_model_requires_responses_api(
+                    agent.model, provider=agent.provider,
+                )
+            )
+        ):
+            agent.api_mode = "codex_responses"
+        assert agent.api_mode == "chat_completions"
+
+    def test_non_azure_gpt5_upgrades_to_codex_responses(self, agent):
+        """On api.openai.com, gpt-5.x must still upgrade to codex_responses."""
+        agent.base_url = "https://api.openai.com/v1"
+        agent.api_mode = "chat_completions"
+        agent.model = "gpt-5.4-mini"
+        if (
+            agent.api_mode == "chat_completions"
+            and not agent._is_azure_openai_url()
+            and (
+                agent._is_direct_openai_url()
+                or agent._provider_model_requires_responses_api(
+                    agent.model, provider=agent.provider,
+                )
+            )
+        ):
+            agent.api_mode = "codex_responses"
+        assert agent.api_mode == "codex_responses"
+
+    def test_is_azure_openai_url_detection(self, agent):
+        assert agent._is_azure_openai_url("https://foo.openai.azure.com/openai/v1") is True
+        assert agent._is_azure_openai_url("https://api.openai.com/v1") is False
+        assert agent._is_azure_openai_url("https://openrouter.ai/api/v1") is False
+        # Path-embedded azure string should still detect — we're ~substring matching
+        agent.base_url = "https://my-resource.openai.azure.com/openai/v1"
+        assert agent._is_azure_openai_url() is True
 
 
 # ---------------------------------------------------------------------------

@@ -214,3 +214,65 @@ class TestResolveTopicPrompt:
             ]
         }
         assert resolve_topic_prompt(extra, "-1001", "5") == multiline
+
+
+class TestCallSitePrecedence:
+    """Caller-contract tests: verify the exact two-step resolution order
+    that _event_from_message implements (resolve_topic_prompt first,
+    resolve_channel_prompt as fallback). These are *not* end-to-end
+    integration tests — they replicate the helper-call sequence rather
+    than driving a fake telegram.Message through _event_from_message,
+    which would require a much heavier mock surface for marginal gain.
+    The full integration is exercised by the existing telegram suite
+    (test_telegram_*.py) running with this branch's call-site change."""
+
+    def _resolve_via_call_site(self, extra: dict, chat_id: str, thread_id: str | None) -> str | None:
+        # Mirror exactly the lines telegram._event_from_message executes.
+        from gateway.platforms.telegram import resolve_topic_prompt
+        from gateway.platforms.base import resolve_channel_prompt
+
+        prompt = resolve_topic_prompt(extra, chat_id, thread_id)
+        if not prompt:
+            prompt = resolve_channel_prompt(
+                extra,
+                thread_id or chat_id,
+                chat_id if thread_id else None,
+            )
+        return prompt
+
+    def test_per_topic_prompt_used_when_set(self):
+        extra = {
+            "group_topics": [
+                {
+                    "chat_id": "-1003742888118",
+                    "topics": [{"thread_id": "5", "prompt": "Per-topic"}],
+                },
+            ],
+            "channel_prompts": {"5": "Flat fallback"},
+        }
+        assert self._resolve_via_call_site(extra, "-1003742888118", "5") == "Per-topic"
+
+    def test_falls_back_to_channel_prompts_when_no_per_topic(self):
+        extra = {
+            "group_topics": [
+                {
+                    "chat_id": "-1003742888118",
+                    "topics": [{"thread_id": "6", "prompt": "Different topic"}],
+                },
+            ],
+            "channel_prompts": {"5": "Flat for thread 5"},
+        }
+        # No per-topic prompt for thread 5 → falls back to channel_prompts["5"].
+        assert self._resolve_via_call_site(extra, "-1003742888118", "5") == "Flat for thread 5"
+
+    def test_per_topic_wins_over_channel_prompts_for_same_topic(self):
+        extra = {
+            "group_topics": [
+                {
+                    "chat_id": "-1003742888118",
+                    "topics": [{"thread_id": "5", "prompt": "Per-topic wins"}],
+                },
+            ],
+            "channel_prompts": {"5": "Flat would win without group_topics", "-1003742888118:5": "Composite would also lose"},
+        }
+        assert self._resolve_via_call_site(extra, "-1003742888118", "5") == "Per-topic wins"

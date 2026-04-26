@@ -4780,11 +4780,17 @@ class TelegramAdapter(BasePlatformAdapter):
         # Per-channel/topic ephemeral prompt
         from gateway.platforms.base import resolve_channel_prompt
         _chat_id_str = str(chat.id)
-        _channel_prompt = resolve_channel_prompt(
-            self.config.extra,
-            thread_id_str or _chat_id_str,
-            _chat_id_str if thread_id_str else None,
-        )
+
+        # 1. Per-topic prompt from group_topics (most specific, structurally validated, #13256).
+        _channel_prompt = resolve_topic_prompt(self.config.extra, _chat_id_str, thread_id_str)
+
+        # 2. Fall back to channel_prompts dict (cross-platform; includes composite key after #13272).
+        if not _channel_prompt:
+            _channel_prompt = resolve_channel_prompt(
+                self.config.extra,
+                thread_id_str or _chat_id_str,
+                _chat_id_str if thread_id_str else None,
+            )
 
         return MessageEvent(
             text=message.text or "",

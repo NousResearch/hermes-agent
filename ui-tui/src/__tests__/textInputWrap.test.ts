@@ -42,9 +42,10 @@ describe('input metrics helpers', () => {
     expect(inputVisualHeight('one\ntwo', 40)).toBe(2)
   })
 
-  it('reserves a stable transcript scrollbar gutter for composer width', () => {
+  it('reserves gutters without exceeding the physical terminal width', () => {
     expect(stableComposerColumns(100, 3)).toBe(93)
-    expect(stableComposerColumns(10, 3)).toBe(20)
+    expect(stableComposerColumns(10, 3)).toBe(3)
+    expect(stableComposerColumns(6, 3)).toBe(1)
   })
 })
 

@@ -356,6 +356,9 @@ def test_complete_slash_includes_tui_details_command():
 
 
 def test_complete_slash_details_args():
+    resp_root = server.handle_request(
+        {"id": "0", "method": "complete.slash", "params": {"text": "/details"}}
+    )
     resp_section = server.handle_request(
         {"id": "1", "method": "complete.slash", "params": {"text": "/details t"}}
     )
@@ -367,6 +370,7 @@ def test_complete_slash_details_args():
         }
     )
 
+    assert resp_root["result"]["replace_from"] == len("/details")
     assert any(item["text"] == "thinking" for item in resp_section["result"]["items"])
     assert any(item["text"] == "expanded" for item in resp_mode["result"]["items"])
 

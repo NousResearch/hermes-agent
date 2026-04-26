@@ -41,6 +41,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes gateway` | Run or manage the messaging gateway service. |
 | `hermes setup` | Interactive setup wizard for all or part of the configuration. |
 | `hermes whatsapp` | Configure and pair the WhatsApp bridge. |
+| `hermes slack` | Slack helpers (currently: generate the app manifest with every command as a native slash). |
 | `hermes auth` | Manage credentials — add, list, remove, reset, set strategy. Handles OAuth flows for Codex/Nous/Anthropic. |
 | `hermes login` / `logout` | **Deprecated** — use `hermes auth` instead. |
 | `hermes status` | Show agent, auth, and platform status. |
@@ -220,6 +221,33 @@ hermes whatsapp
 ```
 
 Runs the WhatsApp pairing/setup flow, including mode selection and QR-code pairing.
+
+## `hermes slack`
+
+```bash
+hermes slack manifest              # print manifest to stdout
+hermes slack manifest --write      # write to ~/.hermes/slack-manifest.json
+hermes slack manifest --slashes-only  # just the features.slash_commands array
+```
+
+Generates a Slack app manifest that registers every gateway command in
+`COMMAND_REGISTRY` (`/btw`, `/stop`, `/model`, …) as a first-class
+Slack slash command — matching Discord and Telegram parity. Paste the
+output into your Slack app config at
+[https://api.slack.com/apps](https://api.slack.com/apps) → your app →
+**Features → App Manifest → Edit**, then **Save**. Slack prompts for
+reinstall if scopes or slash commands changed.
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--write [PATH]` | stdout | Write to a file instead of stdout. Bare `--write` writes `$HERMES_HOME/slack-manifest.json`. |
+| `--name NAME` | `Hermes` | Bot display name in Slack. |
+| `--description DESC` | default blurb | Bot description shown in the Slack app directory. |
+| `--slashes-only` | off | Emit only `features.slash_commands` for merging into a manually-maintained manifest. |
+
+Run `hermes slack manifest --write` again after `hermes update` to pick
+up any new commands.
+
 
 ## `hermes login` / `hermes logout` *(Deprecated)*
 

@@ -2471,6 +2471,11 @@ def _load_ollama_cloud_cache(*, ignore_ttl: bool = False) -> Optional[dict]:
         models = data.get("models")
         if not (isinstance(models, list) and models):
             return None
+        # Repair legacy caches that may contain :cloud / -cloud suffixes
+        sanitized = _sanitize_ollama_cloud_model_list(models)
+        if not sanitized:
+            return None
+        data["models"] = sanitized
         if not ignore_ttl:
             cached_at = data.get("cached_at", 0)
             if (time.time() - cached_at) > _OLLAMA_CLOUD_CACHE_TTL:
@@ -2490,6 +2495,46 @@ def _save_ollama_cloud_cache(models: list[str]) -> None:
         atomic_json_write(cache_path, {"models": models, "cached_at": time.time()}, indent=None)
     except Exception:
         pass
+
+
+def _strip_ollama_cloud_suffix(model_id: str) -> str:
+    """Remove ``:cloud`` or ``-cloud`` suffixes from models.dev Ollama Cloud IDs.
+
+    models.dev appends these suffixes to distinguish cloud-hosted variants,
+    but the live Ollama Cloud API does not accept them (returns 400/404).
+    """
+    if model_id.endswith(":cloud"):
+        return model_id[:-6]
+    if model_id.endswith("-cloud"):
+        return model_id[:-6]
+    return model_id
+
+
+def _sanitize_ollama_cloud_model_list(models: list[str]) -> list[str]:
+    """Strip ``:cloud`` / ``-cloud`` suffixes and dedupe, preserving order.
+
+    Repairs legacy on-disk caches that may still contain suffixed IDs.
+    """
+    seen: set[str] = set()
+    result: list[str] = []
+    stripped_any = False
+    for m in models:
+        if not m or m in seen:
+            continue
+        normalized = _strip_ollama_cloud_suffix(m)
+        if not normalized or normalized in seen:
+            stripped_any = True
+            continue
+        if normalized != m:
+            stripped_any = True
+        seen.add(normalized)
+        result.append(normalized)
+    if stripped_any:
+        import logging
+        logging.getLogger(__name__).debug(
+            "Stripped :cloud / -cloud suffixes from Ollama Cloud model list"
+        )
+    return result
 
 
 def fetch_ollama_cloud_models(
@@ -2536,33 +2581,16 @@ def fetch_ollama_cloud_models(
 
     # 4. Merge: live first, then models.dev additions (deduped, order-preserving)
     if live_models or mdev_models:
-        seen: set[str] = set()
-        merged: list[str] = []
-        for m in live_models:
-            if m and m not in seen:
-                seen.add(m)
-                merged.append(m)
+        merged = _sanitize_ollama_cloud_model_list(live_models)
         live_set = set(live_models)
         for m in mdev_models:
-            if not m or m in seen:
-                continue
-            # Strip :cloud / -cloud suffixes from static registry to avoid 400/404
-            if m.endswith(":cloud"):
-                sanitized = m[:-6]
-            elif m.endswith("-cloud"):
-                sanitized = m[:-6]
-            else:
-                sanitized = m
-            if not sanitized:
+            normalized = _strip_ollama_cloud_suffix(m)
+            if not normalized or normalized in merged:
                 continue
             # Discard if the sanitized version already exists in the live API
-            if sanitized in live_set:
+            if normalized in live_set:
                 continue
-            # Also dedupe against other sanitized models.dev entries
-            if sanitized in seen:
-                continue
-            seen.add(sanitized)
-            merged.append(sanitized)
+            merged.append(normalized)
         if merged:
             _save_ollama_cloud_cache(merged)
             return merged

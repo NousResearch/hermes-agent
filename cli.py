@@ -1312,6 +1312,16 @@ def _usage_line_ansi(line: str) -> str:
         return f"{dim}{line}{reset}"
     if "|" not in line and line.startswith("#") and line.endswith("#"):
         inner = line[1:-1]
+        inner_lower = inner.lower()
+        if "openrouter" in inner_lower:
+            colored_inner = re.sub(r"openrouter", f"{bright_blue}openrouter{reset}", inner, count=1, flags=re.IGNORECASE)
+            colored_inner = _replace_money(colored_inner, default_color=bright_green)
+            return f"{dim}#{reset}{colored_inner}{dim}#{reset}"
+        if "maritaca" in inner_lower:
+            colored_inner = re.sub(r"maritaca", f"{brazil_green}maritaca{reset}", inner, count=1, flags=re.IGNORECASE)
+            colored_inner = re.sub(r"saldo", f"{brazil_yellow}saldo{reset}", colored_inner, count=1, flags=re.IGNORECASE)
+            colored_inner = _replace_money(colored_inner, default_color=brazil_yellow, brl_color=brazil_blue)
+            return f"{dim}#{reset}{colored_inner}{dim}#{reset}"
         return f"{dim}#{reset}{bright_cyan}{inner}{reset}{dim}#{reset}"
     if "|" not in line:
         return line

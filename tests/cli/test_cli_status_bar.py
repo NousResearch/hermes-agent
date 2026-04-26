@@ -428,21 +428,22 @@ class TestCLIUsageReport:
         assert any("Usage" in line for line in captured)
 
     def test_usage_line_ansi_uses_brazil_colors_for_maritaca(self):
-        line = "# maritaca           | Saldo: R$ 118,96                                   #"
+        line = "#                         maritaca  [saldo R$ 118,96]                         #"
 
         rendered = _usage_line_ansi(line)
 
         assert "\x1b[1;32mmaritaca" in rendered
-        assert "\x1b[1;33mSaldo:" in rendered
+        assert "\x1b[1;33msaldo" in rendered
         assert "\x1b[1;34mR$ 118,96" in rendered
 
     def test_usage_line_ansi_keeps_usd_balances_green(self):
-        line = "# openrouter         | Credits balance: $44.48                             #"
+        line = "#    openrouter  [bal $44.48] [d $18.37] [w $38.63] [m $38.63] [Σ $38.63]     #"
 
         rendered = _usage_line_ansi(line)
 
         assert "\x1b[1;34mopenrouter" in rendered
         assert "\x1b[1;32m$44.48" in rendered
+        assert "\x1b[1;32m$18.37" in rendered
 
     def test_usage_line_ansi_keeps_title_row_edges_gray(self):
         line = "#" + " Usage ".center(77) + "#"

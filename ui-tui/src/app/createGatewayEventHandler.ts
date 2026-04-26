@@ -379,6 +379,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const inlineDiffText =
           ev.payload.inline_diff && getUiState().inlineDiffs ? stripAnsi(String(ev.payload.inline_diff)).trim() : ''
 
+        if (inlineDiffText) {
+          turnController.flushStreamingSegment()
+        }
+
         turnController.recordToolComplete(
           ev.payload.tool_id,
           ev.payload.name,
@@ -386,16 +390,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           inlineDiffText ? '' : ev.payload.summary
         )
 
-        if (!inlineDiffText) {
-          return
+        if (inlineDiffText) {
+          turnController.pushInlineDiffSegment(inlineDiffText)
         }
-
-        // Anchor the diff to where the edit happened in the turn — between
-        // the narration that preceded the tool call and whatever the agent
-        // streams afterwards. The previous end-merge put the diff at the
-        // bottom of the final message even when the edit fired mid-turn,
-        // which read as "the agent wrote this after saying that".
-        turnController.pushInlineDiffSegment(inlineDiffText)
 
         return
       }

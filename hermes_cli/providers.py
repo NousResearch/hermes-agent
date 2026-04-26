@@ -74,8 +74,8 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "vertex": HermesOverlay(
         transport="openai_chat",
         auth_type="api_key",
-        extra_env_vars=("GOOGLE_APPLICATION_CREDENTIALS",),
-        base_url_env_var="VERTEX_LOCATION",
+        extra_env_vars=("VERTEX_CREDENTIALS_PATH", "GOOGLE_APPLICATION_CREDENTIALS"),
+        base_url_env_var="VERTEX_REGION",
     ),
     "copilot-acp": HermesOverlay(
         transport="codex_responses",

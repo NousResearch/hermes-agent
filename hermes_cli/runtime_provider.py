@@ -214,35 +214,17 @@ def _resolve_runtime_from_pool_entry(
         base_url = cfg_base_url or base_url or "https://api.anthropic.com"
     elif provider == "vertex":
         api_mode = "chat_completions"
-        creds_path = api_key or os.environ.get("GOOGLE_APPLICATION_CREDENTIALS")
-        
-        if not creds_path or not __import__("os").path.exists(creds_path):
-            raise ValueError("Vertex AI credentials not found. Please set GOOGLE_APPLICATION_CREDENTIALS to a valid JSON key file path.")
-        
-        try:
-            from google.oauth2 import service_account
-            from google.auth.transport.requests import Request
-        except ImportError:
-            raise ImportError(
-                "Missing Google Auth dependencies for Vertex AI. "
-                "Please install them via: pip install hermes-agent[vertex]"
+        from hermes_cli.vertex_adapter import get_vertex_config
+        region = base_url or None  # base_url slot carries the region when set explicitly
+        token, resolved_url = get_vertex_config(credentials_path=api_key or None, region=region)
+        if not token or not resolved_url:
+            raise ValueError(
+                "Vertex AI credentials not found. Set VERTEX_CREDENTIALS_PATH or "
+                "GOOGLE_APPLICATION_CREDENTIALS to a service account JSON file, "
+                "or run `gcloud auth application-default login`."
             )
-        import json
-
-        with open(creds_path, 'r') as f:
-            sa_info = json.load(f)
-        project_id = sa_info.get("project_id")
-        
-        if not project_id:
-            raise ValueError("Invalid Vertex AI credential file: missing 'project_id' field.")
-            
-        location = base_url if base_url else __import__("os").environ.get("VERTEX_LOCATION", "us-central1")
-        scopes = ["https://www.googleapis.com/auth/cloud-platform"]
-        creds = service_account.Credentials.from_service_account_file(creds_path, scopes=scopes)
-        creds.refresh(Request())
-        
-        api_key = creds.token
-        base_url = f"https://{location}-aiplatform.googleapis.com/v1beta1/projects/{project_id}/locations/{location}/endpoints/openapi"
+        api_key = token
+        base_url = resolved_url
     elif provider == "openrouter":
         base_url = base_url or OPENROUTER_BASE_URL
     elif provider == "xai":

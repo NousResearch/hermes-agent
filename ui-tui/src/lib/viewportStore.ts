@@ -1,7 +1,6 @@
+import type { ScrollBoxHandle } from '@hermes/ink'
 import type { RefObject } from 'react'
 import { useCallback, useSyncExternalStore } from 'react'
-
-import type { ScrollBoxHandle } from '@hermes/ink'
 
 export interface ViewportSnapshot {
   atBottom: boolean

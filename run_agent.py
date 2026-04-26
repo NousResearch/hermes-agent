@@ -7851,11 +7851,19 @@ class AIAgent:
             api_msg["reasoning_content"] = existing
             return
 
-        # 2. DeepSeek / Kimi thinking mode: tool-call turns that lack
-        # reasoning_content are "poisoned history" — a prior provider (MiniMax,
-        # etc.) left them empty. DeepSeek returns HTTP 400 if reasoning_content
-        # is absent on replay; inject "" to satisfy the provider's requirement
-        # without forwarding any cross-provider reasoning content.
+        # 2. Promote 'reasoning' field to 'reasoning_content' FIRST — before
+        # the poisoned-history / empty-string fallback below.  This ensures
+        # cross-provider reasoning (e.g. Xiaomi → DeepSeek fallback) is not
+        # silently dropped on tool-call turns.
+        normalized_reasoning = source_msg.get("reasoning")
+        if isinstance(normalized_reasoning, str) and normalized_reasoning:
+            api_msg["reasoning_content"] = normalized_reasoning
+            return
+
+        # 3. DeepSeek / Kimi thinking mode: tool-call turns that still lack
+        # reasoning_content at this point are "poisoned history" — a prior
+        # provider left them empty.  Inject "" to satisfy the provider's
+        # requirement (avoids HTTP 400 on replay).
         needs_empty_reasoning = (
             source_msg.get("tool_calls")
             and (
@@ -7867,15 +7875,8 @@ class AIAgent:
             api_msg["reasoning_content"] = ""
             return
 
-        # 3. Healthy session: promote 'reasoning' field to 'reasoning_content'
-        # for providers that use the internal 'reasoning' key.
-        normalized_reasoning = source_msg.get("reasoning")
-        if isinstance(normalized_reasoning, str) and normalized_reasoning:
-            api_msg["reasoning_content"] = normalized_reasoning
-            return
-
         # 4. DeepSeek / Kimi thinking mode: all assistant messages need
-        # reasoning_content. Inject "" to satisfy the provider's requirement
+        # reasoning_content.  Inject "" to satisfy the provider's requirement
         # when no explicit reasoning content is present.
         if (
             self._needs_kimi_tool_reasoning()

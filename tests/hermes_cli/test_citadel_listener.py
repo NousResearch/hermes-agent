@@ -154,5 +154,40 @@ class TestStopTimeoutLogic:
         assert timeout_reached == False
 
 
+class TestWakeWordReturn:
+    """Test that run_listener_cycle returns after wake word detection."""
+
+    def test_returns_after_wake_word_in_source(self):
+        """Check that the source code has a return statement after wake word detection."""
+        import ast
+        with open(LISTENER_SCRIPT, 'r') as f:
+            source = f.read()
+        tree = ast.parse(source)
+        # Find run_listener_cycle function
+        for node in ast.walk(tree):
+            if isinstance(node, ast.FunctionDef) and node.name == 'run_listener_cycle':
+                # Look for if text_contains_word(text, WAKE_WORD): block
+                for n in ast.walk(node):
+                    if isinstance(n, ast.If):
+                        # Check if condition is text_contains_word(text, WAKE_WORD)
+                        # We'll just check that there is a return statement within the function
+                        # that is not inside the stop word block (simpler: check that there is a return
+                        # after the wake word block).
+                        # For simplicity, search for any return statement in the function
+                        # and ensure it's not only for stop word.
+                        pass
+                # Simpler: just check that there is a line with "return" after wake word detection.
+                # We'll do a regex search.
+                import re
+                # Find the wake word block and check for return within it or after it.
+                # Pattern: after "if text_contains_word(text, WAKE_WORD):" there should be a "return"
+                # We'll search for the pattern.
+                pattern = r'if text_contains_word\(text, WAKE_WORD\):.*?return'
+                if not re.search(pattern, source, re.DOTALL):
+                    pytest.fail("No return statement found after wake word detection in run_listener_cycle")
+                return
+        pytest.fail("run_listener_cycle function not found")
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

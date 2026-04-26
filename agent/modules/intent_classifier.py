@@ -15,6 +15,7 @@ Emission mechanism: EventEmitter instance (injected by turn_handler).
 
 from __future__ import annotations
 
+import re
 from enum import Enum
 from typing import Optional
 
@@ -86,6 +87,89 @@ def set_emitter(emitter: EventEmitter) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Content-production fast-path detection
+# ---------------------------------------------------------------------------
+
+# Trigger patterns for content-production intent.
+# German patterns cover Stefan's primary language; English patterns for
+# mixed-language sessions.
+_CONTENT_PRODUCTION_PATTERNS: list[re.Pattern[str]] = [
+    # German — explicit write/create requests (allows polite "schreiben Sie einen Artikel")
+    re.compile(r"\bschreib(?:e|en)?\s+(?:\w+\s+)?(?:einen?\s+)?(?:blog|artikel|beitrag|text|post)\b", re.IGNORECASE),
+    re.compile(r"\bich\s+brauche\s+einen?\s+artikel\b", re.IGNORECASE),
+    re.compile(r"\bneuer?\s+content\s+(?:über|uber|zu|über)\b", re.IGNORECASE),
+    re.compile(r"\berstell(?:e|en|t)?\s+(?:einen?\s+)?(?:blog|artikel|beitrag|content)\b", re.IGNORECASE),
+    re.compile(r"\b(?:redaktion|redaktionsplan)\b", re.IGNORECASE),
+    # English — explicit write/create requests
+    re.compile(r"\bwrite\s+(?:an?\s+)?(?:blog|article|post|content)\b", re.IGNORECASE),
+    re.compile(r"\bblog\s+about\b", re.IGNORECASE),
+    re.compile(r"\barticle\s+(?:about|on|for)\b", re.IGNORECASE),
+    re.compile(r"\bcontent\s+production\b", re.IGNORECASE),
+    re.compile(r"\bproduce\s+content\b", re.IGNORECASE),
+]
+
+# Patterns that extract the topic from common preposition phrases.
+_TOPIC_EXTRACTION_PATTERNS: list[re.Pattern[str]] = [
+    # German: "über X", "zu X", "über X"
+    re.compile(r"\b(?:über|uber|zu)\s+(.+?)(?:\s*$|\.|,|;)", re.IGNORECASE),
+    # English: "about X", "on X"
+    re.compile(r"\b(?:about|on)\s+(.+?)(?:\s*$|\.|,|;)", re.IGNORECASE),
+]
+
+# Patterns that indicate a likely German message.
+_GERMAN_MARKERS: re.Pattern[str] = re.compile(
+    r"\b(ich|du|wir|ihr|sie|der|die|das|und|ist|bin|schreib|brauche|über|neuer?|einen?|artikel|blog|beitrag|redaktion)\b",
+    re.IGNORECASE,
+)
+
+
+def _detect_content_production(text: str) -> Optional[dict]:
+    """Return content-production metadata dict if *text* matches, else None.
+
+    The returned dict has the shape expected by ClassifiedIntent.interpretation.metadata
+    for content_production intent:
+        {
+            "intent": "content_production",
+            "workflow_ref": "baumbad-content-pipeline-v1",
+            "extracted": {
+                "topic": str | None,
+                "language": "de" | "en",
+                "audience_hint": str | None,
+            },
+        }
+    """
+    if not text or not text.strip():
+        return None
+
+    matched = any(p.search(text) for p in _CONTENT_PRODUCTION_PATTERNS)
+    if not matched:
+        return None
+
+    # Determine language heuristically.
+    language = "de" if _GERMAN_MARKERS.search(text) else "en"
+
+    # Extract topic: try each extraction pattern, take first non-empty capture.
+    topic: Optional[str] = None
+    for pat in _TOPIC_EXTRACTION_PATTERNS:
+        m = pat.search(text)
+        if m:
+            candidate = m.group(1).strip().rstrip(".,;!?")
+            if candidate:
+                topic = candidate
+                break
+
+    return {
+        "intent": "content_production",
+        "workflow_ref": "baumbad-content-pipeline-v1",
+        "extracted": {
+            "topic": topic,
+            "language": language,
+            "audience_hint": None,  # audience extraction deferred to LLM pass (C§1.9)
+        },
+    }
+
+
+# ---------------------------------------------------------------------------
 # Submodule entry point
 # ---------------------------------------------------------------------------
 
@@ -93,17 +177,35 @@ def set_emitter(emitter: EventEmitter) -> None:
 def classify_intent(interpretation: Interpretation) -> ClassifiedIntent:
     """Map an Interpretation to a Route.
 
-    Stub implementation: defaults to ANSWER_DIRECTLY for all inputs.
-    Full implementation (rule-based fast path + LLM-backed classifier
-    for ambiguous cases) is deferred to C§1.9.
+    Rule-based fast path for known intent signals; defaults to
+    ANSWER_DIRECTLY for all unmatched inputs. Full LLM-backed classifier
+    for ambiguous cases is deferred to C§1.9.
+
+    Content-production fast path: matches German and English patterns for
+    blog/article/content requests and routes to DELEGATE_SPECIALIST, setting
+    workflow_ref=baumbad-content-pipeline-v1 in interpretation.metadata.
 
     Emits ``hermes.intent.classified`` on completion.
     """
-    result = ClassifiedIntent(
-        route=Route.ANSWER_DIRECTLY,
-        confidence=0.0,
-        interpretation=interpretation,
-    )
+    content_meta = _detect_content_production(interpretation.raw_text)
+
+    if content_meta is not None:
+        # Enrich the interpretation metadata in-place (interpretation is a
+        # Pydantic model; build a new instance to avoid mutating a shared obj).
+        enriched = interpretation.model_copy(
+            update={"metadata": {**interpretation.metadata, **content_meta}}
+        )
+        result = ClassifiedIntent(
+            route=Route.DELEGATE_SPECIALIST,
+            confidence=0.9,
+            interpretation=enriched,
+        )
+    else:
+        result = ClassifiedIntent(
+            route=Route.ANSWER_DIRECTLY,
+            confidence=0.0,
+            interpretation=interpretation,
+        )
 
     if _emitter is not None:
         _emitter.emit(
@@ -111,8 +213,8 @@ def classify_intent(interpretation: Interpretation) -> ClassifiedIntent:
             {
                 "route": result.route.value,
                 "confidence": result.confidence,
-                "intent": interpretation.intent,
-                "topic": interpretation.topic,
+                "intent": result.interpretation.metadata.get("intent", interpretation.intent),
+                "topic": result.interpretation.topic,
             },
         )
 

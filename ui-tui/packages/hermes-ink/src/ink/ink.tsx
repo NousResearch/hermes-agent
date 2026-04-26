@@ -1302,11 +1302,13 @@ export default class Ink {
   }
 
   /**
-   * Copy the current selection to the clipboard without clearing the
-   * highlight. Matches iTerm2's copy-on-select behavior where the selected
-   * region stays visible after the automatic copy.
+   * Copy the current text selection to the system clipboard without clearing the
+   * selection. Returns the copied text when a clipboard path succeeded (native
+   * tool fired, tmux buffer loaded, or OSC 52 emitted), or '' when no path was
+   * taken (e.g. headless Linux without tmux). Matches iTerm2's copy-on-select
+   * behavior where the selected region stays visible after the automatic copy.
    */
-  copySelectionNoClear(): string {
+  async copySelectionNoClear(): Promise<string> {
     if (!hasSelection(this.selection)) {
       return ''
     }
@@ -1314,28 +1316,41 @@ export default class Ink {
     const text = getSelectedText(this.selection, this.frontFrame.screen)
 
     if (text) {
-      // Raw OSC 52, or DCS-passthrough-wrapped OSC 52 inside tmux (tmux
-      // drops it silently unless allow-passthrough is on — no regression).
-      void setClipboard(text).then(raw => {
-        if (raw) {
-          this.options.stdout.write(raw)
+      try {
+        const { sequence, success } = await setClipboard(text)
+
+        if (sequence) {
+          this.options.stdout.write(sequence)
         }
-      })
+
+        if (success) {
+          return text
+        }
+
+        if (process.env.HERMES_TUI_DEBUG_CLIPBOARD) {
+          console.error('[clipboard] no path reached the clipboard (headless + no tmux?) — set HERMES_TUI_FORCE_OSC52=1 to force the escape sequence')
+        }
+      } catch (err) {
+        if (process.env.HERMES_TUI_DEBUG_CLIPBOARD) {
+          console.error('[clipboard] error:', err)
+        }
+      }
     }
 
-    return text
+    return ''
   }
 
   /**
    * Copy the current text selection to the system clipboard via OSC 52
-   * and clear the selection. Returns the copied text (empty if no selection).
+   * and clear the selection. Returns the copied text (empty if no selection
+   * or clipboard operation failed).
    */
-  copySelection(): string {
+  async copySelection(): Promise<string> {
     if (!hasSelection(this.selection)) {
       return ''
     }
 
-    const text = this.copySelectionNoClear()
+    const text = await this.copySelectionNoClear()
     clearSelection(this.selection)
     this.notifySelectionChange()
 

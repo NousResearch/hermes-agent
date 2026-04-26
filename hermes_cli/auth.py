@@ -467,10 +467,26 @@ def _resolve_api_key_provider_secret(
             pass
         return "", ""
 
+    from hermes_cli.config import get_env_value
     for env_var in pconfig.api_key_env_vars:
-        val = os.getenv(env_var, "").strip()
+        # Check both os.environ and ~/.hermes/.env file
+        val = (get_env_value(env_var) or "").strip()
         if has_usable_secret(val):
             return val, env_var
+
+    # Fallback: try credential pool (e.g. zai key stored via auth.json)
+    try:
+        from agent.credential_pool import load_pool
+        pool = load_pool(provider_id)
+        if pool and pool.has_credentials():
+            entry = pool.peek()
+            if entry:
+                key = getattr(entry, "access_token", "") or getattr(entry, "runtime_api_key", "")
+                key = str(key).strip()
+                if has_usable_secret(key):
+                    return key, f"credential_pool:{provider_id}"
+    except Exception:
+        pass
 
     return "", ""
 
@@ -4244,10 +4260,10 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                 )
 
             from hermes_cli.models import (
-                _PROVIDER_MODELS, get_pricing_for_provider,
+                get_curated_nous_model_ids, get_pricing_for_provider,
                 check_nous_free_tier, partition_nous_models_by_tier,
             )
-            model_ids = _PROVIDER_MODELS.get("nous", [])
+            model_ids = get_curated_nous_model_ids()
 
             print()
             unavailable_models: list = []

@@ -207,8 +207,31 @@ class SlackAdapter(BasePlatformAdapter):
             async def handle_assistant_thread_context_changed(event, say):
                 await self._handle_assistant_thread_lifecycle_event(event)
 
-            # Register slash command handler
-            @self._app.command("/hermes")
+            # Register slash command handler(s)
+            #
+            # Every gateway command from COMMAND_REGISTRY is a native Slack
+            # slash, matching Discord and Telegram's model (e.g. /btw, /stop,
+            # /model work directly without /hermes prefix). A single regex
+            # matcher dispatches all of them to one handler so we don't need
+            # N identical @app.command() decorators.
+            #
+            # The slash commands must ALSO be declared in the Slack app
+            # manifest (see `hermes slack manifest`). In Socket Mode, Slack
+            # routes the command event through the socket regardless of the
+            # manifest's request URL, but it will not deliver an event for
+            # a slash command the manifest doesn't declare.
+            from hermes_cli.commands import slack_native_slashes
+            import re as _re
+
+            _slash_names = [name for name, _d, _h in slack_native_slashes()]
+            if _slash_names:
+                _slash_pattern = _re.compile(
+                    r"^/(?:" + "|".join(_re.escape(n) for n in _slash_names) + r")$"
+                )
+            else:  # pragma: no cover - registry always non-empty
+                _slash_pattern = _re.compile(r"^/hermes$")
+
+            @self._app.command(_slash_pattern)
             async def handle_hermes_command(ack, command):
                 await ack()
                 await self._handle_slash_command(command)
@@ -1561,7 +1584,20 @@ class SlackAdapter(BasePlatformAdapter):
             return ""
 
     async def _handle_slash_command(self, command: dict) -> None:
-        """Handle /hermes slash command."""
+        """Handle Slack slash commands.
+
+        Every gateway command in COMMAND_REGISTRY is registered as a native
+        Slack slash (``/btw``, ``/stop``, ``/model``, etc.), matching the
+        Discord and Telegram model. The slash name itself is the command;
+        any text after it is the argument list.
+
+        The legacy ``/hermes <subcommand> [args]`` form is preserved for
+        backward compatibility with older workspace manifests and for users
+        who want a single entry point for free-form questions (``/hermes
+        what's the weather`` — non-slash text is treated as a regular
+        message).
+        """
+        slash_name = (command.get("command") or "").lstrip("/").strip()
         text = command.get("text", "").strip()
         user_id = command.get("user_id", "")
         channel_id = command.get("channel_id", "")
@@ -1571,20 +1607,25 @@ class SlackAdapter(BasePlatformAdapter):
         if team_id and channel_id:
             self._channel_team[channel_id] = team_id
 
-        # Map subcommands to gateway commands — derived from central registry.
-        # Also keep "compact" as a Slack-specific alias for /compress.
-        from hermes_cli.commands import slack_subcommand_map
-        subcommand_map = slack_subcommand_map()
-        subcommand_map["compact"] = "/compress"
-        first_word = text.split()[0] if text else ""
-        if first_word in subcommand_map:
-            # Preserve arguments after the subcommand
-            rest = text[len(first_word):].strip()
-            text = f"{subcommand_map[first_word]} {rest}".strip() if rest else subcommand_map[first_word]
-        elif text:
-            pass  # Treat as a regular question
+        if slash_name in ("hermes", ""):
+            # Legacy /hermes <subcommand> [args] routing + free-form questions.
+            # Empty slash_name falls into this branch for backward compat
+            # with any caller that didn't populate command["command"].
+            from hermes_cli.commands import slack_subcommand_map
+            subcommand_map = slack_subcommand_map()
+            subcommand_map["compact"] = "/compress"
+            first_word = text.split()[0] if text else ""
+            if first_word in subcommand_map:
+                rest = text[len(first_word):].strip()
+                text = f"{subcommand_map[first_word]} {rest}".strip() if rest else subcommand_map[first_word]
+            elif text:
+                pass  # Treat as a regular question
+            else:
+                text = "/help"
         else:
-            text = "/help"
+            # Native slash — /<slash_name> [args].  Route directly through the
+            # gateway command dispatcher by prepending the slash.
+            text = f"/{slash_name} {text}".strip()
 
         source = self.build_source(
             chat_id=channel_id,

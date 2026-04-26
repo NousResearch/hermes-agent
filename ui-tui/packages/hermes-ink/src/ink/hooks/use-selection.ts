@@ -9,9 +9,9 @@ import { type FocusMove, type SelectionState, shiftAnchor } from '../selection.j
  * Returns no-op functions when fullscreen mode is disabled.
  */
 export function useSelection(): {
-  copySelection: () => string
+  copySelection: () => Promise<string>
   /** Copy without clearing the highlight (for copy-on-select). */
-  copySelectionNoClear: () => string
+  copySelectionNoClear: () => Promise<string>
   clearSelection: () => void
   hasSelection: () => boolean
   /** Read the raw mutable selection state (for drag-to-scroll). */
@@ -48,8 +48,8 @@ export function useSelection(): {
   return useMemo(() => {
     if (!ink) {
       return {
-        copySelection: () => '',
-        copySelectionNoClear: () => '',
+        copySelection: async () => '',
+        copySelectionNoClear: async () => '',
         clearSelection: () => {},
         hasSelection: () => false,
         getState: () => null,

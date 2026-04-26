@@ -33,7 +33,7 @@ export type StatusBarMode = 'bottom' | 'off' | 'top'
 export interface SelectionApi {
   captureScrolledRows: (firstRow: number, lastRow: number, side: 'above' | 'below') => void
   clearSelection: () => void
-  copySelection: () => string
+  copySelection: () => Promise<string>
   getState: () => unknown
   shiftAnchor: (dRow: number, minRow: number, maxRow: number) => void
   shiftSelection: (dRow: number, minRow: number, maxRow: number) => void

@@ -15,6 +15,7 @@ import type { Msg, Usage } from '../types.js'
 
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
+const AURORA_STATUS_IDENTITY = 'Aurora Proto'
 
 function FaceTicker({ color, startedAt }: { color: string; startedAt?: null | number }) {
   const [tick, setTick] = useState(() => Math.floor(Math.random() * 1000))
@@ -105,7 +106,7 @@ export function buildAuroraStatusParts({
 }): { color: string; text: string }[] {
   const pct = usage.context_percent
   const barColor = ctxBarColor(pct, t)
-  const parts = [{ color: t.color.label, text: `${t.brand.icon} ${t.brand.name}` }]
+  const parts = [{ color: t.color.label, text: `${t.brand.icon} ${AURORA_STATUS_IDENTITY}` }]
 
   if (model) {
     parts.push({ color: t.color.dim, text: ` │ ${model}` })
@@ -272,7 +273,7 @@ export function StatusRule({
           {'─ '}
           {buildAuroraStatusParts({
             model,
-            promptElapsedMs: turnStartedAt ? null : promptElapsedMs,
+            promptElapsedMs: null,
             sessionElapsedMs: null,
             t,
             usage

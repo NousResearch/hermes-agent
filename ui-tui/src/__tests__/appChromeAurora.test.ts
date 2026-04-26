@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import { buildAuroraStatusParts, formatPromptElapsed } from '../components/appChrome.js'
-import { DARK_THEME } from '../theme.js'
+import { DARK_THEME, fromSkin } from '../theme.js'
 import type { Usage } from '../types.js'
 
 const usage: Usage = {
@@ -25,6 +25,18 @@ describe('Aurora TUI chrome', () => {
         usage
       }).map(part => part.text)
     ).toEqual(['☤ Aurora Proto', ' │ gpt-5.5', ' │ ctx 18k/128k', ' │ [█░░░░░░░░░] 14%', ' │ 42m', ' │ ⏲ 8s'])
+  })
+
+  it('keeps the full Proto identity even when a skin shortens the agent name', () => {
+    const skinned = fromSkin({}, { agent_name: 'Aurora' })
+
+    expect(
+      buildAuroraStatusParts({
+        model: 'gpt-5.5',
+        t: skinned,
+        usage
+      })[0]?.text
+    ).toBe('☤ Aurora Proto')
   })
 
   it('uses the live timer glyph while a turn is running', () => {

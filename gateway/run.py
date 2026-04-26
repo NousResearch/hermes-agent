@@ -96,149 +96,269 @@ _hermes_home = get_hermes_home()
 # User-managed env files should override stale shell exports on restart.
 from dotenv import load_dotenv  # backward-compat for tests that monkeypatch this symbol
 from hermes_cli.env_loader import load_hermes_dotenv
+
+_gateway_project_env = Path(__file__).resolve().parents[1] / '.env'
 _env_path = _hermes_home / '.env'
-load_hermes_dotenv(hermes_home=_hermes_home, project_env=Path(__file__).resolve().parents[1] / '.env')
+_config_path = _hermes_home / 'config.yaml'
+_gateway_bootstrap_state = sys.modules.setdefault(
+    "gateway._run_bootstrap_state",
+    type(sys)("gateway._run_bootstrap_state"),
+)
+if not hasattr(_gateway_bootstrap_state, "env"):
+    _gateway_bootstrap_state.env = {}
+if not hasattr(_gateway_bootstrap_state, "home"):
+    _gateway_bootstrap_state.home = os.fspath(_hermes_home)
+_gateway_bootstrap_env: Dict[str, tuple[bool, str, Optional[str]]] = dict(_gateway_bootstrap_state.env)
+
+
+def _sync_gateway_bootstrap_env_state() -> None:
+    _gateway_bootstrap_state.env = dict(_gateway_bootstrap_env)
+
+
+def _same_path(left: Path, right: Path) -> bool:
+    return os.path.abspath(os.fspath(left)) == os.path.abspath(os.fspath(right))
+
+
+def _refresh_gateway_bootstrap_paths() -> None:
+    global _hermes_home, _env_path, _config_path
+    # If tests monkeypatch the module global after import, respect that explicit
+    # override. Otherwise, re-read HERMES_HOME so a patched env var can retarget
+    # gateway bootstrap state away from the operator's real ~/.hermes.
+    tracked_home = Path(getattr(_gateway_bootstrap_state, "home", os.fspath(_hermes_home)))
+    if _same_path(_hermes_home, tracked_home):
+        _hermes_home = get_hermes_home()
+        _gateway_bootstrap_state.home = os.fspath(_hermes_home)
+    _env_path = _hermes_home / '.env'
+    _config_path = _hermes_home / 'config.yaml'
+
+
+def _clear_gateway_bootstrap_env() -> None:
+    global _gateway_bootstrap_env
+    for _key, (_present, _value, _applied) in list(_gateway_bootstrap_env.items()):
+        if _applied is not None and os.environ.get(_key) != _applied:
+            # Preserve explicit in-process overrides that changed after the
+            # previous bootstrap loaded profile-specific env/config values.
+            continue
+        if _present:
+            os.environ[_key] = _value
+        else:
+            os.environ.pop(_key, None)
+    _gateway_bootstrap_env = {}
+    _sync_gateway_bootstrap_env_state()
+
+
+def _collect_changed_env_keys(before_env: Dict[str, str]) -> set[str]:
+    return {
+        _key
+        for _key in set(before_env) | set(os.environ)
+        if before_env.get(_key) != os.environ.get(_key)
+    }
+
+
+def _bridge_gateway_config_env(_cfg: dict) -> set[str]:
+    owned_keys: set[str] = set()
+
+    # Top-level simple values (fallback only — don't override .env)
+    for _key, _val in _cfg.items():
+        if not isinstance(_val, (str, int, float, bool)):
+            continue
+        if _key not in os.environ:
+            os.environ[_key] = str(_val)
+            owned_keys.add(_key)
+
+    # Terminal config is nested — bridge to TERMINAL_* env vars.
+    # config.yaml overrides .env for these since it's the documented config path.
+    _terminal_cfg = _cfg.get("terminal", {})
+    if _terminal_cfg and isinstance(_terminal_cfg, dict):
+        _terminal_env_map = {
+            "backend": "TERMINAL_ENV",
+            "cwd": "TERMINAL_CWD",
+            "timeout": "TERMINAL_TIMEOUT",
+            "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
+            "docker_image": "TERMINAL_DOCKER_IMAGE",
+            "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
+            "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
+            "modal_image": "TERMINAL_MODAL_IMAGE",
+            "daytona_image": "TERMINAL_DAYTONA_IMAGE",
+            "ssh_host": "TERMINAL_SSH_HOST",
+            "ssh_user": "TERMINAL_SSH_USER",
+            "ssh_port": "TERMINAL_SSH_PORT",
+            "ssh_key": "TERMINAL_SSH_KEY",
+            "container_cpu": "TERMINAL_CONTAINER_CPU",
+            "container_memory": "TERMINAL_CONTAINER_MEMORY",
+            "container_disk": "TERMINAL_CONTAINER_DISK",
+            "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
+            "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
+            "sandbox_dir": "TERMINAL_SANDBOX_DIR",
+            "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
+        }
+        for _cfg_key, _env_var in _terminal_env_map.items():
+            if _cfg_key not in _terminal_cfg:
+                continue
+            _val = _terminal_cfg[_cfg_key]
+            # Skip cwd placeholder values (".", "auto", "cwd") — the gateway
+            # resolves these to Path.home() later. Writing the placeholder here
+            # would just be noise; only bridge explicit paths from config.yaml.
+            if _cfg_key == "cwd" and str(_val) in (".", "auto", "cwd"):
+                continue
+            owned_keys.add(_env_var)
+            if isinstance(_val, list):
+                os.environ[_env_var] = json.dumps(_val)
+            else:
+                os.environ[_env_var] = str(_val)
+
+    # Compression config is read directly from config.yaml by run_agent.py and
+    # auxiliary_client.py — no env var bridging needed. Auxiliary overrides are
+    # bridged only when explicitly configured.
+    _auxiliary_cfg = _cfg.get("auxiliary", {})
+    if _auxiliary_cfg and isinstance(_auxiliary_cfg, dict):
+        _aux_task_env = {
+            "vision": {
+                "provider": "AUXILIARY_VISION_PROVIDER",
+                "model": "AUXILIARY_VISION_MODEL",
+                "base_url": "AUXILIARY_VISION_BASE_URL",
+                "api_key": "AUXILIARY_VISION_API_KEY",
+            },
+            "web_extract": {
+                "provider": "AUXILIARY_WEB_EXTRACT_PROVIDER",
+                "model": "AUXILIARY_WEB_EXTRACT_MODEL",
+                "base_url": "AUXILIARY_WEB_EXTRACT_BASE_URL",
+                "api_key": "AUXILIARY_WEB_EXTRACT_API_KEY",
+            },
+            "approval": {
+                "provider": "AUXILIARY_APPROVAL_PROVIDER",
+                "model": "AUXILIARY_APPROVAL_MODEL",
+                "base_url": "AUXILIARY_APPROVAL_BASE_URL",
+                "api_key": "AUXILIARY_APPROVAL_API_KEY",
+            },
+        }
+        for _task_key, _env_map in _aux_task_env.items():
+            _task_cfg = _auxiliary_cfg.get(_task_key, {})
+            if not isinstance(_task_cfg, dict):
+                continue
+            _prov = str(_task_cfg.get("provider", "")).strip()
+            _model = str(_task_cfg.get("model", "")).strip()
+            _base_url = str(_task_cfg.get("base_url", "")).strip()
+            _api_key = str(_task_cfg.get("api_key", "")).strip()
+            if _prov and _prov != "auto":
+                owned_keys.add(_env_map["provider"])
+                os.environ[_env_map["provider"]] = _prov
+            if _model:
+                owned_keys.add(_env_map["model"])
+                os.environ[_env_map["model"]] = _model
+            if _base_url:
+                owned_keys.add(_env_map["base_url"])
+                os.environ[_env_map["base_url"]] = _base_url
+            if _api_key:
+                owned_keys.add(_env_map["api_key"])
+                os.environ[_env_map["api_key"]] = _api_key
+
+    _agent_cfg = _cfg.get("agent", {})
+    if _agent_cfg and isinstance(_agent_cfg, dict):
+        if "max_turns" in _agent_cfg:
+            owned_keys.add("HERMES_MAX_ITERATIONS")
+            os.environ["HERMES_MAX_ITERATIONS"] = str(_agent_cfg["max_turns"])
+        if "gateway_timeout" in _agent_cfg and "HERMES_AGENT_TIMEOUT" not in os.environ:
+            owned_keys.add("HERMES_AGENT_TIMEOUT")
+            os.environ["HERMES_AGENT_TIMEOUT"] = str(_agent_cfg["gateway_timeout"])
+        if "gateway_timeout_warning" in _agent_cfg and "HERMES_AGENT_TIMEOUT_WARNING" not in os.environ:
+            owned_keys.add("HERMES_AGENT_TIMEOUT_WARNING")
+            os.environ["HERMES_AGENT_TIMEOUT_WARNING"] = str(_agent_cfg["gateway_timeout_warning"])
+        if "gateway_notify_interval" in _agent_cfg and "HERMES_AGENT_NOTIFY_INTERVAL" not in os.environ:
+            owned_keys.add("HERMES_AGENT_NOTIFY_INTERVAL")
+            os.environ["HERMES_AGENT_NOTIFY_INTERVAL"] = str(_agent_cfg["gateway_notify_interval"])
+        if "restart_drain_timeout" in _agent_cfg and "HERMES_RESTART_DRAIN_TIMEOUT" not in os.environ:
+            owned_keys.add("HERMES_RESTART_DRAIN_TIMEOUT")
+            os.environ["HERMES_RESTART_DRAIN_TIMEOUT"] = str(_agent_cfg["restart_drain_timeout"])
+
+    _display_cfg = _cfg.get("display", {})
+    if _display_cfg and isinstance(_display_cfg, dict):
+        if "busy_input_mode" in _display_cfg and "HERMES_GATEWAY_BUSY_INPUT_MODE" not in os.environ:
+            owned_keys.add("HERMES_GATEWAY_BUSY_INPUT_MODE")
+            os.environ["HERMES_GATEWAY_BUSY_INPUT_MODE"] = str(_display_cfg["busy_input_mode"])
+
+    # Timezone: bridge config.yaml → HERMES_TIMEZONE env var.
+    _tz_cfg = _cfg.get("timezone", "")
+    if _tz_cfg and isinstance(_tz_cfg, str) and "HERMES_TIMEZONE" not in os.environ:
+        owned_keys.add("HERMES_TIMEZONE")
+        os.environ["HERMES_TIMEZONE"] = _tz_cfg.strip()
+
+    # Security settings.
+    _security_cfg = _cfg.get("security", {})
+    if isinstance(_security_cfg, dict):
+        _redact = _security_cfg.get("redact_secrets")
+        if _redact is not None:
+            owned_keys.add("HERMES_REDACT_SECRETS")
+            os.environ["HERMES_REDACT_SECRETS"] = str(_redact).lower()
+
+    return owned_keys
+
+
+def _bootstrap_gateway_env() -> dict:
+    """Load gateway .env/config for the current HERMES_HOME.
+
+    Safe to call repeatedly in one process: env vars injected by the previous
+    gateway home are restored before loading the next home. Explicit in-process
+    overrides made after bootstrap are preserved.
+    """
+    global _gateway_bootstrap_env
+
+    _refresh_gateway_bootstrap_paths()
+    _clear_gateway_bootstrap_env()
+
+    _env_before = dict(os.environ)
+    load_hermes_dotenv(
+        hermes_home=_hermes_home,
+        project_env=_gateway_project_env,
+    )
+    _owned_keys = _collect_changed_env_keys(_env_before)
+
+    _cfg: dict = {}
+    if _config_path.exists():
+        try:
+            import yaml as _yaml
+            with open(_config_path, encoding="utf-8") as _f:
+                _cfg = _yaml.safe_load(_f) or {}
+            from hermes_cli.config import _expand_env_vars
+            _cfg = _expand_env_vars(_cfg)
+            _owned_keys.update(_bridge_gateway_config_env(_cfg))
+        except Exception:
+            _cfg = {}
+
+    os.environ["HERMES_QUIET"] = "1"
+    _owned_keys.add("HERMES_QUIET")
+    os.environ["HERMES_EXEC_ASK"] = "1"
+    _owned_keys.add("HERMES_EXEC_ASK")
+
+    _configured_cwd = os.environ.get("TERMINAL_CWD", "")
+    if not _configured_cwd or _configured_cwd in (".", "auto", "cwd"):
+        _fallback = os.getenv("MESSAGING_CWD") or str(Path.home())
+        os.environ["TERMINAL_CWD"] = _fallback
+        _owned_keys.add("TERMINAL_CWD")
+
+    _gateway_bootstrap_env = {
+        _key: (_key in _env_before, _env_before.get(_key, ""), os.environ.get(_key))
+        for _key in _owned_keys
+    }
+    _sync_gateway_bootstrap_env_state()
+    return _cfg
+
+
+def _apply_gateway_ipv4_preference(_cfg: dict) -> None:
+    try:
+        from hermes_constants import apply_ipv4_preference
+        _network_cfg = (_cfg if isinstance(_cfg, dict) else {}).get("network", {})
+        if isinstance(_network_cfg, dict) and _network_cfg.get("force_ipv4"):
+            apply_ipv4_preference(force=True)
+    except Exception:
+        pass
 
 
 _DOCKER_VOLUME_SPEC_RE = re.compile(r"^(?P<host>.+):(?P<container>/[^:]+?)(?::(?P<options>[^:]+))?$")
 _DOCKER_MEDIA_OUTPUT_CONTAINER_PATHS = {"/output", "/outputs"}
 
-# Bridge config.yaml values into the environment so os.getenv() picks them up.
-# config.yaml is authoritative for terminal settings — overrides .env.
-_config_path = _hermes_home / 'config.yaml'
-if _config_path.exists():
-    try:
-        import yaml as _yaml
-        with open(_config_path, encoding="utf-8") as _f:
-            _cfg = _yaml.safe_load(_f) or {}
-        # Expand ${ENV_VAR} references before bridging to env vars.
-        from hermes_cli.config import _expand_env_vars
-        _cfg = _expand_env_vars(_cfg)
-        # Top-level simple values (fallback only — don't override .env)
-        for _key, _val in _cfg.items():
-            if isinstance(_val, (str, int, float, bool)) and _key not in os.environ:
-                os.environ[_key] = str(_val)
-        # Terminal config is nested — bridge to TERMINAL_* env vars.
-        # config.yaml overrides .env for these since it's the documented config path.
-        _terminal_cfg = _cfg.get("terminal", {})
-        if _terminal_cfg and isinstance(_terminal_cfg, dict):
-            _terminal_env_map = {
-                "backend": "TERMINAL_ENV",
-                "cwd": "TERMINAL_CWD",
-                "timeout": "TERMINAL_TIMEOUT",
-                "lifetime_seconds": "TERMINAL_LIFETIME_SECONDS",
-                "docker_image": "TERMINAL_DOCKER_IMAGE",
-                "docker_forward_env": "TERMINAL_DOCKER_FORWARD_ENV",
-                "singularity_image": "TERMINAL_SINGULARITY_IMAGE",
-                "modal_image": "TERMINAL_MODAL_IMAGE",
-                "daytona_image": "TERMINAL_DAYTONA_IMAGE",
-                "ssh_host": "TERMINAL_SSH_HOST",
-                "ssh_user": "TERMINAL_SSH_USER",
-                "ssh_port": "TERMINAL_SSH_PORT",
-                "ssh_key": "TERMINAL_SSH_KEY",
-                "container_cpu": "TERMINAL_CONTAINER_CPU",
-                "container_memory": "TERMINAL_CONTAINER_MEMORY",
-                "container_disk": "TERMINAL_CONTAINER_DISK",
-                "container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
-                "docker_volumes": "TERMINAL_DOCKER_VOLUMES",
-                "sandbox_dir": "TERMINAL_SANDBOX_DIR",
-                "persistent_shell": "TERMINAL_PERSISTENT_SHELL",
-            }
-            for _cfg_key, _env_var in _terminal_env_map.items():
-                if _cfg_key in _terminal_cfg:
-                    _val = _terminal_cfg[_cfg_key]
-                    # Skip cwd placeholder values (".", "auto", "cwd") — the
-                    # gateway resolves these to Path.home() later (line ~255).
-                    # Writing the raw placeholder here would just be noise.
-                    # Only bridge explicit absolute paths from config.yaml.
-                    if _cfg_key == "cwd" and str(_val) in (".", "auto", "cwd"):
-                        continue
-                    if isinstance(_val, list):
-                        os.environ[_env_var] = json.dumps(_val)
-                    else:
-                        os.environ[_env_var] = str(_val)
-        # Compression config is read directly from config.yaml by run_agent.py
-        # and auxiliary_client.py — no env var bridging needed.
-        # Auxiliary model/direct-endpoint overrides (vision, web_extract).
-        # Each task has provider/model/base_url/api_key; bridge non-default values to env vars.
-        _auxiliary_cfg = _cfg.get("auxiliary", {})
-        if _auxiliary_cfg and isinstance(_auxiliary_cfg, dict):
-            _aux_task_env = {
-                "vision": {
-                    "provider": "AUXILIARY_VISION_PROVIDER",
-                    "model": "AUXILIARY_VISION_MODEL",
-                    "base_url": "AUXILIARY_VISION_BASE_URL",
-                    "api_key": "AUXILIARY_VISION_API_KEY",
-                },
-                "web_extract": {
-                    "provider": "AUXILIARY_WEB_EXTRACT_PROVIDER",
-                    "model": "AUXILIARY_WEB_EXTRACT_MODEL",
-                    "base_url": "AUXILIARY_WEB_EXTRACT_BASE_URL",
-                    "api_key": "AUXILIARY_WEB_EXTRACT_API_KEY",
-                },
-                "approval": {
-                    "provider": "AUXILIARY_APPROVAL_PROVIDER",
-                    "model": "AUXILIARY_APPROVAL_MODEL",
-                    "base_url": "AUXILIARY_APPROVAL_BASE_URL",
-                    "api_key": "AUXILIARY_APPROVAL_API_KEY",
-                },
-            }
-            for _task_key, _env_map in _aux_task_env.items():
-                _task_cfg = _auxiliary_cfg.get(_task_key, {})
-                if not isinstance(_task_cfg, dict):
-                    continue
-                _prov = str(_task_cfg.get("provider", "")).strip()
-                _model = str(_task_cfg.get("model", "")).strip()
-                _base_url = str(_task_cfg.get("base_url", "")).strip()
-                _api_key = str(_task_cfg.get("api_key", "")).strip()
-                if _prov and _prov != "auto":
-                    os.environ[_env_map["provider"]] = _prov
-                if _model:
-                    os.environ[_env_map["model"]] = _model
-                if _base_url:
-                    os.environ[_env_map["base_url"]] = _base_url
-                if _api_key:
-                    os.environ[_env_map["api_key"]] = _api_key
-        _agent_cfg = _cfg.get("agent", {})
-        if _agent_cfg and isinstance(_agent_cfg, dict):
-            if "max_turns" in _agent_cfg:
-                os.environ["HERMES_MAX_ITERATIONS"] = str(_agent_cfg["max_turns"])
-            # Bridge agent.gateway_timeout → HERMES_AGENT_TIMEOUT env var.
-            # Env var from .env takes precedence (already in os.environ).
-            if "gateway_timeout" in _agent_cfg and "HERMES_AGENT_TIMEOUT" not in os.environ:
-                os.environ["HERMES_AGENT_TIMEOUT"] = str(_agent_cfg["gateway_timeout"])
-            if "gateway_timeout_warning" in _agent_cfg and "HERMES_AGENT_TIMEOUT_WARNING" not in os.environ:
-                os.environ["HERMES_AGENT_TIMEOUT_WARNING"] = str(_agent_cfg["gateway_timeout_warning"])
-            if "gateway_notify_interval" in _agent_cfg and "HERMES_AGENT_NOTIFY_INTERVAL" not in os.environ:
-                os.environ["HERMES_AGENT_NOTIFY_INTERVAL"] = str(_agent_cfg["gateway_notify_interval"])
-            if "restart_drain_timeout" in _agent_cfg and "HERMES_RESTART_DRAIN_TIMEOUT" not in os.environ:
-                os.environ["HERMES_RESTART_DRAIN_TIMEOUT"] = str(_agent_cfg["restart_drain_timeout"])
-        _display_cfg = _cfg.get("display", {})
-        if _display_cfg and isinstance(_display_cfg, dict):
-            if "busy_input_mode" in _display_cfg and "HERMES_GATEWAY_BUSY_INPUT_MODE" not in os.environ:
-                os.environ["HERMES_GATEWAY_BUSY_INPUT_MODE"] = str(_display_cfg["busy_input_mode"])
-        # Timezone: bridge config.yaml → HERMES_TIMEZONE env var.
-        # HERMES_TIMEZONE from .env takes precedence (already in os.environ).
-        _tz_cfg = _cfg.get("timezone", "")
-        if _tz_cfg and isinstance(_tz_cfg, str) and "HERMES_TIMEZONE" not in os.environ:
-            os.environ["HERMES_TIMEZONE"] = _tz_cfg.strip()
-        # Security settings
-        _security_cfg = _cfg.get("security", {})
-        if isinstance(_security_cfg, dict):
-            _redact = _security_cfg.get("redact_secrets")
-            if _redact is not None:
-                os.environ["HERMES_REDACT_SECRETS"] = str(_redact).lower()
-    except Exception:
-        pass  # Non-fatal; gateway can still run with .env values
-
-# Apply IPv4 preference if configured (before any HTTP clients are created).
-try:
-    from hermes_constants import apply_ipv4_preference
-    _network_cfg = (_cfg if '_cfg' in dir() else {}).get("network", {})
-    if isinstance(_network_cfg, dict) and _network_cfg.get("force_ipv4"):
-        apply_ipv4_preference(force=True)
-except Exception:
-    pass
+_cfg = _bootstrap_gateway_env()
+_apply_gateway_ipv4_preference(_cfg)
 
 # Validate config structure early — log warnings so gateway operators see problems
 try:
@@ -253,22 +373,6 @@ try:
     warn_deprecated_cwd_env_vars()
 except Exception:
     pass
-
-# Gateway runs in quiet mode - suppress debug output and use cwd directly (no temp dirs)
-os.environ["HERMES_QUIET"] = "1"
-
-# Enable interactive exec approval for dangerous commands on messaging platforms
-os.environ["HERMES_EXEC_ASK"] = "1"
-
-# Set terminal working directory for messaging platforms.
-# config.yaml terminal.cwd is the canonical source (bridged to TERMINAL_CWD
-# by the config bridge above).  When it's unset or a placeholder, default
-# to home directory.  MESSAGING_CWD is accepted as a backward-compat
-# fallback (deprecated — the warning above tells users to migrate).
-_configured_cwd = os.environ.get("TERMINAL_CWD", "")
-if not _configured_cwd or _configured_cwd in (".", "auto", "cwd"):
-    _fallback = os.getenv("MESSAGING_CWD") or str(Path.home())
-    os.environ["TERMINAL_CWD"] = _fallback
 
 from gateway.config import (
     Platform,
@@ -508,16 +612,16 @@ def _platform_config_key(platform: "Platform") -> str:
     return "cli" if platform == Platform.LOCAL else platform.value
 
 
-def _load_gateway_config() -> dict:
+def _load_gateway_config(hermes_home: Path | None = None) -> dict:
     """Load and parse ~/.hermes/config.yaml, returning {} on any error."""
+    config_path = (hermes_home or _hermes_home) / 'config.yaml'
     try:
-        config_path = _hermes_home / 'config.yaml'
         if config_path.exists():
             import yaml
             with open(config_path, 'r', encoding='utf-8') as f:
                 return yaml.safe_load(f) or {}
     except Exception:
-        logger.debug("Could not load gateway config from %s", _hermes_home / 'config.yaml')
+        logger.debug("Could not load gateway config from %s", config_path)
     return {}
 
 
@@ -639,8 +743,32 @@ class GatewayRunner:
     _stop_task: Optional[asyncio.Task] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
+
+    def __getattr__(self, name: str):
+        """Fallback bare runners to the current module home paths.
+
+        Focused tests often construct ``GatewayRunner`` via ``__new__`` and skip
+        ``__init__``. Those runners still need profile-aware path attributes.
+        """
+        if name == "_hermes_home":
+            return _hermes_home
+        if name == "_env_path":
+            return getattr(self, "_hermes_home", _hermes_home) / ".env"
+        if name == "_config_path":
+            return getattr(self, "_hermes_home", _hermes_home) / "config.yaml"
+        if name == "_VOICE_MODE_PATH":
+            return getattr(self, "_hermes_home", _hermes_home) / "gateway_voice_mode.json"
+        raise AttributeError(f"{type(self).__name__!s} object has no attribute {name!r}")
     
     def __init__(self, config: Optional[GatewayConfig] = None):
+        global _cfg
+        _cfg = _bootstrap_gateway_env()
+        _apply_gateway_ipv4_preference(_cfg)
+        self._hermes_home = _hermes_home
+        self._env_path = self._hermes_home / ".env"
+        self._config_path = self._hermes_home / "config.yaml"
+        self._env_snapshot = dict(os.environ)
+        self._VOICE_MODE_PATH = self._hermes_home / "gateway_voice_mode.json"
         self.config = config or load_gateway_config()
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}
         self._warn_if_docker_media_delivery_is_risky()
@@ -842,8 +970,6 @@ class GatewayRunner:
             return False
 
     # -- Voice mode persistence ------------------------------------------
-
-    _VOICE_MODE_PATH = _hermes_home / "gateway_voice_mode.json"
 
     def _voice_key(self, platform: Platform, chat_id: str) -> str:
         """Return a platform-namespaced key for voice mode state."""
@@ -4246,7 +4372,7 @@ class GatewayRunner:
         _redact_pii = False
         try:
             import yaml as _pii_yaml
-            with open(_config_path, encoding="utf-8") as _pf:
+            with open(self._config_path, encoding="utf-8") as _pf:
                 _pcfg = _pii_yaml.safe_load(_pf) or {}
             _redact_pii = bool((_pcfg.get("privacy") or {}).get("redact_pii", False))
         except Exception:
@@ -9777,9 +9903,9 @@ class GatewayRunner:
             # Re-read .env and config for fresh credentials (gateway is long-lived,
             # keys may change without restart).
             try:
-                load_dotenv(_env_path, override=True, encoding="utf-8")
+                load_dotenv(self._env_path, override=True, encoding="utf-8")
             except UnicodeDecodeError:
-                load_dotenv(_env_path, override=True, encoding="latin-1")
+                load_dotenv(self._env_path, override=True, encoding="latin-1")
             except Exception:
                 pass
 

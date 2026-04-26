@@ -6,7 +6,7 @@ import { delimiter, join } from 'node:path'
  *
  * Order of preference:
  *   1. $VISUAL / $EDITOR (user's explicit choice)
- *   2. first executable found on $PATH from `vim` → `vi` → `nano`
+ *   2. first executable found on $PATH from `nvim` → `vim` → `vi` → `nano`
  *   3. literal `'vi'` so spawnSync still has something to try
  *
  * Mirrors the override on `input_area.buffer._open_file_in_editor` in cli.py
@@ -14,7 +14,7 @@ import { delimiter, join } from 'node:path'
  * doesn't surprise the user with nano in one and vim in the other.
  */
 export function resolveEditor(env: NodeJS.ProcessEnv = process.env): string {
-  return env.VISUAL || env.EDITOR || findExecutable(env.PATH ?? '', 'vim', 'vi', 'nano') || 'vi'
+  return env.VISUAL || env.EDITOR || findExecutable(env.PATH ?? '', 'nvim', 'vim', 'vi', 'nano') || 'vi'
 }
 
 function findExecutable(path: string, ...names: string[]): null | string {

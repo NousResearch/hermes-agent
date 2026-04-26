@@ -33,12 +33,13 @@ describe('resolveEditor', () => {
     expect(resolveEditor({ EDITOR: 'nvim', PATH: dir })).toBe('nvim')
   })
 
-  it('prefers vim over vi over nano on $PATH', () => {
+  it('prefers nvim over vim over vi over nano on $PATH', () => {
     exe('nano')
     exe('vi')
-    const vim = exe('vim')
+    exe('vim')
+    const nvim = exe('nvim')
 
-    expect(resolveEditor({ PATH: dir })).toBe(vim)
+    expect(resolveEditor({ PATH: dir })).toBe(nvim)
   })
 
   it('falls back to vi when only vi and nano exist', () => {

@@ -440,6 +440,7 @@ class TestBuildOAuthAuthNonInteractive:
 
 def test_build_client_metadata_basic():
     """_build_client_metadata returns metadata with expected defaults."""
+    pytest.importorskip("mcp")
     from tools.mcp_oauth import _build_client_metadata, _configure_callback_port
 
     cfg = {"client_name": "Test Client"}
@@ -453,6 +454,7 @@ def test_build_client_metadata_basic():
 
 def test_build_client_metadata_without_secret_is_public():
     """Without client_secret, token endpoint auth is 'none' (public client)."""
+    pytest.importorskip("mcp")
     from tools.mcp_oauth import _build_client_metadata, _configure_callback_port
 
     cfg = {}
@@ -463,6 +465,7 @@ def test_build_client_metadata_without_secret_is_public():
 
 def test_build_client_metadata_with_secret_is_confidential():
     """With client_secret, token endpoint auth is 'client_secret_post'."""
+    pytest.importorskip("mcp")
     from tools.mcp_oauth import _build_client_metadata, _configure_callback_port
 
     cfg = {"client_secret": "shh"}

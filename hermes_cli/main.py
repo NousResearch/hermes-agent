@@ -2935,19 +2935,30 @@ def _save_custom_provider(
 def _model_flow_azure_foundry(config, current_model=""):
     """Azure Foundry provider: configure endpoint, API mode, API key, and model.
 
-    Azure Foundry supports both OpenAI-style (/v1/chat/completions) and
-    Anthropic-style (/v1/messages) endpoints. The user must select which
-    API format their endpoint uses.
+    Azure Foundry supports both OpenAI-style (``/v1/chat/completions``) and
+    Anthropic-style (``/v1/messages``) endpoints.  The wizard auto-detects
+    the transport and available models when possible:
+
+    * URLs ending in ``/anthropic`` → Anthropic Messages API.
+    * Successful ``GET <base>/models`` probe → OpenAI-style + populates
+      a picker with the returned deployment / model IDs.
+    * Anthropic Messages probe fallback when ``/models`` fails.
+    * Manual entry when every probe fails (private endpoints, etc.).
+
+    Context lengths for the chosen model are resolved via the standard
+    :func:`agent.model_metadata.get_model_context_length` chain
+    (models.dev, provider metadata, hardcoded family fallbacks).
     """
-    from hermes_cli.auth import _save_model_choice, deactivate_provider
+    from hermes_cli.auth import _save_model_choice, deactivate_provider  # noqa: F401
     from hermes_cli.config import get_env_value, save_env_value, load_config, save_config
+    from hermes_cli import azure_detect
     import getpass
 
-    # Load current Azure Foundry configuration
+    # ── Load current Azure Foundry configuration ─────────────────────
     model_cfg = config.get("model", {})
-    if isinstance(model_cfg, dict):
-        current_base_url = model_cfg.get("base_url", "") if model_cfg.get("provider") == "azure-foundry" else ""
-        current_api_mode = model_cfg.get("api_mode", "") if model_cfg.get("provider") == "azure-foundry" else ""
+    if isinstance(model_cfg, dict) and model_cfg.get("provider") == "azure-foundry":
+        current_base_url = str(model_cfg.get("base_url", "") or "")
+        current_api_mode = str(model_cfg.get("api_mode", "") or "")
     else:
         current_base_url = ""
         current_api_mode = ""
@@ -2959,64 +2970,43 @@ def _model_flow_azure_foundry(config, current_model=""):
     print("=" * 50)
     print()
     print("Azure Foundry can host models with either OpenAI-style or")
-    print("Anthropic-style API endpoints. Configure your endpoint below.")
+    print("Anthropic-style API endpoints.  Hermes will probe your")
+    print("endpoint to auto-detect the transport and the deployed")
+    print("models when possible.")
     print()
 
     if current_base_url:
         print(f"  Current endpoint: {current_base_url}")
     if current_api_mode:
-        mode_label = "OpenAI-style" if current_api_mode == "chat_completions" else "Anthropic-style"
-        print(f"  Current API mode: {mode_label}")
+        _lbl = "OpenAI-style" if current_api_mode == "chat_completions" else "Anthropic-style"
+        print(f"  Current API mode: {_lbl}")
     if current_api_key:
         print(f"  Current API key:  {current_api_key[:8]}...")
     print()
 
-    # Step 1: Get the endpoint URL
+    # ── Step 1: endpoint URL ─────────────────────────────────────────
     try:
-        base_url = input(f"API endpoint URL [{current_base_url or 'e.g. https://your-model.azure.com/v1'}]: ").strip()
+        base_url = input(
+            f"API endpoint URL [{current_base_url or 'e.g. https://your-resource.openai.azure.com/openai/v1'}]: "
+        ).strip()
     except (KeyboardInterrupt, EOFError):
         print("\nCancelled.")
         return
 
-    effective_url = base_url or current_base_url
+    effective_url = (base_url or current_base_url).rstrip("/")
     if not effective_url:
         print("No endpoint URL provided. Cancelled.")
         return
-
-    # Validate URL format
     if not effective_url.startswith(("http://", "https://")):
         print(f"Invalid URL: {effective_url} (must start with http:// or https://)")
         return
 
-    # Step 2: Select API mode (OpenAI or Anthropic style)
-    print()
-    print("Select the API format your Azure Foundry endpoint uses:")
-    print()
-    print("  1. OpenAI-style  (POST /v1/chat/completions)")
-    print("     For: GPT models, Llama, Mistral, and most open models")
-    print()
-    print("  2. Anthropic-style  (POST /v1/messages)")
-    print("     For: Claude models deployed via Anthropic API format")
-    print()
-
-    try:
-        default_choice = "1" if current_api_mode != "anthropic_messages" else "2"
-        mode_choice = input(f"API format [1/2] ({default_choice}): ").strip() or default_choice
-    except (KeyboardInterrupt, EOFError):
-        print("\nCancelled.")
-        return
-
-    if mode_choice == "2":
-        api_mode = "anthropic_messages"
-        print("  → Using Anthropic-style API format")
-    else:
-        api_mode = "chat_completions"
-        print("  → Using OpenAI-style API format")
-
-    # Step 3: Get the API key
+    # ── Step 2: API key ──────────────────────────────────────────────
     print()
     try:
-        api_key = getpass.getpass(f"API key [{current_api_key[:8] + '...' if current_api_key else 'required'}]: ").strip()
+        api_key = getpass.getpass(
+            f"API key [{current_api_key[:8] + '...' if current_api_key else 'required'}]: "
+        ).strip()
     except (KeyboardInterrupt, EOFError):
         print("\nCancelled.")
         return
@@ -3026,24 +3016,82 @@ def _model_flow_azure_foundry(config, current_model=""):
         print("No API key provided. Cancelled.")
         return
 
-    # Step 4: Get the model name
+    # ── Step 3: auto-detect transport + models ───────────────────────
     print()
-    try:
-        model_name = input(f"Model name [{current_model or 'e.g. gpt-4, claude-3-5-sonnet'}]: ").strip()
-    except (KeyboardInterrupt, EOFError):
-        print("\nCancelled.")
-        return
+    print("◐ Probing endpoint to auto-detect transport and models...")
+    detection = azure_detect.detect(effective_url, effective_key)
 
-    effective_model = model_name or current_model
+    discovered_models: list[str] = list(detection.models)
+    api_mode: str = detection.api_mode or ""
+
+    if api_mode:
+        mode_label = "OpenAI-style" if api_mode == "chat_completions" else "Anthropic-style"
+        print(f"✓ Detected API transport: {mode_label}")
+        if detection.reason:
+            print(f"    ({detection.reason})")
+        if discovered_models:
+            print(f"✓ Found {len(discovered_models)} deployed model(s) on this endpoint")
+    else:
+        print(f"⚠ Auto-detection incomplete: {detection.reason}")
+        print()
+        print("Select the API format your Azure Foundry endpoint uses:")
+        print("  1. OpenAI-style  (POST /v1/chat/completions)")
+        print("     For: GPT models, Llama, Mistral, and most open models")
+        print("  2. Anthropic-style  (POST /v1/messages)")
+        print("     For: Claude models deployed via Anthropic API format")
+        try:
+            default_choice = "2" if current_api_mode == "anthropic_messages" else "1"
+            mode_choice = input(f"API format [1/2] ({default_choice}): ").strip() or default_choice
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled.")
+            return
+        api_mode = "anthropic_messages" if mode_choice == "2" else "chat_completions"
+
+    # ── Step 4: model name ───────────────────────────────────────────
+    print()
+    effective_model = ""
+    if discovered_models:
+        print("Available models on this endpoint:")
+        for i, mid in enumerate(discovered_models[:30], start=1):
+            print(f"  {i:>2}. {mid}")
+        if len(discovered_models) > 30:
+            print(f"  ... and {len(discovered_models) - 30} more (type name manually if not shown)")
+        print()
+        try:
+            pick = input(
+                f"Pick by number, or type a deployment name [{current_model or discovered_models[0]}]: "
+            ).strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled.")
+            return
+        if not pick:
+            effective_model = current_model or discovered_models[0]
+        elif pick.isdigit() and 1 <= int(pick) <= min(len(discovered_models), 30):
+            effective_model = discovered_models[int(pick) - 1]
+        else:
+            effective_model = pick
+    else:
+        try:
+            model_name = input(
+                f"Model / deployment name [{current_model or 'e.g. gpt-5.4, claude-sonnet-4-6'}]: "
+            ).strip()
+        except (KeyboardInterrupt, EOFError):
+            print("\nCancelled.")
+            return
+        effective_model = model_name or current_model
+
     if not effective_model:
         print("No model name provided. Cancelled.")
         return
 
-    # Step 5: Save configuration
-    # Save API key to .env
+    # ── Step 5: context-length lookup ────────────────────────────────
+    ctx_len = azure_detect.lookup_context_length(
+        effective_model, effective_url, effective_key,
+    )
+
+    # ── Step 6: persist ──────────────────────────────────────────────
     save_env_value("AZURE_FOUNDRY_API_KEY", effective_key)
 
-    # Update config.yaml
     cfg = load_config()
     model = cfg.get("model")
     if not isinstance(model, dict):
@@ -3051,19 +3099,18 @@ def _model_flow_azure_foundry(config, current_model=""):
         cfg["model"] = model
 
     model["provider"] = "azure-foundry"
-    model["base_url"] = effective_url.rstrip("/")
+    model["base_url"] = effective_url
     model["api_mode"] = api_mode
     model["default"] = effective_model
+    if ctx_len:
+        model["context_length"] = ctx_len
 
     save_config(cfg)
-
-    # Deactivate any OAuth provider
     deactivate_provider()
-
-    # Update caller's config dict
     config["model"] = dict(model)
 
-    # Clear any conflicting env vars
+    # Clear any conflicting env vars so auxiliary clients don't poison
+    # themselves with a stale OpenAI base URL / key.
     if get_env_value("OPENAI_BASE_URL"):
         save_env_value("OPENAI_BASE_URL", "")
     if get_env_value("OPENAI_API_KEY"):
@@ -3071,10 +3118,14 @@ def _model_flow_azure_foundry(config, current_model=""):
 
     mode_label = "OpenAI-style" if api_mode == "chat_completions" else "Anthropic-style"
     print()
-    print(f"✓ Azure Foundry configured:")
-    print(f"    Endpoint:  {effective_url}")
-    print(f"    API mode:  {mode_label}")
-    print(f"    Model:     {effective_model}")
+    print("✓ Azure Foundry configured:")
+    print(f"    Endpoint:       {effective_url}")
+    print(f"    API mode:       {mode_label}")
+    print(f"    Model:          {effective_model}")
+    if ctx_len:
+        print(f"    Context length: {ctx_len:,} tokens")
+    else:
+        print("    Context length: not auto-detected (will fall back at runtime)")
     print()
 
 

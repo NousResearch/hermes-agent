@@ -36,6 +36,11 @@ class TestWeComRequirements:
 
 
 class TestWeComAdapterInit:
+    def test_declares_non_editable_message_capability(self):
+        from gateway.platforms.wecom import WeComAdapter
+
+        assert WeComAdapter.SUPPORTS_MESSAGE_EDITING is False
+
     def test_reads_config_from_extra(self):
         from gateway.platforms.wecom import WeComAdapter
 

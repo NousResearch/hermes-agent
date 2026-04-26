@@ -54,24 +54,35 @@ def yaml_load(content: str):
 # in-process LRU prompt cache lookup — so each call would otherwise re-read
 # and re-parse ~/.hermes/config.yaml.  In gateway mode that adds disk reads
 # and a YAML parse on every session.  Cache the parsed dict keyed by path,
-# invalidated by ``(st_mtime_ns, st_size)`` so user edits still take effect.
+# invalidated by ``(st_mtime_ns, st_size, st_ino)``.
+#
+# Why include st_ino: ``atomic_yaml_write`` (used by gateway/CLI to mutate
+# config.yaml at runtime) creates a temp file and ``os.replace``s it onto
+# config.yaml — the new file always has a fresh inode.  On filesystems with
+# coarse mtime resolution, two same-size writes within one tick would
+# otherwise share the same (mtime, size) tuple; the inode change makes the
+# invalidation bulletproof against atomic replacement.
 
 _CONFIG_CACHE_LOCK = threading.Lock()
-_CONFIG_CACHE: Dict[str, Tuple[Optional[Tuple[int, int]], Dict[str, Any]]] = {}
+_ConfigSig = Optional[Tuple[int, int, int]]
+_CONFIG_CACHE: Dict[str, Tuple[_ConfigSig, Dict[str, Any]]] = {}
 _CONFIG_CACHE_MAX_ENTRIES = 32
 
 
 def _read_config_cached() -> Dict[str, Any]:
-    """Return a parsed snapshot of ``~/.hermes/config.yaml`` (cached by mtime+size).
+    """Return a parsed snapshot of ``~/.hermes/config.yaml`` (cached by stat sig).
 
     Returns an empty dict when the file is missing or unparsable.  The
-    returned dict is shared across callers — treat it as read-only.
+    returned dict is shared across callers and *must not be mutated* — only
+    read.  ``get_disabled_skill_names`` and ``get_external_skills_dirs``
+    return fresh sets/lists so callers cannot accidentally corrupt the cache
+    through them.
     """
     config_path = get_config_path()
     path_str = str(config_path)
     try:
         st = config_path.stat()
-        sig: Optional[Tuple[int, int]] = (st.st_mtime_ns, st.st_size)
+        sig: _ConfigSig = (st.st_mtime_ns, st.st_size, st.st_ino)
     except OSError:
         sig = None
 
@@ -92,8 +103,9 @@ def _read_config_cached() -> Dict[str, Any]:
 
     with _CONFIG_CACHE_LOCK:
         if len(_CONFIG_CACHE) >= _CONFIG_CACHE_MAX_ENTRIES and path_str not in _CONFIG_CACHE:
-            # Drop an arbitrary entry to bound memory in pathological test
-            # runs that monkeypatch HERMES_HOME to many distinct tmpdirs.
+            # Bound memory in pathological test runs that monkeypatch
+            # HERMES_HOME to many distinct tmpdirs.  Drop the oldest entry
+            # (insertion-ordered dict ⇒ first key is oldest).
             _CONFIG_CACHE.pop(next(iter(_CONFIG_CACHE)))
         _CONFIG_CACHE[path_str] = (sig, data)
     return data

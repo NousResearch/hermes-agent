@@ -303,6 +303,8 @@ export function TextInput({
   const pasteTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pastePos = useRef(0)
   const editVersionRef = useRef(0)
+  const parentChangeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingParentValue = useRef<string | null>(null)
   const undo = useRef<{ cursor: number; value: string }[]>([])
   const redo = useRef<{ cursor: number; value: string }[]>([])
 
@@ -385,11 +387,40 @@ export function TextInput({
       if (pasteTimer.current) {
         clearTimeout(pasteTimer.current)
       }
+
+      if (parentChangeTimer.current) {
+        clearTimeout(parentChangeTimer.current)
+      }
     },
     []
   )
 
-  const commit = (next: string, nextCur: number, track = true) => {
+  const flushParentChange = () => {
+    if (parentChangeTimer.current) {
+      clearTimeout(parentChangeTimer.current)
+      parentChangeTimer.current = null
+    }
+
+    const next = pendingParentValue.current
+    pendingParentValue.current = null
+
+    if (next !== null) {
+      self.current = true
+      cbChange.current(next)
+    }
+  }
+
+  const scheduleParentChange = (next: string) => {
+    pendingParentValue.current = next
+
+    if (parentChangeTimer.current) {
+      return
+    }
+
+    parentChangeTimer.current = setTimeout(flushParentChange, 16)
+  }
+
+  const commit = (next: string, nextCur: number, track = true, syncParent = true) => {
     const prev = vRef.current
     const c = snapPos(next, nextCur)
     editVersionRef.current += 1
@@ -414,8 +445,13 @@ export function TextInput({
     vRef.current = next
 
     if (next !== prev) {
-      self.current = true
-      cbChange.current(next)
+      if (syncParent) {
+        flushParentChange()
+        self.current = true
+        cbChange.current(next)
+      } else {
+        scheduleParentChange(next)
+      }
     }
   }
 
@@ -597,9 +633,13 @@ export function TextInput({
       }
 
       if (k.return) {
-        k.shift || (isMac ? isActionMod(k) : k.meta)
-          ? commit(ins(vRef.current, curRef.current, '\n'), curRef.current + 1)
-          : cbSubmit.current?.(vRef.current)
+        if (k.shift || (isMac ? isActionMod(k) : k.meta)) {
+          flushParentChange()
+          commit(ins(vRef.current, curRef.current, '\n'), curRef.current + 1)
+        } else {
+          flushParentChange()
+          cbSubmit.current?.(vRef.current)
+        }
 
         return
       }
@@ -741,8 +781,25 @@ export function TextInput({
             v = v.slice(0, range.start) + text + v.slice(range.end)
             c = range.start + text.length
           } else {
+            const simpleAppend =
+              focus &&
+              termFocus &&
+              !selected &&
+              !mask &&
+              !placeholder &&
+              c === v.length &&
+              !v.includes('\n') &&
+              stringWidth(text) === text.length &&
+              stringWidth(v) + text.length < Math.max(1, columns)
+
             v = v.slice(0, c) + text + v.slice(c)
             c += text.length
+
+            if (simpleAppend) {
+              commit(v, c, true, false)
+
+              return
+            }
           }
         } else {
           return

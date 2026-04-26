@@ -431,12 +431,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
 
-      case 'btw.complete':
-        dropBgTask('btw:x')
-        sys(`[btw] ${ev.payload.text}`)
-
-        return
-
       case 'subagent.spawn_requested':
         // Child built but not yet running (waiting on ThreadPoolExecutor slot).
         // Preserve completed state if a later event races in before this one.

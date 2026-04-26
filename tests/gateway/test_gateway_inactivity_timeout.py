@@ -14,11 +14,15 @@ import os
 import sys
 import time
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 sys.path.insert(0, str(Path(__file__).parent.parent.parent))
+
+from gateway.run import _agent_timeout_idle_seconds, _format_timeout_duration  # noqa: E402
+from run_agent import AIAgent  # noqa: E402
 
 
 class FakeAgent:
@@ -103,7 +107,7 @@ class TestStagedInactivityWarning:
         while True:
             done, _ = concurrent.futures.wait({future}, timeout=_POLL_INTERVAL)
             if done:
-                result = future.result()
+                future.result()
                 break
             _idle_secs = 0.0
             if hasattr(agent, "get_activity_summary"):
@@ -313,3 +317,47 @@ class TestWarningThresholdBelowTimeout:
         pool.shutdown(wait=False, cancel_futures=True)
         assert _warning_fired
         assert _timeout_fired
+
+
+class TestProgressAwareTimeout:
+    """Timeouts use productive progress, not provider-wait heartbeats."""
+
+    def test_timeout_idle_prefers_progress_over_status_activity(self):
+        summary = {
+            "seconds_since_activity": 1.0,
+            "seconds_since_progress": 121.0,
+            "last_activity_desc": "waiting for stream response (120s, no chunks yet)",
+            "last_progress_activity_desc": "starting API call #1",
+        }
+
+        assert _agent_timeout_idle_seconds(summary) == 121.0
+
+    def test_timeout_idle_falls_back_for_older_agents(self):
+        summary = {"seconds_since_activity": 17.0}
+
+        assert _agent_timeout_idle_seconds(summary) == 17.0
+
+    def test_timeout_duration_does_not_round_seconds_to_minutes(self):
+        assert _format_timeout_duration(30) == "30s"
+        assert _format_timeout_duration(90) == "1m 30s"
+        assert _format_timeout_duration(120) == "2m"
+
+    def test_non_productive_heartbeat_does_not_reset_progress_timer(self):
+        agent = AIAgent.__new__(AIAgent)
+        now = time.time()
+        agent._last_activity_ts = now - 50.0
+        agent._last_activity_desc = "starting API call #1"
+        agent._last_progress_activity_ts = now - 50.0
+        agent._last_progress_activity_desc = "starting API call #1"
+        agent._current_tool = None
+        agent._api_call_count = 1
+        agent.max_iterations = 120
+        agent.iteration_budget = SimpleNamespace(used=1, max_total=120)
+
+        agent._touch_activity("waiting for stream response (30s, no chunks yet)", productive=False)
+        summary = agent.get_activity_summary()
+
+        assert summary["last_activity_desc"].startswith("waiting for stream response")
+        assert summary["last_progress_activity_desc"] == "starting API call #1"
+        assert summary["seconds_since_activity"] <= 1.0
+        assert summary["seconds_since_progress"] >= 49.0

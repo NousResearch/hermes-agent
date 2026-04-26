@@ -1709,7 +1709,8 @@ def resolve_provider_client(
             instead of wrapping in CodexAuxiliaryClient.  Use this when
             the caller needs direct access to responses.stream() (e.g.,
             the main agent loop).
-        explicit_base_url: Optional direct OpenAI-compatible endpoint.
+        explicit_base_url: Optional direct endpoint URL. The SDK client
+            selected is determined by api_mode (OpenAI, Anthropic, Codex).
         explicit_api_key: Optional API key paired with explicit_base_url.
         api_mode: API mode override.  One of "chat_completions",
             "codex_responses", or None (auto-detect).  When set to
@@ -1861,6 +1862,30 @@ def resolve_provider_client(
                 extra["default_headers"] = copilot_request_headers(
                     is_agent_turn=True, is_vision=is_vision
                 )
+            # anthropic_messages: route through the Anthropic Messages API
+            # via AnthropicAuxiliaryClient.  Mirrors the named-custom-provider
+            # branch (path 2) above.  Without this, api_mode is silently
+            # ignored for explicit_base_url configs — causing Anthropic-format
+            # bodies to be sent to the wrong endpoint (#16254).
+            if api_mode == "anthropic_messages":
+                try:
+                    from agent.anthropic_adapter import build_anthropic_client
+                    real_client = build_anthropic_client(custom_key, _clean_base)
+                except ImportError:
+                    logger.warning(
+                        "resolve_provider_client: explicit_base_url declares "
+                        "api_mode=anthropic_messages but the anthropic SDK is "
+                        "not installed — falling back to OpenAI-wire."
+                    )
+                    client = OpenAI(api_key=custom_key, base_url=_clean_base, **extra)
+                    return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
+                            else (client, final_model))
+                sync_anthropic = AnthropicAuxiliaryClient(
+                    real_client, final_model, custom_key, _clean_base, is_oauth=False,
+                )
+                if async_mode:
+                    return AsyncAnthropicAuxiliaryClient(sync_anthropic), final_model
+                return sync_anthropic, final_model
             client = OpenAI(api_key=custom_key, base_url=_clean_base, **extra)
             client = _wrap_if_needed(client, final_model, custom_base)
             return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
@@ -2706,6 +2731,11 @@ def _resolve_task_provider_model(
         cfg_model = str(task_config.get("model", "")).strip() or None
         cfg_base_url = str(task_config.get("base_url", "")).strip() or None
         cfg_api_key = str(task_config.get("api_key", "")).strip() or None
+        _cfg_key_env = str(task_config.get("key_env", "")).strip()
+        if not cfg_api_key and _cfg_key_env:
+            # Mirrors _get_named_custom_provider so auxiliary.<task> configs
+            # honour key_env identically to providers: entries (#16254).
+            cfg_api_key = os.getenv(_cfg_key_env, "").strip() or None
         cfg_api_mode = str(task_config.get("api_mode", "")).strip() or None
 
     resolved_model = model or cfg_model

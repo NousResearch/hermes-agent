@@ -65,6 +65,7 @@ import {
   type SelectionState,
   selectLineAt,
   selectWordAt,
+  selectionBounds,
   shiftAnchor,
   shiftSelection,
   shiftSelectionForFollow,
@@ -252,7 +253,6 @@ export default class Ink {
   // into one follow-up microtask instead of stacking renders.
   private isRendering = false
   private immediateRerenderRequested = false
-  private selectionNotifyQueued = false
   private selectionDragCell: { col: number; row: number } | null = null
   private selectionAutoScrollTimer: ReturnType<typeof setInterval> | null = null
   private selectionAutoScrollDir: -1 | 0 | 1 = 0
@@ -1606,13 +1606,7 @@ export default class Ink {
     return () => this.selectionListeners.delete(cb)
   }
   private notifySelectionChange(): void {
-    if (!this.selectionNotifyQueued) {
-      this.selectionNotifyQueued = true
-      queueMicrotask(() => {
-        this.selectionNotifyQueued = false
-        this.scheduleRender()
-      })
-    }
+    this.scheduleRender()
 
     const active = hasSelection(this.selection)
 
@@ -1854,11 +1848,16 @@ export default class Ink {
       return
     }
 
-    if (this.selectionAutoScrollDir > 0) {
-      captureScrolledRows(this.selection, this.frontFrame.screen, box.scrollViewportTop ?? 0, box.scrollViewportTop ?? 0, 'above')
-    } else {
-      const bottom = (box.scrollViewportTop ?? 0) + viewport - 1
-      captureScrolledRows(this.selection, this.frontFrame.screen, bottom, bottom, 'below')
+    const top = box.scrollViewportTop ?? 0
+    const bottom = top + viewport - 1
+    const before = selectionBounds(this.selection)
+
+    if (before) {
+      if (this.selectionAutoScrollDir > 0) {
+        captureScrolledRows(this.selection, this.frontFrame.screen, top, top, 'above')
+      } else {
+        captureScrolledRows(this.selection, this.frontFrame.screen, bottom, bottom, 'below')
+      }
     }
 
     box.stickyScroll = false
@@ -1866,8 +1865,16 @@ export default class Ink {
     box.scrollAnchor = undefined
     box.scrollTop = next
     markDirty(box)
-    shiftAnchor(this.selection, -this.selectionAutoScrollDir, box.scrollViewportTop ?? 0, (box.scrollViewportTop ?? 0) + viewport - 1)
-    this.applySelectionDrag(this.selectionDragCell?.col ?? 0, this.selectionAutoScrollDir > 0 ? this.terminalRows - 1 : 0)
+    shiftAnchor(this.selection, -this.selectionAutoScrollDir, top, bottom)
+
+    if (this.selectionDragCell) {
+      this.selectionDragCell = {
+        col: this.selectionDragCell.col,
+        row: this.selectionAutoScrollDir > 0 ? bottom : top
+      }
+    }
+
+    this.applySelectionDrag(this.selectionDragCell?.col ?? 0, this.selectionDragCell?.row ?? (this.selectionAutoScrollDir > 0 ? bottom : top))
   }
 
   private stopSelectionAutoScroll(): void {

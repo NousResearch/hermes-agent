@@ -34,23 +34,59 @@ any headless environment.
 
 ## First-Time Setup
 
-### 1. Register an Azure AD App (one-time, ~3 minutes)
+## Authentication Options
 
-Go to **Azure Portal → App registrations** (or visit this link):
-https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade
+Pick the path that works for your setup.
 
-1. Click **New registration**
-2. Name it anything (e.g. `hermes-agent`)
+### Option 1: rclone (Easiest — recommended for personal Microsoft accounts)
+
+Microsoft makes it hard to use OAuth with custom apps for personal accounts.
+**rclone already has a pre-registered public OAuth client**, so you don't need
+an Azure app at all.
+
+Install rclone (Termux: `pkg install rclone`, Ubuntu: `apt-get install rclone`),
+then run once:
+
+```bash
+rclone config
+# n) New remote
+# name: onedrive
+# Storage: 26 (OneDrive)
+# Follow the interactive prompts — it will open a browser on your phone
+# Choose "Personal" account when asked
+```
+
+From then on Hermes uses the rclone backend automatically. No Azure portal
+needed, no app registration.
+
+### Option 2: Direct Microsoft Graph API (No external dependencies)
+
+This gives you full control but **requires an Azure app configured as a
+Public client**.
+
+**Register an Azure AD App (one-time, ~3 minutes):**
+
+1. Go to https://portal.azure.com/#blade/Microsoft_AAD_RegisteredApps/ApplicationsListBlade
+2. Click **New registration** → name it `hermes-agent`
 3. Supported account types: **"Accounts in any organizational directory and
    personal Microsoft accounts"**
-4. Redirect URI: **leave empty** (not needed for device code flow)
+4. Redirect URI: **leave empty**
 5. Click **Register**
-6. On the Overview page, copy **Application (client) ID**
-7. Left sidebar → **API permissions** → **Add a permission** → **Microsoft Graph**
-   → **Delegated permissions**, then add:
+6. Copy the **Application (client) ID**
+7. Left sidebar → **Authentication**
+8. Under **Advanced settings**
+   → Toggle **"Allow public client flows"** → **Yes** ← *Required for device code*
+9. Left sidebar → **API permissions** → **Add a permission** → **Microsoft Graph**
+   → **Delegated permissions**, add:
    - `Files.ReadWrite`
    - `User.Read`
-8. Click **Grant admin consent** (not required for personal Microsoft accounts)
+10. Click **Grant admin consent**
+
+> **CRITICAL:** If you see `AADSTS70002: The provided client is not supported
+> for this feature` during auth, you skipped step 8. The app **must** be a
+> Public client for device-code flow.
+   - `User.Read`
+10. Click **Grant admin consent** (not required for personal Microsoft accounts)
 
 > **Important:** Save the Client ID. You'll need it below.
 
@@ -176,11 +212,11 @@ $OD search "budget 2024" --format json
 
 | Symptom | Fix |
 |---------|-----|
-| `invalid_client` | Double-check the client ID. No client secret needed for device code. |
-| `access_denied` / `authorization_pending` | You haven't completed the browser step yet. Open the link, enter the code, and approve. |
-| `InvalidAuthenticationToken` | Token expired and auto-refresh failed. Delete `~/.hermes/onedrive_token.json` and re-run `--auth`. |
-| Upload fails with large files | Currently limited to ~60 MB. Large file chunked upload will be added in a future version. |
-| `AADSTS70002: The provided client is not supported` | The Azure app is registered as a **Web** app. Device code requires a **Public client**. Fix: Azure Portal → your app → Authentication → Advanced settings → **Allow public client flows: Yes** → Save. |
+| `invalid_client` / `AADSTS70002: The provided client is not supported for this feature` (device-code) | Your Azure app is a **Web** application. Go to Azure Portal → Authentication → **Allow public client flows** → **Yes** → Save. Device-code flow only works with **Public** clients. |
+| `invalid_client` (PKCE) | Your Azure app doesn't have the `nativeclient` redirect URI. Either add `https://login.microsoftonline.com/common/oauth2/nativeclient` as a **Mobile and desktop** platform, or switch to the device-code flow. |
+| `InvalidAuthenticationToken` | Token expired and auto-refresh failed. Delete `~/.hermes/onedrive_token.json` and re-run setup. |
+| Upload fails with large files | Currently limited to ~60 MB. Use rclone for files above that. |
+| `Insufficient privileges` | Remove and re-add the API permissions in Azure Portal, then grant admin consent. |
 | `Insufficient privileges` | Remove and re-add the API permissions in Azure Portal, then grant admin consent. |
 
 ## Contributing

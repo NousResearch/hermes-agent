@@ -11,19 +11,16 @@ from urllib.parse import urlencode
 
 DEFAULT_TOKEN_PATH = os.path.join(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")), "onedrive_token.json")
 
-AUTH_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/devicecode"
-TOKEN_URL = "https://login.microsoftonline.com/consumers/oauth2/v2.0/token"
+AUTH_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/devicecode"
+TOKEN_URL = "https://login.microsoftonline.com/common/oauth2/v2.0/token"
 SCOPES = "https://graph.microsoft.com/Files.ReadWrite offline_access User.Read"
 
 def json_request(url, data=None, headers=None, method=None):
-    """Small helper for JSON API calls."""
     req = Request(url, data=data, headers=headers or {}, method=method)
     with urlopen(req, timeout=60) as resp:
         return json.loads(resp.read().decode())
 
 def do_device_flow(client_id):
-    """Run the device code OAuth flow. Returns token dict on success."""
-    # Step 1: Request device code
     device_resp = json_request(
         AUTH_URL,
         data=urlencode({"client_id": client_id, "scope": SCOPES}).encode(),
@@ -42,7 +39,6 @@ def do_device_flow(client_id):
         "message": f"Open {verification_uri} in a browser and enter code: {user_code}"
     }))
 
-    # Step 2: Poll for token
     start = time.time()
     while time.time() - start < expires_in:
         time.sleep(interval)
@@ -57,7 +53,6 @@ def do_device_flow(client_id):
                 headers={"Content-Type": "application/x-www-form-urlencoded"}
             )
         except Exception as e:
-            # Some errors are just "not ready yet"
             body = e.read().decode() if hasattr(e, 'read') else str(e)
             if "authorization_pending" in body or "authorization_pending" in str(body):
                 continue
@@ -65,7 +60,7 @@ def do_device_flow(client_id):
                 print(json.dumps({"error": "Device code expired. Please restart --auth."}))
                 sys.exit(1)
             if "invalid_client" in body:
-                print(json.dumps({"error": "Invalid client_id. Check your Azure app registration."}))
+                print(json.dumps({"error": "Invalid client_id. Check your Azure app registration — device code requires the app to be a Public client."}))
                 sys.exit(1)
             print(json.dumps({"error": str(body)}))
             sys.exit(1)
@@ -77,24 +72,21 @@ def do_device_flow(client_id):
                 print(json.dumps({"error": "Device code expired. Please restart --auth."}))
                 sys.exit(1)
             if token_resp["error"] == "invalid_client":
-                print(json.dumps({"error": "Invalid client_id. Check your Azure app registration."}))
+                print(json.dumps({"error": "Invalid client_id. Check your Azure app registration — device code requires the app to be a Public client."}))
                 sys.exit(1)
             continue
 
-        # Success! token_resp has access_token, refresh_token, expires_in
         return token_resp
 
     print(json.dumps({"error": "Timed out waiting for user approval."}))
     sys.exit(1)
 
 def refresh_access_token(token_data, client_id):
-    """Refresh the access token using the refresh_token."""
     refresh_token = token_data.get("refresh_token")
     if not refresh_token:
         return None
-
     try:
-        resp = json_request(
+        return json_request(
             TOKEN_URL,
             data=urlencode({
                 "client_id": client_id,
@@ -104,7 +96,6 @@ def refresh_access_token(token_data, client_id):
             }).encode(),
             headers={"Content-Type": "application/x-www-form-urlencoded"}
         )
-        return resp
     except Exception:
         return None
 
@@ -127,7 +118,6 @@ def check_auth(token_path=DEFAULT_TOKEN_PATH):
     if not token:
         print("NOT_AUTHENTICATED")
         return 1
-    # Quick check: try to get /me via Graph with current access_token
     try:
         me = json_request(
             "https://graph.microsoft.com/v1.0/me",
@@ -136,9 +126,8 @@ def check_auth(token_path=DEFAULT_TOKEN_PATH):
         print(f"AUTHENTICATED as {me.get('userPrincipalName')}")
         return 0
     except Exception:
-        # Token might be expired; try refresh if client_id is available
-        pass
-    return 1
+        print("NOT_AUTHENTICATED")
+        return 1
 
 def main():
     parser = argparse.ArgumentParser(description="OneDrive OAuth setup")
@@ -157,7 +146,6 @@ def main():
             print(json.dumps({"error": "--auth requires --client-id"}))
             sys.exit(1)
         token = do_device_flow(args.client_id)
-        # For future refreshes, store client_id with token
         token["_client_id"] = args.client_id
         save_token(token, args.token_path)
         print(json.dumps({"status": "success", "message": "Authenticated. Token saved."}))

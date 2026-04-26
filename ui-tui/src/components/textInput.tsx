@@ -700,7 +700,7 @@ export function TextInput({
       }
 
       if (k.return) {
-        if (k.shift || (isMac ? isActionMod(k) : k.meta)) {
+        if (k.shift || k.ctrl || (isMac ? isActionMod(k) : k.meta)) {
           flushParentChange()
           commit(ins(vRef.current, curRef.current, '\n'), curRef.current + 1)
         } else {

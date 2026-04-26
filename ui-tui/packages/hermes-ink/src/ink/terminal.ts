@@ -176,7 +176,7 @@ export function isXtermJs(): boolean {
 // in xterm.js-based terminals like VS Code). tmux is allowlisted because it
 // accepts modifyOtherKeys and doesn't forward the kitty sequence to the outer
 // terminal.
-const EXTENDED_KEYS_TERMINALS = ['iTerm.app', 'kitty', 'WezTerm', 'ghostty', 'tmux', 'windows-terminal']
+const EXTENDED_KEYS_TERMINALS = ['iTerm.app', 'kitty', 'WezTerm', 'ghostty', 'tmux', 'windows-terminal', 'vscode']
 
 /** True if this terminal correctly handles extended key reporting
  *  (Kitty keyboard protocol + xterm modifyOtherKeys). */

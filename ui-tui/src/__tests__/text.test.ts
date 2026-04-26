@@ -12,7 +12,8 @@ import {
   parseToolTrailResultLine,
   pasteTokenLabel,
   sameToolTrailGroup,
-  splitToolDuration
+  splitToolDuration,
+  thinkingPreview
 } from '../lib/text.js'
 
 describe('isToolTrailResultLine', () => {
@@ -79,6 +80,17 @@ describe('estimateTokensRough', () => {
     expect(estimateTokensRough('a')).toBe(1)
     expect(estimateTokensRough('abcd')).toBe(1)
     expect(estimateTokensRough('abcde')).toBe(2)
+  })
+})
+
+describe('thinkingPreview', () => {
+  it('adds paragraph breaks before markdown thinking headings', () => {
+    const raw =
+      '**Considering user instructions**\nI need to answer.**Planning tool execution**\nI can run tools.**Determining weather search parameters**\nUse SF.'
+
+    expect(thinkingPreview(raw, 'full')).toBe(
+      '**Considering user instructions**\nI need to answer.\n\n**Planning tool execution**\nI can run tools.\n\n**Determining weather search parameters**\nUse SF.'
+    )
   })
 })
 

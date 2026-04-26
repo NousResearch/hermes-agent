@@ -2290,6 +2290,36 @@ class AIAgent:
             and getattr(self, "platform", "") == "cli"
         )
 
+    def _should_suppress_gateway_lifecycle_status(self, message: str) -> bool:
+        """Return True when a lifecycle status is too noisy for chat gateways.
+
+        CLI users still see every lifecycle event through ``_vprint``. Messaging
+        platforms, however, should not be flooded with internal retry/fallback
+        chatter when a final assistant response will summarize the failure.
+        """
+        raw_platform = getattr(self, "platform", "") or ""
+        platform = getattr(raw_platform, "value", raw_platform)
+        platform = str(platform).strip().lower()
+        if not platform or platform == "cli":
+            return False
+        text = (message or "").strip()
+        if not text:
+            return False
+
+        noisy_prefixes = (
+            "⚠️ Rate limited — switching to fallback provider...",
+            "💸 Provider credits/balance exhausted — switching to fallback provider...",
+            "⚠️ Empty/malformed response — switching to fallback...",
+            "🔄 Primary model failed — switching to fallback:",
+            "⏱️ Rate limit reached. Waiting",
+            "❌ Rate limited after ",
+        )
+        if any(text.startswith(prefix) for prefix in noisy_prefixes):
+            return True
+        if text.startswith("⚠️ Max retries (") and "trying fallback" in text.lower():
+            return True
+        return False
+
     def _emit_status(self, message: str) -> None:
         """Emit a lifecycle status message to both CLI and gateway channels.
 
@@ -2305,6 +2335,8 @@ class AIAgent:
         except Exception:
             pass
         if self.status_callback:
+            if self._should_suppress_gateway_lifecycle_status(message):
+                return
             try:
                 self.status_callback("lifecycle", message)
             except Exception:
@@ -2548,19 +2580,20 @@ class AIAgent:
 
         return 300.0, True
 
-    def _compute_non_stream_stale_timeout(self, messages: list[dict[str, Any]]) -> float:
+    def _compute_non_stream_stale_timeout(self, api_kwargs: dict[str, Any]) -> float:
         """Compute the effective non-stream stale timeout for this request."""
         stale_base, uses_implicit_default = self._resolved_api_call_stale_timeout_base()
         base_url = getattr(self, "_base_url", None) or self.base_url or ""
         if uses_implicit_default and base_url and is_local_endpoint(base_url):
             return float("inf")
 
-        est_tokens = sum(len(str(v)) for v in messages) // 4
-        if est_tokens > 100_000:
-            return max(stale_base, 600.0)
-        if est_tokens > 50_000:
-            return max(stale_base, 450.0)
-        return stale_base
+        est_tokens = self._estimate_request_context_tokens(api_kwargs)
+        return self._scale_stale_timeout_for_context(
+            stale_base,
+            est_tokens,
+            medium_timeout=450.0,
+            large_timeout=600.0,
+        )
 
     def _is_openrouter_url(self) -> bool:
         """Return True when the base URL targets OpenRouter."""
@@ -5640,6 +5673,36 @@ class AIAgent:
                 timeout=get_provider_request_timeout(self.provider, self.model),
             )
 
+    @staticmethod
+    def _rough_payload_chars(value: Any) -> int:
+        if value is None:
+            return 0
+        try:
+            return len(json.dumps(value, ensure_ascii=False, separators=(",", ":")))
+        except Exception:
+            return len(str(value))
+
+    def _estimate_request_context_tokens(self, api_kwargs: dict) -> int:
+        """Roughly estimate request size across chat-completions and Responses payloads."""
+        total_chars = 0
+        for key in ("system", "messages", "input", "instructions", "tools"):
+            total_chars += self._rough_payload_chars(api_kwargs.get(key))
+        return (total_chars + 3) // 4 if total_chars > 0 else 0
+
+    @staticmethod
+    def _scale_stale_timeout_for_context(
+        base_timeout: float,
+        est_tokens: int,
+        *,
+        medium_timeout: float,
+        large_timeout: float,
+    ) -> float:
+        if est_tokens > 100_000:
+            return max(base_timeout, large_timeout)
+        if est_tokens > 50_000:
+            return max(base_timeout, medium_timeout)
+        return base_timeout
+
     def _interruptible_api_call(self, api_kwargs: dict):
         """
         Run the API call in a background thread so the main conversation loop
@@ -5707,9 +5770,7 @@ class AIAgent:
         # httpx timeout (default 1800s) with zero feedback.  The stale
         # detector kills the connection early so the main retry loop can
         # apply richer recovery (credential rotation, provider fallback).
-        _stale_timeout = self._compute_non_stream_stale_timeout(
-            api_kwargs.get("messages", [])
-        )
+        _stale_timeout = self._compute_non_stream_stale_timeout(api_kwargs)
 
         _call_start = time.time()
         self._touch_activity("waiting for non-streaming API response")
@@ -5733,7 +5794,7 @@ class AIAgent:
             # arrives within the configured timeout.
             _elapsed = time.time() - _call_start
             if _elapsed > _stale_timeout:
-                _est_ctx = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
+                _est_ctx = self._estimate_request_context_tokens(api_kwargs)
                 logger.warning(
                     "Non-streaming API call stale for %.0fs (threshold %.0fs). "
                     "model=%s context=~%s tokens. Killing connection.",
@@ -6575,13 +6636,13 @@ class AIAgent:
             # when the context is large.  Without this, the stale detector kills
             # healthy connections during the model's thinking phase, producing
             # spurious RemoteProtocolError ("peer closed connection").
-            _est_tokens = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
-            if _est_tokens > 100_000:
-                _stream_stale_timeout = max(_stream_stale_timeout_base, 300.0)
-            elif _est_tokens > 50_000:
-                _stream_stale_timeout = max(_stream_stale_timeout_base, 240.0)
-            else:
-                _stream_stale_timeout = _stream_stale_timeout_base
+            _est_tokens = self._estimate_request_context_tokens(api_kwargs)
+            _stream_stale_timeout = self._scale_stale_timeout_for_context(
+                _stream_stale_timeout_base,
+                _est_tokens,
+                medium_timeout=240.0,
+                large_timeout=300.0,
+            )
 
         t = threading.Thread(target=_call, daemon=True)
         t.start()
@@ -6611,7 +6672,7 @@ class AIAgent:
             # inner retry loop can start a fresh connection.
             _stale_elapsed = time.time() - last_chunk_time["t"]
             if _stale_elapsed > _stream_stale_timeout:
-                _est_ctx = sum(len(str(v)) for v in api_kwargs.get("messages", [])) // 4
+                _est_ctx = self._estimate_request_context_tokens(api_kwargs)
                 logger.warning(
                     "Stream stale for %.0fs (threshold %.0fs) — no chunks received. "
                     "model=%s context=~%s tokens. Killing connection.",
@@ -10910,7 +10971,10 @@ class AIAgent:
                             self._credential_pool
                         )
                         if not pool_may_recover:
-                            self._emit_status("⚠️ Rate limited — switching to fallback provider...")
+                            if classified.reason == FailoverReason.billing:
+                                self._emit_status("💸 Provider credits/balance exhausted — switching to fallback provider...")
+                            else:
+                                self._emit_status("⚠️ Rate limited — switching to fallback provider...")
                             if self._try_activate_fallback(reason=classified.reason):
                                 retry_count = 0
                                 compression_attempts = 0
@@ -11192,7 +11256,6 @@ class AIAgent:
                             and not classified.should_compress
                             and classified.reason not in (
                                 FailoverReason.rate_limit,
-                                FailoverReason.billing,
                                 FailoverReason.overloaded,
                                 FailoverReason.context_overflow,
                                 FailoverReason.payload_too_large,
@@ -11223,7 +11286,7 @@ class AIAgent:
                         self._vprint(f"{self.log_prefix}   🔌 Provider: {_provider}  Model: {_model}", force=True)
                         self._vprint(f"{self.log_prefix}   🌐 Endpoint: {_base}", force=True)
                         # Actionable guidance for common auth errors
-                        if classified.is_auth or classified.reason == FailoverReason.billing:
+                        if classified.is_auth:
                             if _provider == "openai-codex" and status_code == 401:
                                 self._vprint(f"{self.log_prefix}   💡 Codex OAuth token was rejected (HTTP 401). Your token may have been", force=True)
                                 self._vprint(f"{self.log_prefix}      refreshed by another client (Codex CLI, VS Code). To fix:", force=True)
@@ -11235,6 +11298,12 @@ class AIAgent:
                                 self._vprint(f"{self.log_prefix}      • Does your account have access to {_model}?", force=True)
                                 if base_url_host_matches(str(_base), "openrouter.ai"):
                                     self._vprint(f"{self.log_prefix}      • Check credits: https://openrouter.ai/settings/credits", force=True)
+                        elif classified.reason == FailoverReason.billing:
+                            self._vprint(f"{self.log_prefix}   💡 Provider balance/credits appear exhausted for this request.", force=True)
+                            if "openrouter" in str(_base).lower():
+                                self._vprint(f"{self.log_prefix}      • Top up credits: https://openrouter.ai/settings/credits", force=True)
+                            elif _provider == "minimax":
+                                self._vprint(f"{self.log_prefix}      • Check MiniMax account balance / billing before retrying.", force=True)
                         else:
                             self._vprint(f"{self.log_prefix}   💡 This type of error won't be fixed by retrying.", force=True)
                         logging.error(f"{self.log_prefix}Non-retryable client error: {api_error}")

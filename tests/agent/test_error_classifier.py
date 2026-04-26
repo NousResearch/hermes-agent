@@ -250,6 +250,24 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.rate_limit
         assert result.should_fallback is True
 
+    def test_429_insufficient_balance_classified_as_billing(self):
+        e = MockAPIError("HTTP 429: insufficient balance (1008)", status_code=429)
+        result = classify_api_error(e, provider="minimax")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
+    def test_429_payment_required_error_code_classified_as_billing(self):
+        e = MockAPIError(
+            "provider error",
+            status_code=429,
+            body={"error": {"code": "payment_required", "message": "provider error"}},
+        )
+        result = classify_api_error(e, provider="openrouter")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+
     def test_alibaba_rate_increased_too_quickly(self):
         """Alibaba/DashScope returns a unique throttling message.
 

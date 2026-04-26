@@ -285,7 +285,7 @@ def test_default_non_stream_stale_timeout_auto_disables_for_local_endpoints(monk
         platform="cli",
     )
 
-    assert agent._compute_non_stream_stale_timeout([]) == float("inf")
+    assert agent._compute_non_stream_stale_timeout({"messages": []}) == float("inf")
 
 
 def test_explicit_non_stream_stale_timeout_is_honored_for_local_endpoints(monkeypatch, tmp_path):
@@ -305,4 +305,4 @@ def test_explicit_non_stream_stale_timeout_is_honored_for_local_endpoints(monkey
         platform="cli",
     )
 
-    assert agent._compute_non_stream_stale_timeout([]) == 300.0
+    assert agent._compute_non_stream_stale_timeout({"messages": []}) == 300.0

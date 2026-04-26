@@ -438,6 +438,80 @@ class TestBuildApiKwargsCodex:
         assert "function" not in tools[0]
 
 
+class TestEstimateRequestContextTokens:
+    def test_chat_completions_counts_messages_and_tools(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openrouter")
+        api_kwargs = {
+            "model": "anthropic/claude-sonnet-4-20250514",
+            "messages": [
+                {"role": "system", "content": "a" * 4000},
+                {"role": "user", "content": "b" * 4000},
+            ],
+            "tools": _tool_defs("web_search", "terminal"),
+        }
+
+        est = agent._estimate_request_context_tokens(api_kwargs)
+
+        assert est > 2000
+
+    def test_codex_responses_counts_input_and_instructions(self, monkeypatch):
+        agent = _make_agent(
+            monkeypatch,
+            "openai-codex",
+            api_mode="codex_responses",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
+        api_kwargs = {
+            "model": "gpt-5.4",
+            "instructions": "system:" + ("y" * 10000),
+            "input": [{"role": "user", "content": "x" * 410000}],
+            "tools": [
+                {
+                    "type": "function",
+                    "name": "web_search",
+                    "description": "search",
+                    "parameters": {"type": "object", "properties": {}},
+                }
+            ],
+        }
+
+        assert "messages" not in api_kwargs
+        est = agent._estimate_request_context_tokens(api_kwargs)
+
+        assert est > 100000
+        assert agent._scale_stale_timeout_for_context(
+            300.0,
+            est,
+            medium_timeout=450.0,
+            large_timeout=600.0,
+        ) == 600.0
+        assert agent._scale_stale_timeout_for_context(
+            180.0,
+            est,
+            medium_timeout=240.0,
+            large_timeout=300.0,
+        ) == 300.0
+
+    def test_anthropic_counts_top_level_system(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "anthropic", api_mode="anthropic_messages")
+        api_kwargs = {
+            "model": "claude-sonnet-4.6",
+            "system": "policy:" + ("s" * 240000),
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": _tool_defs("web_search"),
+        }
+
+        est = agent._estimate_request_context_tokens(api_kwargs)
+
+        assert est > 60000
+        assert agent._scale_stale_timeout_for_context(
+            300.0,
+            est,
+            medium_timeout=450.0,
+            large_timeout=600.0,
+        ) == 450.0
+
+
 # ── Message conversion tests ────────────────────────────────────────────────
 
 class TestChatMessagesToResponsesInput:

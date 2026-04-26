@@ -2,6 +2,7 @@
 import json
 import sys
 import types
+from argparse import Namespace
 
 import pytest
 
@@ -221,6 +222,86 @@ def test_setup_gateway_in_container_shows_docker_guidance(monkeypatch, capsys):
     assert "Messaging platforms configured!" in out
     assert "docker" in out.lower() or "Docker" in out
     assert "restart" in out.lower()
+
+
+def test_prompt_tool_governance_defaults_can_enable_both(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = load_config()
+
+    yes_no_answers = iter([True])
+    choice_answers = iter([2])
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *args, **kwargs: next(yes_no_answers))
+    monkeypatch.setattr(setup_mod, "prompt_choice", lambda *args, **kwargs: next(choice_answers))
+
+    setup_mod._prompt_tool_governance_defaults(config)
+
+    assert config["security"]["tool_governance"]["skill_allowed_tools"] is True
+    assert config["security"]["tool_governance"]["channel_tool_review"] is True
+
+
+def test_run_first_time_quick_setup_offers_tool_governance(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    config = load_config()
+    calls = []
+
+    monkeypatch.setattr(setup_mod, "setup_model_provider", lambda cfg, quick=True: calls.append(("model", quick)))
+    monkeypatch.setattr(setup_mod, "setup_gateway", lambda cfg: calls.append(("gateway", None)))
+    monkeypatch.setattr(setup_mod, "_prompt_tool_governance_defaults", lambda cfg: calls.append(("governance", None)))
+    monkeypatch.setattr(setup_mod, "_print_setup_summary", lambda cfg, home: calls.append(("summary", None)))
+    monkeypatch.setattr(setup_mod, "_offer_launch_chat", lambda: calls.append(("chat", None)))
+    monkeypatch.setattr(setup_mod, "prompt_choice", lambda *args, **kwargs: 1)
+
+    setup_mod._run_first_time_quick_setup(config, tmp_path, is_existing=False)
+
+    assert ("governance", None) in calls
+
+
+def test_run_setup_wizard_full_setup_offers_tool_governance(tmp_path, monkeypatch):
+    args = Namespace(non_interactive=False, section=None, reset=False)
+    config = load_config()
+    calls = []
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(setup_mod, "ensure_hermes_home", lambda: None)
+    monkeypatch.setattr(setup_mod, "load_config", lambda: config)
+    monkeypatch.setattr(setup_mod, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(setup_mod, "is_interactive_stdin", lambda: True)
+    monkeypatch.setattr(setup_mod, "get_env_value", lambda key: "")
+    monkeypatch.setattr("hermes_cli.auth.get_active_provider", lambda: None)
+    monkeypatch.setattr(setup_mod, "_offer_openclaw_migration", lambda home: False)
+    choices = iter([1])
+    monkeypatch.setattr(setup_mod, "prompt_choice", lambda *args, **kwargs: next(choices))
+    monkeypatch.setattr(setup_mod, "setup_model_provider", lambda cfg: calls.append("model"))
+    monkeypatch.setattr(setup_mod, "setup_terminal_backend", lambda cfg: calls.append("terminal"))
+    monkeypatch.setattr(setup_mod, "setup_agent_settings", lambda cfg: calls.append("agent"))
+    monkeypatch.setattr(setup_mod, "setup_gateway", lambda cfg: calls.append("gateway"))
+    monkeypatch.setattr(setup_mod, "setup_tools", lambda cfg, first_install=True: calls.append("tools"))
+    monkeypatch.setattr(setup_mod, "_prompt_tool_governance_defaults", lambda cfg: calls.append("governance"))
+    monkeypatch.setattr(setup_mod, "_print_setup_summary", lambda cfg, home: calls.append("summary"))
+    monkeypatch.setattr(setup_mod, "_offer_launch_chat", lambda: calls.append("chat"))
+    monkeypatch.setattr(setup_mod, "save_config", lambda cfg: calls.append("save"))
+
+    setup_mod.run_setup_wizard(args)
+
+    assert "governance" in calls
+
+
+def test_run_setup_wizard_security_section_dispatches_governance(tmp_path, monkeypatch):
+    args = Namespace(non_interactive=False, section="security", reset=False)
+    config = load_config()
+    calls = []
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(setup_mod, "ensure_hermes_home", lambda: None)
+    monkeypatch.setattr(setup_mod, "load_config", lambda: config)
+    monkeypatch.setattr(setup_mod, "get_hermes_home", lambda: tmp_path)
+    monkeypatch.setattr(setup_mod, "is_interactive_stdin", lambda: True)
+    monkeypatch.setattr(setup_mod, "_prompt_tool_governance_defaults", lambda cfg: calls.append("governance"))
+    monkeypatch.setattr(setup_mod, "save_config", lambda cfg: calls.append("save"))
+
+    setup_mod.run_setup_wizard(args)
+
+    assert calls == ["governance", "save"]
 
 
 def test_setup_syncs_custom_provider_removal_from_disk(tmp_path, monkeypatch):

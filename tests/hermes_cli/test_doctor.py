@@ -399,22 +399,23 @@ def test_run_doctor_kimi_cn_env_is_detected_and_probe_is_null_safe(monkeypatch, 
 
 
 @pytest.mark.parametrize("base_url", [None, "https://opencode.ai/zen/go/v1"])
-def test_run_doctor_opencode_go_skips_invalid_models_probe(monkeypatch, tmp_path, base_url):
+def _run_doctor_with_single_api_key_provider(monkeypatch, tmp_path, env_var, env_value, provider_name, base_env=None, base_url=None):
     home = tmp_path / ".hermes"
     home.mkdir(parents=True, exist_ok=True)
     (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
-    (home / ".env").write_text("OPENCODE_GO_API_KEY=***\n", encoding="utf-8")
+    (home / ".env").write_text(f"{env_var}=***\n", encoding="utf-8")
     project = tmp_path / "project"
     project.mkdir(exist_ok=True)
 
     monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
     monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
     monkeypatch.setattr(doctor_mod, "_DHH", str(home))
-    monkeypatch.setenv("OPENCODE_GO_API_KEY", "sk-test")
-    if base_url:
-        monkeypatch.setenv("OPENCODE_GO_BASE_URL", base_url)
-    else:
-        monkeypatch.delenv("OPENCODE_GO_BASE_URL", raising=False)
+    monkeypatch.setenv(env_var, env_value)
+    if base_env:
+        if base_url:
+            monkeypatch.setenv(base_env, base_url)
+        else:
+            monkeypatch.delenv(base_env, raising=False)
 
     fake_model_tools = types.SimpleNamespace(
         check_tool_availability=lambda *a, **kw: ([], []),
@@ -438,15 +439,89 @@ def test_run_doctor_opencode_go_skips_invalid_models_probe(monkeypatch, tmp_path
     import httpx
     monkeypatch.setattr(httpx, "get", fake_get)
 
-    import io, contextlib
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         doctor_mod.run_doctor(Namespace(fix=False))
     out = buf.getvalue()
 
     assert any(
-        "OpenCode Go" in line and "(key configured)" in line
+        provider_name in line and "(key configured)" in line
         for line in out.splitlines()
     )
+    return out, calls
+
+
+@pytest.mark.parametrize("base_url", [None, "https://opencode.ai/zen/go/v1"])
+def test_run_doctor_opencode_go_skips_invalid_models_probe(monkeypatch, tmp_path, base_url):
+    _, calls = _run_doctor_with_single_api_key_provider(
+        monkeypatch,
+        tmp_path,
+        env_var="OPENCODE_GO_API_KEY",
+        env_value="sk-test",
+        provider_name="OpenCode Go",
+        base_env="OPENCODE_GO_BASE_URL",
+        base_url=base_url,
+    )
+
     assert not any(url == "https://opencode.ai/zen/go/v1/models" for url, _, _ in calls)
     assert not any("opencode" in url.lower() and "models" in url.lower() for url, _, _ in calls)
+
+
+@pytest.mark.parametrize("base_url", [None, "https://api.minimax.io/anthropic"])
+def test_run_doctor_minimax_skips_invalid_models_probe(monkeypatch, tmp_path, base_url):
+    _, calls = _run_doctor_with_single_api_key_provider(
+        monkeypatch,
+        tmp_path,
+        env_var="MINIMAX_API_KEY",
+        env_value="sk-test",
+        provider_name="MiniMax",
+        base_env="MINIMAX_BASE_URL",
+        base_url=base_url,
+    )
+
+    assert not any("minimax" in url.lower() and "models" in url.lower() for url, _, _ in calls)
+
+
+def test_run_doctor_reports_tool_governance_settings(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(parents=True, exist_ok=True)
+    (home / "config.yaml").write_text(
+        """
+memory: {}
+security:
+  tool_governance:
+    skill_allowed_tools: true
+    channel_tool_review: false
+""".strip()
+        + "\n",
+        encoding="utf-8",
+    )
+    project = tmp_path / "project"
+    project.mkdir(exist_ok=True)
+
+    monkeypatch.setattr(doctor_mod, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor_mod, "PROJECT_ROOT", project)
+    monkeypatch.setattr(doctor_mod, "_DHH", str(home))
+
+    fake_model_tools = types.SimpleNamespace(
+        check_tool_availability=lambda *a, **kw: ([], []),
+        TOOLSET_REQUIREMENTS={},
+    )
+    monkeypatch.setitem(sys.modules, "model_tools", fake_model_tools)
+
+    try:
+        from hermes_cli import auth as _auth_mod
+        monkeypatch.setattr(_auth_mod, "get_nous_auth_status", lambda: {})
+        monkeypatch.setattr(_auth_mod, "get_codex_auth_status", lambda: {})
+    except Exception:
+        pass
+
+    import io, contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        doctor_mod.run_doctor(Namespace(fix=False))
+    out = buf.getvalue()
+
+    assert "Tool Governance" in out
+    assert "Skill allowed-tools enforcement: enabled" in out
+    assert "Channel tool review: disabled" in out

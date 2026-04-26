@@ -596,6 +596,8 @@ def _print_setup_summary(config: dict, hermes_home):
     )
     print(f"   {color('hermes config set <key> <value>', Colors.GREEN)}")
     print("                          Set a specific value")
+    print("                          e.g. security.tool_governance.skill_allowed_tools true")
+    print("                               security.tool_governance.channel_tool_review true")
     print()
     print("   Or edit the files directly:")
     print(f"   {color(f'nano {get_config_path()}', Colors.DIM)}")
@@ -610,6 +612,49 @@ def _print_setup_summary(config: dict, hermes_home):
     print(f"   {color('hermes gateway', Colors.GREEN)}      Start messaging gateway")
     print(f"   {color('hermes doctor', Colors.GREEN)}       Check for issues")
     print()
+
+
+def _prompt_tool_governance_defaults(config: dict) -> None:
+    """Offer optional low-risk governance defaults during setup."""
+    print()
+    print_header("Tool Governance (optional)")
+    print_info("Optional low-risk guardrails for messaging and skill-driven sessions.")
+    print_info("Defaults stay off unless you enable them here.")
+    print()
+
+    if not prompt_yes_no("Configure tool governance defaults now?", False):
+        return
+
+    choice = prompt_choice(
+        "Which governance preset would you like?",
+        [
+            "Messaging-safe — enable channel tool review",
+            "Skill-safe — enforce skill allowed-tools",
+            "Enable both low-risk policies",
+        ],
+        0,
+    )
+
+    tool_governance = config.setdefault("security", {}).setdefault("tool_governance", {})
+    tool_governance.setdefault("skill_allowed_tools", False)
+    tool_governance.setdefault("channel_tool_review", False)
+    if choice == 0:
+        tool_governance["channel_tool_review"] = True
+        tool_governance["skill_allowed_tools"] = False
+    elif choice == 1:
+        tool_governance["skill_allowed_tools"] = True
+        tool_governance["channel_tool_review"] = False
+    elif choice == 2:
+        tool_governance["channel_tool_review"] = True
+        tool_governance["skill_allowed_tools"] = True
+
+    print_success("Tool governance defaults updated")
+    print_info("You can change these later with 'hermes config governance'.")
+
+
+def setup_security(config: dict):
+    """Configure security and governance defaults."""
+    _prompt_tool_governance_defaults(config)
 
 
 def _prompt_container_resources(config: dict):
@@ -2861,6 +2906,7 @@ SETUP_SECTIONS = [
     ("gateway", "Messaging Platforms (Gateway)", setup_gateway),
     ("tools", "Tools", setup_tools),
     ("agent", "Agent Settings", setup_agent_settings),
+    ("security", "Security & Governance", setup_security),
 ]
 
 # The returning-user menu intentionally omits standalone TTS because model setup
@@ -2872,6 +2918,7 @@ RETURNING_USER_MENU_SECTION_KEYS = [
     "gateway",
     "tools",
     "agent",
+    "security",
 ]
 
 
@@ -2886,6 +2933,7 @@ def run_setup_wizard(args):
       hermes setup gateway   — just messaging platforms
       hermes setup tools     — just tool configuration
       hermes setup agent     — just agent settings
+      hermes setup security  — security/governance defaults
     """
     from hermes_cli.config import is_managed, managed_error
     if is_managed():
@@ -3003,6 +3051,7 @@ def run_setup_wizard(args):
             "Messaging Platforms (Gateway)",
             "Tools",
             "Agent Settings",
+            "Security & Governance",
             "Exit",
         ]
         choice = prompt_choice("What would you like to do?", menu_choices, 0)
@@ -3014,10 +3063,10 @@ def run_setup_wizard(args):
         elif choice == 1:
             # Full setup — fall through to run all sections
             pass
-        elif choice == 7:
+        elif choice == 8:
             print_info("Exiting. Run 'hermes setup' again when ready.")
             return
-        elif 2 <= choice <= 6:
+        elif 2 <= choice <= 7:
             # Individual section — map by key, not by position.
             # SETUP_SECTIONS includes TTS but the returning-user menu skips it,
             # so positional indexing (choice - 2) would dispatch the wrong section.
@@ -3081,6 +3130,8 @@ def run_setup_wizard(args):
     # Section 5: Tools
     if not (migration_ran and _skip_configured_section(config, "tools", "Tools")):
         setup_tools(config, first_install=not is_existing)
+
+    _prompt_tool_governance_defaults(config)
 
     # Save and show summary
     save_config(config)
@@ -3148,6 +3199,8 @@ def _run_first_time_quick_setup(config: dict, hermes_home, is_existing: bool):
     if gateway_choice == 0:
         setup_gateway(config)
         save_config(config)
+
+    _prompt_tool_governance_defaults(config)
 
     print()
     print_success("Setup complete! You're ready to go.")

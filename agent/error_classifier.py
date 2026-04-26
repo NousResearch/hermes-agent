@@ -89,10 +89,13 @@ class ClassifiedError:
 # Patterns that indicate billing exhaustion (not transient rate limit)
 _BILLING_PATTERNS = [
     "insufficient credits",
+    "insufficient balance",
+    "insufficient_balance",
     "insufficient_quota",
     "credit balance",
     "credits have been exhausted",
     "top up your credits",
+    "can only afford",
     "payment required",
     "billing hard limit",
     "exceeded your current quota",
@@ -589,6 +592,20 @@ def _classify_by_status(
         )
 
     if status_code == 429:
+        # Some providers surface billing exhaustion as 429 instead of 402 and may
+        # only expose the billing signal through a structured error code.
+        if error_code:
+            classified = _classify_by_error_code(error_code, error_msg, result_fn)
+            if classified is not None:
+                return classified
+        # Others embed the billing signal only in free-text messages.
+        if any(p in error_msg for p in _BILLING_PATTERNS):
+            return result_fn(
+                FailoverReason.billing,
+                retryable=False,
+                should_rotate_credential=True,
+                should_fallback=True,
+            )
         # Already checked long_context_tier above; this is a normal rate limit
         return result_fn(
             FailoverReason.rate_limit,

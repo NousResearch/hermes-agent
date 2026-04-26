@@ -664,6 +664,23 @@ class TestIsPaymentError:
         exc.status_code = 429
         assert _is_payment_error(exc) is True
 
+    def test_429_with_insufficient_balance_message(self):
+        exc = Exception("HTTP 429: insufficient balance (1008)")
+        exc.status_code = 429
+        assert _is_payment_error(exc) is True
+
+    def test_429_with_billing_message_in_structured_body(self):
+        exc = Exception("provider error")
+        exc.status_code = 429
+        exc.body = {"error": {"message": "insufficient balance (1008)"}}
+        assert _is_payment_error(exc) is True
+
+    def test_429_with_billing_error_code_in_structured_body(self):
+        exc = Exception("provider error")
+        exc.status_code = 429
+        exc.body = {"error": {"code": "payment_required", "message": "provider error"}}
+        assert _is_payment_error(exc) is True
+
     def test_429_without_credits_message_is_not_payment(self):
         """Normal rate limits should NOT be treated as payment errors."""
         exc = Exception("Rate limit exceeded, try again in 2 seconds")

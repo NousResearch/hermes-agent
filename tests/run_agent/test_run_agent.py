@@ -22,6 +22,7 @@ import run_agent
 from run_agent import AIAgent
 from agent.error_classifier import FailoverReason
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
+from gateway.config import Platform
 
 
 # ---------------------------------------------------------------------------
@@ -1628,6 +1629,67 @@ class TestExecuteToolCalls:
         output = captured.getvalue()
         assert "API call failed" not in output
         assert "Rate limit reached" not in output
+
+    def test_emit_status_suppresses_noisy_gateway_fallback_messages(self, agent):
+        agent.platform = "telegram"
+        agent.status_callback = MagicMock()
+
+        with patch.object(agent, "_vprint") as mock_vprint:
+            agent._emit_status("⚠️ Rate limited — switching to fallback provider...")
+
+        mock_vprint.assert_called_once()
+        agent.status_callback.assert_not_called()
+
+    def test_emit_status_forwards_non_noisy_gateway_messages(self, agent):
+        agent.platform = "telegram"
+        agent.status_callback = MagicMock()
+
+        with patch.object(agent, "_vprint") as mock_vprint:
+            agent._emit_status("🗜️ Context reduced to 120,000 tokens (was 240,000), retrying...")
+
+        mock_vprint.assert_called_once()
+        agent.status_callback.assert_called_once_with("lifecycle", "🗜️ Context reduced to 120,000 tokens (was 240,000), retrying...")
+
+    def test_emit_status_handles_platform_enum_for_gateway_suppression(self, agent):
+        agent.platform = Platform.TELEGRAM
+        agent.status_callback = MagicMock()
+
+        with patch.object(agent, "_vprint") as mock_vprint:
+            agent._emit_status("⚠️ Rate limited — switching to fallback provider...")
+
+        mock_vprint.assert_called_once()
+        agent.status_callback.assert_not_called()
+
+    def test_billing_429_does_not_emit_rate_limit_backoff_status(self, agent):
+        class _Billing429Error(Exception):
+            status_code = 429
+
+            def __str__(self):
+                return "HTTP 429: insufficient balance (1008)"
+
+        agent._cached_system_prompt = "You are helpful."
+        agent._use_prompt_caching = False
+        agent.tool_delay = 0
+        agent.compression_enabled = False
+        agent.save_trajectories = False
+        agent.base_url = "https://api.minimax.io/v1/"
+        status_messages = []
+
+        with (
+            patch.object(agent, "_interruptible_api_call", side_effect=_Billing429Error()),
+            patch.object(agent, "_persist_session"),
+            patch.object(agent, "_save_trajectory"),
+            patch.object(agent, "_cleanup_task_resources"),
+            patch.object(agent, "_emit_status", side_effect=status_messages.append),
+            patch("run_agent.time.sleep", return_value=None),
+        ):
+            result = agent.run_conversation("hello")
+
+        assert result["completed"] is False
+        assert result["final_response"] is None
+        assert "insufficient balance (1008)" in result["error"]
+        assert result["api_calls"] == 1
+        assert not any("Rate limit reached. Waiting" in msg for msg in status_messages)
 
 
 class TestConcurrentToolExecution:

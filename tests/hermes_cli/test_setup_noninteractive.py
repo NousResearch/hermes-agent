@@ -226,6 +226,7 @@ class TestNonInteractiveSetup:
             "Messaging Platforms (Gateway)",
             "Tools",
             "Agent Settings",
+            "Security & Governance",
             "Exit",
         ]
 
@@ -244,3 +245,19 @@ class TestNonInteractiveSetup:
         main_mod.main()
 
         assert received["section"] == "tts"
+
+    def test_main_accepts_security_setup_section(self, monkeypatch):
+        """`hermes setup security` should parse and dispatch like other setup sections."""
+        from hermes_cli import main as main_mod
+
+        received = {}
+
+        def fake_cmd_setup(args):
+            received["section"] = args.section
+
+        monkeypatch.setattr(main_mod, "cmd_setup", fake_cmd_setup)
+        monkeypatch.setattr("sys.argv", ["hermes", "setup", "security"])
+
+        main_mod.main()
+
+        assert received["section"] == "security"

@@ -1303,13 +1303,47 @@ def _is_payment_error(exc: Exception) -> bool:
     status = getattr(exc, "status_code", None)
     if status == 402:
         return True
-    err_lower = str(exc).lower()
+
+    parts = [str(exc).lower()]
+    body = getattr(exc, "body", None)
+    if isinstance(body, dict):
+        try:
+            parts.append(json.dumps(body, ensure_ascii=False).lower())
+        except Exception:
+            parts.append(str(body).lower())
+        err_obj = body.get("error", {}) if isinstance(body.get("error"), dict) else {}
+        body_msg = (err_obj.get("message") or body.get("message") or "").lower()
+        if body_msg:
+            parts.append(body_msg)
+        error_code = (err_obj.get("code") or err_obj.get("type") or body.get("code") or body.get("type") or "")
+        if error_code:
+            parts.append(str(error_code).lower())
+        metadata = err_obj.get("metadata", {}) if isinstance(err_obj, dict) else {}
+        raw_json = metadata.get("raw") if isinstance(metadata, dict) else None
+        if isinstance(raw_json, str) and raw_json.strip():
+            try:
+                inner = json.loads(raw_json)
+                if isinstance(inner, dict):
+                    inner_err = inner.get("error", {}) if isinstance(inner.get("error"), dict) else {}
+                    inner_msg = (inner_err.get("message") or inner.get("message") or "").lower()
+                    if inner_msg:
+                        parts.append(inner_msg)
+            except Exception:
+                parts.append(raw_json.lower())
+    elif body is not None:
+        parts.append(str(body).lower())
+
+    err_lower = " ".join(p for p in parts if p)
     # OpenRouter and other providers include "credits" or "afford" in 402 bodies,
     # but sometimes wrap them in 429 or other codes.
     if status in (402, 429, None):
-        if any(kw in err_lower for kw in ("credits", "insufficient funds",
-                                           "can only afford", "billing",
-                                           "payment required")):
+        if any(kw in err_lower for kw in (
+            "credits", "insufficient funds", "insufficient balance",
+            "insufficient_balance", "insufficient_quota",
+            "can only afford", "billing",
+            "payment required", "payment_required",
+            "top up your credits",
+        )):
             return True
     return False
 

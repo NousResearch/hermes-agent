@@ -82,6 +82,8 @@ TIPS = [
     "hermes config set KEY VALUE auto-routes secrets to .env and everything else to config.yaml.",
     "hermes config edit opens config.yaml in your default editor.",
     "hermes config check scans for missing or stale configuration options.",
+    "hermes config governance shows tool-governance status and supports quick presets like --preset messaging-safe.",
+    "hermes setup security opens the dedicated setup section for tool-governance defaults.",
     "hermes sessions browse opens an interactive session picker with search.",
     "hermes sessions stats shows session counts by platform and database size.",
     "hermes sessions prune --older-than 30 cleans up old sessions.",
@@ -127,7 +129,7 @@ TIPS = [
 
     # --- Tools & Capabilities ---
     "execute_code runs Python scripts that call Hermes tools programmatically — results stay out of context.",
-    "delegate_task spawns up to 3 concurrent sub-agents by default (delegation.max_concurrent_children) with isolated contexts for parallel work.",
+    "delegate_task spawns up to 3 sub-agents by default (see delegation.max_concurrent_children) with isolated contexts for parallel work.",
     "web_extract works on PDF URLs — pass any PDF link and it converts to markdown.",
     "search_files is ripgrep-backed and faster than grep — use it instead of terminal grep.",
     "patch uses 9 fuzzy matching strategies so minor whitespace differences won't break edits.",

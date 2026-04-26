@@ -336,6 +336,28 @@ def _is_kimi_coding_endpoint(base_url: str | None) -> bool:
     return normalized.rstrip("/").lower().startswith("https://api.kimi.com/coding")
 
 
+def _is_deepseek_anthropic_endpoint(base_url: str | None) -> bool:
+    """Return True for DeepSeek's Anthropic-compatible endpoint.
+
+    DeepSeek's ``/anthropic`` route requires that any ``thinking`` /
+    ``redacted_thinking`` blocks returned in assistant messages be replayed
+    *unchanged* (signature included) on subsequent turns when thinking mode
+    is enabled.  Stripping them — as the generic third-party path does to
+    avoid Anthropic-signature validation errors on other proxies — triggers
+    HTTP 400::
+
+        The content[].thinking in the thinking mode must be passed back to
+        the API.
+
+    The signatures are DeepSeek's own (not Anthropic's), so DeepSeek can and
+    does validate them.
+    """
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
+        return False
+    return normalized.rstrip("/").lower().startswith("https://api.deepseek.com/anthropic")
+
+
 def _requires_bearer_auth(base_url: str | None) -> bool:
     """Return True for Anthropic-compatible providers that require Bearer auth.
 
@@ -1435,6 +1457,7 @@ def convert_messages_to_anthropic(
     _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
     _is_third_party = _is_third_party_anthropic_endpoint(base_url)
     _is_kimi = _is_kimi_coding_endpoint(base_url)
+    _is_deepseek = _is_deepseek_anthropic_endpoint(base_url)
 
     last_assistant_idx = None
     for i in range(len(result) - 1, -1, -1):
@@ -1464,6 +1487,14 @@ def convert_messages_to_anthropic(
                 # keep it: Kimi needs it for message-history validation.
                 new_content.append(b)
             m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
+        elif _is_deepseek:
+            # DeepSeek's /anthropic endpoint requires every thinking block
+            # — including the signature it issued — to be replayed unchanged
+            # on subsequent turns when thinking mode is enabled.  The
+            # signatures are DeepSeek's own so it can validate them; do not
+            # strip or downgrade.  See the docstring on
+            # ``_is_deepseek_anthropic_endpoint`` for the failure mode.
+            pass
         elif _is_third_party or idx != last_assistant_idx:
             # Third-party endpoint: strip ALL thinking blocks from every
             # assistant message — signatures are Anthropic-proprietary.

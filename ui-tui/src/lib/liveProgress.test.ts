@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { appendToolShelfMessage, isTodoDone } from './liveProgress.js'
+import { appendToolShelfMessage, canHoldToolShelf, isTodoDone, mergeToolShelfInto } from './liveProgress.js'
 
 describe('isTodoDone', () => {
   it('only treats non-empty all-completed/cancelled lists as done', () => {
@@ -13,6 +13,23 @@ describe('isTodoDone', () => {
         { content: 'y', id: 'y', status: 'cancelled' }
       ])
     ).toBe(true)
+  })
+})
+
+describe('tool shelf helpers', () => {
+  it('recognizes contextual thinking shelves as holders', () => {
+    expect(canHoldToolShelf({ kind: 'trail', role: 'system', text: '', thinking: 'plan' })).toBe(true)
+    expect(canHoldToolShelf({ kind: 'trail', role: 'system', text: '', tools: ['one ✓'] })).toBe(true)
+    expect(canHoldToolShelf({ role: 'assistant', text: 'done' })).toBe(false)
+  })
+
+  it('merges source rows into an existing shelf', () => {
+    expect(
+      mergeToolShelfInto(
+        { kind: 'trail', role: 'system', text: '', thinking: 'plan', tools: ['one ✓'] },
+        { kind: 'trail', role: 'system', text: '', tools: ['two ✓'] }
+      )
+    ).toEqual({ kind: 'trail', role: 'system', text: '', thinking: 'plan', tools: ['one ✓', 'two ✓'] })
   })
 })
 

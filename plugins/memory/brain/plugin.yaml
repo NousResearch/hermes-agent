@@ -1,0 +1,3 @@
+name: brain
+version: 0.1.0
+description: "Local Brain memory provider — Hermes event capture plus zep-ia/brain 90-iteration ranking sidecar."

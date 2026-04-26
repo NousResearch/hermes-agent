@@ -1297,15 +1297,11 @@ export default class Ink {
   }
 
   /**
-   * Copy the current selection to the clipboard without clearing the
-   * highlight. Matches iTerm2's copy-on-select behavior where the selected
-   * region stays visible after the automatic copy.
-   */
-  /**
    * Copy the current text selection to the system clipboard without clearing the
-   * selection. Returns the copied text on success (empty if no selection or
-   * clipboard operation failed). Success is determined by whether an OSC 52
-   * sequence was emitted (native/tmux paths do not produce a sequence).
+   * selection. Returns the copied text when a clipboard path succeeded (native
+   * tool fired, tmux buffer loaded, or OSC 52 emitted), or '' when no path was
+   * taken (e.g. headless Linux without tmux). Matches iTerm2's copy-on-select
+   * behavior where the selected region stays visible after the automatic copy.
    */
   async copySelectionNoClear(): Promise<string> {
     if (!hasSelection(this.selection)) {
@@ -1316,17 +1312,22 @@ export default class Ink {
 
     if (text) {
       try {
-        const raw = await setClipboard(text)
-        if (raw) {
-          this.options.stdout.write(raw)
+        const { sequence, success } = await setClipboard(text)
+
+        if (sequence) {
+          this.options.stdout.write(sequence)
+        }
+
+        if (success) {
           return text
         }
+
         if (process.env.HERMES_TUI_DEBUG_CLIPBOARD) {
-          console.error('[clipboard] [osc52] no sequence emitted — native clipboard or tmux buffer path in use')
+          console.error('[clipboard] no path reached the clipboard (headless + no tmux?) — set HERMES_TUI_FORCE_OSC52=1 to force the escape sequence')
         }
       } catch (err) {
         if (process.env.HERMES_TUI_DEBUG_CLIPBOARD) {
-          console.error('[clipboard] [osc52] error:', err)
+          console.error('[clipboard] error:', err)
         }
       }
     }

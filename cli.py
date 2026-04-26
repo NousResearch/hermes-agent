@@ -4012,10 +4012,8 @@ class HermesCLI:
         else:
             _cprint(f"  {_DIM}(._.) No image found in clipboard{_RST}")
 
-    def _write_osc52_clipboard(self, text: str) -> None:
-        """Copy *text* to terminal clipboard via OSC 52."""
-        payload = base64.b64encode(text.encode("utf-8")).decode("ascii")
-        seq = f"\x1b]52;c;{payload}\x07"
+    def _emit_osc52_to_terminal(self, seq: str) -> None:
+        """Write a raw OSC 52 escape sequence to the active terminal output."""
         out = getattr(self, "_app", None)
         output = getattr(out, "output", None) if out else None
         if output and hasattr(output, "write_raw"):
@@ -4028,6 +4026,17 @@ class HermesCLI:
             return
         sys.stdout.write(seq)
         sys.stdout.flush()
+
+    def _write_osc52_clipboard(self, text: str) -> None:
+        """Copy *text* to terminal clipboard via OSC 52 (legacy entry point).
+
+        Retained for callers/tests that bypass the native fallback layer.
+        New code should call ``hermes_cli.clipboard.write_clipboard_text``,
+        which tries native binaries first (or OSC 52 first under SSH) and
+        actually reports whether the copy succeeded.
+        """
+        payload = base64.b64encode(text.encode("utf-8")).decode("ascii")
+        self._emit_osc52_to_terminal(f"\x1b]52;c;{payload}\x07")
 
     def _handle_copy_command(self, cmd_original: str) -> None:
         """Handle /copy [number] — copy assistant output to clipboard."""
@@ -4061,11 +4070,21 @@ class HermesCLI:
             _cprint("  Nothing to copy in that assistant response.")
             return
 
+        from hermes_cli.clipboard import write_clipboard_text
         try:
-            self._write_osc52_clipboard(text)
-            _cprint(f"  Copied assistant response #{idx + 1} to clipboard")
+            ok = write_clipboard_text(text, osc52_writer=self._emit_osc52_to_terminal)
         except Exception as e:
             _cprint(f"  Clipboard copy failed: {e}")
+            return
+
+        if ok:
+            _cprint(f"  Copied assistant response #{idx + 1} to clipboard")
+        else:
+            _cprint(
+                "  Clipboard copy failed: no working clipboard backend "
+                "(install pbcopy/wl-copy/xclip/xsel, or use a terminal "
+                "that supports OSC 52)."
+            )
 
     def _handle_image_command(self, cmd_original: str):
         """Handle /image <path> — attach a local image file for the next prompt."""

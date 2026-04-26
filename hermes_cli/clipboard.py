@@ -1,15 +1,20 @@
-"""Clipboard image extraction for macOS, Windows, Linux, and WSL2.
+"""Clipboard image extraction and text writing for macOS, Windows, Linux, and WSL2.
 
-Provides a single function `save_clipboard_image(dest)` that checks the
-system clipboard for image data, saves it to *dest* as PNG, and returns
-True on success.  No external Python dependencies — uses only OS-level
-CLI tools that ship with the platform (or are commonly installed).
+Provides:
+  - save_clipboard_image(dest)    — extract image from clipboard, save as PNG
+  - has_clipboard_image()         — quick check for image content
+  - write_clipboard_text(text, *) — copy text to the system clipboard, with
+                                    native binaries (pbcopy / wl-copy / xclip /
+                                    xsel / clip.exe) and OSC 52 as a fallback
+
+No external Python dependencies — uses only OS-level CLI tools that ship
+with the platform (or are commonly installed).
 
 Platform support:
-  macOS   — osascript (always available), pngpaste (if installed)
-  Windows — PowerShell via WinForms, Get-Clipboard, file-drop fallback
-  WSL2    — powershell.exe via WinForms, Get-Clipboard, file-drop fallback
-  Linux   — wl-paste (Wayland), xclip (X11)
+  macOS   — osascript (always available), pngpaste (if installed); pbcopy for text
+  Windows — PowerShell via WinForms, Get-Clipboard, file-drop fallback; clip.exe for text
+  WSL2    — powershell.exe via WinForms, Get-Clipboard, file-drop fallback; clip.exe for text
+  Linux   — wl-paste/wl-copy (Wayland), xclip/xsel (X11)
 """
 
 import base64
@@ -18,6 +23,7 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from typing import Callable, Optional
 
 from hermes_constants import is_wsl as _is_wsl
 
@@ -35,6 +41,153 @@ def save_clipboard_image(dest: Path) -> bool:
     if sys.platform == "win32":
         return _windows_save(dest)
     return _linux_save(dest)
+
+
+# ── Text writer ──────────────────────────────────────────────────────────
+
+def _is_ssh_session() -> bool:
+    """True when the current process is part of an SSH session.
+
+    Both ``SSH_CONNECTION`` and ``SSH_TTY`` are set by sshd; checking either
+    is sufficient. We use this to decide between native-first (local) and
+    OSC-52-first (remote) clipboard ordering — running pbcopy/xclip on the
+    remote host is useless when the user is sitting at a local terminal.
+    """
+    return bool(os.environ.get("SSH_CONNECTION") or os.environ.get("SSH_TTY"))
+
+
+def _osc52_sequence(text: str) -> str:
+    payload = base64.b64encode(text.encode("utf-8")).decode("ascii")
+    return f"\x1b]52;c;{payload}\x07"
+
+
+def _emit_osc52(text: str, writer: Optional[Callable[[str], None]]) -> bool:
+    """Emit an OSC 52 escape sequence via *writer*.
+
+    Returns True if the bytes were flushed to the writer without raising.
+    This is **best-effort only** — OSC 52 is fire-and-forget: we cannot
+    observe whether the receiving terminal actually honoured the sequence
+    (macOS Terminal.app, for example, silently drops it). A True return
+    here means "we wrote it"; it does not mean "the system clipboard
+    now contains *text*".
+
+    Returns False if no writer was provided or the writer raised.
+    """
+    if writer is None:
+        return False
+    try:
+        writer(_osc52_sequence(text))
+        return True
+    except Exception as e:
+        logger.debug("OSC 52 writer failed: %s", e)
+        return False
+
+
+def write_clipboard_text(
+    text: str,
+    *,
+    osc52_writer: Optional[Callable[[str], None]] = None,
+) -> bool:
+    """Copy *text* to the system clipboard.
+
+    Tries the most reliable path for the current environment first:
+
+      - **Local terminal** — native binary (pbcopy on macOS, wl-copy/xclip/xsel
+        on Linux, clip.exe on WSL/Windows), then OSC 52 as a fallback.
+      - **SSH session** — OSC 52 first (the local terminal honours it across
+        the SSH tunnel), then native binaries (which would copy on the
+        *remote* host but are still better than nothing).
+
+    *osc52_writer* is a callable that accepts the OSC 52 escape sequence and
+    writes it to the user's terminal (e.g. ``prompt_toolkit``'s output).
+    Pass ``None`` if no terminal sink is available — in that case only the
+    native path is attempted.
+
+    Return value is True if **either** of these happened:
+
+      - A native binary (pbcopy / wl-copy / xclip / xsel / clip / clip.exe)
+        exited with code 0 — this is a real confirmation that the system
+        clipboard was written.
+      - The OSC 52 escape sequence was successfully flushed to the
+        terminal sink — this is **best-effort only**: we cannot observe
+        whether the terminal honoured it. Several terminals (notably
+        macOS Terminal.app) silently drop OSC 52, so a True return on
+        this path does not guarantee the user can paste *text* anywhere.
+
+    Returns False only when every available path failed outright (no
+    backend installed, no terminal sink, all writes raised). Callers
+    should report a real error to the user when this returns False
+    rather than claiming success.
+    """
+    if not text:
+        return False
+
+    paths = (_emit_osc52, _native_clipboard_write) if _is_ssh_session() \
+        else (_native_clipboard_write, _emit_osc52)
+    for path in paths:
+        if path(text, osc52_writer):
+            return True
+    return False
+
+
+def _native_clipboard_write(text: str, _osc52_writer: Optional[Callable[[str], None]]) -> bool:
+    """Dispatch to the platform-appropriate native clipboard binary."""
+    if sys.platform == "darwin":
+        return _macos_write_text(text)
+    if sys.platform == "win32":
+        return _windows_write_text(text)
+    if _is_wsl():
+        return _wsl_write_text(text) or _linux_write_text(text)
+    return _linux_write_text(text)
+
+
+def _run_clipboard_writer(cmd: list[str], text: str, *, label: str) -> bool:
+    """Invoke *cmd* with *text* on stdin. Return True on success."""
+    try:
+        r = subprocess.run(
+            cmd,
+            input=text.encode("utf-8"),
+            capture_output=True,
+            timeout=5,
+        )
+        if r.returncode == 0:
+            return True
+        logger.debug("%s exited %d: %s", label, r.returncode, r.stderr[:200] if r.stderr else "")
+    except FileNotFoundError:
+        logger.debug("%s not installed — clipboard write unavailable via this path", label)
+    except subprocess.TimeoutExpired:
+        logger.debug("%s timed out writing to clipboard", label)
+    except Exception as e:
+        logger.debug("%s clipboard write failed: %s", label, e)
+    return False
+
+
+def _macos_write_text(text: str) -> bool:
+    return _run_clipboard_writer(["pbcopy"], text, label="pbcopy")
+
+
+def _linux_write_text(text: str) -> bool:
+    """Write to Linux clipboard. Wayland first if available, then X11 (xclip → xsel)."""
+    if os.environ.get("WAYLAND_DISPLAY"):
+        if _run_clipboard_writer(["wl-copy"], text, label="wl-copy"):
+            return True
+    # X11 fallbacks. Try xclip first, then xsel — both are common on different distros.
+    if _run_clipboard_writer(
+        ["xclip", "-selection", "clipboard"], text, label="xclip"
+    ):
+        return True
+    return _run_clipboard_writer(
+        ["xsel", "--clipboard", "--input"], text, label="xsel"
+    )
+
+
+def _wsl_write_text(text: str) -> bool:
+    """WSL has clip.exe on PATH and bridges to the Windows clipboard."""
+    return _run_clipboard_writer(["clip.exe"], text, label="clip.exe")
+
+
+def _windows_write_text(text: str) -> bool:
+    return _run_clipboard_writer(["clip"], text, label="clip")
 
 
 def has_clipboard_image() -> bool:

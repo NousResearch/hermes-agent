@@ -4,6 +4,7 @@ declare module '@hermes/ink' {
   export type Key = {
     readonly ctrl: boolean
     readonly meta: boolean
+    readonly super: boolean
     readonly shift: boolean
     readonly alt: boolean
     readonly upArrow: boolean
@@ -82,8 +83,8 @@ declare module '@hermes/ink' {
   export function withInkSuspended(run: RunExternalProcess): Promise<void>
   export function useInput(handler: InputHandler, options?: { readonly isActive?: boolean }): void
   export function useSelection(): {
-    readonly copySelection: () => string
-    readonly copySelectionNoClear: () => string
+    readonly copySelection: () => Promise<string>
+    readonly copySelectionNoClear: () => Promise<string>
     readonly clearSelection: () => void
     readonly hasSelection: () => boolean
     readonly getState: () => unknown

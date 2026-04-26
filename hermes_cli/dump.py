@@ -160,7 +160,6 @@ def _config_overrides(config: dict) -> dict[str, str]:
         ("display", "streaming"),
         ("display", "skin"),
         ("display", "show_reasoning"),
-        ("smart_model_routing", "enabled"),
         ("privacy", "redact_pii"),
         ("tts", "provider"),
     ]
@@ -268,6 +267,8 @@ def run_dump(args):
         ("ANTHROPIC_API_KEY", "anthropic"),
         ("ANTHROPIC_TOKEN", "anthropic_token"),
         ("NOUS_API_KEY", "nous"),
+        ("GOOGLE_API_KEY", "google/gemini"),
+        ("GEMINI_API_KEY", "gemini"),
         ("GLM_API_KEY", "glm/zai"),
         ("ZAI_API_KEY", "zai"),
         ("KIMI_API_KEY", "kimi"),

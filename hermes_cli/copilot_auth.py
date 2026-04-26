@@ -275,6 +275,99 @@ def copilot_device_code_login(
     return None
 
 
+# ─── Copilot Token Exchange ────────────────────────────────────────────────
+
+# Module-level cache for exchanged Copilot API tokens.
+# Maps raw_token_fingerprint -> (api_token, expires_at_epoch).
+_jwt_cache: dict[str, tuple[str, float]] = {}
+_JWT_REFRESH_MARGIN_SECONDS = 120  # refresh 2 min before expiry
+
+# Token exchange endpoint and headers (matching VS Code / Copilot CLI)
+_TOKEN_EXCHANGE_URL = "https://api.github.com/copilot_internal/v2/token"
+_EDITOR_VERSION = "vscode/1.104.1"
+_EXCHANGE_USER_AGENT = "GitHubCopilotChat/0.26.7"
+
+
+def _token_fingerprint(raw_token: str) -> str:
+    """Short fingerprint of a raw token for cache keying (avoids storing full token)."""
+    import hashlib
+    return hashlib.sha256(raw_token.encode()).hexdigest()[:16]
+
+
+def exchange_copilot_token(raw_token: str, *, timeout: float = 10.0) -> tuple[str, float]:
+    """Exchange a raw GitHub token for a short-lived Copilot API token.
+
+    Calls ``GET https://api.github.com/copilot_internal/v2/token`` with
+    the raw GitHub token and returns ``(api_token, expires_at)``.
+
+    The returned token is a semicolon-separated string (not a standard JWT)
+    used as ``Authorization: Bearer <token>`` for Copilot API requests.
+
+    Results are cached in-process and reused until close to expiry.
+    Raises ``ValueError`` on failure.
+    """
+    import urllib.request
+
+    fp = _token_fingerprint(raw_token)
+
+    # Check cache first
+    cached = _jwt_cache.get(fp)
+    if cached:
+        api_token, expires_at = cached
+        if time.time() < expires_at - _JWT_REFRESH_MARGIN_SECONDS:
+            return api_token, expires_at
+
+    req = urllib.request.Request(
+        _TOKEN_EXCHANGE_URL,
+        method="GET",
+        headers={
+            "Authorization": f"token {raw_token}",
+            "User-Agent": _EXCHANGE_USER_AGENT,
+            "Accept": "application/json",
+            "Editor-Version": _EDITOR_VERSION,
+        },
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            data = json.loads(resp.read().decode())
+    except Exception as exc:
+        raise ValueError(f"Copilot token exchange failed: {exc}") from exc
+
+    api_token = data.get("token", "")
+    expires_at = data.get("expires_at", 0)
+    if not api_token:
+        raise ValueError("Copilot token exchange returned empty token")
+
+    # Convert expires_at to float if needed
+    expires_at = float(expires_at) if expires_at else time.time() + 1800
+
+    _jwt_cache[fp] = (api_token, expires_at)
+    logger.debug(
+        "Copilot token exchanged, expires_at=%s",
+        expires_at,
+    )
+    return api_token, expires_at
+
+
+def get_copilot_api_token(raw_token: str) -> str:
+    """Exchange a raw GitHub token for a Copilot API token, with fallback.
+
+    Convenience wrapper: returns the exchanged token on success, or the
+    raw token unchanged if the exchange fails (e.g. network error, unsupported
+    account type). This preserves existing behaviour for accounts that don't
+    need exchange while enabling access to internal-only models for those that do.
+    """
+    if not raw_token:
+        return raw_token
+    try:
+        api_token, _ = exchange_copilot_token(raw_token)
+        return api_token
+    except Exception as exc:
+        logger.debug("Copilot token exchange failed, using raw token: %s", exc)
+        return raw_token
+
+
 # ─── Copilot API Headers ───────────────────────────────────────────────────
 
 def copilot_request_headers(

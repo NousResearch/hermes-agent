@@ -10,6 +10,8 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
 
+from gateway.platforms.base import ProcessingOutcome
+
 try:
     import lark_oapi
     _HAS_LARK_OAPI = True
@@ -638,83 +640,54 @@ class TestAdapterBehavior(unittest.TestCase):
         )
 
     @patch.dict(os.environ, {}, clear=True)
-    @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
-    def test_add_ack_reaction_uses_ok_emoji(self):
-        from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
-
-        adapter = FeishuAdapter(PlatformConfig())
-        captured = {}
-
-        class _ReactionAPI:
-            def create(self, request):
-                captured["request"] = request
-                return SimpleNamespace(
-                    success=lambda: True,
-                    data=SimpleNamespace(reaction_id="r_typing"),
-                )
-
-        adapter._client = SimpleNamespace(
-            im=SimpleNamespace(v1=SimpleNamespace(message_reaction=_ReactionAPI()))
-        )
-
-        async def _direct(func, *args, **kwargs):
-            return func(*args, **kwargs)
-
-        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
-            reaction_id = asyncio.run(adapter._add_ack_reaction("om_msg"))
-
-        self.assertEqual(reaction_id, "r_typing")
-        self.assertEqual(captured["request"].request_body.reaction_type["emoji_type"], "OK")
-
-    @patch.dict(os.environ, {}, clear=True)
-    def test_add_ack_reaction_logs_warning_on_failure(self):
-        from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
-
-        adapter = FeishuAdapter(PlatformConfig())
-
-        class _ReactionAPI:
-            def create(self, request):
-                raise RuntimeError("boom")
-
-        adapter._client = SimpleNamespace(
-            im=SimpleNamespace(v1=SimpleNamespace(message_reaction=_ReactionAPI()))
-        )
-
-        async def _direct(func, *args, **kwargs):
-            return func(*args, **kwargs)
-
-        with (
-            patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct),
-            self.assertLogs("gateway.platforms.feishu", level="WARNING") as logs,
-        ):
-            reaction_id = asyncio.run(adapter._add_ack_reaction("om_msg"))
-
-        self.assertIsNone(reaction_id)
-        self.assertTrue(
-            any("Failed to add ack reaction to om_msg" in entry for entry in logs.output),
-            logs.output,
-        )
-
-    @patch.dict(os.environ, {}, clear=True)
-    def test_ack_reaction_events_are_ignored_to_avoid_feedback_loops(self):
+    def test_bot_origin_reactions_are_dropped_to_avoid_feedback_loops(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
         adapter._loop = object()
+
+        for emoji in ("Typing", "CrossMark"):
+            event = SimpleNamespace(
+                message_id="om_msg",
+                operator_type="bot",
+                reaction_type=SimpleNamespace(emoji_type=emoji),
+            )
+            data = SimpleNamespace(event=event)
+            with patch(
+                "gateway.platforms.feishu.asyncio.run_coroutine_threadsafe"
+            ) as run_threadsafe:
+                adapter._on_reaction_event("im.message.reaction.created_v1", data)
+            run_threadsafe.assert_not_called()
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_user_reaction_with_managed_emoji_is_still_routed(self):
+        # Operator-origin filter is enough to prevent feedback loops; we must
+        # not additionally swallow user-origin reactions just because their
+        # emoji happens to collide with a lifecycle emoji.
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._loop = SimpleNamespace(is_closed=lambda: False)
+
         event = SimpleNamespace(
             message_id="om_msg",
             operator_type="user",
-            reaction_type=SimpleNamespace(emoji_type="OK"),
+            reaction_type=SimpleNamespace(emoji_type="Typing"),
         )
         data = SimpleNamespace(event=event)
 
-        with patch("gateway.platforms.feishu.asyncio.run_coroutine_threadsafe") as run_threadsafe:
-            adapter._on_reaction_event("im.message.reaction.created_v1", data)
+        def _close_coro_and_return_future(coro, _loop):
+            coro.close()
+            return SimpleNamespace(add_done_callback=lambda _: None)
 
-        run_threadsafe.assert_not_called()
+        with patch(
+            "gateway.platforms.feishu.asyncio.run_coroutine_threadsafe",
+            side_effect=_close_coro_and_return_future,
+        ) as run_threadsafe:
+            adapter._on_reaction_event("im.message.reaction.created_v1", data)
+        run_threadsafe.assert_called_once()
 
     @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
     def test_group_message_requires_mentions_even_when_policy_open(self):
@@ -746,6 +719,57 @@ class TestAdapterBehavior(unittest.TestCase):
     @patch.dict(
         os.environ,
         {
+            "FEISHU_BOT_OPEN_ID": "ou_hermes",
+            "FEISHU_BOT_USER_ID": "u_hermes",
+        },
+        clear=True,
+    )
+    def test_other_bot_sender_is_not_treated_as_self_sent_message(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        event = SimpleNamespace(
+            sender=SimpleNamespace(
+                sender_type="bot",
+                sender_id=SimpleNamespace(open_id="ou_other_bot", user_id="u_other_bot"),
+            )
+        )
+
+        self.assertFalse(adapter._is_self_sent_bot_message(event))
+
+    @patch.dict(
+        os.environ,
+        {
+            "FEISHU_BOT_OPEN_ID": "ou_hermes",
+            "FEISHU_BOT_USER_ID": "u_hermes",
+        },
+        clear=True,
+    )
+    def test_self_bot_sender_is_treated_as_self_sent_message(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        by_open_id = SimpleNamespace(
+            sender=SimpleNamespace(
+                sender_type="bot",
+                sender_id=SimpleNamespace(open_id="ou_hermes", user_id="u_other"),
+            )
+        )
+        by_user_id = SimpleNamespace(
+            sender=SimpleNamespace(
+                sender_type="app",
+                sender_id=SimpleNamespace(open_id="ou_other", user_id="u_hermes"),
+            )
+        )
+
+        self.assertTrue(adapter._is_self_sent_bot_message(by_open_id))
+        self.assertTrue(adapter._is_self_sent_bot_message(by_user_id))
+
+    @patch.dict(
+        os.environ,
+        {
             "FEISHU_GROUP_POLICY": "allowlist",
             "FEISHU_ALLOWED_USERS": "ou_allowed",
             "FEISHU_BOT_NAME": "Hermes Bot",
@@ -757,11 +781,12 @@ class TestAdapterBehavior(unittest.TestCase):
         from gateway.platforms.feishu import FeishuAdapter
 
         adapter = FeishuAdapter(PlatformConfig())
+        # Mention without IDs — name fallback legitimately engages.
         mentioned = SimpleNamespace(
             mentions=[
                 SimpleNamespace(
                     name="Hermes Bot",
-                    id=SimpleNamespace(open_id="ou_other", user_id="u_other"),
+                    id=SimpleNamespace(open_id=None, user_id=None),
                 )
             ]
         )
@@ -1002,40 +1027,47 @@ class TestAdapterBehavior(unittest.TestCase):
 
     @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
     def test_group_message_matches_bot_name_when_only_name_available(self):
+        """Name fallback engages when either side lacks an open_id. When BOTH
+        the mention and the bot carry open_ids, IDs are authoritative — a
+        same-name human with a different open_id must NOT admit."""
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
 
+        # Case 1: bot has only a name (open_id not hydrated / not configured).
+        # Name fallback is the only available signal for any mention.
         adapter = FeishuAdapter(PlatformConfig())
         adapter._bot_name = "Hermes Bot"
         sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
 
-        named_mention = SimpleNamespace(
+        name_only_mention = SimpleNamespace(
             name="Hermes Bot",
-            id=SimpleNamespace(open_id="ou_other", user_id="u_other"),
+            id=SimpleNamespace(open_id=None, user_id=None),
         )
         different_mention = SimpleNamespace(
             name="Another Bot",
-            id=SimpleNamespace(open_id="ou_other", user_id="u_other"),
+            id=SimpleNamespace(open_id=None, user_id=None),
         )
 
-        self.assertTrue(adapter._should_accept_group_message(SimpleNamespace(mentions=[named_mention]), sender_id, ""))
+        self.assertTrue(adapter._should_accept_group_message(SimpleNamespace(mentions=[name_only_mention]), sender_id, ""))
         self.assertFalse(adapter._should_accept_group_message(SimpleNamespace(mentions=[different_mention]), sender_id, ""))
 
-    @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
-    def test_group_post_message_uses_parsed_mentions_when_sdk_mentions_missing(self):
-        from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
+        # Case 2: bot's open_id IS known — a same-name human with different
+        # open_id must NOT admit (IDs override names).
+        adapter2 = FeishuAdapter(PlatformConfig())
+        adapter2._bot_open_id = "ou_bot"
+        adapter2._bot_name = "Hermes Bot"
 
-        adapter = FeishuAdapter(PlatformConfig())
-        adapter._bot_open_id = "ou_bot"
-        sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
-        message = SimpleNamespace(
-            message_type="post",
-            mentions=[],
-            content='{"en_us":{"content":[[{"tag":"at","user_name":"Hermes","open_id":"ou_bot"}]]}}',
+        same_name_other_id_mention = SimpleNamespace(
+            name="Hermes Bot",
+            id=SimpleNamespace(open_id="ou_other", user_id="u_other"),
+        )
+        bot_mention = SimpleNamespace(
+            name="Hermes Bot",
+            id=SimpleNamespace(open_id="ou_bot", user_id=None),
         )
 
-        self.assertTrue(adapter._should_accept_group_message(message, sender_id, ""))
+        self.assertFalse(adapter2._should_accept_group_message(SimpleNamespace(mentions=[same_name_other_id_mention]), sender_id, ""))
+        self.assertTrue(adapter2._should_accept_group_message(SimpleNamespace(mentions=[bot_mention]), sender_id, ""))
 
     @patch.dict(os.environ, {}, clear=True)
     def test_extract_post_message_as_text(self):
@@ -1049,7 +1081,7 @@ class TestAdapterBehavior(unittest.TestCase):
             message_id="om_post",
         )
 
-        text, msg_type, media_urls, media_types = asyncio.run(adapter._extract_message_content(message))
+        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
 
         self.assertEqual(text, "Title\nhello\n[doc](https://example.com)")
         self.assertEqual(msg_type.value, "text")
@@ -1068,7 +1100,7 @@ class TestAdapterBehavior(unittest.TestCase):
             message_id="om_post_fr",
         )
 
-        text, msg_type, media_urls, media_types = asyncio.run(adapter._extract_message_content(message))
+        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
 
         self.assertEqual(text, "Subject\nbonjour")
         self.assertEqual(msg_type.value, "text")
@@ -1094,7 +1126,7 @@ class TestAdapterBehavior(unittest.TestCase):
             message_id="om_post_rich",
         )
 
-        text, msg_type, media_urls, media_types = asyncio.run(adapter._extract_message_content(message))
+        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
 
         self.assertEqual(text, "Rich message\n[Image: diagram]\n@Alice please check the attachment\n[Attachment: spec.pdf]\n:smile:")
         self.assertEqual(msg_type.value, "text")
@@ -1120,7 +1152,7 @@ class TestAdapterBehavior(unittest.TestCase):
             message_id="om_post_media",
         )
 
-        text, msg_type, media_urls, media_types = asyncio.run(adapter._extract_message_content(message))
+        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
 
         self.assertEqual(text, "Rich message\n[Image: diagram]\n[Attachment: spec.pdf]")
         self.assertEqual(msg_type.value, "text")
@@ -1157,7 +1189,7 @@ class TestAdapterBehavior(unittest.TestCase):
             message_id="om_merge_forward",
         )
 
-        text, msg_type, media_urls, media_types = asyncio.run(adapter._extract_message_content(message))
+        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
 
         self.assertEqual(
             text,
@@ -1179,7 +1211,7 @@ class TestAdapterBehavior(unittest.TestCase):
             message_id="om_share_chat",
         )
 
-        text, msg_type, media_urls, media_types = asyncio.run(adapter._extract_message_content(message))
+        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
 
         self.assertEqual(text, "Shared chat: Platform Ops\nChat ID: oc_shared")
         self.assertEqual(msg_type.value, "text")
@@ -1213,7 +1245,7 @@ class TestAdapterBehavior(unittest.TestCase):
             message_id="om_interactive",
         )
 
-        text, msg_type, media_urls, media_types = asyncio.run(adapter._extract_message_content(message))
+        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
 
         self.assertEqual(text, "Approval Request\nRequester: Alice\nApprove\nActions: Approve")
         self.assertEqual(msg_type.value, "text")
@@ -1233,7 +1265,7 @@ class TestAdapterBehavior(unittest.TestCase):
             message_id="om_image",
         )
 
-        text, msg_type, media_urls, media_types = asyncio.run(adapter._extract_message_content(message))
+        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
 
         self.assertEqual(text, "")
         self.assertEqual(msg_type.value, "photo")
@@ -1259,7 +1291,7 @@ class TestAdapterBehavior(unittest.TestCase):
             message_id="om_audio",
         )
 
-        text, msg_type, media_urls, media_types = asyncio.run(adapter._extract_message_content(message))
+        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
 
         self.assertEqual(text, "")
         self.assertEqual(msg_type.value, "audio")
@@ -1281,7 +1313,7 @@ class TestAdapterBehavior(unittest.TestCase):
             message_id="om_file",
         )
 
-        text, msg_type, media_urls, media_types = asyncio.run(adapter._extract_message_content(message))
+        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
 
         self.assertEqual(text, "")
         self.assertEqual(msg_type.value, "document")
@@ -1303,7 +1335,7 @@ class TestAdapterBehavior(unittest.TestCase):
             message_id="om_media",
         )
 
-        text, msg_type, media_urls, media_types = asyncio.run(adapter._extract_message_content(message))
+        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
 
         self.assertEqual(text, "")
         self.assertEqual(msg_type.value, "photo")
@@ -1325,7 +1357,7 @@ class TestAdapterBehavior(unittest.TestCase):
             message_id="om_video",
         )
 
-        text, msg_type, media_urls, media_types = asyncio.run(adapter._extract_message_content(message))
+        text, msg_type, media_urls, media_types, _mentions = asyncio.run(adapter._extract_message_content(message))
 
         self.assertEqual(text, "")
         self.assertEqual(msg_type.value, "video")
@@ -1505,7 +1537,7 @@ class TestAdapterBehavior(unittest.TestCase):
         adapter._dispatch_inbound_event.assert_awaited_once()
         event = adapter._dispatch_inbound_event.await_args.args[0]
         self.assertEqual(event.message_type, MessageType.TEXT)
-        self.assertEqual(event.source.user_id, "ou_user")
+        self.assertEqual(event.source.user_id, "u_user")  # tenant-scoped user_id preferred over app-scoped open_id
         self.assertEqual(event.source.user_name, "张三")
         self.assertEqual(event.source.user_id_alt, "on_union")
         self.assertEqual(event.source.chat_name, "Feishu DM")
@@ -2371,6 +2403,134 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(elements, [{"tag": "md", "text": "可以用 **粗体** 和 *斜体*。"}])
 
     @patch.dict(os.environ, {}, clear=True)
+    def test_send_splits_fenced_code_blocks_into_separate_post_rows(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_codeblock"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        content = (
+            "确认已入库 ✓\n"
+            "文件路径：`/root/.hermes/profiles/agent_cto/cron/jobs.json`\n"
+            "**解码后的内容：**\n"
+            "```json\n"
+            '{"cron": "list"}\n'
+            "```\n"
+            "后续说明仍应保留。"
+        )
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(
+                    chat_id="oc_chat",
+                    content=content,
+                )
+            )
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].request_body.msg_type, "post")
+        payload = json.loads(captured["request"].request_body.content)
+        rows = payload["zh_cn"]["content"]
+        self.assertEqual(
+            rows,
+            [
+                [
+                    {
+                        "tag": "md",
+                        "text": "确认已入库 ✓\n文件路径：`/root/.hermes/profiles/agent_cto/cron/jobs.json`\n**解码后的内容：**",
+                    }
+                ],
+                [{"tag": "md", "text": "```json\n{\"cron\": \"list\"}\n```"}],
+                [{"tag": "md", "text": "后续说明仍应保留。"}],
+            ],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_post_payload_keeps_fence_like_code_lines_inside_code_block(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        payload = json.loads(
+            adapter._build_post_payload(
+                "before\n```python\n```oops\n```\nafter"
+            )
+        )
+
+        self.assertEqual(
+            payload["zh_cn"]["content"],
+            [
+                [{"tag": "md", "text": "before"}],
+                [{"tag": "md", "text": "```python\n```oops\n```"}],
+                [{"tag": "md", "text": "after"}],
+            ],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_post_payload_preserves_trailing_spaces_in_code_block(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        payload = json.loads(
+            adapter._build_post_payload(
+                "before\n```python\nline with two spaces  \n```\nafter"
+            )
+        )
+
+        self.assertEqual(
+            payload["zh_cn"]["content"],
+            [
+                [{"tag": "md", "text": "before"}],
+                [{"tag": "md", "text": "```python\nline with two spaces  \n```"}],
+                [{"tag": "md", "text": "after"}],
+            ],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_post_payload_splits_multiple_fenced_code_blocks(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        payload = json.loads(
+            adapter._build_post_payload(
+                "before\n```python\nprint(1)\n```\nmiddle\n```json\n{}\n```\nafter"
+            )
+        )
+
+        self.assertEqual(
+            payload["zh_cn"]["content"],
+            [
+                [{"tag": "md", "text": "before"}],
+                [{"tag": "md", "text": "```python\nprint(1)\n```"}],
+                [{"tag": "md", "text": "middle"}],
+                [{"tag": "md", "text": "```json\n{}\n```"}],
+                [{"tag": "md", "text": "after"}],
+            ],
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
     def test_send_falls_back_to_text_when_post_payload_is_rejected(self):
         from gateway.config import PlatformConfig
         from gateway.platforms.feishu import FeishuAdapter
@@ -2503,6 +2663,135 @@ class TestAdapterBehavior(unittest.TestCase):
             rows,
             [[{"tag": "md", "text": "---\n1. 第一项\n<u>下划线</u>\n~~删除线~~"}]],
         )
+
+
+@unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
+class TestHydrateBotIdentity(unittest.TestCase):
+    """Hydration of bot identity via /open-apis/bot/v3/info and application info.
+
+    Covers the manual-setup path where FEISHU_BOT_OPEN_ID / FEISHU_BOT_USER_ID
+    are not configured. Hydration must populate _bot_open_id so that
+    _is_self_sent_bot_message() can filter the adapter's own outbound echoes.
+    """
+
+    def _make_adapter(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        return FeishuAdapter(PlatformConfig())
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_hydration_populates_open_id_from_bot_info(self):
+        adapter = self._make_adapter()
+        adapter._client = Mock()
+        payload = json.dumps(
+            {
+                "code": 0,
+                "bot": {
+                    "bot_name": "Hermes Bot",
+                    "open_id": "ou_hermes_hydrated",
+                },
+            }
+        ).encode("utf-8")
+        response = SimpleNamespace(raw=SimpleNamespace(content=payload))
+        adapter._client.request = Mock(return_value=response)
+
+        asyncio.run(adapter._hydrate_bot_identity())
+
+        self.assertEqual(adapter._bot_open_id, "ou_hermes_hydrated")
+        self.assertEqual(adapter._bot_name, "Hermes Bot")
+        # Application-info fallback must NOT run when bot_name is already set.
+        self.assertFalse(
+            adapter._client.application.v6.application.get.called
+            if hasattr(adapter._client, "application") else False
+        )
+
+    @patch.dict(
+        os.environ,
+        {
+            "FEISHU_BOT_OPEN_ID": "ou_env",
+            "FEISHU_BOT_NAME": "Env Hermes",
+        },
+        clear=True,
+    )
+    def test_hydration_skipped_when_env_vars_supply_both_fields(self):
+        adapter = self._make_adapter()
+        adapter._client = Mock()
+        adapter._client.request = Mock()
+
+        asyncio.run(adapter._hydrate_bot_identity())
+
+        # Neither probe should run — both fields are already populated.
+        adapter._client.request.assert_not_called()
+        self.assertEqual(adapter._bot_open_id, "ou_env")
+        self.assertEqual(adapter._bot_name, "Env Hermes")
+
+    @patch.dict(os.environ, {"FEISHU_BOT_OPEN_ID": "ou_env"}, clear=True)
+    def test_hydration_fills_only_missing_fields(self):
+        """Env-var open_id must NOT be overwritten by a different probe value."""
+        adapter = self._make_adapter()
+        adapter._client = Mock()
+        payload = json.dumps(
+            {
+                "code": 0,
+                "bot": {
+                    "bot_name": "Hermes Bot",
+                    "open_id": "ou_probe_DIFFERENT",
+                },
+            }
+        ).encode("utf-8")
+        adapter._client.request = Mock(return_value=SimpleNamespace(raw=SimpleNamespace(content=payload)))
+
+        asyncio.run(adapter._hydrate_bot_identity())
+
+        self.assertEqual(adapter._bot_open_id, "ou_env")  # preserved
+        self.assertEqual(adapter._bot_name, "Hermes Bot")  # filled in
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_hydration_tolerates_probe_failure_and_falls_back_to_app_info(self):
+        adapter = self._make_adapter()
+        adapter._client = Mock()
+        adapter._client.request = Mock(side_effect=RuntimeError("network down"))
+
+        # Make the application-info fallback succeed for _bot_name.
+        app_response = Mock()
+        app_response.success = Mock(return_value=True)
+        app_response.data = SimpleNamespace(app=SimpleNamespace(app_name="Fallback Bot"))
+        adapter._client.application.v6.application.get = Mock(return_value=app_response)
+        adapter._build_get_application_request = Mock(return_value=object())
+
+        asyncio.run(adapter._hydrate_bot_identity())
+
+        # Primary probe failed — open_id stays empty, but bot_name came from app-info.
+        self.assertEqual(adapter._bot_open_id, "")
+        self.assertEqual(adapter._bot_name, "Fallback Bot")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_hydrated_open_id_enables_self_send_filter(self):
+        """E2E: after hydration, _is_self_sent_bot_message() rejects adapter's own id."""
+        adapter = self._make_adapter()
+        adapter._client = Mock()
+        payload = json.dumps(
+            {"code": 0, "bot": {"bot_name": "Hermes", "open_id": "ou_hermes"}}
+        ).encode("utf-8")
+        adapter._client.request = Mock(return_value=SimpleNamespace(raw=SimpleNamespace(content=payload)))
+
+        asyncio.run(adapter._hydrate_bot_identity())
+
+        self_event = SimpleNamespace(
+            sender=SimpleNamespace(
+                sender_type="bot",
+                sender_id=SimpleNamespace(open_id="ou_hermes", user_id=""),
+            )
+        )
+        peer_event = SimpleNamespace(
+            sender=SimpleNamespace(
+                sender_type="bot",
+                sender_id=SimpleNamespace(open_id="ou_peer_bot", user_id=""),
+            )
+        )
+        self.assertTrue(adapter._is_self_sent_bot_message(self_event))
+        self.assertFalse(adapter._is_self_sent_bot_message(peer_event))
 
 
 @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
@@ -2970,3 +3259,1261 @@ class TestSenderNameResolution(unittest.TestCase):
             result = asyncio.run(adapter._resolve_sender_name_from_api("ou_broken"))
 
         self.assertIsNone(result)
+
+
+@unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")
+class TestProcessingReactions(unittest.TestCase):
+    """Typing on start → removed on SUCCESS, swapped for CrossMark on FAILURE,
+    removed (no replacement) on CANCELLED."""
+
+    @staticmethod
+    def _run(coro):
+        return asyncio.run(coro)
+
+    def _build_adapter(
+        self,
+        create_success: bool = True,
+        delete_success: bool = True,
+        next_reaction_id: str = "r1",
+    ):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        tracker = SimpleNamespace(
+            create_calls=[],
+            delete_calls=[],
+            next_reaction_id=next_reaction_id,
+            create_success=create_success,
+            delete_success=delete_success,
+        )
+
+        def _create(request):
+            tracker.create_calls.append(
+                request.request_body.reaction_type["emoji_type"]
+            )
+            if tracker.create_success:
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(reaction_id=tracker.next_reaction_id),
+                )
+            return SimpleNamespace(
+                success=lambda: False, code=99, msg="rejected", data=None,
+            )
+
+        def _delete(request):
+            tracker.delete_calls.append(request.reaction_id)
+            return SimpleNamespace(
+                success=lambda: tracker.delete_success,
+                code=0 if tracker.delete_success else 99,
+                msg="success" if tracker.delete_success else "rejected",
+            )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message_reaction=SimpleNamespace(create=_create, delete=_delete),
+                ),
+            ),
+        )
+        return adapter, tracker
+
+    @staticmethod
+    def _event(message_id: str = "om_msg"):
+        return SimpleNamespace(message_id=message_id)
+
+    def _patch_to_thread(self):
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        return patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct)
+
+    # ------------------------------------------------------------------ start
+    @patch.dict(os.environ, {}, clear=True)
+    def test_start_adds_typing_and_caches_reaction_id(self):
+        adapter, tracker = self._build_adapter(next_reaction_id="r_typing")
+        with self._patch_to_thread():
+            self._run(adapter.on_processing_start(self._event()))
+        self.assertEqual(tracker.create_calls, ["Typing"])
+        self.assertEqual(adapter._pending_processing_reactions["om_msg"], "r_typing")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_start_is_idempotent_for_same_message_id(self):
+        adapter, tracker = self._build_adapter(next_reaction_id="r_typing")
+        with self._patch_to_thread():
+            self._run(adapter.on_processing_start(self._event()))
+            self._run(adapter.on_processing_start(self._event()))
+        self.assertEqual(tracker.create_calls, ["Typing"])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_start_does_not_cache_when_create_fails(self):
+        adapter, tracker = self._build_adapter(create_success=False)
+        with self._patch_to_thread():
+            self._run(adapter.on_processing_start(self._event()))
+        self.assertEqual(tracker.create_calls, ["Typing"])
+        self.assertNotIn("om_msg", adapter._pending_processing_reactions)
+
+    # --------------------------------------------------------------- complete
+    @patch.dict(os.environ, {}, clear=True)
+    def test_success_removes_typing_and_adds_nothing(self):
+        adapter, tracker = self._build_adapter(next_reaction_id="r_typing")
+        with self._patch_to_thread():
+            self._run(adapter.on_processing_start(self._event()))
+            self._run(
+                adapter.on_processing_complete(self._event(), ProcessingOutcome.SUCCESS)
+            )
+        self.assertEqual(tracker.create_calls, ["Typing"])
+        self.assertEqual(tracker.delete_calls, ["r_typing"])
+        self.assertNotIn("om_msg", adapter._pending_processing_reactions)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_failure_removes_typing_then_adds_cross_mark(self):
+        adapter, tracker = self._build_adapter(next_reaction_id="r_typing")
+        with self._patch_to_thread():
+            self._run(adapter.on_processing_start(self._event()))
+            self._run(
+                adapter.on_processing_complete(self._event(), ProcessingOutcome.FAILURE)
+            )
+        self.assertEqual(tracker.create_calls, ["Typing", "CrossMark"])
+        self.assertEqual(tracker.delete_calls, ["r_typing"])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_cancelled_removes_typing_and_adds_nothing(self):
+        adapter, tracker = self._build_adapter(next_reaction_id="r_typing")
+        with self._patch_to_thread():
+            self._run(adapter.on_processing_start(self._event()))
+            self._run(
+                adapter.on_processing_complete(self._event(), ProcessingOutcome.CANCELLED)
+            )
+        self.assertEqual(tracker.create_calls, ["Typing"])
+        self.assertEqual(tracker.delete_calls, ["r_typing"])
+        self.assertNotIn("om_msg", adapter._pending_processing_reactions)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_failure_without_preceding_start_still_adds_cross_mark(self):
+        adapter, tracker = self._build_adapter()
+        with self._patch_to_thread():
+            self._run(
+                adapter.on_processing_complete(self._event(), ProcessingOutcome.FAILURE)
+            )
+        self.assertEqual(tracker.create_calls, ["CrossMark"])
+        self.assertEqual(tracker.delete_calls, [])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_success_without_preceding_start_is_full_noop(self):
+        adapter, tracker = self._build_adapter()
+        with self._patch_to_thread():
+            self._run(
+                adapter.on_processing_complete(self._event(), ProcessingOutcome.SUCCESS)
+            )
+        self.assertEqual(tracker.create_calls, [])
+        self.assertEqual(tracker.delete_calls, [])
+
+    # ------------------------- delete failure: don't stack badges -----------
+    @patch.dict(os.environ, {}, clear=True)
+    def test_delete_failure_on_failure_outcome_skips_cross_mark(self):
+        # Removing Typing is best-effort — but if it fails, we must NOT
+        # additionally add CrossMark, or the UI would show two contradictory
+        # badges. The handle stays in the cache for LRU to clean up later.
+        adapter, tracker = self._build_adapter(
+            next_reaction_id="r_typing", delete_success=False,
+        )
+        with self._patch_to_thread():
+            self._run(adapter.on_processing_start(self._event()))
+            self._run(
+                adapter.on_processing_complete(self._event(), ProcessingOutcome.FAILURE)
+            )
+        self.assertEqual(tracker.create_calls, ["Typing"])  # CrossMark NOT added
+        self.assertEqual(tracker.delete_calls, ["r_typing"])  # delete was attempted
+        self.assertEqual(
+            adapter._pending_processing_reactions["om_msg"], "r_typing",
+        )  # handle retained
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_delete_failure_on_success_outcome_retains_handle(self):
+        adapter, tracker = self._build_adapter(
+            next_reaction_id="r_typing", delete_success=False,
+        )
+        with self._patch_to_thread():
+            self._run(adapter.on_processing_start(self._event()))
+            self._run(
+                adapter.on_processing_complete(self._event(), ProcessingOutcome.SUCCESS)
+            )
+        self.assertEqual(tracker.create_calls, ["Typing"])
+        self.assertEqual(tracker.delete_calls, ["r_typing"])
+        self.assertEqual(
+            adapter._pending_processing_reactions["om_msg"], "r_typing",
+        )
+
+    # ------------------------------------------------------------- env toggle
+    @patch.dict(os.environ, {"FEISHU_REACTIONS": "false"}, clear=True)
+    def test_env_disable_short_circuits_both_hooks(self):
+        adapter, tracker = self._build_adapter()
+        with self._patch_to_thread():
+            self._run(adapter.on_processing_start(self._event()))
+            self._run(
+                adapter.on_processing_complete(self._event(), ProcessingOutcome.FAILURE)
+            )
+        self.assertEqual(tracker.create_calls, [])
+        self.assertEqual(tracker.delete_calls, [])
+
+    # ------------------------------------------------------------- LRU bounds
+    @patch.dict(os.environ, {}, clear=True)
+    def test_cache_evicts_oldest_entry_beyond_size_limit(self):
+        from gateway.platforms.feishu import _FEISHU_PROCESSING_REACTION_CACHE_SIZE
+
+        adapter, _ = self._build_adapter()
+        counter = {"n": 0}
+
+        def _create(_request):
+            counter["n"] += 1
+            return SimpleNamespace(
+                success=lambda: True,
+                data=SimpleNamespace(reaction_id=f"r{counter['n']}"),
+            )
+
+        adapter._client.im.v1.message_reaction.create = _create
+
+        with self._patch_to_thread():
+            for i in range(_FEISHU_PROCESSING_REACTION_CACHE_SIZE + 1):
+                self._run(adapter.on_processing_start(self._event(f"om_{i}")))
+
+        self.assertNotIn("om_0", adapter._pending_processing_reactions)
+        self.assertIn(
+            f"om_{_FEISHU_PROCESSING_REACTION_CACHE_SIZE}",
+            adapter._pending_processing_reactions,
+        )
+        self.assertEqual(
+            len(adapter._pending_processing_reactions),
+            _FEISHU_PROCESSING_REACTION_CACHE_SIZE,
+        )
+
+
+class TestFeishuMentionMap(unittest.TestCase):
+    def test_build_mentions_map_handles_at_all(self):
+        from gateway.platforms.feishu import _build_mentions_map, _FeishuBotIdentity, FeishuMentionRef
+
+        mention = SimpleNamespace(key="@_all", id=None, name="")
+        result = _build_mentions_map(
+            [mention],
+            _FeishuBotIdentity(open_id="ou_bot", name="Hermes"),
+        )
+        self.assertEqual(result["@_all"], FeishuMentionRef(is_all=True))
+
+    def test_build_mentions_map_marks_self_by_open_id(self):
+        from gateway.platforms.feishu import _build_mentions_map, _FeishuBotIdentity
+
+        mention = SimpleNamespace(
+            key="@_user_1",
+            id=SimpleNamespace(open_id="ou_bot", user_id=""),
+            name="Hermes",
+        )
+        ref = _build_mentions_map([mention], _FeishuBotIdentity(open_id="ou_bot"))["@_user_1"]
+        self.assertTrue(ref.is_self)
+        self.assertEqual(ref.open_id, "ou_bot")
+        self.assertEqual(ref.name, "Hermes")
+
+    def test_build_mentions_map_marks_self_by_name_fallback(self):
+        from gateway.platforms.feishu import _build_mentions_map, _FeishuBotIdentity
+
+        mention = SimpleNamespace(
+            key="@_user_1",
+            id=SimpleNamespace(open_id="", user_id=""),
+            name="Hermes",
+        )
+        result = _build_mentions_map([mention], _FeishuBotIdentity(name="Hermes"))
+        self.assertTrue(result["@_user_1"].is_self)
+
+    def test_build_mentions_map_name_match_does_not_override_mismatching_open_id(self):
+        """Regression: a human user whose display name matches the bot must
+        NOT be flagged as self when their open_id differs. Before the fix,
+        name-match fired even when open_id was present and different, causing
+        their messages to be silently stripped/dropped."""
+        from gateway.platforms.feishu import _build_mentions_map, _FeishuBotIdentity
+
+        human_with_same_name = SimpleNamespace(
+            key="@_user_1",
+            id=SimpleNamespace(open_id="ou_human", user_id=""),
+            name="Hermes Bot",
+        )
+        result = _build_mentions_map(
+            [human_with_same_name],
+            _FeishuBotIdentity(open_id="ou_bot", name="Hermes Bot"),
+        )
+        self.assertFalse(result["@_user_1"].is_self)
+
+    def test_build_mentions_map_falls_back_to_name_when_bot_open_id_not_hydrated(self):
+        """Regression: right after gateway startup, _hydrate_bot_identity may
+        not have populated _bot_open_id yet. During that window, a mention
+        carrying a real open_id should still match via name — otherwise
+        @bot messages silently fail admission."""
+        from gateway.platforms.feishu import _build_mentions_map, _FeishuBotIdentity
+
+        bot_mention = SimpleNamespace(
+            key="@_user_1",
+            id=SimpleNamespace(open_id="ou_bot_actual", user_id=""),
+            name="Hermes Bot",
+        )
+        # Bot identity has name but no open_id yet (hydration pending).
+        result = _build_mentions_map(
+            [bot_mention],
+            _FeishuBotIdentity(open_id="", name="Hermes Bot"),
+        )
+        self.assertTrue(result["@_user_1"].is_self)
+
+    def test_build_mentions_map_non_self_user(self):
+        from gateway.platforms.feishu import _build_mentions_map, _FeishuBotIdentity
+
+        mention = SimpleNamespace(
+            key="@_user_1",
+            id=SimpleNamespace(open_id="ou_alice", user_id=""),
+            name="Alice",
+        )
+        ref = _build_mentions_map([mention], _FeishuBotIdentity(open_id="ou_bot"))["@_user_1"]
+        self.assertFalse(ref.is_self)
+        self.assertEqual(ref.open_id, "ou_alice")
+        self.assertEqual(ref.name, "Alice")
+
+    def test_build_mentions_map_returns_empty_for_none_input(self):
+        from gateway.platforms.feishu import _build_mentions_map, _FeishuBotIdentity
+
+        self.assertEqual(_build_mentions_map(None, _FeishuBotIdentity(open_id="ou_bot")), {})
+
+    def test_build_mentions_map_tolerates_missing_id_object(self):
+        from gateway.platforms.feishu import _build_mentions_map, _FeishuBotIdentity
+
+        mention = SimpleNamespace(key="@_user_9", id=None, name="")
+        ref = _build_mentions_map([mention], _FeishuBotIdentity(open_id="ou_bot"))["@_user_9"]
+        self.assertEqual(ref.open_id, "")
+        self.assertFalse(ref.is_self)
+
+
+class TestFeishuMentionHint(unittest.TestCase):
+    def test_hint_single_user(self):
+        from gateway.platforms.feishu import FeishuMentionRef, _build_mention_hint
+
+        refs = [FeishuMentionRef(name="Alice", open_id="ou_alice")]
+        self.assertEqual(
+            _build_mention_hint(refs),
+            "[Mentioned: Alice (open_id=ou_alice)]",
+        )
+
+    def test_hint_multiple_users(self):
+        from gateway.platforms.feishu import FeishuMentionRef, _build_mention_hint
+
+        refs = [
+            FeishuMentionRef(name="Alice", open_id="ou_alice"),
+            FeishuMentionRef(name="Bob", open_id="ou_bob"),
+        ]
+        self.assertEqual(
+            _build_mention_hint(refs),
+            "[Mentioned: Alice (open_id=ou_alice), Bob (open_id=ou_bob)]",
+        )
+
+    def test_hint_at_all(self):
+        from gateway.platforms.feishu import FeishuMentionRef, _build_mention_hint
+
+        refs = [FeishuMentionRef(is_all=True)]
+        self.assertEqual(_build_mention_hint(refs), "[Mentioned: @all]")
+
+    def test_hint_filters_self_mentions(self):
+        from gateway.platforms.feishu import FeishuMentionRef, _build_mention_hint
+
+        refs = [
+            FeishuMentionRef(name="Hermes", open_id="ou_bot", is_self=True),
+            FeishuMentionRef(name="Alice", open_id="ou_alice"),
+        ]
+        self.assertEqual(
+            _build_mention_hint(refs),
+            "[Mentioned: Alice (open_id=ou_alice)]",
+        )
+
+    def test_hint_returns_empty_when_only_self(self):
+        from gateway.platforms.feishu import FeishuMentionRef, _build_mention_hint
+
+        refs = [FeishuMentionRef(name="Hermes", open_id="ou_bot", is_self=True)]
+        self.assertEqual(_build_mention_hint(refs), "")
+
+    def test_hint_returns_empty_for_no_refs(self):
+        from gateway.platforms.feishu import _build_mention_hint
+
+        self.assertEqual(_build_mention_hint([]), "")
+
+    def test_hint_falls_back_when_open_id_missing(self):
+        from gateway.platforms.feishu import FeishuMentionRef, _build_mention_hint
+
+        refs = [FeishuMentionRef(name="Alice", open_id="")]
+        self.assertEqual(_build_mention_hint(refs), "[Mentioned: Alice]")
+
+    def test_hint_uses_unknown_placeholder_when_name_missing(self):
+        from gateway.platforms.feishu import FeishuMentionRef, _build_mention_hint
+
+        refs = [FeishuMentionRef(name="", open_id="ou_xxx")]
+        self.assertEqual(_build_mention_hint(refs), "[Mentioned: unknown (open_id=ou_xxx)]")
+
+    def test_hint_dedupes_repeated_user(self):
+        from gateway.platforms.feishu import FeishuMentionRef, _build_mention_hint
+
+        refs = [
+            FeishuMentionRef(name="Alice", open_id="ou_alice"),
+            FeishuMentionRef(name="Alice", open_id="ou_alice"),
+            FeishuMentionRef(name="Bob", open_id="ou_bob"),
+        ]
+        self.assertEqual(
+            _build_mention_hint(refs),
+            "[Mentioned: Alice (open_id=ou_alice), Bob (open_id=ou_bob)]",
+        )
+
+    def test_hint_dedupes_repeated_at_all(self):
+        from gateway.platforms.feishu import FeishuMentionRef, _build_mention_hint
+
+        refs = [FeishuMentionRef(is_all=True), FeishuMentionRef(is_all=True)]
+        self.assertEqual(_build_mention_hint(refs), "[Mentioned: @all]")
+
+
+class TestFeishuStripLeadingSelf(unittest.TestCase):
+    def _make_refs(self, *, self_name="Hermes", other_name=None):
+        from gateway.platforms.feishu import FeishuMentionRef
+
+        refs = [FeishuMentionRef(name=self_name, open_id="ou_bot", is_self=True)]
+        if other_name:
+            refs.append(FeishuMentionRef(name=other_name, open_id="ou_alice"))
+        return refs
+
+    def test_strips_leading_self(self):
+        from gateway.platforms.feishu import _strip_edge_self_mentions
+
+        result = _strip_edge_self_mentions("@Hermes /help", self._make_refs())
+        self.assertEqual(result, "/help")
+
+    def test_strips_consecutive_leading_self(self):
+        from gateway.platforms.feishu import _strip_edge_self_mentions
+
+        result = _strip_edge_self_mentions("@Hermes @Hermes hi", self._make_refs())
+        self.assertEqual(result, "hi")
+
+    def test_stops_at_first_non_self_token(self):
+        from gateway.platforms.feishu import _strip_edge_self_mentions
+
+        result = _strip_edge_self_mentions(
+            "@Hermes @Alice make a group", self._make_refs(other_name="Alice")
+        )
+        self.assertEqual(result, "@Alice make a group")
+
+    def test_preserves_mid_text_self(self):
+        from gateway.platforms.feishu import _strip_edge_self_mentions
+
+        result = _strip_edge_self_mentions("check @Hermes said yesterday", self._make_refs())
+        self.assertEqual(result, "check @Hermes said yesterday")
+
+    def test_strips_trailing_self_at_end_of_text(self):
+        from gateway.platforms.feishu import _strip_edge_self_mentions
+
+        result = _strip_edge_self_mentions("look up docs @Hermes", self._make_refs())
+        self.assertEqual(result, "look up docs")
+
+    def test_strips_trailing_self_with_terminal_punct(self):
+        from gateway.platforms.feishu import _strip_edge_self_mentions
+
+        # Terminal punct after the mention — strip the mention, keep the punct.
+        result = _strip_edge_self_mentions("look up docs @Hermes.", self._make_refs())
+        self.assertEqual(result, "look up docs.")
+
+    def test_preserves_trailing_self_before_non_terminal_char(self):
+        from gateway.platforms.feishu import _strip_edge_self_mentions
+
+        # Non-terminal char (here a Chinese particle) follows — preserve.
+        result = _strip_edge_self_mentions(
+            "please don't @Hermes anymore", self._make_refs()
+        )
+        self.assertEqual(result, "please don't @Hermes anymore")
+
+    def test_returns_input_when_refs_empty(self):
+        from gateway.platforms.feishu import _strip_edge_self_mentions
+
+        self.assertEqual(_strip_edge_self_mentions("@Hermes /help", []), "@Hermes /help")
+
+    def test_returns_input_when_no_self_refs(self):
+        from gateway.platforms.feishu import _strip_edge_self_mentions, FeishuMentionRef
+
+        refs = [FeishuMentionRef(name="Alice", open_id="ou_alice")]
+        self.assertEqual(_strip_edge_self_mentions("@Alice hi", refs), "@Alice hi")
+
+    def test_uses_open_id_fallback_when_name_missing(self):
+        from gateway.platforms.feishu import _strip_edge_self_mentions, FeishuMentionRef
+
+        refs = [FeishuMentionRef(name="", open_id="ou_bot", is_self=True)]
+        self.assertEqual(_strip_edge_self_mentions("@ou_bot hi", refs), "hi")
+
+    def test_word_boundary_prevents_prefix_collision(self):
+        """A bot named 'Al' must not eat the leading '@Alice' of a different user."""
+        from gateway.platforms.feishu import _strip_edge_self_mentions, FeishuMentionRef
+
+        refs = [FeishuMentionRef(name="Al", open_id="ou_bot", is_self=True)]
+        self.assertEqual(_strip_edge_self_mentions("@Alice hi", refs), "@Alice hi")
+
+
+class TestFeishuNormalizeText(unittest.TestCase):
+    def test_renders_mention_with_display_name(self):
+        from gateway.platforms.feishu import _normalize_feishu_text, FeishuMentionRef
+
+        refs = {"@_user_1": FeishuMentionRef(name="Alice", open_id="ou_alice")}
+        self.assertEqual(_normalize_feishu_text("@_user_1 hello", refs), "@Alice hello")
+
+    def test_renders_self_mention_with_name(self):
+        from gateway.platforms.feishu import _normalize_feishu_text, FeishuMentionRef
+
+        refs = {"@_user_1": FeishuMentionRef(name="Hermes", open_id="ou_bot", is_self=True)}
+        self.assertEqual(
+            _normalize_feishu_text("stop pinging @_user_1 please", refs),
+            "stop pinging @Hermes please",
+        )
+
+    def test_at_all_rendered_as_english_literal(self):
+        from gateway.platforms.feishu import _normalize_feishu_text
+
+        self.assertEqual(_normalize_feishu_text("@_all notice", None), "@all notice")
+
+    def test_unknown_placeholder_degrades_to_space(self):
+        from gateway.platforms.feishu import _normalize_feishu_text
+
+        # No map: fall back to the old behavior (substitute with space, then collapse).
+        self.assertEqual(_normalize_feishu_text("@_user_9 hello", None), "hello")
+
+    def test_backward_compatible_without_map(self):
+        from gateway.platforms.feishu import _normalize_feishu_text
+
+        self.assertEqual(_normalize_feishu_text("hello  world"), "hello world")
+
+    def test_mention_for_missing_map_entry_degrades_to_space(self):
+        from gateway.platforms.feishu import _normalize_feishu_text, FeishuMentionRef
+
+        refs = {"@_user_1": FeishuMentionRef(name="Alice")}
+        # @_user_2 has no entry — should degrade to a space (legacy behavior)
+        self.assertEqual(
+            _normalize_feishu_text("@_user_1 @_user_2 hi", refs),
+            "@Alice hi",
+        )
+
+
+class TestFeishuPostMentionParsing(unittest.TestCase):
+    def test_post_at_tag_renders_via_mentions_map(self):
+        """Post <at>.user_id is a placeholder ('@_user_N'); the real display
+        name comes from the mentions_map lookup. Confirmed via live
+        im.v1.message.get payload."""
+        from gateway.platforms.feishu import parse_feishu_post_payload, FeishuMentionRef
+
+        payload = {
+            "en_us": {
+                "content": [[
+                    {"tag": "at", "user_id": "@_user_1", "user_name": "ignored"},
+                    {"tag": "text", "text": " hello"},
+                ]]
+            }
+        }
+        mentions_map = {
+            "@_user_1": FeishuMentionRef(name="Alice", open_id="ou_alice"),
+        }
+        result = parse_feishu_post_payload(payload, mentions_map=mentions_map)
+        self.assertEqual(result.text_content, "@Alice hello")
+
+    def test_post_at_tag_falls_back_to_inline_user_name_when_map_misses(self):
+        """When the mentions payload is missing a placeholder, fall back to the
+        inline user_name in the <at> tag itself."""
+        from gateway.platforms.feishu import parse_feishu_post_payload
+
+        payload = {
+            "en_us": {
+                "content": [[
+                    {"tag": "at", "user_id": "@_user_7", "user_name": "Unknown"},
+                    {"tag": "text", "text": " hi"},
+                ]]
+            }
+        }
+        result = parse_feishu_post_payload(payload, mentions_map={})
+        self.assertEqual(result.text_content, "@Unknown hi")
+
+    def test_post_at_all_tag_renders_as_at_all(self):
+        """Post-format @everyone has user_id == '@_all' (confirmed via live
+        im.v1.message.get). Rendered as literal '@all' regardless of map."""
+        from gateway.platforms.feishu import parse_feishu_post_payload
+
+        payload = {
+            "en_us": {
+                "content": [[
+                    {"tag": "at", "user_id": "@_all", "user_name": "everyone"},
+                    {"tag": "text", "text": " meeting"},
+                ]]
+            }
+        }
+        result = parse_feishu_post_payload(payload)
+        self.assertIn("@all", result.text_content)
+
+
+class TestFeishuNormalizeWithMentions(unittest.TestCase):
+    def test_text_message_renders_mention_by_name(self):
+        from gateway.platforms.feishu import normalize_feishu_message, _FeishuBotIdentity
+
+        mention = SimpleNamespace(
+            key="@_user_1",
+            id=SimpleNamespace(open_id="ou_alice", user_id=""),
+            name="Alice",
+        )
+        normalized = normalize_feishu_message(
+            message_type="text",
+            raw_content=json.dumps({"text": "@_user_1 hello"}),
+            mentions=[mention],
+            bot=_FeishuBotIdentity(open_id="ou_bot"),
+        )
+        self.assertEqual(normalized.text_content, "@Alice hello")
+        self.assertEqual(len(normalized.mentions), 1)
+        self.assertEqual(normalized.mentions[0].open_id, "ou_alice")
+        self.assertFalse(normalized.mentions[0].is_self)
+
+    def test_text_message_marks_bot_self_mention(self):
+        from gateway.platforms.feishu import normalize_feishu_message, _FeishuBotIdentity
+
+        mention = SimpleNamespace(
+            key="@_user_1",
+            id=SimpleNamespace(open_id="ou_bot", user_id=""),
+            name="Hermes",
+        )
+        normalized = normalize_feishu_message(
+            message_type="text",
+            raw_content=json.dumps({"text": "@_user_1 /help"}),
+            mentions=[mention],
+            bot=_FeishuBotIdentity(open_id="ou_bot"),
+        )
+        self.assertTrue(normalized.mentions[0].is_self)
+        # self mention is still rendered — strip is a separate adapter-level pass
+        self.assertEqual(normalized.text_content, "@Hermes /help")
+
+    def test_text_message_at_all_surfaces_ref(self):
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        mention = SimpleNamespace(key="@_all", id=None, name="")
+        normalized = normalize_feishu_message(
+            message_type="text",
+            raw_content=json.dumps({"text": "@_all meeting"}),
+            mentions=[mention],
+        )
+        self.assertEqual(normalized.text_content, "@all meeting")
+        self.assertEqual(len(normalized.mentions), 1)
+        self.assertTrue(normalized.mentions[0].is_all)
+
+    def test_text_message_at_all_in_text_without_mentions_payload(self):
+        """Feishu SDK sometimes omits @_all from the mentions payload (confirmed
+        via im.v1.message.get). The fallback scan on raw text must still yield
+        an is_all ref so [Mentioned: @all] gets injected."""
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        normalized = normalize_feishu_message(
+            message_type="text",
+            raw_content=json.dumps({"text": "@_all hello"}),
+            mentions=None,
+        )
+        self.assertEqual(normalized.text_content, "@all hello")
+        self.assertEqual(len(normalized.mentions), 1)
+        self.assertTrue(normalized.mentions[0].is_all)
+
+    def test_text_message_at_all_not_synthesized_if_absent_from_text(self):
+        """No @_all in text → no synthetic ref even if mentions_map is empty."""
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        normalized = normalize_feishu_message(
+            message_type="text",
+            raw_content=json.dumps({"text": "plain hello"}),
+            mentions=None,
+        )
+        self.assertEqual(normalized.mentions, [])
+
+    def test_text_message_without_mentions_param_is_backward_compatible(self):
+        from gateway.platforms.feishu import normalize_feishu_message
+
+        normalized = normalize_feishu_message(
+            message_type="text",
+            raw_content=json.dumps({"text": "hello world"}),
+        )
+        self.assertEqual(normalized.text_content, "hello world")
+        self.assertEqual(normalized.mentions, [])
+
+    def test_post_message_marks_self_via_mentions_map_lookup(self):
+        """Real Feishu post: <at user_id="@_user_N"> + top-level mentions array
+        resolves to open_id via placeholder lookup, not direct tag fields."""
+        from gateway.platforms.feishu import normalize_feishu_message, _FeishuBotIdentity
+
+        raw = json.dumps({
+            "en_us": {
+                "content": [
+                    [
+                        {"tag": "at", "user_id": "@_user_1", "user_name": "Hermes"},
+                        {"tag": "text", "text": " check this"},
+                    ]
+                ]
+            }
+        })
+        bot_mention = SimpleNamespace(
+            key="@_user_1",
+            id=SimpleNamespace(open_id="ou_bot", user_id=""),
+            name="Hermes",
+        )
+        normalized = normalize_feishu_message(
+            message_type="post",
+            raw_content=raw,
+            mentions=[bot_mention],
+            bot=_FeishuBotIdentity(open_id="ou_bot"),
+        )
+        self.assertEqual(len(normalized.mentions), 1)
+        self.assertTrue(normalized.mentions[0].is_self)
+        self.assertEqual(normalized.mentions[0].open_id, "ou_bot")
+
+
+class TestFeishuPostMentionsBot(unittest.TestCase):
+    def _build_adapter(self, bot_open_id="ou_bot", bot_user_id="", bot_name=""):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter._bot_open_id = bot_open_id
+        adapter._bot_user_id = bot_user_id
+        adapter._bot_name = bot_name
+        return adapter
+
+    def test_post_mentions_bot_uses_is_self_flag(self):
+        from gateway.platforms.feishu import FeishuMentionRef
+
+        adapter = self._build_adapter()
+        self.assertTrue(
+            adapter._post_mentions_bot(
+                [FeishuMentionRef(name="Hermes", open_id="ou_bot", is_self=True)]
+            )
+        )
+        self.assertFalse(
+            adapter._post_mentions_bot(
+                [FeishuMentionRef(name="Alice", open_id="ou_alice")]
+            )
+        )
+
+    def test_post_mentions_bot_empty_returns_false(self):
+        adapter = self._build_adapter()
+        self.assertFalse(adapter._post_mentions_bot([]))
+
+
+class TestFeishuExtractMessageContent(unittest.TestCase):
+    def _build_adapter(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter._bot_open_id = "ou_bot"
+        adapter._bot_user_id = ""
+        adapter._bot_name = "Hermes"
+        adapter._download_feishu_message_resources = AsyncMock(return_value=([], []))
+        return adapter
+
+    def test_returns_five_tuple_with_mentions(self):
+        adapter = self._build_adapter()
+        message = SimpleNamespace(
+            content=json.dumps({"text": "@_user_1 hello"}),
+            message_type="text",
+            message_id="m1",
+            mentions=[
+                SimpleNamespace(
+                    key="@_user_1",
+                    id=SimpleNamespace(open_id="ou_alice", user_id=""),
+                    name="Alice",
+                )
+            ],
+        )
+
+        text, inbound_type, media_urls, media_types, mentions = asyncio.run(
+            adapter._extract_message_content(message)
+        )
+        self.assertEqual(text, "@Alice hello")
+        self.assertEqual(len(mentions), 1)
+        self.assertEqual(mentions[0].open_id, "ou_alice")
+
+    def test_returns_empty_mentions_when_missing(self):
+        adapter = self._build_adapter()
+        message = SimpleNamespace(
+            content=json.dumps({"text": "plain hello"}),
+            message_type="text",
+            message_id="m2",
+            mentions=None,
+        )
+
+        text, _, _, _, mentions = asyncio.run(adapter._extract_message_content(message))
+        self.assertEqual(text, "plain hello")
+        self.assertEqual(mentions, [])
+
+
+class TestFeishuProcessInboundMessage(unittest.TestCase):
+    def _build_adapter(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter._bot_open_id = "ou_bot"
+        adapter._bot_user_id = ""
+        adapter._bot_name = "Hermes"
+        adapter._download_feishu_message_resources = AsyncMock(return_value=([], []))
+        adapter._fetch_message_text = AsyncMock(return_value=None)
+        adapter.get_chat_info = AsyncMock(return_value={"name": "Test Chat"})
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "u1", "user_name": "Alice", "user_id_alt": None}
+        )
+        adapter._resolve_source_chat_type = Mock(return_value="group")
+        adapter.build_source = Mock(return_value=SimpleNamespace(thread_id=None))
+        adapter._dispatch_inbound_event = AsyncMock()
+        return adapter
+
+    def test_leading_self_mention_stripped_for_command(self):
+        from gateway.platforms.base import MessageType
+
+        adapter = self._build_adapter()
+        bot_mention = SimpleNamespace(
+            key="@_user_1",
+            id=SimpleNamespace(open_id="ou_bot", user_id=""),
+            name="Hermes",
+        )
+        message = SimpleNamespace(
+            content=json.dumps({"text": "@_user_1 /help"}),
+            message_type="text",
+            message_id="m1",
+            mentions=[bot_mention],
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            thread_id=None,
+        )
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=None,
+                chat_type="group",
+                message_id="m1",
+            )
+        )
+        event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertEqual(event.text, "/help")
+        self.assertEqual(event.message_type, MessageType.COMMAND)
+
+    def test_non_command_message_with_mentions_injects_hint(self):
+        from gateway.platforms.base import MessageType
+
+        adapter = self._build_adapter()
+        alice = SimpleNamespace(
+            key="@_user_1",
+            id=SimpleNamespace(open_id="ou_alice", user_id=""),
+            name="Alice",
+        )
+        bob = SimpleNamespace(
+            key="@_user_2",
+            id=SimpleNamespace(open_id="ou_bob", user_id=""),
+            name="Bob",
+        )
+        message = SimpleNamespace(
+            content=json.dumps({"text": "@_user_1 @_user_2 make a group"}),
+            message_type="text",
+            message_id="m2",
+            mentions=[alice, bob],
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            thread_id=None,
+        )
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=None,
+                chat_type="group",
+                message_id="m2",
+            )
+        )
+        event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertEqual(event.message_type, MessageType.TEXT)
+        self.assertIn("[Mentioned: Alice (open_id=ou_alice), Bob (open_id=ou_bob)]", event.text)
+        self.assertIn("@Alice @Bob make a group", event.text)
+
+    def test_command_message_never_injects_hint(self):
+        adapter = self._build_adapter()
+        bot_mention = SimpleNamespace(
+            key="@_user_1",
+            id=SimpleNamespace(open_id="ou_bot", user_id=""),
+            name="Hermes",
+        )
+        alice = SimpleNamespace(
+            key="@_user_2",
+            id=SimpleNamespace(open_id="ou_alice", user_id=""),
+            name="Alice",
+        )
+        message = SimpleNamespace(
+            content=json.dumps({"text": "@_user_1 /model @_user_2"}),
+            message_type="text",
+            message_id="m3",
+            mentions=[bot_mention, alice],
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            thread_id=None,
+        )
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=None,
+                chat_type="group",
+                message_id="m3",
+            )
+        )
+        event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertNotIn("[Mentioned:", event.text)
+        self.assertTrue(event.text.startswith("/model"))
+
+    def test_mid_text_self_mention_preserved(self):
+        adapter = self._build_adapter()
+        bot_mention = SimpleNamespace(
+            key="@_user_1",
+            id=SimpleNamespace(open_id="ou_bot", user_id=""),
+            name="Hermes",
+        )
+        message = SimpleNamespace(
+            content=json.dumps({"text": "stop pinging @_user_1 please"}),
+            message_type="text",
+            message_id="m4",
+            mentions=[bot_mention],
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            thread_id=None,
+        )
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=None,
+                chat_type="group",
+                message_id="m4",
+            )
+        )
+        event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertEqual(event.text, "stop pinging @Hermes please")
+
+    def test_pure_self_mention_message_is_ignored(self):
+        """A message containing only '@Bot' (no body, no media) must not dispatch.
+
+        Regression guard: the rendered '@Hermes' slips past the pre-strip empty
+        guard; the post-strip guard must catch it.
+        """
+        adapter = self._build_adapter()
+        bot_mention = SimpleNamespace(
+            key="@_user_1",
+            id=SimpleNamespace(open_id="ou_bot", user_id=""),
+            name="Hermes",
+        )
+        message = SimpleNamespace(
+            content=json.dumps({"text": "@_user_1"}),
+            message_type="text",
+            message_id="m5",
+            mentions=[bot_mention],
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            thread_id=None,
+        )
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message, message=message, sender_id=None,
+                chat_type="group", message_id="m5",
+            )
+        )
+        adapter._dispatch_inbound_event.assert_not_called()
+
+
+class TestFeishuFetchMessageText(unittest.TestCase):
+    def _build_adapter(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter._bot_open_id = "ou_bot"
+        adapter._bot_user_id = ""
+        adapter._bot_name = "Hermes"
+        adapter._message_text_cache = {}
+        adapter._client = Mock()
+        adapter._build_get_message_request = Mock(return_value=object())
+        return adapter
+
+    def test_fetch_message_text_renders_mentions_without_hint_prefix(self):
+        adapter = self._build_adapter()
+
+        alice_mention = SimpleNamespace(
+            key="@_user_1",
+            id="ou_alice",
+            id_type="open_id",
+            name="Alice",
+        )
+        parent = SimpleNamespace(
+            body=SimpleNamespace(content=json.dumps({"text": "@_user_1 hi"})),
+            msg_type="text",
+            mentions=[alice_mention],
+        )
+        response = Mock()
+        response.success = Mock(return_value=True)
+        response.data = SimpleNamespace(items=[parent])
+        adapter._client.im.v1.message.get = Mock(return_value=response)
+
+        result = asyncio.run(adapter._fetch_message_text("m_parent"))
+        self.assertEqual(result, "@Alice hi")
+        # No [Mentioned:] wrapper — reply-context path intentionally skips the hint.
+        self.assertNotIn("[Mentioned:", result)
+
+    def test_extract_text_from_raw_content_accepts_mentions_kwarg(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter._bot_open_id = ""
+        adapter._bot_user_id = ""
+        adapter._bot_name = ""
+
+        alice_mention = SimpleNamespace(
+            key="@_user_1",
+            id=SimpleNamespace(open_id="ou_alice", user_id=""),
+            name="Alice",
+        )
+        self.assertEqual(
+            adapter._extract_text_from_raw_content(
+                msg_type="text",
+                raw_content=json.dumps({"text": "@_user_1 hello"}),
+                mentions=[alice_mention],
+            ),
+            "@Alice hello",
+        )
+
+    def test_fetch_message_text_marks_is_self_via_string_id_shape(self):
+        """History-path Mention objects carry id as str + id_type; is_self must still work."""
+        adapter = self._build_adapter()
+        # bot_name is empty — is_self must be detected via open_id alone
+        adapter._bot_name = ""
+
+        bot_mention = SimpleNamespace(
+            key="@_user_1",
+            id="ou_bot",
+            id_type="open_id",
+            name="Hermes",
+        )
+        parent = SimpleNamespace(
+            body=SimpleNamespace(content=json.dumps({"text": "@_user_1 hi"})),
+            msg_type="text",
+            mentions=[bot_mention],
+        )
+        response = Mock()
+        response.success = Mock(return_value=True)
+        response.data = SimpleNamespace(items=[parent])
+        adapter._client.im.v1.message.get = Mock(return_value=response)
+
+        # The rendered text should still have the bot name substituted.
+        result = asyncio.run(adapter._fetch_message_text("m_parent"))
+        self.assertEqual(result, "@Hermes hi")
+
+    def test_build_mentions_map_string_id_shape(self):
+        """_build_mentions_map accepts the reply-history shape (id as str +
+        id_type='open_id'). user_id id_type is not load-bearing for self
+        detection — inbound mention payloads always include an open_id."""
+        from gateway.platforms.feishu import _build_mentions_map, _FeishuBotIdentity
+
+        # open_id discriminator, non-self
+        alice = SimpleNamespace(key="@_user_1", id="ou_alice", id_type="open_id", name="Alice")
+        ref = _build_mentions_map([alice], _FeishuBotIdentity(open_id="ou_bot"))["@_user_1"]
+        self.assertEqual(ref.open_id, "ou_alice")
+        self.assertFalse(ref.is_self)
+
+        # open_id discriminator, is_self matches via open_id
+        bot_oid = SimpleNamespace(key="@_user_3", id="ou_bot", id_type="open_id", name="Hermes")
+        self.assertTrue(
+            _build_mentions_map([bot_oid], _FeishuBotIdentity(open_id="ou_bot"))["@_user_3"].is_self
+        )
+
+
+class TestFeishuMentionEndToEnd(unittest.TestCase):
+    """High-level scenarios from the design spec — verify the full pipeline."""
+
+    def _build_adapter(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter._bot_open_id = "ou_bot"
+        adapter._bot_user_id = ""
+        adapter._bot_name = "Hermes"
+        adapter._download_feishu_message_resources = AsyncMock(return_value=([], []))
+        adapter._fetch_message_text = AsyncMock(return_value=None)
+        adapter.get_chat_info = AsyncMock(return_value={"name": "Test Chat"})
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "u1", "user_name": "Alice", "user_id_alt": None}
+        )
+        adapter._resolve_source_chat_type = Mock(return_value="group")
+        adapter.build_source = Mock(return_value=SimpleNamespace(thread_id=None))
+        adapter._dispatch_inbound_event = AsyncMock()
+        return adapter
+
+    def _run(self, adapter, text, mentions):
+        raw_mentions = [
+            SimpleNamespace(
+                key=m["key"],
+                id=SimpleNamespace(open_id=m.get("open_id", ""), user_id=m.get("user_id", "")),
+                name=m.get("name", ""),
+            )
+            for m in mentions
+        ]
+        message = SimpleNamespace(
+            content=json.dumps({"text": text}),
+            message_type="text",
+            message_id="m",
+            mentions=raw_mentions,
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            thread_id=None,
+        )
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message, message=message, sender_id=None, chat_type="group", message_id="m",
+            )
+        )
+        return adapter._dispatch_inbound_event.call_args.args[0]
+
+    def test_scenario_bot_plus_alice_plus_bob_build_group(self):
+        adapter = self._build_adapter()
+        event = self._run(
+            adapter,
+            "@_user_1 @_user_2 @_user_3 build me a group",
+            [
+                {"key": "@_user_1", "open_id": "ou_bot", "name": "Hermes"},
+                {"key": "@_user_2", "open_id": "ou_alice", "name": "Alice"},
+                {"key": "@_user_3", "open_id": "ou_bob", "name": "Bob"},
+            ],
+        )
+        self.assertIn("[Mentioned: Alice (open_id=ou_alice), Bob (open_id=ou_bob)]", event.text)
+        self.assertIn("@Alice @Bob build me a group", event.text)
+        self.assertNotIn("@Hermes", event.text)
+
+    def test_scenario_at_all_announcement(self):
+        adapter = self._build_adapter()
+        event = self._run(
+            adapter,
+            "@_all meeting at 3pm",
+            [{"key": "@_all"}],
+        )
+        self.assertTrue(event.text.startswith("[Mentioned: @all]"))
+        self.assertIn("@all meeting at 3pm", event.text)
+
+    def test_scenario_trailing_self_mention_stripped(self):
+        """Trailing @bot at the end of a message is routing noise, not content —
+        strip it so the agent sees a clean instruction body."""
+        adapter = self._build_adapter()
+        event = self._run(
+            adapter,
+            "who are you @_user_1",
+            [{"key": "@_user_1", "open_id": "ou_bot", "name": "Hermes"}],
+        )
+        self.assertEqual(event.text, "who are you")
+
+    def test_scenario_mid_text_self_mention_preserved(self):
+        """Self mention in the middle of a sentence (followed by a non-terminal
+        character) is meaningful content — preserve it."""
+        adapter = self._build_adapter()
+        event = self._run(
+            adapter,
+            "please don't @_user_1 anymore",
+            [{"key": "@_user_1", "open_id": "ou_bot", "name": "Hermes"}],
+        )
+        self.assertEqual(event.text, "please don't @Hermes anymore")
+
+    def test_scenario_no_mentions_zero_regression(self):
+        adapter = self._build_adapter()
+        event = self._run(adapter, "plain message", [])
+        self.assertEqual(event.text, "plain message")
+        self.assertNotIn("[Mentioned:", event.text)
+
+    def test_scenario_post_at_alice_exposes_open_id(self):
+        """Post-type @mention: <at> placeholder resolves via top-level mentions,
+        agent gets real open_id in the hint (mirrors text-type behavior)."""
+        adapter = self._build_adapter()
+        alice_mention = SimpleNamespace(
+            key="@_user_1",
+            id=SimpleNamespace(open_id="ou_alice", user_id=""),
+            name="Alice",
+        )
+        post_content = json.dumps({
+            "zh_cn": {
+                "content": [[
+                    {"tag": "at", "user_id": "@_user_1", "user_name": "Alice"},
+                    {"tag": "text", "text": " lookup this doc"},
+                ]]
+            }
+        })
+        message = SimpleNamespace(
+            content=post_content,
+            message_type="post",
+            message_id="m_post",
+            mentions=[alice_mention],
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            thread_id=None,
+        )
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message, message=message, sender_id=None,
+                chat_type="group", message_id="m_post",
+            )
+        )
+        event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertIn("[Mentioned: Alice (open_id=ou_alice)]", event.text)
+        self.assertIn("@Alice lookup this doc", event.text)
+
+    def test_scenario_post_bot_plus_alice_filters_self_from_hint(self):
+        """Post-type message @-ing both the bot and Alice: leading bot is
+        stripped from the body, self is filtered from the [Mentioned: ...]
+        hint, and Alice's real open_id is surfaced for the agent."""
+        adapter = self._build_adapter()
+        bot_mention = SimpleNamespace(
+            key="@_user_1",
+            id=SimpleNamespace(open_id="ou_bot", user_id=""),
+            name="Hermes",
+        )
+        alice_mention = SimpleNamespace(
+            key="@_user_2",
+            id=SimpleNamespace(open_id="ou_alice", user_id=""),
+            name="Alice",
+        )
+        post_content = json.dumps({
+            "zh_cn": {
+                "content": [[
+                    {"tag": "at", "user_id": "@_user_1", "user_name": "Hermes"},
+                    {"tag": "at", "user_id": "@_user_2", "user_name": "Alice"},
+                    {"tag": "text", "text": " review the spec with Alice"},
+                ]]
+            }
+        })
+        message = SimpleNamespace(
+            content=post_content,
+            message_type="post",
+            message_id="m_post_both",
+            mentions=[bot_mention, alice_mention],
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            thread_id=None,
+        )
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message, message=message, sender_id=None,
+                chat_type="group", message_id="m_post_both",
+            )
+        )
+        event = adapter._dispatch_inbound_event.call_args.args[0]
+        # Hint surfaces Alice; bot excluded because is_self=True.
+        self.assertIn("[Mentioned: Alice (open_id=ou_alice)]", event.text)
+        self.assertNotIn("Hermes (open_id=", event.text)
+        # Body: leading @Hermes stripped, Alice preserved, trailing text intact.
+        self.assertIn("@Alice review the spec with Alice", event.text)
+        self.assertNotIn("@Hermes @Alice", event.text)

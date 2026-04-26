@@ -4244,10 +4244,10 @@ def _login_nous(args, pconfig: ProviderConfig) -> None:
                 )
 
             from hermes_cli.models import (
-                _PROVIDER_MODELS, get_pricing_for_provider,
+                get_curated_nous_model_ids, get_pricing_for_provider,
                 check_nous_free_tier, partition_nous_models_by_tier,
             )
-            model_ids = _PROVIDER_MODELS.get("nous", [])
+            model_ids = get_curated_nous_model_ids()
 
             print()
             unavailable_models: list = []

@@ -1,9 +1,15 @@
 import { Box, Text } from '@hermes/ink'
 import { memo } from 'react'
 
-import { todoGlyph } from '../lib/todo.js'
+import { todoGlyph, todoTone } from '../lib/todo.js'
 import type { Theme } from '../theme.js'
 import type { TodoItem } from '../types.js'
+
+const rowColor = (t: Theme, status: TodoItem['status']) => {
+  const tone = todoTone(status)
+
+  return tone === 'active' ? t.color.cornsilk : tone === 'body' ? t.color.statusFg : t.color.dim
+}
 
 export const TodoPanel = memo(function TodoPanel({ t, todos }: { t: Theme; todos: TodoItem[] }) {
   if (!todos.length) {
@@ -23,19 +29,12 @@ export const TodoPanel = memo(function TodoPanel({ t, todos }: { t: Theme; todos
       </Text>
       <Box flexDirection="column" marginLeft={2}>
         {todos.map(todo => {
-          const done = todo.status === 'completed'
-          const cancel = todo.status === 'cancelled'
-          const active = todo.status === 'in_progress'
+          const tone = todoTone(todo.status)
+          const color = rowColor(t, todo.status)
 
           return (
-            <Text
-              color={done || cancel ? t.color.dim : active ? t.color.cornsilk : t.color.statusFg}
-              dim={done || cancel}
-              key={todo.id}
-            >
-              <Text color={active ? t.color.amber : done ? t.color.ok : cancel ? t.color.error : t.color.dim}>
-                {todoGlyph(todo.status)}{' '}
-              </Text>
+            <Text color={color} dim={tone === 'dim'} key={todo.id}>
+              <Text color={color}>{todoGlyph(todo.status)} </Text>
               {todo.content}
             </Text>
           )

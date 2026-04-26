@@ -1016,6 +1016,13 @@ DEFAULT_CONFIG = {
         "min_interval_hours": 24,
     },
 
+    # Contextual first-touch onboarding hints (see agent/onboarding.py).
+    # Each hint is shown once per install and then latched here so it
+    # never fires again.  Users can wipe the section to re-see all hints.
+    "onboarding": {
+        "seen": {},
+    },
+
     # Config schema version - bump this when adding new required fields
     "_config_version": 22,
 }

@@ -417,6 +417,11 @@ def load_cli_config() -> Dict[str, Any]:
             "base_url": "",    # Direct OpenAI-compatible endpoint for subagents
             "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
         },
+        "onboarding": {
+            # First-touch hint flags (see agent/onboarding.py).  Each hint is
+            # shown once per install then latched here.
+            "seen": {},
+        },
     }
     
     # Track whether the config file explicitly set terminal config.
@@ -7412,6 +7417,31 @@ class HermesCLI:
                     _cprint(f"  {line}")
                 except Exception:
                     pass
+                # First-touch onboarding: on the first tool in this process
+                # that takes longer than the threshold while we're in the
+                # noisiest progress mode, print a one-time hint about
+                # /verbose.  Latched on self so it fires at most once per
+                # process; persisted to config.yaml so it never fires again
+                # across processes either.
+                try:
+                    if (
+                        not getattr(self, "_long_tool_hint_fired", False)
+                        and self.tool_progress_mode == "all"
+                        and duration >= 30.0
+                    ):
+                        from agent.onboarding import (
+                            TOOL_PROGRESS_FLAG,
+                            is_seen,
+                            mark_seen,
+                            tool_progress_hint_cli,
+                        )
+                        if not is_seen(CLI_CONFIG, TOOL_PROGRESS_FLAG):
+                            self._long_tool_hint_fired = True
+                            _cprint(f"  {_DIM}{tool_progress_hint_cli()}{_RST}")
+                            mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
+                            CLI_CONFIG.setdefault("onboarding", {}).setdefault("seen", {})[TOOL_PROGRESS_FLAG] = True
+                except Exception:
+                    pass
             self._invalidate()
             return
         if event_type != "tool.started":
@@ -9295,6 +9325,24 @@ class HermesCLI:
                                          f"agent_running={self._agent_running}\n")
                         except Exception:
                             pass
+                    # First-touch onboarding: on the very first busy-while-running
+                    # event for this install, print a one-line tip explaining the
+                    # /busy knob.  Flag persists to config.yaml and never fires
+                    # again.  Guarded for exceptions so onboarding can't break
+                    # the input loop.
+                    try:
+                        from agent.onboarding import (
+                            BUSY_INPUT_FLAG,
+                            busy_input_hint_cli,
+                            is_seen,
+                            mark_seen,
+                        )
+                        if not is_seen(CLI_CONFIG, BUSY_INPUT_FLAG):
+                            _cprint(f"  {_DIM}{busy_input_hint_cli(self.busy_input_mode)}{_RST}")
+                            mark_seen(_hermes_home / "config.yaml", BUSY_INPUT_FLAG)
+                            CLI_CONFIG.setdefault("onboarding", {}).setdefault("seen", {})[BUSY_INPUT_FLAG] = True
+                    except Exception:
+                        pass
                 else:
                     self._pending_input.put(payload)
                 event.app.current_buffer.reset(append_to_history=True)

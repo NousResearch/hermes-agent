@@ -599,11 +599,24 @@ def inspect_skill(identifier: str) -> Optional[dict]:
     return out
 
 
-def do_list(source_filter: str = "all", console: Optional[Console] = None) -> None:
-    """List installed skills, distinguishing hub, builtin, and local skills."""
+def do_list(source_filter: str = "all",
+            enabled_only: bool = False,
+            console: Optional[Console] = None) -> None:
+    """List installed skills, distinguishing hub, builtin, and local skills.
+
+    Args:
+        source_filter: ``all`` | ``hub`` | ``builtin`` | ``local``.
+        enabled_only: If True, hide disabled skills from the output.
+
+    Enabled/disabled state is resolved against the currently active profile's
+    config — ``hermes -p <profile> skills list`` reads that profile's
+    ``skills.disabled`` list because ``-p`` swaps ``HERMES_HOME`` at process
+    start.  No explicit profile flag needed here.
+    """
     from tools.skills_hub import HubLockFile, ensure_hub_dirs
     from tools.skills_sync import _read_manifest
     from tools.skills_tool import _find_all_skills
+    from agent.skill_utils import get_disabled_skill_names
 
     c = console or _console
     ensure_hub_dirs()
@@ -611,17 +624,26 @@ def do_list(source_filter: str = "all", console: Optional[Console] = None) -> No
     hub_installed = {e["name"]: e for e in lock.list_installed()}
     builtin_names = set(_read_manifest())
 
-    all_skills = _find_all_skills()
+    # Pull ALL skills (including disabled ones) so we can annotate status.
+    all_skills = _find_all_skills(skip_disabled=True)
+    disabled_names = get_disabled_skill_names()
 
-    table = Table(title="Installed Skills")
+    title = "Installed Skills"
+    if enabled_only:
+        title += " (enabled only)"
+
+    table = Table(title=title)
     table.add_column("Name", style="bold cyan")
     table.add_column("Category", style="dim")
     table.add_column("Source", style="dim")
     table.add_column("Trust", style="dim")
+    table.add_column("Status", style="dim")
 
     hub_count = 0
     builtin_count = 0
     local_count = 0
+    enabled_count = 0
+    disabled_count = 0
 
     for skill in sorted(all_skills, key=lambda s: (s.get("category") or "", s["name"])):
         name = skill["name"]
@@ -632,29 +654,48 @@ def do_list(source_filter: str = "all", console: Optional[Console] = None) -> No
             source_type = "hub"
             source_display = hub_entry.get("source", "hub")
             trust = hub_entry.get("trust_level", "community")
-            hub_count += 1
         elif name in builtin_names:
             source_type = "builtin"
             source_display = "builtin"
             trust = "builtin"
-            builtin_count += 1
         else:
             source_type = "local"
             source_display = "local"
             trust = "local"
-            local_count += 1
 
         if source_filter != "all" and source_filter != source_type:
             continue
 
+        is_enabled = name not in disabled_names
+        if enabled_only and not is_enabled:
+            continue
+
+        if source_type == "hub":
+            hub_count += 1
+        elif source_type == "builtin":
+            builtin_count += 1
+        else:
+            local_count += 1
+
+        if is_enabled:
+            enabled_count += 1
+            status_cell = "[bold green]enabled[/]"
+        else:
+            disabled_count += 1
+            status_cell = "[dim red]disabled[/]"
+
         trust_style = {"builtin": "bright_cyan", "trusted": "green", "community": "yellow", "local": "dim"}.get(trust, "dim")
         trust_label = "official" if source_display == "official" else trust
-        table.add_row(name, category, source_display, f"[{trust_style}]{trust_label}[/]")
+        table.add_row(name, category, source_display, f"[{trust_style}]{trust_label}[/]", status_cell)
 
     c.print(table)
-    c.print(
-        f"[dim]{hub_count} hub-installed, {builtin_count} builtin, {local_count} local[/]\n"
-    )
+    summary = f"[dim]{hub_count} hub-installed, {builtin_count} builtin, {local_count} local"
+    if enabled_only:
+        summary += f" — {enabled_count} enabled shown"
+    else:
+        summary += f" — {enabled_count} enabled, {disabled_count} disabled"
+    summary += "[/]\n"
+    c.print(summary)
 
 
 def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> None:
@@ -1127,7 +1168,10 @@ def skills_command(args) -> None:
     elif action == "inspect":
         do_inspect(args.identifier)
     elif action == "list":
-        do_list(source_filter=args.source)
+        do_list(
+            source_filter=args.source,
+            enabled_only=getattr(args, "enabled_only", False),
+        )
     elif action == "check":
         do_check(name=getattr(args, "name", None))
     elif action == "update":
@@ -1279,11 +1323,12 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
 
     elif action == "list":
         source_filter = "all"
+        enabled_only = "--enabled-only" in args or "--enabled" in args
         if "--source" in args:
             idx = args.index("--source")
             if idx + 1 < len(args):
                 source_filter = args[idx + 1]
-        do_list(source_filter=source_filter, console=c)
+        do_list(source_filter=source_filter, enabled_only=enabled_only, console=c)
 
     elif action == "check":
         name = args[0] if args else None
@@ -1371,7 +1416,8 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]search[/] <query>              Search registries for skills\n"
         "  [cyan]install[/] <identifier>        Install a skill (with security scan)\n"
         "  [cyan]inspect[/] <identifier>        Preview a skill without installing\n"
-        "  [cyan]list[/] [--source hub|builtin|local] List installed skills\n"
+        "  [cyan]list[/] [--source hub|builtin|local] [--enabled-only]\n"
+        "       List installed skills; --enabled-only filters to the active profile's live set\n"
         "  [cyan]check[/] [name]                Check hub skills for upstream updates\n"
         "  [cyan]update[/] [name]               Update hub skills with upstream changes\n"
         "  [cyan]audit[/] [name]                Re-scan hub skills for security\n"

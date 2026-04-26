@@ -22,6 +22,7 @@ End-to-end pipeline for producing publication-ready ML/AI research papers target
 
 This is **not a linear pipeline** — it is an iterative loop. Results trigger new experiments. Reviews trigger new analysis. The agent must handle these feedback loops.
 
+<!-- ascii-guard-ignore -->
 ```
 ┌─────────────────────────────────────────────────────────────┐
 │                    RESEARCH PAPER PIPELINE                  │
@@ -41,6 +42,7 @@ This is **not a linear pipeline** — it is an iterative loop. Results trigger n
 │                                                             │
 └─────────────────────────────────────────────────────────────┘
 ```
+<!-- ascii-guard-ignore-end -->
 
 ---
 

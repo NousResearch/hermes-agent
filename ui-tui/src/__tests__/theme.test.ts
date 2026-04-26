@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { DEFAULT_THEME, fromSkin } from '../theme.js'
+import { DARK_THEME, DEFAULT_THEME, detectLightMode, fromSkin, LIGHT_THEME } from '../theme.js'
 
 describe('DEFAULT_THEME', () => {
   it('has brand defaults', () => {
@@ -12,6 +12,52 @@ describe('DEFAULT_THEME', () => {
   it('has color palette', () => {
     expect(DEFAULT_THEME.color.gold).toBe('#FFD700')
     expect(DEFAULT_THEME.color.error).toBe('#ef5350')
+  })
+})
+
+describe('LIGHT_THEME', () => {
+  it('avoids bright-yellow accents unreadable on white backgrounds (#11300)', () => {
+    expect(LIGHT_THEME.color.gold).not.toBe('#FFD700')
+    expect(LIGHT_THEME.color.amber).not.toBe('#FFBF00')
+    expect(LIGHT_THEME.color.dim).not.toBe('#B8860B')
+    expect(LIGHT_THEME.color.statusWarn).not.toBe('#FFD700')
+  })
+
+  it('keeps the same shape as DARK_THEME', () => {
+    expect(Object.keys(LIGHT_THEME.color).sort()).toEqual(Object.keys(DARK_THEME.color).sort())
+    expect(LIGHT_THEME.brand).toEqual(DARK_THEME.brand)
+  })
+})
+
+describe('DEFAULT_THEME aliasing', () => {
+  it('defaults to DARK_THEME when nothing signals light', () => {
+    expect(DEFAULT_THEME).toBe(DARK_THEME)
+  })
+})
+
+describe('detectLightMode', () => {
+  it('returns false on empty env', () => {
+    expect(detectLightMode({})).toBe(false)
+  })
+
+  it('honors HERMES_TUI_LIGHT on/off', () => {
+    expect(detectLightMode({ HERMES_TUI_LIGHT: '1' })).toBe(true)
+    expect(detectLightMode({ HERMES_TUI_LIGHT: 'true' })).toBe(true)
+    expect(detectLightMode({ HERMES_TUI_LIGHT: 'on' })).toBe(true)
+    expect(detectLightMode({ HERMES_TUI_LIGHT: '0' })).toBe(false)
+    expect(detectLightMode({ HERMES_TUI_LIGHT: 'off' })).toBe(false)
+  })
+
+  it('sniffs COLORFGBG bg slots 7 and 15 as light (#11300)', () => {
+    expect(detectLightMode({ COLORFGBG: '0;15' })).toBe(true)
+    expect(detectLightMode({ COLORFGBG: '0;default;15' })).toBe(true)
+    expect(detectLightMode({ COLORFGBG: '0;7' })).toBe(true)
+    expect(detectLightMode({ COLORFGBG: '15;0' })).toBe(false)
+    expect(detectLightMode({ COLORFGBG: '7;default;0' })).toBe(false)
+  })
+
+  it('lets HERMES_TUI_LIGHT=0 override a light COLORFGBG', () => {
+    expect(detectLightMode({ COLORFGBG: '0;15', HERMES_TUI_LIGHT: '0' })).toBe(false)
   })
 })
 

@@ -33,7 +33,12 @@ class TestWriteDenyExactPaths:
         assert _is_write_denied(path) is True
 
     def test_hermes_env(self):
-        path = os.path.join(str(Path.home()), ".hermes", ".env")
+        # ``.env`` under the active HERMES_HOME (profile-aware, not just
+        # ``~/.hermes``) must be write-denied. The hermetic test conftest
+        # points HERMES_HOME at a tempdir — resolve via get_hermes_home()
+        # to match the denylist.
+        from hermes_constants import get_hermes_home
+        path = str(get_hermes_home() / ".env")
         assert _is_write_denied(path) is True
 
     def test_shell_profiles(self):

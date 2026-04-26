@@ -197,9 +197,13 @@ def _make_fake_mautrix():
             self.account_id = account_id
             self.pickle_key = pickle_key
             self.db = db
+            self._device_id = ""
 
         async def open(self):
             pass
+
+        async def put_device_id(self, device_id):
+            self._device_id = device_id
 
     mautrix_crypto_store_asyncpg.PgCryptoStore = PgCryptoStore
 

@@ -1,6 +1,6 @@
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
-import { imageTokenMeta } from '../domain/messages.js'
+import { attachedImageNotice } from '../domain/messages.js'
 import { looksLikeSlashCommand } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { InputDetectDropResponse, PromptSubmitResponse, ShellExecResponse } from '../gatewayTypes.js'
@@ -83,9 +83,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
           }
 
           if (r.is_image) {
-            const meta = imageTokenMeta(r)
-
-            turnController.pushActivity(`attached image: ${r.name}${meta ? ` · ${meta}` : ''}`)
+            turnController.pushActivity(attachedImageNotice(r))
           } else {
             turnController.pushActivity(`detected file: ${r.name}`)
           }
@@ -236,11 +234,11 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
   const submit = useCallback(
     (value: string) => {
-      if (value.startsWith('/') && composerState.completions.length) {
+      if (composerState.completions.length) {
         const row = composerState.completions[composerState.compIdx]
 
         if (row?.text) {
-          const text = row.text.startsWith('/') && composerState.compReplace > 0 ? row.text.slice(1) : row.text
+          const text = value.startsWith('/') && row.text.startsWith('/') ? row.text.slice(1) : row.text
           const next = value.slice(0, composerState.compReplace) + text
 
           if (next !== value) {

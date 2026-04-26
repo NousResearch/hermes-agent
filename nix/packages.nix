@@ -8,14 +8,22 @@
         inherit (inputs) uv2nix pyproject-nix pyproject-build-systems;
       };
 
-      hermesTui = pkgs.callPackage ./tui.nix {
+      hermesNpmLib = pkgs.callPackage ./lib.nix {
         npm-lockfile-fix = inputs'.npm-lockfile-fix.packages.default;
+      };
+
+      hermesTui = pkgs.callPackage ./tui.nix {
+        inherit hermesNpmLib;
       };
 
       # Import bundled skills, excluding runtime caches
       bundledSkills = pkgs.lib.cleanSourceWith {
         src = ../skills;
         filter = path: _type: !(pkgs.lib.hasInfix "/index-cache/" path);
+      };
+
+      hermesWeb = pkgs.callPackage ./web.nix {
+        inherit hermesNpmLib;
       };
 
       runtimeDeps = with pkgs; [
@@ -52,6 +60,7 @@
 
             mkdir -p $out/share/hermes-agent $out/bin
             cp -r ${bundledSkills} $out/share/hermes-agent/skills
+            cp -r ${hermesWeb} $out/share/hermes-agent/web_dist
 
             # copy pre-built TUI (same layout as dev: ui-tui/dist/ + node_modules/)
             mkdir -p $out/ui-tui
@@ -62,8 +71,10 @@
                 makeWrapper ${hermesVenv}/bin/${name} $out/bin/${name} \
                   --suffix PATH : "${runtimePath}" \
                   --set HERMES_BUNDLED_SKILLS $out/share/hermes-agent/skills \
+                  --set HERMES_WEB_DIST $out/share/hermes-agent/web_dist \
                   --set HERMES_TUI_DIR $out/ui-tui \
-                  --set HERMES_PYTHON ${hermesVenv}/bin/python3
+                  --set HERMES_PYTHON ${hermesVenv}/bin/python3 \
+                  --set HERMES_NODE ${pkgs.nodejs_22}/bin/node
               '')
               [
                 "hermes"
@@ -80,7 +91,7 @@
             STAMP_VALUE="${pyprojectHash}:${uvLockHash}"
             if [ ! -f "$STAMP" ] || [ "$(cat "$STAMP")" != "$STAMP_VALUE" ]; then
               echo "hermes-agent: installing Python dependencies..."
-              uv venv .venv --python ${pkgs.python311}/bin/python3 2>/dev/null || true
+              uv venv .venv --python ${pkgs.python312}/bin/python3 2>/dev/null || true
               source .venv/bin/activate
               uv pip install -e ".[all]"
               [ -d mini-swe-agent ] && uv pip install -e ./mini-swe-agent 2>/dev/null || true
@@ -103,6 +114,11 @@
         };
 
         tui = hermesTui;
+        web = hermesWeb;
+
+        fix-lockfiles = hermesNpmLib.mkFixLockfiles {
+          packages = [ hermesTui hermesWeb ];
+        };
       };
     };
 }

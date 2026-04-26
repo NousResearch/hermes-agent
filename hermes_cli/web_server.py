@@ -338,6 +338,7 @@ _CATEGORY_MERGE: Dict[str, str] = {
     "human_delay": "display",
     "dashboard": "display",
     "code_execution": "agent",
+    "prompt_caching": "agent",
 }
 
 # Display order for tabs — unlisted categories sort alphabetically after these.
@@ -3102,6 +3103,12 @@ def _mount_plugin_api_routes():
         if not api_path.exists():
             _log.warning("Plugin %s declares api=%s but file not found", plugin["name"], api_file_name)
             continue
+        original_sys_path = list(sys.path)
+        original_tools_modules = {
+            name: module
+            for name, module in sys.modules.items()
+            if name == "tools" or name.startswith("tools.")
+        }
         try:
             spec = importlib.util.spec_from_file_location(
                 f"hermes_dashboard_plugin_{plugin['name']}", api_path,
@@ -3118,6 +3125,12 @@ def _mount_plugin_api_routes():
             _log.info("Mounted plugin API routes: /api/plugins/%s/", plugin["name"])
         except Exception as exc:
             _log.warning("Failed to load plugin %s API routes: %s", plugin["name"], exc)
+        finally:
+            sys.path[:] = original_sys_path
+            for name in list(sys.modules):
+                if name == "tools" or name.startswith("tools."):
+                    sys.modules.pop(name, None)
+            sys.modules.update(original_tools_modules)
 
 
 # Mount plugin API routes before the SPA catch-all.

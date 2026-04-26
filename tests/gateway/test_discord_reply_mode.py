@@ -307,11 +307,13 @@ class FakeDMChannel(_DMChannelBase):
         # Do NOT call super().__init__() — real DMChannel requires State
         self.id = channel_id
         self.name = name
+        self.guild = None
 
 
 def _make_message(*, content: str = "hi", reference=None):
     """Build a mock Discord message for _handle_message tests."""
     author = SimpleNamespace(id=42, display_name="TestUser", name="TestUser")
+    channel = FakeDMChannel()
     return SimpleNamespace(
         id=999,
         content=content,
@@ -319,8 +321,9 @@ def _make_message(*, content: str = "hi", reference=None):
         attachments=[],
         reference=reference,
         created_at=datetime.now(timezone.utc),
-        channel=FakeDMChannel(),
+        channel=channel,
         author=author,
+        guild=getattr(channel, "guild", None),
     )
 
 

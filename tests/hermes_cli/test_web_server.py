@@ -1717,6 +1717,57 @@ class TestDashboardPluginManifestExtensions:
             "chat:top",
         ]
 
+    def test_plugin_api_mount_does_not_shadow_core_tools(self, tmp_path, monkeypatch):
+        """Plugin API modules may import their own ``tools`` package, but that
+        must not poison later dashboard imports of Hermes' core ``tools``.
+        """
+        import importlib.util
+        import json
+
+        from hermes_cli import web_server
+
+        plugin_root = tmp_path / "plugins" / "shadow-tools"
+        dashboard_dir = plugin_root / "dashboard"
+        plugin_tools = plugin_root / "tools"
+        dashboard_dir.mkdir(parents=True)
+        plugin_tools.mkdir()
+        (dashboard_dir / "manifest.json").write_text(
+            json.dumps({
+                "name": "shadow-tools",
+                "label": "Shadow Tools",
+                "tab": {"path": "/shadow-tools"},
+                "entry": "dist/index.js",
+                "api": "plugin_api.py",
+            })
+        )
+        (plugin_tools / "__init__.py").write_text("")
+        (plugin_tools / "catalog.py").write_text("def marker():\n    return 'plugin-tools'\n")
+        (dashboard_dir / "plugin_api.py").write_text(
+            "import sys\n"
+            "from pathlib import Path\n"
+            "from fastapi import APIRouter\n"
+            "PLUGIN_ROOT = Path(__file__).resolve().parents[1]\n"
+            "sys.path.insert(0, str(PLUGIN_ROOT))\n"
+            "from tools.catalog import marker\n"
+            "router = APIRouter()\n"
+        )
+
+        monkeypatch.setattr(
+            web_server,
+            "_get_dashboard_plugins",
+            lambda force_rescan=False: [{
+                "name": "shadow-tools",
+                "_dir": str(dashboard_dir),
+                "_api_file": "plugin_api.py",
+            }],
+        )
+
+        web_server._mount_plugin_api_routes()
+
+        spec = importlib.util.find_spec("tools.skills_tool")
+        assert spec is not None
+        assert str(spec.origin).endswith("tools/skills_tool.py")
+
 
 # ---------------------------------------------------------------------------
 # /api/pty WebSocket — terminal bridge for the dashboard "Chat" tab.
@@ -1852,7 +1903,7 @@ class TestPtyWebSocket:
             "_resolve_chat_argv",
             # sleep gives the test time to push the resize before tput runs
             lambda resume=None, sidecar_url=None: (
-                ["/bin/sh", "-c", "sleep 0.15; tput cols; tput lines"],
+                ["/bin/sh", "-c", "TERM=xterm; export TERM; sleep 0.15; tput cols; tput lines"],
                 None,
                 None,
             ),

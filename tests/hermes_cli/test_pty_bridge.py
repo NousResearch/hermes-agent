@@ -99,7 +99,7 @@ class TestPtyBridgeResize:
         # tput reads COLUMNS/LINES from the TTY ioctl (TIOCGWINSZ).
         # Spawn a shell, resize, then ask tput for the dimensions.
         bridge = PtyBridge.spawn(
-            ["/bin/sh", "-c", "sleep 0.1; tput cols; tput lines"],
+            ["/bin/sh", "-c", "TERM=xterm; export TERM; sleep 0.1; tput cols; tput lines"],
             cols=80,
             rows=24,
         )

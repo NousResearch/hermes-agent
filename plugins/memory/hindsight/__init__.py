@@ -592,10 +592,14 @@ class HindsightMemoryProvider(MemoryProvider):
             sys.stdout.write("  LLM API key: ")
             sys.stdout.flush()
             llm_key = getpass.getpass(prompt="") if sys.stdin.isatty() else sys.stdin.readline().strip()
-            # Always write explicitly (including empty) so the provider sees ""
-            # rather than a missing variable.  The daemon reads from .env at
-            # startup and fails when HINDSIGHT_LLM_API_KEY is unset.
-            env_writes["HINDSIGHT_LLM_API_KEY"] = llm_key
+            existing_llm_key = _load_simple_env(Path(hermes_home) / ".env").get(
+                "HINDSIGHT_LLM_API_KEY",
+                "",
+            )
+            # Write an empty key only for new setups. If a key already exists,
+            # blank input means keep the current value.
+            if llm_key or not existing_llm_key:
+                env_writes["HINDSIGHT_LLM_API_KEY"] = llm_key
 
         # Step 4: Save everything
         provider_config["bank_id"] = "hermes"

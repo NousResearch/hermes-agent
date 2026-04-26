@@ -6,34 +6,9 @@ to shadow the installed utils module.  entry.py must sanitize sys.path before
 any non-stdlib import is resolved.
 """
 
-import importlib
 import os
 import sys
 from unittest.mock import patch
-
-
-def _reload_entry_with_env(env_overrides: dict) -> None:
-    """Re-execute entry.py's module-level path setup under a controlled env."""
-    # We only want to exercise the sys.path fixup block, not the signal/import
-    # machinery that follows.  We do this by running the fixup code verbatim in
-    # a fresh copy of sys.path rather than importing the real module (which
-    # would trigger tui_gateway.server imports requiring heavy mocks).
-    original_path = sys.path[:]
-    original_env = {k: os.environ.get(k) for k in env_overrides}
-    try:
-        with patch.dict(os.environ, env_overrides, clear=False):
-            _src_root = os.environ.get("HERMES_PYTHON_SRC_ROOT", "")
-            if _src_root and _src_root not in sys.path:
-                sys.path.insert(0, _src_root)
-            sys.path = [p for p in sys.path if p not in ("", ".")]
-        return sys.path[:]
-    finally:
-        sys.path = original_path
-        for k, v in original_env.items():
-            if v is None:
-                os.environ.pop(k, None)
-            else:
-                os.environ[k] = v
 
 
 def test_empty_string_and_dot_removed_from_sys_path():

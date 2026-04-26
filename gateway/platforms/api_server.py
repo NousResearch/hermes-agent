@@ -9,7 +9,7 @@ Exposes an HTTP server with endpoints:
 - GET  /v1/models                  — lists hermes-agent as an available model
 - POST /v1/runs                    — start a run, returns run_id immediately (202)
 - GET  /v1/runs/{run_id}/events    — SSE stream of structured lifecycle events
-- POST /v1/runs/{run_id}/stop     — interrupt a running agent
+- POST /v1/runs/{run_id}/stop    — interrupt a running agent
 - GET  /health                     — health check
 - GET  /health/detailed            — rich status for cross-container dashboard probing
 
@@ -2569,8 +2569,18 @@ class APIServerAdapter(BasePlatformAdapter):
 
         if task is not None and not task.done():
             task.cancel()
+            # Bounded wait: run_conversation() executes in the default
+            # executor thread which task.cancel() cannot preempt — we rely on
+            # agent.interrupt() above to break the loop. Cap the wait so a
+            # slow/unresponsive interrupt can't hang this handler.
             try:
-                await task
+                await asyncio.wait_for(asyncio.shield(task), timeout=5.0)
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "[api_server] stop for run %s timed out after 5s; "
+                    "agent may still be finishing the current step",
+                    run_id,
+                )
             except (asyncio.CancelledError, Exception):
                 pass
 

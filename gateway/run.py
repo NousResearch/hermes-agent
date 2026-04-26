@@ -3501,6 +3501,14 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "background":
                 return await self._handle_background_command(event)
 
+            # /btw must bypass the running-agent guard for the same reason
+            # as /background: it spawns a parallel ephemeral side-question
+            # task (see _handle_btw_command) that doesn't interrupt the
+            # active conversation and self-guards against concurrent /btw
+            # on the same chat.
+            if _cmd_def_inner and _cmd_def_inner.name == "btw":
+                return await self._handle_btw_command(event)
+
             # Session-level toggles that are safe to run mid-agent —
             # /yolo can unblock a pending approval prompt, /verbose cycles
             # the tool-progress display mode for the ongoing stream.

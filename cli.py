@@ -9789,31 +9789,6 @@ class HermesCLI:
         # EEXIST. The suffix keeps markdown highlighting without that bug.
         input_area.buffer.tempfile_suffix = '.md'
 
-        # prompt_toolkit's default fallback chain prefers /usr/bin/nano over
-        # /usr/bin/vi when neither $VISUAL nor $EDITOR is set. The TUI's
-        # resolveEditor() prefers nvim → vim → vi → nano. Override this single
-        # buffer's resolver so both surfaces pick the same editor.
-        import shlex
-        import subprocess
-
-        def _hermes_pick_editor(filename: str) -> bool:
-            chosen = (
-                os.environ.get('VISUAL')
-                or os.environ.get('EDITOR')
-                or shutil.which('nvim')
-                or shutil.which('vim')
-                or shutil.which('vi')
-                or shutil.which('nano')
-            )
-            if not chosen:
-                return False
-            try:
-                return subprocess.call(shlex.split(chosen) + [filename]) == 0
-            except OSError:
-                return False
-
-        input_area.buffer._open_file_in_editor = _hermes_pick_editor
-
         # Dynamic height: accounts for both explicit newlines AND visual
         # wrapping of long lines so the input area always fits its content.
         def _input_height():

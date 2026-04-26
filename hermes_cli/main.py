@@ -7734,6 +7734,19 @@ For more help on a command:
     setup_parser.add_argument(
         "--reset", action="store_true", help="Reset configuration to defaults"
     )
+    setup_parser.add_argument(
+        "--reconfigure",
+        action="store_true",
+        help="(Default on existing installs.) Re-run the full wizard, "
+             "showing current values as defaults. Kept for backwards "
+             "compatibility — a bare 'hermes setup' now does this.",
+    )
+    setup_parser.add_argument(
+        "--quick",
+        action="store_true",
+        help="On existing installs: only prompt for items that are missing "
+             "or unset, instead of running the full reconfigure wizard.",
+    )
     setup_parser.set_defaults(func=cmd_setup)
 
     # =========================================================================

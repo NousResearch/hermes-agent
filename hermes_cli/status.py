@@ -140,6 +140,7 @@ def show_status(args):
         "WandB": "WANDB_API_KEY",
         "ElevenLabs": "ELEVENLABS_API_KEY",
         "GitHub": "GITHUB_TOKEN",
+        "NVIDIA NIM":      "NVIDIA_API_KEY",
     }
 
     for name, env_var in keys.items():

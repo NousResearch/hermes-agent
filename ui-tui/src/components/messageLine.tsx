@@ -37,7 +37,7 @@ export const MessageLine = memo(function MessageLine({
   const thinking = msg.thinking?.trim() ?? ''
 
   if (msg.kind === 'trail' && msg.todos?.length) {
-    return <TodoPanel t={t} todos={msg.todos} />
+    return <TodoPanel incomplete={msg.todoIncomplete} t={t} todos={msg.todos} />
   }
 
   if (msg.kind === 'trail' && (msg.tools?.length || tools.length || thinking)) {

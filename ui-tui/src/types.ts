@@ -117,6 +117,7 @@ export interface Msg {
   toolTokens?: number
   tools?: string[]
   todos?: TodoItem[]
+  todoIncomplete?: boolean
 }
 
 export type Role = 'assistant' | 'system' | 'tool' | 'user'

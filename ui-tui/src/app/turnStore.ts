@@ -40,14 +40,22 @@ export const patchTurnState = (next: Partial<TurnState> | ((state: TurnState) =>
 
 export const toggleTodoCollapsed = () => patchTurnState(state => ({ ...state, todoCollapsed: !state.todoCollapsed }))
 
-export const archiveDoneTodos = () => {
+export const archiveDoneTodos = () => archiveTodosAtTurnEnd()
+
+export const archiveTodosAtTurnEnd = () => {
   const state = $turnState.get()
 
-  if (!isTodoDone(state.todos)) {
+  if (!state.todos.length) {
     return []
   }
 
-  const msg: Msg = { kind: 'trail', role: 'system', text: '', todos: state.todos }
+  const msg: Msg = {
+    kind: 'trail',
+    role: 'system',
+    text: '',
+    todos: state.todos,
+    ...(isTodoDone(state.todos) ? {} : { todoIncomplete: true })
+  }
 
   patchTurnState({ todoCollapsed: false, todos: [] })
 

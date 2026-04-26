@@ -1630,6 +1630,27 @@ class GatewayRunner:
                 f"I'll respond to your message shortly."
             )
 
+        # First-touch onboarding: the very first time a user sends a message
+        # while the agent is busy, append a one-time hint explaining the
+        # queue/interrupt knob.  Flag is persisted to config.yaml so it never
+        # fires again on this install.
+        try:
+            from agent.onboarding import (
+                BUSY_INPUT_FLAG,
+                busy_input_hint_gateway,
+                is_seen,
+                mark_seen,
+            )
+            _user_cfg = _load_gateway_config()
+            if not is_seen(_user_cfg, BUSY_INPUT_FLAG):
+                message = (
+                    f"{message}\n\n"
+                    f"{busy_input_hint_gateway('queue' if is_queue_mode else 'interrupt')}"
+                )
+                mark_seen(_hermes_home / "config.yaml", BUSY_INPUT_FLAG)
+        except Exception as _onb_err:
+            logger.debug("Failed to apply busy-input onboarding hint: %s", _onb_err)
+
         thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
         try:
             await adapter._send_with_retry(
@@ -9411,10 +9432,40 @@ class GatewayRunner:
         last_tool = [None]  # Mutable container for tracking in closure
         last_progress_msg = [None]  # Track last message for dedup
         repeat_count = [0]  # How many times the same message repeated
-        
+        # First-touch onboarding latch: fires at most once per run, even if
+        # several tools exceed the threshold.
+        long_tool_hint_fired = [False]
+        _LONG_TOOL_THRESHOLD_S = 30.0
+
         def progress_callback(event_type: str, tool_name: str = None, preview: str = None, args: dict = None, **kwargs):
             """Callback invoked by agent on tool lifecycle events."""
             if not progress_queue or not _run_still_current():
+                return
+
+            # First-touch onboarding: the first time a tool takes longer than
+            # _LONG_TOOL_THRESHOLD_S during a run that's streaming every tool
+            # (progress_mode == "all"), append a one-time hint suggesting
+            # /verbose.  We only fire when (a) the user hasn't seen the hint
+            # before and (b) /verbose is actually usable on this platform
+            # (gateway gate must be open).  The CLI has its own trigger.
+            if event_type == "tool.completed" and not long_tool_hint_fired[0]:
+                try:
+                    duration = kwargs.get("duration") or 0
+                    if duration >= _LONG_TOOL_THRESHOLD_S and progress_mode == "all":
+                        from agent.onboarding import (
+                            TOOL_PROGRESS_FLAG,
+                            is_seen,
+                            mark_seen,
+                            tool_progress_hint_gateway,
+                        )
+                        _cfg = _load_gateway_config()
+                        gate_on = bool(_cfg.get("display", {}).get("tool_progress_command", False))
+                        if gate_on and not is_seen(_cfg, TOOL_PROGRESS_FLAG):
+                            long_tool_hint_fired[0] = True
+                            progress_queue.put(tool_progress_hint_gateway())
+                            mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
+                except Exception as _hint_err:
+                    logger.debug("tool-progress onboarding hint failed: %s", _hint_err)
                 return
 
             # Only act on tool.started events (ignore tool.completed, reasoning.available, etc.)

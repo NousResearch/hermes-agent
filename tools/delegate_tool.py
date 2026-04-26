@@ -2231,8 +2231,8 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
 
     If ``delegation.base_url`` is configured, subagents use that direct
     OpenAI-compatible endpoint. ``delegation.api_key`` overrides the key; when
-    omitted, ``api_key`` is returned as None so ``_spawn_child`` inherits the
-    parent agent's key (``effective_api_key = override_api_key or parent_api_key``).
+    omitted, ``api_key`` is returned as None so ``_build_child_agent`` inherits
+    the parent agent's key (``effective_api_key = override_api_key or parent_api_key``).
     This lets providers that store their key outside ``OPENAI_API_KEY`` (e.g.
     ``MINIMAX_API_KEY``, ``DASHSCOPE_API_KEY``) work without a duplicate config entry.
 
@@ -2251,13 +2251,13 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     configured_api_key = str(cfg.get("api_key") or "").strip() or None
 
     if configured_base_url:
-        # When delegation.api_key is not set, return None so _spawn_child falls
-        # back to the parent agent's API key via the credential inheritance path
-        # (effective_api_key = override_api_key or parent_api_key).  This lets
-        # providers that store their key in a non-OPENAI_API_KEY env var (e.g.
-        # MINIMAX_API_KEY, DASHSCOPE_API_KEY) work without requiring callers to
-        # duplicate the key under delegation.api_key.
-        api_key = configured_api_key  # None → inherited from parent in _spawn_child
+        # When delegation.api_key is not set, return None so _build_child_agent
+        # falls back to the parent agent's API key via the credential inheritance
+        # path (effective_api_key = override_api_key or parent_api_key).  This
+        # lets providers that store their key in a non-OPENAI_API_KEY env var
+        # (e.g. MINIMAX_API_KEY, DASHSCOPE_API_KEY) work without requiring
+        # callers to duplicate the key under delegation.api_key.
+        api_key = configured_api_key  # None → inherited from parent in _build_child_agent
 
         base_lower = configured_base_url.lower()
         provider = "custom"

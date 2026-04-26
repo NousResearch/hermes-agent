@@ -823,7 +823,7 @@ class TestDelegationCredentialResolution(unittest.TestCase):
 
     def test_direct_endpoint_returns_none_api_key_when_not_configured(self):
         # When base_url is set without api_key, api_key should be None so
-        # _spawn_child inherits the parent's key (effective_api_key = override or parent).
+        # _build_child_agent inherits the parent's key (effective_api_key = override or parent).
         parent = _make_mock_parent(depth=0)
         cfg = {
             "model": "qwen2.5-coder",
@@ -835,7 +835,7 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertEqual(creds["provider"], "custom")
 
     def test_direct_endpoint_no_raise_when_only_provider_env_key_present(self):
-        # Even if OPENAI_API_KEY is absent, no ValueError — parent key is the fallback.
+        # Even if OPENAI_API_KEY is absent, no ValueError — _build_child_agent uses parent key.
         parent = _make_mock_parent(depth=0)
         cfg = {
             "model": "qwen2.5-coder",

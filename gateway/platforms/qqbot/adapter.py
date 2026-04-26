@@ -397,13 +397,24 @@ class QQAdapter(BasePlatformAdapter):
             await self._session.close()
         self._session = None
 
-        self._session = aiohttp.ClientSession()
+        # Honor WSL proxy env for QQ WebSocket. Hermes upgrades overwrite this
+        # local patch, so QQ can regress to direct-connect timeouts after update.
+        self._session = aiohttp.ClientSession(trust_env=True)
+        ws_proxy = (
+            os.getenv("WSS_PROXY")
+            or os.getenv("wss_proxy")
+            or os.getenv("HTTPS_PROXY")
+            or os.getenv("https_proxy")
+            or os.getenv("ALL_PROXY")
+            or os.getenv("all_proxy")
+        )
         self._ws = await self._session.ws_connect(
             gateway_url,
             headers={
                 "User-Agent": build_user_agent(),
             },
             timeout=CONNECT_TIMEOUT_SECONDS,
+            proxy=ws_proxy,
         )
         logger.info("[%s] WebSocket connected to %s", self._log_tag, gateway_url)
 

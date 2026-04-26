@@ -832,7 +832,18 @@ class SessionDB:
         params = []
 
         if not include_children:
-            where_clauses.append("s.parent_session_id IS NULL")
+            # Show root sessions and branch sessions (whose parent ended with
+            # end_reason='branched' before the child was created), while still
+            # hiding sub-agent runs and compression continuations (which also
+            # carry a parent_session_id but were spawned while the parent was
+            # still live — i.e., started_at < parent.ended_at).
+            where_clauses.append(
+                "(s.parent_session_id IS NULL"
+                " OR EXISTS (SELECT 1 FROM sessions p"
+                "            WHERE p.id = s.parent_session_id"
+                "            AND p.end_reason = 'branched'"
+                "            AND s.started_at >= p.ended_at))"
+            )
 
         if source:
             where_clauses.append("s.source = ?")

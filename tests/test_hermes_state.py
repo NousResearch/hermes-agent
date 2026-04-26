@@ -1485,6 +1485,48 @@ class TestListSessionsRich:
         assert "\n" not in sessions[0]["preview"]
         assert "Line one Line two" in sessions[0]["preview"]
 
+    def test_branch_session_visible_in_list(self, db):
+        """Branch sessions (parent ended with 'branched') must appear in list_sessions_rich."""
+        db.create_session("parent", "cli")
+        db.end_session("parent", "branched")
+        db.create_session("branch", "cli", parent_session_id="parent")
+        db.append_message("branch", "user", "Exploring the alternative approach")
+
+        sessions = db.list_sessions_rich()
+        ids = [s["id"] for s in sessions]
+        assert "branch" in ids, "Branch session should be visible in default list"
+
+    def test_subagent_session_still_hidden(self, db):
+        """Sub-agent children (parent NOT ended with 'branched') remain hidden."""
+        db.create_session("root", "cli")
+        db.create_session("delegate", "cli", parent_session_id="root")
+
+        sessions = db.list_sessions_rich()
+        ids = [s["id"] for s in sessions]
+        assert "delegate" not in ids, "Delegate sub-agent should not appear in default list"
+        assert "root" in ids
+
+    def test_compression_child_still_hidden(self, db):
+        """Compression continuation sessions remain hidden (parent ended with 'compression')."""
+        import time as _time
+        t0 = _time.time()
+        db.create_session("root", "cli")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "root"))
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?",
+            (t0 + 1800, "root"),
+        )
+        db._conn.commit()
+        db.create_session("continuation", "cli", parent_session_id="root")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?", (t0 + 1801, "continuation")
+        )
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(project_compression_tips=False)
+        ids = [s["id"] for s in sessions]
+        assert "continuation" not in ids, "Compression continuation should stay hidden"
+
 
 class TestCompressionChainProjection:
     """Tests for lineage-aware list_sessions_rich — compressed conversations

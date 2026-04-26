@@ -1264,22 +1264,23 @@ class TestInvalidateRuntimeClient:
 class TestIsStaleConnectionError:
     """Classifier that decides whether an exception warrants client eviction."""
 
-    def test_detects_botocore_connection_closed_error(self):
-        pytest.importorskip("botocore")
+    @pytest.fixture
+    def requires_botocore(self):
+        pytest.importorskip("botocore", reason="botocore is required for botocore-specific stale connection tests")
+
+    def test_detects_botocore_connection_closed_error(self, requires_botocore):
         from agent.bedrock_adapter import is_stale_connection_error
         from botocore.exceptions import ConnectionClosedError
         exc = ConnectionClosedError(endpoint_url="https://bedrock.example")
         assert is_stale_connection_error(exc) is True
 
-    def test_detects_botocore_endpoint_connection_error(self):
-        pytest.importorskip("botocore")
+    def test_detects_botocore_endpoint_connection_error(self, requires_botocore):
         from agent.bedrock_adapter import is_stale_connection_error
         from botocore.exceptions import EndpointConnectionError
         exc = EndpointConnectionError(endpoint_url="https://bedrock.example")
         assert is_stale_connection_error(exc) is True
 
-    def test_detects_botocore_read_timeout(self):
-        pytest.importorskip("botocore")
+    def test_detects_botocore_read_timeout(self, requires_botocore):
         from agent.bedrock_adapter import is_stale_connection_error
         from botocore.exceptions import ReadTimeoutError
         exc = ReadTimeoutError(endpoint_url="https://bedrock.example")

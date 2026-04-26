@@ -24,6 +24,7 @@ import json
 import asyncio
 import logging
 import threading
+import time
 from typing import Dict, Any, List, Optional, Tuple
 
 from tools.registry import discover_builtin_tools, registry
@@ -567,6 +568,14 @@ def handle_function_call(
             except Exception:
                 pass  # file_tools may not be loaded yet
 
+        # Measure tool dispatch latency so post_tool_call and
+        # transform_tool_result hooks can observe per-tool duration.
+        # Inspired by Claude Code 2.1.119, which added ``duration_ms`` to
+        # PostToolUse hook inputs so plugin authors can build latency
+        # dashboards, budget alerts, and regression canaries without having
+        # to wrap every tool manually.  We use monotonic() so the value is
+        # unaffected by wall-clock adjustments during the call.
+        _dispatch_start = time.monotonic()
         if function_name == "execute_code":
             # Prefer the caller-provided list so subagents can't overwrite
             # the parent's tool set via the process-global.
@@ -582,6 +591,7 @@ def handle_function_call(
                 task_id=task_id,
                 user_task=user_task,
             )
+        duration_ms = int((time.monotonic() - _dispatch_start) * 1000)
 
         try:
             from hermes_cli.plugins import invoke_hook
@@ -593,6 +603,7 @@ def handle_function_call(
                 task_id=task_id or "",
                 session_id=session_id or "",
                 tool_call_id=tool_call_id or "",
+                duration_ms=duration_ms,
             )
         except Exception:
             pass
@@ -613,6 +624,7 @@ def handle_function_call(
                 task_id=task_id or "",
                 session_id=session_id or "",
                 tool_call_id=tool_call_id or "",
+                duration_ms=duration_ms,
             )
             for hook_result in hook_results:
                 if isinstance(hook_result, str):

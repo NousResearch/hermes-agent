@@ -6282,7 +6282,7 @@ class HermesCLI:
         _cmd_def = _resolve_cmd(_base_word)
         canonical = _cmd_def.name if _cmd_def else _base_word
         
-        if canonical in ("quit", "exit", "q"):
+        if canonical in ("quit", "exit"):
             return False
         elif canonical == "help":
             self.show_help()

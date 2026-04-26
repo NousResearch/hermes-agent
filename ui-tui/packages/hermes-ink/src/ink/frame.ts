@@ -46,6 +46,17 @@ export type FrameEvent = {
     write: number
     /** Pre-optimize patch count (proxy for how much changed this frame) */
     patches: number
+    /** Post-optimize patch count — what was actually written to stdout. */
+    optimizedPatches: number
+    /** Bytes written to stdout this frame (escape sequences + payload). */
+    writeBytes: number
+    /** Whether stdout.write returned false (backpressure = outer terminal slow). */
+    backpressure: boolean
+    /** ms from this frame's stdout.write until the write-callback fired.
+     *  Populated on the NEXT frame (async), so this field reflects the
+     *  PREVIOUS frame's terminal-drain time.  0 = callback already fired
+     *  before next frame started (drained in sub-ms). */
+    prevFrameDrainMs: number
     /** yoga calculateLayout() time (runs in resetAfterCommit, before onRender) */
     yoga: number
     /** React reconcile time: scrollMutated → resetAfterCommit. 0 if no commit. */

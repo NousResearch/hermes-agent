@@ -149,12 +149,16 @@ export const logFrameEvent = ENABLED
         flickers: event.flickers.length ? event.flickers : undefined,
         phases: event.phases
           ? {
+              backpressure: event.phases.backpressure,
               commit: round2(event.phases.commit),
               diff: round2(event.phases.diff),
               optimize: round2(event.phases.optimize),
+              optimizedPatches: event.phases.optimizedPatches,
               patches: event.phases.patches,
+              prevFrameDrainMs: round2(event.phases.prevFrameDrainMs),
               renderer: round2(event.phases.renderer),
               write: round2(event.phases.write),
+              writeBytes: event.phases.writeBytes,
               yoga: round2(event.phases.yoga),
               yogaCacheHits: event.phases.yogaCacheHits,
               yogaLive: event.phases.yogaLive,

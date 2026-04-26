@@ -84,6 +84,31 @@ COPILOT_REMOTE_SCHEMA = {
                 "type": "boolean",
                 "description": "Test the launch path without spawning Copilot.",
             },
+            "signal_source": {
+                "type": "string",
+                "description": (
+                    "Optional origin label for the launch (e.g. 'slack', "
+                    "'cli', 'webhook'). Stored as job metadata; does not "
+                    "affect Copilot reconnect."
+                ),
+            },
+            "signal_ref": {
+                "type": "string",
+                "description": (
+                    "Optional external reference for the launch (e.g. a "
+                    "Jira ticket ID or Slack message ts). Stored as job "
+                    "metadata only; the Copilot reconnect handle is tracked "
+                    "separately and is not affected by this value."
+                ),
+            },
+            "hermes_session_id": {
+                "type": "string",
+                "description": (
+                    "Optional Hermes session ID to link this Copilot remote "
+                    "job to. Stored as a foreign key into ``sessions``; does "
+                    "not affect Copilot reconnect."
+                ),
+            },
         },
         "required": [],
     },
@@ -99,7 +124,8 @@ def _error(message: str) -> str:
 
 
 def _job_handle(job: Dict[str, Any]) -> str:
-    return str(job.get("signal_ref") or job.get("id") or "")
+    """Return the Copilot reconnect handle (never the metadata ``signal_ref``)."""
+    return str(job.get("connect_handle") or job.get("id") or "")
 
 
 def _serialize_job(job: Dict[str, Any]) -> Dict[str, Any]:
@@ -207,6 +233,7 @@ def _launch(args: Dict[str, Any]) -> str:
             prompt=prompt,
             signal_source=str(args.get("signal_source") or "tool"),
             signal_ref=str(args.get("signal_ref") or "") or None,
+            hermes_session_id=str(args.get("hermes_session_id") or "") or None,
         )
 
         from copilot_remote.launcher import launch_copilot
@@ -222,7 +249,7 @@ def _launch(args: Dict[str, Any]) -> str:
 
         connect_handle = result.get("connect_id") or job_id
         if connect_handle != job_id:
-            db.update_copilot_remote_signal_ref(job_id, str(connect_handle))
+            db.update_copilot_remote_connect_handle(job_id, str(connect_handle))
 
         job = db.get_copilot_remote(job_id) or {
             "id": job_id,
@@ -230,7 +257,7 @@ def _launch(args: Dict[str, Any]) -> str:
             "repo_slug": repo_entry.slug,
             "repo_path": repo_entry.path,
             "prompt": prompt,
-            "signal_ref": connect_handle if connect_handle != job_id else None,
+            "connect_handle": connect_handle if connect_handle != job_id else None,
         }
         payload = {
             "success": True,

@@ -1261,7 +1261,7 @@ class TestSchemaInit:
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 11
+        assert cursor.fetchone()[0] == 12
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
@@ -1827,7 +1827,7 @@ class TestConcurrentWriteSafety:
 class TestCopilotRemoteLifecycle:
     def test_schema_version_is_11(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 11
+        assert cursor.fetchone()[0] == 12
 
     def test_copilot_tables_exist(self, db):
         cursor = db._conn.execute(
@@ -1980,7 +1980,7 @@ class TestCopilotRemoteMigrationFromV6:
         migrated_db = SessionDB(db_path=db_path)
 
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 11
+        assert cursor.fetchone()[0] == 12
 
         # Verify copilot tables exist
         cursor = migrated_db._conn.execute(
@@ -2082,7 +2082,7 @@ class TestCopilotRemoteMigrationFromV6:
 
         migrated_db = SessionDB(db_path=db_path)
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 11
+        assert cursor.fetchone()[0] == 12
 
         cursor = migrated_db._conn.execute(
             "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"

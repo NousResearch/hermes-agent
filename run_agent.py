@@ -12805,7 +12805,11 @@ class AIAgent:
             "action": "launch",
             "prompt": user_message,
             "signal_source": self.platform or "agent",
-            "signal_ref": self.session_id or "",
+            # Link the Copilot remote job to this Hermes session via the
+            # dedicated FK column instead of overloading `signal_ref` (which
+            # is reserved for caller-supplied external metadata such as a
+            # Jira ticket ID and is never used as the reconnect handle).
+            "hermes_session_id": self.session_id or "",
         }
         tool_call_id = f"call_{uuid.uuid4().hex[:12]}"
         assistant_tool_call = {

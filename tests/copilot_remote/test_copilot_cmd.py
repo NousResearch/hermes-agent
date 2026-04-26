@@ -129,7 +129,7 @@ class TestSlashShow:
             job_id="eeeeeeee-0000-0000-0000-000000000001",
             repo_slug="show-repo",
             repo_path="/show",
-            signal_ref="task-123",
+            connect_handle="task-123",
         )
         out = _capture_slash("/copilot_remote show eeeeeeee-0000-0000-0000-000000000001")
         assert "copilot --connect=task-123" in out

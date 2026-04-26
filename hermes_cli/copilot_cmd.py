@@ -22,8 +22,15 @@ def _get_db() -> SessionDB:
 
 
 def _connect_handle(job: dict) -> str:
-    """Return the best external handle for connect/resume."""
-    return job.get("signal_ref") or job["id"]
+    """Return the best Copilot reconnect handle for connect/resume.
+
+    Prefers the dedicated ``connect_handle`` column (populated by the
+    launcher) and falls back to the job ``id``. ``signal_ref`` is
+    intentionally *not* consulted here — it stores caller metadata
+    (e.g. a Jira ticket ID) and would otherwise produce invalid
+    ``copilot --connect=<ticket-id>`` output.
+    """
+    return job.get("connect_handle") or job["id"]
 
 
 def _relative_time(ts) -> str:
@@ -151,7 +158,7 @@ def copilot_launch(args):
 
     connect_handle = result.get("connect_id") or job_id
     if connect_handle != job_id:
-        db.update_copilot_remote_signal_ref(job_id, connect_handle)
+        db.update_copilot_remote_connect_handle(job_id, connect_handle)
 
     prompt_delivery_warning = result.get("prompt_delivery_warning")
 

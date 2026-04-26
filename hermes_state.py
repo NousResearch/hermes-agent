@@ -31,7 +31,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 11
+SCHEMA_VERSION = 12
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -105,6 +105,7 @@ CREATE TABLE IF NOT EXISTS copilot_remote (
     prompt TEXT,
     signal_source TEXT,
     signal_ref TEXT,
+    connect_handle TEXT,
     state TEXT NOT NULL DEFAULT 'running',
     exit_code INTEGER,
     created_at REAL NOT NULL,
@@ -523,6 +524,29 @@ class SessionDB:
                     "ON copilot_remote(repo_slug, state)"
                 )
                 cursor.execute("UPDATE schema_version SET version = 11")
+            if current_version < 12:
+                # v12: split overloaded `signal_ref` into a dedicated
+                # `connect_handle` column. Pre-v12 launches overwrote
+                # `signal_ref` (caller-supplied metadata, e.g. Jira ticket)
+                # with the Copilot reconnect handle when one was discovered
+                # from the launcher. That conflict produced invalid
+                # `copilot --connect=<ticket-id>` output and silently lost
+                # the original metadata. Going forward the two roles are
+                # stored separately. Backfill copies the existing
+                # `signal_ref` value into `connect_handle` so old rows can
+                # still be reconnected; the original `signal_ref` is left
+                # untouched (best-effort — ambiguous before v12).
+                try:
+                    cursor.execute(
+                        "ALTER TABLE copilot_remote ADD COLUMN connect_handle TEXT"
+                    )
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
+                cursor.execute(
+                    "UPDATE copilot_remote SET connect_handle = signal_ref "
+                    "WHERE connect_handle IS NULL AND signal_ref IS NOT NULL"
+                )
+                cursor.execute("UPDATE schema_version SET version = 12")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -1736,17 +1760,24 @@ class SessionDB:
         signal_source: str = None,
         signal_ref: str = None,
         hermes_session_id: str = None,
+        connect_handle: str = None,
     ) -> str:
-        """Create a new copilot remote in 'running' state. Returns the job_id."""
+        """Create a new copilot remote in 'running' state. Returns the job_id.
+
+        ``signal_ref`` stores caller-supplied metadata (e.g. a Jira ticket
+        ID) and is never overwritten by the launcher. ``connect_handle``
+        stores the value used for ``copilot --connect=<handle>`` /
+        ``--resume=<handle>`` and is set / updated by the launcher only.
+        """
         now = time.time()
         def _do(conn):
             conn.execute(
                 """INSERT INTO copilot_remote
                    (id, hermes_session_id, repo_slug, repo_path, prompt,
-                    signal_source, signal_ref, state, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, 'running', ?)""",
+                    signal_source, signal_ref, connect_handle, state, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'running', ?)""",
                 (job_id, hermes_session_id, repo_slug, repo_path, prompt,
-                 signal_source, signal_ref, now),
+                 signal_source, signal_ref, connect_handle, now),
             )
         self._execute_write(_do)
         return job_id
@@ -1770,16 +1801,21 @@ class SessionDB:
             )
         self._execute_write(_do)
 
-    def update_copilot_remote_signal_ref(
+    def update_copilot_remote_connect_handle(
         self,
         job_id: str,
-        signal_ref: str,
+        connect_handle: str,
     ) -> None:
-        """Update the external connect/resume handle for a copilot remote."""
+        """Update the Copilot reconnect handle for a copilot remote.
+
+        This is the value used for ``copilot --connect=<handle>`` /
+        ``--resume=<handle>``. It is distinct from ``signal_ref``
+        (caller-supplied metadata such as a Jira ticket ID).
+        """
         def _do(conn):
             conn.execute(
-                "UPDATE copilot_remote SET signal_ref = ? WHERE id = ?",
-                (signal_ref, job_id),
+                "UPDATE copilot_remote SET connect_handle = ? WHERE id = ?",
+                (connect_handle, job_id),
             )
         self._execute_write(_do)
 

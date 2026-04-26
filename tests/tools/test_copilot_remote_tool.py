@@ -85,7 +85,9 @@ def test_launch_routes_repo_and_stores_connect_handle(db, monkeypatch):
 
     jobs = db.list_copilot_remote(state="running")
     assert len(jobs) == 1
-    assert jobs[0]["signal_ref"] == "task-123"
+    # Post-v12: the launcher-discovered connect handle lives in its own
+    # column; `signal_ref` is reserved for caller-supplied metadata.
+    assert jobs[0]["connect_handle"] == "task-123"
 
 
 def test_launch_requires_prompt(db):
@@ -101,7 +103,7 @@ def test_list_and_show(db):
         repo_slug="static-pages",
         repo_path="/workspace/repos/corp_it/static-pages",
         prompt="Build page",
-        signal_ref="task-1",
+        connect_handle="task-1",
     )
 
     listing = json.loads(copilot_remote({"action": "list"}))

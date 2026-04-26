@@ -8082,7 +8082,16 @@ For more help on a command:
     cop_launch.add_argument("--model", help="Model to use for the session")
     cop_launch.add_argument("--dry-run", dest="dry_run", action="store_true", help="Simulate launch without spawning copilot")
     cop_launch.add_argument("--signal-source", dest="signal_source", default="cli", help="Signal origin (default: cli)")
-    cop_launch.add_argument("--signal-ref", dest="signal_ref", help="Signal reference (e.g. Jira ticket ID)")
+    cop_launch.add_argument(
+        "--signal-ref",
+        dest="signal_ref",
+        help=(
+            "External reference metadata for the launch (e.g. a Jira ticket "
+            "ID or Slack message ts). Stored as job metadata only \u2014 the "
+            "Copilot reconnect handle is tracked separately and is not "
+            "affected by this flag."
+        ),
+    )
 
     # copilot list
     cop_list = copilot_subparsers.add_parser("list", aliases=["ls"], help="List copilot remote jobs")

@@ -993,6 +993,162 @@ class TestOnMemoryWriteBridge:
         assert good.memory_writes == [("add", "user", "test")]
 
 
+# ---------------------------------------------------------------------------
+# Lazy tool registration regression tests
+# (fix: re-index _tool_to_provider after provider.initialize())
+# ---------------------------------------------------------------------------
+
+
+class LazyToolProvider(FakeMemoryProvider):
+    """Provider whose tools are only available after initialize() is called.
+
+    Simulates MCP-backed providers (e.g. context-mode) that query a
+    subprocess during initialize() and only then have non-empty tool schemas.
+    """
+
+    def __init__(self, name="lazy", lazy_tools=None):
+        super().__init__(name=name, tools=[])  # empty at registration time
+        self._lazy_tools = lazy_tools or [
+            {"name": f"{name}_tool", "description": "Lazy tool", "parameters": {}},
+        ]
+
+    def initialize(self, session_id, **kwargs):
+        super().initialize(session_id, **kwargs)
+        self._tools = self._lazy_tools  # populate tools during init
+
+
+class TestLazyToolRegistration:
+    """Regression tests for the fix in initialize_all() that re-indexes
+    _tool_to_provider after each provider's initialize() call.
+
+    Before the fix: providers that return [] from get_tool_schemas() at
+    add_provider() time (e.g. MCP-backed plugins that don't start their
+    subprocess until initialize()) would never be routed to — has_tool()
+    returned False and handle_tool_call() returned an error.
+
+    After the fix: initialize_all() iterates get_tool_schemas() after each
+    provider's initialize() and updates _tool_to_provider accordingly.
+    """
+
+    def test_lazy_provider_tools_routed_after_initialize_all(self):
+        """has_tool returns True for lazy tools after initialize_all."""
+        mgr = MemoryManager()
+        p = LazyToolProvider("ctx")
+        mgr.add_provider(p)
+
+        # Before init: tool not yet routable
+        assert not mgr.has_tool("ctx_tool")
+
+        mgr.initialize_all(session_id="sess-1")
+
+        # After init: tools indexed
+        assert mgr.has_tool("ctx_tool")
+
+    def test_lazy_provider_handle_tool_call_after_initialize_all(self):
+        """handle_tool_call routes to the lazy provider after initialize_all."""
+        mgr = MemoryManager()
+        p = LazyToolProvider("ctx", lazy_tools=[
+            {"name": "ctx_search", "description": "Search", "parameters": {}},
+        ])
+        mgr.add_provider(p)
+        mgr.initialize_all(session_id="sess-1")
+
+        result = json.loads(mgr.handle_tool_call("ctx_search", {"q": "hello"}))
+        assert result["handled"] == "ctx_search"
+
+    def test_eager_provider_tools_not_duplicated_after_initialize_all(self):
+        """Tools registered at add_provider() time are not double-counted."""
+        mgr = MemoryManager()
+        eager = FakeMemoryProvider("eager", tools=[
+            {"name": "eager_tool", "description": "Eager", "parameters": {}},
+        ])
+        mgr.add_provider(eager)
+        mgr.initialize_all(session_id="sess-1")
+
+        # Should still be exactly one mapping, handle_tool_call works
+        assert mgr.has_tool("eager_tool")
+        result = json.loads(mgr.handle_tool_call("eager_tool", {}))
+        assert result["handled"] == "eager_tool"
+
+        # Schema list should not have duplicates
+        schemas = mgr.get_all_tool_schemas()
+        names = [s["name"] for s in schemas]
+        assert names.count("eager_tool") == 1
+
+    def test_lazy_and_eager_providers_coexist(self):
+        """Eager and lazy providers are both routed correctly after initialize_all."""
+        mgr = MemoryManager()
+        eager = FakeMemoryProvider("builtin", tools=[
+            {"name": "builtin_recall", "description": "Builtin", "parameters": {}},
+        ])
+        lazy = LazyToolProvider("ctx", lazy_tools=[
+            {"name": "ctx_index", "description": "Index", "parameters": {}},
+            {"name": "ctx_search", "description": "Search", "parameters": {}},
+        ])
+        mgr.add_provider(eager)
+        mgr.add_provider(lazy)
+        mgr.initialize_all(session_id="sess-1")
+
+        assert mgr.has_tool("builtin_recall")
+        assert mgr.has_tool("ctx_index")
+        assert mgr.has_tool("ctx_search")
+
+        r = json.loads(mgr.handle_tool_call("ctx_index", {"content": "data"}))
+        assert r["handled"] == "ctx_index"
+
+    def test_failed_initialize_does_not_index_tools(self):
+        """If a provider's initialize() raises, its tools are NOT indexed."""
+        mgr = MemoryManager()
+
+        class BrokenLazyProvider(LazyToolProvider):
+            def initialize(self, session_id, **kwargs):
+                self._tools = self._lazy_tools  # would populate tools ...
+                raise RuntimeError("MCP subprocess failed")  # ... but blows up
+
+        p = BrokenLazyProvider("broken")
+        mgr.add_provider(p)
+        mgr.initialize_all(session_id="sess-1")  # must not raise
+
+        # Tools must NOT be routable — initialize failed so we can't trust the provider
+        assert not mgr.has_tool("broken_tool")
+
+    def test_multiple_lazy_providers_all_indexed(self):
+        """Multiple lazy providers both get their tools indexed.
+
+        The manager allows one builtin + one external provider.  We use the
+        built-in slot for p1 (name "holographic" is treated as builtin) so
+        p2 can occupy the external slot.  Both should be indexed after
+        initialize_all().
+        """
+        mgr = MemoryManager()
+        p1 = LazyToolProvider("builtin", lazy_tools=[
+            {"name": "p1_tool", "description": "P1", "parameters": {}},
+        ])
+        p2 = LazyToolProvider("context-mode", lazy_tools=[
+            {"name": "p2_tool", "description": "P2", "parameters": {}},
+        ])
+        mgr.add_provider(p1)
+        mgr.add_provider(p2)
+        mgr.initialize_all(session_id="sess-1")
+
+        assert mgr.has_tool("p1_tool")
+        assert mgr.has_tool("p2_tool")
+
+    def test_get_all_tool_names_includes_lazy_tools(self):
+        """get_all_tool_names returns lazy tools after initialize_all."""
+        mgr = MemoryManager()
+        p = LazyToolProvider("ctx", lazy_tools=[
+            {"name": "ctx_stats", "description": "Stats", "parameters": {}},
+            {"name": "ctx_search", "description": "Search", "parameters": {}},
+        ])
+        mgr.add_provider(p)
+        mgr.initialize_all(session_id="sess-1")
+
+        names = mgr.get_all_tool_names()
+        assert "ctx_stats" in names
+        assert "ctx_search" in names
+
+
 class TestHonchoCadenceTracking:
     """Verify Honcho provider cadence gating depends on on_turn_start().
 

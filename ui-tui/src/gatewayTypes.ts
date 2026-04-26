@@ -174,6 +174,11 @@ export interface PromptSubmitResponse {
   ok?: boolean
 }
 
+export interface OnboardingClaimResponse {
+  claimed?: boolean
+  hint?: null | string
+}
+
 export interface BackgroundStartResponse {
   task_id?: string
 }
@@ -417,3 +422,4 @@ export type GatewayEvent =
       type: 'message.complete'
     }
   | { payload?: { message?: string }; session_id?: string; type: 'error' }
+  | { payload: { flag: string; text: string }; session_id?: string; type: 'onboarding.hint' }

@@ -12,16 +12,72 @@ export interface ActivityItem {
 }
 
 export interface SubagentProgress {
+  apiCalls?: number
+  costUsd?: number
+  depth: number
   durationSeconds?: number
+  filesRead?: string[]
+  filesWritten?: string[]
   goal: string
   id: string
   index: number
+  inputTokens?: number
+  iteration?: number
+  model?: string
   notes: string[]
-  status: 'completed' | 'failed' | 'interrupted' | 'running'
+  outputTail?: SubagentOutputEntry[]
+  outputTokens?: number
+  parentId: null | string
+  reasoningTokens?: number
+  startedAt?: number
+  status: 'completed' | 'failed' | 'interrupted' | 'queued' | 'running'
   summary?: string
   taskCount: number
   thinking: string[]
+  toolCount: number
   tools: string[]
+  toolsets?: string[]
+}
+
+export interface SubagentOutputEntry {
+  isError: boolean
+  preview: string
+  tool: string
+}
+
+export interface SubagentNode {
+  aggregate: SubagentAggregate
+  children: SubagentNode[]
+  item: SubagentProgress
+}
+
+export interface SubagentAggregate {
+  activeCount: number
+  costUsd: number
+  descendantCount: number
+  filesTouched: number
+  hotness: number
+  inputTokens: number
+  maxDepthFromHere: number
+  outputTokens: number
+  totalDuration: number
+  totalTools: number
+}
+
+export interface DelegationStatus {
+  active: {
+    depth?: number
+    goal?: string
+    model?: null | string
+    parent_id?: null | string
+    started_at?: number
+    status?: string
+    subagent_id?: string
+    tool_count?: number
+  }[]
+  max_concurrent_children?: number
+  max_spawn_depth?: number
+  paused: boolean
 }
 
 export interface ApprovalReq {
@@ -46,7 +102,7 @@ export interface ClarifyReq {
 
 export interface Msg {
   info?: SessionInfo
-  kind?: 'intro' | 'panel' | 'slash' | 'trail'
+  kind?: 'diff' | 'intro' | 'panel' | 'slash' | 'trail'
   panelData?: PanelData
   role: Role
   text: string
@@ -59,6 +115,14 @@ export interface Msg {
 export type Role = 'assistant' | 'system' | 'tool' | 'user'
 export type DetailsMode = 'hidden' | 'collapsed' | 'expanded'
 export type ThinkingMode = 'collapsed' | 'truncated' | 'full'
+
+// Per-section overrides for the agent details accordion.  Resolution order
+// at lookup time is: explicit `display.sections.<name>` → built-in
+// SECTION_DEFAULTS → global `details_mode`.  Today the built-in defaults
+// expand `thinking`/`tools` and hide `activity`; `subagents` falls through
+// to the global mode.  Any explicit value still wins for that one section.
+export type SectionName = 'thinking' | 'tools' | 'subagents' | 'activity'
+export type SectionVisibility = Partial<Record<SectionName, DetailsMode>>
 
 export interface McpServerStatus {
   connected: boolean

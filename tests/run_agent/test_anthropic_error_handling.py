@@ -152,7 +152,7 @@ class _FakeAnthropicClient:
         pass
 
 
-def _fake_build_anthropic_client(key, base_url=None):
+def _fake_build_anthropic_client(key, base_url=None, **kwargs):
     return _FakeAnthropicClient()
 
 

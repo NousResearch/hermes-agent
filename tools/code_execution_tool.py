@@ -979,6 +979,7 @@ def execute_code(
         # --- Start UDS server ---
         server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server_sock.bind(sock_path)
+        os.chmod(sock_path, 0o600)
         server_sock.listen(1)
 
         rpc_thread = threading.Thread(

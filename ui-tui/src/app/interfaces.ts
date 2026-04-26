@@ -3,6 +3,7 @@ import type { MutableRefObject, ReactNode, RefObject, SetStateAction } from 'rea
 
 import type { PasteEvent } from '../components/textInput.js'
 import type { GatewayClient } from '../gatewayClient.js'
+import type { ImageAttachResponse } from '../gatewayTypes.js'
 import type { RpcResult } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 import type {
@@ -15,6 +16,7 @@ import type {
   Msg,
   PanelSection,
   SecretReq,
+  SectionVisibility,
   SessionInfo,
   SlashCatalog,
   SubagentProgress,
@@ -26,9 +28,11 @@ export interface StateSetter<T> {
   (value: SetStateAction<T>): void
 }
 
+export type StatusBarMode = 'bottom' | 'off' | 'top'
+
 export interface SelectionApi {
   clearSelection: () => void
-  copySelection: () => string
+  copySelection: () => Promise<string>
 }
 
 export interface CompletionItem {
@@ -52,6 +56,8 @@ export interface GatewayProviderProps {
 }
 
 export interface OverlayState {
+  agents: boolean
+  agentsInitialHistoryIndex: number
   approval: ApprovalReq | null
   clarify: ClarifyReq | null
   confirm: ConfirmReq | null
@@ -82,11 +88,13 @@ export interface UiState {
   detailsMode: DetailsMode
   info: null | SessionInfo
   inlineDiffs: boolean
+  mouseTracking: boolean
+  sections: SectionVisibility
   showCost: boolean
   showReasoning: boolean
   sid: null | string
   status: string
-  statusBar: boolean
+  statusBar: StatusBarMode
   streaming: boolean
   theme: Theme
   usage: Usage
@@ -106,12 +114,14 @@ export interface ComposerPasteResult {
   value: string
 }
 
+export type MaybePromise<T> = Promise<T> | T
+
 export interface ComposerActions {
   clearIn: () => void
   dequeue: () => string | undefined
   enqueue: (text: string) => void
-  handleTextPaste: (event: PasteEvent) => ComposerPasteResult | null
-  openEditor: () => void
+  handleTextPaste: (event: PasteEvent) => MaybePromise<ComposerPasteResult | null>
+  openEditor: () => Promise<void>
   pushHistory: (text: string) => void
   replaceQueue: (index: number, text: string) => void
   setCompIdx: StateSetter<number>
@@ -146,6 +156,7 @@ export interface ComposerState {
 export interface UseComposerStateOptions {
   gw: GatewayClient
   onClipboardPaste: (quiet?: boolean) => Promise<void> | void
+  onImageAttached?: (info: ImageAttachResponse) => void
   submitRef: MutableRefObject<(value: string) => void>
 }
 
@@ -181,9 +192,11 @@ export interface InputHandlerContext {
     stdout?: NodeJS.WriteStream
   }
   voice: {
+    enabled: boolean
     recording: boolean
     setProcessing: StateSetter<boolean>
     setRecording: StateSetter<boolean>
+    setVoiceEnabled: StateSetter<boolean>
   }
   wheelStep: number
 }
@@ -194,9 +207,7 @@ export interface InputHandlerResult {
 
 export interface GatewayEventHandlerContext {
   composer: {
-    dequeue: () => string | undefined
-    queueEditRef: MutableRefObject<null | number>
-    sendQueued: (text: string) => void
+    setInput: StateSetter<string>
   }
   gateway: GatewayServices
   session: {
@@ -207,6 +218,9 @@ export interface GatewayEventHandlerContext {
     resumeById: (id: string) => void
     setCatalog: StateSetter<null | SlashCatalog>
   }
+  submission: {
+    submitRef: MutableRefObject<(value: string) => void>
+  }
   system: {
     bellOnComplete: boolean
     stdout?: NodeJS.WriteStream
@@ -216,6 +230,11 @@ export interface GatewayEventHandlerContext {
     appendMessage: (msg: Msg) => void
     panel: (title: string, sections: PanelSection[]) => void
     setHistoryItems: StateSetter<Msg[]>
+  }
+  voice: {
+    setProcessing: StateSetter<boolean>
+    setRecording: StateSetter<boolean>
+    setVoiceEnabled: StateSetter<boolean>
   }
 }
 
@@ -273,7 +292,7 @@ export interface AppLayoutComposerProps {
   compIdx: number
   completions: CompletionItem[]
   empty: boolean
-  handleTextPaste: (event: PasteEvent) => ComposerPasteResult | null
+  handleTextPaste: (event: PasteEvent) => MaybePromise<ComposerPasteResult | null>
   input: string
   inputBuf: string[]
   pagerPageSize: number
@@ -308,6 +327,7 @@ export interface AppLayoutStatusProps {
   showStickyPrompt: boolean
   statusColor: string
   stickyPrompt: string
+  turnStartedAt: null | number
   voiceLabel: string
 }
 

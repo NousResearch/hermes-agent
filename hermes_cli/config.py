@@ -627,6 +627,7 @@ DEFAULT_CONFIG = {
         "personality": "kawaii",
         "resume_display": "full",
         "busy_input_mode": "interrupt",
+        "busy_input_toggle_key": None,  # e.g. "c-t" or "f2" — toggles interrupt/queue mode at runtime
         "bell_on_complete": False,
         "show_reasoning": False,
         "streaming": False,

@@ -646,22 +646,22 @@ export const Thinking = memo(function Thinking({
         {preview ? (
           mode === 'full' ? (
             lines.map((line, index) => (
-              <Text color={t.color.dim} dim key={index} wrap="wrap-trim">
+              <Text color={t.color.cornsilk} key={index} wrap="wrap-trim">
                 {line || ' '}
                 {index === lines.length - 1 ? (
-                  <StreamCursor color={t.color.dim} dimColor streaming={streaming} visible={active} />
+                  <StreamCursor color={t.color.cornsilk} streaming={streaming} visible={active} />
                 ) : null}
               </Text>
             ))
           ) : (
-            <Text color={t.color.dim} dim wrap="truncate-end">
+            <Text color={t.color.cornsilk} wrap="truncate-end">
               {preview}
-              <StreamCursor color={t.color.dim} dimColor streaming={streaming} visible={active} />
+              <StreamCursor color={t.color.cornsilk} streaming={streaming} visible={active} />
             </Text>
           )
         ) : (
-          <Text color={t.color.dim} dim>
-            <StreamCursor color={t.color.dim} dimColor streaming={streaming} visible={active} />
+          <Text color={t.color.cornsilk}>
+            <StreamCursor color={t.color.cornsilk} streaming={streaming} visible={active} />
           </Text>
         )}
       </Box>

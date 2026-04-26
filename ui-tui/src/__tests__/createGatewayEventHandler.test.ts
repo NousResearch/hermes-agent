@@ -82,13 +82,12 @@ describe('createGatewayEventHandler', () => {
       type: 'message.complete'
     } as any)
 
-    expect(appended).toHaveLength(3)
+    expect(appended).toHaveLength(2)
     expect(appended[0]).toMatchObject({ kind: 'trail', role: 'system', text: '', thinking: 'mapped the page' })
-    expect(appended[1]).toMatchObject({ kind: 'trail', role: 'system', text: '' })
-    expect(appended[1]?.tools).toHaveLength(1)
-    expect(appended[1]?.tools?.[0]).toContain('hero cards')
-    expect(appended[1]?.toolTokens).toBeGreaterThan(0)
-    expect(appended[2]).toMatchObject({ role: 'assistant', text: 'final answer' })
+    expect(appended[0]?.tools).toHaveLength(1)
+    expect(appended[0]?.tools?.[0]).toContain('hero cards')
+    expect(appended[0]?.toolTokens).toBeGreaterThan(0)
+    expect(appended[1]).toMatchObject({ role: 'assistant', text: 'final answer' })
   })
 
   it('keeps tool tokens across handler recreation mid-turn', () => {
@@ -116,10 +115,10 @@ describe('createGatewayEventHandler', () => {
       type: 'message.complete'
     } as any)
 
-    expect(appended).toHaveLength(3)
-    expect(appended[1]?.tools).toHaveLength(1)
-    expect(appended[1]?.toolTokens).toBeGreaterThan(0)
-    expect(appended[2]).toMatchObject({ role: 'assistant', text: 'final answer' })
+    expect(appended).toHaveLength(2)
+    expect(appended[0]?.tools).toHaveLength(1)
+    expect(appended[0]?.toolTokens).toBeGreaterThan(0)
+    expect(appended[1]).toMatchObject({ role: 'assistant', text: 'final answer' })
   })
 
   it('streams legacy thinking.delta into visible reasoning state', () => {
@@ -134,6 +133,21 @@ describe('createGatewayEventHandler', () => {
     expect(getTurnState().reasoningActive).toBe(true)
     expect(getTurnState().reasoningTokens).toBe(estimateTokensRough(streamed))
     vi.useRealTimers()
+  })
+
+  it('preserves streamed reasoning as one completed thinking panel after segment flushes', () => {
+    const appended: Msg[] = []
+    const streamed = 'first reasoning chunk\nsecond reasoning chunk'
+
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: { text: streamed }, type: 'reasoning.delta' } as any)
+    onEvent({ payload: { text: 'Before edit.' }, type: 'message.delta' } as any)
+    turnController.flushStreamingSegment()
+    onEvent({ payload: { text: 'final answer' }, type: 'message.complete' } as any)
+
+    expect(appended.map(msg => msg.thinking).filter(Boolean)).toEqual([streamed])
+    expect(appended[appended.length - 1]).toMatchObject({ role: 'assistant', text: 'final answer' })
   })
 
   it('ignores fallback reasoning.available when streamed reasoning already exists', () => {

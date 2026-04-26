@@ -1231,28 +1231,30 @@ class TestMatrixUploadAndSend:
     @pytest.mark.asyncio
     async def test_upload_encrypted_room_uses_file_payload(self):
         """Encrypted rooms should use 'file' key with crypto metadata."""
-        adapter = _make_adapter()
-        adapter._encryption = True
-        mock_client = MagicMock()
-        mock_client.crypto = object()
-        mock_client.state_store = MagicMock()
-        mock_client.state_store.is_encrypted = AsyncMock(return_value=True)
-        mock_client.upload_media = AsyncMock(return_value="mxc://example.org/enc")
-        mock_client.send_message_event = AsyncMock(return_value="$event")
-        adapter._client = mock_client
+        fake_mautrix_mods = _make_fake_mautrix()
+        with patch.dict("sys.modules", fake_mautrix_mods):
+            adapter = _make_adapter()
+            adapter._encryption = True
+            mock_client = MagicMock()
+            mock_client.crypto = object()
+            mock_client.state_store = MagicMock()
+            mock_client.state_store.is_encrypted = AsyncMock(return_value=True)
+            mock_client.upload_media = AsyncMock(return_value="mxc://example.org/enc")
+            mock_client.send_message_event = AsyncMock(return_value="$event")
+            adapter._client = mock_client
 
-        result = await adapter._upload_and_send(
-            "!room:example.org", b"secret", "secret.txt", "text/plain", "m.file",
-        )
+            result = await adapter._upload_and_send(
+                "!room:example.org", b"secret", "secret.txt", "text/plain", "m.file",
+            )
 
-        assert result.success is True
-        # Should have uploaded ciphertext, not plaintext
-        uploaded_data = mock_client.upload_media.await_args.args[0]
-        assert uploaded_data != b"secret"
-        sent = mock_client.send_message_event.await_args.args[2]
-        assert "url" not in sent
-        assert "file" in sent
-        assert sent["file"]["url"] == "mxc://example.org/enc"
+            assert result.success is True
+            # Should have uploaded ciphertext, not plaintext
+            uploaded_data = mock_client.upload_media.await_args.args[0]
+            assert uploaded_data != b"secret"
+            sent = mock_client.send_message_event.await_args.args[2]
+            assert "url" not in sent
+            assert "file" in sent
+            assert sent["file"]["url"] == "mxc://example.org/enc"
 
 
 class TestMatrixEncryptedSendFallback:

@@ -5102,6 +5102,37 @@ class GatewayRunner:
             except Exception:
                 title = None
 
+        # Get model information
+        import yaml
+        from hermes_cli.providers import get_label
+        config_path = _hermes_home / "config.yaml"
+        
+        current_model = ""
+        current_provider = "openrouter"
+        has_override = False
+        
+        try:
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    cfg = yaml.safe_load(f) or {}
+                model_cfg = cfg.get("model", {})
+                if isinstance(model_cfg, dict):
+                    current_model = model_cfg.get("default", "")
+                    current_provider = model_cfg.get("provider", current_provider)
+        except Exception:
+            pass
+        
+        # Check for session override
+        override = self._session_model_overrides.get(session_key, {})
+        if override:
+            has_override = True
+            override_model = override.get("model")
+            override_provider = override.get("provider")
+            if override_model:
+                current_model = override_model
+            if override_provider:
+                current_provider = override_provider
+
         lines = [
             "📊 **Hermes Gateway Status**",
             "",
@@ -5114,6 +5145,10 @@ class GatewayRunner:
             f"**Last Activity:** {session_entry.updated_at.strftime('%Y-%m-%d %H:%M')}",
             f"**Tokens:** {session_entry.total_tokens:,}",
             f"**Agent Running:** {'Yes ⚡' if is_running else 'No'}",
+            "",
+            "🤖 **Model Info**:",
+            f"  **Model:** `{current_model}`" + (" (session override)" if has_override else ""),
+            f"  **Provider:** {get_label(current_provider)}",
             "",
             f"**Connected Platforms:** {', '.join(connected_platforms)}",
         ])

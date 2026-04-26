@@ -1,9 +1,11 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Clock, Pause, Play, Plus, Trash2, Zap } from "lucide-react";
 import { H2 } from "@nous-research/ui";
 import { api } from "@/lib/api";
 import type { CronJob } from "@/lib/api";
+import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useToast } from "@/hooks/useToast";
+import { useConfirmDelete } from "@/hooks/useConfirmDelete";
 import { Toast } from "@/components/Toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
@@ -12,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectOption } from "@/components/ui/select";
 import { useI18n } from "@/i18n";
+import { PluginSlot } from "@/plugins";
 
 function formatTime(iso?: string | null): string {
   if (!iso) return "—";
@@ -40,17 +43,17 @@ export default function CronPage() {
   const [deliver, setDeliver] = useState("local");
   const [creating, setCreating] = useState(false);
 
-  const loadJobs = () => {
+  const loadJobs = useCallback(() => {
     api
       .getCronJobs()
       .then(setJobs)
       .catch(() => showToast(t.common.loading, "error"))
       .finally(() => setLoading(false));
-  };
+  }, [showToast, t.common.loading]);
 
   useEffect(() => {
     loadJobs();
-  }, []);
+  }, [loadJobs]);
 
   const handleCreate = async () => {
     if (!prompt.trim() || !schedule.trim()) {
@@ -113,18 +116,25 @@ export default function CronPage() {
     }
   };
 
-  const handleDelete = async (job: CronJob) => {
-    try {
-      await api.deleteCronJob(job.id);
-      showToast(
-        `${t.common.delete}: "${job.name || job.prompt.slice(0, 30)}"`,
-        "success",
-      );
-      loadJobs();
-    } catch (e) {
-      showToast(`${t.status.error}: ${e}`, "error");
-    }
-  };
+  const jobDelete = useConfirmDelete({
+    onDelete: useCallback(
+      async (id: string) => {
+        const job = jobs.find((j) => j.id === id);
+        try {
+          await api.deleteCronJob(id);
+          showToast(
+            `${t.common.delete}: "${job?.name || (job?.prompt ?? "").slice(0, 30) || id}"`,
+            "success",
+          );
+          loadJobs();
+        } catch (e) {
+          showToast(`${t.status.error}: ${e}`, "error");
+          throw e;
+        }
+      },
+      [jobs, loadJobs, showToast, t.common.delete, t.status.error],
+    ),
+  });
 
   if (loading) {
     return (
@@ -134,9 +144,27 @@ export default function CronPage() {
     );
   }
 
+  const pendingJob = jobDelete.pendingId
+    ? jobs.find((j) => j.id === jobDelete.pendingId)
+    : null;
+
   return (
     <div className="flex flex-col gap-6">
+      <PluginSlot name="cron:top" />
       <Toast toast={toast} />
+
+      <DeleteConfirmDialog
+        open={jobDelete.isOpen}
+        onCancel={jobDelete.cancel}
+        onConfirm={jobDelete.confirm}
+        title={t.cron.confirmDeleteTitle}
+        description={
+          pendingJob
+            ? `"${pendingJob.name || pendingJob.prompt.slice(0, 40)}" — ${t.cron.confirmDeleteMessage}`
+            : t.cron.confirmDeleteMessage
+        }
+        loading={jobDelete.isDeleting}
+      />
 
       {/* Create new job form */}
       <Card>
@@ -311,7 +339,7 @@ export default function CronPage() {
                   size="icon"
                   title={t.common.delete}
                   aria-label={t.common.delete}
-                  onClick={() => handleDelete(job)}
+                  onClick={() => jobDelete.requestDelete(job.id)}
                 >
                   <Trash2 className="h-4 w-4 text-destructive" />
                 </Button>
@@ -320,6 +348,7 @@ export default function CronPage() {
           </Card>
         ))}
       </div>
+      <PluginSlot name="cron:bottom" />
     </div>
   );
 }

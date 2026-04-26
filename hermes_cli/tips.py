@@ -127,7 +127,7 @@ TIPS = [
 
     # --- Tools & Capabilities ---
     "execute_code runs Python scripts that call Hermes tools programmatically — results stay out of context.",
-    "delegate_task spawns up to 3 concurrent sub-agents by default (configurable via delegation.max_concurrent_children) with isolated contexts for parallel work.",
+    "delegate_task spawns up to 3 concurrent sub-agents by default (delegation.max_concurrent_children) with isolated contexts for parallel work.",
     "web_extract works on PDF URLs — pass any PDF link and it converts to markdown.",
     "search_files is ripgrep-backed and faster than grep — use it instead of terminal grep.",
     "patch uses 9 fuzzy matching strategies so minor whitespace differences won't break edits.",
@@ -289,6 +289,7 @@ TIPS = [
     "When a provider returns HTTP 402 (payment required), the auxiliary client auto-falls back to the next one.",
     "agent.tool_use_enforcement steers models that describe actions instead of calling tools — auto for GPT/Codex.",
     "agent.restart_drain_timeout (default 60s) lets running agents finish before a gateway restart takes effect.",
+    "agent.api_max_retries (default 3) controls how many times the agent retries a failed API call before surfacing the error — lower it for fast fallback.",
     "The gateway caches AIAgent instances per session — destroying this cache breaks Anthropic prompt caching.",
     "Any website can expose skills via /.well-known/skills/index.json — the skills hub discovers them automatically.",
     "The skills audit log at ~/.hermes/skills/.hub/audit.log tracks every install and removal operation.",

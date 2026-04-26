@@ -116,6 +116,10 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
         transport="openai_chat",
         base_url_env_var="DASHSCOPE_BASE_URL",
     ),
+    "alibaba-coding-plan": HermesOverlay(
+        transport="openai_chat",
+        base_url_env_var="ALIBABA_CODING_PLAN_BASE_URL",
+    ),
     "vercel": HermesOverlay(
         transport="openai_chat",
         is_aggregator=True,
@@ -162,6 +166,12 @@ HERMES_OVERLAYS: Dict[str, HermesOverlay] = {
     "ollama-cloud": HermesOverlay(
         transport="openai_chat",
         base_url_env_var="OLLAMA_BASE_URL",
+    ),
+    # Azure Foundry: supports both OpenAI-style and Anthropic-style endpoints.
+    # The transport is determined at runtime from config.yaml model.api_mode.
+    "azure-foundry": HermesOverlay(
+        transport="openai_chat",  # default; overridden by api_mode in config
+        base_url_env_var="AZURE_FOUNDRY_BASE_URL",
     ),
 }
 
@@ -259,6 +269,9 @@ ALIASES: Dict[str, str] = {
     "aliyun": "alibaba",
     "qwen": "alibaba",
     "alibaba-cloud": "alibaba",
+    "alibaba_coding": "alibaba-coding-plan",
+    "alibaba-coding": "alibaba-coding-plan",
+    "alibaba_coding_plan": "alibaba-coding-plan",
 
     # google-gemini-cli (OAuth + Code Assist)
     "gemini-cli": "google-gemini-cli",

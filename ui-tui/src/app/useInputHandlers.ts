@@ -8,7 +8,7 @@ import type {
   SudoRespondResponse,
   VoiceRecordResponse
 } from '../gatewayTypes.js'
-import { isAction, isMac } from '../lib/platform.js'
+import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platform.js'
 
 import { getInputSelection } from './inputSelectionStore.js'
 import type { InputHandlerContext, InputHandlerResult } from './interfaces.js'
@@ -30,11 +30,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const copySelection = () => {
     // ink's copySelection() already calls setClipboard() which handles
     // pbcopy (macOS), wl-copy/xclip (Linux), tmux, and OSC 52 fallback.
-    const text = terminal.selection.copySelection()
-
-    if (text) {
-      actions.sys(`copied ${text.length} chars`)
-    }
+    terminal.selection.copySelection()
   }
 
   const clearSelection = () => {
@@ -134,44 +130,40 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
   }
 
-  const voiceStop = () => {
-    voice.setRecording(false)
-    voice.setProcessing(true)
+  // CLI parity: Ctrl+B toggles the VAD-driven continuous recording loop
+  // (NOT the voice-mode umbrella bit). The mode is enabled via /voice on;
+  // Ctrl+B while the mode is off sys-nudges the user. While the mode is
+  // on, the first press starts a continuous loop (gateway → start_continuous,
+  // VAD auto-stop → transcribe → auto-restart), a subsequent press stops it.
+  // The gateway publishes voice.status + voice.transcript events that
+  // createGatewayEventHandler turns into UI badges and composer injection.
+  const voiceRecordToggle = () => {
+    if (!voice.enabled) {
+      return actions.sys('voice: mode is off — enable with /voice on')
+    }
 
-    gateway
-      .rpc<VoiceRecordResponse>('voice.record', { action: 'stop' })
-      .then(r => {
-        if (!r) {
-          return
-        }
+    const starting = !voice.recording
+    const action = starting ? 'start' : 'stop'
 
-        const transcript = String(r.text || '').trim()
+    // Optimistic UI — flip the REC badge immediately so the user gets
+    // feedback while the RPC round-trips; the voice.status event is the
+    // authoritative source and may correct us.
+    if (starting) {
+      voice.setRecording(true)
+    } else {
+      voice.setRecording(false)
+      voice.setProcessing(false)
+    }
 
-        if (!transcript) {
-          return actions.sys('voice: no speech detected')
-        }
+    gateway.rpc<VoiceRecordResponse>('voice.record', { action }).catch((e: Error) => {
+      // Revert optimistic UI on failure.
+      if (starting) {
+        voice.setRecording(false)
+      }
 
-        cActions.setInput(prev => (prev ? `${prev}${/\s$/.test(prev) ? '' : ' '}${transcript}` : transcript))
-      })
-      .catch((e: Error) => actions.sys(`voice error: ${e.message}`))
-      .finally(() => {
-        voice.setProcessing(false)
-        patchUiState({ status: 'ready' })
-      })
+      actions.sys(`voice error: ${e.message}`)
+    })
   }
-
-  const voiceStart = () =>
-    gateway
-      .rpc<VoiceRecordResponse>('voice.record', { action: 'start' })
-      .then(r => {
-        if (!r) {
-          return
-        }
-
-        voice.setRecording(true)
-        patchUiState({ status: 'recording…' })
-      })
-      .catch((e: Error) => actions.sys(`voice error: ${e.message}`))
 
   useInput((ch, key) => {
     const live = getUiState()
@@ -319,7 +311,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       }
     }
 
-    if (isAction(key, ch, 'c')) {
+    if (isCopyShortcut(key, ch)) {
       if (terminal.hasSelection) {
         return copySelection()
       }
@@ -370,12 +362,17 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return actions.newSession()
     }
 
-    if (isAction(key, ch, 'b')) {
-      return voice.recording ? voiceStop() : voiceStart()
+    if (isVoiceToggleKey(key, ch)) {
+      return voiceRecordToggle()
     }
 
-    if (isAction(key, ch, 'g')) {
-      return cActions.openEditor()
+    // Cmd/Ctrl+G, plus Alt+G fallback for VSCode/Cursor (they bind the
+    // primary keystroke to "Find Next" before the TUI sees it; Alt+G
+    // arrives as meta+g across platforms).
+    if (ch.toLowerCase() === 'g' && (isAction(key, ch, 'g') || key.meta)) {
+      return void cActions.openEditor().catch((err: unknown) => {
+        actions.sys(err instanceof Error ? `failed to open editor: ${err.message}` : 'failed to open editor')
+      })
     }
 
     // shift-tab flips yolo without spending a turn (claude-code parity)

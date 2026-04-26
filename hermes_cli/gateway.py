@@ -175,6 +175,60 @@ def _request_gateway_self_restart(pid: int) -> bool:
     return True
 
 
+def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
+    """Send SIGUSR1 to a gateway PID and wait for it to exit gracefully.
+
+    SIGUSR1 is wired in gateway/run.py to ``request_restart(via_service=True)``
+    which drains in-flight agent runs (up to ``agent.restart_drain_timeout``
+    seconds), then exits with code 75.  Both systemd (``Restart=on-failure``
+    + ``RestartForceExitStatus=75``) and launchd (``KeepAlive.SuccessfulExit
+    = false``) relaunch the process after the graceful exit.
+
+    This is the drain-aware alternative to ``systemctl restart`` / ``SIGTERM``,
+    which SIGKILL in-flight agents after a short timeout.
+
+    Args:
+        pid: Gateway process PID (systemd MainPID, launchd PID, or bare
+            process PID).
+        drain_timeout: Seconds to wait for the process to exit after sending
+            SIGUSR1.  Should be slightly larger than the gateway's
+            ``agent.restart_drain_timeout`` to allow the drain loop to
+            finish cleanly.
+
+    Returns:
+        True if the PID was signalled and exited within the timeout.
+        False if SIGUSR1 couldn't be sent or the process didn't exit in
+        time (caller should fall back to a harder restart path).
+    """
+    if not hasattr(signal, "SIGUSR1"):
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, signal.SIGUSR1)
+    except ProcessLookupError:
+        # Already gone — nothing to drain.
+        return True
+    except (PermissionError, OSError):
+        return False
+
+    import time as _time
+
+    deadline = _time.monotonic() + max(drain_timeout, 1.0)
+    while _time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)  # signal 0 — probe liveness
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            # Process still exists but we can't signal it.  Treat as alive
+            # so the caller falls back.
+            pass
+        _time.sleep(0.5)
+    # Drain didn't finish in time.
+    return False
+
+
 def _append_unique_pid(pids: list[int], pid: int | None, exclude_pids: set[int]) -> None:
     if pid is None or pid <= 0:
         return
@@ -761,6 +815,21 @@ def get_systemd_unit_path(system: bool = False) -> Path:
     return Path.home() / ".config" / "systemd" / "user" / f"{name}.service"
 
 
+class UserSystemdUnavailableError(RuntimeError):
+    """Raised when ``systemctl --user`` cannot reach the user D-Bus session.
+
+    Typically hit on fresh RHEL/Debian SSH sessions where linger is disabled
+    and no user@.service is running, so ``/run/user/$UID/bus`` never exists.
+    Carries a user-facing remediation message in ``args[0]``.
+    """
+
+
+def _user_dbus_socket_path() -> Path:
+    """Return the expected per-user D-Bus socket path (regardless of existence)."""
+    xdg = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    return Path(xdg) / "bus"
+
+
 def _ensure_user_systemd_env() -> None:
     """Ensure DBUS_SESSION_BUS_ADDRESS and XDG_RUNTIME_DIR are set for systemctl --user.
 
@@ -781,6 +850,126 @@ def _ensure_user_systemd_env() -> None:
         bus_path = Path(xdg_runtime) / "bus"
         if bus_path.exists():
             os.environ["DBUS_SESSION_BUS_ADDRESS"] = f"unix:path={bus_path}"
+
+
+def _wait_for_user_dbus_socket(timeout: float = 3.0) -> bool:
+    """Poll for the user D-Bus socket to appear, up to ``timeout`` seconds.
+
+    Linger-enabled user@.service can take a second or two to spawn the socket
+    after ``loginctl enable-linger`` runs.  Returns True once the socket exists.
+    """
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if _user_dbus_socket_path().exists():
+            _ensure_user_systemd_env()
+            return True
+        time.sleep(0.2)
+    return _user_dbus_socket_path().exists()
+
+
+def _preflight_user_systemd(*, auto_enable_linger: bool = True) -> None:
+    """Ensure ``systemctl --user`` will reach the user D-Bus session bus.
+
+    No-op when the bus socket is already there (the common case on desktops
+    and linger-enabled servers).  On fresh SSH sessions where the socket is
+    missing:
+
+    * If linger is already enabled, wait briefly for user@.service to spawn
+      the socket.
+    * If linger is disabled and ``auto_enable_linger`` is True, try
+      ``loginctl enable-linger $USER`` (works as non-root when polkit permits
+      it, otherwise needs sudo).
+    * If the socket is still missing afterwards, raise
+      :class:`UserSystemdUnavailableError` with a precise remediation message.
+
+    Callers should treat the exception as a terminal condition for user-scope
+    systemd operations and surface the message to the user.
+    """
+    _ensure_user_systemd_env()
+    bus_path = _user_dbus_socket_path()
+    if bus_path.exists():
+        return
+
+    import getpass
+
+    username = getpass.getuser()
+    linger_enabled, linger_detail = get_systemd_linger_status()
+
+    if linger_enabled is True:
+        if _wait_for_user_dbus_socket(timeout=3.0):
+            return
+        # Linger is on but socket still missing — unusual; fall through to error.
+        _raise_user_systemd_unavailable(
+            username,
+            reason="User D-Bus socket is missing even though linger is enabled.",
+            fix_hint=(
+                f"  systemctl start user@{os.getuid()}.service\n"
+                "  (may require sudo; try again after the command succeeds)"
+            ),
+        )
+
+    if auto_enable_linger and shutil.which("loginctl"):
+        try:
+            result = subprocess.run(
+                ["loginctl", "enable-linger", username],
+                capture_output=True,
+                text=True,
+                check=False,
+                timeout=30,
+            )
+        except Exception as exc:
+            _raise_user_systemd_unavailable(
+                username,
+                reason=f"loginctl enable-linger failed ({exc}).",
+                fix_hint=f"  sudo loginctl enable-linger {username}",
+            )
+        else:
+            if result.returncode == 0:
+                if _wait_for_user_dbus_socket(timeout=5.0):
+                    print(f"✓ Enabled linger for {username} — user D-Bus now available")
+                    return
+                # enable-linger succeeded but the socket never appeared.
+                _raise_user_systemd_unavailable(
+                    username,
+                    reason="Linger was enabled, but the user D-Bus socket did not appear.",
+                    fix_hint=(
+                        "  Log out and log back in, then re-run the command.\n"
+                        f"  Or reboot and run: systemctl --user start {get_service_name()}"
+                    ),
+                )
+            detail = (result.stderr or result.stdout or f"exit {result.returncode}").strip()
+            _raise_user_systemd_unavailable(
+                username,
+                reason=f"loginctl enable-linger was denied: {detail}",
+                fix_hint=f"  sudo loginctl enable-linger {username}",
+            )
+
+    _raise_user_systemd_unavailable(
+        username,
+        reason=(
+            "User D-Bus session is not available "
+            f"({linger_detail or 'linger disabled'})."
+        ),
+        fix_hint=f"  sudo loginctl enable-linger {username}",
+    )
+
+
+def _raise_user_systemd_unavailable(username: str, *, reason: str, fix_hint: str) -> None:
+    """Build a user-facing error message and raise UserSystemdUnavailableError."""
+    msg = (
+        f"{reason}\n"
+        "  systemctl --user cannot reach the user D-Bus session in this shell.\n"
+        "\n"
+        "  To fix:\n"
+        f"{fix_hint}\n"
+        "\n"
+        "  Alternative: run the gateway in the foreground (stays up until\n"
+        "  you exit / close the terminal):\n"
+        "    hermes gateway run"
+    )
+    raise UserSystemdUnavailableError(msg)
 
 
 def _systemctl_cmd(system: bool = False) -> list[str]:
@@ -1334,7 +1523,14 @@ def generate_systemd_unit(system: bool = False, run_as_user: str | None = None) 
             path_entries.append(resolved_node_dir)
 
     common_bin_paths = ["/usr/local/sbin", "/usr/local/bin", "/usr/sbin", "/usr/bin", "/sbin", "/bin"]
-    restart_timeout = max(60, int(_get_restart_drain_timeout() or 0))
+    # systemd's TimeoutStopSec must exceed the gateway's drain_timeout so
+    # there's budget left for post-interrupt cleanup (tool subprocess kill,
+    # adapter disconnect, session DB close) before systemd escalates to
+    # SIGKILL on the cgroup — otherwise bash/sleep tool-call children left
+    # by a force-interrupted agent get reaped by systemd instead of us
+    # (#8202). 30s of headroom covers the worst case we've observed.
+    _drain_timeout = int(_get_restart_drain_timeout() or 0)
+    restart_timeout = max(60, _drain_timeout) + 30
 
     if system:
         username, group_name, home_dir = _system_service_identity(run_as_user)
@@ -1623,6 +1819,11 @@ def systemd_start(system: bool = False):
     system = _select_systemd_scope(system)
     if system:
         _require_root_for_system_service("start")
+    else:
+        # Fail fast with actionable guidance if the user D-Bus session is not
+        # reachable (common on fresh RHEL/Debian SSH sessions without linger).
+        # Raises UserSystemdUnavailableError with a remediation message.
+        _preflight_user_systemd()
     refresh_systemd_unit_if_needed(system=system)
     _run_systemctl(["start", get_service_name()], system=system, check=True, timeout=30)
     print(f"✓ {_service_scope_label(system).capitalize()} service started")
@@ -1642,6 +1843,8 @@ def systemd_restart(system: bool = False):
     system = _select_systemd_scope(system)
     if system:
         _require_root_for_system_service("restart")
+    else:
+        _preflight_user_systemd()
     refresh_systemd_unit_if_needed(system=system)
     from gateway.status import get_running_pid
 
@@ -3516,6 +3719,10 @@ def gateway_setup():
                     systemd_start()
                 elif is_macos():
                     launchd_start()
+            except UserSystemdUnavailableError as e:
+                print_error("  Failed to start — user systemd not reachable:")
+                for line in str(e).splitlines():
+                    print(f"  {line}")
             except subprocess.CalledProcessError as e:
                 print_error(f"  Failed to start: {e}")
     else:
@@ -3580,6 +3787,10 @@ def gateway_setup():
                     else:
                         stop_profile_gateway()
                         print_info("Start manually: hermes gateway")
+                except UserSystemdUnavailableError as e:
+                    print_error("  Restart failed — user systemd not reachable:")
+                    for line in str(e).splitlines():
+                        print(f"  {line}")
                 except subprocess.CalledProcessError as e:
                     print_error(f"  Restart failed: {e}")
         elif service_installed:
@@ -3589,6 +3800,10 @@ def gateway_setup():
                         systemd_start()
                     elif is_macos():
                         launchd_start()
+                except UserSystemdUnavailableError as e:
+                    print_error("  Start failed — user systemd not reachable:")
+                    for line in str(e).splitlines():
+                        print(f"  {line}")
                 except subprocess.CalledProcessError as e:
                     print_error(f"  Start failed: {e}")
         else:
@@ -3612,6 +3827,10 @@ def gateway_setup():
                                     systemd_start(system=installed_scope == "system")
                                 else:
                                     launchd_start()
+                            except UserSystemdUnavailableError as e:
+                                print_error("  Start failed — user systemd not reachable:")
+                                for line in str(e).splitlines():
+                                    print(f"  {line}")
                             except subprocess.CalledProcessError as e:
                                 print_error(f"  Start failed: {e}")
                     except subprocess.CalledProcessError as e:
@@ -3649,6 +3868,18 @@ def gateway_setup():
 
 def gateway_command(args):
     """Handle gateway subcommands."""
+    try:
+        return _gateway_command_inner(args)
+    except UserSystemdUnavailableError as e:
+        # Clean, actionable message instead of a traceback when the user D-Bus
+        # session is unreachable (fresh SSH shell, no linger, container, etc.).
+        print_error("User systemd not reachable:")
+        for line in str(e).splitlines():
+            print(f"  {line}")
+        sys.exit(1)
+
+
+def _gateway_command_inner(args):
     subcmd = getattr(args, 'gateway_command', None)
     
     # Default to run if no subcommand

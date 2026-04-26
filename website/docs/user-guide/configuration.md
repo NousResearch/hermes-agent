@@ -431,6 +431,35 @@ file_read_max_chars: 30000
 
 The agent also deduplicates file reads automatically — if the same file region is read twice and the file hasn't changed, a lightweight stub is returned instead of re-sending the content. This resets on context compression so the agent can re-read files after their content is summarized away.
 
+## Tool Output Truncation Limits
+
+Three related caps control how much raw output a tool can return before Hermes truncates it:
+
+```yaml
+tool_output:
+  max_bytes: 50000        # terminal output cap (chars)
+  max_lines: 2000         # read_file pagination cap
+  max_line_length: 2000   # per-line cap in read_file's line-numbered view
+```
+
+- **`max_bytes`** — When a `terminal` command produces more than this many characters of combined stdout/stderr, Hermes keeps the first 40% and last 60% and inserts a `[OUTPUT TRUNCATED]` notice between them. Default `50000` (≈12-15K tokens across typical tokenisers).
+- **`max_lines`** — Upper bound on the `limit` parameter of a single `read_file` call. Requests above this are clamped so a single read can't flood the context window. Default `2000`.
+- **`max_line_length`** — Per-line cap applied when `read_file` emits the line-numbered view. Lines longer than this are truncated to this many chars followed by `... [truncated]`. Default `2000`.
+
+Raise the limits on models with large context windows that can afford more raw output per call. Lower them for small-context models to keep tool results compact:
+
+```yaml
+# Large context model (200K+)
+tool_output:
+  max_bytes: 150000
+  max_lines: 5000
+
+# Small local model (16K context)
+tool_output:
+  max_bytes: 20000
+  max_lines: 500
+```
+
 ## Git Worktree Isolation
 
 Enable isolated git worktrees for running multiple agents in parallel on the same repo:
@@ -616,6 +645,18 @@ Options: `fill_first` (default), `round_robin`, `least_used`, `random`. See [Cre
 
 Hermes uses lightweight "auxiliary" models for side tasks like image analysis, web page summarization, and browser screenshot analysis. By default, these use **Gemini Flash** via auto-detection — you don't need to configure anything.
 
+### Video Tutorial
+
+<div style={{position: 'relative', width: '100%', aspectRatio: '16 / 9', marginBottom: '1.5rem'}}>
+  <iframe
+    src="https://www.youtube.com/embed/NoF-YajElIM"
+    title="Hermes Agent — Auxiliary Models Tutorial"
+    style={{position: 'absolute', top: 0, left: 0, width: '100%', height: '100%', border: 0}}
+    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+    allowFullScreen
+  />
+</div>
+
 ### The universal config pattern
 
 Every model slot in Hermes — auxiliary tasks, compression, fallback — uses the same three knobs:
@@ -628,7 +669,7 @@ Every model slot in Hermes — auxiliary tasks, compression, fallback — uses t
 
 When `base_url` is set, Hermes ignores the provider and calls that endpoint directly (using `api_key` or `OPENAI_API_KEY` for auth). When only `provider` is set, Hermes uses that provider's built-in auth and base URL.
 
-Available providers for auxiliary tasks: `auto`, `main`, plus any provider in the [provider registry](/docs/reference/environment-variables) — `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `deepseek`, `nvidia`, `xai`, `ollama-cloud`, `alibaba`, `bedrock`, `huggingface`, `arcee`, `xiaomi`, `kilocode`, `opencode-zen`, `opencode-go`, `ai-gateway` — or any named custom provider from your `custom_providers` list (e.g. `provider: "beans"`).
+Available providers for auxiliary tasks: `auto`, `main`, plus any provider in the [provider registry](/docs/reference/environment-variables) — `openrouter`, `nous`, `openai-codex`, `copilot`, `copilot-acp`, `anthropic`, `gemini`, `google-gemini-cli`, `qwen-oauth`, `zai`, `kimi-coding`, `kimi-coding-cn`, `minimax`, `minimax-cn`, `deepseek`, `nvidia`, `xai`, `ollama-cloud`, `alibaba`, `bedrock`, `huggingface`, `arcee`, `xiaomi`, `kilocode`, `opencode-zen`, `opencode-go`, `ai-gateway`, `azure-foundry` — or any named custom provider from your `custom_providers` list (e.g. `provider: "beans"`).
 
 :::warning `"main"` is for auxiliary tasks only
 The `"main"` provider option means "use whatever provider my main agent uses" — it's only valid inside `auxiliary:`, `compression:`, and `fallback_model:` configs. It is **not** a valid value for your top-level `model.provider` setting. If you use a custom OpenAI-compatible endpoint, set `provider: custom` in your `model:` section. See [AI Providers](/docs/integrations/providers) for all main model provider options.
@@ -687,14 +728,6 @@ auxiliary:
 
   # MCP tool dispatch
   mcp:
-    provider: "auto"
-    model: ""
-    base_url: ""
-    api_key: ""
-    timeout: 30
-
-  # Memory flush — summarizes conversation for persistent memory
-  flush_memories:
     provider: "auto"
     model: ""
     base_url: ""
@@ -1211,9 +1244,25 @@ browser:
   inactivity_timeout: 120        # Seconds before auto-closing idle sessions
   command_timeout: 30             # Timeout in seconds for browser commands (screenshot, navigate, etc.)
   record_sessions: false         # Auto-record browser sessions as WebM videos to ~/.hermes/browser_recordings/
+  # Optional CDP override — when set, Hermes attaches directly to your own
+  # Chrome (via /browser connect) rather than starting a headless browser.
+  cdp_url: ""
+  # Dialog supervisor — controls how native JS dialogs (alert / confirm / prompt)
+  # are handled when a CDP backend is attached (Browserbase, local Chrome via
+  # /browser connect). Ignored on Camofox and default local agent-browser mode.
+  dialog_policy: must_respond    # must_respond | auto_dismiss | auto_accept
+  dialog_timeout_s: 300          # Safety auto-dismiss under must_respond (seconds)
   camofox:
     managed_persistence: false   # When true, Camofox sessions persist cookies/logins across restarts
 ```
+
+**Dialog policies:**
+
+- `must_respond` (default) — capture the dialog, surface it in `browser_snapshot.pending_dialogs`, and wait for the agent to call `browser_dialog(action=...)`. After `dialog_timeout_s` seconds with no response, the dialog is auto-dismissed to prevent the page's JS thread from stalling forever.
+- `auto_dismiss` — capture, dismiss immediately. The agent still sees the dialog record in `browser_snapshot.recent_dialogs` with `closed_by="auto_policy"` after the fact.
+- `auto_accept` — capture, accept immediately. Useful for pages with aggressive `beforeunload` prompts.
+
+See the [browser feature page](./features/browser.md#browser_dialog) for the full dialog workflow.
 
 The browser toolset supports multiple providers. See the [Browser feature page](/docs/user-guide/features/browser) for details on Browserbase, Browser Use, and local Chrome CDP setup.
 

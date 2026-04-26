@@ -31,7 +31,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 8
+SCHEMA_VERSION = 9
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -83,7 +83,8 @@ CREATE TABLE IF NOT EXISTS messages (
     reasoning TEXT,
     reasoning_content TEXT,
     reasoning_details TEXT,
-    codex_reasoning_items TEXT
+    codex_reasoning_items TEXT,
+    codex_message_items TEXT
 );
 
 CREATE TABLE IF NOT EXISTS state_meta (
@@ -356,6 +357,15 @@ class SessionDB:
                 except sqlite3.OperationalError:
                     pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 8")
+            if current_version < 9:
+                # v9: preserve replayable Codex assistant message ids/phases so
+                # follow-up turns can rebuild Responses API message items instead
+                # of flattening everything to plain assistant text.
+                try:
+                    cursor.execute('ALTER TABLE messages ADD COLUMN "codex_message_items" TEXT')
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
+                cursor.execute("UPDATE schema_version SET version = 9")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -956,6 +966,7 @@ class SessionDB:
         reasoning_content: str = None,
         reasoning_details: Any = None,
         codex_reasoning_items: Any = None,
+        codex_message_items: Any = None,
     ) -> int:
         """
         Append a message to a session. Returns the message row ID.
@@ -972,6 +983,10 @@ class SessionDB:
             json.dumps(codex_reasoning_items)
             if codex_reasoning_items else None
         )
+        codex_message_items_json = (
+            json.dumps(codex_message_items)
+            if codex_message_items else None
+        )
         tool_calls_json = json.dumps(tool_calls) if tool_calls else None
 
         # Pre-compute tool call count
@@ -983,8 +998,9 @@ class SessionDB:
             cursor = conn.execute(
                 """INSERT INTO messages (session_id, role, content, tool_call_id,
                    tool_calls, tool_name, timestamp, token_count, finish_reason,
-                   reasoning, reasoning_content, reasoning_details, codex_reasoning_items)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                   reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
+                   codex_message_items)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     role,
@@ -999,6 +1015,7 @@ class SessionDB:
                     reasoning_content,
                     reasoning_details_json,
                     codex_items_json,
+                    codex_message_items_json,
                 ),
             )
             msg_id = cursor.lastrowid
@@ -1039,6 +1056,71 @@ class SessionDB:
             result.append(msg)
         return result
 
+    def resolve_resume_session_id(self, session_id: str) -> str:
+        """Redirect a resume target to the descendant session that holds the messages.
+
+        Context compression ends the current session and forks a new child session
+        (linked via ``parent_session_id``). The flush cursor is reset, so the
+        child is where new messages actually land — the parent ends up with
+        ``message_count = 0`` rows unless messages had already been flushed to
+        it before compression. See #15000.
+
+        This helper walks ``parent_session_id`` forward from ``session_id`` and
+        returns the first descendant in the chain that has at least one message
+        row. If the original session already has messages, or no descendant
+        has any, the original ``session_id`` is returned unchanged.
+
+        The chain is always walked via the child whose ``started_at`` is
+        latest; that matches the single-chain shape that compression creates.
+        A depth cap (32) guards against accidental loops in malformed data.
+        """
+        if not session_id:
+            return session_id
+
+        with self._lock:
+            # If this session already has messages, nothing to redirect.
+            try:
+                row = self._conn.execute(
+                    "SELECT 1 FROM messages WHERE session_id = ? LIMIT 1",
+                    (session_id,),
+                ).fetchone()
+            except Exception:
+                return session_id
+            if row is not None:
+                return session_id
+
+            # Walk descendants: at each step, pick the most-recently-started
+                # child session; stop once we find one with messages.
+            current = session_id
+            seen = {current}
+            for _ in range(32):
+                try:
+                    child_row = self._conn.execute(
+                        "SELECT id FROM sessions "
+                        "WHERE parent_session_id = ? "
+                        "ORDER BY started_at DESC, id DESC LIMIT 1",
+                        (current,),
+                    ).fetchone()
+                except Exception:
+                    return session_id
+                if child_row is None:
+                    return session_id
+                child_id = child_row["id"] if hasattr(child_row, "keys") else child_row[0]
+                if not child_id or child_id in seen:
+                    return session_id
+                seen.add(child_id)
+                try:
+                    msg_row = self._conn.execute(
+                        "SELECT 1 FROM messages WHERE session_id = ? LIMIT 1",
+                        (child_id,),
+                    ).fetchone()
+                except Exception:
+                    return session_id
+                if msg_row is not None:
+                    return child_id
+                current = child_id
+        return session_id
+
     def get_messages_as_conversation(self, session_id: str) -> List[Dict[str, Any]]:
         """
         Load messages in the OpenAI conversation format (role + content dicts).
@@ -1047,7 +1129,8 @@ class SessionDB:
         with self._lock:
             cursor = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
-                "reasoning, reasoning_content, reasoning_details, codex_reasoning_items "
+                "reasoning, reasoning_content, reasoning_details, codex_reasoning_items, "
+                "codex_message_items "
                 "FROM messages WHERE session_id = ? ORDER BY timestamp, id",
                 (session_id,),
             )
@@ -1085,6 +1168,12 @@ class SessionDB:
                     except (json.JSONDecodeError, TypeError):
                         logger.warning("Failed to deserialize codex_reasoning_items, falling back to None")
                         msg["codex_reasoning_items"] = None
+                if row["codex_message_items"]:
+                    try:
+                        msg["codex_message_items"] = json.loads(row["codex_message_items"])
+                    except (json.JSONDecodeError, TypeError):
+                        logger.warning("Failed to deserialize codex_message_items, falling back to None")
+                        msg["codex_message_items"] = None
             messages.append(msg)
         return messages
 

@@ -703,7 +703,6 @@ class TelegramAdapter(BasePlatformAdapter):
                 "write_timeout": _env_float("HERMES_TELEGRAM_HTTP_WRITE_TIMEOUT", 20.0),
             }
 
-            proxy_url = resolve_proxy_url("TELEGRAM_PROXY")
             disable_fallback = (os.getenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "").strip().lower() in ("1", "true", "yes", "on"))
             fallback_ips = self._fallback_ips()
             if not fallback_ips:
@@ -714,6 +713,8 @@ class TelegramAdapter(BasePlatformAdapter):
                     ", ".join(fallback_ips),
                 )
 
+            proxy_targets = ["api.telegram.org", *fallback_ips]
+            proxy_url = resolve_proxy_url("TELEGRAM_PROXY", target_hosts=proxy_targets)
             if fallback_ips and not proxy_url and not disable_fallback:
                 logger.info(
                     "[%s] Telegram fallback IPs active: %s",

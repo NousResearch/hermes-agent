@@ -361,6 +361,15 @@ DEFAULT_CONFIG = {
         # to finish, then interrupts any remaining runs after the timeout.
         # 0 = no drain, interrupt immediately.
         "restart_drain_timeout": 60,
+        # Max app-level retry attempts for API errors (connection drops,
+        # provider timeouts, 5xx, etc.) before the agent surfaces the
+        # failure.  The OpenAI SDK already does its own low-level retries
+        # (max_retries=2 default) for transient network errors; this is
+        # the Hermes-level retry loop that wraps the whole call.  Lower
+        # this to 1 if you use fallback providers and want fast failover
+        # on flaky primaries; raise it if you prefer to tolerate longer
+        # provider hiccups on a single provider.
+        "api_max_retries": 3,
         "service_tier": "",
         # Tool-use enforcement: injects system prompt guidance that tells the
         # model to actually call tools instead of describing intended actions.
@@ -375,7 +384,11 @@ DEFAULT_CONFIG = {
         # Periodic "still working" notification interval (seconds).
         # Sends a status message every N seconds so the user knows the
         # agent hasn't died during long tasks.  0 = disable notifications.
-        "gateway_notify_interval": 600,
+        # Lower values mean faster feedback on slow tasks but more chat
+        # noise; 180s is a compromise that catches spinning weak-model runs
+        # (60+ tool iterations with tiny output) before users assume the
+        # bot is dead and /restart.
+        "gateway_notify_interval": 180,
     },
     
     "terminal": {
@@ -394,17 +407,23 @@ DEFAULT_CONFIG = {
         # (bash doesn't source bashrc in non-interactive login mode) or
         # zsh-specific files like ``~/.zshrc`` / ``~/.zprofile``.
         # Paths support ``~`` / ``${VAR}``. Missing files are silently
-        # skipped. When empty, Hermes auto-appends ``~/.bashrc`` if the
+        # skipped. When empty, Hermes auto-sources ``~/.profile``,
+        # ``~/.bash_profile``, and ``~/.bashrc`` (in that order) if the
         # snapshot shell is bash (this is the ``auto_source_bashrc``
         # behaviour — disable with that key if you want strict login-only
         # semantics).
         "shell_init_files": [],
-        # When true (default), Hermes sources ``~/.bashrc`` in the login
-        # shell used to build the environment snapshot.  This captures
-        # PATH additions, shell functions, and aliases defined in the
-        # user's bashrc — which a plain ``bash -l -c`` would otherwise
-        # miss because bash skips bashrc in non-interactive login mode.
-        # Turn this off if you have a bashrc that misbehaves when sourced
+        # When true (default), Hermes sources the user's shell rc files
+        # (``~/.profile``, ``~/.bash_profile``, ``~/.bashrc``) in the
+        # login shell used to build the environment snapshot. This
+        # captures PATH additions, shell functions, and aliases — which a
+        # plain ``bash -l -c`` would otherwise miss because bash skips
+        # bashrc in non-interactive login mode, and because a default
+        # Debian/Ubuntu ``~/.bashrc`` short-circuits on non-interactive
+        # sources. ``~/.profile`` and ``~/.bash_profile`` are tried first
+        # because ``n`` / ``nvm`` / ``asdf`` installers typically write
+        # their PATH exports there without an interactivity guard. Turn
+        # this off if your rc files misbehave when sourced
         # non-interactively (e.g. one that hard-exits on TTY checks).
         "auto_source_bashrc": True,
         "docker_image": "nikolaik/python-nodejs:python3.11-nodejs20",
@@ -447,6 +466,12 @@ DEFAULT_CONFIG = {
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
         "allow_private_urls": False,  # Allow navigating to private/internal IPs (localhost, 192.168.x.x, etc.)
         "cdp_url": "",  # Optional persistent CDP endpoint for attaching to an existing Chromium/Chrome
+        # CDP supervisor — dialog + frame detection via a persistent WebSocket.
+        # Active only when a CDP-capable backend is attached (Browserbase or
+        # local Chrome via /browser connect). See
+        # website/docs/developer-guide/browser-supervisor.md.
+        "dialog_policy": "must_respond",  # must_respond | auto_dismiss | auto_accept
+        "dialog_timeout_s": 300,  # Safety auto-dismiss after N seconds under must_respond
         "camofox": {
             # When true, Hermes sends a stable profile-scoped userId to Camofox
             # so the server maps it to a persistent Firefox profile automatically.
@@ -467,13 +492,39 @@ DEFAULT_CONFIG = {
     # exceed this are rejected with guidance to use offset+limit.
     # 100K chars ≈ 25–35K tokens across typical tokenisers.
     "file_read_max_chars": 100_000,
-    
+
+    # Tool-output truncation thresholds. When terminal output or a
+    # single read_file page exceeds these limits, Hermes truncates the
+    # payload sent to the model (keeping head + tail for terminal,
+    # enforcing pagination for read_file). Tuning these trades context
+    # footprint against how much raw output the model can see in one
+    # shot. Ported from anomalyco/opencode PR #23770.
+    #
+    # - max_bytes:       terminal_tool output cap, in chars
+    #                    (default 50_000 ≈ 12-15K tokens).
+    # - max_lines:       read_file pagination cap — the maximum `limit`
+    #                    a single read_file call can request before
+    #                    being clamped (default 2000).
+    # - max_line_length: per-line cap applied when read_file emits a
+    #                    line-numbered view (default 2000 chars).
+    "tool_output": {
+        "max_bytes": 50_000,
+        "max_lines": 2000,
+        "max_line_length": 2000,
+    },
+
     "compression": {
         "enabled": True,
         "threshold": 0.50,            # compress when context usage exceeds this ratio
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         "protect_last_n": 20,         # minimum recent messages to keep uncompressed
 
+    },
+
+    # Anthropic prompt caching (Claude via OpenRouter or native Anthropic API).
+    # cache_ttl must be "5m" or "1h" (Anthropic-supported tiers); other values are ignored.
+    "prompt_caching": {
+        "cache_ttl": "5m",
     },
 
     # AWS Bedrock provider configuration.
@@ -554,14 +605,6 @@ DEFAULT_CONFIG = {
             "extra_body": {},
         },
         "mcp": {
-            "provider": "auto",
-            "model": "",
-            "base_url": "",
-            "api_key": "",
-            "timeout": 30,
-            "extra_body": {},
-        },
-        "flush_memories": {
             "provider": "auto",
             "model": "",
             "base_url": "",
@@ -720,6 +763,10 @@ DEFAULT_CONFIG = {
         "inherit_mcp_toolsets": True,
         "max_iterations": 50,  # per-subagent iteration cap (each subagent gets its own budget,
                                # independent of the parent's max_iterations)
+        "child_timeout_seconds": 600,  # wall-clock timeout for each child agent (floor 30s,
+                                       # no ceiling). High-reasoning models on large tasks
+                                       # (e.g. gpt-5.5 xhigh, opus-4.6) need generous budgets;
+                                       # raise if children time out before producing output.
         "reasoning_effort": "",  # reasoning effort for subagents: "xhigh", "high", "medium",
                                  # "low", "minimal", "none" (empty = inherit parent's level)
         "max_concurrent_children": 3,  # max parallel children per batch; floor of 1 enforced, no ceiling
@@ -728,6 +775,15 @@ DEFAULT_CONFIG = {
         # warning log if out of range.
         "max_spawn_depth": 1,        # depth cap (1 = flat [default], 2 = orchestrator→leaf, 3 = three-level)
         "orchestrator_enabled": True,  # kill switch for role="orchestrator"
+        # When a subagent hits a dangerous-command approval prompt, the parent's
+        # prompt_toolkit TUI owns stdin — a thread-local input() call from the
+        # subagent worker would deadlock the parent UI. To avoid the deadlock,
+        # subagent threads ALWAYS resolve approvals non-interactively:
+        #   false (default) → auto-deny with a logger.warning audit line (safe)
+        #   true             → auto-approve "once" with a logger.warning audit line
+        # Flip to true only if you trust delegated work to run dangerous cmds
+        # without human review (cron pipelines, batch automation, etc.).
+        "subagent_auto_approve": False,
     },
 
     # Ephemeral prefill messages file — JSON list of {role, content} dicts
@@ -754,6 +810,17 @@ DEFAULT_CONFIG = {
         "inline_shell": False,
         # Timeout (seconds) for each !`cmd` snippet when inline_shell is on.
         "inline_shell_timeout": 10,
+        # Run the keyword/pattern security scanner on skills the agent
+        # writes via skill_manage (create/edit/patch).  Off by default
+        # because the agent can already execute the same code paths via
+        # terminal() with no gate, so the scan adds friction (blocks
+        # skills that mention risky keywords in prose) without meaningful
+        # security.  Turn on if you want the belt-and-suspenders — a
+        # dangerous verdict will then surface as a tool error to the
+        # agent, which can retry with the flagged content removed.
+        # External hub installs (trusted/community sources) are always
+        # scanned regardless of this setting.
+        "guard_agent_created": False,
     },
 
     # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.
@@ -773,7 +840,7 @@ DEFAULT_CONFIG = {
         "auto_thread": True,           # Auto-create threads on @mention in channels (like Slack)
         "reactions": True,             # Add 👀/✅/❌ reactions to messages during processing
         "channel_prompts": {},         # Per-channel ephemeral system prompts (forum parents apply to child threads)
-        # discord_server tool: restrict which actions the agent may call.
+        # discord / discord_admin tools: restrict which actions the agent may call.
         # Default (empty) = all actions allowed (subject to bot privileged intents).
         # Accepts comma-separated string ("list_guilds,list_channels,fetch_messages")
         # or YAML list. Unknown names are dropped with a warning at load time.
@@ -1274,7 +1341,7 @@ OPTIONAL_ENV_VARS = {
         "advanced": True,
     },
     "XIAOMI_API_KEY": {
-        "description": "Xiaomi MiMo API key for MiMo models (mimo-v2-pro, mimo-v2-omni, mimo-v2-flash)",
+        "description": "Xiaomi MiMo API key for MiMo models (mimo-v2.5-pro, mimo-v2.5, mimo-v2-pro, mimo-v2-omni, mimo-v2-flash)",
         "prompt": "Xiaomi MiMo API Key",
         "url": "https://platform.xiaomimimo.com",
         "password": True,
@@ -1299,6 +1366,21 @@ OPTIONAL_ENV_VARS = {
     "AWS_PROFILE": {
         "description": "AWS named profile for Bedrock authentication (from ~/.aws/credentials)",
         "prompt": "AWS Profile",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "AZURE_FOUNDRY_API_KEY": {
+        "description": "Azure Foundry API key for custom Azure endpoints",
+        "prompt": "Azure Foundry API Key",
+        "url": "https://ai.azure.com/",
+        "password": True,
+        "category": "provider",
+    },
+    "AZURE_FOUNDRY_BASE_URL": {
+        "description": "Azure Foundry base URL (set via 'hermes model' for endpoint-specific config)",
+        "prompt": "Azure Foundry base URL",
         "url": None,
         "password": False,
         "category": "provider",
@@ -2055,6 +2137,14 @@ def _normalize_custom_provider_entry(
     models = entry.get("models")
     if isinstance(models, dict) and models:
         normalized["models"] = models
+    elif isinstance(models, list) and models:
+        # Hand-edited configs (and older Hermes versions) write ``models`` as
+        # a plain list of model ids. Preserve them by converting to the dict
+        # shape downstream code expects; otherwise normalize silently drops
+        # the list and /model shows the provider with (0) models.
+        normalized["models"] = {
+            str(m): {} for m in models if isinstance(m, str) and m.strip()
+        }
 
     context_length = entry.get("context_length")
     if isinstance(context_length, int) and context_length > 0:
@@ -2129,6 +2219,71 @@ def get_compatible_custom_providers(
         _append_if_new(entry)
 
     return compatible
+
+
+def get_custom_provider_context_length(
+    model: str,
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[int]:
+    """Look up a per-model ``context_length`` override from ``custom_providers``.
+
+    Matches any entry whose ``base_url`` equals ``base_url`` (trailing-slash
+    insensitive) and returns ``custom_providers[i].models.<model>.context_length``
+    if present and valid.  Returns ``None`` when no override applies.
+
+    This is the single source of truth for custom-provider context overrides,
+    used by:
+      * ``AIAgent.__init__`` (startup resolution)
+      * ``AIAgent.switch_model`` (mid-session ``/model`` switch)
+      * ``hermes_cli.model_switch.resolve_display_context_length`` (``/model`` confirmation display)
+      * ``gateway.run._format_session_info`` (``/info`` display)
+      * ``agent.model_metadata.get_model_context_length`` (when custom_providers is threaded through)
+
+    Before this helper existed, the lookup was duplicated in ``run_agent.py``'s
+    startup path only; every other path (notably ``/model`` switch) fell back
+    to the 128K default.  See #15779.
+    """
+    if not model or not base_url:
+        return None
+    if custom_providers is None:
+        try:
+            custom_providers = get_compatible_custom_providers(config)
+        except Exception:
+            if config is None:
+                return None
+            raw = config.get("custom_providers")
+            custom_providers = raw if isinstance(raw, list) else []
+    if not isinstance(custom_providers, list):
+        return None
+
+    target_url = (base_url or "").rstrip("/")
+    if not target_url:
+        return None
+
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        entry_url = (entry.get("base_url") or "").rstrip("/")
+        if not entry_url or entry_url != target_url:
+            continue
+        models = entry.get("models")
+        if not isinstance(models, dict):
+            continue
+        model_cfg = models.get(model)
+        if not isinstance(model_cfg, dict):
+            continue
+        raw_ctx = model_cfg.get("context_length")
+        if raw_ctx is None:
+            continue
+        try:
+            ctx = int(raw_ctx)
+        except (TypeError, ValueError):
+            continue
+        if ctx > 0:
+            return ctx
+    return None
 
 
 def check_config_version() -> Tuple[int, int]:

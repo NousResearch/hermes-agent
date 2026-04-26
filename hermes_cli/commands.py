@@ -77,7 +77,7 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("rollback", "List or restore filesystem checkpoints", "Session",
                args_hint="[number]"),
     CommandDef("snapshot", "Create or restore state snapshots of Hermes config/state", "Session",
-               aliases=("snap",), args_hint="[create|restore <id>|prune]"),
+               cli_only=True, aliases=("snap",), args_hint="[create|restore <id>|prune]"),
     CommandDef("stop", "Kill all running background processes", "Session"),
     CommandDef("approve", "Approve a pending dangerous command", "Session",
                gateway_only=True, args_hint="[session|always]"),
@@ -103,10 +103,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
                cli_only=True),
-    CommandDef("model", "Switch model for this session", "Configuration", args_hint="[model] [--provider name] [--global]"),
-    CommandDef("provider", "Show available providers and current provider",
-               "Configuration"),
-    CommandDef("gquota", "Show Google Gemini Code Assist quota usage", "Info"),
+    CommandDef("model", "Switch model for this session", "Configuration",
+               aliases=("provider",), args_hint="[model] [--provider name] [--global]"),
+    CommandDef("gquota", "Show Google Gemini Code Assist quota usage", "Info",
+               cli_only=True),
 
     CommandDef("personality", "Set a predefined personality", "Configuration",
                args_hint="[name]"),
@@ -124,9 +124,12 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[normal|fast|status]",
                subcommands=("normal", "fast", "status", "on", "off")),
     CommandDef("skin", "Show or change the display skin/theme", "Configuration",
-               args_hint="[name]"),
+               cli_only=True, args_hint="[name]"),
     CommandDef("voice", "Toggle voice mode", "Configuration",
                args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status")),
+    CommandDef("busy", "Control what Enter does while Hermes is working", "Configuration",
+               cli_only=True, args_hint="[queue|interrupt|status]",
+               subcommands=("queue", "interrupt", "status")),
 
     # Tools & Skills
     CommandDef("tools", "Manage tools: /tools [list|disable|enable] [name...]", "Tools & Skills",
@@ -139,7 +142,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
                cli_only=True, args_hint="[subcommand]",
                subcommands=("list", "add", "create", "edit", "pause", "resume", "run", "remove")),
-    CommandDef("reload", "Reload .env variables into the running session", "Tools & Skills"),
+    CommandDef("reload", "Reload .env variables into the running session", "Tools & Skills",
+               cli_only=True),
     CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",
                aliases=("reload_mcp",)),
     CommandDef("browser", "Connect browser tools to your live Chrome via CDP", "Tools & Skills",
@@ -317,7 +321,7 @@ def should_bypass_active_session(command_name: str | None) -> bool:
     safety net in gateway.run discards any command text that reaches
     the pending queue — which meant a mid-run /model (or /reasoning,
     /voice, /insights, /title, /resume, /retry, /undo, /compress,
-    /usage, /provider, /reload-mcp, /sethome, /reset) would silently
+    /usage, /reload-mcp, /sethome, /reset) would silently
     interrupt the agent AND get discarded, producing a zero-char
     response. See issue #5057 / PRs #6252, #10370, #4665.
 

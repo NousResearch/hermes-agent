@@ -12,6 +12,7 @@ reasoning configuration, temperature handling, and extra_body assembly.
 import copy
 from typing import Any, Dict, List, Optional
 
+from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall, Usage
@@ -30,15 +31,15 @@ class ChatCompletionsTransport(ProviderTransport):
     def convert_messages(self, messages: List[Dict[str, Any]], **kwargs) -> List[Dict[str, Any]]:
         """Messages are already in OpenAI format — sanitize Codex leaks only.
 
-        Strips Codex Responses API fields (``codex_reasoning_items`` on the
-        message, ``call_id``/``response_item_id`` on tool_calls) that strict
-        chat-completions providers reject with 400/422.
+        Strips Codex Responses API fields (``codex_reasoning_items`` /
+        ``codex_message_items`` on the message, ``call_id``/``response_item_id``
+        on tool_calls) that strict chat-completions providers reject with 400/422.
         """
         needs_sanitize = False
         for msg in messages:
             if not isinstance(msg, dict):
                 continue
-            if "codex_reasoning_items" in msg:
+            if "codex_reasoning_items" in msg or "codex_message_items" in msg:
                 needs_sanitize = True
                 break
             tool_calls = msg.get("tool_calls")
@@ -58,6 +59,7 @@ class ChatCompletionsTransport(ProviderTransport):
             if not isinstance(msg, dict):
                 continue
             msg.pop("codex_reasoning_items", None)
+            msg.pop("codex_message_items", None)
             tool_calls = msg.get("tool_calls")
             if isinstance(tool_calls, list):
                 for tc in tool_calls:
@@ -172,6 +174,11 @@ class ChatCompletionsTransport(ProviderTransport):
 
         # Tools
         if tools:
+            # Moonshot/Kimi uses a stricter flavored JSON Schema.  Rewriting
+            # tool parameters here keeps aggregator routes (Nous, OpenRouter,
+            # etc.) compatible, in addition to direct moonshot.ai endpoints.
+            if is_moonshot_model(model):
+                tools = sanitize_moonshot_tools(tools)
             api_kwargs["tools"] = tools
 
         # max_tokens resolution — priority: ephemeral > user > provider default

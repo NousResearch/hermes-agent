@@ -1,3 +1,5 @@
+import pytest
+
 from hermes_cli import runtime_provider as rp
 
 
@@ -534,6 +536,72 @@ def test_custom_endpoint_explicit_custom_prefers_config_key(monkeypatch):
 
     assert resolved["base_url"] == "https://my-vllm-server.example.com/v1"
     assert resolved["api_key"] == "sk-vllm-key"
+
+
+def test_bare_custom_uses_loopback_model_base_url_when_provider_not_custom(monkeypatch):
+    """Regression for #14676: /model can select Custom while YAML still lists another provider."""
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "openrouter",
+            "base_url": "http://127.0.0.1:8082/v1",
+            "default": "my-local-model",
+        },
+    )
+    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-key")
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "http://127.0.0.1:8082/v1"
+    assert resolved["api_key"] == "openai-key"
+
+
+def test_bare_custom_custom_base_url_env_overrides_remote_yaml(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "openrouter",
+            "base_url": "https://api.openrouter.ai/api/v1",
+        },
+    )
+    monkeypatch.setenv("CUSTOM_BASE_URL", "http://localhost:9999/v1")
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["provider"] == "custom"
+    assert resolved["base_url"] == "http://localhost:9999/v1"
+
+
+def test_bare_custom_does_not_trust_non_loopback_when_provider_not_custom(monkeypatch):
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "openrouter")
+    monkeypatch.setattr(
+        rp,
+        "_get_model_config",
+        lambda: {
+            "provider": "openrouter",
+            "base_url": "https://remote.example.com/v1",
+        },
+    )
+    monkeypatch.delenv("CUSTOM_BASE_URL", raising=False)
+    monkeypatch.delenv("OPENROUTER_BASE_URL", raising=False)
+    monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+    resolved = rp.resolve_runtime_provider(requested="custom")
+
+    assert resolved["provider"] == "custom"
+    assert "openrouter.ai" in resolved["base_url"]
+    assert "remote.example.com" not in resolved["base_url"]
 
 
 def test_named_custom_provider_uses_saved_credentials(monkeypatch):
@@ -1499,3 +1567,79 @@ class TestOllamaUrlSubstringLeak:
         resolved = rp.resolve_runtime_provider(requested="custom")
 
         assert resolved["api_key"] == "ol-legit-key"
+
+
+# =============================================================================
+# Azure Foundry — both OpenAI-style and Anthropic-style endpoints
+# =============================================================================
+
+class TestAzureFoundryResolution:
+    """Verify Azure Foundry resolves correctly for both API modes."""
+
+    def _make_cfg(self, base_url: str, api_mode: str = "chat_completions"):
+        return {
+            "provider": "azure-foundry",
+            "base_url": base_url,
+            "api_mode": api_mode,
+            "default": "gpt-5.4",
+        }
+
+    def test_azure_foundry_openai_style_explicit(self, monkeypatch):
+        """OpenAI-style Azure Foundry → chat_completions, keeps base_url as-is."""
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "az-key-openai")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "azure-foundry")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: self._make_cfg(
+            "https://my-resource.openai.azure.com/openai/v1",
+            "chat_completions",
+        ))
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        resolved = rp.resolve_runtime_provider(requested="azure-foundry")
+
+        assert resolved["provider"] == "azure-foundry"
+        assert resolved["api_mode"] == "chat_completions"
+        assert resolved["base_url"] == "https://my-resource.openai.azure.com/openai/v1"
+        assert resolved["api_key"] == "az-key-openai"
+
+    def test_azure_foundry_anthropic_style_strips_v1_suffix(self, monkeypatch):
+        """Anthropic-style Azure Foundry → anthropic_messages, /v1 stripped
+        because the Anthropic SDK appends /v1/messages itself."""
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "az-key-ant")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "azure-foundry")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: self._make_cfg(
+            "https://my-resource.services.ai.azure.com/anthropic/v1",
+            "anthropic_messages",
+        ))
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        resolved = rp.resolve_runtime_provider(requested="azure-foundry")
+
+        assert resolved["provider"] == "azure-foundry"
+        assert resolved["api_mode"] == "anthropic_messages"
+        # /v1 stripped so SDK can append /v1/messages cleanly
+        assert resolved["base_url"] == "https://my-resource.services.ai.azure.com/anthropic"
+
+    def test_azure_foundry_missing_base_url_raises(self, monkeypatch):
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "az-key")
+        monkeypatch.delenv("AZURE_FOUNDRY_BASE_URL", raising=False)
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "azure-foundry")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {})
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        with pytest.raises(rp.AuthError, match="base URL"):
+            rp.resolve_runtime_provider(requested="azure-foundry")
+
+    def test_azure_foundry_missing_api_key_raises(self, monkeypatch):
+        monkeypatch.delenv("AZURE_FOUNDRY_API_KEY", raising=False)
+        # `get_env_value` reads from ~/.hermes/.env — mock it to return None
+        # so the resolver can't find a key there either.
+        import hermes_cli.config as cfg_mod
+        monkeypatch.setattr(cfg_mod, "get_env_value", lambda k: None)
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "azure-foundry")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: self._make_cfg(
+            "https://my-resource.openai.azure.com/openai/v1"
+        ))
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        with pytest.raises(rp.AuthError, match="API key"):
+            rp.resolve_runtime_provider(requested="azure-foundry")

@@ -78,31 +78,52 @@ class AnthropicTransport(ProviderTransport):
     def normalize_response(self, response: Any, **kwargs) -> NormalizedResponse:
         """Normalize Anthropic response to NormalizedResponse.
 
-        Calls the adapter's v1 normalize and maps the (SimpleNamespace, finish_reason)
-        tuple to the shared NormalizedResponse type.
+        Parses content blocks (text, thinking, tool_use), maps stop_reason
+        to OpenAI finish_reason, and collects reasoning_details in provider_data.
         """
-        from agent.anthropic_adapter import normalize_anthropic_response
-        from agent.transports.types import build_tool_call
+        import json
+        from agent.anthropic_adapter import _to_plain_data
+        from agent.transports.types import ToolCall
 
         strip_tool_prefix = kwargs.get("strip_tool_prefix", False)
-        assistant_msg, finish_reason = normalize_anthropic_response(response, strip_tool_prefix)
+        _MCP_PREFIX = "mcp_"
 
-        tool_calls = None
-        if assistant_msg.tool_calls:
-            tool_calls = [
-                build_tool_call(id=tc.id, name=tc.function.name, arguments=tc.function.arguments)
-                for tc in assistant_msg.tool_calls
-            ]
+        text_parts = []
+        reasoning_parts = []
+        reasoning_details = []
+        tool_calls = []
+
+        for block in response.content:
+            if block.type == "text":
+                text_parts.append(block.text)
+            elif block.type == "thinking":
+                reasoning_parts.append(block.thinking)
+                block_dict = _to_plain_data(block)
+                if isinstance(block_dict, dict):
+                    reasoning_details.append(block_dict)
+            elif block.type == "tool_use":
+                name = block.name
+                if strip_tool_prefix and name.startswith(_MCP_PREFIX):
+                    name = name[len(_MCP_PREFIX):]
+                tool_calls.append(
+                    ToolCall(
+                        id=block.id,
+                        name=name,
+                        arguments=json.dumps(block.input),
+                    )
+                )
+
+        finish_reason = self._STOP_REASON_MAP.get(response.stop_reason, "stop")
 
         provider_data = {}
-        if getattr(assistant_msg, "reasoning_details", None):
-            provider_data["reasoning_details"] = assistant_msg.reasoning_details
+        if reasoning_details:
+            provider_data["reasoning_details"] = reasoning_details
 
         return NormalizedResponse(
-            content=assistant_msg.content,
-            tool_calls=tool_calls,
+            content="\n".join(text_parts) if text_parts else None,
+            tool_calls=tool_calls or None,
             finish_reason=finish_reason,
-            reasoning=getattr(assistant_msg, "reasoning", None),
+            reasoning="\n\n".join(reasoning_parts) if reasoning_parts else None,
             usage=None,
             provider_data=provider_data or None,
         )

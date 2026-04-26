@@ -55,11 +55,13 @@ export interface ConfigDisplayConfig {
   bell_on_complete?: boolean
   details_mode?: string
   inline_diffs?: boolean
+  sections?: Record<string, string>
   show_cost?: boolean
   show_reasoning?: boolean
   streaming?: boolean
   thinking_mode?: string
   tui_compact?: boolean
+  tui_mouse?: boolean
   tui_statusbar?: 'bottom' | 'off' | 'on' | 'top' | boolean
 }
 
@@ -92,7 +94,7 @@ export interface SetupStatusResponse {
 // ── Session lifecycle ────────────────────────────────────────────────
 
 export interface SessionCreateResponse {
-  info?: SessionInfo & { credential_warning?: string }
+  info?: SessionInfo & { config_warning?: string; credential_warning?: string }
   session_id: string
 }
 
@@ -115,6 +117,10 @@ export interface SessionListItem {
 
 export interface SessionListResponse {
   sessions?: SessionListItem[]
+}
+
+export interface SessionSaveResponse {
+  file?: string
 }
 
 export interface SessionUndoResponse {
@@ -236,10 +242,16 @@ export interface ImageAttachResponse {
 // ── Voice ────────────────────────────────────────────────────────────
 
 export interface VoiceToggleResponse {
+  audio_available?: boolean
+  available?: boolean
+  details?: string
   enabled?: boolean
+  stt_available?: boolean
+  tts?: boolean
 }
 
 export interface VoiceRecordResponse {
+  status?: string
   text?: string
 }
 
@@ -368,6 +380,8 @@ export type GatewayEvent =
   | { payload?: { text?: string }; session_id?: string; type: 'thinking.delta' }
   | { payload?: undefined; session_id?: string; type: 'message.start' }
   | { payload?: { kind?: string; text?: string }; session_id?: string; type: 'status.update' }
+  | { payload?: { state?: 'idle' | 'listening' | 'transcribing' }; session_id?: string; type: 'voice.status' }
+  | { payload?: { no_speech_limit?: boolean; text?: string }; session_id?: string; type: 'voice.transcript' }
   | { payload: { line: string }; session_id?: string; type: 'gateway.stderr' }
   | { payload?: { cwd?: string; python?: string }; session_id?: string; type: 'gateway.start_timeout' }
   | { payload?: { preview?: string }; session_id?: string; type: 'gateway.protocol_error' }

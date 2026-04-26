@@ -33,17 +33,22 @@ describe('resolveEditor', () => {
     expect(resolveEditor({ EDITOR: 'nvim', PATH: dir })).toBe('nvim')
   })
 
-  it('prefers nvim over vim over vi over nano on $PATH', () => {
+  it('prefers system editor over nano over vi on $PATH', () => {
     exe('nano')
     exe('vi')
-    exe('vim')
-    const nvim = exe('nvim')
+    const editor = exe('editor')
 
-    expect(resolveEditor({ PATH: dir })).toBe(nvim)
+    expect(resolveEditor({ PATH: dir })).toBe(editor)
   })
 
-  it('falls back to vi when only vi and nano exist', () => {
-    exe('nano')
+  it('falls back to nano when only nano and vi exist', () => {
+    const nano = exe('nano')
+    exe('vi')
+
+    expect(resolveEditor({ PATH: dir })).toBe(nano)
+  })
+
+  it('falls back to vi when only vi exists', () => {
     const vi = exe('vi')
 
     expect(resolveEditor({ PATH: dir })).toBe(vi)
@@ -59,9 +64,9 @@ describe('resolveEditor', () => {
     const a = mkdtempSync(join(tmpdir(), 'editor-a-'))
     const b = mkdtempSync(join(tmpdir(), 'editor-b-'))
 
-    writeFileSync(join(b, 'vim'), '#!/bin/sh\n')
-    chmodSync(join(b, 'vim'), 0o755)
+    writeFileSync(join(b, 'editor'), '#!/bin/sh\n')
+    chmodSync(join(b, 'editor'), 0o755)
 
-    expect(resolveEditor({ PATH: [a, b].join(delimiter) })).toBe(join(b, 'vim'))
+    expect(resolveEditor({ PATH: [a, b].join(delimiter) })).toBe(join(b, 'editor'))
   })
 })

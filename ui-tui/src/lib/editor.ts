@@ -6,33 +6,45 @@ import { delimiter, join } from 'node:path'
  *
  * Order of preference:
  *   1. $VISUAL / $EDITOR (user's explicit choice)
- *   2. first executable found on $PATH from `nvim` → `vim` → `vi` → `nano`
+ *   2. prompt_toolkit-compatible system fallback:
+ *      editor → nano → pico → vi → emacs
  *   3. literal `'vi'` so spawnSync still has something to try
  *
- * Mirrors the override on `input_area.buffer._open_file_in_editor` in cli.py
- * — both surfaces should pick the same editor so the CLI/TUI handoff
- * doesn't surprise the user with nano in one and vim in the other.
+ * This intentionally mirrors prompt_toolkit's Buffer.open_in_editor() picker
+ * used by the classic CLI. In Cursor/VSCode terminals, nano is a better prompt
+ * editing default than dropping casual users into vi's modal interface.
  */
 export function resolveEditor(env: NodeJS.ProcessEnv = process.env): string {
-  return env.VISUAL || env.EDITOR || findExecutable(env.PATH ?? '', 'nvim', 'vim', 'vi', 'nano') || 'vi'
+  return (
+    env.VISUAL ||
+    env.EDITOR ||
+    findEditor(env.PATH ?? '', 'editor', 'nano', 'pico', 'vi', 'emacs') ||
+    'vi'
+  )
 }
 
-function findExecutable(path: string, ...names: string[]): null | string {
+function findEditor(path: string, ...names: string[]): null | string {
   const dirs = path.split(delimiter).filter(Boolean)
 
   for (const name of names) {
     for (const dir of dirs) {
       const candidate = join(dir, name)
 
-      try {
-        accessSync(candidate, constants.X_OK)
-
+      if (isExecutable(candidate)) {
         return candidate
-      } catch {
-        // not executable / not present; try next
       }
     }
   }
 
   return null
+}
+
+function isExecutable(path: string): boolean {
+  try {
+    accessSync(path, constants.X_OK)
+
+    return true
+  } catch {
+    return false
+  }
 }

@@ -3822,7 +3822,10 @@ def _(rid, params: dict) -> dict:
         if details_items is not None:
             return _ok(
                 rid,
-                {"items": details_items, "replace_from": text.rfind(" ") + 1},
+                {
+                    "items": details_items,
+                    "replace_from": text.rfind(" ") + 1 if " " in text else len(text),
+                },
             )
 
         return _ok(

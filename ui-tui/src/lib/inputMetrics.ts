@@ -54,9 +54,9 @@ export function inputVisualHeight(value: string, columns: number) {
 }
 
 export function stableComposerColumns(totalCols: number, promptWidth: number) {
-  // totalCols is the terminal width. Reserve:
+  // Physical render/wrap width. Reserve:
   // - outer composer paddingX={1}: 2 columns
   // - transcript scrollbar gutter + marginLeft: 2 columns
   // - prompt prefix width
-  return Math.max(20, totalCols - promptWidth - 4)
+  return Math.max(1, totalCols - promptWidth - 4)
 }

@@ -596,15 +596,32 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
 
 
 def _resolve_last_session(source: str = "cli") -> Optional[str]:
-    """Look up the most recent session ID for a source."""
+    """Look up the most recently *used* session ID for a source.
+
+    Previously this returned the most recently *started* session, which meant
+    `hermes -c` could skip the session you just closed if a newer one had been
+    opened earlier in a different window. We now order by last_active
+    (max message timestamp, falling back to started_at) so -c always resumes
+    the most recent conversation you actually touched.
+    """
     try:
         from hermes_state import SessionDB
 
         db = SessionDB()
-        sessions = db.search_sessions(source=source, limit=1)
+        sessions = db.search_sessions(source=source, limit=20)
         db.close()
-        if sessions:
-            return sessions[0]["id"]
+        if not sessions:
+            return None
+
+        def _last_active(s: dict) -> float:
+            v = s.get("last_active") or s.get("started_at") or 0
+            try:
+                return float(v)
+            except (TypeError, ValueError):
+                return 0.0
+
+        sessions.sort(key=_last_active, reverse=True)
+        return sessions[0]["id"]
     except Exception:
         pass
     return None

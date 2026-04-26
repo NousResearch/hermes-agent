@@ -532,6 +532,16 @@ class GatewayStreamConsumer:
                 return str(result.message_id)
             else:
                 self._edit_supported = False
+                logger.warning(
+                    "[StreamConsumer] Send failed (success=%s, msg_id=%s, error=%s) "
+                    "chat=%s reply_to=%s text_len=%d",
+                    result.success,
+                    result.message_id,
+                    getattr(result, "error", None),
+                    self.chat_id,
+                    reply_to_id,
+                    len(text),
+                )
                 return reply_to_id
         except Exception as e:
             logger.error("Stream send chunk error: %s", e)

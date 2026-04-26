@@ -1647,8 +1647,14 @@ class FeishuAdapter(BasePlatformAdapter):
         last_response = None
 
         try:
-            for chunk in chunks:
+            for i, chunk in enumerate(chunks):
                 msg_type, payload = self._build_outbound_payload(chunk)
+                logger.info(
+                    "[Feishu] send_message: chat=%s reply_to=%s chunk=%d/%d "
+                    "msg_type=%s payload_len=%d content_len=%d",
+                    chat_id, reply_to, i + 1, len(chunks),
+                    msg_type, len(payload), len(chunk),
+                )
                 try:
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
@@ -2723,7 +2729,7 @@ class FeishuAdapter(BasePlatformAdapter):
             chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=chat_type),
             user_id=sender_profile["user_id"],
             user_name=sender_profile["user_name"],
-            thread_id=getattr(message, "thread_id", None) or None,
+            thread_id=getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None,
             user_id_alt=sender_profile["user_id_alt"],
         )
         normalized = MessageEvent(
@@ -3953,10 +3959,18 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def _finalize_send_result(self, response: Any, default_message: str) -> SendResult:
         if not self._response_succeeded(response):
-            return self._response_error_result(response, default_message=default_message)
+            result = self._response_error_result(response, default_message=default_message)
+            logger.warning(
+                "[Feishu] send failed: code=%s msg=%s",
+                getattr(response, "code", "unknown"),
+                getattr(response, "msg", default_message),
+            )
+            return result
+        msg_id = self._extract_response_field(response, "message_id")
+        logger.info("[Feishu] send succeeded: msg_id=%s", msg_id)
         return SendResult(
             success=True,
-            message_id=self._extract_response_field(response, "message_id"),
+            message_id=msg_id,
             raw_response=response,
         )
 

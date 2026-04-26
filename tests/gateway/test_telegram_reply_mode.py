@@ -86,31 +86,35 @@ class TestShouldThreadReply:
         assert adapter._should_thread_reply(None, 0) is False
         assert adapter._should_thread_reply("", 0) is False
 
+    def test_internal_non_numeric_message_id_does_not_thread(self, adapter_factory):
+        adapter = adapter_factory(reply_to_mode="first")
+        assert adapter._should_thread_reply("auto-resume:20260424_121419_a34a55", 0) is False
+
     def test_off_mode_never_threads(self, adapter_factory):
         adapter = adapter_factory(reply_to_mode="off")
-        assert adapter._should_thread_reply("msg-123", 0) is False
-        assert adapter._should_thread_reply("msg-123", 1) is False
-        assert adapter._should_thread_reply("msg-123", 5) is False
+        assert adapter._should_thread_reply("999", 0) is False
+        assert adapter._should_thread_reply("999", 1) is False
+        assert adapter._should_thread_reply("999", 5) is False
 
     def test_first_mode_only_first_chunk(self, adapter_factory):
         adapter = adapter_factory(reply_to_mode="first")
-        assert adapter._should_thread_reply("msg-123", 0) is True
-        assert adapter._should_thread_reply("msg-123", 1) is False
-        assert adapter._should_thread_reply("msg-123", 2) is False
-        assert adapter._should_thread_reply("msg-123", 10) is False
+        assert adapter._should_thread_reply("999", 0) is True
+        assert adapter._should_thread_reply("999", 1) is False
+        assert adapter._should_thread_reply("999", 2) is False
+        assert adapter._should_thread_reply("999", 10) is False
 
     def test_all_mode_all_chunks(self, adapter_factory):
         adapter = adapter_factory(reply_to_mode="all")
-        assert adapter._should_thread_reply("msg-123", 0) is True
-        assert adapter._should_thread_reply("msg-123", 1) is True
-        assert adapter._should_thread_reply("msg-123", 2) is True
-        assert adapter._should_thread_reply("msg-123", 10) is True
+        assert adapter._should_thread_reply("999", 0) is True
+        assert adapter._should_thread_reply("999", 1) is True
+        assert adapter._should_thread_reply("999", 2) is True
+        assert adapter._should_thread_reply("999", 10) is True
 
     def test_invalid_mode_falls_back_to_first(self, adapter_factory):
         """Invalid mode behaves like 'first' - only first chunk threads."""
         adapter = adapter_factory(reply_to_mode="invalid")
-        assert adapter._should_thread_reply("msg-123", 0) is True
-        assert adapter._should_thread_reply("msg-123", 1) is False
+        assert adapter._should_thread_reply("999", 0) is True
+        assert adapter._should_thread_reply("999", 1) is False
 
 
 class TestSendWithReplyToMode:
@@ -182,6 +186,23 @@ class TestSendWithReplyToMode:
         calls = adapter._bot.send_message.call_args_list
         assert len(calls) == 1
         assert calls[0].kwargs.get("reply_to_message_id") == 999
+
+    @pytest.mark.asyncio
+    async def test_non_numeric_reply_to_is_sent_without_threading(self, adapter_factory):
+        adapter = adapter_factory(reply_to_mode="first")
+        adapter._bot = MagicMock()
+        adapter._bot.send_message = AsyncMock(return_value=MagicMock(message_id=1))
+        adapter.truncate_message = lambda content, max_len, **kw: ["single chunk"]
+
+        result = await adapter.send(
+            "12345",
+            "test",
+            reply_to="auto-resume:20260424_121419_a34a55",
+        )
+
+        assert result.success is True
+        adapter._bot.send_message.assert_awaited_once()
+        assert adapter._bot.send_message.call_args.kwargs.get("reply_to_message_id") is None
 
 
 class TestConfigSerialization:

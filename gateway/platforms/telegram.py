@@ -959,6 +959,12 @@ class TelegramAdapter(BasePlatformAdapter):
         """
         if not reply_to:
             return False
+        # Telegram Bot API reply_to_message_id must be an integer. Internal
+        # gateway events (for example auto-resume) may use synthetic message
+        # IDs like "auto-resume:<session_id>"; those should still allow a
+        # normal message send, just without Telegram reply threading.
+        if not str(reply_to).isdigit():
+            return False
         mode = self._reply_to_mode
         if mode == "off":
             return False

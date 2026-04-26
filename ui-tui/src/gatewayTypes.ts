@@ -119,6 +119,10 @@ export interface SessionListResponse {
   sessions?: SessionListItem[]
 }
 
+export interface SessionSaveResponse {
+  file?: string
+}
+
 export interface SessionUndoResponse {
   removed?: number
 }

@@ -3,6 +3,7 @@ import typescriptEslint from '@typescript-eslint/eslint-plugin'
 import typescriptParser from '@typescript-eslint/parser'
 import perfectionist from 'eslint-plugin-perfectionist'
 import reactPlugin from 'eslint-plugin-react'
+import reactCompiler from 'eslint-plugin-react-compiler'
 import hooksPlugin from 'eslint-plugin-react-hooks'
 import unusedImports from 'eslint-plugin-unused-imports'
 import globals from 'globals'
@@ -43,6 +44,7 @@ export default [
       'custom-rules': customRules,
       perfectionist,
       react: reactPlugin,
+      'react-compiler': reactCompiler,
       'react-hooks': hooksPlugin,
       'unused-imports': unusedImports
     },
@@ -53,6 +55,12 @@ export default [
       '@typescript-eslint/no-unused-vars': 'off',
       'no-undef': 'off',
       'no-unused-vars': 'off',
+      // React Compiler: warn (not error) so the gate doesn't block merges
+      // while we migrate. Flags patterns that would break the compiler at
+      // runtime (mutating refs during render, non-PascalCase components,
+      // etc.). See audit §5 — we run the compiler in `npm run build` as a
+      // post-pass over tsc's `dist/` output.
+      'react-compiler/react-compiler': 'warn',
       'padding-line-between-statements': [
         1,
         { blankLine: 'always', next: ['block-like', 'block', 'return', 'if', 'class', 'continue', 'debugger', 'break', 'multiline-const', 'multiline-let'], prev: '*' },
@@ -89,6 +97,9 @@ export default [
       'no-constant-condition': 'off',
       'no-empty': 'off',
       'no-redeclare': 'off',
+      // Ink internals: reconciler, style pool, DOM node impl — full of
+      // intentional side effects the compiler rules reject.
+      'react-compiler/react-compiler': 'off',
       'react-hooks/exhaustive-deps': 'off'
     }
   },

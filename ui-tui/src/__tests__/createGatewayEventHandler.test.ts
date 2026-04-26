@@ -123,6 +123,20 @@ describe('createGatewayEventHandler', () => {
     expect(appended[0]?.toolTokens).toBeGreaterThan(0)
   })
 
+  it('streams legacy thinking.delta into visible reasoning state', () => {
+    vi.useFakeTimers()
+    const appended: Msg[] = []
+    const streamed = 'short streamed reasoning'
+
+    createGatewayEventHandler(buildCtx(appended))({ payload: { text: streamed }, type: 'thinking.delta' } as any)
+    vi.runOnlyPendingTimers()
+
+    expect(getTurnState().reasoning).toBe(streamed)
+    expect(getTurnState().reasoningActive).toBe(true)
+    expect(getTurnState().reasoningTokens).toBe(estimateTokensRough(streamed))
+    vi.useRealTimers()
+  })
+
   it('ignores fallback reasoning.available when streamed reasoning already exists', () => {
     const appended: Msg[] = []
     const streamed = 'short streamed reasoning'

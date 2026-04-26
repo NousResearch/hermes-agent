@@ -47,6 +47,11 @@ from gateway.platforms.base import (
     SendResult,
     is_network_accessible,
 )
+from gateway.voice_hermes_bridge import (
+    HER_VOICE_SYSTEM_PROMPT,
+    HerVoiceBridge,
+    her_voice_tool_declarations,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -591,6 +596,7 @@ class APIServerAdapter(BasePlatformAdapter):
         self._active_run_agents: Dict[str, Any] = {}
         self._active_run_tasks: Dict[str, "asyncio.Task"] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self._voice_bridge: Optional[HerVoiceBridge] = None
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -701,6 +707,15 @@ class APIServerAdapter(BasePlatformAdapter):
                 logger.debug("SessionDB unavailable for API server: %s", e)
         return self._session_db
 
+    def _ensure_voice_bridge(self) -> HerVoiceBridge:
+        """Lazily initialise the function-call bridge used by realtime voice."""
+        if self._voice_bridge is None:
+            self._voice_bridge = HerVoiceBridge(
+                run_agent=self._run_agent,
+                session_db_factory=self._ensure_session_db,
+            )
+        return self._voice_bridge
+
     # ------------------------------------------------------------------
     # Agent creation helper
     # ------------------------------------------------------------------
@@ -709,6 +724,7 @@ class APIServerAdapter(BasePlatformAdapter):
         self,
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
+        platform: str = "api_server",
         stream_delta_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
@@ -748,7 +764,7 @@ class APIServerAdapter(BasePlatformAdapter):
             ephemeral_system_prompt=ephemeral_system_prompt or None,
             enabled_toolsets=enabled_toolsets,
             session_id=session_id,
-            platform="api_server",
+            platform=platform,
             stream_delta_callback=stream_delta_callback,
             tool_progress_callback=tool_progress_callback,
             tool_start_callback=tool_start_callback,
@@ -1038,6 +1054,44 @@ class APIServerAdapter(BasePlatformAdapter):
         }
 
         return web.json_response(response_data, headers={"X-Hermes-Session-Id": session_id})
+
+    async def _handle_voice_tools(self, request: "web.Request") -> "web.Response":
+        """GET /api/voice/her/tools — Gemini Live function declarations."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+        return web.json_response({
+            "tools": [{"function_declarations": her_voice_tool_declarations()}],
+            "system_prompt": HER_VOICE_SYSTEM_PROMPT,
+        })
+
+    async def _handle_voice_call(self, request: "web.Request") -> "web.Response":
+        """POST /api/voice/her/call — execute one voice function call."""
+        auth_err = self._check_auth(request)
+        if auth_err:
+            return auth_err
+
+        try:
+            body = await request.json()
+        except (json.JSONDecodeError, Exception):
+            return web.json_response(_openai_error("Invalid JSON in request body"), status=400)
+
+        name = str(body.get("name") or body.get("tool") or "").strip()
+        arguments = body.get("arguments") or body.get("args") or {}
+        if not name:
+            return web.json_response(
+                {"error": {"message": "Missing voice tool name", "type": "invalid_request_error"}},
+                status=400,
+            )
+        if not isinstance(arguments, dict):
+            return web.json_response(
+                {"error": {"message": "Voice tool arguments must be an object", "type": "invalid_request_error"}},
+                status=400,
+            )
+
+        result = await self._ensure_voice_bridge().call(name, arguments)
+        status = 200 if result.get("ok", False) else 400
+        return web.json_response(result, status=status)
 
     async def _write_sse_chat_completion(
         self, request: "web.Request", completion_id: str, model: str,
@@ -2247,6 +2301,7 @@ class APIServerAdapter(BasePlatformAdapter):
         conversation_history: List[Dict[str, str]],
         ephemeral_system_prompt: Optional[str] = None,
         session_id: Optional[str] = None,
+        platform: str = "api_server",
         stream_delta_callback=None,
         tool_progress_callback=None,
         tool_start_callback=None,
@@ -2270,6 +2325,7 @@ class APIServerAdapter(BasePlatformAdapter):
             agent = self._create_agent(
                 ephemeral_system_prompt=ephemeral_system_prompt,
                 session_id=session_id,
+                platform=platform,
                 stream_delta_callback=stream_delta_callback,
                 tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback,
@@ -2634,6 +2690,9 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_post("/api/jobs/{job_id}/pause", self._handle_pause_job)
             self._app.router.add_post("/api/jobs/{job_id}/resume", self._handle_resume_job)
             self._app.router.add_post("/api/jobs/{job_id}/run", self._handle_run_job)
+            # Hermes voice bridge for realtime function calls
+            self._app.router.add_get("/api/voice/her/tools", self._handle_voice_tools)
+            self._app.router.add_post("/api/voice/her/call", self._handle_voice_call)
             # Structured event streaming
             self._app.router.add_post("/v1/runs", self._handle_runs)
             self._app.router.add_get("/v1/runs/{run_id}/events", self._handle_run_events)

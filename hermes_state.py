@@ -31,7 +31,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 9
+SCHEMA_VERSION = 10
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -41,6 +41,7 @@ CREATE TABLE IF NOT EXISTS schema_version (
 CREATE TABLE IF NOT EXISTS sessions (
     id TEXT PRIMARY KEY,
     source TEXT NOT NULL,
+    channel TEXT DEFAULT 'text',
     user_id TEXT,
     model TEXT,
     model_config TEXT,
@@ -366,6 +367,21 @@ class SessionDB:
                 except sqlite3.OperationalError:
                     pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 9")
+            if current_version < 10:
+                # v10: mark the conversational channel separately from source.
+                # Existing sessions are text; the voice bridge creates sessions
+                # with source=voice and channel=voice for shared recall later.
+                try:
+                    cursor.execute('ALTER TABLE sessions ADD COLUMN "channel" TEXT DEFAULT \'text\'')
+                except sqlite3.OperationalError:
+                    pass  # Column already exists
+                cursor.execute(
+                    "UPDATE sessions SET channel = 'text' WHERE channel IS NULL OR channel = ''"
+                )
+                cursor.execute(
+                    "CREATE INDEX IF NOT EXISTS idx_sessions_channel ON sessions(channel)"
+                )
+                cursor.execute("UPDATE schema_version SET version = 10")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -376,6 +392,13 @@ class SessionDB:
             )
         except sqlite3.OperationalError:
             pass  # Index already exists
+
+        try:
+            cursor.execute(
+                "CREATE INDEX IF NOT EXISTS idx_sessions_channel ON sessions(channel)"
+            )
+        except sqlite3.OperationalError:
+            pass  # Older partially-created DBs will be handled by migrations.
 
         # FTS5 setup (separate because CREATE VIRTUAL TABLE can't be in executescript with IF NOT EXISTS reliably)
         try:
@@ -402,12 +425,13 @@ class SessionDB:
         """Create a new session record. Returns the session_id."""
         def _do(conn):
             conn.execute(
-                """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
+                """INSERT OR IGNORE INTO sessions (id, source, channel, user_id, model, model_config,
                    system_prompt, parent_session_id, started_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
                 (
                     session_id,
                     source,
+                    "voice" if source == "voice" else "text",
                     user_id,
                     model,
                     json.dumps(model_config) if model_config else None,
@@ -564,9 +588,9 @@ class SessionDB:
         def _do(conn):
             conn.execute(
                 """INSERT OR IGNORE INTO sessions
-                   (id, source, model, started_at)
-                   VALUES (?, ?, ?, ?)""",
-                (session_id, source, model, time.time()),
+                   (id, source, channel, model, started_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (session_id, source, "voice" if source == "voice" else "text", model, time.time()),
             )
         self._execute_write(_do)
 
@@ -1310,6 +1334,7 @@ class SessionDB:
                 m.timestamp,
                 m.tool_name,
                 s.source,
+                s.channel,
                 s.model,
                 s.started_at AS session_started
             FROM messages_fts
@@ -1353,7 +1378,7 @@ class SessionDB:
                               max(1, instr(m.content, ?) - 40),
                               120) AS snippet,
                        m.content, m.timestamp, m.tool_name,
-                       s.source, s.model, s.started_at AS session_started
+                       s.source, s.channel, s.model, s.started_at AS session_started
                 FROM messages m
                 JOIN sessions s ON s.id = m.session_id
                 WHERE {' AND '.join(like_where)}
@@ -1677,4 +1702,3 @@ class SessionDB:
             result["error"] = str(exc)
 
         return result
-

@@ -32,8 +32,15 @@ class TestSessionLifecycle:
         session = db.get_session("s1")
         assert session is not None
         assert session["source"] == "cli"
+        assert session["channel"] == "text"
         assert session["model"] == "test-model"
         assert session["ended_at"] is None
+
+    def test_voice_source_sets_voice_channel(self, db):
+        db.create_session(session_id="voice-1", source="voice")
+        session = db.get_session("voice-1")
+        assert session["source"] == "voice"
+        assert session["channel"] == "voice"
 
     def test_get_nonexistent_session(self, db):
         assert db.get_session("nonexistent") is None
@@ -1200,7 +1207,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 9
+        assert version == 10
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -1256,17 +1263,18 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v9
+        # Open with SessionDB — should migrate to v10
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 9
+        assert cursor.fetchone()[0] == 10
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
         assert session is not None
         assert session["title"] is None
+        assert session["channel"] == "text"
 
         # Verify api_call_count column was added with default 0
         cursor = migrated_db._conn.execute(
@@ -1938,4 +1946,3 @@ class TestAutoMaintenance:
         assert marker is not None
         # Should parse as a float timestamp close to now.
         assert abs(float(marker) - time.time()) < 60
-

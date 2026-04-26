@@ -334,7 +334,19 @@ def test_config_bridges_slack_reply_in_thread(monkeypatch, tmp_path):
 
     adapter = SlackAdapter(slack_config)
     assert adapter._resolve_thread_ts(reply_to="171.000", metadata={}) is None
+
+    # Top-level channel messages arrive with metadata.thread_id == reply_to
+    # because the inbound handler uses event.ts as a session-keying fallback.
+    # Those must be treated as non-threaded so reply_in_thread=false takes
+    # effect in channels, not just DMs.
     assert adapter._resolve_thread_ts(
         reply_to="171.000",
+        metadata={"thread_id": "171.000"},
+    ) is None
+
+    # Real thread replies (reply_to differs from thread parent) must still
+    # resolve to the parent thread so conversation context is preserved.
+    assert adapter._resolve_thread_ts(
+        reply_to="171.500",
         metadata={"thread_id": "171.000"},
     ) == "171.000"

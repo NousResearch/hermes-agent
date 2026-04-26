@@ -82,15 +82,13 @@ describe('createGatewayEventHandler', () => {
       type: 'message.complete'
     } as any)
 
-    expect(appended).toHaveLength(1)
-    expect(appended[0]).toMatchObject({
-      role: 'assistant',
-      text: 'final answer',
-      thinking: 'mapped the page'
-    })
-    expect(appended[0]?.tools).toHaveLength(1)
-    expect(appended[0]?.tools?.[0]).toContain('hero cards')
-    expect(appended[0]?.toolTokens).toBeGreaterThan(0)
+    expect(appended).toHaveLength(3)
+    expect(appended[0]).toMatchObject({ kind: 'trail', role: 'system', text: '', thinking: 'mapped the page' })
+    expect(appended[1]).toMatchObject({ kind: 'trail', role: 'system', text: '' })
+    expect(appended[1]?.tools).toHaveLength(1)
+    expect(appended[1]?.tools?.[0]).toContain('hero cards')
+    expect(appended[1]?.toolTokens).toBeGreaterThan(0)
+    expect(appended[2]).toMatchObject({ role: 'assistant', text: 'final answer' })
   })
 
   it('keeps tool tokens across handler recreation mid-turn', () => {
@@ -118,9 +116,10 @@ describe('createGatewayEventHandler', () => {
       type: 'message.complete'
     } as any)
 
-    expect(appended).toHaveLength(1)
-    expect(appended[0]?.tools).toHaveLength(1)
-    expect(appended[0]?.toolTokens).toBeGreaterThan(0)
+    expect(appended).toHaveLength(3)
+    expect(appended[1]?.tools).toHaveLength(1)
+    expect(appended[1]?.toolTokens).toBeGreaterThan(0)
+    expect(appended[2]).toMatchObject({ role: 'assistant', text: 'final answer' })
   })
 
   it('streams legacy thinking.delta into visible reasoning state', () => {
@@ -148,9 +147,10 @@ describe('createGatewayEventHandler', () => {
     onEvent({ payload: { text: fallback }, type: 'reasoning.available' } as any)
     onEvent({ payload: { text: 'final answer' }, type: 'message.complete' } as any)
 
-    expect(appended).toHaveLength(1)
+    expect(appended).toHaveLength(2)
     expect(appended[0]?.thinking).toBe(streamed)
     expect(appended[0]?.thinkingTokens).toBe(estimateTokensRough(streamed))
+    expect(appended[1]).toMatchObject({ role: 'assistant', text: 'final answer' })
   })
 
   it('uses message.complete reasoning when no streamed reasoning ref', () => {
@@ -161,9 +161,10 @@ describe('createGatewayEventHandler', () => {
 
     onEvent({ payload: { reasoning: fromServer, text: 'final answer' }, type: 'message.complete' } as any)
 
-    expect(appended).toHaveLength(1)
+    expect(appended).toHaveLength(2)
     expect(appended[0]?.thinking).toBe(fromServer)
     expect(appended[0]?.thinkingTokens).toBe(estimateTokensRough(fromServer))
+    expect(appended[1]).toMatchObject({ role: 'assistant', text: 'final answer' })
   })
 
   it('anchors inline_diff as its own segment where the edit happened', () => {
@@ -184,21 +185,19 @@ describe('createGatewayEventHandler', () => {
     expect(appended).toHaveLength(0)
     expect(turnController.segmentMessages).toEqual([
       { role: 'assistant', text: 'Editing the file' },
+      { kind: 'trail', role: 'system', text: '', tools: ['Patch("foo.ts")  ✓'] },
       { kind: 'diff', role: 'assistant', text: block }
     ])
 
     onEvent({ payload: { text: 'patch applied' }, type: 'message.complete' } as any)
 
-    // Four transcript messages: pre-tool narration → tool trail → diff
-    // (kind='diff', so MessageLine gives it blank-line breathing room) →
-    // post-tool narration. The final message does NOT contain a diff.
-    expect(appended).toHaveLength(4)
+    expect(appended).toHaveLength(5)
     expect(appended[0]?.text).toBe('Editing the file')
     expect(appended[1]).toMatchObject({ kind: 'trail' })
     expect(appended[1]?.tools?.[0]).toContain('Patch')
     expect(appended[2]).toMatchObject({ kind: 'diff', text: block })
-    expect(appended[3]?.text).toBe('patch applied')
-    expect(appended[3]?.text).not.toContain('```diff')
+    expect(appended[4]?.text).toBe('patch applied')
+    expect(appended[4]?.text).not.toContain('```diff')
   })
 
   it('drops the diff segment when the final assistant text narrates the same diff', () => {
@@ -212,9 +211,10 @@ describe('createGatewayEventHandler', () => {
 
     // Only the final message — diff-only segment dropped so we don't
     // render two stacked copies of the same patch.
-    expect(appended).toHaveLength(1)
-    expect(appended[0]?.text).toBe(assistantText)
-    expect((appended[0]?.text.match(/```diff/g) ?? []).length).toBe(1)
+    expect(appended).toHaveLength(2)
+    expect(appended[0]).toMatchObject({ kind: 'trail' })
+    expect(appended[1]?.text).toBe(assistantText)
+    expect((appended[1]?.text.match(/```diff/g) ?? []).length).toBe(1)
   })
 
   it('strips the CLI "┊ review diff" header from inline diff segments', () => {
@@ -246,9 +246,10 @@ describe('createGatewayEventHandler', () => {
     } as any)
     onEvent({ payload: { text: assistantText }, type: 'message.complete' } as any)
 
-    expect(appended).toHaveLength(1)
-    expect(appended[0]?.text).toBe(assistantText)
-    expect((appended[0]?.text.match(/```diff/g) ?? []).length).toBe(1)
+    expect(appended).toHaveLength(2)
+    expect(appended[0]).toMatchObject({ kind: 'trail' })
+    expect(appended[1]?.text).toBe(assistantText)
+    expect((appended[1]?.text.match(/```diff/g) ?? []).length).toBe(1)
   })
 
   it('keeps tool trail terse when inline_diff is present', () => {

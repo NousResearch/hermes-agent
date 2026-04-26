@@ -76,6 +76,7 @@ from agent.usage_middleman import build_compact_usage_table
 from hermes_cli.banner import _format_context_length, format_banner_version_label
 
 _COMMAND_SPINNER_FRAMES = ("⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏")
+_USAGE_PROVIDER_FETCH_TIMEOUT_SECONDS = 75.0
 
 
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
@@ -1322,9 +1323,28 @@ def _usage_line_ansi(line: str) -> str:
             colored_inner = re.sub(r"saldo", f"{brazil_yellow}saldo{reset}", colored_inner, count=1, flags=re.IGNORECASE)
             colored_inner = _replace_money(colored_inner, default_color=brazil_yellow, brl_color=brazil_blue)
             return f"{dim}#{reset}{colored_inner}{dim}#{reset}"
+        if "saldo" in inner_lower or "r$" in inner_lower:
+            colored_inner = re.sub(r"saldo", f"{brazil_yellow}saldo{reset}", inner, count=1, flags=re.IGNORECASE)
+            colored_inner = _replace_money(colored_inner, default_color=brazil_yellow, brl_color=brazil_blue)
+            return f"{dim}#{reset}{colored_inner}{dim}#{reset}"
         return f"{dim}#{reset}{bright_cyan}{inner}{reset}{dim}#{reset}"
     if "|" not in line:
         return line
+
+    inner = line[1:-1] if line.startswith("#") and line.endswith("#") else line
+    inner_lower = inner.lower()
+    if "openrouter" in inner_lower:
+        colored_inner = re.sub(r"openrouter", f"{bright_blue}openrouter{reset}", inner, count=1, flags=re.IGNORECASE)
+        colored_inner = _replace_money(colored_inner, default_color=bright_green)
+        return f"{dim}#{reset}{colored_inner}{dim}#{reset}" if line.startswith("#") and line.endswith("#") else colored_inner
+    if "maritaca" in inner_lower:
+        colored_inner = re.sub(r"maritaca", f"{brazil_green}maritaca{reset}", inner, count=1, flags=re.IGNORECASE)
+        colored_inner = re.sub(r"saldo", f"{brazil_yellow}saldo{reset}", colored_inner, count=1, flags=re.IGNORECASE)
+        colored_inner = _replace_money(colored_inner, default_color=brazil_yellow, brl_color=brazil_blue)
+        return f"{dim}#{reset}{colored_inner}{dim}#{reset}" if line.startswith("#") and line.endswith("#") else colored_inner
+    if "$" in inner and inner.strip().startswith("|"):
+        colored_inner = _replace_money(inner, default_color=bright_green)
+        return f"{dim}#{reset}{colored_inner}{dim}#{reset}" if line.startswith("#") and line.endswith("#") else colored_inner
 
     label = line[2:20]
     value = line[23:77]
@@ -7193,7 +7213,7 @@ class HermesCLI:
                         provider_name,
                         base_url=resolved_base_url,
                         api_key=resolved_api_key,
-                    ).result(timeout=12.0)
+                    ).result(timeout=_USAGE_PROVIDER_FETCH_TIMEOUT_SECONDS)
                 except (concurrent.futures.TimeoutError, Exception):
                     return []
 

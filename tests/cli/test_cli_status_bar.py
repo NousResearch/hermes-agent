@@ -294,9 +294,9 @@ class TestCLIUsageReport:
         table_lines = lines[1:]
         assert table_lines[0] == "#" * 79
         assert all(len(line) == 79 for line in table_lines)
-        assert any("balances" in line for line in table_lines)
+        assert any("BALANCES" in line for line in table_lines)
         assert any("openrouter" in line for line in table_lines)
-        assert any("Credits balance: $12.34" in line for line in table_lines)
+        assert any("| bal $12.34 |" in line for line in table_lines)
 
     def test_show_usage_uses_persisted_session_when_agent_not_active(self, capsys, monkeypatch):
         cli_obj = _make_cli()
@@ -330,6 +330,52 @@ class TestCLIUsageReport:
         assert any("tokens" in line and "12,450" in line for line in lines)
         assert any("calls" in line and "7" in line for line in lines)
         assert any("cost" in line and "$" in line for line in lines)
+
+    def test_show_usage_waits_long_enough_for_maritaca_balance_fetch(self, capsys, monkeypatch):
+        from agent.account_usage import AccountUsageSnapshot
+        import cli as cli_module
+
+        cli_obj = _make_cli(model="gpt-5.4")
+        cli_obj.provider = "openai-codex"
+        cli_obj.verbose = False
+        cli_obj._session_db = None
+
+        snapshot = AccountUsageSnapshot(
+            provider="maritaca",
+            source="a3_protonpass_credits_api",
+            fetched_at=datetime.now(),
+            details=("Saldo: R$ 118,29",),
+        )
+
+        class _FakeFuture:
+            def result(self, timeout=None):
+                if timeout is not None and timeout < 60:
+                    raise cli_module.concurrent.futures.TimeoutError()
+                return [snapshot]
+
+        class _FakeExecutor:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def submit(self, fn, *args, **kwargs):
+                return _FakeFuture()
+
+        monkeypatch.setattr(cli_module.concurrent.futures, "ThreadPoolExecutor", lambda max_workers=1: _FakeExecutor())
+        monkeypatch.setattr(
+            "cli.render_multi_provider_hash",
+            lambda snapshots: [(item.provider, item.details[0]) for item in snapshots],
+        )
+
+        cli_obj._show_usage()
+        output = capsys.readouterr().out
+        lines = [line for line in output.splitlines() if line]
+
+        assert any("BALANCES" in line for line in lines)
+        assert any("maritaca" in line for line in lines)
+        assert any("saldo R$ 118,29" in line for line in lines)
 
     def test_show_usage_renders_compact_table_with_provider_and_quota_sections(self, capsys, monkeypatch):
         from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
@@ -396,11 +442,11 @@ class TestCLIUsageReport:
         assert lines[-1] == "#" * 79
         assert all(len(line) == 79 for line in lines)
         assert any("session" in line for line in lines)
-        assert any("balances" in line for line in lines)
+        assert any("BALANCES" in line for line in lines)
         assert any("claude code" in line for line in lines)
         assert any("codex / openai" in line for line in lines)
-        assert any("Credits balance: $44.48" in line for line in lines)
-        assert any("Saldo: R$ 118,96" in line for line in lines)
+        assert any("| bal $44.48 |" in line for line in lines)
+        assert any("saldo R$ 118,96" in line for line in lines)
         assert any("$0.064" in line for line in lines)
         assert any("[████████" in line or "[███████" in line for line in lines)
 
@@ -428,22 +474,26 @@ class TestCLIUsageReport:
         assert any("Usage" in line for line in captured)
 
     def test_usage_line_ansi_uses_brazil_colors_for_maritaca(self):
-        line = "#                         maritaca  [saldo R$ 118,96]                         #"
+        provider_line = "#                                  maritaca                                   #"
+        saldo_line = "#                              saldo R$ 118,96                               #"
 
-        rendered = _usage_line_ansi(line)
+        rendered_provider = _usage_line_ansi(provider_line)
+        rendered_saldo = _usage_line_ansi(saldo_line)
 
-        assert "\x1b[1;32mmaritaca" in rendered
-        assert "\x1b[1;33msaldo" in rendered
-        assert "\x1b[1;34mR$ 118,96" in rendered
+        assert "\x1b[1;32mmaritaca" in rendered_provider
+        assert "\x1b[1;33msaldo" in rendered_saldo
+        assert "\x1b[1;34mR$ 118,96" in rendered_saldo
 
     def test_usage_line_ansi_keeps_usd_balances_green(self):
-        line = "#    openrouter  [bal $44.48] [d $18.37] [w $38.63] [m $38.63] [Σ $38.63]     #"
+        provider_line = "#                                 openrouter                                  #"
+        metrics_line = "#                    | d $18.37 | w $38.63 | m $38.63 |                    #"
 
-        rendered = _usage_line_ansi(line)
+        rendered_provider = _usage_line_ansi(provider_line)
+        rendered_metrics = _usage_line_ansi(metrics_line)
 
-        assert "\x1b[1;34mopenrouter" in rendered
-        assert "\x1b[1;32m$44.48" in rendered
-        assert "\x1b[1;32m$18.37" in rendered
+        assert "\x1b[1;34mopenrouter" in rendered_provider
+        assert "\x1b[1;32m$18.37" in rendered_metrics
+        assert "\x1b[1;32m$38.63" in rendered_metrics
 
     def test_usage_line_ansi_keeps_title_row_edges_gray(self):
         line = "#" + " Usage ".center(77) + "#"

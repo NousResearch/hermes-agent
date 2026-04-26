@@ -19,6 +19,7 @@ exactly 79 characters wide.
 from __future__ import annotations
 
 from typing import Iterable, Sequence
+import re
 import textwrap
 
 _TOTAL = 79
@@ -88,6 +89,79 @@ def _append_section(lines: list[str], title: str, rows: Iterable[tuple[str, str]
     lines.append(_center_line(title))
     for label, value in rows:
         lines.extend(_row(label, value))
+
+
+def _center_content_row(text: str) -> str:
+    shown = str(text or "").strip()
+    if len(shown) > _INNER:
+        shown = shown[: _INNER - 1] + "…"
+    return f"#{shown:^{_INNER}}#"
+
+
+def _extract_metric(value: str, pattern: str) -> str | None:
+    match = re.search(pattern, value)
+    if not match:
+        return None
+    return match.group(1).strip()
+
+
+def _cell_grid(cells: Sequence[tuple[str, int]]) -> list[str]:
+    border = "+" + "+".join("-" * (width + 2) for _, width in cells) + "+"
+    content = "|" + "|".join(f" {text:^{width}} " for text, width in cells) + "|"
+    return [border, content, border]
+
+
+def _format_balance_lines(label: str, value: str) -> list[str]:
+    provider = str(label or "").strip().lower()
+    detail = str(value or "").strip()
+
+    if provider == "openrouter":
+        balance = _extract_metric(detail, r"Credits balance:\s*([^\s•]+)")
+        total = _extract_metric(detail, r"API key usage:\s*([^\s]+)\s+total")
+        today = _extract_metric(detail, r"([^\s]+)\s+today")
+        week = _extract_metric(detail, r"([^\s]+)\s+this week")
+        month = _extract_metric(detail, r"([^\s]+)\s+this month")
+        top_cells = []
+        bottom_cells = []
+        if today:
+            top_cells.append((f"d {today}", 8))
+        if week:
+            top_cells.append((f"w {week}", 8))
+        if month:
+            top_cells.append((f"m {month}", 8))
+        if balance:
+            bottom_cells.append((f"bal {balance}", 10))
+        if total:
+            bottom_cells.append((f"Σ {total}", 8))
+        metric_lines: list[str] = ["openrouter"]
+        if top_cells:
+            metric_lines.extend(_cell_grid(top_cells))
+        if bottom_cells:
+            metric_lines.extend(_cell_grid(bottom_cells))
+        if len(metric_lines) > 1:
+            return metric_lines
+
+    if provider == "maritaca":
+        amount = _extract_metric(detail, r"Saldo:\s*(R\$\s*[0-9.,]+)")
+        if amount:
+            return ["maritaca", f"saldo {amount}"]
+
+    if provider:
+        return [f"{provider}  {detail}"]
+    return [detail]
+
+
+def _append_balance_section(lines: list[str], rows: Iterable[tuple[str, str]]) -> None:
+    rows = list(rows)
+    if not rows:
+        return
+    if len(lines) > 1:
+        lines.append(_divider())
+    lines.append(_center_line("BALANCES"))
+    for label, value in rows:
+        lines.append(_divider())
+        for balance_line in _format_balance_lines(label, value):
+            lines.append(_center_content_row(balance_line))
 
 
 def _format_session_rows(
@@ -212,7 +286,7 @@ def build_compact_usage_table(
         _append_section(lines, "session", session_rows)
 
     if balance_rows:
-        _append_section(lines, "balances", balance_rows)
+        _append_balance_section(lines, balance_rows)
 
     for section_title, section_rows in quota_sections or ():
         if not section_rows:

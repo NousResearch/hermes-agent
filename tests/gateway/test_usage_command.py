@@ -206,7 +206,7 @@ class TestUsageAccountSection:
             result = await runner._handle_usage_command(event)
 
         assert "#" * 79 in result
-        assert "balances" in result
+        assert "BALANCES" in result
         assert "Provider: openai-codex (Pro)" in result
 
     @pytest.mark.asyncio
@@ -247,7 +247,7 @@ class TestUsageAccountSection:
         assert calls["args"] == ("openai-codex",)
         assert calls["kwargs"]["base_url"] == "https://chatgpt.com/backend-api/codex"
         assert "#" * 79 in result
-        assert "balances" in result
+        assert "BALANCES" in result
 
     @pytest.mark.asyncio
     async def test_usage_command_renders_quota_sections_in_compact_table(self, monkeypatch):
@@ -301,5 +301,5 @@ class TestUsageAccountSection:
 
         assert "claude code" in result
         assert "codex / openai" in result
-        assert "Credits balance: $44.48" in result
+        assert "| bal $44.48 |" in result
         assert "[███████" in result or "[████████" in result

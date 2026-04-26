@@ -2,7 +2,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from datetime import datetime, timezone
+import json
 import os
+from pathlib import Path
+import subprocess
 from typing import Any, Optional
 
 import httpx
@@ -311,10 +314,41 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
     )
 
 
+def _fetch_maritaca_account_usage_via_skill() -> Optional[AccountUsageSnapshot]:
+    hermes_home = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes"))
+    script_path = hermes_home / "skills/web/maritaca-billing-status-web/scripts/check_balance_via_a3_protonpass.py"
+    if not script_path.exists():
+        return None
+    try:
+        result = subprocess.run(
+            ["python3", str(script_path), "--json"],
+            capture_output=True,
+            text=True,
+            timeout=120,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if result.returncode != 0:
+        return None
+    try:
+        payload = json.loads((result.stdout or "").strip())
+    except json.JSONDecodeError:
+        return None
+    credits = payload.get("credits")
+    if not isinstance(credits, (int, float)):
+        return None
+    return AccountUsageSnapshot(
+        provider="maritaca",
+        source="a3_protonpass_credits_api",
+        fetched_at=_utc_now(),
+        details=(f"Saldo: {_format_brl(float(credits))}",),
+    )
+
+
 def _fetch_maritaca_account_usage(api_key: Optional[str] = None) -> Optional[AccountUsageSnapshot]:
     token = str(api_key or os.getenv("MARITACA_API_KEY", "")).strip()
     if not token:
-        return None
+        return _fetch_maritaca_account_usage_via_skill()
     headers = {
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",

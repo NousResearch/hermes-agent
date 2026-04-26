@@ -225,6 +225,35 @@ def test_fetch_account_usage_maritaca(monkeypatch):
     assert snapshot.details == ("Saldo: R$ 118,96",)
 
 
+def test_fetch_account_usage_maritaca_falls_back_to_a3_protonpass_skill(monkeypatch, tmp_path):
+    monkeypatch.delenv("MARITACA_API_KEY", raising=False)
+    hermes_home = tmp_path / ".hermes"
+    script_path = hermes_home / "skills/web/maritaca-billing-status-web/scripts/check_balance_via_a3_protonpass.py"
+    script_path.parent.mkdir(parents=True)
+    script_path.write_text("# stub\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+    calls = []
+
+    class _Completed:
+        def __init__(self, returncode=0, stdout='{"credits": 118.9582285}\n', stderr=""):
+            self.returncode = returncode
+            self.stdout = stdout
+            self.stderr = stderr
+
+    monkeypatch.setattr(
+        "agent.account_usage.subprocess.run",
+        lambda args, capture_output, text, timeout: calls.append((args, capture_output, text, timeout)) or _Completed(),
+    )
+
+    snapshot = fetch_account_usage("maritaca")
+
+    assert snapshot is not None
+    assert snapshot.provider == "maritaca"
+    assert snapshot.details == ("Saldo: R$ 118,96",)
+    assert calls == [(["python3", str(script_path), "--json"], True, True, 120)]
+
+
 def test_fetch_all_relevant_providers_includes_maritaca(monkeypatch):
     monkeypatch.setattr(
         "agent.account_usage.fetch_account_usage",

@@ -1,7 +1,6 @@
 import type { ScrollBoxHandle } from '@hermes/ink'
 
 import type { SelectionApi } from './interfaces.js'
-import { markScrolling } from './interactionMode.js'
 
 export interface SelectionSnap {
   anchor?: { row: number } | null
@@ -29,8 +28,6 @@ export function scrollWithSelectionBy(delta: number, { scrollRef, selection }: S
   if (actual === 0) {
     return
   }
-
-  markScrolling()
 
   const sel = selection.getState() as null | SelectionSnap
   const top = s.getViewportTop()

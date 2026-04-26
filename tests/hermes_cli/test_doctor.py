@@ -663,3 +663,79 @@ def test_run_doctor_opencode_go_skips_invalid_models_probe(monkeypatch, tmp_path
     )
     assert not any(url == "https://opencode.ai/zen/go/v1/models" for url, _, _ in calls)
     assert not any("opencode" in url.lower() and "models" in url.lower() for url, _, _ in calls)
+
+
+class TestGitHubTokenCheck:
+    """Tests for GitHub token / gh auth detection in doctor."""
+
+    def test_no_token_and_not_gh_authenticated_shows_warn(self, monkeypatch, tmp_path):
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("PATH", "/nonexistent")  # gh not found
+
+        from hermes_cli.doctor import run_doctor, _DHH
+        import io, contextlib
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            run_doctor(Namespace(fix=False))
+        out = buf.getvalue()
+
+        assert "No GITHUB_TOKEN" in out
+        assert "60 req/hr" in out
+
+    def test_token_env_present_shows_ok(self, monkeypatch, tmp_path):
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("GITHUB_TOKEN", "ghp_test123")
+        monkeypatch.setenv("PATH", "/nonexistent")  # gh not found
+
+        from hermes_cli.doctor import run_doctor
+        import io, contextlib
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            run_doctor(Namespace(fix=False))
+        out = buf.getvalue()
+
+        assert "GitHub token configured" in out
+
+    def test_gh_authenticated_without_env_token_shows_ok(self, monkeypatch, tmp_path):
+        home = tmp_path / ".hermes"
+        home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        # No GITHUB_TOKEN or GH_TOKEN
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+
+        # Mock gh to return success
+        import shutil
+        real_which = shutil.which
+        def mock_which(cmd):
+            return "/usr/local/bin/gh" if cmd == "gh" else real_which(cmd)
+        monkeypatch.setattr(shutil, "which", mock_which)
+
+        call_log = []
+        def mock_run(cmd, **kwargs):
+            call_log.append(cmd)
+            if cmd[:2] == ["gh", "auth"]:
+                result = types.SimpleNamespace(returncode=0, stdout="", stderr="")
+            else:
+                result = types.SimpleNamespace(returncode=1, stdout="", stderr="")
+            return result
+
+        import subprocess
+        monkeypatch.setattr(subprocess, "run", mock_run)
+
+        from hermes_cli.doctor import run_doctor
+        import io, contextlib
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            run_doctor(Namespace(fix=False))
+        out = buf.getvalue()
+
+        assert "gh auth" in str(call_log) or any(c[0] == "gh" for c in call_log), f"gh not called: {call_log}"
+        assert "GitHub authenticated via gh CLI" in out or "token configured" in out

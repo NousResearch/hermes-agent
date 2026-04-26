@@ -14,6 +14,7 @@ from datetime import datetime
 from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import OPENROUTER_BASE_URL
+from hermes_cli.config import get_env_value
 import hermes_cli.auth as auth_mod
 from hermes_cli.auth import (
     CODEX_ACCESS_TOKEN_REFRESH_SKEW_SECONDS,
@@ -1274,11 +1275,7 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
             return False
     if provider == "openrouter":
         # Check both os.environ and ~/.hermes/.env file
-        try:
-            from hermes_cli.config import get_env_value
-            token = (get_env_value("OPENROUTER_API_KEY") or "").strip()
-        except Exception:
-            token = os.getenv("OPENROUTER_API_KEY", "").strip()
+        token = (get_env_value("OPENROUTER_API_KEY") or "").strip()
         if token:
             source = "env:OPENROUTER_API_KEY"
             if _is_source_suppressed(provider, source):
@@ -1304,11 +1301,7 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
 
     env_url = ""
     if pconfig.base_url_env_var:
-        try:
-            from hermes_cli.config import get_env_value
-            env_url = (get_env_value(pconfig.base_url_env_var) or "").strip().rstrip("/")
-        except Exception:
-            env_url = os.getenv(pconfig.base_url_env_var, "").strip().rstrip("/")
+        env_url = (get_env_value(pconfig.base_url_env_var) or "").strip().rstrip("/")
 
     env_vars = list(pconfig.api_key_env_vars)
     if provider == "anthropic":
@@ -1320,11 +1313,7 @@ def _seed_from_env(provider: str, entries: List[PooledCredential]) -> Tuple[bool
 
     for env_var in env_vars:
         # Check both os.environ and ~/.hermes/.env file
-        try:
-            from hermes_cli.config import get_env_value
-            token = (get_env_value(env_var) or "").strip()
-        except Exception:
-            token = os.getenv(env_var, "").strip()
+        token = (get_env_value(env_var) or "").strip()
         if not token:
             continue
         source = f"env:{env_var}"

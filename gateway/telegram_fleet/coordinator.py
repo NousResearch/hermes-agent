@@ -361,6 +361,82 @@ class FleetCoordinator:
                 break
         return absorbed
 
+    def adopt_existing_bot(
+        self,
+        token: str,
+        *,
+        persona: str = "",
+        model: Optional[str] = None,
+        profile: Optional[str] = None,
+        toolset: Optional[List[str]] = None,
+        rate_limit_per_min: int = 30,
+        daily_budget_usd: Optional[float] = None,
+        notes: str = "",
+    ) -> ChildBot:
+        """Adopt a bot the user *already* created in BotFather into the fleet.
+
+        Skips the Managed Bots ``getManagedBotToken`` ceremony entirely —
+        validates the token by calling ``getMe`` against it and writes the
+        result straight into the roster as ``status="active"``.  Use this
+        when ``hermes fleet add`` (the deep-link spawn flow) hits a
+        "username already taken" error because the bot was created manually.
+
+        Trade-off: bots adopted this way cannot be rotated via
+        ``replaceManagedBotToken`` — that endpoint only works on bots that
+        were *created* through the manager flow.  Rotation for adopted bots
+        means generating a fresh token in BotFather and re-adopting.
+        """
+        if not token or ":" not in token:
+            raise FleetGuardrailError(
+                "token doesn't look like a Telegram bot token (expected "
+                "'<id>:<rest>')"
+            )
+        # Validate against Telegram + read identity.  Re-import so test
+        # patches against ``gateway.telegram_fleet.api.FleetApiClient`` take
+        # effect (the module-level import is bound at coordinator import
+        # time and would not see monkeypatches).
+        from gateway.telegram_fleet import api as _api_module
+        client = _api_module.FleetApiClient(token)
+        try:
+            me = client.get_me()
+        except BotApiError as e:
+            raise FleetGuardrailError(
+                f"Telegram rejected this token: {e}"
+            ) from e
+        username = _normalize_username(str(me.get("username") or ""))
+        bot_id = int(me.get("id") or 0)
+        if not username or not bot_id:
+            raise FleetGuardrailError(
+                f"getMe returned an unusable identity: {me!r}"
+            )
+
+        with self._lock:
+            check_can_spawn(self._roster)
+            existing = self._roster.find(username)
+            child = ChildBot(
+                username=username,
+                persona=persona,
+                bot_id=bot_id,
+                token=token,
+                model=model,
+                profile=profile,
+                toolset=toolset,
+                status="active",
+                rate_limit_per_min=rate_limit_per_min,
+                daily_budget_usd=daily_budget_usd,
+                notes=notes or (existing.notes if existing else ""),
+                last_rotated_at=_now_iso(),
+            )
+            self._roster.upsert(child)
+            save_roster(self._roster, path=self._roster_path)
+        audit_event(
+            "adopted",
+            bot_username=username,
+            bot_id=bot_id,
+            replaced_existing=existing is not None,
+        )
+        return child
+
     def absorb_managed_bot(self, info: ManagedBotInfo) -> Optional[ChildBot]:
         """Promote a pending child to active when the user confirms the spawn.
 

@@ -55,6 +55,12 @@ Per worker you can also pass `context` (extra grounding) and `toolsets` (allowed
 
 Use **only** when the user explicitly wants visible Telegram bot activity ("send me updates from each agent", "I want to watch them work in Telegram", or they've already been working with named fleet bots like `@research_legal_bot`). Requires a one-time manager-bot setup; if not configured, prefer `hermes_swarm`.
 
+> **One-time fleet setup (operator side).** The user runs `hermes fleet setup` once to register a manager bot, then either:
+> * `hermes fleet add <username>` — creates a NEW child bot through the Managed Bots deep-link flow (one tap to confirm).
+> * `hermes fleet adopt --token <bot_token>` — adopts a bot the user **already** created in BotFather.  Use this when `add` says "username already taken."
+>
+> Both paths land the bot in the roster as `active`, ready for `telegram_orchestrate_swarm`.
+
 **This variant has visible side-effects** (named bots posting into chats), so it requires explicit user consent — same pattern as `terminal_tool`'s dangerous-command flow. Two paths to run:
 
 ### A. Approval flow (default)

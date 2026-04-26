@@ -297,6 +297,148 @@ def test_cmd_fleet_dispatches_to_status_by_default(hermes_home, capsys):
     assert rc == 1
 
 
+# ── adopt ──────────────────────────────────────────────────────────────
+
+
+def test_adopt_rejects_bad_token_shape(hermes_home, capsys):
+    from hermes_cli.fleet import _cmd_adopt
+
+    rc = _cmd_adopt(
+        _ns(token="too-short", persona="x", model=None, toolset=None)
+    )
+    out = capsys.readouterr().out
+    assert "Token doesn't look right" in out
+    assert rc == 1
+
+
+def test_adopt_writes_active_entry(hermes_home, monkeypatch, capsys):
+    """Adopting a real-looking token validates via getMe and lands as active."""
+    from hermes_cli.fleet import _cmd_adopt
+    from gateway.telegram_fleet import api as api_module
+    from gateway.telegram_fleet.coordinator import FleetCoordinator
+
+    fake_client = MagicMock()
+    fake_client.get_me.return_value = {
+        "id": 7777,
+        "username": "my_existing_bot",
+        "can_manage_bots": False,  # adopted bots don't need manager mode
+    }
+    monkeypatch.setattr(api_module, "FleetApiClient", lambda *a, **k: fake_client)
+
+    rc = _cmd_adopt(
+        _ns(
+            token="12345:ABC" + "x" * 30,
+            persona="research lead",
+            model=None,
+            toolset=None,
+        )
+    )
+    out = capsys.readouterr().out
+    assert rc == 0
+    assert "Adopted @my_existing_bot" in out
+
+    # Roster updated with active bot.
+    coord = FleetCoordinator()
+    child = coord.find("my_existing_bot")
+    assert child is not None
+    assert child.is_active()
+    assert child.bot_id == 7777
+    assert child.persona == "research lead"
+
+
+def test_adopt_surfaces_telegram_rejection(hermes_home, monkeypatch, capsys):
+    """Real-shaped but invalid token gets a clean error."""
+    from hermes_cli.fleet import _cmd_adopt
+    from gateway.telegram_fleet import api as api_module
+    from gateway.telegram_fleet.api import BotApiError
+
+    fake_client = MagicMock()
+    fake_client.get_me.side_effect = BotApiError("getMe", 401, "Unauthorized")
+    monkeypatch.setattr(api_module, "FleetApiClient", lambda *a, **k: fake_client)
+
+    rc = _cmd_adopt(
+        _ns(
+            token="12345:ABC" + "x" * 30,
+            persona="x",
+            model=None,
+            toolset=None,
+        )
+    )
+    out = capsys.readouterr().out
+    assert rc == 1
+    assert "Telegram rejected" in out or "rejected" in out.lower()
+
+
+def test_adopt_parses_toolset_csv(hermes_home, monkeypatch, capsys):
+    """--toolset web,file → list."""
+    from hermes_cli.fleet import _cmd_adopt
+    from gateway.telegram_fleet import api as api_module
+    from gateway.telegram_fleet.coordinator import FleetCoordinator
+
+    fake_client = MagicMock()
+    fake_client.get_me.return_value = {
+        "id": 1234,
+        "username": "tooled_bot",
+        "can_manage_bots": False,
+    }
+    monkeypatch.setattr(api_module, "FleetApiClient", lambda *a, **k: fake_client)
+
+    rc = _cmd_adopt(
+        _ns(
+            token="12345:ABC" + "x" * 30,
+            persona="",
+            model=None,
+            toolset="web, file, terminal",
+        )
+    )
+    assert rc == 0
+    coord = FleetCoordinator()
+    child = coord.find("tooled_bot")
+    assert child.toolset == ["web", "file", "terminal"]
+
+
+# ── coordinator: adopt_existing_bot directly ─────────────────────────
+
+
+def test_coordinator_adopt_validates_token_shape(hermes_home):
+    from gateway.telegram_fleet.coordinator import FleetCoordinator
+    from gateway.telegram_fleet.guardrails import FleetGuardrailError
+
+    api = MagicMock()
+    coord = FleetCoordinator(manager_token="x:y", api_client=api)
+    with pytest.raises(FleetGuardrailError, match="bot token"):
+        coord.adopt_existing_bot(token="not-a-token")
+
+
+def test_coordinator_adopt_replaces_existing_pending_entry(hermes_home, monkeypatch):
+    """Adopting overrides a stale pending entry with the same username."""
+    from gateway.telegram_fleet import api as api_module
+    from gateway.telegram_fleet.coordinator import FleetCoordinator
+
+    api = MagicMock()
+    api.get_me.return_value = {"id": 1, "username": "Mgr", "can_manage_bots": True}
+    coord = FleetCoordinator(manager_token="x:y", api_client=api)
+    coord.spawn_bot("dup_bot", persona="from spawn")  # creates pending entry
+
+    fake_child_client = MagicMock()
+    fake_child_client.get_me.return_value = {
+        "id": 9999,
+        "username": "dup_bot",
+        "can_manage_bots": False,
+    }
+    monkeypatch.setattr(
+        api_module, "FleetApiClient", lambda *a, **k: fake_child_client
+    )
+
+    child = coord.adopt_existing_bot(
+        token="12345:ABC" + "x" * 30, persona="from adopt"
+    )
+    assert child.is_active()
+    assert child.bot_id == 9999
+    # The stale pending entry was replaced (not duplicated).
+    assert len([c for c in coord.list_children() if c.username == "dup_bot"]) == 1
+
+
 # ── connect ────────────────────────────────────────────────────────────
 
 

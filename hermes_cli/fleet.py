@@ -78,6 +78,8 @@ def cmd_fleet(args: argparse.Namespace) -> int:
         return _cmd_list(args)
     if sub == "add":
         return _cmd_add(args)
+    if sub == "adopt":
+        return _cmd_adopt(args)
     if sub == "connect":
         return _cmd_connect(args)
     return _cmd_status(args)
@@ -139,6 +141,48 @@ def add_fleet_parser(subparsers) -> None:
             "After printing the deep link, poll for up to N seconds "
             "waiting for the user to tap (default 180 = 3 minutes).  Pass "
             "0 to skip polling and exit immediately."
+        ),
+    )
+
+    adopt_parser = fleet_subparsers.add_parser(
+        "adopt",
+        help=(
+            "Adopt an EXISTING bot into the fleet by token.  Use this when "
+            "you already created the bot manually in @BotFather and "
+            "`hermes fleet add` says the username is taken."
+        ),
+        description=(
+            "Adds an already-existing Telegram bot to the fleet roster by "
+            "validating its token (calls getMe) and writing it as active.  "
+            "Bypasses the Managed Bots deep-link flow.  Trade-off: bots "
+            "adopted this way cannot be rotated via replaceManagedBotToken; "
+            "rotation means generating a fresh token in BotFather and "
+            "re-running `hermes fleet adopt`."
+        ),
+    )
+    adopt_parser.add_argument(
+        "--token",
+        default=None,
+        help=(
+            "Bot API token.  If omitted, you'll be prompted (input hidden)."
+        ),
+    )
+    adopt_parser.add_argument(
+        "--persona",
+        default="",
+        help="Free-text persona/role description for this worker.",
+    )
+    adopt_parser.add_argument(
+        "--model",
+        default=None,
+        help="Optional model override for tasks routed through this bot.",
+    )
+    adopt_parser.add_argument(
+        "--toolset",
+        default=None,
+        help=(
+            "Optional toolset whitelist, comma-separated "
+            "(e.g. 'web,file,terminal')."
         ),
     )
 
@@ -404,6 +448,14 @@ def _cmd_add(args: argparse.Namespace) -> int:
     print(f"  {_BOLD}Tap this link in Telegram to confirm:{_RST}")
     print(f"  {_INFO}{result.deep_link}{_RST}")
     print()
+    print(
+        f"  {_DIM}This link CREATES a new bot under your manager's "
+        f"control.  If Telegram says 'username already taken' when you "
+        f"tap, the bot already exists \u2014 use "
+        f"`hermes fleet adopt --token <its_token> --persona \"...\"` "
+        f"instead.{_RST}"
+    )
+    print()
 
     wait_seconds = int(getattr(args, "wait", 0) or 0)
     if wait_seconds <= 0:
@@ -475,6 +527,73 @@ def _explain_bot_api_error(e) -> None:
             "Open @BotFather \u2192 /mybots \u2192 select the bot \u2192 BotFather "
             "MiniApp \u2192 enable 'Bot Management Mode', then retry."
         )
+
+
+def _cmd_adopt(args: argparse.Namespace) -> int:
+    """Adopt an existing Telegram bot (created in BotFather) into the fleet."""
+    from gateway.telegram_fleet import (
+        FleetGuardrailError,
+        SpawnApprovalRequired,
+        get_coordinator,
+    )
+    from gateway.telegram_fleet.api import BotApiError
+
+    token = (args.token or "").strip()
+    if not token:
+        if not sys.stdin.isatty():
+            _err(
+                "No --token provided and stdin is not a TTY.  Pass "
+                "`--token <bot_token>` explicitly."
+            )
+            return 1
+        _info(
+            "Paste the bot's API token (from @BotFather \u2192 /mybots \u2192 "
+            "select bot \u2192 API Token).  Looks like '12345:ABC...'."
+        )
+        try:
+            token = getpass.getpass("Token (input hidden): ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print()
+            _err("Aborted.")
+            return 1
+    if ":" not in token or len(token) < 30:
+        _err(f"Token doesn't look right (got {len(token)} chars; expected ~46).")
+        return 1
+
+    toolset_list: Optional[list] = None
+    if args.toolset:
+        toolset_list = [t.strip() for t in str(args.toolset).split(",") if t.strip()]
+
+    coord = get_coordinator(refresh=True)
+    try:
+        child = coord.adopt_existing_bot(
+            token=token,
+            persona=args.persona,
+            model=args.model,
+            toolset=toolset_list,
+        )
+    except SpawnApprovalRequired as e:
+        _err(str(e))
+        return 1
+    except FleetGuardrailError as e:
+        _err(str(e))
+        return 1
+    except BotApiError as e:
+        _err(f"Telegram API error: {e}")
+        _explain_bot_api_error(e)
+        return 1
+    _ok(
+        f"Adopted @{child.username} into the fleet "
+        f"(bot_id={child.bot_id}, status=active)."
+    )
+    if args.persona:
+        _info(f"Persona: {args.persona}")
+    print()
+    _info(
+        "The bot is ready for `telegram_orchestrate_swarm`.  "
+        "Run `hermes fleet list` to verify."
+    )
+    return 0
 
 
 def _cmd_connect(args: argparse.Namespace) -> int:

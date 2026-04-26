@@ -9841,7 +9841,7 @@ class HermesCLI:
                 status = cli_ref._command_status or "Processing command..."
                 return f"{frame} {status}"
             if cli_ref._agent_running:
-                return "type a message + Enter to interrupt, Ctrl+C to cancel"
+                return "msg=interrupt · /queue · /bg · /steer · Ctrl+C cancel"
             if cli_ref._voice_mode:
                 return "type or Ctrl+B to record"
             return ""

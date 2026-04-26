@@ -180,6 +180,7 @@ $OD search "budget 2024" --format json
 | `access_denied` / `authorization_pending` | You haven't completed the browser step yet. Open the link, enter the code, and approve. |
 | `InvalidAuthenticationToken` | Token expired and auto-refresh failed. Delete `~/.hermes/onedrive_token.json` and re-run `--auth`. |
 | Upload fails with large files | Currently limited to ~60 MB. Large file chunked upload will be added in a future version. |
+| `AADSTS70002: The provided client is not supported` | The Azure app is registered as a **Web** app. Device code requires a **Public client**. Fix: Azure Portal → your app → Authentication → Advanced settings → **Allow public client flows: Yes** → Save. |
 | `Insufficient privileges` | Remove and re-add the API permissions in Azure Portal, then grant admin consent. |
 
 ## Contributing

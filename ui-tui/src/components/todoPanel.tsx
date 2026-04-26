@@ -1,5 +1,5 @@
 import { Box, Text } from '@hermes/ink'
-import { memo } from 'react'
+import { memo, useState } from 'react'
 
 import { countPendingTodos } from '../lib/liveProgress.js'
 import { todoGlyph, todoTone } from '../lib/todo.js'
@@ -13,7 +13,7 @@ const rowColor = (t: Theme, status: TodoItem['status']) => {
 }
 
 export const TodoPanel = memo(function TodoPanel({
-  collapsed = false,
+  collapsed,
   incomplete = false,
   onToggle,
   t,
@@ -25,6 +25,25 @@ export const TodoPanel = memo(function TodoPanel({
   t: Theme
   todos: TodoItem[]
 }) {
+  // Fallback local state for archived todos in transcript where there's no
+  // external controller. Live TodoPanel passes collapsed+onToggle from the
+  // turn store so clicks still work there.
+  const [localCollapsed, setLocalCollapsed] = useState(false)
+  const isControlled = typeof collapsed === 'boolean'
+  const effectiveCollapsed = isControlled ? collapsed : localCollapsed
+
+  const handleToggle = () => {
+    if (onToggle) {
+      onToggle()
+
+      return
+    }
+
+    if (!isControlled) {
+      setLocalCollapsed(v => !v)
+    }
+  }
+
   if (!todos.length) {
     return null
   }
@@ -34,9 +53,9 @@ export const TodoPanel = memo(function TodoPanel({
 
   return (
     <Box flexDirection="column" marginBottom={1}>
-      <Box onClick={onToggle}>
+      <Box onClick={handleToggle}>
         <Text color={t.color.dim}>
-          <Text color={t.color.amber}>{collapsed ? '▸ ' : '▾ '}</Text>
+          <Text color={t.color.amber}>{effectiveCollapsed ? '▸ ' : '▾ '}</Text>
           <Text bold color={t.color.cornsilk}>
             Todo
           </Text>{' '}
@@ -52,7 +71,7 @@ export const TodoPanel = memo(function TodoPanel({
         </Text>
       </Box>
 
-      {!collapsed && (
+      {!effectiveCollapsed && (
         <Box flexDirection="column" marginLeft={2}>
           {todos.map(todo => {
             const tone = todoTone(todo.status)

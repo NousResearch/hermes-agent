@@ -26,7 +26,7 @@ module.exports = {
   ],
   // We feed already-compiled JS into babel; don't re-parse as TS/JSX.
   // @babel/preset-env etc. would over-transform — the compiler is our only
-  // transform here.
-  babelrc: false,
-  configFile: false
+  // transform here. babelrc:false stops @babel/cli from walking up the
+  // filesystem looking for other configs (the parent repo might add one).
+  babelrc: false
 }

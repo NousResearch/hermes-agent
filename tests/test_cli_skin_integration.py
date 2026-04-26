@@ -91,6 +91,28 @@ class TestCliSkinPromptIntegration:
         assert cli._app.style is not None
 
 
+class TestResponsePanelLabel:
+    def test_includes_current_session_title(self):
+        set_active_skin("default")
+        cli = _make_cli_stub()
+        cli.session_id = "session-123"
+        cli._pending_title = None
+        cli._session_db = SimpleNamespace(
+            get_session=lambda session_id: {"title": "A3 certificate setup"}
+        )
+
+        assert cli._response_panel_label() == " ⚕ Hermes · A3 certificate setup "
+
+    def test_uses_pending_title_before_session_is_persisted(self):
+        set_active_skin("default")
+        cli = _make_cli_stub()
+        cli.session_id = "session-123"
+        cli._pending_title = "Billing monitor"
+        cli._session_db = None
+
+        assert cli._response_panel_label() == " ⚕ Hermes · Billing monitor "
+
+
 class TestCompactBannerSkinIntegration:
     def test_default_compact_banner_keeps_legacy_nous_hermes_branding(self):
         set_active_skin("default")

@@ -638,6 +638,7 @@ class GatewayRunner:
     _restart_via_service: bool = False
     _stop_task: Optional[asyncio.Task] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
+    _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
     
     def __init__(self, config: Optional[GatewayConfig] = None):
         self.config = config or load_gateway_config()
@@ -701,6 +702,9 @@ class GatewayRunner:
         # Per-session model overrides from /model command.
         # Key: session_key, Value: dict with model/provider/api_key/base_url/api_mode
         self._session_model_overrides: Dict[str, Dict[str, str]] = {}
+        # Per-session reasoning effort overrides from /reasoning.
+        # Key: session_key, Value: parsed reasoning config dict.
+        self._session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
         # Track pending exec approvals per session
         # Key: session_key, Value: {"command": str, "pattern_key": str, ...}
         self._pending_approvals: Dict[str, Dict[str, Any]] = {}
@@ -1262,6 +1266,66 @@ class GatewayRunner:
         if effort and effort.strip() and result is None:
             logger.warning("Unknown reasoning_effort '%s', using default (medium)", effort)
         return result
+
+    @staticmethod
+    def _parse_reasoning_command_args(raw_args: str) -> tuple[str, bool]:
+        """Parse `/reasoning` args into `(value, persist_global)`.
+
+        `/reasoning <level>` is session-scoped by default. `--global` may be
+        supplied in any position to persist the change to config.yaml.
+        """
+        import shlex
+
+        text = str(raw_args or "").strip().replace("—", "--")
+        if not text:
+            return "", False
+        try:
+            tokens = shlex.split(text)
+        except ValueError:
+            tokens = text.split()
+
+        persist_global = False
+        value_tokens = []
+        for token in tokens:
+            if token == "--global":
+                persist_global = True
+            else:
+                value_tokens.append(token)
+        return " ".join(value_tokens).strip().lower(), persist_global
+
+    def _resolve_session_reasoning_config(
+        self,
+        *,
+        source: Optional[SessionSource] = None,
+        session_key: Optional[str] = None,
+    ) -> dict | None:
+        """Resolve reasoning effort for a session, honoring session overrides."""
+        resolved_session_key = session_key
+        if not resolved_session_key and source is not None:
+            try:
+                resolved_session_key = self._session_key_for_source(source)
+            except Exception:
+                resolved_session_key = None
+
+        overrides = getattr(self, "_session_reasoning_overrides", {}) or {}
+        if resolved_session_key and resolved_session_key in overrides:
+            return overrides[resolved_session_key]
+        return self._load_reasoning_config()
+
+    def _set_session_reasoning_override(
+        self,
+        session_key: str,
+        reasoning_config: Optional[dict],
+    ) -> None:
+        """Set or clear the session-scoped reasoning override."""
+        if not session_key:
+            return
+        if not hasattr(self, "_session_reasoning_overrides"):
+            self._session_reasoning_overrides = {}
+        if reasoning_config is None:
+            self._session_reasoning_overrides.pop(session_key, None)
+        else:
+            self._session_reasoning_overrides[session_key] = dict(reasoning_config)
 
     @staticmethod
     def _load_service_tier() -> str | None:
@@ -3982,6 +4046,8 @@ class GatewayRunner:
         # Get or create session
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
+        if getattr(session_entry, "was_auto_reset", False):
+            self._set_session_reasoning_override(session_key, None)
         
         # Emit session:start for new or auto-reset sessions
         _is_new_session = (
@@ -4652,6 +4718,7 @@ class GatewayRunner:
                 self.session_store.reset_session(session_key)
                 self._evict_cached_agent(session_key)
                 self._session_model_overrides.pop(session_key, None)
+                self._set_session_reasoning_override(session_key, None)
                 response = (response or "") + (
                     "\n\n🔄 Session auto-reset — the conversation exceeded the "
                     "maximum context size and could not be compressed further. "
@@ -4824,6 +4891,7 @@ class GatewayRunner:
         provider = None
         base_url = None
         api_key = None
+        custom_provs = None
 
         try:
             cfg_path = _hermes_home / "config.yaml"
@@ -4841,6 +4909,11 @@ class GatewayRunner:
                             pass
                     provider = model_cfg.get("provider") or None
                     base_url = model_cfg.get("base_url") or None
+                try:
+                    from hermes_cli.config import get_compatible_custom_providers
+                    custom_provs = get_compatible_custom_providers(data)
+                except Exception:
+                    custom_provs = data.get("custom_providers")
         except Exception:
             pass
 
@@ -4859,6 +4932,7 @@ class GatewayRunner:
             api_key=api_key or "",
             config_context_length=config_context_length,
             provider=provider or "",
+            custom_providers=custom_provs,
         )
 
         # Format context source hint
@@ -4928,9 +5002,10 @@ class GatewayRunner:
         # Reset the session
         new_entry = self.session_store.reset_session(session_key)
 
-        # Clear any session-scoped model override so the next agent picks up
-        # the configured default instead of the previously switched model.
+        # Clear any session-scoped model/reasoning overrides so the next agent
+        # picks up configured defaults instead of previous session switches.
         self._session_model_overrides.pop(session_key, None)
+        self._set_session_reasoning_override(session_key, None)
 
         # Clear session-scoped dangerous-command approvals and /yolo state.
         # /new is a conversation-boundary operation — approval state from the
@@ -5533,6 +5608,7 @@ class GatewayRunner:
                             base_url=result.base_url or current_base_url or "",
                             api_key=result.api_key or current_api_key or "",
                             model_info=mi,
+                            custom_providers=custom_provs,
                         )
                         if ctx:
                             lines.append(f"Context: {ctx:,} tokens")
@@ -5680,6 +5756,7 @@ class GatewayRunner:
             base_url=result.base_url or current_base_url or "",
             api_key=result.api_key or current_api_key or "",
             model_info=mi,
+            custom_providers=custom_provs,
         )
         if ctx:
             lines.append(f"Context: {ctx:,} tokens")
@@ -6417,7 +6494,7 @@ class GatewayRunner:
 
             pr = self._provider_routing
             max_iterations = int(os.getenv("HERMES_MAX_ITERATIONS", "90"))
-            reasoning_config = self._load_reasoning_config()
+            reasoning_config = self._resolve_session_reasoning_config(source=source)
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
             turn_route = self._resolve_turn_agent_config(prompt, model, runtime_kwargs)
@@ -6590,7 +6667,10 @@ class GatewayRunner:
                 return
 
             platform_key = _platform_config_key(source.platform)
-            reasoning_config = self._load_reasoning_config()
+            reasoning_config = self._resolve_session_reasoning_config(
+                source=source,
+                session_key=session_key,
+            )
             self._service_tier = self._load_service_tier()
             turn_route = self._resolve_turn_agent_config(question, model, runtime_kwargs)
             pr = self._provider_routing
@@ -6696,17 +6776,24 @@ class GatewayRunner:
         """Handle /reasoning command — manage reasoning effort and display toggle.
 
         Usage:
-            /reasoning              Show current effort level and display state
-            /reasoning <level>      Set reasoning effort (none, minimal, low, medium, high, xhigh)
-            /reasoning show|on      Show model reasoning in responses
-            /reasoning hide|off     Hide model reasoning from responses
+            /reasoning                       Show current effort level and display state
+            /reasoning <level>               Set reasoning effort for this session only
+            /reasoning <level> --global      Persist reasoning effort to config.yaml
+            /reasoning reset                 Clear this session's reasoning override
+            /reasoning show|on               Show model reasoning in responses
+            /reasoning hide|off              Hide model reasoning from responses
         """
         import yaml
 
-        args = event.get_command_args().strip().lower()
+        raw_args = event.get_command_args().strip()
+        args, persist_global = self._parse_reasoning_command_args(raw_args)
         config_path = _hermes_home / "config.yaml"
-        self._reasoning_config = self._load_reasoning_config()
+        session_key = self._session_key_for_source(event.source)
         self._show_reasoning = self._load_show_reasoning()
+        self._reasoning_config = self._resolve_session_reasoning_config(
+            source=event.source,
+            session_key=session_key,
+        )
 
         def _save_config_key(key_path: str, value):
             """Save a dot-separated key to config.yaml."""
@@ -6728,7 +6815,7 @@ class GatewayRunner:
                 logger.error("Failed to save config key %s: %s", key_path, e)
                 return False
 
-        if not args:
+        if not raw_args:
             # Show current state
             rc = self._reasoning_config
             if rc is None:
@@ -6738,11 +6825,14 @@ class GatewayRunner:
             else:
                 level = rc.get("effort", "medium")
             display_state = "on ✓" if self._show_reasoning else "off"
+            has_session_override = session_key in (getattr(self, "_session_reasoning_overrides", {}) or {})
+            scope = "session override" if has_session_override else "global config"
             return (
                 "🧠 **Reasoning Settings**\n\n"
                 f"**Effort:** `{level}`\n"
+                f"**Scope:** {scope}\n"
                 f"**Display:** {display_state}\n\n"
-                "_Usage:_ `/reasoning <none|minimal|low|medium|high|xhigh|show|hide>`"
+                "_Usage:_ `/reasoning <none|minimal|low|medium|high|xhigh|reset|show|hide> [--global]`"
             )
 
         # Display toggle (per-platform)
@@ -6762,22 +6852,38 @@ class GatewayRunner:
 
         # Effort level change
         effort = args.strip()
+        if effort == "reset":
+            if persist_global:
+                return "⚠️ `/reasoning reset --global` is not supported. Use `/reasoning <level> --global` to change the global default."
+            self._set_session_reasoning_override(session_key, None)
+            self._reasoning_config = self._load_reasoning_config()
+            self._evict_cached_agent(session_key)
+            return "🧠 ✓ Session reasoning override cleared; falling back to global config."
         if effort == "none":
             parsed = {"enabled": False}
         elif effort in ("minimal", "low", "medium", "high", "xhigh"):
             parsed = {"enabled": True, "effort": effort}
         else:
             return (
-                f"⚠️ Unknown argument: `{effort}`\n\n"
+                f"⚠️ Unknown argument: `{effort or raw_args.lower()}`\n\n"
                 "**Valid levels:** none, minimal, low, medium, high, xhigh\n"
-                "**Display:** show, hide"
+                "**Display:** show, hide\n"
+                "**Persist:** add `--global` to save beyond this session"
             )
 
         self._reasoning_config = parsed
-        if _save_config_key("agent.reasoning_effort", effort):
-            return f"🧠 ✓ Reasoning effort set to `{effort}` (saved to config)\n_(takes effect on next message)_"
-        else:
-            return f"🧠 ✓ Reasoning effort set to `{effort}` (this session only)"
+        if persist_global:
+            if _save_config_key("agent.reasoning_effort", effort):
+                self._set_session_reasoning_override(session_key, None)
+                self._evict_cached_agent(session_key)
+                return f"🧠 ✓ Reasoning effort set to `{effort}` (saved to config)\n_(takes effect on next message)_"
+            self._set_session_reasoning_override(session_key, parsed)
+            self._evict_cached_agent(session_key)
+            return f"🧠 ✓ Reasoning effort set to `{effort}` (session only — config save failed)\n_(takes effect on next message)_"
+
+        self._set_session_reasoning_override(session_key, parsed)
+        self._evict_cached_agent(session_key)
+        return f"🧠 ✓ Reasoning effort set to `{effort}` (session only — add `--global` to persist)\n_(takes effect on next message)_"
 
     async def _handle_fast_command(self, event: MessageEvent) -> str:
         """Handle /fast — mirror the CLI Priority Processing toggle in gateway chats."""
@@ -9579,7 +9685,10 @@ class GatewayRunner:
                 }
 
             pr = self._provider_routing
-            reasoning_config = self._load_reasoning_config()
+            reasoning_config = self._resolve_session_reasoning_config(
+                source=source,
+                session_key=session_key,
+            )
             self._reasoning_config = reasoning_config
             self._service_tier = self._load_service_tier()
             # Set up stream consumer for token streaming or interim commentary.

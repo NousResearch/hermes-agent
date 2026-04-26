@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
-import { getUiState, resetUiState } from '../app/uiStore.js'
+import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 
 describe('createSlashHandler', () => {
   beforeEach(() => {
@@ -286,6 +286,64 @@ describe('createSlashHandler', () => {
     createSlashHandler(ctx)('/history')
     expect(ctx.transcript.page).not.toHaveBeenCalled()
     expect(ctx.transcript.sys).toHaveBeenCalledWith('no conversation yet')
+  })
+
+  it('/save forwards to session.save RPC and reports the returned file', async () => {
+    patchUiState({ sid: 'sid-abc' })
+
+    const rpc = vi.fn(() => Promise.resolve({ file: '/tmp/hermes_conversation_test.json' }))
+
+    const ctx = buildCtx({
+      gateway: { ...buildGateway(), rpc },
+      local: {
+        ...buildLocal(),
+        getHistoryItems: vi.fn(() => [
+          { role: 'system', text: 'intro' },
+          { role: 'user', text: 'hello' },
+          { role: 'assistant', text: 'hi there' }
+        ])
+      }
+    })
+
+    createSlashHandler(ctx)('/save')
+
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(rpc).toHaveBeenCalledWith('session.save', { session_id: 'sid-abc' })
+
+    await vi.waitFor(() => {
+      expect(ctx.transcript.sys).toHaveBeenCalledWith(
+        'conversation saved to: /tmp/hermes_conversation_test.json'
+      )
+    })
+  })
+
+  it('/save reports empty state without calling the RPC or slash worker', () => {
+    const rpc = vi.fn(() => Promise.resolve({}))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    createSlashHandler(ctx)('/save')
+
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+    expect(rpc).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('no conversation yet')
+  })
+
+  it('/save without an active session tells the user instead of hitting the RPC', () => {
+    // sid stays null (default) but there IS visible conversation
+    const rpc = vi.fn(() => Promise.resolve({}))
+
+    const ctx = buildCtx({
+      gateway: { ...buildGateway(), rpc },
+      local: {
+        ...buildLocal(),
+        getHistoryItems: vi.fn(() => [{ role: 'user', text: 'hello' }])
+      }
+    })
+
+    createSlashHandler(ctx)('/save')
+
+    expect(rpc).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('no active session — nothing to save')
   })
 })
 

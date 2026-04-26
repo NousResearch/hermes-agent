@@ -22,6 +22,7 @@ import re
 import concurrent.futures
 import base64
 import atexit
+import errno
 import tempfile
 import time
 import uuid
@@ -4318,7 +4319,7 @@ class HermesCLI:
 
         _cprint(f"\n  {_DIM}Tip: Just type your message to chat with Hermes!{_RST}")
         _cprint(f"  {_DIM}Multi-line: Alt+Enter for a new line{_RST}")
-        _cprint(f"  {_DIM}Draft editor: Ctrl+G{_RST}")
+        _cprint(f"  {_DIM}Draft editor: Ctrl+G (Alt+G in VSCode/Cursor){_RST}")
         if _is_termux_environment():
             _cprint(f"  {_DIM}Attach image: /image {_termux_example_image_path()} or start your prompt with a local image path{_RST}\n")
         else:
@@ -5273,23 +5274,21 @@ class HermesCLI:
         # Parse --provider and --global flags
         model_input, explicit_provider, persist_global = parse_model_flags(raw_args)
 
+        # Load providers for switch_model (picker path needs them below)
         user_provs = None
         custom_provs = None
+        try:
+            from hermes_cli.config import get_compatible_custom_providers, load_config
+            cfg = load_config()
+            user_provs = cfg.get("providers")
+            custom_provs = get_compatible_custom_providers(cfg)
+        except Exception:
+            pass
 
         # No args at all: open prompt_toolkit-native picker modal
         if not model_input and not explicit_provider:
             model_display = self.model or "unknown"
             provider_display = get_label(self.provider) if self.provider else "unknown"
-
-            user_provs = None
-            custom_provs = None
-            try:
-                from hermes_cli.config import get_compatible_custom_providers, load_config
-                cfg = load_config()
-                user_provs = cfg.get("providers")
-                custom_provs = get_compatible_custom_providers(cfg)
-            except Exception:
-                pass
 
             try:
                 providers = list_authenticated_providers(
@@ -9308,14 +9307,18 @@ class HermesCLI:
             """Ctrl+Enter (c-j) inserts a newline. Most terminals send c-j for Ctrl+Enter."""
             event.current_buffer.insert_text('\n')
 
-        @kb.add(
-            'c-g',
-            filter=Condition(
-                lambda: not self._clarify_state and not self._approval_state and not self._sudo_state and not self._secret_state
-            ),
+        # VSCode/Cursor bind Ctrl+G to "Find Next" at the editor level, so
+        # the keystroke never reaches the embedded terminal. Alt+G is unbound
+        # in those IDEs and arrives here as ('escape', 'g') — register it as
+        # a fallback so the editor handoff works inside Cursor/VSCode too.
+        _editor_filter = Condition(
+            lambda: not self._clarify_state and not self._approval_state and not self._sudo_state and not self._secret_state
         )
+
+        @kb.add('c-g', filter=_editor_filter)
+        @kb.add('escape', 'g', filter=_editor_filter)
         def handle_open_in_editor(event):
-            """Ctrl+G opens the current draft in an external editor."""
+            """Ctrl+G (or Alt+G in VSCode/Cursor) opens the current draft in an external editor."""
             cli_ref._open_external_editor(event.current_buffer)
 
         @kb.add('tab', eager=True)
@@ -9779,6 +9782,11 @@ class HermesCLI:
                 completer=_completer,
             ),
         )
+        # Keep prompt_toolkit on its simple tempfile path. Setting
+        # buffer.tempfile = "prompt.md" triggers its complex-tempfile branch,
+        # which tries to mkdir() the mkdtemp() directory again and raises
+        # EEXIST. The suffix keeps markdown highlighting without that bug.
+        input_area.buffer.tempfile_suffix = '.md'
 
         # Dynamic height: accounts for both explicit newlines AND visual
         # wrapping of long lines so the input area always fits its content.
@@ -10731,6 +10739,8 @@ class HermesCLI:
                 return  # silently suppress
             if isinstance(exc, KeyError) and "is not registered" in str(exc):
                 return  # suppress selector registration failures (#6393)
+            if isinstance(exc, OSError) and getattr(exc, "errno", None) == errno.EIO:
+                return  # suppress I/O errors from broken stdout on interrupt (#13710)
             # Fall back to default handler for everything else
             loop.default_exception_handler(context)
 
@@ -10763,9 +10773,11 @@ class HermesCLI:
         except (EOFError, KeyboardInterrupt, BrokenPipeError):
             pass
         except (KeyError, OSError) as _stdin_err:
-            # Catch selector registration failures from broken stdin (#6393).
-            # This is the fallback for cases that slip past the fstat() guard.
-            if "is not registered" in str(_stdin_err) or "Bad file descriptor" in str(_stdin_err):
+            # Catch selector registration failures from broken stdin (#6393)
+            # and I/O errors from broken stdout during interrupt (#13710).
+            if isinstance(_stdin_err, OSError) and getattr(_stdin_err, "errno", None) == errno.EIO:
+                pass  # suppress broken-stdout I/O errors on interrupt (#13710)
+            elif "is not registered" in str(_stdin_err) or "Bad file descriptor" in str(_stdin_err):
                 print(
                     f"\nError: stdin is not usable ({_stdin_err}).\n"
                     "This can happen with certain Python installations (e.g. uv-managed cPython on macOS).\n"

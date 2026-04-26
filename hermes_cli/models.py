@@ -383,6 +383,9 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "us.meta.llama4-maverick-17b-instruct-v1:0",
         "us.meta.llama4-scout-17b-instruct-v1:0",
     ],
+    # Azure Foundry: user-provided endpoint and model.
+    # Empty list because models depend on the endpoint configuration.
+    "azure-foundry": [],
 }
 
 # Vercel AI Gateway: derive the bare-model-id catalog from the curated
@@ -740,6 +743,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("opencode-zen",   "OpenCode Zen",             "OpenCode Zen (35+ curated models, pay-as-you-go)"),
     ProviderEntry("opencode-go",    "OpenCode Go",              "OpenCode Go (open models, $10/month subscription)"),
     ProviderEntry("bedrock",        "AWS Bedrock",              "AWS Bedrock (Claude, Nova, Llama, DeepSeek — IAM or API key)"),
+    ProviderEntry("azure-foundry",  "Azure Foundry",            "Azure Foundry (OpenAI-style or Anthropic-style endpoint — your Azure AI deployment)"),
 ]
 
 # Derived dicts — used throughout the codebase
@@ -2622,8 +2626,8 @@ def validate_requested_model(
                 )
 
             return {
-                "accepted": False,
-                "persist": False,
+                "accepted": True,
+                "persist": True,
                 "recognized": False,
                 "message": message,
             }

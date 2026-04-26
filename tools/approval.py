@@ -74,6 +74,101 @@ _PROJECT_SENSITIVE_WRITE_TARGET = rf'(?:{_PROJECT_ENV_PATH}|{_PROJECT_CONFIG_PAT
 _COMMAND_TAIL = r'(?:\s*(?:&&|\|\||;).*)?$'
 
 # =========================================================================
+# Hardline (unconditional) blocklist
+# =========================================================================
+#
+# Commands so catastrophic they should NEVER run via the agent, regardless
+# of --yolo, /yolo, approvals.mode=off, or cron approve mode.  This is a
+# floor below yolo: opting into yolo is the user trusting the agent with
+# their files and services, not trusting it to wipe the disk or power the
+# box off.
+#
+# Hardline only applies to environments that can actually damage the host
+# (local, ssh, container-host cron).  Containerized backends (docker,
+# singularity, modal, daytona) already bypass the dangerous-command layer
+# because nothing they do can touch the host, so we leave that behavior
+# alone.
+#
+# The list is deliberately tiny — only things with no recovery path:
+# filesystem destruction rooted at /, raw block device overwrites, kernel
+# shutdown/reboot, and denial-of-service commands that take the host down.
+# Recoverable-but-costly operations (git reset --hard, rm -rf /tmp/x,
+# chmod -R 777, curl|sh) stay in DANGEROUS_PATTERNS where yolo can pass
+# them through — that's what yolo is for.
+#
+# Inspired by Mercury Agent's permission-hardened blocklist
+# (https://github.com/cosmicstack-labs/mercury-agent).
+
+# Regex fragment matching the *start* of a command (i.e. positions where
+# a shell would begin parsing a new command).  Used by shutdown/reboot
+# patterns so they don't fire on "echo reboot" or "grep 'shutdown' log".
+# Matches: start of string, after command separators (; && || | newline),
+# after subshell openers ( `$(` or backtick ), optionally consuming
+# leading wrapper commands (sudo, env VAR=VAL, exec, nohup, setsid).
+_CMDPOS = (
+    r'(?:^|[;&|\n`]|\$\()'         # start position
+    r'\s*'                          # optional whitespace
+    r'(?:sudo\s+(?:-[^\s]+\s+)*)?'  # optional sudo with flags
+    r'(?:env\s+(?:\w+=\S*\s+)*)?'   # optional env with VAR=VAL pairs
+    r'(?:(?:exec|nohup|setsid|time)\s+)*'  # optional wrapper commands
+    r'\s*'
+)
+
+HARDLINE_PATTERNS = [
+    # rm recursive targeting the root filesystem or protected roots
+    (r'\brm\s+(-[^\s]*\s+)*(/|/\*|/ \*)(\s|$)', "recursive delete of root filesystem"),
+    (r'\brm\s+(-[^\s]*\s+)*(/home|/home/\*|/root|/root/\*|/etc|/etc/\*|/usr|/usr/\*|/var|/var/\*|/bin|/bin/\*|/sbin|/sbin/\*|/boot|/boot/\*|/lib|/lib/\*)(\s|$)', "recursive delete of system directory"),
+    (r'\brm\s+(-[^\s]*\s+)*(~|\$HOME)(/?|/\*)?(\s|$)', "recursive delete of home directory"),
+    # Filesystem format
+    (r'\bmkfs(\.[a-z0-9]+)?\b', "format filesystem (mkfs)"),
+    # Raw block device overwrites (dd + redirection)
+    (r'\bdd\b[^\n]*\bof=/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*', "dd to raw block device"),
+    (r'>\s*/dev/(sd|nvme|hd|mmcblk|vd|xvd)[a-z0-9]*\b', "redirect to raw block device"),
+    # Fork bomb (classic shell form)
+    (r':\(\)\s*\{\s*:\s*\|\s*:\s*&\s*\}\s*;\s*:', "fork bomb"),
+    # Kill every process on the system
+    (r'\bkill\s+(-[^\s]+\s+)*-1\b', "kill all processes"),
+    # System shutdown / reboot — anchor to command position (start of line,
+    # after a command separator, or after sudo/env wrappers) so we don't
+    # false-positive on "echo reboot" or "grep 'shutdown' logs".
+    # _CMDPOS matches start-of-command positions.
+    (_CMDPOS + r'(shutdown|reboot|halt|poweroff)\b', "system shutdown/reboot"),
+    (_CMDPOS + r'init\s+[06]\b', "init 0/6 (shutdown/reboot)"),
+    (_CMDPOS + r'systemctl\s+(poweroff|reboot|halt|kexec)\b', "systemctl poweroff/reboot"),
+    (_CMDPOS + r'telinit\s+[06]\b', "telinit 0/6 (shutdown/reboot)"),
+]
+
+
+def detect_hardline_command(command: str) -> tuple:
+    """Check if a command matches the unconditional hardline blocklist.
+
+    Returns:
+        (is_hardline, description) or (False, None)
+    """
+    normalized = _normalize_command_for_detection(command).lower()
+    for pattern, description in HARDLINE_PATTERNS:
+        if re.search(pattern, normalized, re.IGNORECASE | re.DOTALL):
+            return (True, description)
+    return (False, None)
+
+
+def _hardline_block_result(description: str) -> dict:
+    """Build the standard block result for a hardline match."""
+    return {
+        "approved": False,
+        "hardline": True,
+        "message": (
+            f"BLOCKED (hardline): {description}. "
+            "This command is on the unconditional blocklist and cannot "
+            "be executed via the agent — not even with --yolo, /yolo, "
+            "approvals.mode=off, or cron approve mode. If you genuinely "
+            "need to run it, run it yourself in a terminal outside the "
+            "agent."
+        ),
+    }
+
+
+# =========================================================================
 # Dangerous command patterns
 # =========================================================================
 
@@ -617,6 +712,16 @@ def check_dangerous_command(command: str, env_type: str,
     if env_type in ("docker", "singularity", "modal", "daytona"):
         return {"approved": True, "message": None}
 
+    # Hardline floor: commands with no recovery path (rm -rf /, mkfs, dd
+    # to raw device, shutdown/reboot, fork bomb, kill -1) are blocked
+    # unconditionally, BEFORE the yolo bypass.  Opting into yolo is
+    # trusting the agent with your files and services, not trusting it
+    # to wipe the disk or power the box off.
+    is_hardline, hardline_desc = detect_hardline_command(command)
+    if is_hardline:
+        logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
+        return _hardline_block_result(hardline_desc)
+
     # --yolo: bypass all approval prompts. Gateway /yolo is session-scoped;
     # CLI --yolo remains process-scoped via the env var for local use.
     if os.getenv("HERMES_YOLO_MODE") or is_current_session_yolo_enabled():
@@ -731,6 +836,15 @@ def check_all_command_guards(command: str, env_type: str,
     # Skip containers for both checks
     if env_type in ("docker", "singularity", "modal", "daytona"):
         return {"approved": True, "message": None}
+
+    # Hardline floor: unconditional block for catastrophic commands
+    # (rm -rf /, mkfs, dd to raw device, shutdown/reboot, fork bomb,
+    # kill -1). Applies BEFORE yolo / mode=off / cron approve-mode so
+    # no session-level setting can bypass it.
+    is_hardline, hardline_desc = detect_hardline_command(command)
+    if is_hardline:
+        logger.warning("Hardline block: %s (command: %s)", hardline_desc, command[:200])
+        return _hardline_block_result(hardline_desc)
 
     # --yolo or approvals.mode=off: bypass all approval prompts.
     # Gateway /yolo is session-scoped; CLI --yolo remains process-scoped.

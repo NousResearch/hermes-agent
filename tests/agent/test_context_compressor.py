@@ -873,6 +873,137 @@ class TestUpdateModelBudgets:
         assert comp.max_summary_tokens == min(int(10_000 * 0.05), 4000)
 
 
+class TestSummarySanitization:
+    """Regression tests for stale/operational handoff instructions in summaries."""
+
+    def test_strips_stale_operational_instructions_when_no_active_or_pending_work(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = """## Active Task
+None.
+
+## Goal
+Already completed.
+
+## Constraints & Preferences
+None.
+
+## Completed Actions
+1. Answered the user. [tool: read_file]
+
+## Active State
+No changes.
+
+## In Progress
+The next assistant should briefly tell the user that the task is complete.
+
+## Blocked
+None.
+
+## Key Decisions
+None.
+
+## Resolved Questions
+1. Done.
+
+## Pending User Asks
+None.
+
+## Relevant Files
+- /tmp/example
+
+## Remaining Work
+The next assistant should tell the user there is nothing left to do.
+
+## Critical Context
+None.
+"""
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test/model", quiet_mode=True)
+
+        messages = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "second"},
+            {"role": "user", "content": "third"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            summary = c._generate_summary(messages)
+
+        assert summary.startswith(SUMMARY_PREFIX)
+        body = summary[len(SUMMARY_PREFIX):]
+        assert "the next assistant should" not in body.lower()
+        assert "briefly tell the user" not in body.lower()
+        assert "## In Progress\nNone." in body
+        assert "## Remaining Work\nNone." in body
+
+    def test_strips_meta_followup_sections_for_real_session_shape_when_active_task_is_none(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = """## Active Task
+None.
+
+## Goal
+Compression review finished.
+
+## Constraints & Preferences
+None.
+
+## Completed Actions
+1. Did the work. [tool: patch]
+
+## Active State
+No changes.
+
+## In Progress
+The actual tracking mechanism and skill search have been completed, but the user has not yet been given a final conversational update after the file creation/patch. The next assistant should briefly tell the user:
+- A tracker was created.
+- The skill was patched.
+
+## Blocked
+None.
+
+## Key Decisions
+None.
+
+## Resolved Questions
+1. Done.
+
+## Pending User Asks
+None strictly outstanding operationally. However, the user has not yet received the post-action update confirming the tracker creation.
+
+## Relevant Files
+- /tmp/example
+
+## Remaining Work
+- Give the user a concise update that the tracker has been created.
+- Optionally read back the tracker file.
+- Eventually implement Phase 1.
+
+## Critical Context
+None.
+"""
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test/model", quiet_mode=True)
+
+        messages = [
+            {"role": "user", "content": "first"},
+            {"role": "assistant", "content": "second"},
+            {"role": "user", "content": "third"},
+        ]
+
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            summary = c._generate_summary(messages)
+
+        body = summary[len(SUMMARY_PREFIX):]
+        assert "the next assistant should" not in body.lower()
+        assert "give the user a concise update" not in body.lower()
+        assert "## In Progress\nNone." in body
+        assert "## Remaining Work\nNone." in body
+
+
 class TestTruncateToolCallArgsJson:
     """Regression tests for #11762.
 

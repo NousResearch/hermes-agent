@@ -105,6 +105,64 @@ def _append_text_to_content(content: Any, text: str, *, prepend: bool = False) -
     return text + rendered if prepend else rendered + text
 
 
+_SUMMARY_SECTION_RE = re.compile(r"(?ms)^##\s+([^\n]+)\n(.*?)(?=^##\s+|\Z)")
+
+
+
+def _sanitize_summary_handoff(summary: str) -> str:
+    """Remove stale operational instructions from structured summaries.
+
+    The handoff summary is supposed to be reference-only state. In practice the
+    summarizer may leak imperative phrases like "the next assistant should..."
+    into sections such as "In Progress" or "Remaining Work" even when there is
+    no active task left. Those lines conflict with SUMMARY_PREFIX and can steer
+    the next model toward stale work.
+    """
+    text = (summary or "").strip()
+    if not text:
+        return text
+
+    matches = list(_SUMMARY_SECTION_RE.finditer(text))
+    if not matches:
+        return text
+
+    sections: list[tuple[str, str]] = []
+    for match in matches:
+        title = match.group(1).strip()
+        body = match.group(2).strip()
+        sections.append((title, body))
+
+    section_map = {title: body for title, body in sections}
+
+    def _is_noneish(value: str) -> bool:
+        normalized = (value or "").strip().lower()
+        if normalized in {"", "none", "none.", "n/a", "n/a."}:
+            return True
+        return bool(re.match(r"^none(?:\b|[\s.,:;!-])", normalized))
+
+    active_task = section_map.get("Active Task", "")
+    pending_user_asks = section_map.get("Pending User Asks", "")
+    should_strip_operational_handoff = _is_noneish(active_task) and _is_noneish(pending_user_asks)
+
+    if not should_strip_operational_handoff:
+        return text
+
+    sanitized_sections: list[tuple[str, str]] = []
+    modified = False
+    for title, body in sections:
+        if title in {"In Progress", "Remaining Work"} and body and body != "None.":
+            sanitized_sections.append((title, "None."))
+            modified = True
+        else:
+            sanitized_sections.append((title, body))
+
+    if not modified:
+        return text
+
+    return "\n\n".join(f"## {title}\n{body or 'None.'}" for title, body in sanitized_sections)
+
+
+
 def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
     """Shrink long string values inside a tool-call arguments JSON blob while
     preserving JSON validity.
@@ -817,6 +875,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             # Redact the summary output as well — the summarizer LLM may
             # ignore prompt instructions and echo back secrets verbatim.
             summary = redact_sensitive_text(content.strip())
+            summary = _sanitize_summary_handoff(summary)
             # Store for iterative updates on next compaction
             self._previous_summary = summary
             self._summary_failure_cooldown_until = 0.0

@@ -220,7 +220,7 @@ class TurnController {
     }, REASONING_PULSE_MS)
   }
 
-  pushInlineDiffSegment(diffText: string) {
+  pushInlineDiffSegment(diffText: string, tools: string[] = []) {
     // Strip CLI chrome the gateway emits before the unified diff (e.g. a
     // leading "┊ review diff" header written by `_emit_inline_diff` for the
     // terminal printer). That header only makes sense as stdout dressing,
@@ -247,7 +247,7 @@ class TurnController {
       return
     }
 
-    this.segmentMessages = [...this.segmentMessages, { kind: 'diff', role: 'assistant', text: block }]
+    this.segmentMessages = [...this.segmentMessages, { kind: 'diff', role: 'assistant', text: block, ...(tools.length && { tools }) }]
     patchTurnState({ streamSegments: this.segmentMessages })
   }
 
@@ -397,13 +397,25 @@ class TurnController {
   }
 
   recordToolComplete(toolId: string, fallbackName?: string, error?: string, summary?: string) {
+    const line = this.completeTool(toolId, fallbackName, error, summary)
+
+    this.pendingSegmentTools = [...this.pendingSegmentTools, line]
+    this.publishToolState()
+  }
+
+  recordInlineDiffToolComplete(diffText: string, toolId: string, fallbackName?: string, error?: string) {
+    this.flushStreamingSegment()
+    this.pushInlineDiffSegment(diffText, [this.completeTool(toolId, fallbackName, error, '')])
+    this.publishToolState()
+  }
+
+  private completeTool(toolId: string, fallbackName?: string, error?: string, summary?: string) {
     const done = this.activeTools.find(tool => tool.id === toolId)
     const name = done?.name ?? fallbackName ?? 'tool'
     const label = toolTrailLabel(name)
     const line = buildToolTrailLine(name, done?.context || '', Boolean(error), error || summary || '')
 
     this.activeTools = this.activeTools.filter(tool => tool.id !== toolId)
-    this.pendingSegmentTools = [...this.pendingSegmentTools, line]
 
     const next = this.turnTools.filter(item => !sameToolTrailGroup(label, item))
 
@@ -412,6 +424,11 @@ class TurnController {
     }
 
     this.turnTools = next.slice(-TRAIL_LIMIT)
+
+    return line
+  }
+
+  private publishToolState() {
     patchTurnState({
       streamPendingTools: this.pendingSegmentTools,
       tools: this.activeTools,

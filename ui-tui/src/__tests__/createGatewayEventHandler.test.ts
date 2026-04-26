@@ -185,19 +185,17 @@ describe('createGatewayEventHandler', () => {
     expect(appended).toHaveLength(0)
     expect(turnController.segmentMessages).toEqual([
       { role: 'assistant', text: 'Editing the file' },
-      { kind: 'trail', role: 'system', text: '', tools: ['Patch("foo.ts")  ✓'] },
-      { kind: 'diff', role: 'assistant', text: block }
+      { kind: 'diff', role: 'assistant', text: block, tools: ['Patch("foo.ts")  ✓'] }
     ])
 
     onEvent({ payload: { text: 'patch applied' }, type: 'message.complete' } as any)
 
-    expect(appended).toHaveLength(5)
+    expect(appended).toHaveLength(4)
     expect(appended[0]?.text).toBe('Editing the file')
-    expect(appended[1]).toMatchObject({ kind: 'trail' })
+    expect(appended[1]).toMatchObject({ kind: 'diff', text: block })
     expect(appended[1]?.tools?.[0]).toContain('Patch')
-    expect(appended[2]).toMatchObject({ kind: 'diff', text: block })
-    expect(appended[4]?.text).toBe('patch applied')
-    expect(appended[4]?.text).not.toContain('```diff')
+    expect(appended[3]?.text).toBe('patch applied')
+    expect(appended[3]?.text).not.toContain('```diff')
   })
 
   it('drops the diff segment when the final assistant text narrates the same diff', () => {
@@ -211,10 +209,9 @@ describe('createGatewayEventHandler', () => {
 
     // Only the final message — diff-only segment dropped so we don't
     // render two stacked copies of the same patch.
-    expect(appended).toHaveLength(2)
-    expect(appended[0]).toMatchObject({ kind: 'trail' })
-    expect(appended[1]?.text).toBe(assistantText)
-    expect((appended[1]?.text.match(/```diff/g) ?? []).length).toBe(1)
+    expect(appended).toHaveLength(1)
+    expect(appended[0]?.text).toBe(assistantText)
+    expect((appended[0]?.text.match(/```diff/g) ?? []).length).toBe(1)
   })
 
   it('strips the CLI "┊ review diff" header from inline diff segments', () => {
@@ -226,12 +223,12 @@ describe('createGatewayEventHandler', () => {
     onEvent({ payload: { text: 'done' }, type: 'message.complete' } as any)
 
     // Tool trail first, then diff segment (kind='diff'), then final narration.
-    expect(appended).toHaveLength(3)
-    expect(appended[0]?.kind).toBe('trail')
-    expect(appended[1]?.kind).toBe('diff')
-    expect(appended[1]?.text).not.toContain('┊ review diff')
-    expect(appended[1]?.text).toContain('--- a/foo.ts')
-    expect(appended[2]?.text).toBe('done')
+    expect(appended).toHaveLength(2)
+    expect(appended[0]?.kind).toBe('diff')
+    expect(appended[0]?.text).not.toContain('┊ review diff')
+    expect(appended[0]?.text).toContain('--- a/foo.ts')
+    expect(appended[0]?.tools?.[0]).toContain('Tool')
+    expect(appended[1]?.text).toBe('done')
   })
 
   it('drops the diff segment when assistant writes its own ```diff fence', () => {
@@ -246,10 +243,9 @@ describe('createGatewayEventHandler', () => {
     } as any)
     onEvent({ payload: { text: assistantText }, type: 'message.complete' } as any)
 
-    expect(appended).toHaveLength(2)
-    expect(appended[0]).toMatchObject({ kind: 'trail' })
-    expect(appended[1]?.text).toBe(assistantText)
-    expect((appended[1]?.text.match(/```diff/g) ?? []).length).toBe(1)
+    expect(appended).toHaveLength(1)
+    expect(appended[0]?.text).toBe(assistantText)
+    expect((appended[0]?.text.match(/```diff/g) ?? []).length).toBe(1)
   })
 
   it('keeps tool trail terse when inline_diff is present', () => {
@@ -265,15 +261,13 @@ describe('createGatewayEventHandler', () => {
 
     // Tool row is now placed before the diff, so telemetry does not render
     // below the patch that came from that tool.
-    expect(appended).toHaveLength(3)
-    expect(appended[0]?.kind).toBe('trail')
+    expect(appended).toHaveLength(2)
+    expect(appended[0]?.kind).toBe('diff')
+    expect(appended[0]?.text).toContain('```diff')
     expect(appended[0]?.tools?.[0]).toContain('Review Diff')
     expect(appended[0]?.tools?.[0]).not.toContain('--- a/foo.ts')
-    expect(appended[1]?.kind).toBe('diff')
-    expect(appended[1]?.text).toContain('```diff')
+    expect(appended[1]?.text).toBe('done')
     expect(appended[1]?.tools ?? []).toEqual([])
-    expect(appended[2]?.text).toBe('done')
-    expect(appended[2]?.tools ?? []).toEqual([])
   })
 
   it('shows setup panel for missing provider startup error', () => {

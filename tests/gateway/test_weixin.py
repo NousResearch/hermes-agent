@@ -5,7 +5,7 @@ import base64
 import json
 import os
 from pathlib import Path
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 from gateway.config import PlatformConfig
 from gateway.config import GatewayConfig, HomeChannel, Platform, _apply_env_overrides
@@ -788,3 +788,43 @@ class TestIsStaleSessionRet:
     def test_success_codes_are_not_stale(self):
         assert weixin._is_stale_session_ret(0, 0, "") is False
         assert weixin._is_stale_session_ret(None, None, "unknown error") is False
+
+
+class TestWeixinContentDedup:
+    """Regression tests for Issue #16182 — upstream API sends duplicate content
+    with different message_ids, bypassing message_id deduplication.
+    """
+
+    def test_duplicate_content_with_different_message_ids_is_dropped(self):
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter.handle_message = AsyncMock()
+
+        base_msg = {
+            "from_user_id": "wxid_user1",
+            "item_list": [{"type": 1, "text_item": {"text": "hello world"}}],
+        }
+
+        asyncio.run(adapter._process_message({**base_msg, "message_id": "msg-1"}))
+        asyncio.run(adapter._process_message({**base_msg, "message_id": "msg-2"}))
+
+        assert adapter.handle_message.await_count == 1
+        event = adapter.handle_message.await_args[0][0]
+        assert event.text == "hello world"
+
+    def test_content_dedup_not_called_for_messages_without_text(self):
+        adapter = _make_adapter()
+        adapter._poll_session = object()
+        adapter.handle_message = AsyncMock()
+        adapter._dedup.is_duplicate = Mock(return_value=False)
+
+        empty_msg = {
+            "from_user_id": "wxid_user1",
+            "message_id": "msg-1",
+            "item_list": [],
+        }
+        asyncio.run(adapter._process_message(empty_msg))
+
+        assert adapter.handle_message.await_count == 0
+        # is_duplicate should only be called for message_id, never for content
+        assert all("content:" not in str(call) for call in adapter._dedup.is_duplicate.call_args_list)

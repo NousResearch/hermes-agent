@@ -450,8 +450,18 @@ class SlackAdapter(BasePlatformAdapter):
         """
         # When reply_in_thread is disabled (default: True for backward compat),
         # only thread messages that are already part of an existing thread.
+        # For top-level channel messages, the inbound handler sets
+        # metadata.thread_id to the message's own ts as a session-keying
+        # fallback (see the `thread_ts = event.get("thread_ts") or ts` branch),
+        # so metadata alone can't distinguish a real thread reply from a
+        # top-level message. reply_to is the incoming message's own id, so
+        # when thread_id == reply_to the "thread" is synthetic and we reply
+        # directly in the channel instead.
         if not self.config.extra.get("reply_in_thread", True):
-            existing_thread = (metadata or {}).get("thread_id") or (metadata or {}).get("thread_ts")
+            md = metadata or {}
+            existing_thread = md.get("thread_id") or md.get("thread_ts")
+            if existing_thread and reply_to and existing_thread == reply_to:
+                existing_thread = None
             return existing_thread or None
 
         if metadata:

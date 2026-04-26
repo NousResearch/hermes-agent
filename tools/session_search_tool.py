@@ -486,7 +486,7 @@ def session_search(
             }, ensure_ascii=False)
 
         summaries = []
-        for (session_id, match_info, conversation_text, _), result in zip(tasks, results):
+        for (session_id, match_info, conversation_text, session_meta), result in zip(tasks, results):
             if isinstance(result, Exception):
                 logging.warning(
                     "Failed to summarize session %s: %s",
@@ -494,11 +494,18 @@ def session_search(
                 )
                 result = None
 
+            # Prefer resolved parent session metadata over FTS5 match metadata.
+            # match_info carries source/model from the *child* session that contained
+            # the FTS5 hit; after _resolve_to_parent() the session_id points to the
+            # root, so session_meta has the authoritative platform/source for the
+            # session the user actually cares about (#15909).
             entry = {
                 "session_id": session_id,
-                "when": _format_timestamp(match_info.get("session_started")),
-                "source": match_info.get("source", "unknown"),
-                "model": match_info.get("model"),
+                "when": _format_timestamp(
+                    session_meta.get("started_at") or match_info.get("session_started")
+                ),
+                "source": session_meta.get("source") or match_info.get("source", "unknown"),
+                "model": session_meta.get("model") or match_info.get("model"),
             }
 
             if result:

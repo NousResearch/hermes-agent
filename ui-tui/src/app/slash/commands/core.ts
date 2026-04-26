@@ -251,11 +251,17 @@ export const coreCommands: SlashCommand[] = [
   {
     help: 'copy selection or assistant message',
     name: 'copy',
-    run: (arg, ctx) => {
+    run: async (arg, ctx) => {
       const { sys } = ctx.transcript
 
-      if (!arg && ctx.composer.hasSelection && ctx.composer.selection.copySelection()) {
-        return sys('copied selection')
+      if (!arg && ctx.composer.hasSelection) {
+        const text = await ctx.composer.selection.copySelection()
+        if (text) {
+          // Include character count to match user's reported message format
+          return sys(`copied ${text.length} characters`)
+        } else {
+          return sys('clipboard copy failed — no OSC 52 emitted; see HERMES_TUI_DEBUG_CLIPBOARD')
+        }
       }
 
       if (arg && Number.isNaN(parseInt(arg, 10))) {

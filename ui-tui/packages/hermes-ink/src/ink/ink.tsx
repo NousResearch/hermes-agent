@@ -1301,7 +1301,13 @@ export default class Ink {
    * highlight. Matches iTerm2's copy-on-select behavior where the selected
    * region stays visible after the automatic copy.
    */
-  copySelectionNoClear(): string {
+  /**
+   * Copy the current text selection to the system clipboard without clearing the
+   * selection. Returns the copied text on success (empty if no selection or
+   * clipboard operation failed). Success is determined by whether an OSC 52
+   * sequence was emitted (native/tmux paths do not produce a sequence).
+   */
+  async copySelectionNoClear(): Promise<string> {
     if (!hasSelection(this.selection)) {
       return ''
     }
@@ -1309,28 +1315,36 @@ export default class Ink {
     const text = getSelectedText(this.selection, this.frontFrame.screen)
 
     if (text) {
-      void setClipboard(text).then(raw => {
+      try {
+        const raw = await setClipboard(text)
         if (raw) {
           this.options.stdout.write(raw)
-        } else if (process.env.HERMES_TUI_DEBUG_CLIPBOARD) {
+          return text
+        }
+        if (process.env.HERMES_TUI_DEBUG_CLIPBOARD) {
           console.error('[clipboard] [osc52] no sequence emitted — native clipboard or tmux buffer path in use')
         }
-      })
+      } catch (err) {
+        if (process.env.HERMES_TUI_DEBUG_CLIPBOARD) {
+          console.error('[clipboard] [osc52] error:', err)
+        }
+      }
     }
 
-    return text
+    return ''
   }
 
   /**
    * Copy the current text selection to the system clipboard via OSC 52
-   * and clear the selection. Returns the copied text (empty if no selection).
+   * and clear the selection. Returns the copied text (empty if no selection
+   * or clipboard operation failed).
    */
-  copySelection(): string {
+  async copySelection(): Promise<string> {
     if (!hasSelection(this.selection)) {
       return ''
     }
 
-    const text = this.copySelectionNoClear()
+    const text = await this.copySelectionNoClear()
     clearSelection(this.selection)
     this.notifySelectionChange()
 

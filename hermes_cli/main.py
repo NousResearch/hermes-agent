@@ -5209,6 +5209,52 @@ def _print_stash_cleanup_guidance(
         )
 
 
+_PACKAGE_LOCK_NAME = "package-lock.json"
+
+
+def _is_package_lock_path(path: str) -> bool:
+    return path == _PACKAGE_LOCK_NAME or path.endswith(f"/{_PACKAGE_LOCK_NAME}")
+
+
+def _package_lock_only_stash_files(
+    git_cmd: list[str], cwd: Path, stash_ref: str
+) -> list[str]:
+    """Return changed package-lock files when a stash contains only lockfile churn.
+
+    `hermes update` autostashes before pulling. A very common low-risk dirty state
+    is npm rewriting tracked package-lock metadata while the matching package.json
+    remains unchanged. That should not get the same scary restore-default-yes
+    prompt as real source/config edits.
+
+    Keep this intentionally narrow: any non-package-lock tracked path, any empty
+    diff, or any untracked stash payload makes the stash a normal local-change
+    stash.
+    """
+    diff = subprocess.run(
+        git_cmd + ["diff", "--name-only", f"{stash_ref}^1", stash_ref],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if diff.returncode != 0:
+        return []
+
+    tracked_paths = [line.strip() for line in diff.stdout.splitlines() if line.strip()]
+    if not tracked_paths or not all(_is_package_lock_path(path) for path in tracked_paths):
+        return []
+
+    untracked = subprocess.run(
+        git_cmd + ["ls-tree", "-r", "--name-only", f"{stash_ref}^3"],
+        cwd=cwd,
+        capture_output=True,
+        text=True,
+    )
+    if untracked.returncode == 0 and untracked.stdout.strip():
+        return []
+
+    return tracked_paths
+
+
 def _restore_stashed_changes(
     git_cmd: list[str],
     cwd: Path,
@@ -5217,22 +5263,39 @@ def _restore_stashed_changes(
     input_fn=None,
 ) -> bool:
     if prompt_user:
+        lockfile_churn_files = _package_lock_only_stash_files(git_cmd, cwd, stash_ref)
         print()
         print("⚠ Local changes were stashed before updating.")
-        print(
-            "  Restoring them may reapply local customizations onto the updated codebase."
-        )
-        print("  Review the result afterward if Hermes behaves unexpectedly.")
-        print("Restore local changes now? [Y/n]")
-        if input_fn is not None:
-            response = input_fn("Restore local changes now? [Y/n]", "y")
+        if lockfile_churn_files:
+            print("  These look like generated package-lock churn:")
+            for path in lockfile_churn_files:
+                print(f"  • {path}")
+            print("  package.json was unchanged; restoring these is usually unnecessary.")
+            print("Restore generated lockfile changes now? [y/N]")
+            if input_fn is not None:
+                response = input_fn("Restore generated lockfile changes now? [y/N]", "n")
+            else:
+                response = input().strip().lower()
+            if response not in ("y", "yes"):
+                print("Skipped restoring generated lockfile changes.")
+                print("Your changes are still preserved in git stash.")
+                print(f"Restore manually with: git stash apply {stash_ref}")
+                return False
         else:
-            response = input().strip().lower()
-        if response not in ("", "y", "yes"):
-            print("Skipped restoring local changes.")
-            print("Your changes are still preserved in git stash.")
-            print(f"Restore manually with: git stash apply {stash_ref}")
-            return False
+            print(
+                "  Restoring them may reapply local customizations onto the updated codebase."
+            )
+            print("  Review the result afterward if Hermes behaves unexpectedly.")
+            print("Restore local changes now? [Y/n]")
+            if input_fn is not None:
+                response = input_fn("Restore local changes now? [Y/n]", "y")
+            else:
+                response = input().strip().lower()
+            if response not in ("", "y", "yes"):
+                print("Skipped restoring local changes.")
+                print("Your changes are still preserved in git stash.")
+                print(f"Restore manually with: git stash apply {stash_ref}")
+                return False
 
     print("→ Restoring local changes...")
     restore = subprocess.run(

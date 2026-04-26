@@ -85,10 +85,11 @@ def test_restore_stashed_changes_prompts_before_applying(monkeypatch, tmp_path, 
     restored = hermes_main._restore_stashed_changes(["git"], tmp_path, "abc123", prompt_user=True)
 
     assert restored is True
-    assert calls[0][0] == ["git", "stash", "apply", "abc123"]
-    assert calls[1][0] == ["git", "diff", "--name-only", "--diff-filter=U"]
-    assert calls[2][0] == ["git", "stash", "list", "--format=%gd %H"]
-    assert calls[3][0] == ["git", "stash", "drop", "stash@{1}"]
+    assert calls[0][0] == ["git", "diff", "--name-only", "abc123^1", "abc123"]
+    assert calls[1][0] == ["git", "stash", "apply", "abc123"]
+    assert calls[2][0] == ["git", "diff", "--name-only", "--diff-filter=U"]
+    assert calls[3][0] == ["git", "stash", "list", "--format=%gd %H"]
+    assert calls[4][0] == ["git", "stash", "drop", "stash@{1}"]
     out = capsys.readouterr().out
     assert "Restore local changes now? [Y/n]" in out
     assert "restored on top of the updated codebase" in out
@@ -101,6 +102,8 @@ def test_restore_stashed_changes_can_skip_restore_and_keep_stash(monkeypatch, tm
 
     def fake_run(cmd, **kwargs):
         calls.append((cmd, kwargs))
+        if cmd[1:3] == ["diff", "--name-only"]:
+            return SimpleNamespace(stdout="hermes_cli/main.py\n", stderr="", returncode=0)
         raise AssertionError(f"unexpected command: {cmd}")
 
     monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
@@ -109,11 +112,45 @@ def test_restore_stashed_changes_can_skip_restore_and_keep_stash(monkeypatch, tm
     restored = hermes_main._restore_stashed_changes(["git"], tmp_path, "abc123", prompt_user=True)
 
     assert restored is False
-    assert calls == []
+    assert [cmd for cmd, _ in calls] == [
+        ["git", "diff", "--name-only", "abc123^1", "abc123"],
+    ]
     out = capsys.readouterr().out
     assert "Restore local changes now? [Y/n]" in out
     assert "Your changes are still preserved in git stash." in out
     assert "git stash apply abc123" in out
+
+
+def test_restore_stashed_changes_treats_package_lock_only_stash_as_generated_churn(
+    monkeypatch, tmp_path, capsys
+):
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if cmd[1:3] == ["diff", "--name-only"]:
+            return SimpleNamespace(
+                stdout="web/package-lock.json\nui-tui/package-lock.json\n",
+                stderr="",
+                returncode=0,
+            )
+        if cmd[1:3] == ["ls-tree", "-r"]:
+            return SimpleNamespace(stdout="", stderr="fatal: not a tree\n", returncode=128)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", fake_run)
+    monkeypatch.setattr("builtins.input", lambda: "")
+
+    restored = hermes_main._restore_stashed_changes(["git"], tmp_path, "abc123", prompt_user=True)
+
+    assert restored is False
+    out = capsys.readouterr().out
+    assert "These look like generated package-lock churn" in out
+    assert "web/package-lock.json" in out
+    assert "ui-tui/package-lock.json" in out
+    assert "Restore generated lockfile changes now? [y/N]" in out
+    assert "git stash apply abc123" in out
+    assert not any(cmd[1:3] == ["stash", "apply"] for cmd, _ in calls)
 
 
 def test_restore_stashed_changes_applies_without_prompt_when_disabled(monkeypatch, tmp_path, capsys):

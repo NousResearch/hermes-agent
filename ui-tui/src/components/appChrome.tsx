@@ -1,6 +1,6 @@
 import { Box, type ScrollBoxHandle, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
-import { type ReactNode, type RefObject, useCallback, useEffect, useMemo, useState, useSyncExternalStore } from 'react'
+import { type ReactNode, type RefObject, useEffect, useMemo, useState } from 'react'
 
 import { $delegationState } from '../app/delegationStore.js'
 import { $turnState } from '../app/turnStore.js'
@@ -9,6 +9,7 @@ import { VERBS } from '../content/verbs.js'
 import { fmtDuration } from '../domain/messages.js'
 import { stickyPromptFromViewport } from '../domain/viewport.js'
 import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree.js'
+import { useViewportSnapshot } from '../lib/viewportStore.js'
 import { fmtK } from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { Msg, Usage } from '../types.js'
@@ -255,17 +256,7 @@ export function FloatBox({ children, color }: { children: ReactNode; color: stri
 }
 
 export function StickyPromptTracker({ messages, offsets, scrollRef, onChange }: StickyPromptTrackerProps) {
-  useSyncExternalStore(
-    useCallback((cb: () => void) => scrollRef.current?.subscribe(cb) ?? (() => {}), [scrollRef]),
-    () => {
-      const { atBottom, top } = getStickyViewport(scrollRef.current)
-
-      return atBottom ? -1 - top : top
-    },
-    () => NaN
-  )
-
-  const { atBottom, bottom, top } = getStickyViewport(scrollRef.current)
+  const { atBottom, bottom, top } = useViewportSnapshot(scrollRef)
   const text = stickyPromptFromViewport(messages, offsets, top, bottom, atBottom)
 
   useEffect(() => onChange(text), [onChange, text])
@@ -274,42 +265,18 @@ export function StickyPromptTracker({ messages, offsets, scrollRef, onChange }: 
 }
 
 export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) {
-  useSyncExternalStore(
-    useCallback((cb: () => void) => scrollRef.current?.subscribe(cb) ?? (() => {}), [scrollRef]),
-    () => {
-      const s = scrollRef.current
-
-      if (!s) {
-        return NaN
-      }
-
-      const vp = Math.max(0, s.getViewportHeight())
-      const total = Math.max(vp, s.getScrollHeight())
-      const top = Math.max(0, s.getScrollTop() + s.getPendingDelta())
-      const thumb = total > vp ? Math.max(1, Math.round((vp * vp) / total)) : vp
-      const travel = Math.max(1, vp - thumb)
-      const thumbTop = total > vp ? Math.round((top / Math.max(1, total - vp)) * travel) : 0
-
-      return `${thumbTop}:${thumb}:${vp}`
-    },
-    () => ''
-  )
-
   const [hover, setHover] = useState(false)
   const [grab, setGrab] = useState<number | null>(null)
-
-  const s = scrollRef.current
-  const vp = Math.max(0, s?.getViewportHeight() ?? 0)
+  const { scrollHeight: total, top: pos, viewportHeight: vp } = useViewportSnapshot(scrollRef)
 
   if (!vp) {
     return <Box width={1} />
   }
 
-  const total = Math.max(vp, s?.getScrollHeight() ?? vp)
+  const s = scrollRef.current
   const scrollable = total > vp
   const thumb = scrollable ? Math.max(1, Math.round((vp * vp) / total)) : vp
   const travel = Math.max(1, vp - thumb)
-  const pos = Math.max(0, (s?.getScrollTop() ?? 0) + (s?.getPendingDelta() ?? 0))
   const thumbTop = scrollable ? Math.round((pos / Math.max(1, total - vp)) * travel) : 0
   const thumbColor = grab !== null ? t.color.gold : hover ? t.color.amber : t.color.bronze
   const trackColor = hover ? t.color.bronze : t.color.dim
@@ -390,16 +357,4 @@ interface StickyPromptTrackerProps {
 interface TranscriptScrollbarProps {
   scrollRef: RefObject<ScrollBoxHandle | null>
   t: Theme
-}
-
-function getStickyViewport(s?: ScrollBoxHandle | null) {
-  const top = Math.max(0, (s?.getScrollTop() ?? 0) + (s?.getPendingDelta() ?? 0))
-  const vp = Math.max(0, s?.getViewportHeight() ?? 0)
-  const total = Math.max(vp, s?.getScrollHeight() ?? vp)
-
-  return {
-    atBottom: (s?.isSticky() ?? true) || top + vp >= total - 2,
-    bottom: top + vp,
-    top
-  }
 }

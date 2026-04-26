@@ -4,6 +4,7 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
+import { cursorLayout } from '../lib/inputMetrics.js'
 import { isActionMod, isMac, isMacActionFallback } from '../lib/platform.js'
 
 type InkExt = typeof Ink & {
@@ -165,50 +166,6 @@ export function lineNav(s: string, p: number, dir: -1 | 1): null | number {
   const lineEnd = nextEnd < 0 ? s.length : nextEnd
 
   return snapPos(s, Math.min(nextBreak + 1 + col, lineEnd))
-}
-
-// mirrors wrap-ansi(..., { wordWrap: false, hard: true }) so the declared
-// cursor lines up with what <Text wrap="wrap-char"> actually renders
-export function cursorLayout(value: string, cursor: number, cols: number) {
-  const pos = Math.max(0, Math.min(cursor, value.length))
-  const w = Math.max(1, cols)
-
-  let col = 0,
-    line = 0
-
-  for (const { segment, index } of seg().segment(value)) {
-    if (index >= pos) {
-      break
-    }
-
-    if (segment === '\n') {
-      line++
-      col = 0
-
-      continue
-    }
-
-    const sw = stringWidth(segment)
-
-    if (!sw) {
-      continue
-    }
-
-    if (col + sw > w) {
-      line++
-      col = 0
-    }
-
-    col += sw
-  }
-
-  // trailing cursor-cell overflows to the next row at the wrap column
-  if (col >= w) {
-    line++
-    col = 0
-  }
-
-  return { column: col, line }
 }
 
 export function offsetFromPosition(value: string, row: number, col: number, cols: number) {

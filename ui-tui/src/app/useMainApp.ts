@@ -19,6 +19,7 @@ import { useVirtualHistory } from '../hooks/useVirtualHistory.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
 import { buildToolTrailLine, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
+import { getViewportSnapshot } from '../lib/viewportStore.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
@@ -689,11 +690,9 @@ export function useMainApp(gw: GatewayClient) {
       return true
     }
 
-    const top = Math.max(0, s.getScrollTop() + s.getPendingDelta())
-    const vp = Math.max(0, s.getViewportHeight())
-    const total = Math.max(vp, s.getScrollHeight())
+    const { bottom, scrollHeight } = getViewportSnapshot(s)
 
-    return top + vp >= total - 3
+    return bottom >= scrollHeight - 3
   })()
 
   const liveProgress = useMemo(

@@ -255,3 +255,39 @@ class TestMemoryToolDispatcher:
     def test_remove_requires_old_text(self, store):
         result = json.loads(memory_tool(action="remove", store=store))
         assert result["success"] is False
+
+
+class TestMemoryToolAliases:
+    """Tolerate common LLM near-misses for the action name (#15843)."""
+
+    @pytest.mark.parametrize("alias", ["create", "insert", "save", "ADD"])
+    def test_add_aliases(self, store, alias):
+        result = json.loads(memory_tool(action=alias, content="hi", store=store))
+        assert result["success"] is True
+
+    def test_update_alias_runs_replace(self, store):
+        memory_tool(action="add", content="original entry", store=store)
+        result = json.loads(memory_tool(
+            action="update", old_text="original", content="updated entry", store=store,
+        ))
+        assert result["success"] is True
+
+    def test_delete_alias_runs_remove(self, store):
+        memory_tool(action="add", content="trash entry", store=store)
+        result = json.loads(memory_tool(
+            action="delete", old_text="trash", store=store,
+        ))
+        assert result["success"] is True
+
+    def test_new_text_accepted_as_content_alias_for_replace(self, store):
+        memory_tool(action="add", content="cats are cool", store=store)
+        result = json.loads(memory_tool(
+            action="replace", old_text="cats", new_text="dogs are cool too", store=store,
+        ))
+        assert result["success"] is True
+
+    def test_unknown_action_error_lists_aliases(self, store):
+        result = json.loads(memory_tool(action="purge", store=store))
+        assert result["success"] is False
+        assert "purge" in result["error"]
+        assert "aliases" in result["error"].lower()

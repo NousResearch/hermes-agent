@@ -462,11 +462,29 @@ class MemoryStore:
             raise RuntimeError(f"Failed to write memory file {path}: {e}")
 
 
+# Common LLM synonyms that should map onto our canonical action names.
+# Saves a class of "Unknown action 'update'" failures when the model
+# produces a near-miss (#15843).
+_ACTION_ALIASES = {
+    "create": "add",
+    "insert": "add",
+    "save": "add",
+    "update": "replace",
+    "edit": "replace",
+    "modify": "replace",
+    "delete": "remove",
+    "del": "remove",
+    "rm": "remove",
+    "drop": "remove",
+}
+
+
 def memory_tool(
     action: str,
     target: str = "memory",
     content: str = None,
     old_text: str = None,
+    new_text: str = None,
     store: Optional[MemoryStore] = None,
 ) -> str:
     """
@@ -480,25 +498,41 @@ def memory_tool(
     if target not in ("memory", "user"):
         return tool_error(f"Invalid target '{target}'. Use 'memory' or 'user'.", success=False)
 
-    if action == "add":
+    # Accept ``new_text`` as an alias for ``content`` — a few LLMs produce
+    # it for replace operations because the schema names "old_text" and
+    # they pattern-match to "new_text".
+    if content is None and new_text is not None:
+        content = new_text
+
+    canonical = (action or "").strip().lower()
+    canonical = _ACTION_ALIASES.get(canonical, canonical)
+
+    if canonical == "add":
         if not content:
             return tool_error("Content is required for 'add' action.", success=False)
         result = store.add(target, content)
 
-    elif action == "replace":
+    elif canonical == "replace":
         if not old_text:
             return tool_error("old_text is required for 'replace' action.", success=False)
         if not content:
-            return tool_error("content is required for 'replace' action.", success=False)
+            return tool_error(
+                "content (or new_text) is required for 'replace' action.",
+                success=False,
+            )
         result = store.replace(target, old_text, content)
 
-    elif action == "remove":
+    elif canonical == "remove":
         if not old_text:
             return tool_error("old_text is required for 'remove' action.", success=False)
         result = store.remove(target, old_text)
 
     else:
-        return tool_error(f"Unknown action '{action}'. Use: add, replace, remove", success=False)
+        return tool_error(
+            f"Unknown action '{action}'. Use: add, replace, remove "
+            "(aliases: create/insert→add, update/edit→replace, delete/rm→remove).",
+            success=False,
+        )
 
     return json.dumps(result, ensure_ascii=False)
 
@@ -576,6 +610,7 @@ registry.register(
         target=args.get("target", "memory"),
         content=args.get("content"),
         old_text=args.get("old_text"),
+        new_text=args.get("new_text"),
         store=kw.get("store")),
     check_fn=check_memory_requirements,
     emoji="🧠",

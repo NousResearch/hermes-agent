@@ -632,6 +632,7 @@ def _fake_message(channel, *, content="Hello", author_id=42, display_name="Jezza
         reference=None,
         created_at=None,
         id=12345,
+        guild=getattr(channel, "guild", None),
     )
 
 

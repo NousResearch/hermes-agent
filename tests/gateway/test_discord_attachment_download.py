@@ -338,6 +338,7 @@ class TestHandleMessageUsesAuthenticatedRead:
             class _FakeDMChannel:
                 id = 100
                 name = "dm"
+                guild = None
 
             # Patch the DMChannel isinstance check so our fake counts as DM.
             monkeypatch.setattr(
@@ -351,6 +352,7 @@ class TestHandleMessageUsesAuthenticatedRead:
                 created_at=datetime.now(timezone.utc),
                 channel=chan,
                 author=SimpleNamespace(id=42, display_name="U", name="U"),
+                guild=getattr(chan, "guild", None),
             )
             await adapter._handle_message(msg)
 

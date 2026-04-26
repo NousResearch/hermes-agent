@@ -1472,6 +1472,32 @@ class BasePlatformAdapter(ABC):
         
         return media, cleaned
 
+    def extract_inline_keyboard(
+        self, text: str,
+    ) -> Tuple[Optional[list], str]:
+        """Extract inline keyboard directives from response text.
+
+        Returns:
+            Tuple of (parsed keyboard data or None, cleaned text with tags removed).
+
+        The base implementation is a no-op — override in platform adapters
+        that support inline keyboards (e.g. Telegram).
+        """
+        return None, text
+
+    async def attach_inline_keyboard(
+        self,
+        chat_id: str,
+        message_id: str,
+        buttons: list,
+    ) -> "SendResult":
+        """Attach an inline keyboard to an existing message.
+
+        The base implementation is a no-op — override in platform adapters
+        that support inline keyboards (e.g. Telegram).
+        """
+        return SendResult(success=False, error="Not supported")
+
     @staticmethod
     def extract_local_files(content: str) -> Tuple[List[str], str]:
         """
@@ -2204,6 +2230,15 @@ class BasePlatformAdapter(ABC):
                 # Strip any remaining internal directives from message body (fixes #1561)
                 text_content = text_content.replace("[[audio_as_voice]]", "").strip()
                 text_content = re.sub(r"MEDIA:\s*\S+", "", text_content).strip()
+
+                # Extract inline keyboard tags (e.g. [KEYBOARD: ...] blocks)
+                inline_keyboard = None
+                if text_content:
+                    try:
+                        inline_keyboard, text_content = self.extract_inline_keyboard(text_content)
+                    except Exception as kb_err:
+                        logger.warning("[%s] Failed to extract inline keyboard: %s", self.name, kb_err)
+
                 if images:
                     logger.info("[%s] extract_images found %d image(s) in response (%d chars)", self.name, len(images), len(response))
 
@@ -2259,6 +2294,23 @@ class BasePlatformAdapter(ABC):
                         metadata=_thread_metadata,
                     )
                     _record_delivery(result)
+
+                    # Attach inline keyboard to the last message chunk
+                    if inline_keyboard and result.success and result.message_id:
+                        target_id = result.message_id
+                        # For chunked messages, attach to the very last chunk
+                        if isinstance(getattr(result, "raw_response", None), dict):
+                            ids = result.raw_response.get("message_ids")
+                            if isinstance(ids, list) and ids:
+                                target_id = ids[-1]
+                        try:
+                            await self.attach_inline_keyboard(
+                                chat_id=event.source.chat_id,
+                                message_id=str(target_id),
+                                buttons=inline_keyboard,
+                            )
+                        except Exception as kb_err:
+                            logger.warning("[%s] Failed to attach inline keyboard: %s", self.name, kb_err)
 
                 # Human-like pacing delay between text and media
                 human_delay = self._get_human_delay()

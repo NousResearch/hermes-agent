@@ -382,6 +382,15 @@ class GatewayStreamConsumer:
                     self._last_edit_time = time.monotonic()
 
                 if got_done:
+                    # Extract inline keyboard tags before the final delivery
+                    # so the raw [KEYBOARD:...] block is never shown to users.
+                    inline_keyboard = None
+                    if self._accumulated:
+                        try:
+                            inline_keyboard, self._accumulated = self.adapter.extract_inline_keyboard(self._accumulated)
+                        except Exception as kb_err:
+                            logger.warning("Stream: failed to extract keyboard tag: %s", kb_err)
+
                     # Final edit without cursor. If progressive editing failed
                     # mid-stream, send a single continuation/fallback message
                     # here instead of letting the base gateway path send the
@@ -407,6 +416,20 @@ class GatewayStreamConsumer:
                             )
                         elif not self._already_sent:
                             self._final_response_sent = await self._send_or_edit(self._accumulated)
+
+                    # Attach inline keyboard to the final streamed message
+                    if (inline_keyboard
+                            and self._message_id
+                            and self._message_id != "__no_edit__"):
+                        try:
+                            await self.adapter.attach_inline_keyboard(
+                                chat_id=self.chat_id,
+                                message_id=str(self._message_id),
+                                buttons=inline_keyboard,
+                            )
+                        except Exception as kb_err:
+                            logger.warning("Stream: failed to attach keyboard: %s", kb_err)
+
                     return
 
                 if commentary_text is not None:
@@ -473,6 +496,8 @@ class GatewayStreamConsumer:
     # Matches the simple cleanup regex used by the non-streaming path in
     # gateway/platforms/base.py for post-processing.
     _MEDIA_RE = re.compile(r'''[`"']?MEDIA:\s*\S+[`"']?''')
+    # Pattern to strip complete [KEYBOARD: ...] blocks from streaming display.
+    _KEYBOARD_RE = re.compile(r'\[KEYBOARD:\s*\n.*?\]', re.DOTALL)
 
     @staticmethod
     def _clean_for_display(text: str) -> str:
@@ -485,10 +510,17 @@ class GatewayStreamConsumer:
         stream finishes — we just need to hide the raw directives from the
         user.
         """
-        if "MEDIA:" not in text and "[[audio_as_voice]]" not in text:
+        if ("MEDIA:" not in text
+                and "[[audio_as_voice]]" not in text
+                and "[KEYBOARD:" not in text):
             return text
         cleaned = text.replace("[[audio_as_voice]]", "")
         cleaned = GatewayStreamConsumer._MEDIA_RE.sub("", cleaned)
+        # Strip complete [KEYBOARD:...] blocks; if the closing ']' hasn't
+        # arrived yet, hide everything from the opening tag onward.
+        cleaned = GatewayStreamConsumer._KEYBOARD_RE.sub("", cleaned)
+        if "[KEYBOARD:" in cleaned:
+            cleaned = cleaned.split("[KEYBOARD:", 1)[0]
         # Collapse excessive blank lines left behind by removed tags
         cleaned = re.sub(r'\n{3,}', '\n\n', cleaned)
         # Strip trailing whitespace/newlines but preserve leading content

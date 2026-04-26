@@ -14,7 +14,7 @@ import os
 import tempfile
 import html as _html
 import re
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -1209,6 +1209,92 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return SendResult(success=False, error=str(e))
 
+    # ------------------------------------------------------------------
+    # Inline keyboard support (extract from agent output → attach to msg)
+    # ------------------------------------------------------------------
+
+    def extract_inline_keyboard(
+        self, text: str,
+    ) -> Tuple[Optional[List[List[Tuple[str, str]]]], str]:
+        """Extract a ``[KEYBOARD: ...]`` block from agent output.
+
+        Syntax produced by the agent::
+
+            [KEYBOARD:
+            ✅ Confirm=ck:confirm | ❌ Cancel=ck:cancel
+            🔄 Later=ck:later
+            ]
+
+        Each line becomes one row; ``|`` separates buttons within a row.
+        Only ``ck:``-prefixed callback data is accepted (custom-keyboard
+        namespace).  Callbacks exceeding Telegram's 64-byte limit are
+        silently skipped.
+
+        Returns:
+            ``(buttons, cleaned_text)`` — *buttons* is ``None`` when no
+            valid keyboard block was found.
+        """
+        match = re.search(r'\[KEYBOARD:\s*\n(.*?)\]', text, re.DOTALL)
+        if not match:
+            return None, text
+
+        raw = match.group(1).strip()
+        cleaned = (text[:match.start()] + text[match.end():]).strip()
+
+        buttons: List[List[Tuple[str, str]]] = []
+        for line in raw.splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            row: List[Tuple[str, str]] = []
+            for item in line.split("|"):
+                item = item.strip()
+                if "=" not in item:
+                    continue
+                label, callback = item.rsplit("=", 1)
+                label, callback = label.strip(), callback.strip()
+                if not label or not callback.startswith("ck:"):
+                    continue
+                if len(callback.encode("utf-8")) > 64:
+                    logger.warning(
+                        "[%s] Skipping keyboard callback over 64 bytes: %s",
+                        self.name, callback,
+                    )
+                    continue
+                row.append((label, callback))
+            if row:
+                buttons.append(row)
+
+        return (buttons or None), cleaned
+
+    async def attach_inline_keyboard(
+        self,
+        chat_id: str,
+        message_id: str,
+        buttons: List[List[Tuple[str, str]]],
+    ) -> SendResult:
+        """Attach an inline keyboard to an existing Telegram message."""
+        if not self._bot:
+            return SendResult(success=False, error="Not connected")
+        try:
+            keyboard = InlineKeyboardMarkup([
+                [InlineKeyboardButton(label, callback_data=data)
+                 for label, data in row]
+                for row in buttons
+            ])
+            await self._bot.edit_message_reply_markup(
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+                reply_markup=keyboard,
+            )
+            return SendResult(success=True, message_id=message_id)
+        except Exception as e:
+            logger.error(
+                "[%s] Failed to attach inline keyboard to msg %s: %s",
+                self.name, message_id, e, exc_info=True,
+            )
+            return SendResult(success=False, error=str(e))
+
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "",
         session_key: str = "",
@@ -1601,6 +1687,67 @@ class TelegramAdapter(BasePlatformAdapter):
             # Catch-all (e.g. page counter button "mx:noop")
             await query.answer()
 
+    async def _handle_custom_keyboard_callback(
+        self, query: Any, data: str,
+    ) -> None:
+        """Re-inject a ``ck:`` callback as a virtual user message.
+
+        When the user taps an inline keyboard button whose callback_data
+        starts with ``ck:``, we acknowledge the tap, edit the message to
+        show which option was selected (removing the keyboard), and feed
+        the raw callback string back into the normal message handler so
+        the agent can act on it.
+        """
+        if not query or not query.message:
+            return
+
+        try:
+            await query.answer()
+        except Exception:
+            pass
+
+        # Find the label of the clicked button from the original keyboard
+        clicked_label = data
+        try:
+            markup = query.message.reply_markup
+            if markup and markup.inline_keyboard:
+                for row in markup.inline_keyboard:
+                    for btn in row:
+                        if btn.callback_data == data:
+                            clicked_label = btn.text
+                            break
+        except Exception:
+            pass
+
+        # Edit the message: keep original text, append selection, remove keyboard
+        try:
+            original_text = query.message.text or ""
+            user_display = getattr(query.from_user, "first_name", "User")
+            updated_text = f"{original_text}\n\n> {user_display} selected: {clicked_label}"
+            await query.edit_message_text(
+                text=updated_text,
+                reply_markup=None,
+            )
+        except Exception:
+            # Fallback: just remove the keyboard
+            try:
+                await query.edit_message_reply_markup(reply_markup=None)
+            except Exception:
+                pass
+
+        try:
+            event = self._build_message_event(query.message, MessageType.TEXT)
+            event.text = data
+            if event.source and getattr(query, "from_user", None):
+                event.source.user_id = str(query.from_user.id)
+                event.source.user_name = query.from_user.full_name
+            await self.handle_message(event)
+        except Exception as exc:
+            logger.error(
+                "[%s] Failed to re-inject keyboard callback %r: %s",
+                self.name, data, exc, exc_info=True,
+            )
+
     async def _handle_callback_query(
         self, update: "Update", context: "ContextTypes.DEFAULT_TYPE"
     ) -> None:
@@ -1615,6 +1762,11 @@ class TelegramAdapter(BasePlatformAdapter):
             chat_id = str(query.message.chat_id) if query.message else None
             if chat_id:
                 await self._handle_model_picker_callback(query, data, chat_id)
+            return
+
+        # --- Custom inline keyboard callbacks (ck:...) ---
+        if data.startswith("ck:"):
+            await self._handle_custom_keyboard_callback(query, data)
             return
 
         # --- Exec approval callbacks (ea:choice:id) ---

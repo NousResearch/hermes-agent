@@ -155,7 +155,7 @@ $CS list onedrive:
 $CS list onedrive:Documents/
 
 # JSON output for scripting
-$CS list gdrive: --format json
+$CS --format json list gdrive:
 
 # Fast directory-only listing
 $CS list onedrive: --dirs-only
@@ -202,7 +202,7 @@ $CS mkdir gdrive:2024/Reports/Q3
 ```bash
 # Search filename across a remote
 $CS search onedrive: "report"
-$CS search gdrive: --include "*.pdf" --format json
+$CS --format json search gdrive: "report"
 ```
 
 ### Get Info

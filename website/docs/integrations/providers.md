@@ -192,7 +192,7 @@ Hermes supports GitHub Copilot as a first-class provider with two modes:
 **`copilot` — Direct Copilot API** (recommended). Uses your GitHub Copilot subscription to access GPT-5.x, Claude, Gemini, and other models through the Copilot API.
 
 ```bash
-hermes chat --provider copilot --model gpt-5.4
+hermes chat --provider copilot --model gpt-5.5
 ```
 
 **Authentication options** (checked in this order):
@@ -241,7 +241,7 @@ hermes chat --provider copilot-acp --model copilot-acp
 ```yaml
 model:
   provider: "copilot"
-  default: "gpt-5.4"
+  default: "gpt-5.5"
 ```
 
 | Environment variable | Description |

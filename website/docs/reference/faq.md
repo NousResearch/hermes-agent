@@ -644,7 +644,7 @@ For one-off model switches without delegation, use `/model` in the CLI:
 ```bash
 /model google/gemini-3-flash-preview    # switch for this session
 # ... write your content ...
-/model openai/gpt-5.4                   # switch back
+/model openai/gpt-5.5                   # switch back
 ```
 
 See [Subagent Delegation](../user-guide/features/delegation.md) for more on how delegation works.

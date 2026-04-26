@@ -85,7 +85,8 @@ VERCEL_AI_GATEWAY_MODELS: list[tuple[str, str]] = [
     ("anthropic/claude-opus-4.7",            ""),
     ("anthropic/claude-opus-4.6",            ""),
     ("anthropic/claude-haiku-4.5",           ""),
-    ("openai/gpt-5.4",                       ""),
+    ("openai/gpt-5.5",                  ""),
+    ("openai/gpt-5.4",                  ""),
     ("openai/gpt-5.4-mini",                  ""),
     ("openai/gpt-5.3-codex",                 ""),
     ("google/gemini-3.1-pro-preview",        ""),
@@ -145,6 +146,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # Native OpenAI Chat Completions (api.openai.com). Used by /model counts and
     # provider_model_ids fallback when /v1/models is unavailable.
     "openai": [
+        "gpt-5.5",
         "gpt-5.4",
         "gpt-5.4-mini",
         "gpt-5-mini",
@@ -159,6 +161,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "copilot-acp",
     ],
     "copilot": [
+        "gpt-5.5",
         "gpt-5.4",
         "gpt-5.4-mini",
         "gpt-5-mini",
@@ -284,6 +287,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     ],
     "opencode-zen": [
         "kimi-k2.5",
+        "gpt-5.5",
         "gpt-5.4-pro",
         "gpt-5.4",
         "gpt-5.3-codex",
@@ -336,6 +340,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     "kilocode": [
         "anthropic/claude-opus-4.6",
         "anthropic/claude-sonnet-4.6",
+        "openai/gpt-5.5",
         "openai/gpt-5.4",
         "google/gemini-3-pro-preview",
         "google/gemini-3-flash-preview",
@@ -1588,6 +1593,7 @@ def provider_label(provider: Optional[str]) -> str:
 # See https://openai.com/api-priority-processing/ for the canonical list.
 # Only the bare model slug is stored (no vendor prefix).
 _PRIORITY_PROCESSING_MODELS: frozenset[str] = frozenset({
+    "gpt-5.5",
     "gpt-5.4",
     "gpt-5.4-mini",
     "gpt-5.2",

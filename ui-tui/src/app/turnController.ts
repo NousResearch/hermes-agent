@@ -2,18 +2,20 @@ import {
   REASONING_PULSE_MS,
   STREAM_BATCH_MS,
   STREAM_IDLE_BATCH_MS,
+  STREAM_SCROLL_BATCH_MS,
   STREAM_TYPING_BATCH_MS
 } from '../config/timing.js'
 import type { SessionInterruptResponse, SubagentEventPayload } from '../gatewayTypes.js'
 import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
 import {
+  boundedLiveRenderText,
   buildToolTrailLine,
   estimateTokensRough,
   isTransientTrailLine,
   sameToolTrailGroup,
   toolTrailLabel
 } from '../lib/text.js'
-import type { ActiveTool, ActivityItem, Msg, SubagentProgress } from '../types.js'
+import type { ActiveTool, ActivityItem, Msg, SubagentProgress, TodoItem } from '../types.js'
 
 import { resetFlowOverlays } from './overlayStore.js'
 import { pushSnapshot } from './spawnHistoryStore.js'
@@ -40,7 +42,52 @@ const diffSegmentBody = (msg: Msg): null | string => {
 
 const hasDetails = (msg: Msg): boolean => Boolean(msg.thinking || msg.tools?.length || msg.toolTokens)
 
-const textSegments = (segments: Msg[]) => segments.filter(msg => msg.role === 'assistant' && msg.kind !== 'diff').map(msg => msg.text)
+const isToolOnly = (msg: Msg | undefined) =>
+  Boolean(msg && msg.kind === 'trail' && !msg.thinking?.trim() && !msg.text && msg.tools?.length)
+
+const mergeSequentialToolOnly = (segments: Msg[]) =>
+  segments.reduce<Msg[]>((acc, msg) => {
+    if (isToolOnly(msg) && isToolOnly(acc.at(-1))) {
+      const prev = acc.at(-1)!
+
+      return [...acc.slice(0, -1), { ...prev, tools: [...(prev.tools ?? []), ...(msg.tools ?? [])] }]
+    }
+
+    return [...acc, msg]
+  }, [])
+
+const isTodoStatus = (status: unknown): status is TodoItem['status'] =>
+  status === 'pending' || status === 'in_progress' || status === 'completed' || status === 'cancelled'
+
+const parseTodos = (value: unknown): null | TodoItem[] => {
+  if (!Array.isArray(value)) {
+    return null
+  }
+
+  return value
+    .map(item => {
+      if (!item || typeof item !== 'object') {
+        return null
+      }
+
+      const row = item as Record<string, unknown>
+      const status = row.status
+
+      if (!isTodoStatus(status)) {
+        return null
+      }
+
+      return {
+        content: String(row.content ?? '').trim(),
+        id: String(row.id ?? '').trim(),
+        status
+      }
+    })
+    .filter((item): item is TodoItem => Boolean(item?.id && item.content))
+}
+
+const textSegments = (segments: Msg[]) =>
+  segments.filter(msg => msg.role === 'assistant' && msg.kind !== 'diff').map(msg => msg.text)
 
 const finalTail = (finalText: string, segments: Msg[]) => {
   let tail = finalText
@@ -88,6 +135,7 @@ class TurnController {
   turnTools: string[] = []
 
   private activeTools: ActiveTool[] = []
+  private activeReasoningText = ''
   private reasoningSegmentIndex: null | number = null
   private activityId = 0
   private reasoningStreamingTimer: Timer = null
@@ -100,12 +148,18 @@ class TurnController {
     this.streamDelay = STREAM_TYPING_BATCH_MS
   }
 
+  boostStreamingForScroll() {
+    this.streamDelay = Math.max(this.streamDelay, STREAM_SCROLL_BATCH_MS)
+  }
+
   relaxStreaming() {
     this.streamDelay = STREAM_IDLE_BATCH_MS
   }
 
   clearReasoning() {
     this.reasoningTimer = clear(this.reasoningTimer)
+    this.activeReasoningText = ''
+    this.reasoningSegmentIndex = null
     this.reasoningText = ''
     this.toolTokenAcc = 0
     patchTurnState({ reasoning: '', reasoningTokens: 0, toolTokens: 0 })
@@ -143,6 +197,8 @@ class TurnController {
   interruptTurn({ appendMessage, gw, sid, sys }: InterruptDeps) {
     this.interrupted = true
     gw.request<SessionInterruptResponse>('session.interrupt', { session_id: sid }).catch(() => {})
+
+    this.closeReasoningSegment()
 
     const segments = this.segmentMessages
     const partial = this.bufRef.trimStart()
@@ -193,7 +249,7 @@ class TurnController {
   }
 
   private syncReasoningSegment() {
-    const thinking = this.reasoningText.trim()
+    const thinking = this.activeReasoningText.trim()
 
     if (!thinking) {
       return
@@ -205,8 +261,7 @@ class TurnController {
       text: '',
       thinking,
       thinkingTokens: estimateTokensRough(thinking),
-      toolTokens: this.toolTokenAcc || undefined,
-      ...(this.pendingSegmentTools.length && { tools: this.pendingSegmentTools })
+      toolTokens: this.toolTokenAcc || undefined
     }
 
     if (this.reasoningSegmentIndex === null) {
@@ -219,13 +274,40 @@ class TurnController {
     patchTurnState({ streamSegments: this.segmentMessages })
   }
 
+  private closeReasoningSegment() {
+    this.syncReasoningSegment()
+    this.activeReasoningText = ''
+    this.reasoningSegmentIndex = null
+  }
+
+  private pushSegment(msg: Msg) {
+    if (isToolOnly(msg) && isToolOnly(this.segmentMessages.at(-1)!)) {
+      const prev = this.segmentMessages.at(-1)!
+      this.segmentMessages = [
+        ...this.segmentMessages.slice(0, -1),
+        { ...prev, tools: [...(prev.tools ?? []), ...(msg.tools ?? [])] }
+      ]
+
+      return
+    }
+
+    this.segmentMessages = [...this.segmentMessages, msg]
+  }
+
   flushStreamingSegment() {
     const raw = this.bufRef.trimStart()
-    const split = raw ? (hasReasoningTag(raw) ? splitReasoning(raw) : { reasoning: '', text: raw }) : { reasoning: '', text: '' }
+
+    const split = raw
+      ? hasReasoningTag(raw)
+        ? splitReasoning(raw)
+        : { reasoning: '', text: raw }
+      : { reasoning: '', text: '' }
 
     if (split.reasoning && !this.reasoningText.trim()) {
       this.reasoningText = split.reasoning
+      this.activeReasoningText = split.reasoning
       patchTurnState({ reasoning: this.reasoningText, reasoningTokens: estimateTokensRough(this.reasoningText) })
+      this.syncReasoningSegment()
     }
 
     const msg: Msg = {
@@ -238,7 +320,7 @@ class TurnController {
     this.streamTimer = clear(this.streamTimer)
 
     if (split.text || hasDetails(msg)) {
-      this.segmentMessages = [...this.segmentMessages, msg]
+      this.pushSegment(msg)
     }
 
     this.pendingSegmentTools = []
@@ -254,6 +336,31 @@ class TurnController {
       this.reasoningStreamingTimer = null
       patchTurnState({ reasoningStreaming: false })
     }, REASONING_PULSE_MS)
+  }
+
+  recordTodos(value: unknown) {
+    const todos = parseTodos(value)
+
+    if (todos !== null) {
+      patchTurnState({ todos })
+    }
+  }
+
+  private flushPendingToolsIntoLastSegment() {
+    const last = this.segmentMessages[this.segmentMessages.length - 1]
+
+    if (!this.pendingSegmentTools.length || !isToolOnly(last)) {
+      return false
+    }
+
+    this.segmentMessages = [
+      ...this.segmentMessages.slice(0, -1),
+      { ...last, tools: [...(last.tools ?? []), ...this.pendingSegmentTools] }
+    ]
+    this.pendingSegmentTools = []
+    patchTurnState({ streamPendingTools: [], streamSegments: this.segmentMessages })
+
+    return true
   }
 
   pushInlineDiffSegment(diffText: string, tools: string[] = []) {
@@ -283,7 +390,10 @@ class TurnController {
       return
     }
 
-    this.segmentMessages = [...this.segmentMessages, { kind: 'diff', role: 'assistant', text: block, ...(tools.length && { tools }) }]
+    this.segmentMessages = [
+      ...this.segmentMessages,
+      { kind: 'diff', role: 'assistant', text: block, ...(tools.length && { tools }) }
+    ]
     patchTurnState({ streamSegments: this.segmentMessages })
   }
 
@@ -328,13 +438,25 @@ class TurnController {
   }
 
   recordMessageComplete(payload: { rendered?: string; reasoning?: string; text?: string }) {
+    this.closeReasoningSegment()
+
     const rawText = (payload.rendered ?? payload.text ?? this.bufRef).trimStart()
     const split = splitReasoning(rawText)
     const finalText = finalTail(split.text, this.segmentMessages)
     const existingReasoning = this.reasoningText.trim() || String(payload.reasoning ?? '').trim()
     const savedReasoning = [existingReasoning, existingReasoning ? '' : split.reasoning].filter(Boolean).join('\n\n')
     const savedToolTokens = this.toolTokenAcc
-    const tools = this.pendingSegmentTools
+    let tools = this.pendingSegmentTools
+    const last = this.segmentMessages[this.segmentMessages.length - 1]
+
+    if (tools.length && isToolOnly(last)) {
+      this.segmentMessages = [
+        ...this.segmentMessages.slice(0, -1),
+        { ...last, tools: [...(last.tools ?? []), ...tools] }
+      ]
+      this.pendingSegmentTools = []
+      tools = []
+    }
 
     // Drop diff-only segments the agent is about to narrate in the final
     // reply. Without this, a closing "here's the diff …" message would
@@ -343,13 +465,19 @@ class TurnController {
     // assistant narration stays put.
     const finalHasOwnDiffFence = /```(?:diff|patch)\b/i.test(finalText)
 
-    const segments = this.segmentMessages.filter(msg => {
-      const body = diffSegmentBody(msg)
+    const segments = mergeSequentialToolOnly(
+      this.segmentMessages.filter(msg => {
+        const body = diffSegmentBody(msg)
 
-      return body === null || (!finalHasOwnDiffFence && !finalText.includes(body))
-    })
+        return body === null || (!finalHasOwnDiffFence && !finalText.includes(body))
+      })
+    )
 
-    const finalThinking = savedReasoning.trim()
+    const hasReasoningSegment =
+      this.reasoningSegmentIndex !== null || segments.some(msg => Boolean(msg.thinking?.trim()))
+
+    const finalThinking = hasReasoningSegment ? '' : savedReasoning.trim()
+
     const finalDetails: Msg = {
       kind: 'trail',
       role: 'system',
@@ -359,8 +487,8 @@ class TurnController {
       toolTokens: savedToolTokens || undefined,
       ...(tools.length && { tools })
     }
-    const hasReasoningSegment = this.reasoningSegmentIndex !== null
-    const finalMessages = hasDetails(finalDetails) && !hasReasoningSegment ? [...segments, finalDetails] : [...segments]
+
+    const finalMessages = hasDetails(finalDetails) ? [...segments, finalDetails] : [...segments]
 
     if (finalText) {
       finalMessages.push({ role: 'assistant', text: finalText })
@@ -387,6 +515,7 @@ class TurnController {
     this.turnTools = []
     this.persistedToolLabels.clear()
     this.bufRef = ''
+    this.interrupted = false
     patchTurnState({ activity: [], outcome: '' })
 
     return { finalMessages, finalText, wasInterrupted }
@@ -419,6 +548,7 @@ class TurnController {
     }
 
     this.reasoningText = incoming
+    this.activeReasoningText = incoming
     this.scheduleReasoning()
     this.syncReasoningSegment()
     this.pulseReasoningStreaming()
@@ -429,30 +559,63 @@ class TurnController {
       return
     }
 
+    if (!this.activeReasoningText.trim() && this.pendingSegmentTools.length) {
+      this.flushStreamingSegment()
+    }
+
     this.reasoningText += text
+    this.activeReasoningText += text
+
+    if (this.reasoningText.length > 80_000) {
+      this.reasoningText = this.reasoningText.slice(-60_000)
+    }
+
     this.scheduleReasoning()
     this.syncReasoningSegment()
     this.pulseReasoningStreaming()
   }
 
-  recordToolComplete(toolId: string, fallbackName?: string, error?: string, summary?: string) {
-    const line = this.completeTool(toolId, fallbackName, error, summary)
+  recordToolComplete(
+    toolId: string,
+    fallbackName?: string,
+    error?: string,
+    summary?: string,
+    duration?: number,
+    todos?: unknown
+  ) {
+    this.recordTodos(todos)
+    const line = this.completeTool(toolId, fallbackName, error, summary, duration)
 
     this.pendingSegmentTools = [...this.pendingSegmentTools, line]
+    this.flushPendingToolsIntoLastSegment()
     this.publishToolState()
   }
 
-  recordInlineDiffToolComplete(diffText: string, toolId: string, fallbackName?: string, error?: string) {
+  recordInlineDiffToolComplete(
+    diffText: string,
+    toolId: string,
+    fallbackName?: string,
+    error?: string,
+    duration?: number
+  ) {
     this.flushStreamingSegment()
-    this.pushInlineDiffSegment(diffText, [this.completeTool(toolId, fallbackName, error, '')])
+    this.pushInlineDiffSegment(diffText, [this.completeTool(toolId, fallbackName, error, '', duration)])
     this.publishToolState()
   }
 
-  private completeTool(toolId: string, fallbackName?: string, error?: string, summary?: string) {
+  private completeTool(toolId: string, fallbackName?: string, error?: string, summary?: string, duration?: number) {
     const done = this.activeTools.find(tool => tool.id === toolId)
     const name = done?.name ?? fallbackName ?? 'tool'
     const label = toolTrailLabel(name)
-    const line = buildToolTrailLine(name, done?.context || '', Boolean(error), error || summary || '')
+    const fallbackDuration = done?.startedAt ? (Date.now() - done.startedAt) / 1000 : undefined
+
+    const line = buildToolTrailLine(
+      name,
+      done?.context || '',
+      Boolean(error),
+      error || summary || '',
+      duration ?? fallbackDuration
+    )
 
     this.activeTools = this.activeTools.filter(tool => tool.id !== toolId)
 
@@ -496,6 +659,7 @@ class TurnController {
 
   recordToolStart(toolId: string, name: string, context: string) {
     this.flushStreamingSegment()
+    this.closeReasoningSegment()
     this.pruneTransient()
     this.endReasoningPhase()
 
@@ -514,6 +678,7 @@ class TurnController {
     this.bufRef = ''
     this.interrupted = false
     this.lastStatusNote = ''
+    this.activeReasoningText = ''
     this.pendingSegmentTools = []
     this.protocolWarned = false
     this.reasoningSegmentIndex = null
@@ -552,7 +717,7 @@ class TurnController {
       this.streamTimer = null
       const raw = this.bufRef.trimStart()
       const visible = hasReasoningTag(raw) ? splitReasoning(raw).text : raw
-      patchTurnState({ streaming: visible })
+      patchTurnState({ streaming: boundedLiveRenderText(visible) })
     }, this.streamDelay)
   }
 
@@ -560,6 +725,8 @@ class TurnController {
     this.endReasoningPhase()
     this.clearReasoning()
     this.activeTools = []
+    this.activeReasoningText = ''
+    this.reasoningSegmentIndex = null
     this.turnTools = []
     this.toolTokenAcc = 0
     this.persistedToolLabels.clear()

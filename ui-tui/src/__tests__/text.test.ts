@@ -1,14 +1,18 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  boundedLiveRenderText,
+  buildToolTrailLine,
   edgePreview,
   estimateRows,
   estimateTokensRough,
   fmtK,
   isToolTrailResultLine,
   lastCotTrailIndex,
+  parseToolTrailResultLine,
   pasteTokenLabel,
-  sameToolTrailGroup
+  sameToolTrailGroup,
+  splitToolDuration
 } from '../lib/text.js'
 
 describe('isToolTrailResultLine', () => {
@@ -16,6 +20,16 @@ describe('isToolTrailResultLine', () => {
     expect(isToolTrailResultLine('foo ✓')).toBe(true)
     expect(isToolTrailResultLine('foo ✗')).toBe(true)
     expect(isToolTrailResultLine('drafting x…')).toBe(false)
+  })
+})
+
+describe('buildToolTrailLine', () => {
+  it('puts completion duration inline before the result marker', () => {
+    const line = buildToolTrailLine('read_file', 'x', false, '', 0.94)
+
+    expect(line).toBe('Read File("x") (0.9s) ✓')
+    expect(parseToolTrailResultLine(line)).toEqual({ call: 'Read File("x") (0.9s)', detail: '', mark: '✓' })
+    expect(splitToolDuration('Read File("x") (0.9s)')).toEqual({ label: 'Read File("x")', duration: ' (0.9s)' })
   })
 })
 
@@ -65,6 +79,28 @@ describe('estimateTokensRough', () => {
     expect(estimateTokensRough('a')).toBe(1)
     expect(estimateTokensRough('abcd')).toBe(1)
     expect(estimateTokensRough('abcde')).toBe(2)
+  })
+})
+
+describe('boundedLiveRenderText', () => {
+  it('preserves short live text verbatim', () => {
+    expect(boundedLiveRenderText('one\ntwo', { maxChars: 100, maxLines: 10 })).toBe('one\ntwo')
+  })
+
+  it('keeps the live tail by character budget', () => {
+    const out = boundedLiveRenderText('abcdefghij', { maxChars: 4, maxLines: 10 })
+
+    expect(out).toContain('ghij')
+    expect(out).toContain('omitted')
+    expect(out).not.toContain('abcdef')
+  })
+
+  it('keeps the live tail by line budget', () => {
+    const out = boundedLiveRenderText(['a', 'b', 'c', 'd'].join('\n'), { maxChars: 100, maxLines: 2 })
+
+    expect(out).toContain('c\nd')
+    expect(out).toContain('omitted 2 lines')
+    expect(out).not.toContain('a\nb')
   })
 })
 

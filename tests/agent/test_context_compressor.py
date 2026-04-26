@@ -1281,6 +1281,47 @@ class TestTokenBudgetTailProtection:
         assert isinstance(cut, int)
         assert 0 <= cut <= len(messages)
 
+    def test_generous_budget_protects_everything_floor_does_not_override(
+        self, budget_compressor
+    ):
+        """A budget that covers the whole transcript must prune nothing —
+        ``protect_tail_count`` is a minimum floor, not a ceiling."""
+        c = budget_compressor
+
+        # 100 alternating assistant/tool messages.  Each tool result has
+        # *unique* content so the dedup pass (Pass 1, which is independent
+        # of prune_boundary) is a no-op and we isolate the boundary logic.
+        messages = []
+        for i in range(50):
+            messages.append({
+                "role": "assistant", "content": None,
+                "tool_calls": [{
+                    "id": f"c{i}",
+                    "type": "function",
+                    "function": {"name": "noop", "arguments": "{}"},
+                }],
+            })
+            messages.append({
+                "role": "tool",
+                "tool_call_id": f"c{i}",
+                "content": f"unique-tool-output-{i:03d}-" + ("x" * 250),
+            })
+
+        # Budget large enough to cover the whole transcript many times over,
+        # so the budget walk completes without hitting its break condition
+        # and the boundary lands at 0 ("protect everything").
+        _, pruned = c._prune_old_tool_results(
+            messages,
+            protect_tail_count=20,
+            protect_tail_tokens=10_000_000,
+        )
+
+        assert pruned == 0, (
+            "budget said protect everything, but the floor still pruned "
+            f"{pruned} messages — protect_tail_count is acting as a ceiling, "
+            "not a minimum floor"
+        )
+
 
 class TestUpdateModelBudgets:
     """Regression: update_model() must recalculate token budgets."""

@@ -3498,6 +3498,8 @@ class GatewayRunner:
 
             # /background must bypass the running-agent guard — it starts a
             # parallel task and must never interrupt the active conversation.
+            # /btw is an alias of /background and resolves to the same canonical
+            # name, so this branch handles both commands.
             if _cmd_def_inner and _cmd_def_inner.name == "background":
                 return await self._handle_background_command(event)
 
@@ -3508,14 +3510,6 @@ class GatewayRunner:
             # mid-run is the whole point of the board.
             if _cmd_def_inner and _cmd_def_inner.name == "kanban":
                 return await self._handle_kanban_command(event)
-
-            # /btw must bypass the running-agent guard for the same reason
-            # as /background: it spawns a parallel ephemeral side-question
-            # task (see _handle_btw_command) that doesn't interrupt the
-            # active conversation and self-guards against concurrent /btw
-            # on the same chat.
-            if _cmd_def_inner and _cmd_def_inner.name == "btw":
-                return await self._handle_btw_command(event)
 
             # Session-level toggles that are safe to run mid-agent —
             # /yolo can unblock a pending approval prompt, /verbose cycles

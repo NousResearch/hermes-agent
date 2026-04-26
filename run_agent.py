@@ -7760,12 +7760,20 @@ class AIAgent:
             raw_reasoning_content = getattr(assistant_message, "reasoning_content", None)
             if raw_reasoning_content is not None:
                 msg["reasoning_content"] = _sanitize_surrogates(raw_reasoning_content)
-            elif msg.get("tool_calls") and self._needs_deepseek_tool_reasoning():
-                # DeepSeek thinking mode requires reasoning_content on every
+            elif msg.get("tool_calls") and self._needs_kimi_tool_reasoning():
+                # Kimi thinking mode requires reasoning_content on every
                 # assistant tool-call message. Without it, replaying the
-                # persisted message causes HTTP 400. Include empty string
-                # as a defensive compatibility fallback (refs #15250).
+                # persisted message causes HTTP 400.
                 msg["reasoning_content"] = ""
+            elif self._needs_deepseek_tool_reasoning():
+                # DeepSeek thinking mode requires reasoning_content on EVERY
+                # assistant message (both tool-call AND text-only). Without it,
+                # replaying a text-only response on session resume causes
+                # HTTP 400 (refs #15250, #15998). The replay safety net in
+                # _copy_reasoning_content_for_api catches this too, but storing
+                # correct data from creation time is cleaner (refs #15998).
+                raw_r = msg.get("reasoning")
+                msg["reasoning_content"] = _sanitize_surrogates(raw_r) if isinstance(raw_r, str) and raw_r else ""
 
         if hasattr(assistant_message, 'reasoning_details') and assistant_message.reasoning_details:
             # Pass reasoning_details back unmodified so providers (OpenRouter,

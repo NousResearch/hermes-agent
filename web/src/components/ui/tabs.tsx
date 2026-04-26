@@ -37,7 +37,7 @@ export function TabsTrigger({
     <button
       type="button"
       className={cn(
-        "relative inline-flex items-center justify-center whitespace-nowrap px-3 py-1.5 font-display text-xs tracking-[0.1em] uppercase transition-all cursor-pointer",
+        "relative inline-flex items-center justify-center whitespace-nowrap px-3 py-1.5 font-mondwest text-xs tracking-[0.1em] uppercase transition-all cursor-pointer",
         "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring",
         active
           ? "text-foreground after:absolute after:bottom-0 after:left-0 after:right-0 after:h-px after:bg-foreground"

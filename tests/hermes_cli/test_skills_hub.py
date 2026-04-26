@@ -56,7 +56,7 @@ def three_source_env(monkeypatch, hub_env):
     import tools.skills_tool as skills_tool
 
     monkeypatch.setattr(hub, "HubLockFile", lambda: _DummyLockFile([_HUB_ENTRY]))
-    monkeypatch.setattr(skills_tool, "_find_all_skills", lambda: list(_ALL_THREE_SKILLS))
+    monkeypatch.setattr(skills_tool, "_find_all_skills", lambda **_kwargs: list(_ALL_THREE_SKILLS))
     monkeypatch.setattr(skills_sync, "_read_manifest", lambda: dict(_BUILTIN_MANIFEST))
 
     return hub_env
@@ -107,7 +107,7 @@ def test_do_list_initializes_hub_dir(monkeypatch, hub_env):
     import tools.skills_sync as skills_sync
     import tools.skills_tool as skills_tool
 
-    monkeypatch.setattr(skills_tool, "_find_all_skills", lambda: [])
+    monkeypatch.setattr(skills_tool, "_find_all_skills", lambda **_kwargs: [])
     monkeypatch.setattr(skills_sync, "_read_manifest", lambda: {})
 
     hub_dir = hub_env
@@ -152,6 +152,74 @@ def test_do_list_filter_builtin(three_source_env):
     assert "builtin-skill" in output
     assert "hub-skill" not in output
     assert "local-skill" not in output
+
+
+def test_do_list_renders_status_column(three_source_env, monkeypatch):
+    """Every list row should carry an enabled/disabled status (new in PR that
+    answered Mr Mochizuki's 'I just want to see what's live' question)."""
+    from agent import skill_utils
+
+    monkeypatch.setattr(skill_utils, "get_disabled_skill_names", lambda platform=None: set())
+    output = _capture()
+
+    assert "Status" in output
+    assert "enabled" in output.lower()
+    # Summary counts enabled skills.
+    assert "3 enabled, 0 disabled" in output
+
+
+def test_do_list_marks_disabled_skills(three_source_env, monkeypatch):
+    from agent import skill_utils
+
+    # Simulate `skills.disabled: [hub-skill]` in config.
+    monkeypatch.setattr(
+        skill_utils, "get_disabled_skill_names",
+        lambda platform=None: {"hub-skill"},
+    )
+    output = _capture()
+
+    # Row still appears (no --enabled-only), but marked disabled
+    assert "hub-skill" in output
+    assert "disabled" in output.lower()
+    assert "2 enabled, 1 disabled" in output
+
+
+def test_do_list_enabled_only_hides_disabled(three_source_env, monkeypatch):
+    from agent import skill_utils
+
+    monkeypatch.setattr(
+        skill_utils, "get_disabled_skill_names",
+        lambda platform=None: {"hub-skill"},
+    )
+    sink = StringIO()
+    console = Console(file=sink, force_terminal=False, color_system=None)
+    do_list(enabled_only=True, console=console)
+    output = sink.getvalue()
+
+    assert "hub-skill" not in output
+    assert "builtin-skill" in output
+    assert "local-skill" in output
+    assert "enabled only" in output.lower()
+    assert "2 enabled shown" in output
+
+
+def test_do_list_platform_env_is_ignored(three_source_env, monkeypatch):
+    """`hermes skills list` reads the active profile's config via
+    HERMES_HOME (swapped by -p), so it must NOT pass a platform arg to
+    ``get_disabled_skill_names`` — otherwise per-platform overrides
+    would silently leak in from HERMES_PLATFORM env."""
+    from agent import skill_utils
+
+    seen = {}
+
+    def _fake(platform=None):
+        seen["platform"] = platform
+        return set()
+
+    monkeypatch.setattr(skill_utils, "get_disabled_skill_names", _fake)
+    _capture()
+
+    assert seen["platform"] is None
 
 
 def test_do_check_reports_available_updates(monkeypatch):

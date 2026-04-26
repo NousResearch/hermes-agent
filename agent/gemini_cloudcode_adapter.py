@@ -39,6 +39,7 @@ from typing import Any, Dict, Iterator, List, Optional
 import httpx
 
 from agent import google_oauth
+from agent.gemini_schema import sanitize_gemini_tool_parameters
 from agent.google_code_assist import (
     CODE_ASSIST_ENDPOINT,
     FREE_TIER_ID,
@@ -205,7 +206,7 @@ def _translate_tools_to_gemini(tools: Any) -> List[Dict[str, Any]]:
             decl["description"] = str(fn["description"])
         params = fn.get("parameters")
         if isinstance(params, dict):
-            decl["parameters"] = params
+            decl["parameters"] = sanitize_gemini_tool_parameters(params)
         declarations.append(decl)
     if not declarations:
         return []
@@ -504,9 +505,16 @@ def _iter_sse_events(response: httpx.Response) -> Iterator[Dict[str, Any]]:
 def _translate_stream_event(
     event: Dict[str, Any],
     model: str,
-    tool_call_indices: Dict[str, int],
+    tool_call_counter: List[int],
 ) -> List[_GeminiStreamChunk]:
-    """Unwrap Code Assist envelope and emit OpenAI-shaped chunk(s)."""
+    """Unwrap Code Assist envelope and emit OpenAI-shaped chunk(s).
+
+    ``tool_call_counter`` is a single-element list used as a mutable counter
+    across events in the same stream. Each ``functionCall`` part gets a
+    fresh, unique OpenAI ``index`` — keying by function name would collide
+    whenever the model issues parallel calls to the same tool (e.g. reading
+    three files in one turn).
+    """
     inner = event.get("response") if isinstance(event.get("response"), dict) else event
     candidates = inner.get("candidates") or []
     if not candidates:
@@ -532,7 +540,8 @@ def _translate_stream_event(
         fc = part.get("functionCall")
         if isinstance(fc, dict) and fc.get("name"):
             name = str(fc["name"])
-            idx = tool_call_indices.setdefault(name, len(tool_call_indices))
+            idx = tool_call_counter[0]
+            tool_call_counter[0] += 1
             try:
                 args_str = json.dumps(fc.get("args") or {}, ensure_ascii=False)
             except (TypeError, ValueError):
@@ -549,7 +558,7 @@ def _translate_stream_event(
     finish_reason_raw = str(cand.get("finishReason") or "")
     if finish_reason_raw:
         mapped = _map_gemini_finish_reason(finish_reason_raw)
-        if tool_call_indices:
+        if tool_call_counter[0] > 0:
             mapped = "tool_calls"
         chunks.append(_make_stream_chunk(model=model, finish_reason=mapped))
     return chunks
@@ -733,9 +742,9 @@ class GeminiCloudCodeClient:
                         # Materialize error body for better diagnostics
                         response.read()
                         raise _gemini_http_error(response)
-                    tool_call_indices: Dict[str, int] = {}
+                    tool_call_counter: List[int] = [0]
                     for event in _iter_sse_events(response):
-                        for chunk in _translate_stream_event(event, model, tool_call_indices):
+                        for chunk in _translate_stream_event(event, model, tool_call_counter):
                             yield chunk
             except httpx.HTTPError as exc:
                 raise CodeAssistError(
@@ -747,18 +756,150 @@ class GeminiCloudCodeClient:
 
 
 def _gemini_http_error(response: httpx.Response) -> CodeAssistError:
+    """Translate an httpx response into a CodeAssistError with rich metadata.
+
+    Parses Google's error envelope (``{"error": {"code", "message", "status",
+    "details": [...]}}``) so the agent's error classifier can reason about
+    the failure — ``status_code`` enables the rate_limit / auth classification
+    paths, and ``response`` lets the main loop honor ``Retry-After`` just
+    like it does for OpenAI SDK exceptions.
+
+    Also lifts a few recognizable Google conditions into human-readable
+    messages so the user sees something better than a 500-char JSON dump:
+
+        MODEL_CAPACITY_EXHAUSTED → "Gemini model capacity exhausted for
+            <model>. This is a Google-side throttle..."
+        RESOURCE_EXHAUSTED w/o reason → quota-style message
+        404 → "Model <name> not found at cloudcode-pa..."
+    """
     status = response.status_code
+
+    # Parse the body once, surviving any weird encodings.
+    body_text = ""
+    body_json: Dict[str, Any] = {}
     try:
-        body = response.text[:500]
+        body_text = response.text
     except Exception:
-        body = ""
-    # Let run_agent's retry logic see auth errors as rotatable via `api_key`
+        body_text = ""
+    if body_text:
+        try:
+            parsed = json.loads(body_text)
+            if isinstance(parsed, dict):
+                body_json = parsed
+        except (ValueError, TypeError):
+            body_json = {}
+
+    # Dig into Google's error envelope.  Shape is:
+    #   {"error": {"code": 429, "message": "...", "status": "RESOURCE_EXHAUSTED",
+    #              "details": [{"@type": ".../ErrorInfo", "reason": "MODEL_CAPACITY_EXHAUSTED",
+    #                           "metadata": {...}},
+    #                          {"@type": ".../RetryInfo", "retryDelay": "30s"}]}}
+    err_obj = body_json.get("error") if isinstance(body_json, dict) else None
+    if not isinstance(err_obj, dict):
+        err_obj = {}
+    err_status = str(err_obj.get("status") or "").strip()
+    err_message = str(err_obj.get("message") or "").strip()
+    _raw_details = err_obj.get("details")
+    err_details_list = _raw_details if isinstance(_raw_details, list) else []
+
+    # Extract google.rpc.ErrorInfo reason + metadata.  There may be more
+    # than one ErrorInfo (rare), so we pick the first one with a reason.
+    error_reason = ""
+    error_metadata: Dict[str, Any] = {}
+    retry_delay_seconds: Optional[float] = None
+    for detail in err_details_list:
+        if not isinstance(detail, dict):
+            continue
+        type_url = str(detail.get("@type") or "")
+        if not error_reason and type_url.endswith("/google.rpc.ErrorInfo"):
+            reason = detail.get("reason")
+            if isinstance(reason, str) and reason:
+                error_reason = reason
+            md = detail.get("metadata")
+            if isinstance(md, dict):
+                error_metadata = md
+        elif retry_delay_seconds is None and type_url.endswith("/google.rpc.RetryInfo"):
+            # retryDelay is a google.protobuf.Duration string like "30s" or "1.5s".
+            delay_raw = detail.get("retryDelay")
+            if isinstance(delay_raw, str) and delay_raw.endswith("s"):
+                try:
+                    retry_delay_seconds = float(delay_raw[:-1])
+                except ValueError:
+                    pass
+            elif isinstance(delay_raw, (int, float)):
+                retry_delay_seconds = float(delay_raw)
+
+    # Fall back to the Retry-After header if the body didn't include RetryInfo.
+    if retry_delay_seconds is None:
+        try:
+            header_val = response.headers.get("Retry-After") or response.headers.get("retry-after")
+        except Exception:
+            header_val = None
+        if header_val:
+            try:
+                retry_delay_seconds = float(header_val)
+            except (TypeError, ValueError):
+                retry_delay_seconds = None
+
+    # Classify the error code.  ``code_assist_rate_limited`` stays the default
+    # for 429s; a more specific reason tag helps downstream callers (e.g. tests,
+    # logs) without changing the rate_limit classification path.
     code = f"code_assist_http_{status}"
     if status == 401:
         code = "code_assist_unauthorized"
     elif status == 429:
         code = "code_assist_rate_limited"
+        if error_reason == "MODEL_CAPACITY_EXHAUSTED":
+            code = "code_assist_capacity_exhausted"
+
+    # Build a human-readable message.  Keep the status + a raw-body tail for
+    # debugging, but lead with a friendlier summary when we recognize the
+    # Google signal.
+    model_hint = ""
+    if isinstance(error_metadata, dict):
+        model_hint = str(error_metadata.get("model") or error_metadata.get("modelId") or "").strip()
+
+    if status == 429 and error_reason == "MODEL_CAPACITY_EXHAUSTED":
+        target = model_hint or "this Gemini model"
+        message = (
+            f"Gemini capacity exhausted for {target} (Google-side throttle, "
+            f"not a Hermes issue). Try a different Gemini model or set a "
+            f"fallback_providers entry to a non-Gemini provider."
+        )
+        if retry_delay_seconds is not None:
+            message += f" Google suggests retrying in {retry_delay_seconds:g}s."
+    elif status == 429 and err_status == "RESOURCE_EXHAUSTED":
+        message = (
+            f"Gemini quota exhausted ({err_message or 'RESOURCE_EXHAUSTED'}). "
+            f"Check /gquota for remaining daily requests."
+        )
+        if retry_delay_seconds is not None:
+            message += f" Retry suggested in {retry_delay_seconds:g}s."
+    elif status == 404:
+        # Google returns 404 when a model has been retired or renamed.
+        target = model_hint or (err_message or "model")
+        message = (
+            f"Code Assist 404: {target} is not available at "
+            f"cloudcode-pa.googleapis.com. It may have been renamed or "
+            f"retired. Check hermes_cli/models.py for the current list."
+        )
+    elif err_message:
+        # Generic fallback with the parsed message.
+        message = f"Code Assist HTTP {status} ({err_status or 'error'}): {err_message}"
+    else:
+        # Last-ditch fallback — raw body snippet.
+        message = f"Code Assist returned HTTP {status}: {body_text[:500]}"
+
     return CodeAssistError(
-        f"Code Assist returned HTTP {status}: {body}",
+        message,
         code=code,
+        status_code=status,
+        response=response,
+        retry_after=retry_delay_seconds,
+        details={
+            "status": err_status,
+            "reason": error_reason,
+            "metadata": error_metadata,
+            "message": err_message,
+        },
     )

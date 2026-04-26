@@ -73,3 +73,17 @@ class TestApprovalMapping:
             result = cb("rm -rf /", "dangerous")
 
         assert result == "deny"
+
+    def test_approval_none_response_returns_deny(self):
+        """When request_permission resolves to None, the callback should return 'deny'."""
+        loop = MagicMock(spec=asyncio.AbstractEventLoop)
+        mock_rp = MagicMock(name="request_permission")
+
+        future = MagicMock(spec=Future)
+        future.result.return_value = None
+
+        with patch("acp_adapter.permissions.asyncio.run_coroutine_threadsafe", return_value=future):
+            cb = make_approval_callback(mock_rp, loop, session_id="s1", timeout=1.0)
+            result = cb("echo hi", "demo")
+
+        assert result == "deny"

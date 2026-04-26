@@ -26,6 +26,8 @@ from typing import Optional, Tuple
 
 import requests
 
+from hermes_constants import display_hermes_home, get_hermes_home
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
@@ -58,7 +60,7 @@ FEISHU_DEFAULT_SCOPE = (
 )
 
 # Path to persisted UAT token file
-FEISHU_UAT_PATH = Path.home() / ".hermes" / "feishu_uat.json"
+FEISHU_UAT_PATH = get_hermes_home() / "feishu_uat.json"
 
 # Polling backoff cap in seconds (RFC 8628 §3.5)
 _POLL_INTERVAL_CAP = 30
@@ -366,7 +368,7 @@ def save_uat(
         except OSError:
             pass
         raise
-    logger.info("Feishu UAT saved to %s", FEISHU_UAT_PATH)
+    logger.info("Feishu UAT saved to %s/%s", display_hermes_home(), "feishu_uat.json")
 
 
 def load_uat() -> Optional[dict]:
@@ -381,7 +383,7 @@ def load_uat() -> Optional[dict]:
         with open(FEISHU_UAT_PATH, encoding="utf-8") as fh:
             return json.load(fh)
     except (json.JSONDecodeError, OSError) as exc:
-        logger.warning("Failed to load feishu UAT from %s: %s", FEISHU_UAT_PATH, exc)
+        logger.warning("Failed to load feishu UAT from %s/%s: %s", display_hermes_home(), "feishu_uat.json", exc)
         return None
 
 
@@ -635,7 +637,7 @@ def feishu_qr_auth(
     print_success(
         f"  Access Token: {access_token[:8]}{'*' * max(0, len(access_token) - 8)}"
     )
-    print_success(f"  Tokens saved to: {FEISHU_UAT_PATH}")
+    print_success(f"  Tokens saved to: {display_hermes_home()}/feishu_uat.json")
 
     return access_token, refresh_token
 

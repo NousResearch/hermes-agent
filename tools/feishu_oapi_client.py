@@ -27,13 +27,15 @@ import time
 from pathlib import Path
 from typing import Any, Optional
 
+from hermes_constants import get_hermes_home
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Constants
 # ---------------------------------------------------------------------------
 
-FEISHU_UAT_PATH = Path.home() / ".hermes" / "feishu_uat.json"
+FEISHU_UAT_PATH = get_hermes_home() / "feishu_uat.json"
 
 # Access token refresh headroom — treat token as expired this many seconds early
 _ACCESS_TOKEN_EXPIRY_HEADROOM_S = 60

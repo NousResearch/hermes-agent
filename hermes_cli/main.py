@@ -8453,6 +8453,12 @@ Examples:
     skills_list.add_argument(
         "--source", default="all", choices=["all", "hub", "builtin", "local"]
     )
+    skills_list.add_argument(
+        "--enabled-only",
+        action="store_true",
+        help="Hide disabled skills. Use with -p <profile> to see exactly "
+             "which skills will load for that profile.",
+    )
 
     skills_check = skills_subparsers.add_parser(
         "check", help="Check installed hub skills for updates"

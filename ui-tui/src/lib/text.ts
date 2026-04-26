@@ -70,8 +70,43 @@ export const pasteTokenLabel = (text: string, lineCount: number) => {
     : `[[ ${preview} [${fmtK(lineCount)} lines] ]]`
 }
 
+const THINKING_STATUS_WORDS = [
+  'pondering',
+  'contemplating',
+  'musing',
+  'cogitating',
+  'ruminating',
+  'deliberating',
+  'mulling',
+  'reflecting',
+  'processing',
+  'reasoning',
+  'analyzing',
+  'computing',
+  'synthesizing',
+  'formulating',
+  'brainstorming'
+]
+
+const THINKING_STATUS_RE = new RegExp(`^(?:${THINKING_STATUS_WORDS.join('|')})\\.{0,3}$`, 'i')
+
+const THINKING_FACE_SOURCE = '[^A-Za-z\n]+'
+
+const THINKING_STATUS_CHUNK_RE = new RegExp(
+  `${THINKING_FACE_SOURCE}\\s*(?:${THINKING_STATUS_WORDS.join('|')})\\.{0,3}\\s*`,
+  'giu'
+)
+
+export const cleanThinkingText = (reasoning: string) =>
+  reasoning
+    .split('\n')
+    .map(line => line.replace(THINKING_STATUS_CHUNK_RE, '').trim())
+    .filter(line => line && !THINKING_STATUS_RE.test(line.replace(/\.\.\.$/, '').trim()))
+    .join('\n')
+    .trim()
+
 export const thinkingPreview = (reasoning: string, mode: ThinkingMode, max: number = THINKING_COT_MAX) => {
-  const raw = reasoning.trim()
+  const raw = cleanThinkingText(reasoning)
 
   return !raw || mode === 'collapsed' ? '' : mode === 'full' ? raw : compactPreview(raw.replace(WS_RE, ' '), max)
 }

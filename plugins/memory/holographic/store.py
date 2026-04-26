@@ -65,6 +65,25 @@ CREATE TRIGGER IF NOT EXISTS facts_au AFTER UPDATE ON facts BEGIN
         VALUES (new.fact_id, new.content, new.tags);
 END;
 
+CREATE TABLE IF NOT EXISTS episodes (
+    episode_id   INTEGER PRIMARY KEY AUTOINCREMENT,
+    title        TEXT NOT NULL,
+    session_id   TEXT NOT NULL,
+    topic        TEXT DEFAULT '',
+    fact_count   INTEGER DEFAULT 0,
+    created_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at   TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS episode_facts (
+    episode_id INTEGER REFERENCES episodes(episode_id) ON DELETE CASCADE,
+    fact_id    INTEGER REFERENCES facts(fact_id) ON DELETE CASCADE,
+    PRIMARY KEY (episode_id, fact_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_episodes_session ON episodes(session_id);
+CREATE INDEX IF NOT EXISTS idx_episodes_created ON episodes(created_at DESC);
+
 CREATE TABLE IF NOT EXISTS memory_banks (
     bank_id    INTEGER PRIMARY KEY AUTOINCREMENT,
     bank_name  TEXT NOT NULL UNIQUE,
@@ -72,8 +91,7 @@ CREATE TABLE IF NOT EXISTS memory_banks (
     dim        INTEGER NOT NULL,
     fact_count INTEGER DEFAULT 0,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-);
-"""
+);"""
 
 # Trust adjustment constants
 _HELPFUL_DELTA   =  0.05
@@ -345,6 +363,125 @@ class MemoryStore:
             """
             rows = self._conn.execute(sql, params).fetchall()
             return [self._row_to_dict(r) for r in rows]
+
+    # ------------------------------------------------------------------
+    # Episode helpers
+    # ------------------------------------------------------------------
+
+    def add_episode(self, title: str, session_id: str, topic: str = "") -> int:
+        """Create a new episode and return its episode_id."""
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT INTO episodes (title, session_id, topic) VALUES (?, ?, ?)",
+                (title.strip(), session_id.strip(), topic.strip()),
+            )
+            self._conn.commit()
+            return int(cur.lastrowid)
+
+    def get_episode(self, episode_id: int) -> dict | None:
+        """Get an episode by id."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM episodes WHERE episode_id = ?", (episode_id,)
+            ).fetchone()
+            return dict(row) if row else None
+
+    def list_episodes(self, limit: int = 10) -> list[dict]:
+        """List episodes ordered by created_at desc."""
+        with self._lock:
+            rows = self._conn.execute(
+                "SELECT * FROM episodes ORDER BY created_at DESC LIMIT ?", (limit,)
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def search_episodes(self, query: str, limit: int = 10) -> list[dict]:
+        """Search episodes by title or topic (LIKE)."""
+        with self._lock:
+            like = f"%{query.strip()}%"
+            rows = self._conn.execute(
+                """SELECT * FROM episodes
+                   WHERE title LIKE ? OR topic LIKE ?
+                   ORDER BY created_at DESC LIMIT ?""",
+                (like, like, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def get_current_episode(self, session_id: str) -> dict | None:
+        """Get the most recent (latest) episode for a session."""
+        with self._lock:
+            row = self._conn.execute(
+                """SELECT * FROM episodes
+                   WHERE session_id = ?
+                   ORDER BY created_at DESC LIMIT 1""",
+                (session_id.strip(),),
+            ).fetchone()
+            return dict(row) if row else None
+
+    def link_fact_to_episode(self, fact_id: int, episode_id: int) -> bool:
+        """Link a fact to an episode. Returns True if linked, False if already linked."""
+        with self._lock:
+            cur = self._conn.execute(
+                "INSERT OR IGNORE INTO episode_facts (episode_id, fact_id) VALUES (?, ?)",
+                (episode_id, fact_id),
+            )
+            if cur.rowcount:
+                self._conn.execute(
+                    "UPDATE episodes SET fact_count = fact_count + 1, updated_at = CURRENT_TIMESTAMP WHERE episode_id = ?",
+                    (episode_id,),
+                )
+                self._conn.commit()
+                return True
+            return False
+
+    def get_episode_facts(self, episode_id: int, limit: int = 50) -> list[dict]:
+        """Get all facts linked to an episode."""
+        with self._lock:
+            rows = self._conn.execute(
+                """SELECT f.fact_id, f.content, f.category, f.tags,
+                          f.trust_score, f.retrieval_count, f.helpful_count,
+                          f.created_at, f.updated_at
+                   FROM facts f
+                   JOIN episode_facts ef ON ef.fact_id = f.fact_id
+                   WHERE ef.episode_id = ?
+                   ORDER BY f.created_at DESC
+                   LIMIT ?""",
+                (episode_id, limit),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+    def update_episode(self, episode_id: int, title: str | None = None,
+                       topic: str | None = None) -> bool:
+        """Update title or topic of an episode."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT episode_id FROM episodes WHERE episode_id = ?", (episode_id,)
+            ).fetchone()
+            if row is None:
+                return False
+            assignments = ["updated_at = CURRENT_TIMESTAMP"]
+            params = []
+            if title is not None:
+                assignments.append("title = ?")
+                params.append(title.strip())
+            if topic is not None:
+                assignments.append("topic = ?")
+                params.append(topic.strip())
+            params.append(episode_id)
+            self._conn.execute(
+                f"UPDATE episodes SET {', '.join(assignments)} WHERE episode_id = ?",
+                params,
+            )
+            self._conn.commit()
+            return True
+
+    def remove_episode(self, episode_id: int) -> bool:
+        """Delete an episode. Linked facts are NOT deleted (cascade only removes links)."""
+        with self._lock:
+            cur = self._conn.execute(
+                "DELETE FROM episodes WHERE episode_id = ?", (episode_id,)
+            )
+            self._conn.commit()
+            return cur.rowcount > 0
 
     def record_feedback(self, fact_id: int, helpful: bool) -> dict:
         """Record user feedback and adjust trust asymmetrically.

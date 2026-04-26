@@ -55,7 +55,7 @@ FACT_STORE_SCHEMA = {
         "properties": {
             "action": {
                 "type": "string",
-                "enum": ["add", "search", "probe", "related", "reason", "contradict", "update", "remove", "list"],
+                "enum": ["add", "search", "probe", "related", "reason", "contradict", "episodes", "update", "remove", "list"],
             },
             "content": {"type": "string", "description": "Fact content (required for 'add')."},
             "query": {"type": "string", "description": "Search query (required for 'search')."},
@@ -179,6 +179,24 @@ class HolographicMemoryProvider(MemoryProvider):
         )
         self._session_id = session_id
 
+        # Episode tracking: auto-create episode for this session
+        self._current_episode_id: int | None = None
+        try:
+            existing = self._store.get_current_episode(session_id)
+            if existing:
+                self._current_episode_id = existing["episode_id"]
+            else:
+                # Generate a descriptive title based on session time
+                from datetime import datetime
+                now = datetime.now()
+                title = f"Session {now.strftime('%Y-%m-%d %H:%M')}"
+                topic = ""
+                self._current_episode_id = self._store.add_episode(
+                    title=title, session_id=session_id, topic=topic,
+                )
+        except Exception:
+            self._current_episode_id = None
+
     def system_prompt_block(self) -> str:
         if not self._store:
             return ""
@@ -193,13 +211,15 @@ class HolographicMemoryProvider(MemoryProvider):
                 "# Holographic Memory\n"
                 "Active. Empty fact store — proactively add facts the user would expect you to remember.\n"
                 "Use fact_store(action='add') to store durable structured facts about people, projects, preferences, decisions.\n"
+                "Use fact_store(action='episodes') to browse conversation episodes.\n"
                 "Use fact_feedback to rate facts after using them (trains trust scores)."
             )
         return (
-            f"# Holographic Memory\n"
+            "# Holographic Memory\n"
             f"Active. {total} facts stored with entity resolution and trust scoring.\n"
-            f"Use fact_store to search, probe entities, reason across entities, or add facts.\n"
-            f"Use fact_feedback to rate facts after using them (trains trust scores)."
+            "Use fact_store to search, probe entities, reason across entities, or add facts.\n"
+            "Use fact_store(action='episodes') to browse conversation episodes.\n"
+            "Use fact_feedback to rate facts after using them (trains trust scores)."
         )
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
@@ -245,7 +265,9 @@ class HolographicMemoryProvider(MemoryProvider):
         if action == "add" and self._store and content:
             try:
                 category = "user_pref" if target == "user" else "general"
-                self._store.add_fact(content, category=category)
+                fact_id = self._store.add_fact(content, category=category)
+                if fact_id and self._current_episode_id:
+                    self._store.link_fact_to_episode(fact_id, self._current_episode_id)
             except Exception as e:
                 logger.debug("Holographic memory_write mirror failed: %s", e)
 
@@ -267,6 +289,8 @@ class HolographicMemoryProvider(MemoryProvider):
                     category=args.get("category", "general"),
                     tags=args.get("tags", ""),
                 )
+                if self._current_episode_id:
+                    store.link_fact_to_episode(fact_id, self._current_episode_id)
                 return json.dumps({"fact_id": fact_id, "status": "added"})
 
             elif action == "search":
@@ -333,6 +357,15 @@ class HolographicMemoryProvider(MemoryProvider):
                     limit=int(args.get("limit", 10)),
                 )
                 return json.dumps({"facts": facts, "count": len(facts)})
+
+            elif action == "episodes":
+                query = args.get("query", "")
+                limit = int(args.get("limit", 10))
+                if query:
+                    episodes = store.search_episodes(query, limit=limit)
+                else:
+                    episodes = store.list_episodes(limit=limit)
+                return json.dumps({"episodes": episodes, "count": len(episodes)})
 
             else:
                 return tool_error(f"Unknown action: {action}")

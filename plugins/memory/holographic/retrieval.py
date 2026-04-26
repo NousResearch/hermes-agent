@@ -109,6 +109,8 @@ class FactRetriever:
         # Strip raw HRR bytes — callers expect JSON-serializable dicts
         for fact in results:
             fact.pop("hrr_vector", None)
+        # Episode graph propagation: boost facts sharing episode context
+        results = self.episode_propagate(results)
         return results
 
     def probe(
@@ -591,3 +593,88 @@ class FactRetriever:
             return math.pow(0.5, age_days / self.half_life)
         except (ValueError, TypeError):
             return 1.0
+
+    # ------------------------------------------------------------------
+    # Episode graph propagation
+    # ------------------------------------------------------------------
+
+    def episode_propagate(self, results: list[dict],
+                          episode_boost: float = 1.5) -> list[dict]:
+        """Boost facts that share episodes with already-matched facts.
+
+        Graph propagation: for each fact in results, find its episodes,
+        then find other facts in the same episodes and boost their scores.
+        This surfaces contextually related facts from the same conversation
+        episode, even if they don't keyword-match the query directly.
+
+        Returns the original result list with boosted scores for any facts
+        that share episode context.
+        """
+        if not results or len(results) < 2:
+            return results
+
+        conn = self.store._conn
+        fact_ids = [r["fact_id"] for r in results]
+        placeholders = ",".join("?" * len(fact_ids))
+
+        # Find all episodes linked to our matched facts
+        episode_rows = conn.execute(
+            f"""SELECT DISTINCT ef.episode_id
+                FROM episode_facts ef
+                WHERE ef.fact_id IN ({placeholders})""",
+            fact_ids,
+        ).fetchall()
+
+        if not episode_rows:
+            return results  # No episode links = no propagation
+
+        episode_ids = [row["episode_id"] for row in episode_rows]
+        ep_placeholders = ",".join("?" * len(episode_ids))
+
+        # Find sibling facts (same episode, different fact_id) and boost them
+        sibling_rows = conn.execute(
+            f"""SELECT ef2.fact_id
+                FROM episode_facts ef2
+                WHERE ef2.episode_id IN ({ep_placeholders})
+                AND ef2.fact_id IN ({placeholders})""",
+            episode_ids + fact_ids,
+        ).fetchall()
+
+        boost_fact_ids = set(row["fact_id"] for row in sibling_rows)
+
+        for fact in results:
+            if fact["fact_id"] in boost_fact_ids:
+                fact["score"] = fact.get("score", 0.5) * episode_boost
+
+        # Sort again with boosted scores
+        results.sort(key=lambda x: x["score"], reverse=True)
+        return results
+
+    @staticmethod
+    def pronoun_resolve(text: str, speaker_name: str = "the user") -> str:
+        """Resolve first-person pronouns to a named entity for consistent storage.
+
+        Replaces 'I', 'my', 'me', 'mine' with the speaker's name so facts
+        stored from first-person statements are entity-resolvable later.
+
+        Example:
+            "I prefer dark mode" -> "the user prefers dark mode"
+            "My project uses pytest" -> "the user's project uses pytest"
+        """
+        import re
+        result = text
+        # Word-boundary replacements, lowercased for matching
+        result = re.sub(r'\bI\s+(have|am|was|will|can|would|should|might|do|did|don\'t|didn\'t)\b',
+                        lambda m: f"{speaker_name} {m.group(1)}", result)
+        result = re.sub(r'\bI\b', speaker_name, result)
+        result = re.sub(r"\bmy\b", f"{speaker_name}'s", result, flags=re.IGNORECASE)
+        result = re.sub(r"\bme\b", speaker_name, result, flags=re.IGNORECASE)
+        result = re.sub(r"\bmine\b", f"{speaker_name}'s", result, flags=re.IGNORECASE)
+        # Chinese: 我 -> speaker
+        result = result.replace("我喜欢", f"{speaker_name}喜欢")
+        result = result.replace("我用", f"{speaker_name}用")
+        result = result.replace("我要", f"{speaker_name}要")
+        result = result.replace("我是", f"{speaker_name}是")
+        result = result.replace("我的", f"{speaker_name}的")
+        result = result.replace("我想", f"{speaker_name}想")
+        return result

@@ -554,6 +554,7 @@ const sidebars: SidebarsConfig = {
         'guides/webhook-github-pr-review',
         'guides/migrate-from-openclaw',
         'guides/aws-bedrock',
+        'guides/azure-foundry',
       ],
     },
     {

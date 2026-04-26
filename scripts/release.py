@@ -180,6 +180,10 @@ AUTHOR_MAP = {
     "jaisehgal11299@gmail.com": "jaisup",
     "percydikec@gmail.com": "PercyDikec",
     "noonou7@gmail.com": "HenkDz",
+    # Azure Foundry salvage (PRs #9029, #4599, #10086, #8766)
+    "tech@smartlogics.net": "TechPrototyper",
+    "637186+HangGlidersRule@users.noreply.github.com": "HangGlidersRule",
+    "pein892@gmail.com": "pein892",
     "dean.kerr@gmail.com": "deankerr",
     "socrates1024@gmail.com": "socrates1024",
     "seanalt555@gmail.com": "Salt-555",

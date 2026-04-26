@@ -155,7 +155,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       voice.setProcessing(false)
     }
 
-    gateway.rpc<VoiceRecordResponse>('voice.record', { action }).catch((e: Error) => {
+    gateway.rpc<VoiceRecordResponse>('voice.record', { action, session_id: getUiState().sid }).catch((e: Error) => {
       // Revert optimistic UI on failure.
       if (starting) {
         voice.setRecording(false)

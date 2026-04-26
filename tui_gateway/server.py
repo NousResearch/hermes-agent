@@ -4012,6 +4012,8 @@ def _(rid, params: dict) -> dict:
             from hermes_cli.voice import start_continuous
 
             voice_cfg = _load_cfg().get("voice", {})
+            if not isinstance(voice_cfg, dict):
+                voice_cfg = {}
             start_continuous(
                 on_transcript=lambda t: _voice_emit("voice.transcript", {"text": t}),
                 on_status=lambda s: _voice_emit("voice.status", {"state": s}),
@@ -4020,13 +4022,14 @@ def _(rid, params: dict) -> dict:
                 ),
                 silence_threshold=voice_cfg.get("silence_threshold", 200),
                 silence_duration=voice_cfg.get("silence_duration", 3.0),
+                auto_restart=False,
             )
             return _ok(rid, {"status": "recording"})
 
         # action == "stop"
         from hermes_cli.voice import stop_continuous
 
-        stop_continuous()
+        stop_continuous(force_transcribe=True)
         return _ok(rid, {"status": "stopped"})
     except ImportError:
         return _err(

@@ -1341,7 +1341,39 @@ async def _send_wecom(extra, chat_id, message):
 
 
 async def _send_weixin(pconfig, chat_id, message, media_files=None):
-    """Send via Weixin iLink using the native adapter helper."""
+    """Send via Weixin iLink - try gateway bridge first, fallback to direct."""
+    # Try gateway HTTP bridge first (works from CLI/cron processes)
+    try:
+        from gateway.message_bridge import get_bridge_port
+        bridge_port = get_bridge_port()
+        if bridge_port:
+            try:
+                import aiohttp
+                url = f"http://127.0.0.1:{bridge_port}/send"
+                payload = {
+                    "platform": "weixin",
+                    "chat_id": chat_id,
+                    "message": message,
+                }
+                if media_files:
+                    payload["media_files"] = media_files
+                
+                async with aiohttp.ClientSession() as session:
+                    async def _do_post():
+                        async with session.post(url, json=payload) as resp:
+                            return resp.status, await resp.json()
+                    status, result = await asyncio.wait_for(_do_post(), timeout=30)
+                    if status == 200 and result.get("success"):
+                        logger.info("Weixin send via gateway bridge (port %d)", bridge_port)
+                        return result
+                    else:
+                        logger.warning("Gateway bridge send failed: %s", result)
+            except Exception as e:
+                logger.debug("Gateway bridge not available: %s, falling back to direct", e)
+    except ImportError:
+        pass
+    
+    # Fallback: direct send (original logic)
     try:
         from gateway.platforms.weixin import check_weixin_requirements, send_weixin_direct
         if not check_weixin_requirements():

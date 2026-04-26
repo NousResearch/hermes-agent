@@ -915,6 +915,35 @@ DEFAULT_CONFIG = {
         "guard_agent_created": False,
     },
 
+    # Curator — background skill maintenance.
+    #
+    # Periodically reviews AGENT-CREATED skills (never bundled or
+    # hub-installed) and keeps the collection tidy: marks long-unused skills
+    # as stale, archives genuinely obsolete ones (archive only, never
+    # deletes), and spawns a forked aux-model agent to consolidate overlaps
+    # and patch drift. Runs inactivity-triggered from session start — no
+    # cron daemon.
+    #
+    # See `hermes curator status` for the last run summary.
+    "curator": {
+        "enabled": True,
+        # How long to wait between curator runs (hours).
+        "interval_hours": 24,
+        # Only run when the agent has been idle at least this long (hours).
+        "min_idle_hours": 2,
+        # Mark a skill as "stale" after this many days without use.
+        "stale_after_days": 30,
+        # Archive a skill (move to skills/.archive/) after this many days
+        # without use. Archived skills are recoverable — no auto-deletion.
+        "archive_after_days": 90,
+        # Optional per-task override for the curator's aux model. Leave null
+        # to use Hermes' main auxiliary client resolution.
+        "auxiliary": {
+            "provider": None,
+            "model": None,
+        },
+    },
+
     # Honcho AI-native memory -- reads ~/.honcho/config.json as single source of truth.
     # This section is only needed for hermes-specific overrides; everything else
     # (apiKey, workspace, peerName, sessions, enabled) comes from the global config.

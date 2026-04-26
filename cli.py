@@ -5925,7 +5925,29 @@ class HermesCLI:
 
         print(f"(._.) Unknown cron command: {subcommand}")
         print("  Available: list, add, edit, pause, resume, run, remove")
-    
+
+    def _handle_curator_command(self, cmd: str):
+        """Handle /curator slash command.
+
+        Delegates to hermes_cli.curator so the CLI and the `hermes curator`
+        subcommand share the same handler set.
+        """
+        import shlex
+
+        tokens = shlex.split(cmd)[1:] if cmd else []
+        if not tokens:
+            tokens = ["status"]
+
+        try:
+            from hermes_cli.curator import cli_main
+            cli_main(tokens)
+        except SystemExit:
+            # argparse calls sys.exit() on --help or errors; swallow so we
+            # don't kill the interactive session.
+            pass
+        except Exception as exc:
+            print(f"(._.) curator: {exc}")
+
     def _handle_skills_command(self, cmd: str):
         """Handle /skills slash command — delegates to hermes_cli.skills_hub."""
         from hermes_cli.skills_hub import handle_skills_slash
@@ -6169,6 +6191,8 @@ class HermesCLI:
             self.save_conversation()
         elif canonical == "cron":
             self._handle_cron_command(cmd_original)
+        elif canonical == "curator":
+            self._handle_curator_command(cmd_original)
         elif canonical == "skills":
             with self._busy_command(self._slow_command_status(cmd_original)):
                 self._handle_skills_command(cmd_original)
@@ -9276,6 +9300,21 @@ class HermesCLI:
             self._console_print(f"[dim {_tip_color}]✦ Tip: {_tip}[/]")
         except Exception:
             pass  # Tips are non-critical — never break startup
+
+        # Curator — kick off a background skill-maintenance pass on startup
+        # if the schedule says we're due.  Runs in a daemon thread so it
+        # never blocks the interactive loop.  Best-effort; any failure is
+        # swallowed to avoid breaking session startup.
+        try:
+            from agent.curator import maybe_run_curator
+            maybe_run_curator(
+                idle_for_seconds=float("inf"),  # CLI startup = fully idle
+                on_summary=lambda msg: self._console_print(
+                    f"[dim #6b7684]💾 {msg}[/]"
+                ),
+            )
+        except Exception:
+            pass
         if self.preloaded_skills and not self._startup_skills_line_shown:
             skills_label = ", ".join(self.preloaded_skills)
             self._console_print(

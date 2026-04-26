@@ -2382,6 +2382,30 @@ class GatewayRunner:
 
         # Discover and load event hooks
         self.hooks.discover_and_load()
+
+        # Curator — kick off a background skill-maintenance pass on gateway
+        # startup if the schedule says we're due. Runs in a daemon thread
+        # so it never blocks gateway startup. Best-effort; any failure is
+        # swallowed. The interval_hours gate prevents re-running on quick
+        # restarts.
+        try:
+            from agent.curator import maybe_run_curator
+
+            def _curator_summary(msg: str) -> None:
+                # Surface the one-line summary into gateway logs so operators
+                # can see what the curator did. No per-platform push since
+                # there's no user-facing session at gateway boot.
+                logger.info("curator: %s", msg)
+
+            maybe_run_curator(
+                idle_for_seconds=float("inf"),  # gateway boot = no active agent
+                on_summary=_curator_summary,
+            )
+        except Exception:
+            logger.debug(
+                "curator boot hook failed", exc_info=True,
+            )
+
         
         # Recover background processes from checkpoint (crash recovery)
         try:

@@ -5,9 +5,9 @@ import { LONG_MSG } from '../config/limits.js'
 import { sectionMode } from '../domain/details.js'
 import { userDisplay } from '../domain/messages.js'
 import { ROLE } from '../domain/roles.js'
-import { compactPreview, hasAnsi, isPasteBackedText, stripAnsi } from '../lib/text.js'
+import { boundedLiveRenderText, compactPreview, hasAnsi, isPasteBackedText, stripAnsi } from '../lib/text.js'
 import type { Theme } from '../theme.js'
-import type { DetailsMode, Msg, SectionVisibility } from '../types.js'
+import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
 
 import { Md } from './markdown.js'
 import { ToolTrail } from './thinking.js'
@@ -20,7 +20,8 @@ export const MessageLine = memo(function MessageLine({
   isStreaming = false,
   msg,
   sections,
-  t
+  t,
+  tools = []
 }: MessageLineProps) {
   // Per-section overrides win over the global mode, so resolve each section
   // we might consume here once and gate visibility on the *content-bearing*
@@ -34,7 +35,7 @@ export const MessageLine = memo(function MessageLine({
   const activityMode = sectionMode('activity', detailsMode, sections, detailsModeCommandOverride)
   const thinking = msg.thinking?.trim() ?? ''
 
-  if (msg.kind === 'trail' && (msg.tools?.length || thinking)) {
+  if (msg.kind === 'trail' && (msg.tools?.length || tools.length || thinking)) {
     return thinkingMode !== 'hidden' || toolsMode !== 'hidden' || activityMode !== 'hidden' ? (
       <Box flexDirection="column">
         <ToolTrail
@@ -44,6 +45,7 @@ export const MessageLine = memo(function MessageLine({
           reasoningTokens={msg.thinkingTokens}
           sections={sections}
           t={t}
+          tools={tools}
           toolTokens={msg.toolTokens}
           trail={msg.tools ?? []}
         />
@@ -86,7 +88,11 @@ export const MessageLine = memo(function MessageLine({
     }
 
     if (msg.role === 'assistant') {
-      return isStreaming ? <Text color={body}>{msg.text}</Text> : <Md compact={compact} t={t} text={msg.text} />
+      return isStreaming ? (
+        <Text color={body}>{boundedLiveRenderText(msg.text)}</Text>
+      ) : (
+        <Md compact={compact} t={t} text={msg.text} />
+      )
     }
 
     if (msg.role === 'user' && msg.text.length > LONG_MSG && isPasteBackedText(msg.text)) {
@@ -154,4 +160,5 @@ interface MessageLineProps {
   msg: Msg
   sections?: SectionVisibility
   t: Theme
+  tools?: ActiveTool[]
 }

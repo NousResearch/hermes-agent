@@ -554,7 +554,16 @@ class ContextCompressor(ContextEngine):
                     break
                 accumulated += msg_tokens
                 boundary = i
-            prune_boundary = max(boundary, len(result) - min_protect)
+            # Translate the budget walk into a "protected count", apply the
+            # floor in count-space (where `max` reads naturally: protect at
+            # least `min_protect` messages or whatever the budget reserved,
+            # whichever is more), then convert back to a prune boundary.
+            # Doing this in index-space with `max` would invert the direction
+            # (smaller index = MORE protected), so a generous budget would
+            # silently get truncated back down to `min_protect`.
+            budget_protect_count = len(result) - boundary
+            protected_count = max(budget_protect_count, min_protect)
+            prune_boundary = len(result) - protected_count
         else:
             prune_boundary = len(result) - protect_tail_count
 

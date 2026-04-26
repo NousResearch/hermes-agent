@@ -515,11 +515,108 @@ def do_inspect(identifier: str, console: Optional[Console] = None) -> None:
     c.print()
 
 
-def do_list(source_filter: str = "all", console: Optional[Console] = None) -> None:
-    """List installed skills, distinguishing hub, builtin, and local skills."""
+def browse_skills(page: int = 1, page_size: int = 20, source: str = "all") -> dict:
+    """Paginated hub browse for programmatic callers (e.g. TUI gateway).
+
+    Returns ``{"items": [...], "page": int, "total_pages": int, "total": int}``.
+    """
+    from tools.skills_hub import GitHubAuth, create_source_router
+
+    page_size = max(1, min(page_size, 100))
+    _TRUST_RANK = {"builtin": 3, "trusted": 2, "community": 1}
+    _PER_SOURCE_LIMIT = {"official": 100, "skills-sh": 100, "well-known": 25, "github": 100, "clawhub": 50,
+                         "claude-marketplace": 50, "lobehub": 50}
+    auth = GitHubAuth()
+    sources = create_source_router(auth)
+    all_results: list = []
+    for src in sources:
+        sid = src.source_id()
+        if source != "all" and sid != source and sid != "official":
+            continue
+        try:
+            limit = _PER_SOURCE_LIMIT.get(sid, 50)
+            all_results.extend(src.search("", limit=limit))
+        except Exception:
+            continue
+    if not all_results:
+        return {"items": [], "page": 1, "total_pages": 1, "total": 0}
+    seen: dict = {}
+    for r in all_results:
+        rank = _TRUST_RANK.get(r.trust_level, 0)
+        if r.name not in seen or rank > _TRUST_RANK.get(seen[r.name].trust_level, 0):
+            seen[r.name] = r
+    deduped = list(seen.values())
+    deduped.sort(key=lambda r: (-_TRUST_RANK.get(r.trust_level, 0), r.source != "official", r.name.lower()))
+    total = len(deduped)
+    total_pages = max(1, (total + page_size - 1) // page_size)
+    page = max(1, min(page, total_pages))
+    start = (page - 1) * page_size
+    page_items = deduped[start : min(start + page_size, total)]
+    return {
+        "items": [{"name": r.name, "description": r.description, "source": r.source,
+                    "trust": r.trust_level} for r in page_items],
+        "page": page,
+        "total_pages": total_pages,
+        "total": total,
+    }
+
+
+def inspect_skill(identifier: str) -> Optional[dict]:
+    """Skill metadata (+ SKILL.md preview) for programmatic callers."""
+    from tools.skills_hub import GitHubAuth, create_source_router
+
+    class _Q:
+        def print(self, *a, **k):
+            pass
+
+    c = _Q()
+    auth = GitHubAuth()
+    sources = create_source_router(auth)
+    ident = identifier
+    if "/" not in ident:
+        ident = _resolve_short_name(ident, sources, c)
+        if not ident:
+            return None
+    meta, bundle, _ = _resolve_source_meta_and_bundle(ident, sources)
+    if not meta:
+        return None
+    out: dict = {
+        "name": meta.name,
+        "description": meta.description,
+        "source": meta.source,
+        "identifier": meta.identifier,
+        "tags": list(meta.tags) if meta.tags else [],
+    }
+    if bundle and "SKILL.md" in bundle.files:
+        content = bundle.files["SKILL.md"]
+        if isinstance(content, bytes):
+            content = content.decode("utf-8", errors="replace")
+        lines = content.split("\n")
+        preview = "\n".join(lines[:50])
+        if len(lines) > 50:
+            preview += f"\n\n... ({len(lines) - 50} more lines)"
+        out["skill_md_preview"] = preview
+    return out
+
+
+def do_list(source_filter: str = "all",
+            enabled_only: bool = False,
+            console: Optional[Console] = None) -> None:
+    """List installed skills, distinguishing hub, builtin, and local skills.
+
+    Args:
+        source_filter: ``all`` | ``hub`` | ``builtin`` | ``local``.
+        enabled_only: If True, hide disabled skills from the output.
+
+    Enabled/disabled state is resolved against the currently active profile's
+    config — ``hermes -p <profile> skills list`` reads that profile's
+    ``skills.disabled`` list because ``-p`` swaps ``HERMES_HOME`` at process
+    start.  No explicit profile flag needed here.
+    """
     from tools.skills_hub import HubLockFile, ensure_hub_dirs
     from tools.skills_sync import _read_manifest
     from tools.skills_tool import _find_all_skills
+    from agent.skill_utils import get_disabled_skill_names
 
     c = console or _console
     ensure_hub_dirs()
@@ -527,17 +624,26 @@ def do_list(source_filter: str = "all", console: Optional[Console] = None) -> No
     hub_installed = {e["name"]: e for e in lock.list_installed()}
     builtin_names = set(_read_manifest())
 
-    all_skills = _find_all_skills()
+    # Pull ALL skills (including disabled ones) so we can annotate status.
+    all_skills = _find_all_skills(skip_disabled=True)
+    disabled_names = get_disabled_skill_names()
 
-    table = Table(title="Installed Skills")
+    title = "Installed Skills"
+    if enabled_only:
+        title += " (enabled only)"
+
+    table = Table(title=title)
     table.add_column("Name", style="bold cyan")
     table.add_column("Category", style="dim")
     table.add_column("Source", style="dim")
     table.add_column("Trust", style="dim")
+    table.add_column("Status", style="dim")
 
     hub_count = 0
     builtin_count = 0
     local_count = 0
+    enabled_count = 0
+    disabled_count = 0
 
     for skill in sorted(all_skills, key=lambda s: (s.get("category") or "", s["name"])):
         name = skill["name"]
@@ -548,29 +654,48 @@ def do_list(source_filter: str = "all", console: Optional[Console] = None) -> No
             source_type = "hub"
             source_display = hub_entry.get("source", "hub")
             trust = hub_entry.get("trust_level", "community")
-            hub_count += 1
         elif name in builtin_names:
             source_type = "builtin"
             source_display = "builtin"
             trust = "builtin"
-            builtin_count += 1
         else:
             source_type = "local"
             source_display = "local"
             trust = "local"
-            local_count += 1
 
         if source_filter != "all" and source_filter != source_type:
             continue
 
+        is_enabled = name not in disabled_names
+        if enabled_only and not is_enabled:
+            continue
+
+        if source_type == "hub":
+            hub_count += 1
+        elif source_type == "builtin":
+            builtin_count += 1
+        else:
+            local_count += 1
+
+        if is_enabled:
+            enabled_count += 1
+            status_cell = "[bold green]enabled[/]"
+        else:
+            disabled_count += 1
+            status_cell = "[dim red]disabled[/]"
+
         trust_style = {"builtin": "bright_cyan", "trusted": "green", "community": "yellow", "local": "dim"}.get(trust, "dim")
         trust_label = "official" if source_display == "official" else trust
-        table.add_row(name, category, source_display, f"[{trust_style}]{trust_label}[/]")
+        table.add_row(name, category, source_display, f"[{trust_style}]{trust_label}[/]", status_cell)
 
     c.print(table)
-    c.print(
-        f"[dim]{hub_count} hub-installed, {builtin_count} builtin, {local_count} local[/]\n"
-    )
+    summary = f"[dim]{hub_count} hub-installed, {builtin_count} builtin, {local_count} local"
+    if enabled_only:
+        summary += f" — {enabled_count} enabled shown"
+    else:
+        summary += f" — {enabled_count} enabled, {disabled_count} disabled"
+    summary += "[/]\n"
+    c.print(summary)
 
 
 def do_check(name: Optional[str] = None, console: Optional[Console] = None) -> None:
@@ -1043,7 +1168,10 @@ def skills_command(args) -> None:
     elif action == "inspect":
         do_inspect(args.identifier)
     elif action == "list":
-        do_list(source_filter=args.source)
+        do_list(
+            source_filter=args.source,
+            enabled_only=getattr(args, "enabled_only", False),
+        )
     elif action == "check":
         do_check(name=getattr(args, "name", None))
     elif action == "update":
@@ -1195,11 +1323,12 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
 
     elif action == "list":
         source_filter = "all"
+        enabled_only = "--enabled-only" in args or "--enabled" in args
         if "--source" in args:
             idx = args.index("--source")
             if idx + 1 < len(args):
                 source_filter = args[idx + 1]
-        do_list(source_filter=source_filter, console=c)
+        do_list(source_filter=source_filter, enabled_only=enabled_only, console=c)
 
     elif action == "check":
         name = args[0] if args else None
@@ -1287,7 +1416,8 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]search[/] <query>              Search registries for skills\n"
         "  [cyan]install[/] <identifier>        Install a skill (with security scan)\n"
         "  [cyan]inspect[/] <identifier>        Preview a skill without installing\n"
-        "  [cyan]list[/] [--source hub|builtin|local] List installed skills\n"
+        "  [cyan]list[/] [--source hub|builtin|local] [--enabled-only]\n"
+        "       List installed skills; --enabled-only filters to the active profile's live set\n"
         "  [cyan]check[/] [name]                Check hub skills for upstream updates\n"
         "  [cyan]update[/] [name]               Update hub skills with upstream changes\n"
         "  [cyan]audit[/] [name]                Re-scan hub skills for security\n"

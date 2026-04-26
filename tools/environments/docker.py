@@ -148,6 +148,10 @@ def find_docker() -> Optional[str]:
 # We drop all capabilities then add back the minimum needed:
 #   DAC_OVERRIDE - root can write to bind-mounted dirs owned by host user
 #   CHOWN/FOWNER - package managers (pip, npm, apt) need to set file ownership
+#   SETUID/SETGID - the image entrypoint drops from root to the 'hermes'
+#       user via `gosu`, which requires these caps. Combined with
+#       `no-new-privileges`, gosu still cannot escalate back to root after
+#       the drop, so the security posture is preserved.
 # Block privilege escalation and limit PIDs.
 # /tmp is size-limited and nosuid but allows exec (needed by pip/npm builds).
 _SECURITY_ARGS = [
@@ -155,6 +159,8 @@ _SECURITY_ARGS = [
     "--cap-add", "DAC_OVERRIDE",
     "--cap-add", "CHOWN",
     "--cap-add", "FOWNER",
+    "--cap-add", "SETUID",
+    "--cap-add", "SETGID",
     "--security-opt", "no-new-privileges",
     "--pids-limit", "256",
     "--tmpfs", "/tmp:rw,nosuid,size=512m",

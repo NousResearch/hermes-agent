@@ -24,9 +24,17 @@ class _FakeAdapter:
 
     def __init__(self):
         self._pending_messages = {}
+        self._active_sessions = {}
+        self.interrupted_sessions = []
 
     async def send(self, chat_id, text, **kwargs):
         pass
+
+    async def interrupt_session_activity(self, session_key, chat_id):
+        self.interrupted_sessions.append((session_key, chat_id))
+        event = self._active_sessions.get(session_key)
+        if event is not None:
+            event.set()
 
 
 def _make_runner():
@@ -37,6 +45,7 @@ def _make_runner():
     runner.adapters = {Platform.TELEGRAM: _FakeAdapter()}
     runner._running_agents = {}
     runner._running_agents_ts = {}
+    runner._session_run_generation = {}
     runner._pending_messages = {}
     runner._pending_approvals = {}
     runner._voice_mode = {}
@@ -81,7 +90,7 @@ async def test_sentinel_placed_before_agent_setup():
     # Patch _handle_message_with_agent to capture state at entry
     sentinel_was_set = False
 
-    async def mock_inner(self_inner, ev, src, qk):
+    async def mock_inner(self_inner, ev, src, qk, generation):
         nonlocal sentinel_was_set
         sentinel_was_set = runner._running_agents.get(qk) is _AGENT_PENDING_SENTINEL
         return "ok"
@@ -105,7 +114,7 @@ async def test_sentinel_cleaned_up_after_handler_returns():
     event = _make_event()
     session_key = build_session_key(event.source)
 
-    async def mock_inner(self_inner, ev, src, qk):
+    async def mock_inner(self_inner, ev, src, qk, generation):
         return "ok"
 
     with patch.object(GatewayRunner, "_handle_message_with_agent", mock_inner):
@@ -127,7 +136,7 @@ async def test_sentinel_cleaned_up_on_exception():
     event = _make_event()
     session_key = build_session_key(event.source)
 
-    async def mock_inner(self_inner, ev, src, qk):
+    async def mock_inner(self_inner, ev, src, qk, generation):
         raise RuntimeError("boom")
 
     with patch.object(GatewayRunner, "_handle_message_with_agent", mock_inner):
@@ -154,7 +163,7 @@ async def test_second_message_during_sentinel_queued_not_duplicate():
 
     barrier = asyncio.Event()
 
-    async def slow_inner(self_inner, ev, src, qk):
+    async def slow_inner(self_inner, ev, src, qk, generation):
         # Simulate slow setup — wait until test tells us to proceed
         await barrier.wait()
         return "ok"
@@ -288,6 +297,38 @@ async def test_command_messages_do_not_leave_sentinel():
     )
 
 
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("command_text", "handler_attr", "handler_result"),
+    [
+        ("/help", "_handle_help_command", "Help text"),
+        ("/commands", "_handle_commands_command", "Commands text"),
+        ("/update", "_handle_update_command", "Update text"),
+        ("/profile", "_handle_profile_command", "Profile text"),
+    ],
+)
+async def test_active_session_bypass_commands_dispatch_without_interrupt(
+    command_text,
+    handler_attr,
+    handler_result,
+):
+    """Gateway-handled bypass commands must return directly while an agent runs."""
+    runner = _make_runner()
+    event = _make_event(text=command_text)
+    session_key = build_session_key(event.source)
+
+    fake_agent = MagicMock()
+    fake_agent.get_activity_summary.return_value = {"seconds_since_activity": 0}
+    runner._running_agents[session_key] = fake_agent
+    setattr(runner, handler_attr, AsyncMock(return_value=handler_result))
+
+    result = await runner._handle_message(event)
+
+    assert result == handler_result
+    fake_agent.interrupt.assert_not_called()
+    assert session_key not in runner.adapters[Platform.TELEGRAM]._pending_messages
+
+
 # ------------------------------------------------------------------
 # Test 6: /stop during sentinel force-cleans and unlocks session
 # ------------------------------------------------------------------
@@ -301,7 +342,7 @@ async def test_stop_during_sentinel_force_cleans_session():
 
     barrier = asyncio.Event()
 
-    async def slow_inner(self_inner, ev, src, qk):
+    async def slow_inner(self_inner, ev, src, qk, generation):
         await barrier.wait()
         return "ok"
 
@@ -349,6 +390,7 @@ async def test_stop_hard_kills_running_agent():
     fake_agent = MagicMock()
     fake_agent.get_activity_summary.return_value = {"seconds_since_activity": 0}
     runner._running_agents[session_key] = fake_agent
+    runner.adapters[Platform.TELEGRAM]._active_sessions[session_key] = asyncio.Event()
 
     # Send /stop
     stop_event = _make_event(text="/stop")
@@ -361,6 +403,10 @@ async def test_stop_hard_kills_running_agent():
     assert session_key not in runner._running_agents, (
         "/stop must remove the agent from _running_agents so the session is unlocked"
     )
+    assert runner.adapters[Platform.TELEGRAM].interrupted_sessions == [
+        (session_key, "12345")
+    ]
+    assert runner.adapters[Platform.TELEGRAM]._active_sessions[session_key].is_set()
 
     # Must return a confirmation
     assert result is not None

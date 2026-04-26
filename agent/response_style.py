@@ -19,6 +19,7 @@ _SECTION_PATTERNS = {
 _BLOCKER_RE = re.compile(r"(blocker|阻塞|卡点|失败|不能|无法|没有|待|pending|error|failed|stale)", re.IGNORECASE)
 _NEXT_RE = re.compile(r"(next step|下一步|建议|后面|之后|我会|继续|接下来)", re.IGNORECASE)
 _MEDIA_ONLY_RE = re.compile(r"^\s*(?:MEDIA:\S+\s*)+$")
+_DELIVERY_CONTROL_MARKERS = {"[SILENT]"}
 
 
 def _truthy(value: Any, default: bool = False) -> bool:
@@ -138,6 +139,8 @@ def apply_response_style_guard(
     it skips media-only replies or explicit user requests for details.
     """
     if not response or not is_response_style_enabled(config, platform):
+        return response
+    if response in _DELIVERY_CONTROL_MARKERS:
         return response
     if "MEDIA:" in response or "![" in response or _MEDIA_ONLY_RE.match(response):
         return response

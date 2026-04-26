@@ -56,3 +56,11 @@ def test_guard_preserves_media_responses():
     guarded = apply_response_style_guard(response, _cfg(), "telegram", "发图")
 
     assert guarded == response
+
+
+def test_guard_preserves_exact_silent_marker():
+    response = "[SILENT]"
+
+    guarded = apply_response_style_guard(response, _cfg(), "telegram", "继续")
+
+    assert guarded == "[SILENT]"

@@ -3180,6 +3180,43 @@ def _normalize_max_turns_config(config: Dict[str, Any]) -> Dict[str, Any]:
 
 
 
+def _normalize_legacy_compression_summary_config(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Map legacy compression.summary_* keys into auxiliary.compression.
+
+    Config migration v17 rewrote these keys on disk, but many installations run
+    with older config.yaml files for long periods. Runtime loads should still
+    honor the legacy fields so compression keeps using the user's configured
+    auxiliary summarizer even before an explicit migration command is run.
+    """
+    compression = config.get("compression")
+    if not isinstance(compression, dict):
+        return config
+
+    summary_model = compression.get("summary_model")
+    summary_provider = compression.get("summary_provider")
+    summary_base_url = compression.get("summary_base_url")
+    if summary_model in (None, "") and summary_provider in (None, "", "auto") and summary_base_url in (None, ""):
+        return config
+
+    config = copy.deepcopy(config)
+    compression = dict(config.get("compression") or {})
+    auxiliary = dict(config.get("auxiliary") or {})
+    aux_compression = dict(auxiliary.get("compression") or {})
+
+    if summary_model not in (None, "") and not aux_compression.get("model"):
+        aux_compression["model"] = str(summary_model).strip()
+    if summary_provider not in (None, "", "auto") and not aux_compression.get("provider"):
+        aux_compression["provider"] = str(summary_provider).strip()
+    if summary_base_url not in (None, "") and not aux_compression.get("base_url"):
+        aux_compression["base_url"] = str(summary_base_url).strip()
+
+    auxiliary["compression"] = aux_compression
+    config["auxiliary"] = auxiliary
+    config["compression"] = compression
+    return config
+
+
+
 def read_raw_config() -> Dict[str, Any]:
     """Read ~/.hermes/config.yaml as-is, without merging defaults or migrating.
 
@@ -3221,7 +3258,9 @@ def load_config() -> Dict[str, Any]:
         except Exception as e:
             print(f"Warning: Failed to load config: {e}")
 
-    normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
+    normalized = _normalize_legacy_compression_summary_config(
+        _normalize_root_model_keys(_normalize_max_turns_config(config))
+    )
     expanded = _expand_env_vars(normalized)
     _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(expanded)
     return expanded

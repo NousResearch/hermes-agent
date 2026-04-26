@@ -895,6 +895,29 @@ class TestBuildAssistantMessage:
 class TestAuxiliaryClientProviderPriority:
     """Verify auxiliary client resolution doesn't break for any provider."""
 
+    def test_legacy_compression_summary_model_is_honored(self, monkeypatch, tmp_path):
+        """Legacy compression.summary_model still routes compression tasks.
+
+        Many real configs still carry the pre-v17 key. load_config() should
+        expose it as auxiliary.compression.model at runtime so compaction uses
+        the configured summarizer without requiring a manual migration step.
+        """
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text(
+            "compression:\n  summary_model: google/gemini-2.5-flash\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
+
+        from agent.auxiliary_client import get_text_auxiliary_client
+        with patch("agent.auxiliary_client.OpenAI") as mock:
+            client, model = get_text_auxiliary_client("compression")
+
+        assert model == "google/gemini-2.5-flash"
+        assert "openrouter" in str(mock.call_args.kwargs["base_url"]).lower()
+
     def test_openrouter_always_wins(self, monkeypatch):
         monkeypatch.setenv("OPENROUTER_API_KEY", "or-key")
         from agent.auxiliary_client import get_text_auxiliary_client

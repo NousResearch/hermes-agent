@@ -74,10 +74,10 @@ export function useSubmission(opts: UseSubmissionOptions) {
   }, [composerState.input, composerState.inputBuf])
 
   const send = useCallback(
-    (text: string) => {
+    (text: string, showUserMessage = true) => {
       const expand = expandSnips(composerState.pasteSnips)
 
-      const startSubmit = (displayText: string, submitText: string) => {
+      const startSubmit = (displayText: string, submitText: string, showUserMessage = true) => {
         const sid = getUiState().sid
 
         if (!sid) {
@@ -87,7 +87,9 @@ export function useSubmission(opts: UseSubmissionOptions) {
         turnController.clearStatusTimer()
         maybeGoodVibes(submitText)
         setLastUserMsg(text)
-        appendMessage({ role: 'user', text: displayText })
+        if (showUserMessage) {
+          appendMessage({ role: 'user', text: displayText })
+        }
         patchUiState({ busy: true, status: 'running…' })
         turnController.bufRef = ''
         turnController.interrupted = false
@@ -114,7 +116,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       gw.request<InputDetectDropResponse>('input.detect_drop', { session_id: sid, text })
         .then(r => {
           if (!r?.matched) {
-            return startSubmit(text, expand(text))
+            return startSubmit(text, expand(text), showUserMessage)
           }
 
           if (r.is_image) {
@@ -123,9 +125,9 @@ export function useSubmission(opts: UseSubmissionOptions) {
             turnController.pushActivity(`detected file: ${r.name}`)
           }
 
-          startSubmit(r.text || text, expand(r.text || text))
+          startSubmit(r.text || text, expand(r.text || text), showUserMessage)
         })
-        .catch(() => startSubmit(text, expand(text)))
+        .catch(() => startSubmit(text, expand(text), showUserMessage))
     },
     [appendMessage, composerActions, composerState.pasteSnips, gw, maybeGoodVibes, setLastUserMsg, sys]
   )
@@ -192,9 +194,9 @@ export function useSubmission(opts: UseSubmissionOptions) {
         return interpolate(text, send)
       }
 
-      send(text)
+      send(text, composerRefs.queueRef.current.length === 0)
     },
-    [interpolate, send, shellExec]
+    [composerRefs, interpolate, send, shellExec]
   )
 
   const dispatchSubmission = useCallback(

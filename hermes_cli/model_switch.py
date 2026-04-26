@@ -1264,11 +1264,7 @@ def list_authenticated_providers(
                 from hermes_cli.auth import _load_auth_store
                 store = _load_auth_store()
                 providers_store = store.get("providers", {})
-                pool_store = store.get("credential_pool", {})
-                if store and (
-                    pid in providers_store or hermes_slug in providers_store
-                    or pid in pool_store or hermes_slug in pool_store
-                ):
+                if store and (pid in providers_store or hermes_slug in providers_store):
                     has_creds = True
             except Exception as exc:
                 logger.debug("Auth store check failed for %s: %s", pid, exc)
@@ -1364,11 +1360,7 @@ def list_authenticated_providers(
                 from hermes_cli.auth import _load_auth_store
                 _cp_store = _load_auth_store()
                 _cp_providers_store = _cp_store.get("providers", {})
-                _cp_pool_store = _cp_store.get("credential_pool", {})
-                if _cp_store and (
-                    _cp.slug in _cp_providers_store
-                    or _cp.slug in _cp_pool_store
-                ):
+                if _cp_store and _cp.slug in _cp_providers_store:
                     _cp_has_creds = True
             except Exception:
                 pass

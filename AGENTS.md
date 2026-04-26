@@ -667,27 +667,6 @@ def profile_env(tmp_path, monkeypatch):
     return home
 ```
 
-### Clipboard environment variables and pitfalls
-
-Hermes TUI clipboard handling uses a three-tier strategy:
-
-1. **Native OS tools** (`pbcopy`, `wl-copy`, `xclip`, `xsel`, `clip.exe`) — available **only** when a display server is present (`$DISPLAY` for X11 or `$WAYLAND_DISPLAY` for Wayland). On Linux in headless environments (Docker, remote SSH without X11 forwarding), these tools fail or hang. The code now short-circuits immediately if both variables are unset.
-2. **tmux buffer** (`tmux load-buffer`) — when inside a tmux session; requires `set-clipboard on` for system clipboard propagation.
-3. **OSC 52 escape** — written to stdout; the terminal emulator must intercept and set the clipboard. Support varies: iTerm2 disables it by default, VS Code may block it behind a permission prompt, and raw PTYs without an emulator drop it silently.
-
-**Environment variables:**
-
-| Variable | Purpose |
-|---|---|
-| `HERMES_TUI_CLIPBOARD_OSC52` or `HERMES_TUI_COPY_OSC52` | Force OSC 52 emission (`1`/`true`) or disable (`0`/`false`). Ignored when native tools are expected to work (macOS local, or Linux with `$DISPLAY/$WAYLAND_DISPLAY`). |
-| `HERMES_TUI_DEBUG_CLIPBOARD` | Set to `1` to log detailed debug information to stderr about which clipboard path is taken, probe results on Linux, and why OSC 52 may be suppressed. |
-| `SSH_CONNECTION` | Presence indicates an SSH session; this gates native tool usage (to avoid writing to the remote machine's clipboard) and prefers OSC 52. |
-| `TMUX`, `STY` | Used to detect tmux/screen and apply appropriate passthrough or buffer loading. |
-
-**Common false-positive:** The UI message "copied selection" is displayed **unconditionally** after Ctrl+C, even if all clipboard mechanisms fail. If you're in a headless Docker container or a non-OSC52-capable terminal, you'll see the message but nothing is copied. Use `HERMES_TUI_DEBUG_CLIPBOARD=1` to diagnose.
-
-**Dashboard caveat:** The dashboard's `Ctrl+C` path relies on OSC 52 → xterm's handler → browser Clipboard API. Because the Clipboard API requires a user gesture, this can fail if the OSC 52 response arrives outside the key event's activation window. Use `Ctrl+Shift+C` (Cmd+Shift+C on macOS) as a reliable fallback; it calls `navigator.clipboard.writeText()` directly inside the key handler.
-
 ---
 
 ## Testing

@@ -6414,8 +6414,17 @@ class HermesCLI:
             # Check for skill slash commands (/gif-search, /axolotl, etc.)
             elif base_cmd in _skill_commands:
                 user_instruction = cmd_original[len(base_cmd):].strip()
+                runtime_note = ""
+                if base_cmd == "/plan":
+                    from agent.skill_commands import build_plan_path
+                    plan_path = build_plan_path(user_instruction)
+                    runtime_note = (
+                        "Save the markdown plan with write_file to this exact relative path "
+                        f"inside the active workspace/backend cwd: {plan_path}"
+                    )
                 msg = build_skill_invocation_message(
-                    base_cmd, user_instruction, task_id=self.session_id
+                    base_cmd, user_instruction, task_id=self.session_id,
+                    runtime_note=runtime_note,
                 )
                 if msg:
                     skill_name = _skill_commands[base_cmd]["name"]

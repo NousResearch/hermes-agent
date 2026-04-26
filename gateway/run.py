@@ -4354,8 +4354,17 @@ class GatewayRunner:
                                 f"Enable it with: `hermes skills config`"
                             )
                     user_instruction = event.get_command_args().strip()
+                    runtime_note = ""
+                    if command == "plan":
+                        from agent.skill_commands import build_plan_path
+                        _plan_path = build_plan_path(user_instruction)
+                        runtime_note = (
+                            "Save the markdown plan with write_file to this exact relative path "
+                            f"inside the active workspace/backend cwd: {_plan_path}"
+                        )
                     msg = build_skill_invocation_message(
-                        cmd_key, user_instruction, task_id=_quick_key
+                        cmd_key, user_instruction, task_id=_quick_key,
+                        runtime_note=runtime_note,
                     )
                     if msg:
                         event.text = msg

@@ -41,6 +41,10 @@ declare module '@hermes/ink' {
       readonly optimize: number
       readonly write: number
       readonly patches: number
+      readonly optimizedPatches: number
+      readonly writeBytes: number
+      readonly backpressure: boolean
+      readonly prevFrameDrainMs: number
       readonly yoga: number
       readonly commit: number
       readonly yogaVisited: number

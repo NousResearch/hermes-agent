@@ -165,6 +165,15 @@ export default class Ink {
   private backFrame: Frame
   private lastPoolResetTime = performance.now()
   private drainTimer: ReturnType<typeof setTimeout> | null = null
+  // Write-drain telemetry: pendingWriteStart is the performance.now() of
+  // the most recent stdout.write waiting for its drain callback.  Set to
+  // null when the callback fires (drained).  Read on the NEXT frame and
+  // reported as prevFrameDrainMs so the FrameEvent records how long the
+  // previous write took to actually hit the terminal — distinguishes
+  // "queued in Node" (write returned true) from "terminal accepted bytes"
+  // (callback fired).
+  private pendingWriteStart: number | null = null
+  private lastDrainMs = 0
   private lastYogaCounters: {
     ms: number
     visited: number
@@ -970,7 +979,43 @@ export default class Ink {
     }
 
     const tWrite = performance.now()
-    writeDiffToTerminal(this.terminal, optimized, this.altScreenActive && !SYNC_OUTPUT_SUPPORTED)
+    // Capture any stale pending write BEFORE starting this frame's write —
+    // if the callback already fired, pendingWriteStart is null and lastDrainMs
+    // already reflects the previous frame's drain.  If it hasn't fired, we
+    // report "still pending" via a non-zero duration based on now-then so
+    // backpressure shows up even if Node never flushes this session.
+    const staleDrain =
+      this.pendingWriteStart !== null
+        ? performance.now() - this.pendingWriteStart
+        : this.lastDrainMs
+
+    const prevFrameDrainMs = Math.round(staleDrain * 100) / 100
+    this.lastDrainMs = 0
+
+    // Only track drain on TTY. Piped/non-TTY stdout bypasses flow control.
+    const trackDrain = this.options.stdout.isTTY && hasDiff
+    const drainStart = trackDrain ? tWrite : 0
+
+    if (trackDrain) {
+      this.pendingWriteStart = drainStart
+    }
+
+    const { bytes: writeBytes, backpressure } = writeDiffToTerminal(
+      this.terminal,
+      optimized,
+      this.altScreenActive && !SYNC_OUTPUT_SUPPORTED,
+      trackDrain
+        ? () => {
+            // Callback fires once Node has flushed the chunk to the OS.
+            // Capture the drain time and clear pending so the NEXT frame's
+            // staleDrain = the real end-to-end flush time.
+            if (this.pendingWriteStart === drainStart) {
+              this.lastDrainMs = performance.now() - drainStart
+              this.pendingWriteStart = null
+            }
+          }
+        : undefined
+    )
     const writeMs = performance.now() - tWrite
 
     // Update blit safety for the NEXT frame. The frame just rendered
@@ -1008,6 +1053,10 @@ export default class Ink {
         optimize: optimizeMs,
         write: writeMs,
         patches: diff.length,
+        optimizedPatches: optimized.length,
+        writeBytes,
+        backpressure,
+        prevFrameDrainMs,
         yoga: yogaMs,
         commit: commitMs,
         yogaVisited: yc.visited,

@@ -93,6 +93,8 @@ class TestContextEnginePluginInit:
         ):
             agent = AIAgent(
                 api_key="test-key-1234567890",
+                base_url="https://llm.example.com/v1",
+                provider="custom",
                 quiet_mode=True,
                 skip_context_files=True,
                 skip_memory=True,
@@ -120,6 +122,8 @@ class TestContextEnginePluginInit:
         ):
             agent = AIAgent(
                 api_key="test-key-1234567890",
+                base_url="https://llm.example.com/v1",
+                provider="custom",
                 quiet_mode=True,
                 skip_context_files=True,
                 skip_memory=True,
@@ -148,6 +152,8 @@ class TestContextEnginePluginInit:
         ):
             agent = AIAgent(
                 api_key="test-key-1234567890",
+                base_url="https://llm.example.com/v1",
+                provider="custom",
                 quiet_mode=True,
                 skip_context_files=True,
                 skip_memory=True,
@@ -175,6 +181,8 @@ class TestContextEnginePluginInit:
         ):
             agent = AIAgent(
                 api_key="test-key-1234567890",
+                base_url="https://llm.example.com/v1",
+                provider="custom",
                 quiet_mode=True,
                 skip_context_files=True,
                 skip_memory=True,
@@ -215,6 +223,8 @@ class TestContextEnginePluginInit:
         ):
             agent = AIAgent(
                 api_key="test-key-1234567890",
+                base_url="https://llm.example.com/v1",
+                provider="custom",
                 quiet_mode=True,
                 skip_context_files=True,
                 skip_memory=True,

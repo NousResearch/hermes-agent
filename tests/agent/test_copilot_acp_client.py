@@ -201,3 +201,36 @@ def test_run_prompt_passes_home_when_parent_env_is_clean(monkeypatch, tmp_path):
 
     assert "env" in captured["kwargs"]
     assert captured["kwargs"]["env"]["HOME"]
+
+
+def test_run_prompt_strips_provider_credentials_from_child_env(monkeypatch, tmp_path):
+    from tools.environments.local import _HERMES_PROVIDER_ENV_BLOCKLIST
+
+    blocked_var = next(iter(_HERMES_PROVIDER_ENV_BLOCKLIST))
+    monkeypatch.setenv(blocked_var, "secret_value")
+    monkeypatch.setenv("PATH", os.environ.get("PATH", ""))
+
+    captured = {}
+    client = _make_home_client(tmp_path)
+
+    with _patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_fake_popen_capture(captured)):
+        with pytest.raises(RuntimeError, match="Could not start Copilot ACP command"):
+            client._run_prompt("hello", timeout_seconds=1)
+
+    child_env = captured["kwargs"]["env"]
+    assert blocked_var not in child_env
+    assert "PATH" in child_env
+
+
+def test_run_prompt_strips_force_prefixed_env_from_child(monkeypatch, tmp_path):
+    monkeypatch.setenv("_HERMES_FORCE_OPENAI_API_KEY", "secret_value")
+
+    captured = {}
+    client = _make_home_client(tmp_path)
+
+    with _patch("agent.copilot_acp_client.subprocess.Popen", side_effect=_fake_popen_capture(captured)):
+        with pytest.raises(RuntimeError, match="Could not start Copilot ACP command"):
+            client._run_prompt("hello", timeout_seconds=1)
+
+    child_env = captured["kwargs"]["env"]
+    assert "_HERMES_FORCE_OPENAI_API_KEY" not in child_env

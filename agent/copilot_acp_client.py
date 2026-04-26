@@ -83,6 +83,20 @@ def _resolve_home_dir() -> str:
 
 def _build_subprocess_env() -> dict[str, str]:
     env = os.environ.copy()
+    try:
+        from tools.environments.local import (
+            _HERMES_PROVIDER_ENV_BLOCKLIST,
+            _HERMES_PROVIDER_ENV_FORCE_PREFIX,
+        )
+
+        env = {
+            key: value
+            for key, value in env.items()
+            if not key.startswith(_HERMES_PROVIDER_ENV_FORCE_PREFIX)
+            and key not in _HERMES_PROVIDER_ENV_BLOCKLIST
+        }
+    except Exception:
+        pass
     env["HOME"] = _resolve_home_dir()
     return env
 

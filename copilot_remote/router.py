@@ -72,7 +72,12 @@ def _discover_repos(workspace_path: Path = None) -> List[RepoEntry]:
             readme_path = repo_dir / "README.md"
             readme_text = ""
             if readme_path.exists():
-                readme_text = readme_path.read_text(errors="replace")
+                # Cap I/O — only the first ~2KB feeds the router prompt.
+                try:
+                    with readme_path.open("r", encoding="utf-8", errors="replace") as readme_file:
+                        readme_text = readme_file.read(2000)
+                except OSError:
+                    readme_text = ""
 
             slug = repo_dir.name
             default_branch = _get_default_branch(repo_dir)

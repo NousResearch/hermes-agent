@@ -7,12 +7,12 @@ authenticated terminal to attach, and ``copilot --resume=<session_id>``
 to resume a completed session.
 """
 
-import json
 import sys
 import time
 import uuid
 from datetime import datetime, timezone
 
+from agent.redact import redact_sensitive_text
 from hermes_state import SessionDB
 
 
@@ -141,7 +141,11 @@ def copilot_launch(args):
             on_complete=_on_complete,
         )
     except Exception as exc:
-        db.finish_copilot_remote(job_id, state="failed", error_text=str(exc))
+        # Redact before persisting/printing — exception text from subprocess /
+        # HTTP layers can include embedded tokens, headers, or other secrets
+        # that would otherwise leak into state.db and downstream `show`/`list`.
+        redacted = redact_sensitive_text(str(exc))
+        db.finish_copilot_remote(job_id, state="failed", error_text=redacted)
         db.close()
         raise
 

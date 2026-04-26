@@ -81,6 +81,7 @@ from tools.browser_tool import cleanup_browser
 
 # Agent internals extracted to agent/ package for modularity
 from agent.memory_manager import build_memory_context_block, sanitize_context
+from agent.redact import redact_sensitive_text
 from agent.retry_utils import jittered_backoff
 from agent.error_classifier import classify_api_error, FailoverReason
 from agent.prompt_builder import (
@@ -12756,10 +12757,13 @@ class AIAgent:
         try:
             payload = json.loads(tool_result)
         except (TypeError, json.JSONDecodeError):
-            return f"I tried to launch Copilot remote, but got an unreadable result: {tool_result[:500]}"
+            # Tool may have crashed and returned raw exception text containing
+            # credentials. Redact before echoing back to the user.
+            redacted_preview = redact_sensitive_text(str(tool_result)[:500])
+            return f"I tried to launch Copilot remote, but got an unreadable result: {redacted_preview}"
 
         if not payload.get("success"):
-            error = payload.get("error") or "unknown error"
+            error = redact_sensitive_text(str(payload.get("error") or "unknown error"))
             return f"I tried to launch Copilot remote for this implementation request, but it failed: {error}"
 
         job = payload.get("job") or {}

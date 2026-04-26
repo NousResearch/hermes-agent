@@ -269,17 +269,17 @@ export default function ChatPage() {
       const payload = data.slice(semi + 1);
       if (payload === "?" || payload === "") return false; // read/clear — ignore
       try {
-        // atob returns a binary string (one byte per char); we need UTF-8
-        // decode so multi-byte codepoints (≥, →, emoji, CJK) round-trip
-        // correctly.  Without this step, the three UTF-8 bytes of `≥`
-        // would land in the clipboard as the three separate Latin-1
-        // characters `â‰¥`.
         const binary = atob(payload);
         const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
         const text = new TextDecoder("utf-8").decode(bytes);
-        navigator.clipboard.writeText(text).catch(() => {});
-      } catch {
-        // Malformed base64 — silently drop.
+        navigator.clipboard.writeText(text).catch((err) => {
+          // Most common reason: the Clipboard API requires a user gesture.
+          // This can fail when the OSC 52 response arrives outside the
+          // original keydown event's activation. Log to aid debugging.
+          console.warn("[dashboard clipboard] OSC 52 write failed:", err.message);
+        });
+      } catch (e) {
+        console.warn("[dashboard clipboard] malformed OSC 52 payload");
       }
       return true;
     });
@@ -290,16 +290,31 @@ export default function ChatPage() {
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
 
+      // Copy: Cmd+C on macOS, Ctrl+Shift+C on other platforms. Bare Ctrl+C
+      // is reserved for SIGINT to the TUI child — matches xterm / gnome-terminal /
+      // konsole / Windows Terminal. Ctrl+Shift+C only copies if a selection exists;
+      // without a selection it passes through to the TUI so agents can still
+      // react to the keypress.
+      // Paste: Cmd+Shift+V on macOS, Ctrl+Shift+V on others.
       const copyModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
       const pasteModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
 
       if (copyModifier && ev.key.toLowerCase() === "c") {
         const sel = term.getSelection();
         if (sel) {
-          navigator.clipboard.writeText(sel).catch(() => {});
+          // Direct writeText inside the keydown handler preserves the user
+          // gesture — async round-trips through OSC 52 can lose activation
+          // and fail with "Document is not focused".
+          navigator.clipboard.writeText(sel).catch((err) => {
+            console.warn("[dashboard clipboard] direct copy failed:", err.message);
+          });
+          // Clear xterm.js's highlight after copy (matches gnome-terminal).
+          term.clearSelection();
           ev.preventDefault();
           return false;
         }
+        // No selection → fall through so the TUI receives Ctrl+Shift+C
+        // (or the bare ev if the user used a different modifier).
       }
 
       if (pasteModifier && ev.key.toLowerCase() === "v") {
@@ -308,7 +323,9 @@ export default function ChatPage() {
           .then((text) => {
             if (text) term.paste(text);
           })
-          .catch(() => {});
+          .catch((err) => {
+            console.warn("[dashboard clipboard] paste failed:", err.message);
+          });
         ev.preventDefault();
         return false;
       }

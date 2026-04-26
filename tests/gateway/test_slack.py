@@ -147,7 +147,20 @@ class TestAppMentionHandler:
         assert "app_mention" in registered_events
         assert "assistant_thread_started" in registered_events
         assert "assistant_thread_context_changed" in registered_events
-        assert "/hermes" in registered_commands
+        # Slack slash commands are registered via a single regex matcher
+        # covering every COMMAND_REGISTRY entry (e.g. /hermes, /btw, /stop,
+        # /model, ...) so users get native-slash parity with Discord and
+        # Telegram. Verify the regex matches the key expected slashes.
+        assert len(registered_commands) == 1, (
+            f"expected 1 combined slash matcher, got {registered_commands!r}"
+        )
+        slash_matcher = registered_commands[0]
+        import re as _re
+        assert isinstance(slash_matcher, _re.Pattern)
+        for expected in ("/hermes", "/btw", "/stop", "/model", "/help"):
+            assert slash_matcher.match(expected), (
+                f"Slack slash regex does not match {expected}"
+            )
 
 
 class TestSlackConnectCleanup:
@@ -1543,6 +1556,83 @@ class TestSlashCommands:
         await adapter._handle_slash_command(command)
         msg = adapter.handle_message.call_args[0][0]
         assert msg.text == "/reasoning"
+
+    # ------------------------------------------------------------------
+    # Native slash commands — /btw, /stop, /model, ... dispatched directly
+    # instead of as /hermes subcommands. This is the Discord/Telegram parity
+    # fix: the slash name itself becomes the command.
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_native_btw_slash(self, adapter):
+        """/btw with args must dispatch to /background, not /hermes btw."""
+        command = {
+            "command": "/btw",
+            "text": "fix the failing test",
+            "user_id": "U1",
+            "channel_id": "C1",
+        }
+        await adapter._handle_slash_command(command)
+        msg = adapter.handle_message.call_args[0][0]
+        # The gateway command dispatcher resolves /btw -> background via
+        # resolve_command() — our handler's job is just to deliver
+        # "/btw <args>" to the gateway runner, which is what this asserts.
+        assert msg.text == "/btw fix the failing test"
+
+    @pytest.mark.asyncio
+    async def test_native_stop_slash_no_args(self, adapter):
+        command = {
+            "command": "/stop",
+            "text": "",
+            "user_id": "U1",
+            "channel_id": "C1",
+        }
+        await adapter._handle_slash_command(command)
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.text == "/stop"
+
+    @pytest.mark.asyncio
+    async def test_native_model_slash_with_args(self, adapter):
+        command = {
+            "command": "/model",
+            "text": "anthropic/claude-sonnet-4",
+            "user_id": "U1",
+            "channel_id": "C1",
+        }
+        await adapter._handle_slash_command(command)
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.text == "/model anthropic/claude-sonnet-4"
+
+    @pytest.mark.asyncio
+    async def test_legacy_hermes_prefix_still_works(self, adapter):
+        """Backward compat: /hermes btw foo must still route to /btw foo.
+
+        Old workspace manifests only declared /hermes as the single slash.
+        After users refresh their manifest they get /btw natively, but the
+        legacy form must keep working during the transition.
+        """
+        command = {
+            "command": "/hermes",
+            "text": "btw run the tests",
+            "user_id": "U1",
+            "channel_id": "C1",
+        }
+        await adapter._handle_slash_command(command)
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.text == "/btw run the tests"
+
+    @pytest.mark.asyncio
+    async def test_legacy_hermes_freeform_question(self, adapter):
+        """/hermes <free-form text> must stay as the raw text (non-command)."""
+        command = {
+            "command": "/hermes",
+            "text": "what's the weather today?",
+            "user_id": "U1",
+            "channel_id": "C1",
+        }
+        await adapter._handle_slash_command(command)
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.text == "what's the weather today?"
 
 
 # ---------------------------------------------------------------------------

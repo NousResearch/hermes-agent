@@ -417,6 +417,11 @@ def load_cli_config() -> Dict[str, Any]:
             "base_url": "",    # Direct OpenAI-compatible endpoint for subagents
             "api_key": "",     # API key for delegation.base_url (falls back to OPENAI_API_KEY)
         },
+        "onboarding": {
+            # First-touch hint flags (see agent/onboarding.py).  Each hint is
+            # shown once per install then latched here.
+            "seen": {},
+        },
     }
     
     # Track whether the config file explicitly set terminal config.
@@ -1373,7 +1378,7 @@ def _resolve_attachment_path(raw_path: str) -> Path | None:
 
 
 def _format_process_notification(evt: dict) -> "str | None":
-    """Format a process notification event into a [SYSTEM: ...] message.
+    """Format a process notification event into a [IMPORTANT: ...] message.
 
     Handles both completion events (notify_on_complete) and watch pattern
     match events from the unified completion_queue.
@@ -1383,14 +1388,14 @@ def _format_process_notification(evt: dict) -> "str | None":
     _cmd = evt.get("command", "unknown")
 
     if evt_type == "watch_disabled":
-        return f"[SYSTEM: {evt.get('message', '')}]"
+        return f"[IMPORTANT: {evt.get('message', '')}]"
 
     if evt_type == "watch_match":
         _pat = evt.get("pattern", "?")
         _out = evt.get("output", "")
         _sup = evt.get("suppressed", 0)
         text = (
-            f"[SYSTEM: Background process {_sid} matched "
+            f"[IMPORTANT: Background process {_sid} matched "
             f"watch pattern \"{_pat}\".\n"
             f"Command: {_cmd}\n"
             f"Matched output:\n{_out}"
@@ -1404,7 +1409,7 @@ def _format_process_notification(evt: dict) -> "str | None":
     _exit = evt.get("exit_code", "?")
     _out = evt.get("output", "")
     return (
-        f"[SYSTEM: Background process {_sid} completed "
+        f"[IMPORTANT: Background process {_sid} completed "
         f"(exit code {_exit}).\n"
         f"Command: {_cmd}\n"
         f"Output:\n{_out}]"
@@ -4910,6 +4915,12 @@ class HermesCLI:
         if self.agent:
             self.agent.session_id = new_session_id
             self.agent.session_start = now
+            # Redirect the JSON session log to the new branch session file so
+            # messages written after branching land in the correct file.
+            if hasattr(self.agent, "session_log_file") and hasattr(self.agent, "logs_dir"):
+                self.agent.session_log_file = (
+                    self.agent.logs_dir / f"session_{new_session_id}.json"
+                )
             self.agent.reset_session_state()
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = len(self.conversation_history)
@@ -5153,27 +5164,29 @@ class HermesCLI:
         _cprint(f"  ✓ Model switched: {result.new_model}")
         _cprint(f"    Provider: {provider_label}")
 
+        # Context: always resolve via the provider-aware chain so Codex OAuth,
+        # Copilot, and Nous-enforced caps win over the raw models.dev entry
+        # (e.g. gpt-5.5 is 1.05M on openai but 272K on Codex OAuth).
         mi = result.model_info
+        try:
+            from hermes_cli.model_switch import resolve_display_context_length
+            ctx = resolve_display_context_length(
+                result.new_model,
+                result.target_provider,
+                base_url=result.base_url or self.base_url or "",
+                api_key=result.api_key or self.api_key or "",
+                model_info=mi,
+            )
+            if ctx:
+                _cprint(f"    Context: {ctx:,} tokens")
+        except Exception:
+            pass
         if mi:
-            if mi.context_window:
-                _cprint(f"    Context: {mi.context_window:,} tokens")
             if mi.max_output:
                 _cprint(f"    Max output: {mi.max_output:,} tokens")
             if mi.has_cost_data():
                 _cprint(f"    Cost: {mi.format_cost()}")
             _cprint(f"    Capabilities: {mi.format_capabilities()}")
-        else:
-            try:
-                from agent.model_metadata import get_model_context_length
-                ctx = get_model_context_length(
-                    result.new_model,
-                    base_url=result.base_url or self.base_url,
-                    api_key=result.api_key or self.api_key,
-                    provider=result.target_provider,
-                )
-                _cprint(f"    Context: {ctx:,} tokens")
-            except Exception:
-                pass
 
         cache_enabled = (
             (base_url_host_matches(result.base_url or "", "openrouter.ai") and "claude" in result.new_model.lower())
@@ -6122,8 +6135,6 @@ class HermesCLI:
             self._handle_agents_command()
         elif canonical == "background":
             self._handle_background_command(cmd_original)
-        elif canonical == "btw":
-            self._handle_btw_command(cmd_original)
         elif canonical == "queue":
             # Extract prompt after "/queue " or "/q "
             parts = cmd_original.split(None, 1)
@@ -6408,122 +6419,6 @@ class HermesCLI:
 
         thread = threading.Thread(target=run_background, daemon=True, name=f"bg-task-{task_id}")
         self._background_tasks[task_id] = thread
-        thread.start()
-
-    def _handle_btw_command(self, cmd: str):
-        """Handle /btw <question> — ephemeral side question using session context.
-
-        Snapshots the current conversation history, spawns a no-tools agent in
-        a background thread, and prints the answer without persisting anything
-        to the main session.
-        """
-        parts = cmd.strip().split(maxsplit=1)
-        if len(parts) < 2 or not parts[1].strip():
-            _cprint("  Usage: /btw <question>")
-            _cprint("  Example: /btw what module owns session title sanitization?")
-            _cprint("  Answers using session context. No tools, not persisted.")
-            return
-
-        question = parts[1].strip()
-        task_id = f"btw_{datetime.now().strftime('%H%M%S')}_{uuid.uuid4().hex[:6]}"
-
-        if not self._ensure_runtime_credentials():
-            _cprint("  (>_<) Cannot start /btw: no valid credentials.")
-            return
-
-        turn_route = self._resolve_turn_agent_config(question)
-        history_snapshot = list(self.conversation_history)
-
-        preview = question[:60] + ("..." if len(question) > 60 else "")
-        _cprint(f'  💬 /btw: "{preview}"')
-
-        def run_btw():
-            try:
-                btw_agent = AIAgent(
-                    model=turn_route["model"],
-                    api_key=turn_route["runtime"].get("api_key"),
-                    base_url=turn_route["runtime"].get("base_url"),
-                    provider=turn_route["runtime"].get("provider"),
-                    api_mode=turn_route["runtime"].get("api_mode"),
-                    acp_command=turn_route["runtime"].get("command"),
-                    acp_args=turn_route["runtime"].get("args"),
-                    max_iterations=8,
-                    enabled_toolsets=[],
-                    quiet_mode=True,
-                    verbose_logging=False,
-                    session_id=task_id,
-                    platform="cli",
-                    reasoning_config=self.reasoning_config,
-                    service_tier=self.service_tier,
-                    request_overrides=turn_route.get("request_overrides"),
-                    providers_allowed=self._providers_only,
-                    providers_ignored=self._providers_ignore,
-                    providers_order=self._providers_order,
-                    provider_sort=self._provider_sort,
-                    provider_require_parameters=self._provider_require_params,
-                    provider_data_collection=self._provider_data_collection,
-                    fallback_model=self._fallback_model,
-                    session_db=None,
-                    skip_memory=True,
-                    skip_context_files=True,
-                    persist_session=False,
-                )
-
-                btw_prompt = (
-                    "[Ephemeral /btw side question. Answer using the conversation "
-                    "context. No tools available. Be direct and concise.]\n\n"
-                    + question
-                )
-                result = btw_agent.run_conversation(
-                    user_message=btw_prompt,
-                    conversation_history=history_snapshot,
-                    task_id=task_id,
-                )
-
-                response = (result.get("final_response") or "") if result else ""
-                if not response and result and result.get("error"):
-                    response = f"Error: {result['error']}"
-
-                # TUI refresh before printing
-                if self._app:
-                    self._app.invalidate()
-                    time.sleep(0.05)
-                print()
-
-                if response:
-                    try:
-                        from hermes_cli.skin_engine import get_active_skin
-                        _skin = get_active_skin()
-                        _resp_color = _skin.get_color("response_border", "#4F6D4A")
-                    except Exception:
-                        _resp_color = "#4F6D4A"
-
-                    ChatConsole().print(Panel(
-                        _render_final_assistant_content(response, mode=self.final_response_markdown),
-                        title=f"[{_resp_color} bold]⚕ /btw[/]",
-                        title_align="left",
-                        border_style=_resp_color,
-                        box=rich_box.HORIZONTALS,
-                        padding=(1, 4),
-                    ))
-                else:
-                    _cprint("  💬 /btw: (no response)")
-
-                if self.bell_on_complete:
-                    sys.stdout.write("\a")
-                    sys.stdout.flush()
-
-            except Exception as e:
-                if self._app:
-                    self._app.invalidate()
-                    time.sleep(0.05)
-                print()
-                _cprint(f"  ❌ /btw failed: {e}")
-            finally:
-                if self._app:
-                    self._invalidate(min_interval=0)
-
-        thread = threading.Thread(target=run_btw, daemon=True, name=f"btw-{task_id}")
         thread.start()
 
     @staticmethod
@@ -7328,7 +7223,7 @@ class HermesCLI:
             change_detail = ". ".join(change_parts) + ". " if change_parts else ""
             self.conversation_history.append({
                 "role": "user",
-                "content": f"[SYSTEM: MCP servers have been reloaded. {change_detail}{tool_summary}. The tool list for this conversation has been updated accordingly.]",
+                "content": f"[IMPORTANT: MCP servers have been reloaded. {change_detail}{tool_summary}. The tool list for this conversation has been updated accordingly.]",
             })
 
             # Persist session immediately so the session log reflects the
@@ -7408,6 +7303,31 @@ class HermesCLI:
                     if is_error:
                         line = f"{line} [error]"
                     _cprint(f"  {line}")
+                except Exception:
+                    pass
+                # First-touch onboarding: on the first tool in this process
+                # that takes longer than the threshold while we're in the
+                # noisiest progress mode, print a one-time hint about
+                # /verbose.  Latched on self so it fires at most once per
+                # process; persisted to config.yaml so it never fires again
+                # across processes either.
+                try:
+                    if (
+                        not getattr(self, "_long_tool_hint_fired", False)
+                        and self.tool_progress_mode == "all"
+                        and duration >= 30.0
+                    ):
+                        from agent.onboarding import (
+                            TOOL_PROGRESS_FLAG,
+                            is_seen,
+                            mark_seen,
+                            tool_progress_hint_cli,
+                        )
+                        if not is_seen(CLI_CONFIG, TOOL_PROGRESS_FLAG):
+                            self._long_tool_hint_fired = True
+                            _cprint(f"  {_DIM}{tool_progress_hint_cli()}{_RST}")
+                            mark_seen(_hermes_home / "config.yaml", TOOL_PROGRESS_FLAG)
+                            CLI_CONFIG.setdefault("onboarding", {}).setdefault("seen", {})[TOOL_PROGRESS_FLAG] = True
                 except Exception:
                     pass
             self._invalidate()
@@ -9293,6 +9213,24 @@ class HermesCLI:
                                          f"agent_running={self._agent_running}\n")
                         except Exception:
                             pass
+                    # First-touch onboarding: on the very first busy-while-running
+                    # event for this install, print a one-line tip explaining the
+                    # /busy knob.  Flag persists to config.yaml and never fires
+                    # again.  Guarded for exceptions so onboarding can't break
+                    # the input loop.
+                    try:
+                        from agent.onboarding import (
+                            BUSY_INPUT_FLAG,
+                            busy_input_hint_cli,
+                            is_seen,
+                            mark_seen,
+                        )
+                        if not is_seen(CLI_CONFIG, BUSY_INPUT_FLAG):
+                            _cprint(f"  {_DIM}{busy_input_hint_cli(self.busy_input_mode)}{_RST}")
+                            mark_seen(_hermes_home / "config.yaml", BUSY_INPUT_FLAG)
+                            CLI_CONFIG.setdefault("onboarding", {}).setdefault("seen", {})[BUSY_INPUT_FLAG] = True
+                    except Exception:
+                        pass
                 else:
                     self._pending_input.put(payload)
                 event.app.current_buffer.reset(append_to_history=True)
@@ -9909,7 +9847,7 @@ class HermesCLI:
                 status = cli_ref._command_status or "Processing command..."
                 return f"{frame} {status}"
             if cli_ref._agent_running:
-                return "type a message + Enter to interrupt, Ctrl+C to cancel"
+                return "msg=interrupt · /queue · /bg · /steer · Ctrl+C cancel"
             if cli_ref._voice_mode:
                 return "type or Ctrl+B to record"
             return ""

@@ -892,7 +892,6 @@ class AIAgent:
         checkpoints_enabled: bool = False,
         checkpoint_max_snapshots: int = 50,
         pass_session_id: bool = False,
-        persist_session: bool = True,
     ):
         """
         Initialize the AI Agent.
@@ -964,7 +963,6 @@ class AIAgent:
         self.background_review_callback = None  # Optional sync callback for gateway delivery
         self.skip_context_files = skip_context_files
         self.pass_session_id = pass_session_id
-        self.persist_session = persist_session
         self._credential_pool = credential_pool
         self.log_prefix_chars = log_prefix_chars
         self.log_prefix = f"{log_prefix} " if log_prefix else ""
@@ -3109,13 +3107,28 @@ class AIAgent:
     )
 
     _SKILL_REVIEW_PROMPT = (
-        "Review the conversation above and consider saving or updating a skill if appropriate.\n\n"
-        "Focus on: was a non-trivial approach used to complete a task that required trial "
-        "and error, or changing course due to experiential findings along the way, or did "
-        "the user expect or desire a different method or outcome?\n\n"
-        "If a relevant skill already exists, update it with what you learned. "
-        "Otherwise, create a new skill if the approach is reusable.\n"
-        "If nothing is worth saving, just say 'Nothing to save.' and stop."
+        "Review the conversation above and consider whether a skill should be saved or updated.\n\n"
+        "Work in this order — do not skip steps:\n\n"
+        "1. SURVEY the existing skill landscape first. Call skills_list to see what you "
+        "have. If anything looks potentially relevant, skill_view it before deciding. "
+        "You are looking for the CLASS of task that just happened, not the exact task. "
+        "Example: a successful Tauri build is in the class \"desktop app build "
+        "troubleshooting\", not \"fix my specific Tauri error today\".\n\n"
+        "2. THINK CLASS-FIRST. What general pattern of task did the user just complete? "
+        "What conditions will trigger this pattern again? Describe the class in one "
+        "sentence before looking at what to save.\n\n"
+        "3. PREFER GENERALIZING AN EXISTING SKILL over creating a new one. If a skill "
+        "already covers the class — even partially — update it (skill_manage patch) "
+        "with the new insight. Broaden its \"when to use\" trigger if needed.\n\n"
+        "4. ONLY CREATE A NEW SKILL when no existing skill reasonably covers the class. "
+        "When you create one, name and scope it at the class level "
+        "(\"react-i18n-setup\", not \"add-i18n-to-my-dashboard-app\"). The trigger "
+        "section must describe the class of situations, not this one session.\n\n"
+        "5. If you notice two existing skills that overlap, note it in your response "
+        "so a future review can consolidate them. Do not consolidate now unless the "
+        "overlap is obvious and low-risk.\n\n"
+        "Only act when something is genuinely worth saving. "
+        "If nothing stands out, just say 'Nothing to save.' and stop."
     )
 
     _COMBINED_REVIEW_PROMPT = (
@@ -3125,9 +3138,16 @@ class AIAgent:
         "about how you should behave, their work style, or ways they want you to operate? "
         "If so, save using the memory tool.\n\n"
         "**Skills**: Was a non-trivial approach used to complete a task that required trial "
-        "and error, or changing course due to experiential findings along the way, or did "
-        "the user expect or desire a different method or outcome? If a relevant skill "
-        "already exists, update it. Otherwise, create a new one if the approach is reusable.\n\n"
+        "and error, changing course due to experiential findings, or a different method "
+        "or outcome than the user expected? If so, work in this order:\n"
+        "  a. SURVEY existing skills first (skills_list, then skill_view on candidates).\n"
+        "  b. Identify the CLASS of task, not the specific task "
+        "(\"desktop app build troubleshooting\", not \"fix my Tauri error\").\n"
+        "  c. PREFER UPDATING/GENERALIZING an existing skill that covers the class.\n"
+        "  d. ONLY CREATE A NEW SKILL if no existing one covers the class. Scope at "
+        "the class level, not this one session.\n"
+        "  e. If you notice overlapping skills during the survey, note it so a future "
+        "review can consolidate them.\n\n"
         "Only act if there's something genuinely worth saving. "
         "If nothing stands out, just say 'Nothing to save.' and stop."
     )
@@ -3225,12 +3245,25 @@ class AIAgent:
                 with open(os.devnull, "w") as _devnull, \
                      contextlib.redirect_stdout(_devnull), \
                      contextlib.redirect_stderr(_devnull):
+                    # Inherit the parent agent's live runtime (provider, model,
+                    # base_url, api_key, api_mode) so the fork uses the exact
+                    # same credentials the main turn is using.  Without this,
+                    # AIAgent.__init__ re-runs auto-resolution from env vars,
+                    # which fails for OAuth-only providers, session-scoped
+                    # creds, or credential-pool setups where the resolver can't
+                    # reconstruct auth from scratch -- producing the spurious
+                    # "No LLM provider configured" warning at end of turn.
+                    _parent_runtime = self._current_main_runtime()
                     review_agent = AIAgent(
                         model=self.model,
                         max_iterations=8,
                         quiet_mode=True,
                         platform=self.platform,
                         provider=self.provider,
+                        api_mode=_parent_runtime.get("api_mode") or None,
+                        base_url=_parent_runtime.get("base_url") or None,
+                        api_key=_parent_runtime.get("api_key") or None,
+                        credential_pool=getattr(self, "_credential_pool", None),
                         parent_session_id=self.session_id,
                     )
                     review_agent._memory_write_origin = "background_review"
@@ -3331,10 +3364,7 @@ class AIAgent:
         """Save session state to both JSON log and SQLite on any exit path.
 
         Ensures conversations are never lost, even on errors or early returns.
-        Skipped when ``persist_session=False`` (ephemeral helper flows).
         """
-        if not self.persist_session:
-            return
         self._apply_persist_user_message_override(messages)
         self._session_messages = messages
         self._save_session_log(messages)
@@ -7851,7 +7881,17 @@ class AIAgent:
             api_msg["reasoning_content"] = existing
             return
 
-        # 2. DeepSeek / Kimi thinking mode: tool-call turns that lack
+        # 2. Healthy session: promote 'reasoning' field to 'reasoning_content'
+        # for providers that use the internal 'reasoning' key.
+        # This must happen BEFORE the DeepSeek/Kimi tool-call check so that
+        # genuine reasoning content is not overwritten by the empty-string
+        # fallback (#15812 regression in PR #15478).
+        normalized_reasoning = source_msg.get("reasoning")
+        if isinstance(normalized_reasoning, str) and normalized_reasoning:
+            api_msg["reasoning_content"] = normalized_reasoning
+            return
+
+        # 3. DeepSeek / Kimi thinking mode: tool-call turns that lack
         # reasoning_content are "poisoned history" — a prior provider (MiniMax,
         # etc.) left them empty. DeepSeek returns HTTP 400 if reasoning_content
         # is absent on replay; inject "" to satisfy the provider's requirement
@@ -7865,13 +7905,6 @@ class AIAgent:
         )
         if needs_empty_reasoning:
             api_msg["reasoning_content"] = ""
-            return
-
-        # 3. Healthy session: promote 'reasoning' field to 'reasoning_content'
-        # for providers that use the internal 'reasoning' key.
-        normalized_reasoning = source_msg.get("reasoning")
-        if isinstance(normalized_reasoning, str) and normalized_reasoning:
-            api_msg["reasoning_content"] = normalized_reasoning
             return
 
         # 4. DeepSeek / Kimi thinking mode: all assistant messages need
@@ -11007,36 +11040,69 @@ class AIAgent:
                                 continue
 
                     # ── Nous Portal: record rate limit & skip retries ─────
-                    # When Nous returns a 429, record the reset time to a
-                    # shared file so ALL sessions (cron, gateway, auxiliary)
-                    # know not to pile on.  Then skip further retries —
-                    # each one burns another RPH request and deepens the
-                    # rate limit hole.  The retry loop's top-of-iteration
-                    # guard will catch this on the next pass and try
-                    # fallback or bail with a clear message.
+                    # When Nous returns a 429 that is a genuine account-
+                    # level rate limit, record the reset time to a shared
+                    # file so ALL sessions (cron, gateway, auxiliary) know
+                    # not to pile on, then skip further retries -- each
+                    # one burns another RPH request and deepens the hole.
+                    # The retry loop's top-of-iteration guard will catch
+                    # this on the next pass and try fallback or bail.
+                    #
+                    # IMPORTANT: Nous Portal multiplexes multiple upstream
+                    # providers (DeepSeek, Kimi, MiMo, Hermes).  A 429 can
+                    # also mean an UPSTREAM provider is out of capacity
+                    # for one specific model -- transient, clears in
+                    # seconds, nothing to do with the caller's quota.
+                    # Tripping the cross-session breaker on that would
+                    # block every Nous model for minutes.  We use
+                    # ``is_genuine_nous_rate_limit`` to tell the two
+                    # apart via the 429's own x-ratelimit-* headers and
+                    # the last-known-good state captured on the previous
+                    # successful response.
                     if (
                         is_rate_limited
                         and self.provider == "nous"
                         and classified.reason == FailoverReason.rate_limit
                         and not recovered_with_pool
                     ):
+                        _genuine_nous_rate_limit = False
                         try:
-                            from agent.nous_rate_guard import record_nous_rate_limit
+                            from agent.nous_rate_guard import (
+                                is_genuine_nous_rate_limit,
+                                record_nous_rate_limit,
+                            )
                             _err_resp = getattr(api_error, "response", None)
                             _err_hdrs = (
                                 getattr(_err_resp, "headers", None)
                                 if _err_resp else None
                             )
-                            record_nous_rate_limit(
+                            _genuine_nous_rate_limit = is_genuine_nous_rate_limit(
                                 headers=_err_hdrs,
-                                error_context=error_context,
+                                last_known_state=self._rate_limit_state,
                             )
+                            if _genuine_nous_rate_limit:
+                                record_nous_rate_limit(
+                                    headers=_err_hdrs,
+                                    error_context=error_context,
+                                )
+                            else:
+                                logging.info(
+                                    "Nous 429 looks like upstream capacity "
+                                    "(no exhausted bucket in headers or "
+                                    "last-known state) -- not tripping "
+                                    "cross-session breaker."
+                                )
                         except Exception:
                             pass
-                        # Skip straight to max_retries — the top-of-loop
-                        # guard will handle fallback or bail cleanly.
-                        retry_count = max_retries
-                        continue
+                        if _genuine_nous_rate_limit:
+                            # Skip straight to max_retries -- the
+                            # top-of-loop guard will handle fallback or
+                            # bail cleanly.
+                            retry_count = max_retries
+                            continue
+                        # Upstream capacity 429: fall through to normal
+                        # retry logic.  A different model (or the same
+                        # model a moment later) will typically succeed.
 
                     is_payload_too_large = (
                         classified.reason == FailoverReason.payload_too_large

@@ -36,8 +36,7 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/resume [name]` | Resume a previously-named session |
 | `/status` | Show session info |
 | `/agents` (alias: `/tasks`) | Show active agents and running tasks across the current session. |
-| `/background <prompt>` (alias: `/bg`) | Run a prompt in a separate background session. The agent processes your prompt independently — your current session stays free for other work. Results appear as a panel when the task finishes. See [CLI Background Sessions](/docs/user-guide/cli#background-sessions). |
-| `/btw <question>` | Ephemeral side question using session context (no tools, not persisted). Useful for quick clarifications without affecting the conversation history. |
+| `/background <prompt>` (alias: `/bg`, `/btw`) | Run a prompt in a separate background session. The agent processes your prompt independently — your current session stays free for other work. Results appear as a panel when the task finishes. See [CLI Background Sessions](/docs/user-guide/cli#background-sessions). |
 | `/branch [name]` (alias: `/fork`) | Branch the current session (explore a different path) |
 
 ### Configuration

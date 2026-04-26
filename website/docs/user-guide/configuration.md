@@ -146,7 +146,9 @@ terminal:
 
 **Requirements:** Docker Desktop or Docker Engine installed and running. Hermes probes `$PATH` plus common macOS install locations (`/usr/local/bin/docker`, `/opt/homebrew/bin/docker`, Docker Desktop app bundle).
 
-**Container lifecycle:** Each session starts a long-lived container (`docker run -d ... sleep 2h`). Commands run via `docker exec` with a login shell. On cleanup, the container is stopped and removed.
+**Container lifecycle:** Hermes reuses a single long-lived container (`docker run -d ... sleep 2h`) for every terminal and file-tool call made by the top-level agent, across sessions, `/new`, and `/reset`, for the lifetime of the Hermes process. Commands run via `docker exec` with a login shell, so working-directory changes, installed packages, and files in `/workspace` all persist from one tool call to the next. The container is stopped and removed on Hermes shutdown (or when the idle-sweep reclaims it).
+
+Subagents (`delegate_task`) and RL rollouts get their own isolated containers keyed by `task_id` — only the top-level agent shares the `default` container.
 
 **Security hardening:**
 - `--cap-drop ALL` with only `DAC_OVERRIDE`, `CHOWN`, `FOWNER` added back

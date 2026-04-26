@@ -1856,27 +1856,32 @@ def _setup_slack():
     if existing:
         print_info("Slack: already configured")
         if not prompt_yes_no("Reconfigure Slack?", False):
+            # Even without reconfiguring, offer to refresh the manifest so
+            # new commands (e.g. /btw, /stop, ...) get registered in Slack.
+            if prompt_yes_no(
+                "Regenerate the Slack app manifest with the latest command "
+                "list? (recommended after `hermes update`)",
+                True,
+            ):
+                _write_slack_manifest_and_instruct()
             return
 
     print_info("Steps to create a Slack app:")
-    print_info("   1. Go to https://api.slack.com/apps → Create New App (from scratch)")
+    print_info("   1. Go to https://api.slack.com/apps → Create New App")
+    print_info("      Pick 'From an app manifest' — we'll generate one for you below.")
     print_info("   2. Enable Socket Mode: Settings → Socket Mode → Enable")
     print_info("      • Create an App-Level Token with 'connections:write' scope")
-    print_info("   3. Add Bot Token Scopes: Features → OAuth & Permissions")
-    print_info("      Required scopes: chat:write, app_mentions:read,")
-    print_info("      channels:history, channels:read, im:history,")
-    print_info("      im:read, im:write, users:read, files:read, files:write")
-    print_info("      Optional for private channels: groups:history")
-    print_info("   4. Subscribe to Events: Features → Event Subscriptions → Enable")
-    print_info("      Required events: message.im, message.channels, app_mention")
-    print_info("      Optional for private channels: message.groups")
-    print_warning("   ⚠ Without message.channels the bot will ONLY work in DMs,")
-    print_warning("     not public channels.")
-    print_info("   5. Install to Workspace: Settings → Install App")
-    print_info("   6. Reinstall the app after any scope or event changes")
-    print_info("   7. After installing, invite the bot to channels: /invite @YourBot")
+    print_info("   3. Install to Workspace: Settings → Install App")
+    print_info("   4. After installing, invite the bot to channels: /invite @YourBot")
     print()
     print_info("   Full guide: https://hermes-agent.nousresearch.com/docs/user-guide/messaging/slack/")
+    print()
+
+    # Generate and write manifest up-front so the user can paste it into
+    # the "Create from manifest" flow instead of clicking through scopes /
+    # events / slash commands one at a time.
+    _write_slack_manifest_and_instruct()
+
     print()
     bot_token = prompt("Slack Bot Token (xoxb-...)", password=True)
     if not bot_token:
@@ -1900,6 +1905,49 @@ def _setup_slack():
     else:
         print_warning("⚠️  No Slack allowlist set - unpaired users will be denied by default.")
         print_info("   Set SLACK_ALLOW_ALL_USERS=true or GATEWAY_ALLOW_ALL_USERS=true only if you intentionally want open workspace access.")
+
+
+def _write_slack_manifest_and_instruct():
+    """Generate the Slack manifest, write it under HERMES_HOME, and print
+    paste-into-Slack instructions.
+
+    Exposed as its own helper so both the initial setup flow and the
+    "reconfigure? → no" branch can refresh the manifest without the user
+    re-entering tokens. Failures are non-fatal — if the manifest write
+    fails for any reason, we print a warning and skip rather than abort
+    the whole Slack setup.
+    """
+    try:
+        from hermes_cli.slack_cli import _build_full_manifest
+        from hermes_constants import get_hermes_home
+
+        manifest = _build_full_manifest(
+            bot_name="Hermes",
+            bot_description="Your Hermes agent on Slack",
+        )
+        target = Path(get_hermes_home()) / "slack-manifest.json"
+        target.parent.mkdir(parents=True, exist_ok=True)
+        import json as _json
+        target.write_text(
+            _json.dumps(manifest, indent=2, ensure_ascii=False) + "\n",
+            encoding="utf-8",
+        )
+        print_success(f"Slack app manifest written to: {target}")
+        print_info(
+            "   Paste it into https://api.slack.com/apps → your app → Features "
+            "→ App Manifest → Edit, then Save.  Slack will prompt to "
+            "reinstall if scopes or slash commands changed."
+        )
+        print_info(
+            "   Re-run `hermes slack manifest --write` anytime to refresh after "
+            "Hermes adds new commands."
+        )
+    except Exception as exc:  # pragma: no cover - best-effort UX helper
+        print_warning(f"Couldn't write Slack manifest: {exc}")
+        print_info(
+            "   You can generate it manually later with: "
+            "hermes slack manifest --write"
+        )
 
 
 def _setup_matrix():

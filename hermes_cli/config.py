@@ -465,6 +465,7 @@ DEFAULT_CONFIG = {
         "command_timeout": 30,  # Timeout for browser commands in seconds (screenshot, navigate, etc.)
         "record_sessions": False,  # Auto-record browser sessions as WebM videos
         "allow_private_urls": False,  # Allow navigating to private/internal IPs (localhost, 192.168.x.x, etc.)
+        "auto_local_for_private_urls": True,  # When a cloud provider is set, auto-spawn local Chromium for LAN/localhost URLs instead of sending them to the cloud
         "cdp_url": "",  # Optional persistent CDP endpoint for attaching to an existing Chromium/Chrome
         # CDP supervisor — dialog + frame detection via a persistent WebSocket.
         # Active only when a CDP-capable backend is attached (Browserbase or
@@ -959,6 +960,27 @@ DEFAULT_CONFIG = {
         "backup_count": 3,     # Number of rotated backup files to keep
     },
 
+    # Remotely-hosted model catalog manifest.  When enabled, the CLI fetches
+    # curated model lists for OpenRouter and Nous Portal from this URL,
+    # falling back to the in-repo snapshot on network failure.  Lets us
+    # update model picker lists without shipping a hermes-agent release.
+    # The default URL is served by the docs site GitHub Pages deploy.
+    "model_catalog": {
+        "enabled": True,
+        "url": "https://hermes-agent.nousresearch.com/docs/api/model-catalog.json",
+        # Disk cache TTL in hours.  Beyond this, the CLI refetches on the
+        # next /model or `hermes model` invocation; network failures
+        # silently fall back to the stale cache.
+        "ttl_hours": 24,
+        # Optional per-provider override URLs for third parties that want
+        # to self-host their own curation list using the same schema.
+        # Example:
+        #   providers:
+        #     openrouter:
+        #       url: https://example.com/my-curation.json
+        "providers": {},
+    },
+
     # Network settings — workarounds for connectivity issues.
     "network": {
         # Force IPv4 connections.  On servers with broken or unreachable IPv6,
@@ -993,6 +1015,13 @@ DEFAULT_CONFIG = {
         # the sweep on every CLI invocation).  Tracked via state_meta in
         # state.db itself, so it's shared across all processes.
         "min_interval_hours": 24,
+    },
+
+    # Contextual first-touch onboarding hints (see agent/onboarding.py).
+    # Each hint is shown once per install and then latched here so it
+    # never fires again.  Users can wipe the section to re-see all hints.
+    "onboarding": {
+        "seen": {},
     },
 
     # Config schema version - bump this when adding new required fields

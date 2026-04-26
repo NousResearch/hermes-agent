@@ -2315,13 +2315,13 @@ def _model_flow_nous(config, current_model="", args=None):
     # The live /models endpoint returns hundreds of models; the curated list
     # shows only agentic models users recognize from OpenRouter.
     from hermes_cli.models import (
-        _PROVIDER_MODELS,
+        get_curated_nous_model_ids,
         get_pricing_for_provider,
         check_nous_free_tier,
         partition_nous_models_by_tier,
     )
 
-    model_ids = _PROVIDER_MODELS.get("nous", [])
+    model_ids = get_curated_nous_model_ids()
     if not model_ids:
         print("No curated models available for Nous Portal.")
         return
@@ -4780,6 +4780,37 @@ def cmd_webhook(args):
     webhook_command(args)
 
 
+def cmd_slack(args):
+    """Slack integration helpers.
+
+    Dispatches ``hermes slack <subcommand>``. Currently supports:
+      manifest — print or write a Slack app manifest with every gateway
+                 command registered as a first-class slash.
+    """
+    sub = getattr(args, "slack_command", None)
+    if sub in (None, ""):
+        # No subcommand — print usage hint.
+        print(
+            "usage: hermes slack <subcommand>\n"
+            "\n"
+            "subcommands:\n"
+            "  manifest   Generate a Slack app manifest with every gateway\n"
+            "             command registered as a native slash\n"
+            "\n"
+            "Run `hermes slack manifest -h` for details.",
+            file=sys.stderr,
+        )
+        return 1
+
+    if sub == "manifest":
+        from hermes_cli.slack_cli import slack_manifest_command
+
+        return slack_manifest_command(args)
+
+    print(f"Unknown slack subcommand: {sub}", file=sys.stderr)
+    return 1
+
+
 def cmd_hooks(args):
     """Shell-hook inspection and management."""
     from hermes_cli.hooks import hooks_command
@@ -7223,6 +7254,9 @@ Examples:
     hermes auth remove <p> <t>    Remove pooled credential by index, id, or label
     hermes auth reset <provider>  Clear exhaustion status for a provider
     hermes model                  Select default model
+    hermes fallback [list]        Show fallback provider chain
+    hermes fallback add           Add a fallback provider (same picker as `hermes model`)
+    hermes fallback remove        Remove a fallback provider from the chain
     hermes config                 View configuration
     hermes config edit            Edit config in $EDITOR
     hermes config set model gpt-4 Set a config value
@@ -7565,6 +7599,42 @@ For more help on a command:
     model_parser.set_defaults(func=cmd_model)
 
     # =========================================================================
+    # fallback command — manage the fallback provider chain
+    # =========================================================================
+    from hermes_cli.fallback_cmd import cmd_fallback
+
+    fallback_parser = subparsers.add_parser(
+        "fallback",
+        help="Manage fallback providers (tried when the primary model fails)",
+        description=(
+            "Manage the fallback provider chain.  Fallback providers are tried "
+            "in order when the primary model fails with rate-limit, overload, or "
+            "connection errors.  See: "
+            "https://hermes-agent.nousresearch.com/docs/user-guide/features/fallback-providers"
+        ),
+    )
+    fallback_subparsers = fallback_parser.add_subparsers(dest="fallback_command")
+    fallback_subparsers.add_parser(
+        "list",
+        aliases=["ls"],
+        help="Show the current fallback chain (default when no subcommand)",
+    )
+    fallback_subparsers.add_parser(
+        "add",
+        help="Pick a provider + model (same picker as `hermes model`) and append to the chain",
+    )
+    fallback_subparsers.add_parser(
+        "remove",
+        aliases=["rm"],
+        help="Pick an entry to delete from the chain",
+    )
+    fallback_subparsers.add_parser(
+        "clear",
+        help="Remove all fallback entries",
+    )
+    fallback_parser.set_defaults(func=cmd_fallback)
+
+    # =========================================================================
     # gateway command
     # =========================================================================
     gateway_parser = subparsers.add_parser(
@@ -7758,6 +7828,54 @@ For more help on a command:
         description="Configure WhatsApp and pair via QR code",
     )
     whatsapp_parser.set_defaults(func=cmd_whatsapp)
+
+    # =========================================================================
+    # slack command
+    # =========================================================================
+    slack_parser = subparsers.add_parser(
+        "slack",
+        help="Slack integration helpers (manifest generation, etc.)",
+        description="Slack integration helpers for Hermes.",
+    )
+    slack_sub = slack_parser.add_subparsers(dest="slack_command")
+    slack_manifest = slack_sub.add_parser(
+        "manifest",
+        help="Print or write a Slack app manifest with every gateway command "
+             "registered as a native slash (/btw, /stop, /model, ...)",
+        description=(
+            "Generate a Slack app manifest that registers every gateway "
+            "command in COMMAND_REGISTRY as a first-class Slack slash "
+            "command (matching Discord and Telegram parity). Paste the "
+            "output into Slack app config → Features → App Manifest → "
+            "Edit, then Save. Reinstall the app if Slack prompts for it."
+        ),
+    )
+    slack_manifest.add_argument(
+        "--write",
+        nargs="?",
+        const=True,
+        default=None,
+        metavar="PATH",
+        help="Write manifest to a file instead of stdout. With no PATH "
+             "writes to $HERMES_HOME/slack-manifest.json.",
+    )
+    slack_manifest.add_argument(
+        "--name",
+        default=None,
+        help='Bot display name (default: "Hermes")',
+    )
+    slack_manifest.add_argument(
+        "--description",
+        default=None,
+        help="Bot description shown in Slack's app directory.",
+    )
+    slack_manifest.add_argument(
+        "--slashes-only",
+        action="store_true",
+        help="Emit only the features.slash_commands array (for merging "
+             "into an existing manifest manually).",
+    )
+    slack_parser.set_defaults(func=cmd_slack)
 
     # =========================================================================
     # login command
@@ -8413,6 +8531,12 @@ Examples:
     skills_list = skills_subparsers.add_parser("list", help="List installed skills")
     skills_list.add_argument(
         "--source", default="all", choices=["all", "hub", "builtin", "local"]
+    )
+    skills_list.add_argument(
+        "--enabled-only",
+        action="store_true",
+        help="Hide disabled skills. Use with -p <profile> to see exactly "
+             "which skills will load for that profile.",
     )
 
     skills_check = skills_subparsers.add_parser(

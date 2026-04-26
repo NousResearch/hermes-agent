@@ -20,6 +20,7 @@ from tools.file_tools import (
     reset_file_dedup,
     _is_blocked_device,
     _invalidate_dedup_for_path,
+    _READ_DEDUP_STATUS_MESSAGE,
     _get_max_read_chars,
     _DEFAULT_MAX_READ_CHARS,
     _read_tracker,
@@ -163,7 +164,7 @@ class TestFileDedup(unittest.TestCase):
 
     @patch("tools.file_tools._get_file_ops")
     def test_second_read_returns_dedup_stub(self, mock_ops):
-        """Second read of same file+range returns dedup stub."""
+        """Second read of same file+range returns non-content dedup status."""
         mock_ops.return_value = _make_fake_ops(
             content="line one\nline two\n", file_size=20,
         )
@@ -174,7 +175,27 @@ class TestFileDedup(unittest.TestCase):
         # Second read — should get dedup stub
         r2 = json.loads(read_file_tool(self._tmpfile, task_id="dup"))
         self.assertTrue(r2.get("dedup"), "Second read should return dedup stub")
-        self.assertIn("unchanged", r2.get("content", ""))
+        self.assertEqual(r2.get("status"), "unchanged")
+        self.assertIn("unchanged", r2.get("message", ""))
+        self.assertFalse(r2.get("content_returned"))
+        self.assertNotIn("content", r2)
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_write_rejects_internal_read_status_text(self, mock_ops):
+        """write_file must not persist internal read_file status text."""
+        fake = MagicMock()
+        fake.write_file = MagicMock()
+        mock_ops.return_value = fake
+
+        result = json.loads(write_file_tool(
+            self._tmpfile,
+            _READ_DEDUP_STATUS_MESSAGE,
+            task_id="guard",
+        ))
+
+        self.assertIn("error", result)
+        self.assertIn("internal read_file status text", result["error"])
+        fake.write_file.assert_not_called()
 
     @patch("tools.file_tools._get_file_ops")
     def test_modified_file_not_deduped(self, mock_ops):

@@ -1,3 +1,5 @@
+import { writeFileSync } from 'node:fs'
+
 import type { ScrollBoxHandle } from '@hermes/ink'
 import { evictInkCaches } from '@hermes/ink'
 import { type RefObject, useCallback } from 'react'
@@ -22,6 +24,18 @@ import { patchTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
 const usageFrom = (info: null | SessionInfo): Usage => (info?.usage ? { ...ZERO, ...info.usage } : ZERO)
+
+export const writeActiveSessionFile = (sessionId: null | string, file = process.env.HERMES_TUI_ACTIVE_SESSION_FILE) => {
+  if (!file || !sessionId) {
+    return
+  }
+
+  try {
+    writeFileSync(file, JSON.stringify({ session_id: sessionId }), { mode: 0o600 })
+  } catch {
+    // Best-effort shell epilogue hint only; never break live session changes.
+  }
+}
 
 const trimTail = (items: Msg[]) => {
   const q = [...items]
@@ -131,6 +145,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
       resetSession()
       setSessionStartedAt(Date.now())
 
+      writeActiveSessionFile(r.session_id)
       patchUiState({
         info,
         sid: r.session_id,
@@ -188,6 +203,7 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
               const resumed = toTranscriptMessages(r.messages)
 
               setHistoryItems(r.info ? [introMsg(r.info), ...resumed] : resumed)
+              writeActiveSessionFile(r.resumed ?? r.session_id)
               patchUiState({
                 info: r.info ?? null,
                 sid: r.session_id,

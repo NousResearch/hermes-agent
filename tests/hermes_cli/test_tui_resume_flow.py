@@ -178,3 +178,38 @@ def test_print_tui_exit_summary_includes_resume_and_token_totals(monkeypatch, ca
     assert "hermes --tui --resume 20260409_000001_abc123" in out
     assert 'hermes --tui -c "demo title"' in out
     assert "Tokens:         21 (in 10, out 6, cache 4, reasoning 1)" in out
+
+
+def test_print_tui_exit_summary_prefers_actual_active_session_file(monkeypatch, capsys, tmp_path):
+    import hermes_cli.main as main_mod
+
+    seen = []
+
+    class _FakeDB:
+        def get_session(self, session_id):
+            seen.append(session_id)
+            return {
+                "message_count": 1,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "cache_read_tokens": 0,
+                "cache_write_tokens": 0,
+                "reasoning_tokens": 0,
+            }
+
+        def get_session_title(self, _session_id):
+            return "actual"
+
+        def close(self):
+            return None
+
+    active = tmp_path / "active.json"
+    active.write_text('{"session_id":"actual_session"}', encoding="utf-8")
+    monkeypatch.setitem(sys.modules, "hermes_state", types.SimpleNamespace(SessionDB=lambda: _FakeDB()))
+
+    main_mod._print_tui_exit_summary("startup_resume", str(active))
+    out = capsys.readouterr().out
+
+    assert seen == ["actual_session"]
+    assert "hermes --tui --resume actual_session" in out
+    assert "startup_resume" not in out

@@ -52,7 +52,12 @@ class TestCustomProviderModelSwitch:
             _model_flow_named_custom({}, provider_info)
 
         # fetch_api_models MUST be called even though model was saved
-        mock_fetch.assert_called_once_with("sk-test", "https://vllm.example.com/v1", timeout=8.0)
+        mock_fetch.assert_called_once_with(
+            "sk-test",
+            "https://vllm.example.com/v1",
+            timeout=8.0,
+            api_mode=None,
+        )
 
     def test_can_switch_to_different_model(self, config_home):
         """User selects a different model than the saved one."""
@@ -173,3 +178,82 @@ class TestCustomProviderModelSwitch:
         model = config.get("model")
         assert isinstance(model, dict)
         assert "api_mode" not in model, "Stale api_mode should be removed"
+
+    def test_env_template_api_key_is_preserved_in_model_config(self, config_home, monkeypatch):
+        """Selecting an env-backed custom provider must not inline the secret."""
+        import yaml
+        from hermes_cli.main import _model_flow_named_custom
+
+        config_path = config_home / "config.yaml"
+        config_path.write_text(
+            "model:\n"
+            "  default: old-model\n"
+            "  provider: openrouter\n"
+            "custom_providers:\n"
+            "- name: Example Provider\n"
+            "  base_url: https://api.example-provider.test/v1\n"
+            "  api_key: ${EXAMPLE_PROVIDER_API_KEY}\n"
+            "  model: qwen3.6-35b-fast\n"
+        )
+        monkeypatch.setenv("EXAMPLE_PROVIDER_API_KEY", "sk-live-example-provider")
+
+        provider_info = {
+            "name": "Example Provider",
+            "base_url": "https://api.example-provider.test/v1",
+            "api_key": "sk-live-example-provider",
+            "api_key_ref": "${EXAMPLE_PROVIDER_API_KEY}",
+            "model": "qwen3.6-35b-fast",
+        }
+
+        with patch("hermes_cli.models.fetch_api_models", return_value=["qwen3.6-35b-fast"]) as mock_fetch, \
+             patch.dict("sys.modules", {"simple_term_menu": None}), \
+             patch("builtins.input", return_value="1"), \
+             patch("builtins.print"):
+            _model_flow_named_custom({}, provider_info)
+
+        mock_fetch.assert_called_once_with(
+            "sk-live-example-provider",
+            "https://api.example-provider.test/v1",
+            timeout=8.0,
+            api_mode=None,
+        )
+        config = yaml.safe_load(config_path.read_text()) or {}
+        assert config["model"]["api_key"] == "${EXAMPLE_PROVIDER_API_KEY}"
+        assert config["custom_providers"][0]["api_key"] == "${EXAMPLE_PROVIDER_API_KEY}"
+        assert "sk-live-example-provider" not in config_path.read_text()
+
+    def test_key_env_custom_provider_persists_reference_not_secret(self, config_home, monkeypatch):
+        """key_env custom providers should also avoid writing plaintext keys."""
+        import yaml
+        from hermes_cli.main import _model_flow_named_custom
+
+        config_path = config_home / "config.yaml"
+        config_path.write_text(
+            "model:\n"
+            "  default: old-model\n"
+            "custom_providers:\n"
+            "- name: Example Provider\n"
+            "  base_url: https://api.example-provider.test/v1\n"
+            "  key_env: EXAMPLE_PROVIDER_API_KEY\n"
+            "  model: qwen3.6-35b-fast\n"
+        )
+        monkeypatch.setenv("EXAMPLE_PROVIDER_API_KEY", "sk-live-example-provider")
+
+        provider_info = {
+            "name": "Example Provider",
+            "base_url": "https://api.example-provider.test/v1",
+            "api_key": "",
+            "key_env": "EXAMPLE_PROVIDER_API_KEY",
+            "model": "qwen3.6-35b-fast",
+        }
+
+        with patch("hermes_cli.models.fetch_api_models", return_value=["qwen3.6-35b-fast"]), \
+             patch.dict("sys.modules", {"simple_term_menu": None}), \
+             patch("builtins.input", return_value="1"), \
+             patch("builtins.print"):
+            _model_flow_named_custom({}, provider_info)
+
+        config = yaml.safe_load(config_path.read_text()) or {}
+        assert config["model"]["api_key"] == "${EXAMPLE_PROVIDER_API_KEY}"
+        assert config["custom_providers"][0]["key_env"] == "EXAMPLE_PROVIDER_API_KEY"
+        assert "sk-live-example-provider" not in config_path.read_text()

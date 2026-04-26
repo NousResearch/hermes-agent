@@ -9077,6 +9077,17 @@ class AIAgent:
             api_messages = []
             for msg in messages:
                 api_msg = msg.copy()
+
+                # DeepSeek / Liaobots thinking mode: null content for
+                # tool-call messages (see main loop for details #15250).
+                if (
+                    api_msg.get("role") == "assistant"
+                    and api_msg.get("content") == ""
+                    and api_msg.get("tool_calls")
+                    and self._needs_deepseek_tool_reasoning()
+                ):
+                    api_msg["content"] = None
+
                 self._copy_reasoning_content_for_api(msg, api_msg)
                 for internal_field in ("reasoning", "finish_reason", "_thinking_prefill"):
                     api_msg.pop(internal_field, None)
@@ -9724,6 +9735,19 @@ class AIAgent:
             api_messages = []
             for idx, msg in enumerate(messages):
                 api_msg = msg.copy()
+
+                # DeepSeek / Liaobots thinking mode: assistant tool-call
+                # messages must use null content (per OpenAI spec) -- empty
+                # string "" triggers Liaobots internal format converter to
+                # reject with HTTP 400 "content[].thinking must be passed
+                # back" (refs #15250).
+                if (
+                    api_msg.get("role") == "assistant"
+                    and api_msg.get("content") == ""
+                    and api_msg.get("tool_calls")
+                    and self._needs_deepseek_tool_reasoning()
+                ):
+                    api_msg["content"] = None
 
                 # Inject ephemeral context into the current turn's user message.
                 # Sources: memory manager prefetch + plugin pre_llm_call hooks

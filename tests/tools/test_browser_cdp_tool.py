@@ -379,33 +379,28 @@ def test_dispatch_through_registry(cdp_server):
 
 
 def test_check_fn_false_when_no_cdp_url(monkeypatch):
-    """Gate closes when no CDP URL is set — even if the browser toolset is
-    otherwise configured."""
+    """Gate closes when no CDP URL is configured."""
     import tools.browser_tool as bt
 
-    monkeypatch.setattr(bt, "check_browser_requirements", lambda: True)
     monkeypatch.setattr(bt, "_get_cdp_override", lambda: "")
     assert browser_cdp_tool._browser_cdp_check() is False
 
 
 def test_check_fn_true_when_cdp_url_set(monkeypatch):
-    """Gate opens as soon as a CDP URL is resolvable."""
+    """Gate opens as soon as a CDP URL is resolvable, regardless of agent-browser."""
     import tools.browser_tool as bt
 
-    monkeypatch.setattr(bt, "check_browser_requirements", lambda: True)
     monkeypatch.setattr(
         bt, "_get_cdp_override", lambda: "ws://localhost:9222/devtools/browser/x"
     )
     assert browser_cdp_tool._browser_cdp_check() is True
 
 
-def test_check_fn_false_when_browser_requirements_fail(monkeypatch):
-    """Even with a CDP URL, gate closes if the overall browser toolset is
-    unavailable (e.g. agent-browser not installed)."""
+def test_check_fn_true_when_cdp_url_set_but_agent_browser_missing(monkeypatch):
+    """CDP URL alone is sufficient — agent-browser CLI is not required."""
     import tools.browser_tool as bt
 
-    monkeypatch.setattr(bt, "check_browser_requirements", lambda: False)
     monkeypatch.setattr(
         bt, "_get_cdp_override", lambda: "ws://localhost:9222/devtools/browser/x"
     )
-    assert browser_cdp_tool._browser_cdp_check() is False
+    assert browser_cdp_tool._browser_cdp_check() is True

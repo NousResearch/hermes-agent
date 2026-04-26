@@ -535,14 +535,9 @@ def _browser_cdp_check() -> bool:
     ``registry.register(...)`` calls).
     """
     try:
-        from tools.browser_tool import (  # type: ignore[import-not-found]
-            _get_cdp_override,
-            check_browser_requirements,
-        )
+        from tools.browser_tool import _get_cdp_override  # type: ignore[import-not-found]
     except ImportError as exc:  # pragma: no cover — defensive
         logger.debug("browser_cdp check: browser_tool import failed: %s", exc)
-        return False
-    if not check_browser_requirements():
         return False
     return bool(_get_cdp_override())
 

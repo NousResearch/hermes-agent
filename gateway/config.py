@@ -574,6 +574,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["require_mention"] = platform_cfg["require_mention"]
                 if "free_response_channels" in platform_cfg:
                     bridged["free_response_channels"] = platform_cfg["free_response_channels"]
+                if "thread_reply_mode" in platform_cfg:
+                    bridged["thread_reply_mode"] = platform_cfg["thread_reply_mode"]
                 if "mention_patterns" in platform_cfg:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
                 if "dm_policy" in platform_cfg:
@@ -611,6 +613,8 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["SLACK_REQUIRE_MENTION"] = str(slack_cfg["require_mention"]).lower()
                 if "allow_bots" in slack_cfg and not os.getenv("SLACK_ALLOW_BOTS"):
                     os.environ["SLACK_ALLOW_BOTS"] = str(slack_cfg["allow_bots"]).lower()
+                if "thread_reply_mode" in slack_cfg and not os.getenv("SLACK_THREAD_REPLY_MODE"):
+                    os.environ["SLACK_THREAD_REPLY_MODE"] = str(slack_cfg["thread_reply_mode"]).lower()
                 frc = slack_cfg.get("free_response_channels")
                 if frc is not None and not os.getenv("SLACK_FREE_RESPONSE_CHANNELS"):
                     if isinstance(frc, list):

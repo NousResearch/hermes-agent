@@ -211,10 +211,10 @@ Understanding how Hermes behaves in different contexts:
 |---------|----------|
 | **DMs** | Bot responds to every message — no @mention needed |
 | **Channels** | Bot **only responds when @mentioned** (e.g., `@Hermes Agent what time is it?`). In channels, Hermes replies in a thread attached to that message. |
-| **Threads** | If you @mention Hermes inside an existing thread, it replies in that same thread. Once the bot has an active session in a thread, **subsequent replies in that thread do not require @mention** — the bot follows the conversation naturally. |
+| **Threads** | If you @mention Hermes inside an existing thread, it replies in that same thread. By default, once the bot has an active session in a thread, **subsequent replies in that thread do not require @mention** — the bot follows the conversation naturally. Set `slack.thread_reply_mode: "strict"` to require an explicit @mention for every channel/thread reply. |
 
 :::tip
-In channels, always @mention the bot to start a conversation. Once the bot is active in a thread, you can reply in that thread without mentioning it. Outside of threads, messages without @mention are ignored to prevent noise in busy channels.
+In channels, always @mention the bot to start a conversation. With the default `thread_reply_mode: "engaged"`, once the bot is active in a thread, you can reply in that thread without mentioning it. Use `thread_reply_mode: "strict"` for shared or multi-agent channels where Hermes should only respond when explicitly mentioned again.
 :::
 
 ---
@@ -272,6 +272,15 @@ slack:
   # but you can set this explicitly for consistency with other platforms)
   require_mention: true
 
+  # Controls whether engaged Slack threads keep triggering Hermes without
+  # repeated @mentions:
+  # "engaged" — current/default behavior; after Hermes participates in a
+  #             thread, later replies in that thread can trigger it without
+  #             mentioning the bot again
+  # "strict"  — every channel/thread message must explicitly @mention Hermes
+  #             unless the channel is in free_response_channels
+  thread_reply_mode: "engaged"
+
   # Custom mention patterns that trigger the bot
   # (in addition to the default @mention detection)
   mention_patterns:
@@ -283,7 +292,7 @@ slack:
 ```
 
 :::info
-Slack supports both patterns: `@mention` required to start a conversation by default, but you can opt specific channels out via `SLACK_FREE_RESPONSE_CHANNELS` (comma-separated channel IDs) or `slack.free_response_channels` in `config.yaml`. Once the bot has an active session in a thread, subsequent thread replies do not require a mention. In DMs the bot always responds without needing a mention.
+Slack supports both patterns: `@mention` required to start a conversation by default, but you can opt specific channels out via `SLACK_FREE_RESPONSE_CHANNELS` (comma-separated channel IDs) or `slack.free_response_channels` in `config.yaml`. With `thread_reply_mode: "engaged"` (default), once the bot has an active session in a thread, subsequent thread replies do not require a mention. With `thread_reply_mode: "strict"`, every channel/thread message must explicitly mention the bot unless the channel is configured as free-response. In DMs the bot always responds without needing a mention.
 :::
 
 ### Unauthorized User Handling
@@ -324,6 +333,7 @@ stt_enabled: true
 # Slack-specific settings
 slack:
   require_mention: true
+  thread_reply_mode: "engaged"
   unauthorized_dm_behavior: "pair"
 
 # Platform config

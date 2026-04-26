@@ -1087,9 +1087,12 @@ class SlackAdapter(BasePlatformAdapter):
         #   0. Channel is in free_response_channels, OR require_mention is
         #      disabled — always process regardless of mention.
         #   1. The bot is @mentioned in this message, OR
-        #   2. The message is a reply in a thread the bot started/participated in, OR
-        #   3. The message is in a thread where the bot was previously @mentioned, OR
-        #   4. There's an existing session for this thread (survives restarts)
+        #   2. thread_reply_mode=engaged and the message is a reply in a
+        #      thread the bot started/participated in, OR
+        #   3. thread_reply_mode=engaged and the message is in a thread where
+        #      the bot was previously @mentioned, OR
+        #   4. thread_reply_mode=engaged and there's an existing session for
+        #      this thread (survives restarts)
         bot_uid = self._team_bot_user_ids.get(team_id, self._bot_user_id)
         is_mentioned = bot_uid and f"<@{bot_uid}>" in text
         event_thread_ts = event.get("thread_ts")
@@ -1101,6 +1104,8 @@ class SlackAdapter(BasePlatformAdapter):
             elif not self._slack_require_mention():
                 pass  # Mention requirement disabled globally for Slack
             elif not is_mentioned:
+                if self._slack_thread_reply_mode() == "strict":
+                    return
                 reply_to_bot_thread = (
                     is_thread_reply and event_thread_ts in self._bot_message_ts
                 )
@@ -1731,6 +1736,25 @@ class SlackAdapter(BasePlatformAdapter):
                 return configured.lower() not in ("false", "0", "no", "off")
             return bool(configured)
         return os.getenv("SLACK_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no", "off")
+
+    def _slack_thread_reply_mode(self) -> str:
+        """Return Slack thread trigger behavior.
+
+        Modes:
+        - engaged: current/backward-compatible behavior. Once Hermes has
+          participated in a thread, later thread replies can trigger it without
+          a fresh @mention.
+        - strict: when require_mention is enabled, every channel/thread message
+          must explicitly mention the bot unless the channel is configured as a
+          free-response channel.
+        """
+        configured = self.config.extra.get("thread_reply_mode")
+        if configured is None:
+            configured = os.getenv("SLACK_THREAD_REPLY_MODE", "engaged")
+        mode = str(configured).strip().lower()
+        if mode in {"strict", "engaged"}:
+            return mode
+        return "engaged"
 
     def _slack_free_response_channels(self) -> set:
         """Return channel IDs where no @mention is required."""

@@ -55,12 +55,14 @@ CHANNEL_ID = "C0AQWDLHY9M"
 OTHER_CHANNEL_ID = "C9999999999"
 
 
-def _make_adapter(require_mention=None, free_response_channels=None):
+def _make_adapter(require_mention=None, free_response_channels=None, thread_reply_mode=None):
     extra = {}
     if require_mention is not None:
         extra["require_mention"] = require_mention
     if free_response_channels is not None:
         extra["free_response_channels"] = free_response_channels
+    if thread_reply_mode is not None:
+        extra["thread_reply_mode"] = thread_reply_mode
 
     adapter = object.__new__(SlackAdapter)
     adapter.platform = Platform.SLACK
@@ -135,6 +137,37 @@ def test_require_mention_env_var_default_true(monkeypatch):
 
 
 # ---------------------------------------------------------------------------
+# Tests: _slack_thread_reply_mode
+# ---------------------------------------------------------------------------
+
+def test_thread_reply_mode_defaults_to_engaged(monkeypatch):
+    monkeypatch.delenv("SLACK_THREAD_REPLY_MODE", raising=False)
+    adapter = _make_adapter()
+    assert adapter._slack_thread_reply_mode() == "engaged"
+
+
+def test_thread_reply_mode_strict():
+    adapter = _make_adapter(thread_reply_mode="strict")
+    assert adapter._slack_thread_reply_mode() == "strict"
+
+
+def test_thread_reply_mode_engaged():
+    adapter = _make_adapter(thread_reply_mode="engaged")
+    assert adapter._slack_thread_reply_mode() == "engaged"
+
+
+def test_thread_reply_mode_env_var_fallback(monkeypatch):
+    monkeypatch.setenv("SLACK_THREAD_REPLY_MODE", "strict")
+    adapter = _make_adapter()
+    assert adapter._slack_thread_reply_mode() == "strict"
+
+
+def test_thread_reply_mode_malformed_falls_back_to_engaged():
+    adapter = _make_adapter(thread_reply_mode="maybe")
+    assert adapter._slack_thread_reply_mode() == "engaged"
+
+
+# ---------------------------------------------------------------------------
 # Tests: _slack_free_response_channels
 # ---------------------------------------------------------------------------
 
@@ -194,6 +227,8 @@ def _would_process(adapter, *, is_dm=False, channel_id=CHANNEL_ID,
         elif not adapter._slack_require_mention():
             return True
         elif not is_mentioned:
+            if adapter._slack_thread_reply_mode() == "strict":
+                return False
             if thread_reply and active_session:
                 return True
             else:
@@ -237,10 +272,38 @@ def test_mentioned_message_always_processed():
     assert _would_process(adapter, mentioned=True, text="what's up") is True
 
 
-def test_thread_reply_with_active_session_processed():
+def test_thread_reply_with_active_session_processed_by_default_engaged_mode():
     adapter = _make_adapter(require_mention=True)
     assert _would_process(
         adapter, text="followup",
+        thread_reply=True, active_session=True,
+    ) is True
+
+
+def test_thread_reply_with_active_session_ignored_in_strict_mode_without_mention():
+    adapter = _make_adapter(require_mention=True, thread_reply_mode="strict")
+    assert _would_process(
+        adapter, text="followup",
+        thread_reply=True, active_session=True,
+    ) is False
+
+
+def test_thread_reply_with_active_session_processed_in_strict_mode_with_mention():
+    adapter = _make_adapter(require_mention=True, thread_reply_mode="strict")
+    assert _would_process(
+        adapter, text="followup", mentioned=True,
+        thread_reply=True, active_session=True,
+    ) is True
+
+
+def test_strict_thread_reply_mode_does_not_override_free_response_channels():
+    adapter = _make_adapter(
+        require_mention=True,
+        free_response_channels=[CHANNEL_ID],
+        thread_reply_mode="strict",
+    )
+    assert _would_process(
+        adapter, channel_id=CHANNEL_ID, text="followup",
         thread_reply=True, active_session=True,
     ) is True
 
@@ -290,6 +353,7 @@ def test_config_bridges_slack_free_response_channels(monkeypatch, tmp_path):
     (hermes_home / "config.yaml").write_text(
         "slack:\n"
         "  require_mention: false\n"
+        "  thread_reply_mode: strict\n"
         "  free_response_channels:\n"
         "    - C0AQWDLHY9M\n"
         "    - C9999999999\n",
@@ -305,8 +369,10 @@ def test_config_bridges_slack_free_response_channels(monkeypatch, tmp_path):
     assert config is not None
     slack_extra = config.platforms[Platform.SLACK].extra
     assert slack_extra.get("require_mention") is False
+    assert slack_extra.get("thread_reply_mode") == "strict"
     assert slack_extra.get("free_response_channels") == ["C0AQWDLHY9M", "C9999999999"]
     # Verify env vars were set by config bridging
     import os as _os
     assert _os.environ["SLACK_REQUIRE_MENTION"] == "false"
+    assert _os.environ["SLACK_THREAD_REPLY_MODE"] == "strict"
     assert _os.environ["SLACK_FREE_RESPONSE_CHANNELS"] == "C0AQWDLHY9M,C9999999999"

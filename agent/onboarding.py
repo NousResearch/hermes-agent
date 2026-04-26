@@ -80,26 +80,6 @@ def tool_progress_hint_cli() -> str:
     )
 
 
-def busy_input_hint_tui() -> str:
-    """Hint shown the first time a user sends a message while the TUI is busy.
-
-    The TUI auto-queues messages sent mid-turn and uses double-Enter on empty
-    input as the interrupt gesture.  There is no ``/busy`` knob to flip — this
-    hint teaches the keybind instead of a command.
-    """
-    return (
-        "queued for after the current turn — press Enter twice on an empty "
-        "line to interrupt the current turn instead. This tip only shows once."
-    )
-
-
-def tool_progress_hint_tui() -> str:
-    return (
-        "that tool ran for a while — use /verbose to cycle tool-progress "
-        "display modes (all → new → off → verbose). This tip only shows once."
-    )
-
-
 # -------------------------------------------------------------------------
 # State read / write
 # -------------------------------------------------------------------------
@@ -157,10 +137,8 @@ __all__ = [
     "TOOL_PROGRESS_FLAG",
     "busy_input_hint_gateway",
     "busy_input_hint_cli",
-    "busy_input_hint_tui",
     "tool_progress_hint_gateway",
     "tool_progress_hint_cli",
-    "tool_progress_hint_tui",
     "is_seen",
     "mark_seen",
 ]

@@ -570,17 +570,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           sys(`error: ${message}`)
           setStatus('ready')
         }
-
-        return
-      case 'onboarding.hint': {
-        const text = String(ev.payload?.text || '').trim()
-
-        if (text) {
-          sys(`(tip) ${text}`)
-        }
-
-        return
-      }
     }
   }
 }

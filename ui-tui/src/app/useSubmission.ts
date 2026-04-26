@@ -3,7 +3,7 @@ import { type MutableRefObject, useCallback, useRef } from 'react'
 import { attachedImageNotice } from '../domain/messages.js'
 import { looksLikeSlashCommand } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
-import type { InputDetectDropResponse, OnboardingClaimResponse, PromptSubmitResponse, ShellExecResponse } from '../gatewayTypes.js'
+import type { InputDetectDropResponse, PromptSubmitResponse, ShellExecResponse } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
 import { hasInterpolation, INTERPOLATION_RE } from '../protocol/interpolation.js'
 import { PASTE_SNIPPET_RE } from '../protocol/paste.js'
@@ -218,22 +218,6 @@ export function useSubmission(opts: UseSubmissionOptions) {
       composerActions.pushHistory(full)
 
       if (getUiState().busy) {
-        // First-touch onboarding: teach the TUI's auto-queue + double-Enter
-        // interrupt pattern the first time the user hits it.  Claim is
-        // atomic server-side (config.yaml latch), shared with CLI + gateway.
-        gw.request<OnboardingClaimResponse>('onboarding.claim', { flag: 'busy_input_prompt' })
-          .then(raw => {
-            const r = asRpcResult<OnboardingClaimResponse>(raw)
-            const text = r?.hint
-
-            if (typeof text === 'string' && text.trim()) {
-              sys(`(tip) ${text.trim()}`)
-            }
-          })
-          .catch(() => {
-            // Onboarding is best-effort — never block the enqueue path.
-          })
-
         return composerActions.enqueue(full)
       }
 
@@ -245,7 +229,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
       send(full)
     },
-    [appendMessage, composerActions, composerRefs, gw, interpolate, send, sendQueued, shellExec, slashRef, sys]
+    [appendMessage, composerActions, composerRefs, interpolate, send, sendQueued, shellExec, slashRef]
   )
 
   const submit = useCallback(

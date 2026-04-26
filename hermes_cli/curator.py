@@ -151,6 +151,12 @@ def _cmd_pin(args) -> int:
 
 def _cmd_unpin(args) -> int:
     from tools import skill_usage
+    if not skill_usage.is_agent_created(args.skill):
+        print(
+            f"curator: '{args.skill}' is bundled or hub-installed — "
+            "there's nothing to unpin (curator only tracks agent-created skills)"
+        )
+        return 1
     skill_usage.set_pinned(args.skill, False)
     print(f"curator: unpinned '{args.skill}'")
     return 0

@@ -239,10 +239,18 @@ def get_record(skill_name: str) -> Dict[str, Any]:
 
 
 def _mutate(skill_name: str, mutator) -> None:
-    """Load, apply *mutator(record)* in place, save. Best-effort."""
+    """Load, apply *mutator(record)* in place, save. Best-effort.
+
+    Bundled and hub-installed skills are NEVER recorded in the sidecar.
+    This keeps .usage.json focused on agent-created skills (the only ones
+    the curator considers) and prevents stale counters from hanging around
+    for upstream-managed skills.
+    """
     if not skill_name:
         return
     try:
+        if not is_agent_created(skill_name):
+            return
         data = load_usage()
         rec = data.get(skill_name)
         if not isinstance(rec, dict):
@@ -361,7 +369,18 @@ def archive_skill(skill_name: str) -> Tuple[bool, str]:
 
 def restore_skill(skill_name: str) -> Tuple[bool, str]:
     """Move an archived skill back to ~/.hermes/skills/. Restores to the flat
-    top-level layout; original category nesting is NOT reconstructed."""
+    top-level layout; original category nesting is NOT reconstructed.
+
+    Refuses to restore under a name that now collides with a bundled or
+    hub-installed skill — that would shadow the upstream version.
+    """
+    # If a bundled or hub skill has since been installed under the same
+    # name, refuse to restore rather than shadow it.
+    if not is_agent_created(skill_name):
+        return False, (
+            f"skill '{skill_name}' is now bundled or hub-installed; "
+            "restore would shadow the upstream version"
+        )
     archive_root = _archive_dir()
     if not archive_root.exists():
         return False, "no archive directory"

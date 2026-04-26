@@ -810,6 +810,58 @@ class TestParseTargetRefE164:
         assert _parse_target_ref("matrix", "+15551234567")[2] is False
 
 
+class TestParseTargetRefSlack:
+    """_parse_target_ref recognizes Slack alphanumeric channel/group/DM/user IDs."""
+
+    def test_public_channel_id_is_explicit(self):
+        """Slack public channel IDs (C...) are recognized as explicit."""
+        chat_id, thread_id, is_explicit = _parse_target_ref("slack", "C01234ABCDE")
+        assert chat_id == "C01234ABCDE"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_group_channel_id_is_explicit(self):
+        """Slack private channel/group IDs (G...) are recognized as explicit."""
+        chat_id, _, is_explicit = _parse_target_ref("slack", "G0123456789")
+        assert chat_id == "G0123456789"
+        assert is_explicit is True
+
+    def test_dm_channel_id_is_explicit(self):
+        """Slack DM channel IDs (D...) are recognized as explicit."""
+        chat_id, _, is_explicit = _parse_target_ref("slack", "D0123456789")
+        assert chat_id == "D0123456789"
+        assert is_explicit is True
+
+    def test_user_id_is_explicit(self):
+        """Slack user IDs (U...) are recognized as explicit."""
+        chat_id, _, is_explicit = _parse_target_ref("slack", "U0123456789")
+        assert chat_id == "U0123456789"
+        assert is_explicit is True
+
+    def test_whitespace_stripped(self):
+        """Whitespace around a Slack channel ID is stripped."""
+        chat_id, _, is_explicit = _parse_target_ref("slack", "  C01234ABCDE  ")
+        assert chat_id == "C01234ABCDE"
+        assert is_explicit is True
+
+    def test_lowercase_channel_name_is_not_explicit(self):
+        """A Slack channel name like 'general' is NOT an explicit ID — needs resolution."""
+        _, _, is_explicit = _parse_target_ref("slack", "general")
+        assert is_explicit is False
+
+    def test_too_short_id_is_not_explicit(self):
+        """IDs shorter than 9 chars (C + 8 alphanum) are not recognized."""
+        _, _, is_explicit = _parse_target_ref("slack", "C0123456")
+        assert is_explicit is False
+
+    def test_slack_id_does_not_match_other_platforms(self):
+        """Slack ID format is only treated as explicit for the 'slack' platform."""
+        _, _, is_explicit = _parse_target_ref("discord", "C01234ABCDE")
+        assert is_explicit is False
+        _, _, is_explicit = _parse_target_ref("telegram", "C01234ABCDE")
+        assert is_explicit is False
+
+
 class TestSendDiscordThreadId:
     """_send_discord uses thread_id when provided."""
 

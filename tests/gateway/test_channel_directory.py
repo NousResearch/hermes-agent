@@ -92,6 +92,22 @@ class TestResolveChannelName:
             assert resolve_channel_name("slack", "engineering") == "C01"
             assert resolve_channel_name("slack", "ENGINEERING") == "C01"
 
+    def test_slack_channel_id_resolves_directly(self, tmp_path):
+        """Slack alphanumeric channel IDs resolve without going through name matching."""
+        platforms = {
+            "slack": [{"id": "C01234ABCDE", "name": "social", "type": "channel"}]
+        }
+        with self._setup(tmp_path, platforms):
+            assert resolve_channel_name("slack", "C01234ABCDE") == "C01234ABCDE"
+
+    def test_channel_id_match_is_exact(self, tmp_path):
+        """Channel-ID lookup is case-sensitive and exact — 'c01234abcde' does not match."""
+        platforms = {
+            "slack": [{"id": "C01234ABCDE", "name": "social", "type": "channel"}]
+        }
+        with self._setup(tmp_path, platforms):
+            assert resolve_channel_name("slack", "c01234abcde") is None
+
     def test_guild_qualified_match(self, tmp_path):
         platforms = {
             "discord": [

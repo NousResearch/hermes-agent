@@ -30,6 +30,10 @@ _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # downstream adapters (signal, etc.) expect.
 _PHONE_PLATFORMS = frozenset({"signal", "sms", "whatsapp"})
 _E164_TARGET_RE = re.compile(r"^\s*\+(\d{7,15})\s*$")
+# Slack channel/group/DM/user/workspace IDs are uppercase alphanumeric strings
+# starting with C, G, D, U, or W — they never pass isdigit() so without this
+# branch they silently fall through to name resolution and fail.
+_SLACK_CHANNEL_ID_RE = re.compile(r"^\s*([CGDUW][A-Z0-9]{8,})\s*$")
 _IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif"}
 _VIDEO_EXTS = {".mp4", ".mov", ".avi", ".mkv", ".3gp"}
 _AUDIO_EXTS = {".ogg", ".opus", ".mp3", ".wav", ".m4a"}
@@ -333,6 +337,10 @@ def _parse_target_ref(platform_name: str, target_ref: str):
     # Matrix room IDs (start with !) and user IDs (start with @) are explicit
     if platform_name == "matrix" and (target_ref.startswith("!") or target_ref.startswith("@")):
         return target_ref, None, True
+    if platform_name == "slack":
+        match = _SLACK_CHANNEL_ID_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), None, True
     return None, None, False
 
 

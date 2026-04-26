@@ -223,6 +223,13 @@ def resolve_channel_name(platform_name: str, name: str) -> Optional[str]:
     if not channels:
         return None
 
+    # 0. Direct channel-ID match — handles alphanumeric IDs (e.g. Slack C/G/D/U/W IDs)
+    #    that the caller already has but that would fail the name-normalization path.
+    name_stripped = name.strip()
+    for ch in channels:
+        if ch.get("id") == name_stripped:
+            return ch["id"]
+
     query = _normalize_channel_query(name)
 
     # 1. Exact name match, including the display labels shown by send_message(action="list")

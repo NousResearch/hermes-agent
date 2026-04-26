@@ -9783,6 +9783,12 @@ class HermesCLI:
                 completer=_completer,
             ),
         )
+        # Match the TUI's editor handoff: the temp file lands at
+        # <mkdtemp>/prompt.md so vim/nano/helix pick up markdown syntax
+        # highlighting from the .md extension and the title bar reads
+        # "prompt.md" instead of a random "tmpXXXXXX". prompt_toolkit's
+        # complex-tempfile path takes care of cleanup via shutil.rmtree.
+        input_area.buffer.tempfile = 'prompt.md'
 
         # Dynamic height: accounts for both explicit newlines AND visual
         # wrapping of long lines so the input area always fits its content.

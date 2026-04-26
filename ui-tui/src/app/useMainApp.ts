@@ -33,6 +33,7 @@ import { useComposerState } from './useComposerState.js'
 import { useConfigSync } from './useConfigSync.js'
 import { useInputHandlers } from './useInputHandlers.js'
 import { useLongRunToolCharms } from './useLongRunToolCharms.js'
+import { scrollWithSelectionBy } from './scroll.js'
 import { useSessionLifecycle } from './useSessionLifecycle.js'
 import { useSubmission } from './useSubmission.js'
 
@@ -62,12 +63,6 @@ const statusColorOf = (status: string, t: { dim: string; error: string; ok: stri
   }
 
   return t.dim
-}
-
-interface SelectionSnap {
-  anchor?: { row: number }
-  focus?: { row: number }
-  isDragging?: boolean
 }
 
 export function useMainApp(gw: GatewayClient) {
@@ -186,46 +181,7 @@ export function useMainApp(gw: GatewayClient) {
   const virtualHistory = useVirtualHistory(scrollRef, virtualRows, cols)
 
   const scrollWithSelection = useCallback(
-    (delta: number) => {
-      const s = scrollRef.current
-
-      if (!s) {
-        return
-      }
-
-      const sel = selection.getState() as null | SelectionSnap
-      const top = s.getViewportTop()
-      const bottom = top + s.getViewportHeight() - 1
-
-      if (
-        !sel?.anchor ||
-        !sel.focus ||
-        sel.anchor.row < top ||
-        sel.anchor.row > bottom ||
-        (!sel.isDragging && (sel.focus.row < top || sel.focus.row > bottom))
-      ) {
-        return s.scrollBy(delta)
-      }
-
-      const max = Math.max(0, s.getScrollHeight() - s.getViewportHeight())
-      const cur = s.getScrollTop() + s.getPendingDelta()
-      const actual = Math.max(0, Math.min(max, cur + delta)) - cur
-
-      if (actual === 0) {
-        return
-      }
-
-      const shift = sel!.isDragging ? selection.shiftAnchor : selection.shiftSelection
-
-      if (actual > 0) {
-        selection.captureScrolledRows(top, top + actual - 1, 'above')
-      } else {
-        selection.captureScrolledRows(bottom + actual + 1, bottom, 'below')
-      }
-
-      shift(-actual, top, bottom)
-      s.scrollBy(delta)
-    },
+    (delta: number) => scrollWithSelectionBy(delta, { scrollRef, selection }),
     [selection]
   )
 
@@ -700,14 +656,12 @@ export function useMainApp(gw: GatewayClient) {
     [turn, showProgressArea]
   )
 
-  const frozenProgressRef = useRef(liveProgress)
-
-  // Freeze the offscreen live tail so scroll doesn't rebuild unseen streaming UI.
-  if (liveTailVisible || !ui.busy) {
-    frozenProgressRef.current = liveProgress
-  }
-
-  const appProgress = liveTailVisible || !ui.busy ? liveProgress : frozenProgressRef.current
+  // Always pass current progress through. Freezing this while offscreen looked
+  // like a nice scroll optimization, but it also froze the live tail's
+  // thinking/tool state at arbitrary intermediate snapshots. Streaming update
+  // throttling now handles interaction load; progress state should remain
+  // truthful so panels don't randomly disappear.
+  const appProgress = liveProgress
 
   const cwd = ui.info?.cwd || process.env.HERMES_CWD || process.cwd()
   const gitBranch = useGitBranch(cwd)

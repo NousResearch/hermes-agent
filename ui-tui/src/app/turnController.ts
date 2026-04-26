@@ -1,4 +1,10 @@
-import { REASONING_PULSE_MS, STREAM_BATCH_MS, STREAM_IDLE_BATCH_MS, STREAM_TYPING_BATCH_MS } from '../config/timing.js'
+import {
+  REASONING_PULSE_MS,
+  STREAM_BATCH_MS,
+  STREAM_IDLE_BATCH_MS,
+  STREAM_SCROLLING_BATCH_MS,
+  STREAM_TYPING_BATCH_MS
+} from '../config/timing.js'
 import type { SessionInterruptResponse, SubagentEventPayload } from '../gatewayTypes.js'
 import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
 import {
@@ -10,6 +16,7 @@ import {
 } from '../lib/text.js'
 import type { ActiveTool, ActivityItem, Msg, SubagentProgress } from '../types.js'
 
+import { getInteractionMode } from './interactionMode.js'
 import { resetFlowOverlays } from './overlayStore.js'
 import { pushSnapshot } from './spawnHistoryStore.js'
 import { getTurnState, patchTurnState, resetTurnState } from './turnStore.js'
@@ -497,12 +504,15 @@ class TurnController {
       return
     }
 
+    const interaction = getInteractionMode()
+    const delay = interaction === 'scrolling' ? STREAM_SCROLLING_BATCH_MS : interaction === 'typing' ? STREAM_TYPING_BATCH_MS : this.streamDelay
+
     this.streamTimer = setTimeout(() => {
       this.streamTimer = null
       const raw = this.bufRef.trimStart()
       const visible = hasReasoningTag(raw) ? splitReasoning(raw).text : raw
       patchTurnState({ streaming: visible })
-    }, this.streamDelay)
+    }, delay)
   }
 
   startMessage() {

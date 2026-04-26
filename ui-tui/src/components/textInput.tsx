@@ -336,7 +336,7 @@ export function TextInput({
     active: focus && termFocus && !selected
   })
 
-  const nativeCursor = focus && termFocus && !selected
+  const nativeCursor = focus && termFocus && !selected && !!stdout?.isTTY
 
   const rendered = useMemo(() => {
     if (!focus) {

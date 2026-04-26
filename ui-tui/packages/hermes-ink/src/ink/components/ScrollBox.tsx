@@ -122,6 +122,19 @@ function ScrollBox({ children, ref, stickyScroll, ...style }: PropsWithChildren<
     })
   }
 
+  const scrollByNow = (dy: number) => {
+    const el = domRef.current
+
+    if (!el) {
+      return
+    }
+
+    el.stickyScroll = false
+    el.scrollAnchor = undefined
+    el.pendingScrollDelta = (el.pendingScrollDelta ?? 0) + Math.floor(dy)
+    scrollMutated(el)
+  }
+
   useImperativeHandle(
     ref,
     (): ScrollBoxHandle => ({
@@ -155,22 +168,7 @@ function ScrollBox({ children, ref, stickyScroll, ...style }: PropsWithChildren<
         }
         scrollMutated(box)
       },
-      scrollBy(dy: number) {
-        const el = domRef.current
-
-        if (!el) {
-          return
-        }
-
-        el.stickyScroll = false
-        // Wheel input cancels any in-flight anchor seek — user override.
-        el.scrollAnchor = undefined
-        // Accumulate in pendingScrollDelta; renderer drains it at a capped
-        // rate so fast flicks show intermediate frames. Pure accumulator:
-        // scroll-up followed by scroll-down naturally cancels.
-        el.pendingScrollDelta = (el.pendingScrollDelta ?? 0) + Math.floor(dy)
-        scrollMutated(el)
-      },
+      scrollBy: scrollByNow,
       scrollToBottom() {
         const el = domRef.current
 

@@ -17,6 +17,16 @@ const COLD_START = 40
 const QUANTUM = OVERSCAN >> 1
 const FREEZE_RENDERS = 2
 
+export const shouldSetVirtualClamp = ({
+  itemCount,
+  sticky,
+  viewportHeight
+}: {
+  itemCount: number
+  sticky: boolean
+  viewportHeight: number
+}) => itemCount > 0 && viewportHeight > 0 && !sticky
+
 const upperBound = (arr: number[], target: number) => {
   let lo = 0
   let hi = arr.length
@@ -173,11 +183,16 @@ export function useVirtualHistory(
     // Give the renderer the mounted-row coverage for passive scroll clamping.
     // Without this, burst wheel/page scroll can race past the React commit that
     // updates the virtual range and paint spacer-only frames.
-    if (s && n > 0 && vp > 0) {
+    if (s && shouldSetVirtualClamp({ itemCount: n, sticky, viewportHeight: vp })) {
       const min = offsets[start] ?? 0
       const max = Math.max(min, (offsets[end] ?? total) - vp)
       s.setClampBounds(min, max)
     } else {
+      // Sticky bottom often has live, non-virtualized tail content after the
+      // virtual transcript (streaming answer / thinking / tools). A clamp based
+      // only on virtual history would cap rendering before that tail and make
+      // live thinking appear to vanish. No burst-scroll clamp is needed while
+      // sticky anyway.
       s?.setClampBounds(undefined, undefined)
     }
 

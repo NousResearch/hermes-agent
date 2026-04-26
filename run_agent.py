@@ -8929,8 +8929,76 @@ class AIAgent:
             _is_error_result, _ = _detect_tool_failure(function_name, function_result)
             if _is_error_result:
                 logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
+                
+                # ── Adaptive Strategy Switching ─────────────────────────
+                # Track consecutive failures per tool.  When the same tool
+                # fails repeatedly, inject a strategy-hint into the result
+                # so the model gets explicit guidance to try a different
+                # approach instead of blindly retrying the same thing.
+                if not hasattr(self, '_consecutive_tool_failures'):
+                    self._consecutive_tool_failures = {}
+                    self._last_failed_tool = None
+                if function_name == self._last_failed_tool:
+                    self._consecutive_tool_failures[function_name] = \
+                        self._consecutive_tool_failures.get(function_name, 0) + 1
+                else:
+                    # Model switched tools — reset counter for the new tool
+                    self._consecutive_tool_failures[function_name] = 1
+                self._last_failed_tool = function_name
+
+                _fail_count = self._consecutive_tool_failures[function_name]
+                if _fail_count >= 3:
+                    _guide = (
+                        f"\n\n[STRATEGY HINT: The tool '{function_name}' has now failed "
+                        f"{_fail_count} times consecutively. This approach is not working. "
+                    )
+                    # Tool-specific strategy guidance
+                    if function_name in ("terminal", "execute_code"):
+                        _guide += (
+                            "Consider breaking the task into smaller steps, using a different "
+                            "command, or trying a completely different technical approach."
+                        )
+                    elif function_name in ("write_file", "patch"):
+                        _guide += (
+                            "The file operation is failing. Check the file path exists, "
+                            "permissions are correct, or use a different file location."
+                        )
+                    elif function_name in ("read_file", "search_files"):
+                        _guide += (
+                            "Try searching in a different directory, checking if the file "
+                            "exists first, or using a broader search pattern."
+                        )
+                    elif function_name in ("web_search", "browser_navigate"):
+                        _guide += (
+                            "The source is unreachable. Try different search terms, "
+                            "a different URL, or an alternative data source."
+                        )
+                    elif function_name in ("memory",):
+                        _guide += (
+                            "Memory storage may be full or unavailable. Try pruning existing "
+                            "entries or using a different approach to save information."
+                        )
+                    elif function_name == "delegate_task":
+                        _guide += (
+                            "Subagent delegation is failing. Try simplifying the task or "
+                            "doing the work directly instead of delegating."
+                        )
+                    else:
+                        _guide += "Try a completely different approach to accomplish the goal."
+                    _guide += "]"
+                    function_result += _guide
+                    logger.info(
+                        "Injected strategy-switch hint for %s (%d consecutive failures)",
+                        function_name, _fail_count,
+                    )
             else:
                 logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, len(function_result))
+                # Reset failure tracking on success — the current approach worked
+                if hasattr(self, '_consecutive_tool_failures'):
+                    if self._consecutive_tool_failures.get(function_name, 0) > 0:
+                        self._consecutive_tool_failures[function_name] = 0
+                    if self._last_failed_tool == function_name:
+                        self._last_failed_tool = None
 
             if self.tool_progress_callback:
                 try:
@@ -9251,6 +9319,12 @@ class AIAgent:
         # state registry.  Set BEFORE any tool dispatch so snapshots taken at
         # child-launch time see the parent's real id, not None.
         self._current_task_id = effective_task_id
+        
+        # Tool failure tracking for adaptive strategy switching.
+        # Maps tool_name -> consecutive failure count.
+        # Reset on success or when the model switches tools.
+        self._consecutive_tool_failures: Dict[str, int] = {}
+        self._last_failed_tool = None
         
         # Reset retry counters and iteration budget at the start of each turn
         # so subagent usage from a previous turn doesn't eat into the next one.

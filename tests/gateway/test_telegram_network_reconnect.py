@@ -49,6 +49,57 @@ def _make_adapter() -> TelegramAdapter:
 
 
 @pytest.mark.asyncio
+async def test_connect_polling_continues_after_transient_delete_webhook_timeout(monkeypatch):
+    """Transient delete_webhook timeouts should not abort Telegram polling startup."""
+    adapter = _make_adapter()
+
+    builder = MagicMock()
+    builder.token.return_value = builder
+    builder.request.return_value = builder
+    builder.get_updates_request.return_value = builder
+
+    mock_bot = MagicMock()
+    timed_out = type("TimedOut", (Exception,), {})
+    mock_bot.delete_webhook = AsyncMock(side_effect=[timed_out("Timed out"), timed_out("Timed out"), timed_out("Timed out")])
+    mock_bot.set_my_commands = AsyncMock()
+
+    mock_updater = MagicMock()
+    mock_updater.start_polling = AsyncMock()
+    mock_updater.running = False
+
+    mock_app = MagicMock()
+    mock_app.bot = mock_bot
+    mock_app.updater = mock_updater
+    mock_app.initialize = AsyncMock()
+    mock_app.start = AsyncMock()
+    mock_app.add_handler = MagicMock()
+
+    builder.build.return_value = mock_app
+
+    monkeypatch.setattr("gateway.platforms.telegram.Application", MagicMock(builder=MagicMock(return_value=builder)))
+    monkeypatch.setattr("gateway.platforms.telegram.HTTPXRequest", MagicMock())
+    monkeypatch.setattr("gateway.platforms.telegram.Update", MagicMock(ALL_TYPES=[]))
+    monkeypatch.setattr("gateway.platforms.telegram.TelegramMessageHandler", MagicMock())
+    monkeypatch.setattr("gateway.platforms.telegram.CallbackQueryHandler", MagicMock())
+    monkeypatch.setattr("gateway.platforms.telegram.filters", MagicMock(TEXT=1, COMMAND=2, LOCATION=4, VENUE=8, PHOTO=16, VIDEO=32, AUDIO=64, VOICE=128, Document=MagicMock(ALL=256), Sticker=MagicMock(ALL=512)))
+    monkeypatch.setattr("gateway.platforms.telegram.resolve_proxy_url", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr("gateway.platforms.telegram.logger", MagicMock())
+    monkeypatch.setattr(adapter, "_acquire_platform_lock", lambda *_args, **_kwargs: True)
+    monkeypatch.setattr(adapter, "_release_platform_lock", lambda *_args, **_kwargs: None)
+    monkeypatch.setattr(adapter, "_mark_connected", lambda: None)
+    monkeypatch.setattr(adapter, "_setup_dm_topics", AsyncMock())
+
+    async def _sleep(_delay):
+        return None
+
+    monkeypatch.setattr("asyncio.sleep", _sleep)
+
+    assert await adapter.connect() is True
+    assert mock_bot.delete_webhook.await_count == 3
+    mock_updater.start_polling.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_reconnect_self_schedules_on_start_polling_failure():
     """
     When start_polling() raises during a network error retry, the adapter must

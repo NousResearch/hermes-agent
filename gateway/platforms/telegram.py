@@ -334,6 +334,54 @@ class TelegramAdapter(BasePlatformAdapter):
             return {"link_preview_options": LinkPreviewOptions(is_disabled=True)}
         return {"disable_web_page_preview": True}
 
+    async def _clear_stale_polling_webhook(self) -> bool:
+        """Best-effort webhook cleanup before entering polling mode.
+
+        Telegram can briefly time out during bootstrap after host sleep, Wi-Fi
+        churn, or transient upstream 502/timeout windows. A delete_webhook
+        timeout is often ambiguous — Telegram may have processed the request even
+        though the response never arrived. Treat transient timeout/network errors
+        here as recoverable so polling can still start, while preserving hard
+        failures like invalid tokens.
+        """
+        delete_webhook = getattr(self._bot, "delete_webhook", None)
+        if not callable(delete_webhook):
+            return True
+
+        attempts = 3
+        for attempt in range(1, attempts + 1):
+            try:
+                await delete_webhook(drop_pending_updates=False)
+                if attempt > 1:
+                    logger.info(
+                        "[%s] Telegram delete_webhook succeeded on retry %d/%d",
+                        self.name,
+                        attempt,
+                        attempts,
+                    )
+                return True
+            except Exception as err:
+                if not self._looks_like_network_error(err):
+                    raise
+                if attempt < attempts:
+                    delay = min(2 ** (attempt - 1), 5)
+                    logger.warning(
+                        "[%s] Telegram delete_webhook transient failure (%s), retrying in %ds (%d/%d)",
+                        self.name,
+                        err,
+                        delay,
+                        attempt,
+                        attempts,
+                    )
+                    await asyncio.sleep(delay)
+                    continue
+                logger.warning(
+                    "[%s] Telegram delete_webhook timed out after %d attempts; continuing into polling mode because the request may have reached Telegram.",
+                    self.name,
+                    attempts,
+                )
+                return False
+
     async def _handle_polling_network_error(self, error: Exception) -> None:
         """Reconnect polling after a transient network interruption.
 
@@ -817,9 +865,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 # ── Polling mode (default) ───────────────────────────
                 # Clear any stale webhook first so polling doesn't inherit a
                 # previous webhook registration and silently stop receiving updates.
-                delete_webhook = getattr(self._bot, "delete_webhook", None)
-                if callable(delete_webhook):
-                    await delete_webhook(drop_pending_updates=False)
+                await self._clear_stale_polling_webhook()
 
                 loop = asyncio.get_running_loop()
 

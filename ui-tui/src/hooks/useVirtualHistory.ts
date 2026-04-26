@@ -167,7 +167,19 @@ export function useVirtualHistory(
   }, [])
 
   useLayoutEffect(() => {
+    const s = scrollRef.current
     let dirty = false
+
+    // Give the renderer the mounted-row coverage for passive scroll clamping.
+    // Without this, burst wheel/page scroll can race past the React commit that
+    // updates the virtual range and paint spacer-only frames.
+    if (s && n > 0 && vp > 0) {
+      const min = offsets[start] ?? 0
+      const max = Math.max(min, (offsets[end] ?? total) - vp)
+      s.setClampBounds(min, max)
+    } else {
+      s?.setClampBounds(undefined, undefined)
+    }
 
     if (skipMeasurement.current) {
       skipMeasurement.current = false
@@ -187,8 +199,6 @@ export function useVirtualHistory(
         }
       }
     }
-
-    const s = scrollRef.current
 
     if (s) {
       const next = {
@@ -210,7 +220,7 @@ export function useVirtualHistory(
     if (dirty) {
       setVer(v => v + 1)
     }
-  }, [end, hasScrollRef, items, scrollRef, start])
+  }, [end, hasScrollRef, items, n, offsets, scrollRef, start, total, vp])
 
   return {
     bottomSpacer: Math.max(0, total - (offsets[end] ?? total)),

@@ -9783,23 +9783,24 @@ class HermesCLI:
                 completer=_completer,
             ),
         )
-        # Match the TUI's editor handoff: the temp file lands at
-        # <mkdtemp>/prompt.md so vim/nano/helix pick up markdown syntax
-        # highlighting from the .md extension and the title bar reads
-        # "prompt.md" instead of a random "tmpXXXXXX". prompt_toolkit's
-        # complex-tempfile path takes care of cleanup via shutil.rmtree.
-        input_area.buffer.tempfile = 'prompt.md'
+        # Keep prompt_toolkit on its simple tempfile path. Setting
+        # buffer.tempfile = "prompt.md" triggers its complex-tempfile branch,
+        # which tries to mkdir() the mkdtemp() directory again and raises
+        # EEXIST. The suffix keeps markdown highlighting without that bug.
+        input_area.buffer.tempfile_suffix = '.md'
 
         # prompt_toolkit's default fallback chain prefers /usr/bin/nano over
         # /usr/bin/vi when neither $VISUAL nor $EDITOR is set. The TUI's
-        # resolveEditor() prefers vim → vi → nano. Override this single
+        # resolveEditor() prefers nvim → vim → vi → nano. Override this single
         # buffer's resolver so both surfaces pick the same editor.
         import shlex
         import subprocess
+
         def _hermes_pick_editor(filename: str) -> bool:
             chosen = (
                 os.environ.get('VISUAL')
                 or os.environ.get('EDITOR')
+                or shutil.which('nvim')
                 or shutil.which('vim')
                 or shutil.which('vi')
                 or shutil.which('nano')
@@ -9810,6 +9811,7 @@ class HermesCLI:
                 return subprocess.call(shlex.split(chosen) + [filename]) == 0
             except OSError:
                 return False
+
         input_area.buffer._open_file_in_editor = _hermes_pick_editor
 
         # Dynamic height: accounts for both explicit newlines AND visual

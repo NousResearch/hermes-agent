@@ -59,7 +59,7 @@ describe('createGatewayEventHandler', () => {
     patchUiState({ showReasoning: true })
   })
 
-  it('keeps todo list visible after final assistant text completes', () => {
+  it('archives incomplete todos into transcript flow at end of turn so they scroll up', () => {
     const appended: Msg[] = []
 
     const todos = [
@@ -76,8 +76,12 @@ describe('createGatewayEventHandler', () => {
 
     onEvent({ payload: { text: 'Started a todo list.' }, type: 'message.complete' } as any)
 
-    expect(appended[appended.length - 1]).toMatchObject({ role: 'assistant', text: 'Started a todo list.' })
-    expect(getTurnState().todos).toEqual(todos)
+    const trail = appended.find(msg => msg.kind === 'trail' && msg.todos?.length)
+    const finalText = appended.find(msg => msg.role === 'assistant' && msg.text === 'Started a todo list.')
+
+    expect(finalText).toBeDefined()
+    expect(trail).toMatchObject({ kind: 'trail', role: 'system', todos, todoIncomplete: true })
+    expect(getTurnState().todos).toEqual([])
   })
 
   it('archives completed todos into transcript flow at end of turn', () => {

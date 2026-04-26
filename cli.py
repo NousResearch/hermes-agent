@@ -4935,22 +4935,54 @@ class HermesCLI:
         _cprint(f"  Original session: {parent_session_id}")
         _cprint(f"  Branch session:   {new_session_id}")
 
-    def save_conversation(self):
-        """Save the current conversation to a file."""
+    def save_conversation(self, fmt: str = "json"):
+        """Save the current conversation to a file.
+
+        Args:
+            fmt: "json" for machine-readable export (default),
+                 "markdown" for human-readable export.
+        """
         if not self.conversation_history:
             print("(;_;) No conversation to save.")
             return
-        
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"hermes_conversation_{timestamp}.json"
-        
+
+        if fmt == "json":
+            filename = f"hermes_conversation_{timestamp}.json"
+            try:
+                with open(filename, "w", encoding="utf-8") as fh:
+                    json.dump({
+                        "model": self.model,
+                        "session_start": self.session_start.isoformat(),
+                        "messages": self.conversation_history,
+                    }, fh, indent=2, ensure_ascii=False)
+                print(f"(^_^)v Conversation saved to: {filename}")
+            except Exception as e:
+                print(f"(x_x) Failed to save: {e}")
+            return
+
+        # Markdown export
+        filename = f"hermes_conversation_{timestamp}.md"
+        lines = [f"# Hermes Conversation", f"**Model:** {self.model or 'unknown'} | **Date:** {self.session_start.strftime('%Y-%m-%d %H:%M')}", ""]
+        for msg in self.conversation_history:
+            role = msg.get("role", "unknown")
+            content = msg.get("content", "")
+            if isinstance(content, list):
+                content = "\n".join(p.get("text", "") for p in content if isinstance(p, dict))
+            if role == "user":
+                lines.append(f"## You\n\n{content}\n")
+            elif role == "assistant":
+                lines.append(f"## Hermes\n\n{content}\n")
+            elif role == "tool":
+                tool_name = msg.get("tool_name") or msg.get("name") or "tool"
+                preview = (content or "")[:200]
+                if len(content or "") > 200:
+                    preview += "..."
+                lines.append(f"> **{tool_name}:** {preview}\n")
         try:
-            with open(filename, "w", encoding="utf-8") as f:
-                json.dump({
-                    "model": self.model,
-                    "session_start": self.session_start.isoformat(),
-                    "messages": self.conversation_history,
-                }, f, indent=2, ensure_ascii=False)
+            with open(filename, "w", encoding="utf-8") as fh:
+                fh.write("\n".join(lines))
             print(f"(^_^)v Conversation saved to: {filename}")
         except Exception as e:
             print(f"(x_x) Failed to save: {e}")
@@ -6052,7 +6084,11 @@ class HermesCLI:
         elif canonical == "branch":
             self._handle_branch_command(cmd_original)
         elif canonical == "save":
-            self.save_conversation()
+            _save_args = cmd_original.split()[1:] if len(cmd_original.split()) > 1 else []
+            _save_fmt = _save_args[0].lower() if _save_args and _save_args[0].lower() in ("json", "markdown", "md") else "markdown"
+            if _save_fmt == "md":
+                _save_fmt = "markdown"
+            self.save_conversation(fmt=_save_fmt)
         elif canonical == "cron":
             self._handle_cron_command(cmd_original)
         elif canonical == "skills":

@@ -506,6 +506,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/messaging/matrix',
         'user-guide/messaging/dingtalk',
         'user-guide/messaging/feishu',
+        'user-guide/messaging/feishu-uat-tools',
         'user-guide/messaging/wecom',
         'user-guide/messaging/wecom-callback',
         'user-guide/messaging/weixin',

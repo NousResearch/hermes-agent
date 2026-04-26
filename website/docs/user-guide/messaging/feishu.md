@@ -491,6 +491,29 @@ WebSocket and per-group ACL settings are configured via `config.yaml` under `pla
 | Error 200340 when clicking approval buttons | Enable **Interactive Card** capability and configure **Card Request URL** in the Feishu Developer Console. See [Required Feishu App Configuration](#required-feishu-app-configuration) above. |
 | `Webhook rate limit exceeded` | More than 120 requests/minute from the same IP. This is usually a misconfiguration or loop. |
 
+## User Identity Path (UAT)
+
+Beyond the standard bot identity, Hermes can authenticate API calls using your personal Feishu credentials via User-Access-Token (UAT). This unlocks 30+ additional tools for your calendar, documents, tasks, and more.
+
+**Setup:** Run `hermes setup feishu-uat` and scan the QR code with the Feishu mobile app to authorize. Your tokens are stored locally in `~/.hermes/feishu_uat.json` (mode 0600, readable only by you).
+
+**Available tools:** Calendar (4), Bitable (6), Drive (5), Docs (1), Messaging (2), Chat (2), Search (2), Sheets (3), Task (5), Wiki (2), User Info (1) = **33 tools total**.
+
+**Streaming cards (optional):** Enable real-time card updates as the agent generates responses:
+
+```yaml
+platforms:
+  feishu:
+    extra:
+      streaming_card:
+        enabled: true
+```
+
+For the complete UAT setup guide, scopes reference, and troubleshooting, see [Feishu User Identity Tools](./feishu-uat-tools.md).
+
 ## Toolset
 
-Feishu / Lark uses the `hermes-feishu` platform preset, which includes the same core tools as Telegram and other gateway-based messaging platforms.
+Feishu / Lark uses the `hermes-feishu` platform preset, which includes:
+
+- **Core tools** — Chat messaging, media, reactions (available by default with TAT)
+- **UAT tools** — Calendar, docs, tasks, search, etc. (available when UAT is configured)

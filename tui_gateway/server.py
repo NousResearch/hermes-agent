@@ -3692,6 +3692,13 @@ def _details_completion_item(value: str, meta: str = "") -> dict:
     return {"text": value, "display": value, "meta": meta}
 
 
+def _details_root_completion_item(value: str, meta: str, needs_leading_space: bool) -> dict:
+    return _details_completion_item(
+        f" {value}" if needs_leading_space else value,
+        meta,
+    )
+
+
 def _details_completions(text: str) -> list[dict] | None:
     if not text.lower().startswith("/details"):
         return None
@@ -3710,9 +3717,15 @@ def _details_completions(text: str) -> list[dict] | None:
 
     if not body or (len(parts) == 0 and has_trailing_space):
         return [
-            *[_details_completion_item(mode, "global mode") for mode in modes],
-            _details_completion_item("cycle", "cycle global mode"),
-            *[_details_completion_item(section, "section override") for section in sections],
+            *[
+                _details_root_completion_item(mode, "global mode", not has_trailing_space)
+                for mode in modes
+            ],
+            _details_root_completion_item("cycle", "cycle global mode", not has_trailing_space),
+            *[
+                _details_root_completion_item(section, "section override", not has_trailing_space)
+                for section in sections
+            ],
         ]
 
     if len(parts) == 1 and not has_trailing_space:

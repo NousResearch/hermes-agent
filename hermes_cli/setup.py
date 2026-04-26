@@ -2863,17 +2863,6 @@ SETUP_SECTIONS = [
     ("agent", "Agent Settings", setup_agent_settings),
 ]
 
-# The returning-user menu intentionally omits standalone TTS because model setup
-# already includes TTS selection and tools setup covers the rest of the provider
-# configuration. Keep this list in the same order as the visible menu entries.
-RETURNING_USER_MENU_SECTION_KEYS = [
-    "model",
-    "terminal",
-    "gateway",
-    "tools",
-    "agent",
-]
-
 
 def run_setup_wizard(args):
     """Run the interactive setup wizard.
@@ -2897,6 +2886,9 @@ def run_setup_wizard(args):
     if reset_requested:
         save_config(copy.deepcopy(DEFAULT_CONFIG))
         print_success("Configuration reset to defaults.")
+
+    reconfigure_requested = bool(getattr(args, "reconfigure", False))
+    quick_requested = bool(getattr(args, "quick", False))
 
     config = load_config()
     hermes_home = get_hermes_home()
@@ -2989,49 +2981,35 @@ def run_setup_wizard(args):
     migration_ran = False
 
     if is_existing:
-        # ── Returning User Menu ──
-        print()
-        print_header("Welcome Back!")
-        print_success("You already have Hermes configured.")
-        print()
-
-        menu_choices = [
-            "Quick Setup - configure missing items only",
-            "Full Setup - reconfigure everything",
-            "Model & Provider",
-            "Terminal Backend",
-            "Messaging Platforms (Gateway)",
-            "Tools",
-            "Agent Settings",
-            "Exit",
-        ]
-        choice = prompt_choice("What would you like to do?", menu_choices, 0)
-
-        if choice == 0:
-            # Quick setup
+        # Existing install — default is the full-wizard reconfigure flow.
+        # Every prompt shows the current value as its default, so pressing
+        # Enter keeps it.  Opt into `--quick` for the narrow "just fill in
+        # missing items" flow (useful after a partial OpenClaw migration
+        # or when a required API key got cleared).
+        if quick_requested:
             _run_quick_setup(config, hermes_home)
             return
-        elif choice == 1:
-            # Full setup — fall through to run all sections
-            pass
-        elif choice == 7:
-            print_info("Exiting. Run 'hermes setup' again when ready.")
-            return
-        elif 2 <= choice <= 6:
-            # Individual section — map by key, not by position.
-            # SETUP_SECTIONS includes TTS but the returning-user menu skips it,
-            # so positional indexing (choice - 2) would dispatch the wrong section.
-            section_key = RETURNING_USER_MENU_SECTION_KEYS[choice - 2]
-            section = next((s for s in SETUP_SECTIONS if s[0] == section_key), None)
-            if section:
-                _, label, func = section
-                func(config)
-                save_config(config)
-                _print_setup_summary(config, hermes_home)
-            return
+
+        print()
+        print_header("Reconfigure")
+        print_success("You already have Hermes configured.")
+        print_info("Running the full wizard — each prompt shows your current value.")
+        print_info("Press Enter to keep it, or type a new value to change it.")
+        print_info("")
+        print_info("Tip: jump straight to a section with 'hermes setup model|terminal|")
+        print_info("     gateway|tools|agent', or fill only missing items with --quick.")
+        # Fall through to the "Full Setup — run all sections" block below.
+        # --reconfigure is now the default on existing installs; the flag
+        # is preserved for backwards compatibility but is a no-op here.
     else:
         # ── First-Time Setup ──
         print()
+
+        # --reconfigure / --quick on a fresh install are meaningless — fall
+        # through to the normal first-time flow.
+        if reconfigure_requested or quick_requested:
+            print_info("No existing configuration found — running first-time setup.")
+            print()
 
         # Offer OpenClaw migration before configuration begins
         migration_ran = _offer_openclaw_migration(hermes_home)

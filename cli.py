@@ -1284,8 +1284,13 @@ def _usage_line_ansi(line: str) -> str:
     bright_green = "\x1b[1;32m"
     bright_red = "\x1b[1;31m"
 
-    def _replace_money(text: str) -> str:
-        return re.sub(r"(R\$ ?[\d.,]+|\$[\d.,]+)", lambda m: f"{bright_green}{m.group(1)}{reset}", text)
+    def _replace_money(text: str, default_color: str = bright_green) -> str:
+        def _paint(match: re.Match[str]) -> str:
+            money = match.group(1)
+            tone = bright_magenta if money.startswith("R$") else default_color
+            return f"{tone}{money}{reset}"
+
+        return re.sub(r"(R\$ ?[\d.,]+|\$[\d.,]+)", _paint, text)
 
     def _color_progress(text: str) -> str:
         def _paint(match: re.Match[str]) -> str:
@@ -1308,8 +1313,10 @@ def _usage_line_ansi(line: str) -> str:
     value = line[23:77]
     label_clean = label.strip().lower()
     label_color = bright_cyan
+    value_color = bright_green
     if label_clean == "maritaca":
         label_color = bright_magenta
+        value_color = bright_magenta
     elif label_clean == "openrouter":
         label_color = bright_blue
     elif label_clean in {"anthropic", "openai-codex"}:
@@ -1317,7 +1324,9 @@ def _usage_line_ansi(line: str) -> str:
     elif label_clean == "cost":
         label_color = bright_green
 
-    value_colored = _replace_money(_color_progress(value))
+    value_colored = _replace_money(_color_progress(value), default_color=value_color)
+    if label_clean == "maritaca":
+        value_colored = value_colored.replace("Saldo:", f"{bright_magenta}Saldo:{reset}", 1)
     return (
         f"{dim}#{reset} "
         f"{label_color}{label}{reset} "

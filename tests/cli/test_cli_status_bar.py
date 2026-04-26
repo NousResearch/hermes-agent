@@ -2,7 +2,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 from unittest.mock import MagicMock, patch
 
-from cli import HermesCLI
+from cli import HermesCLI, _usage_line_ansi
 
 
 def _make_cli(model: str = "anthropic/claude-sonnet-4-20250514"):
@@ -426,6 +426,23 @@ class TestCLIUsageReport:
         assert captured
         assert any("\x1b[" in line for line in captured)
         assert any("Usage" in line for line in captured)
+
+    def test_usage_line_ansi_uses_dedicated_maritaca_theme(self):
+        line = "# maritaca           | Saldo: R$ 118,96                                   #"
+
+        rendered = _usage_line_ansi(line)
+
+        assert "\x1b[1;35mmaritaca" in rendered
+        assert "\x1b[1;35mSaldo:" in rendered
+        assert "\x1b[1;35mR$ 118,96" in rendered
+
+    def test_usage_line_ansi_keeps_usd_balances_green(self):
+        line = "# openrouter         | Credits balance: $44.48                             #"
+
+        rendered = _usage_line_ansi(line)
+
+        assert "\x1b[1;34mopenrouter" in rendered
+        assert "\x1b[1;32m$44.48" in rendered
 
     def test_show_usage_marks_unknown_pricing(self, capsys):
         cli_obj = _attach_agent(

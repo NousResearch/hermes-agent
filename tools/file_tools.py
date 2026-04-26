@@ -88,8 +88,14 @@ def _resolve_path(filepath: str, task_id: str = "default") -> Path:
 
 def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
     """Return the task's live terminal cwd for bookkeeping when available."""
+    try:
+        from tools.terminal_tool import _resolve_container_task_id
+        container_key = _resolve_container_task_id(task_id)
+    except Exception:
+        container_key = task_id
+
     with _file_ops_lock:
-        cached = _file_ops_cache.get(task_id)
+        cached = _file_ops_cache.get(container_key) or _file_ops_cache.get(task_id)
     if cached is not None:
         live_cwd = getattr(getattr(cached, "env", None), "cwd", None) or getattr(
             cached, "cwd", None
@@ -101,7 +107,7 @@ def _get_live_tracking_cwd(task_id: str = "default") -> str | None:
         from tools.terminal_tool import _active_environments, _env_lock
 
         with _env_lock:
-            env = _active_environments.get(task_id)
+            env = _active_environments.get(container_key) or _active_environments.get(task_id)
             live_cwd = getattr(env, "cwd", None) if env is not None else None
         if live_cwd:
             return live_cwd
@@ -261,14 +267,22 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
 
     Thread-safe: uses the same per-task creation locks as terminal_tool to
     prevent duplicate sandbox creation from concurrent tool calls.
+
+    Note: subagent task_ids are collapsed to "default" via
+    ``_resolve_container_task_id`` so delegate_task children share the
+    parent's container and its cached file_ops. RL/benchmark task_ids with
+    a registered env override keep their isolation.
     """
     from tools.terminal_tool import (
         _active_environments, _env_lock, _create_environment,
         _get_env_config, _last_activity, _start_cleanup_thread,
         _creation_locks,
         _creation_locks_lock,
+        _resolve_container_task_id,
     )
     import time
+
+    task_id = _resolve_container_task_id(task_id)
 
     # Fast path: check cache -- but also verify the underlying environment
     # is still alive (it may have been killed by the cleanup thread).

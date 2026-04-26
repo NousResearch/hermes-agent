@@ -44,6 +44,7 @@ import { homedir } from 'node:os'
 import { dirname, join } from 'node:path'
 
 import type { FrameEvent } from '@hermes/ink'
+import { scrollFastPathStats } from '@hermes/ink'
 import { Profiler, type ProfilerOnRenderCallback, type ReactNode } from 'react'
 
 const ENABLED = /^(?:1|true|yes|on)$/i.test((process.env.HERMES_DEV_PERF ?? '').trim())
@@ -122,8 +123,29 @@ export const logFrameEvent = ENABLED
         return
       }
 
+      // Snapshot the fast-path counters each frame. Cumulative values —
+      // consumers diff pairs to get per-frame deltas. Written verbatim
+      // so we can also see "last*" fields (which decline reason fired,
+      // and what the height math looked like).
+      const fastPath = {
+        captured: scrollFastPathStats.captured,
+        taken: scrollFastPathStats.taken,
+        declined: {
+          heightDeltaMismatch: scrollFastPathStats.declined.heightDeltaMismatch,
+          noHint: scrollFastPathStats.declined.noHint,
+          noPrevScreen: scrollFastPathStats.declined.noPrevScreen,
+          other: scrollFastPathStats.declined.other
+        },
+        lastDeclineReason: scrollFastPathStats.lastDeclineReason,
+        lastHeightDelta: scrollFastPathStats.lastHeightDelta,
+        lastHintDelta: scrollFastPathStats.lastHintDelta,
+        lastPrevHeight: scrollFastPathStats.lastPrevHeight,
+        lastScrollHeight: scrollFastPathStats.lastScrollHeight
+      }
+
       writeRow({
         durationMs: round2(event.durationMs),
+        fastPath,
         flickers: event.flickers.length ? event.flickers : undefined,
         phases: event.phases
           ? {

@@ -101,6 +101,24 @@ declare module '@hermes/ink' {
   export const TextInput: React.ComponentType<any>
   export const stringWidth: (s: string) => number
 
+  export type ScrollFastPathStats = {
+    captured: number
+    taken: number
+    declined: {
+      noPrevScreen: number
+      heightDeltaMismatch: number
+      noHint: number
+      other: number
+    }
+    lastDeclineReason?: string
+    lastHeightDelta?: number
+    lastHintDelta?: number
+    lastScrollHeight?: number
+    lastPrevHeight?: number
+  }
+  export const scrollFastPathStats: ScrollFastPathStats
+  export function resetScrollFastPathStats(): void
+
   export function render(node: React.ReactNode, options?: NodeJS.WriteStream | RenderOptions): Instance
 
   export function useApp(): { readonly exit: (error?: Error) => void }

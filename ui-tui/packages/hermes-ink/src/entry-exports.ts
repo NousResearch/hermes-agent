@@ -21,6 +21,11 @@ export { useTerminalFocus } from './ink/hooks/use-terminal-focus.js'
 export { useTerminalTitle } from './ink/hooks/use-terminal-title.js'
 export { useTerminalViewport } from './ink/hooks/use-terminal-viewport.js'
 export { default as measureElement } from './ink/measure-element.js'
+export {
+  resetScrollFastPathStats,
+  scrollFastPathStats,
+  type ScrollFastPathStats
+} from './ink/render-node-to-output.js'
 export { createRoot, default as render, renderSync } from './ink/root.js'
 export { stringWidth } from './ink/stringWidth.js'
 export { default as TextInput, UncontrolledTextInput } from 'ink-text-input'

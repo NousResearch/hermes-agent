@@ -253,11 +253,18 @@ def _redact_form_body(text: str) -> str:
     return _redact_query_string(text.strip())
 
 
-def redact_sensitive_text(text: str) -> str:
+def redact_sensitive_text(text: str, code_file: bool = False) -> str:
     """Apply all redaction patterns to a block of text.
 
     Safe to call on any string -- non-matching text passes through unchanged.
     Disabled when security.redact_secrets is false in config.yaml.
+
+    Args:
+        text: The text to redact.
+        code_file: When True, skips ENV-assignment and JSON-field regex patterns
+            to avoid false positives on source code content (e.g. MAX_TOKENS=***
+            or "apiKey": "test" in test fixtures). Prefix patterns, auth headers,
+            private keys, DB connstrings, JWTs, and URL secrets are always redacted.
     """
     if text is None:
         return None
@@ -271,17 +278,18 @@ def redact_sensitive_text(text: str) -> str:
     # Known prefixes (sk-, ghp_, etc.)
     text = _PREFIX_RE.sub(lambda m: _mask_token(m.group(1)), text)
 
-    # ENV assignments: OPENAI_API_KEY=sk-abc...
-    def _redact_env(m):
-        name, quote, value = m.group(1), m.group(2), m.group(3)
-        return f"{name}={quote}{_mask_token(value)}{quote}"
-    text = _ENV_ASSIGN_RE.sub(_redact_env, text)
+    # ENV assignments: OPENAI_API_KEY=***  (skip for code files — false positives)
+    if not code_file:
+        def _redact_env(m):
+            name, quote, value = m.group(1), m.group(2), m.group(3)
+            return f"{name}={quote}{_mask_token(value)}{quote}"
+        text = _ENV_ASSIGN_RE.sub(_redact_env, text)
 
-    # JSON fields: "apiKey": "value"
-    def _redact_json(m):
-        key, value = m.group(1), m.group(2)
-        return f'{key}: "{_mask_token(value)}"'
-    text = _JSON_FIELD_RE.sub(_redact_json, text)
+        # JSON fields: "apiKey": "***"  (skip for code files — false positives)
+        def _redact_json(m):
+            key, value = m.group(1), m.group(2)
+            return f'{key}: "{_mask_token(value)}"'
+        text = _JSON_FIELD_RE.sub(_redact_json, text)
 
     # Authorization headers
     text = _AUTH_HEADER_RE.sub(

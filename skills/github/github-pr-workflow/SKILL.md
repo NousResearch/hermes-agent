@@ -1,7 +1,7 @@
 ---
 name: github-pr-workflow
 description: Full pull request lifecycle — create branches, commit changes, open PRs, monitor CI status, auto-fix failures, and merge. Works with gh CLI or falls back to git + GitHub REST API via curl.
-version: 1.1.0
+version: 1.1.2
 author: Hermes Agent
 license: MIT
 metadata:
@@ -102,6 +102,40 @@ Types: `feat`, `fix`, `refactor`, `docs`, `test`, `ci`, `chore`, `perf`
 
 ## 3. Pushing and Creating a PR
 
+### Before reusing an existing branch, verify the old PR state
+
+If you are resuming work on a branch that already exists locally or remotely, do **not** assume its PR is still open.
+
+Mandatory rule:
+- Never push follow-up commits to the head branch of a **merged** PR.
+- A merged PR closes that review scope even if the branch still exists remotely and even if the old branch tip still contains unmerged-looking commits (for example after squash merge).
+- If the prior PR for that branch is `MERGED` or `CLOSED`, create a **new branch from updated `origin/main`** before making or pushing additional commits.
+- If you already made local commits on top of a merged-PR branch, move them onto a fresh branch (for example by `cherry-pick`) and open a new PR.
+
+Check the branch state before every push on a reused branch:
+
+**With gh:**
+
+```bash
+BRANCH=$(git branch --show-current)
+gh pr list --head "$BRANCH" --state all \
+  --json number,title,url,state,mergedAt,closedAt,headRefName,baseRefName
+```
+
+Interpretation:
+- matching `OPEN` PR → continue on that branch/PR if it is the same workstream
+- only `MERGED` / `CLOSED` PRs for that branch → do **not** push there; branch off fresh `origin/main`
+- no PR found → verify the branch is genuinely new work, not stale post-merge continuation
+
+**With git + curl:**
+
+```bash
+BRANCH=$(git branch --show-current)
+curl -s \
+  -H "Authorization: token $GITHUB_TOKEN" \
+  "https://api.github.com/repos/$OWNER/$REPO/pulls?state=all&head=$OWNER:$BRANCH"
+```
+
 ### Push the Branch (same either way)
 
 ```bash
@@ -109,6 +143,20 @@ git push -u origin HEAD
 ```
 
 ### Create the PR
+
+#### First: avoid duplicate PRs and merged-branch reuse
+
+Before creating a PR, perform all checks below.
+
+1. Same-branch state check:
+- Check whether the current head branch already has an `OPEN`, `MERGED`, or `CLOSED` PR.
+- If it already has an `OPEN` PR, reuse that PR and do not create another.
+- If it already has a `MERGED` or `CLOSED` PR, do **not** continue on that branch; create a fresh branch from `origin/main` for the follow-up change.
+
+2. Same-scope duplicate check:
+- List the repo's open PRs and compare their scope against your current change.
+- If an existing open PR already covers the same bugfix/feature, do not open a second PR on a new branch just because the branch name differs.
+- Prefer updating the existing PR if it is the same workstream, or explicitly close the superseded PR before opening a replacement.
 
 **With gh:**
 

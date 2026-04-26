@@ -3426,6 +3426,10 @@ class GatewayRunner:
         # The update process (detached) wrote .update_prompt.json; the watcher
         # forwarded it to the user; now the user's reply goes back via
         # .update_response so the update process can continue.
+        #
+        # IMPORTANT: recognized slash commands must bypass this interception.
+        # Otherwise control/session commands like /new or /help get silently
+        # consumed as update answers instead of being dispatched normally.
         _quick_key = self._session_key_for_source(source)
         _update_prompts = getattr(self, "_update_prompt_pending", {})
         if _update_prompts.get(_quick_key):
@@ -3437,7 +3441,22 @@ class GatewayRunner:
             elif cmd in ("deny", "no"):
                 response_text = "n"
             else:
-                response_text = raw
+                _recognized_cmd = None
+                if cmd:
+                    try:
+                        from hermes_cli.commands import resolve_command as _resolve_update_cmd
+                    except Exception:
+                        _resolve_update_cmd = None
+                    if _resolve_update_cmd is not None:
+                        try:
+                            _cmd_def = _resolve_update_cmd(cmd)
+                            _recognized_cmd = _cmd_def.name if _cmd_def else None
+                        except Exception:
+                            _recognized_cmd = None
+                if _recognized_cmd:
+                    response_text = ""
+                else:
+                    response_text = raw
             if response_text:
                 response_path = _hermes_home / ".update_response"
                 try:
@@ -8808,13 +8827,17 @@ class GatewayRunner:
         return True
 
     def _clear_session_boundary_security_state(self, session_key: str) -> None:
-        """Clear approval state that must not survive a real conversation switch."""
+        """Clear per-session control state that must not survive a boundary switch."""
         if not session_key:
             return
 
         pending_approvals = getattr(self, "_pending_approvals", None)
         if isinstance(pending_approvals, dict):
             pending_approvals.pop(session_key, None)
+
+        update_prompt_pending = getattr(self, "_update_prompt_pending", None)
+        if isinstance(update_prompt_pending, dict):
+            update_prompt_pending.pop(session_key, None)
 
         try:
             from tools.approval import clear_session as _clear_approval_session

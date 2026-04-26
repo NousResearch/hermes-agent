@@ -117,6 +117,26 @@ class TestCodexBuildKwargs:
         )
         assert "max_output_tokens" not in kw
 
+    def test_codex_backend_strips_sampling_overrides(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.4", messages=messages, tools=[],
+            max_tokens=4096,
+            request_overrides={"temperature": 0.3, "max_output_tokens": 1024},
+            is_codex_backend=True,
+        )
+        assert "temperature" not in kw
+        assert "max_output_tokens" not in kw
+
+    def test_non_codex_responses_backend_keeps_sampling_overrides(self, transport):
+        messages = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-5.4", messages=messages, tools=[],
+            request_overrides={"temperature": 0.3},
+            is_codex_backend=False,
+        )
+        assert kw["temperature"] == 0.3
+
     def test_xai_headers(self, transport):
         messages = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

@@ -22,6 +22,7 @@ from agent.auxiliary_client import (
     _normalize_aux_provider,
     _try_payment_fallback,
     _resolve_auto,
+    _build_call_kwargs,
 )
 
 
@@ -486,6 +487,36 @@ class TestExplicitProviderRouting:
             "OPENROUTER_API_KEY not set" in record.message
             for record in caplog.records
         )
+
+
+class TestBuildCallKwargs:
+    def test_chatgpt_codex_backend_omits_temperature_and_token_cap(self):
+        kwargs = _build_call_kwargs(
+            "openai-codex",
+            "gpt-5.5",
+            [{"role": "user", "content": "hi"}],
+            temperature=0.3,
+            max_tokens=512,
+            base_url="https://chatgpt.com/backend-api/codex/",
+        )
+
+        assert "temperature" not in kwargs
+        assert "max_tokens" not in kwargs
+        assert "max_completion_tokens" not in kwargs
+
+    def test_non_codex_backend_keeps_temperature_and_token_cap(self):
+        kwargs = _build_call_kwargs(
+            "openrouter",
+            "google/gemini-3-flash-preview",
+            [{"role": "user", "content": "hi"}],
+            temperature=0.3,
+            max_tokens=512,
+            base_url="https://openrouter.ai/api/v1",
+        )
+
+        assert kwargs["temperature"] == 0.3
+        assert kwargs["max_tokens"] == 512
+
 
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""

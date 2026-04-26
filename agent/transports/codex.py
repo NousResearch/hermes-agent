@@ -121,6 +121,12 @@ class ResponsesApiTransport(ProviderTransport):
             kwargs.update(request_overrides)
 
         if is_codex_backend:
+            # ChatGPT's Codex backend rejects client-side sampling and output
+            # caps.  Keep this after request_overrides so config-level knobs
+            # cannot reintroduce unsupported parameters.
+            kwargs.pop("temperature", None)
+            kwargs.pop("max_output_tokens", None)
+
             prompt_cache_key = kwargs.get("prompt_cache_key")
             cache_scope_id = str(prompt_cache_key or session_id or "").strip()
             if cache_scope_id:

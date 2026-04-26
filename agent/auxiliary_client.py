@@ -2749,6 +2749,23 @@ def _is_anthropic_compat_endpoint(provider: str, base_url: str) -> bool:
     return "/anthropic" in url_lower
 
 
+def _is_chatgpt_codex_backend(provider: str, base_url: Optional[str] = None) -> bool:
+    """Return True for ChatGPT's Codex backend.
+
+    ``https://chatgpt.com/backend-api/codex`` speaks a restricted Responses
+    API surface.  It rejects client-side sampling and output-token controls
+    such as ``temperature`` and ``max_output_tokens``.  Auxiliary callers often
+    set those knobs by default, so sanitize them before the request reaches the
+    OpenAI SDK or a fallback path.
+    """
+    normalized_provider = _normalize_aux_provider(provider)
+    url_lower = (base_url or "").strip().lower().rstrip("/")
+    return normalized_provider == "openai-codex" or (
+        base_url_host_matches(url_lower, "chatgpt.com")
+        and "/backend-api/codex" in url_lower
+    )
+
+
 def _convert_openai_images_to_anthropic(messages: list) -> list:
     """Convert OpenAI ``image_url`` content blocks to Anthropic ``image`` blocks.
 
@@ -2815,8 +2832,12 @@ def _build_call_kwargs(
         "timeout": timeout,
     }
 
+    codex_backend = _is_chatgpt_codex_backend(provider, base_url)
+
     fixed_temperature = _fixed_temperature_for_model(model, base_url)
-    if fixed_temperature is OMIT_TEMPERATURE:
+    if codex_backend:
+        temperature = None
+    elif fixed_temperature is OMIT_TEMPERATURE:
         temperature = None  # strip — let server choose
     elif fixed_temperature is not None:
         temperature = fixed_temperature
@@ -2833,7 +2854,7 @@ def _build_call_kwargs(
     if temperature is not None:
         kwargs["temperature"] = temperature
 
-    if max_tokens is not None:
+    if max_tokens is not None and not codex_backend:
         # Codex adapter handles max_tokens internally; OpenRouter/Nous use max_tokens.
         # Direct OpenAI api.openai.com with newer models needs max_completion_tokens.
         if provider == "custom":

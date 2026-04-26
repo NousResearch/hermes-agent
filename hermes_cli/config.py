@@ -833,6 +833,11 @@ DEFAULT_CONFIG = {
     # Empty string means use server-local time.
     "timezone": "",
 
+    # Feishu / Lark platform settings (gateway mode)
+    "feishu": {
+        "channel_prompts": {},         # Per-chat ephemeral system prompts
+    },
+
     # Discord platform settings (gateway mode)
     "discord": {
         "require_mention": True,       # Require @mention to respond in server channels

@@ -215,6 +215,36 @@ FEISHU_BOT_NAME=MyBot
 
 If none of these are set, the adapter will attempt to auto-discover the bot name via the Application Info API on startup. For this to work, grant the `admin:app.info:readonly` or `application:application:self_manage` permission scope.
 
+## Per-Chat Agent Descriptions
+
+You can inject different ephemeral system prompts for different Feishu / Lark chats by using `feishu.channel_prompts` in `~/.hermes/config.yaml`.
+
+These prompts:
+
+- apply on every turn in the matching chat
+- are keyed by Feishu `chat_id` (for example `oc_xxx`)
+- are **not** persisted to transcript history
+
+```yaml
+feishu:
+  channel_prompts:
+    oc_release_chat: |
+      You are a release-management assistant.
+      Focus on incidents, rollbacks, deploy health, and concise next steps.
+
+    oc_research_chat: |
+      You are a research assistant.
+      Compare options, surface tradeoffs, and cite sources when possible.
+```
+
+Behavior:
+
+- message in `oc_release_chat` → release-management prompt applied
+- message in `oc_research_chat` → research prompt applied
+- message in any other chat → no per-chat prompt applied
+
+Use this when you want one Hermes gateway instance to behave like different "agents" in different Feishu groups.
+
 ## Interactive Card Actions
 
 When users click buttons or interact with interactive cards sent by the bot, the adapter routes these as synthetic `/card` command events:

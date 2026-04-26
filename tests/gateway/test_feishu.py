@@ -76,6 +76,50 @@ class TestConfigEnvOverrides(unittest.TestCase):
 
         self.assertIn(Platform.FEISHU, config.get_connected_platforms())
 
+    @patch.dict(os.environ, {
+        "FEISHU_APP_ID": "cli_xxx",
+        "FEISHU_APP_SECRET": "secret_xxx",
+        "FEISHU_REQUIRE_MENTION": "false",
+        "FEISHU_FREE_RESPONSE_CHATS": "oc_alpha, oc_beta",
+    }, clear=False)
+    def test_feishu_group_gating_loaded_from_env(self):
+        from gateway.config import GatewayConfig, Platform, _apply_env_overrides
+
+        config = GatewayConfig()
+        _apply_env_overrides(config)
+
+        extra = config.platforms[Platform.FEISHU].extra
+        self.assertFalse(extra["require_mention"])
+        self.assertEqual(extra["free_response_chats"], ["oc_alpha", "oc_beta"])
+
+
+def test_config_bridges_feishu_free_response_chats(monkeypatch, tmp_path):
+    from gateway.config import Platform, load_gateway_config
+
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        "feishu:\n"
+        "  require_mention: false\n"
+        "  free_response_chats:\n"
+        "    - oc_alpha\n"
+        "    - oc_beta\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    monkeypatch.delenv("FEISHU_REQUIRE_MENTION", raising=False)
+    monkeypatch.delenv("FEISHU_FREE_RESPONSE_CHATS", raising=False)
+
+    config = load_gateway_config()
+
+    assert config is not None
+    feishu_extra = config.platforms[Platform.FEISHU].extra
+    assert feishu_extra.get("require_mention") is False
+    assert feishu_extra.get("free_response_chats") == ["oc_alpha", "oc_beta"]
+    assert os.environ["FEISHU_REQUIRE_MENTION"] == "false"
+    assert os.environ["FEISHU_FREE_RESPONSE_CHATS"] == "oc_alpha,oc_beta"
+
 
 class TestFeishuMessageNormalization(unittest.TestCase):
     def test_normalize_merge_forward_preserves_summary_lines(self):
@@ -3998,6 +4042,50 @@ class TestFeishuPostMentionsBot(unittest.TestCase):
         self.assertFalse(adapter._post_mentions_bot([]))
 
 
+class TestFeishuGroupGating(unittest.TestCase):
+    def _build_adapter(self, *, require_mention=True, free_response_chats=None):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter._admins = set()
+        adapter._group_rules = {}
+        adapter._default_group_policy = "open"
+        adapter._group_policy = "open"
+        adapter._allowed_group_users = set()
+        adapter._require_mention = require_mention
+        adapter._free_response_chats = set(free_response_chats or [])
+        adapter._bot_open_id = "ou_bot"
+        adapter._bot_user_id = ""
+        adapter._bot_name = "Hermes"
+        return adapter
+
+    def _build_message(self, text="plain hello", mentions=None):
+        return SimpleNamespace(
+            content=json.dumps({"text": text}),
+            mentions=mentions,
+            message_type="text",
+        )
+
+    def test_requires_mention_by_default(self):
+        adapter = self._build_adapter(require_mention=True)
+        message = self._build_message()
+
+        self.assertFalse(adapter._should_accept_group_message(message, sender_id=None, chat_id="oc_plain"))
+
+    def test_require_mention_false_allows_plain_group_message(self):
+        adapter = self._build_adapter(require_mention=False)
+        message = self._build_message()
+
+        self.assertTrue(adapter._should_accept_group_message(message, sender_id=None, chat_id="oc_plain"))
+
+    def test_free_response_chat_bypasses_mention_requirement(self):
+        adapter = self._build_adapter(require_mention=True, free_response_chats={"oc_open"})
+        message = self._build_message()
+
+        self.assertTrue(adapter._should_accept_group_message(message, sender_id=None, chat_id="oc_open"))
+        self.assertFalse(adapter._should_accept_group_message(message, sender_id=None, chat_id="oc_other"))
+
+
 class TestFeishuExtractMessageContent(unittest.TestCase):
     def _build_adapter(self):
         from gateway.platforms.feishu import FeishuAdapter
@@ -4050,6 +4138,7 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         from gateway.platforms.feishu import FeishuAdapter
 
         adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter.config = SimpleNamespace(extra={})
         adapter._bot_open_id = "ou_bot"
         adapter._bot_user_id = ""
         adapter._bot_name = "Hermes"
@@ -4198,6 +4287,33 @@ class TestFeishuProcessInboundMessage(unittest.TestCase):
         event = adapter._dispatch_inbound_event.call_args.args[0]
         self.assertEqual(event.text, "stop pinging @Hermes please")
 
+    def test_process_inbound_message_applies_channel_prompt(self):
+        adapter = self._build_adapter()
+        adapter.config.extra["channel_prompts"] = {"oc_chat": "You are the release bot."}
+        message = SimpleNamespace(
+            content=json.dumps({"text": "plain hello"}),
+            message_type="text",
+            message_id="m_prompt",
+            mentions=None,
+            chat_id="oc_chat",
+            parent_id=None,
+            upper_message_id=None,
+            thread_id=None,
+        )
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=message,
+                message=message,
+                sender_id=None,
+                chat_type="group",
+                message_id="m_prompt",
+            )
+        )
+
+        event = adapter._dispatch_inbound_event.call_args.args[0]
+        self.assertEqual(event.channel_prompt, "You are the release bot.")
+
     def test_pure_self_mention_message_is_ignored(self):
         """A message containing only '@Bot' (no body, no media) must not dispatch.
 
@@ -4340,6 +4456,7 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
         from gateway.platforms.feishu import FeishuAdapter
 
         adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter.config = SimpleNamespace(extra={})
         adapter._bot_open_id = "ou_bot"
         adapter._bot_user_id = ""
         adapter._bot_name = "Hermes"
@@ -4469,6 +4586,46 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
         event = adapter._dispatch_inbound_event.call_args.args[0]
         self.assertIn("[Mentioned: Alice (open_id=ou_alice)]", event.text)
         self.assertIn("@Alice lookup this doc", event.text)
+
+
+class TestFeishuSyntheticChannelPrompt(unittest.TestCase):
+    def _build_adapter(self):
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter.__new__(FeishuAdapter)
+        adapter.config = SimpleNamespace(extra={"channel_prompts": {"oc_chat": "You are the ops bot."}})
+        adapter._card_action_tokens = {}
+        adapter._bot_open_id = "ou_bot"
+        adapter._bot_user_id = ""
+        adapter._bot_name = "Hermes"
+        adapter._download_feishu_message_resources = AsyncMock(return_value=([], []))
+        adapter._fetch_message_text = AsyncMock(return_value=None)
+        adapter._resolve_sender_profile = AsyncMock(
+            return_value={"user_id": "u1", "user_name": "Alice", "user_id_alt": None}
+        )
+        adapter.get_chat_info = AsyncMock(return_value={"name": "Ops Chat"})
+        adapter._resolve_source_chat_type = Mock(return_value="group")
+        adapter.build_source = Mock(return_value=SimpleNamespace(thread_id=None))
+        adapter._handle_message_with_guards = AsyncMock()
+        adapter._dispatch_inbound_event = AsyncMock()
+        return adapter
+
+    def test_card_action_event_applies_channel_prompt(self):
+        adapter = self._build_adapter()
+        data = SimpleNamespace(
+            event=SimpleNamespace(
+                token="tok_1",
+                context=SimpleNamespace(open_chat_id="oc_chat"),
+                operator=SimpleNamespace(open_id="ou_operator"),
+                action=SimpleNamespace(tag="button", value={"action": "deploy"}),
+            )
+        )
+
+        asyncio.run(adapter._handle_card_action_event(data))
+
+        event = adapter._handle_message_with_guards.call_args.args[0]
+        self.assertEqual(event.channel_prompt, "You are the ops bot.")
+        self.assertEqual(event.message_type.name, "COMMAND")
 
     def test_scenario_post_bot_plus_alice_filters_self_from_hint(self):
         """Post-type message @-ing both the bot and Alice: leading bot is

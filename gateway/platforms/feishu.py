@@ -132,6 +132,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     ProcessingOutcome,
+    resolve_channel_prompt,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
     cache_document_from_bytes,
@@ -364,6 +365,8 @@ class FeishuAdapterSettings:
     verification_token: str
     group_policy: str
     allowed_group_users: frozenset[str]
+    require_mention: bool
+    free_response_chats: frozenset[str]
     # Bot's own open_id (app-scoped) — returned by /bot/v3/info.  Used only for
     # @mention matching: Feishu puts this value in mentions[].id.open_id when
     # a user @-mentions the bot in a group chat.
@@ -1390,6 +1393,33 @@ class FeishuAdapter(BasePlatformAdapter):
         # Default group policy (for groups not in group_rules)
         default_group_policy = str(extra.get("default_group_policy", "")).strip().lower()
 
+        require_mention_config = extra.get("require_mention")
+        if require_mention_config is None:
+            require_mention = os.getenv("FEISHU_REQUIRE_MENTION", "true").strip().lower() in (
+                "true",
+                "1",
+                "yes",
+                "on",
+            )
+        elif isinstance(require_mention_config, str):
+            require_mention = require_mention_config.strip().lower() in ("true", "1", "yes", "on")
+        else:
+            require_mention = bool(require_mention_config)
+
+        raw_free_response_chats = extra.get("free_response_chats")
+        if raw_free_response_chats is None:
+            raw_free_response_chats = extra.get("free_response_channels")
+        if raw_free_response_chats is None:
+            raw_free_response_chats = os.getenv("FEISHU_FREE_RESPONSE_CHATS", "")
+        if isinstance(raw_free_response_chats, str):
+            free_response_chats = frozenset(
+                item.strip() for item in raw_free_response_chats.split(",") if item.strip()
+            )
+        elif isinstance(raw_free_response_chats, (list, tuple, set, frozenset)):
+            free_response_chats = frozenset(str(item).strip() for item in raw_free_response_chats if str(item).strip())
+        else:
+            free_response_chats = frozenset()
+
         return FeishuAdapterSettings(
             app_id=str(extra.get("app_id") or os.getenv("FEISHU_APP_ID", "")).strip(),
             app_secret=str(extra.get("app_secret") or os.getenv("FEISHU_APP_SECRET", "")).strip(),
@@ -1405,6 +1435,8 @@ class FeishuAdapter(BasePlatformAdapter):
                 for item in os.getenv("FEISHU_ALLOWED_USERS", "").split(",")
                 if item.strip()
             ),
+            require_mention=require_mention,
+            free_response_chats=free_response_chats,
             bot_open_id=os.getenv("FEISHU_BOT_OPEN_ID", "").strip(),
             bot_user_id=os.getenv("FEISHU_BOT_USER_ID", "").strip(),
             bot_name=os.getenv("FEISHU_BOT_NAME", "").strip(),
@@ -1457,6 +1489,8 @@ class FeishuAdapter(BasePlatformAdapter):
         self._verification_token = settings.verification_token
         self._group_policy = settings.group_policy
         self._allowed_group_users = set(settings.allowed_group_users)
+        self._require_mention = settings.require_mention
+        self._free_response_chats = set(settings.free_response_chats)
         self._admins = set(settings.admins)
         self._default_group_policy = settings.default_group_policy or settings.group_policy
         self._group_rules = settings.group_rules
@@ -2409,6 +2443,8 @@ class FeishuAdapter(BasePlatformAdapter):
 
         sender_profile = await self._resolve_sender_profile(user_id_obj)
         chat_info = await self.get_chat_info(chat_id)
+        config_extra = getattr(getattr(self, "config", None), "extra", {}) or {}
+        channel_prompt = resolve_channel_prompt(config_extra, chat_id, None)
         source = self.build_source(
             chat_id=chat_id,
             chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
@@ -2424,6 +2460,7 @@ class FeishuAdapter(BasePlatformAdapter):
             source=source,
             raw_message=data,
             message_id=message_id,
+            channel_prompt=channel_prompt,
             timestamp=datetime.now(),
         )
         logger.info("[Feishu] Routing reaction %s:%s on bot message %s as synthetic event", action, emoji_type, message_id)
@@ -2471,6 +2508,8 @@ class FeishuAdapter(BasePlatformAdapter):
         sender_id = SimpleNamespace(open_id=open_id, user_id=None, union_id=None)
         sender_profile = await self._resolve_sender_profile(sender_id)
         chat_info = await self.get_chat_info(chat_id)
+        config_extra = getattr(getattr(self, "config", None), "extra", {}) or {}
+        channel_prompt = resolve_channel_prompt(config_extra, chat_id, None)
         source = self.build_source(
             chat_id=chat_id,
             chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
@@ -2486,6 +2525,7 @@ class FeishuAdapter(BasePlatformAdapter):
             source=source,
             raw_message=data,
             message_id=token or str(uuid.uuid4()),
+            channel_prompt=channel_prompt,
             timestamp=datetime.now(),
         )
         logger.info("[Feishu] Routing card action %r from %s in %s as synthetic command", action_tag, open_id, chat_id)
@@ -2717,6 +2757,8 @@ class FeishuAdapter(BasePlatformAdapter):
         chat_id = getattr(message, "chat_id", "") or ""
         chat_info = await self.get_chat_info(chat_id)
         sender_profile = await self._resolve_sender_profile(sender_id)
+        config_extra = getattr(getattr(self, "config", None), "extra", {}) or {}
+        channel_prompt = resolve_channel_prompt(config_extra, chat_id, None)
         source = self.build_source(
             chat_id=chat_id,
             chat_name=chat_info.get("name") or chat_id or "Feishu Chat",
@@ -2736,6 +2778,7 @@ class FeishuAdapter(BasePlatformAdapter):
             media_types=media_types,
             reply_to_message_id=reply_to_message_id,
             reply_to_text=reply_to_text,
+            channel_prompt=channel_prompt,
             timestamp=datetime.now(),
         )
         await self._dispatch_inbound_event(normalized)
@@ -3625,10 +3668,21 @@ class FeishuAdapter(BasePlatformAdapter):
 
         return bool(sender_ids and (sender_ids & self._allowed_group_users))
 
+    def _feishu_require_mention(self) -> bool:
+        return bool(getattr(self, "_require_mention", True))
+
+    def _feishu_free_response_chats(self) -> set[str]:
+        raw = getattr(self, "_free_response_chats", set())
+        return {str(chat_id).strip() for chat_id in raw if str(chat_id).strip()}
+
     def _should_accept_group_message(self, message: Any, sender_id: Any, chat_id: str = "") -> bool:
-        """Require an explicit @mention before group messages enter the agent."""
+        """Apply Feishu group trigger rules after the group policy gate."""
         if not self._allow_group_message(sender_id, chat_id):
             return False
+        if chat_id and chat_id in self._feishu_free_response_chats():
+            return True
+        if not self._feishu_require_mention():
+            return True
         # @_all is Feishu's @everyone placeholder — always route to the bot.
         raw_content = getattr(message, "content", "") or ""
         if "@_all" in raw_content:

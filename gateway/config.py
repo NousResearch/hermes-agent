@@ -574,6 +574,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["reply_in_thread"] = platform_cfg["reply_in_thread"]
                 if "require_mention" in platform_cfg:
                     bridged["require_mention"] = platform_cfg["require_mention"]
+                if "free_response_chats" in platform_cfg:
+                    bridged["free_response_chats"] = platform_cfg["free_response_chats"]
                 if "free_response_channels" in platform_cfg:
                     bridged["free_response_channels"] = platform_cfg["free_response_channels"]
                 if "mention_patterns" in platform_cfg:
@@ -669,6 +671,17 @@ def load_gateway_config() -> GatewayConfig:
                     ):
                         if yaml_key in allow_mentions_cfg and not os.getenv(env_key):
                             os.environ[env_key] = str(allow_mentions_cfg[yaml_key]).lower()
+
+            # Feishu settings → env vars (env vars take precedence)
+            feishu_cfg = yaml_cfg.get("feishu", {})
+            if isinstance(feishu_cfg, dict):
+                if "require_mention" in feishu_cfg and not os.getenv("FEISHU_REQUIRE_MENTION"):
+                    os.environ["FEISHU_REQUIRE_MENTION"] = str(feishu_cfg["require_mention"]).lower()
+                frc = feishu_cfg.get("free_response_chats")
+                if frc is not None and not os.getenv("FEISHU_FREE_RESPONSE_CHATS"):
+                    if isinstance(frc, list):
+                        frc = ",".join(str(v) for v in frc)
+                    os.environ["FEISHU_FREE_RESPONSE_CHATS"] = str(frc)
 
             # Telegram settings → env vars (env vars take precedence)
             telegram_cfg = yaml_cfg.get("telegram", {})
@@ -1126,6 +1139,18 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             "domain": os.getenv("FEISHU_DOMAIN", "feishu"),
             "connection_mode": os.getenv("FEISHU_CONNECTION_MODE", "websocket"),
         })
+        feishu_require_mention = os.getenv("FEISHU_REQUIRE_MENTION")
+        if feishu_require_mention is not None:
+            config.platforms[Platform.FEISHU].extra["require_mention"] = (
+                feishu_require_mention.strip().lower() in {"true", "1", "yes", "on"}
+            )
+        feishu_free_response_chats = os.getenv("FEISHU_FREE_RESPONSE_CHATS")
+        if feishu_free_response_chats is not None:
+            config.platforms[Platform.FEISHU].extra["free_response_chats"] = [
+                item.strip()
+                for item in feishu_free_response_chats.split(",")
+                if item.strip()
+            ]
         feishu_encrypt_key = os.getenv("FEISHU_ENCRYPT_KEY", "")
         if feishu_encrypt_key:
             config.platforms[Platform.FEISHU].extra["encrypt_key"] = feishu_encrypt_key

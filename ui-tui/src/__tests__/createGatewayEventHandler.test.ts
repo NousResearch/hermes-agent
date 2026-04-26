@@ -80,6 +80,18 @@ describe('createGatewayEventHandler', () => {
     expect(getTurnState().todos).toEqual(todos)
   })
 
+  it('archives completed todos into transcript flow at end of turn', () => {
+    const appended: Msg[] = []
+    const todos = [{ content: 'Serve tiny latte', id: 'serve', status: 'completed' }]
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({ payload: { name: 'todo', todos, tool_id: 'todo-1' }, type: 'tool.start' } as any)
+    onEvent({ payload: { text: 'done' }, type: 'message.complete' } as any)
+
+    expect(getTurnState().todos).toEqual([])
+    expect(appended).toContainEqual({ kind: 'trail', role: 'system', text: '', todos })
+  })
+
   it('keeps the current todo list visible when the next message starts', () => {
     const appended: Msg[] = []
     const todos = [{ content: 'Boil water', id: 'boil', status: 'in_progress' }]

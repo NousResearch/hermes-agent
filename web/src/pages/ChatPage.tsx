@@ -290,23 +290,31 @@ export default function ChatPage() {
     term.attachCustomKeyEventHandler((ev) => {
       if (ev.type !== "keydown") return true;
 
-      // Copy: Cmd+C on macOS, Ctrl+C on other platforms (when selection exists)
-      // Paste: Cmd+Shift+V on macOS, Ctrl+Shift+V on others
-      const copyModifier = isMac ? ev.metaKey : ev.ctrlKey;
+      // Copy: Cmd+C on macOS, Ctrl+Shift+C on other platforms. Bare Ctrl+C
+      // is reserved for SIGINT to the TUI child — matches xterm / gnome-terminal /
+      // konsole / Windows Terminal. Ctrl+Shift+C only copies if a selection exists;
+      // without a selection it passes through to the TUI so agents can still
+      // react to the keypress.
+      // Paste: Cmd+Shift+V on macOS, Ctrl+Shift+V on others.
+      const copyModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
       const pasteModifier = isMac ? ev.metaKey : ev.ctrlKey && ev.shiftKey;
 
       if (copyModifier && ev.key.toLowerCase() === "c") {
         const sel = term.getSelection();
         if (sel) {
+          // Direct writeText inside the keydown handler preserves the user
+          // gesture — async round-trips through OSC 52 can lose activation
+          // and fail with "Document is not focused".
           navigator.clipboard.writeText(sel).catch((err) => {
             console.warn("[dashboard clipboard] direct copy failed:", err.message);
           });
-          // Send Escape to the TUI to clear its selection overlay
-          term.write("\x1b");
+          // Clear xterm.js's highlight after copy (matches gnome-terminal).
+          term.clearSelection();
           ev.preventDefault();
           return false;
         }
-        // No selection → let Ctrl+C pass through as interrupt
+        // No selection → fall through so the TUI receives Ctrl+Shift+C
+        // (or the bare ev if the user used a different modifier).
       }
 
       if (pasteModifier && ev.key.toLowerCase() === "v") {

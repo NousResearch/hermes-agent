@@ -3185,11 +3185,12 @@ def validate_requested_model(
             if suggestions:
                 suggestion_text = "\n  Similar models: " + ", ".join(f"`{s}`" for s in suggestions)
             return {
-                "accepted": False,
-                "persist": False,
+                "accepted": True,
+                "persist": True,
                 "recognized": False,
                 "message": (
-                    f"Model `{requested}` was not found in the OpenAI Codex model listing."
+                    f"Note: `{requested}` was not found in the OpenAI Codex model listing. "
+                    "It may still work if your ChatGPT/Codex account has access to a newer or hidden model ID."
                     f"{suggestion_text}"
                 ),
             }

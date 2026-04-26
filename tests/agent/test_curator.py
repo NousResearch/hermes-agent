@@ -359,5 +359,37 @@ def test_curator_review_prompt_has_invariants():
     assert "delete" in CURATOR_REVIEW_PROMPT.lower()
     assert "pinned" in CURATOR_REVIEW_PROMPT.lower()
     # Must mention the decisions the reviewer can make
-    for verb in ("keep", "patch", "archive", "pin"):
+    for verb in ("keep", "patch", "archive", "consolidate"):
         assert verb in CURATOR_REVIEW_PROMPT.lower()
+
+
+def test_curator_review_prompt_points_at_existing_tools_only():
+    """The review prompt must rely on existing tools (skill_manage + terminal)
+    and must NOT reference bespoke curator tools that are not registered
+    model tools."""
+    from agent.curator import CURATOR_REVIEW_PROMPT
+    assert "skill_manage" in CURATOR_REVIEW_PROMPT
+    assert "skills_list" in CURATOR_REVIEW_PROMPT
+    assert "skill_view" in CURATOR_REVIEW_PROMPT
+    assert "terminal" in CURATOR_REVIEW_PROMPT.lower()
+    # These would be nice but aren't actually registered as tools — the
+    # curator uses skill_manage + terminal mv instead.
+    assert "archive_skill" not in CURATOR_REVIEW_PROMPT
+    assert "pin_skill" not in CURATOR_REVIEW_PROMPT
+
+
+def test_curator_does_not_instruct_model_to_pin():
+    """Pinning is a user opt-out, not a model decision. The prompt should
+    not tell the reviewer to pin skills autonomously."""
+    from agent.curator import CURATOR_REVIEW_PROMPT
+    # "pinned" appears in the invariant ("skip pinned skills"), but "pin"
+    # as a decision verb should not.
+    lines = CURATOR_REVIEW_PROMPT.split("\n")
+    decision_block = "\n".join(
+        l for l in lines
+        if l.strip().startswith(("keep", "patch", "archive", "consolidate", "pin "))
+    )
+    # No standalone "pin" action line
+    assert not any(l.strip().startswith("pin ") for l in lines), (
+        f"Found a pin action line in:\n{decision_block}"
+    )

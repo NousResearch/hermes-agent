@@ -1,3 +1,4 @@
+/* eslint-disable react-refresh/only-export-components */
 import {
   createContext,
   useCallback,
@@ -292,6 +293,9 @@ function applyTheme(theme: DashboardTheme) {
   for (const [k, v] of Object.entries(vars)) {
     root.style.setProperty(k, v);
   }
+
+  root.classList.toggle("dark", theme.name !== "mission-light");
+  root.dataset.colorScheme = theme.name === "mission-light" ? "light" : "dark";
 
   injectFontStylesheet(theme.typography.fontUrl);
   applyCustomCSS(theme.customCSS);

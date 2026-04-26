@@ -1,6 +1,5 @@
 import { useCallback, useEffect, useState } from "react";
 import { Clock, Pause, Play, Plus, Trash2, Zap } from "lucide-react";
-import { H2 } from "@nous-research/ui";
 import { api } from "@/lib/api";
 import type { CronJob } from "@/lib/api";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
@@ -250,13 +249,10 @@ export default function CronPage() {
 
       {/* Jobs list */}
       <div className="flex flex-col gap-3">
-        <H2
-          variant="sm"
-          className="flex items-center gap-2 text-muted-foreground"
-        >
+        <h2 className="flex items-center gap-2 text-base font-semibold tracking-tight text-foreground">
           <Clock className="h-4 w-4" />
           {t.cron.scheduledJobs} ({jobs.length})
-        </H2>
+        </h2>
 
         {jobs.length === 0 && (
           <Card>

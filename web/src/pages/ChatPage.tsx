@@ -22,14 +22,14 @@ import { WebLinksAddon } from "@xterm/addon-web-links";
 import { WebglAddon } from "@xterm/addon-webgl";
 import { Terminal } from "@xterm/xterm";
 import "@xterm/xterm/css/xterm.css";
-import { Typography } from "@nous-research/ui";
 import { cn } from "@/lib/utils";
-import { Copy, PanelRight, X } from "lucide-react";
+import { Copy, PanelRight, Play } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 
 import { ChatSidebar } from "@/components/ChatSidebar";
+import { Button } from "@/components/ui/button";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
@@ -61,11 +61,11 @@ function generateChannelId(): string {
 // theme, because the TUI's skin engine already paints the content; the
 // terminal chrome just needs to sit quietly inside the dashboard.
 const TERMINAL_THEME = {
-  background: "#0d2626",
-  foreground: "#f0e6d2",
-  cursor: "#f0e6d2",
-  cursorAccent: "#0d2626",
-  selectionBackground: "#f0e6d244",
+  background: "#0b0b0c",
+  foreground: "#f4f4f5",
+  cursor: "#f4f4f5",
+  cursorAccent: "#0b0b0c",
+  selectionBackground: "#f4f4f533",
 };
 
 /**
@@ -124,9 +124,6 @@ export default function ChatPage() {
     () => `${t.app.modelToolsSheetTitle} ${t.app.modelToolsSheetSubtitle}`,
     [t.app.modelToolsSheetSubtitle, t.app.modelToolsSheetTitle],
   );
-  const [portalRoot] = useState<HTMLElement | null>(() =>
-    typeof document !== "undefined" ? document.body : null,
-  );
   const [narrow, setNarrow] = useState(() =>
     typeof window !== "undefined"
       ? window.matchMedia("(max-width: 1023px)").matches
@@ -134,6 +131,7 @@ export default function ChatPage() {
   );
 
   const resumeRef = useRef<string | null>(searchParams.get("resume"));
+  const [terminalStarted, setTerminalStarted] = useState(() => Boolean(searchParams.get("resume")));
   const channel = useMemo(() => generateChannelId(), []);
 
   useEffect(() => {
@@ -168,30 +166,26 @@ export default function ChatPage() {
   }, []);
 
   useEffect(() => {
-    if (!narrow) {
+    if (!narrow || !terminalStarted) {
       setEnd(null);
       return;
     }
     setEnd(
-      <button
+      <Button
         type="button"
+        variant="outline"
+        size="sm"
         onClick={() => setMobilePanelOpen(true)}
-        className={cn(
-          "inline-flex items-center gap-1.5 rounded border border-current/20",
-          "px-2 py-1 text-[0.65rem] font-medium tracking-wide normal-case",
-          "text-midground/80 hover:text-midground hover:bg-midground/5",
-          "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
-          "shrink-0 cursor-pointer",
-        )}
+        className="h-8 gap-1.5 px-2 text-xs"
         aria-expanded={mobilePanelOpen}
         aria-controls="chat-side-panel"
       >
-        <PanelRight className="h-3 w-3 shrink-0" />
-        {modelToolsLabel}
-      </button>,
+        <PanelRight className="size-3.5 shrink-0" />
+        <span className="hidden min-[360px]:inline">Model & tools</span>
+      </Button>,
     );
     return () => setEnd(null);
-  }, [narrow, mobilePanelOpen, modelToolsLabel, setEnd]);
+  }, [narrow, terminalStarted, mobilePanelOpen, modelToolsLabel, setEnd]);
 
   const handleCopyLast = () => {
     const ws = wsRef.current;
@@ -213,6 +207,7 @@ export default function ChatPage() {
   };
 
   useEffect(() => {
+    if (!terminalStarted) return;
     const host = hostRef.current;
     if (!host) return;
 
@@ -574,7 +569,7 @@ export default function ChatPage() {
         copyResetRef.current = null;
       }
     };
-  }, [channel]);
+  }, [channel, terminalStarted]);
 
   // Layout:
   //   outer flex column — sits inside the dashboard's content area
@@ -594,85 +589,31 @@ export default function ChatPage() {
   // above the app sidebar (`z-50`) and mobile chrome (`z-40`).  The main
   // dashboard column uses `relative z-2`, which traps `position:fixed`
   // descendants below those layers (see Toast.tsx).
-  const mobileModelToolsPortal =
-    narrow &&
-    portalRoot &&
-    createPortal(
-      <>
-        {mobilePanelOpen && (
-          <button
-            type="button"
-            aria-label={t.app.closeModelTools}
-            onClick={closeMobilePanel}
-            className={cn(
-              "fixed inset-0 z-[55]",
-              "bg-black/60 backdrop-blur-sm cursor-pointer",
-            )}
-          />
-        )}
-
-        <div
-          id="chat-side-panel"
-          role="complementary"
-          aria-label={modelToolsLabel}
-          className={cn(
-            "font-mondwest fixed top-0 right-0 z-[60] flex h-dvh max-h-dvh w-64 min-w-0 flex-col antialiased",
-            "border-l border-current/20 text-midground",
-            "bg-background-base/95 backdrop-blur-sm",
-            "transition-transform duration-200 ease-out",
-            "[background:var(--component-sidebar-background)]",
-            "[clip-path:var(--component-sidebar-clip-path)]",
-            "[border-image:var(--component-sidebar-border-image)]",
-            mobilePanelOpen
-              ? "translate-x-0"
-              : "pointer-events-none translate-x-full",
-          )}
-        >
-          <div
-            className={cn(
-              "flex h-14 shrink-0 items-center justify-between gap-2 border-b border-current/20 px-5",
-            )}
-          >
-            <Typography
-              className="font-bold text-[1.125rem] leading-[0.95] tracking-[0.0525rem] text-midground"
-              style={{ mixBlendMode: "plus-lighter" }}
-            >
-              {t.app.modelToolsSheetTitle}
-              <br />
-              {t.app.modelToolsSheetSubtitle}
-            </Typography>
-
-            <button
-              type="button"
-              onClick={closeMobilePanel}
-              aria-label={t.app.closeModelTools}
-              className={cn(
-                "inline-flex h-7 w-7 items-center justify-center",
-                "text-midground/70 hover:text-midground transition-colors cursor-pointer",
-                "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
-              )}
-            >
-              <X className="h-4 w-4" />
-            </button>
-          </div>
-
-          <div
-            className={cn(
-              "min-h-0 flex-1 overflow-y-auto overflow-x-hidden",
-              "border-t border-current/10",
-            )}
-          >
-            <ChatSidebar channel={channel} />
-          </div>
+  const mobileModelToolsSheet = narrow && terminalStarted ? (
+    <Sheet open={mobilePanelOpen} onOpenChange={setMobilePanelOpen}>
+      <SheetContent
+        id="chat-side-panel"
+        side="right"
+        className="flex w-[min(22rem,92vw)] flex-col gap-0 p-0"
+        aria-label={modelToolsLabel}
+      >
+        <SheetHeader className="border-b border-border px-4 py-3 text-left">
+          <SheetTitle className="text-sm font-semibold tracking-tight">
+            Model & tools
+          </SheetTitle>
+        </SheetHeader>
+        <div className="min-h-0 flex-1 overflow-hidden p-3">
+          <ChatSidebar channel={channel} />
         </div>
-      </>,
-      portalRoot,
-    );
+      </SheetContent>
+    </Sheet>
+  ) : null;
+
 
   return (
-    <div className="flex min-h-0 flex-1 flex-col gap-2 normal-case">
+    <div className="flex min-h-0 flex-1 flex-col gap-3 normal-case">
       <PluginSlot name="chat:top" />
-      {mobileModelToolsPortal}
+      {mobileModelToolsSheet}
 
       {banner && (
         <div className="border border-warning/50 bg-warning/10 text-warning px-3 py-2 text-xs tracking-wide">
@@ -681,57 +622,76 @@ export default function ChatPage() {
       )}
 
       <div className="flex min-h-0 flex-1 flex-col gap-2 lg:flex-row lg:gap-3">
-        <div
-          className={cn(
-            "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-lg",
-            "p-2 sm:p-3",
-          )}
-          style={{
-            backgroundColor: TERMINAL_THEME.background,
-            boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
-          }}
-        >
-          <div
-            ref={hostRef}
-            className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
-          />
-
-          <button
-            type="button"
-            onClick={handleCopyLast}
-            title="Copy last assistant response as raw markdown"
-            aria-label="Copy last assistant response"
-            className={cn(
-              "absolute z-10 flex items-center gap-1.5",
-              "rounded border border-current/30",
-              "bg-black/20 backdrop-blur-sm",
-              "opacity-60 hover:opacity-100 hover:border-current/60",
-              "transition-opacity duration-150",
-              "focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-current",
-              "cursor-pointer",
-              "bottom-2 right-2 px-2 py-1 text-[0.65rem] sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5 sm:text-xs",
-              "lg:bottom-4 lg:right-4",
-            )}
-            style={{ color: TERMINAL_THEME.foreground }}
-          >
-            <Copy className="h-3 w-3 shrink-0" />
-            <span className="hidden min-[400px]:inline tracking-wide">
-              {copyState === "copied" ? "copied" : "copy last response"}
-            </span>
-          </button>
-        </div>
-
-        {!narrow && (
-          <div
-            id="chat-side-panel"
-            role="complementary"
-            aria-label={modelToolsLabel}
-            className="flex min-h-0 shrink-0 flex-col lg:h-full lg:w-80"
-          >
-            <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
-              <ChatSidebar channel={channel} />
+        {!terminalStarted ? (
+          <div className="flex min-h-0 min-w-0 flex-1 items-center justify-center rounded-xl border border-dashed border-border bg-card p-6 text-card-foreground shadow-sm">
+            <div className="flex max-w-md flex-col items-center gap-4 text-center">
+              <div className="flex size-12 items-center justify-center rounded-full bg-primary text-primary-foreground shadow-sm">
+                <Play className="size-5" />
+              </div>
+              <div className="space-y-2">
+                <h2 className="text-xl font-semibold tracking-tight">Start a chat session</h2>
+                <p className="text-sm leading-relaxed text-muted-foreground">
+                  Opening the dashboard no longer starts Hermes automatically. Click below when you actually want to launch the embedded terminal session.
+                </p>
+              </div>
+              <Button size="lg" onClick={() => setTerminalStarted(true)}>
+                <Play className="size-4" />
+                Start new session
+              </Button>
             </div>
           </div>
+        ) : (
+          <>
+            <div
+              className={cn(
+                "relative flex min-h-0 min-w-0 flex-1 flex-col overflow-hidden rounded-xl border border-border",
+                "p-2 shadow-sm sm:p-3",
+              )}
+              style={{ backgroundColor: TERMINAL_THEME.background }}
+            >
+              <div
+                ref={hostRef}
+                className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"
+              />
+
+              <button
+                type="button"
+                onClick={handleCopyLast}
+                title="Copy last assistant response as raw markdown"
+                aria-label="Copy last assistant response"
+                className={cn(
+                  "absolute z-10 flex items-center gap-1.5",
+                  "rounded-md border border-white/15",
+                  "bg-black/45 backdrop-blur-sm",
+                  "opacity-70 hover:opacity-100 hover:border-white/30",
+                  "transition-opacity duration-150",
+                  "focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-current",
+                  "cursor-pointer",
+                  "bottom-2 right-2 px-2 py-1 text-[0.65rem] sm:bottom-3 sm:right-3 sm:px-2.5 sm:py-1.5 sm:text-xs",
+                  "lg:bottom-4 lg:right-4",
+                )}
+                style={{ color: TERMINAL_THEME.foreground }}
+              >
+                <Copy className="h-3 w-3 shrink-0" />
+                <span className="hidden min-[400px]:inline tracking-wide">
+                  {copyState === "copied" ? "copied" : "copy last response"}
+                </span>
+              </button>
+            </div>
+
+            {!narrow && (
+              <div
+                id="chat-side-panel"
+                role="complementary"
+                aria-label={modelToolsLabel}
+                className="flex min-h-0 shrink-0 flex-col lg:h-full lg:w-80 xl:w-96"
+              >
+                <div className="min-h-0 flex-1 overflow-y-auto overflow-x-hidden">
+                  <ChatSidebar channel={channel} />
+                </div>
+              </div>
+            )}
+          </>
         )}
       </div>
       <PluginSlot name="chat:bottom" />

@@ -9,7 +9,7 @@ const BUILTIN: Record<string, keyof Translations["app"]["nav"]> = {
   "/skills": "skills",
   "/config": "config",
   "/env": "keys",
-  "/docs": "documentation",
+  "/documentation": "documentation",
 };
 
 export function resolvePageTitle(

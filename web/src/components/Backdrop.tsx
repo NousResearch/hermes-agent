@@ -1,28 +1,11 @@
-import { useGpuTier } from "@nous-research/ui/hooks/use-gpu-tier";
+import { useEffect, useState } from "react";
 
-/**
- * Replicates the visual layer stack of `<Overlays dark />` from
- * `@nous-research/ui` without pulling in its leva / gsap / three peer deps.
- *
- * See `design-language/src/ui/components/overlays/index.tsx` for the source of
- * truth. Defaults match LENS_0 (the Hermes teal dark preset); the deep canvas
- * and the warm vignette both read theme-switchable CSS custom properties so
- * `ThemeProvider` can repaint the stack without remounting.
- *
- *   z-1   bg = `var(--background-base)`, mix-blend-mode: difference
- *   z-2   filler-bg jpeg, inverted, opacity 0.033, difference
- *   z-99  warm top-left vignette (`var(--warm-glow)`), opacity 0.22, lighten
- *   z-101 noise grain (SVG, ~55% opacity × `--noise-opacity-mul`,
- *         color-dodge) — gated on GPU tier
- *
- * `useGpuTier` returns 0 when WebGL is unavailable, the renderer is a
- * software rasterizer (SwiftShader/llvmpipe), or the user has
- * `prefers-reduced-motion: reduce` set. We skip the animated noise layer
- * in that case so low-power / accessibility-conscious sessions stay crisp,
- * mirroring the DS `<Noise />` component's own opt-out.
+/** Legacy backdrop kept for older dashboard themes/plugins. Mission Control's
+ * shell does not mount it, but the component no longer depends on the old Nous
+ * design-system package.
  */
 export function Backdrop() {
-  const gpuTier = useGpuTier();
+  const gpuTier = useLocalGpuTier();
 
   return (
     <>
@@ -40,10 +23,6 @@ export function Backdrop() {
         className="pointer-events-none fixed inset-0 z-[2]"
         style={
           {
-            // Themes can override the filler background by setting
-            // `assets.bg` — the <img> hides itself when a CSS bg is set
-            // so the two don't double-darken. CSS var fallbacks keep the
-            // default behaviour unchanged when no theme customises these.
             mixBlendMode: "var(--component-backdrop-filler-blend-mode, difference)",
             opacity: "var(--component-backdrop-filler-opacity, 0.033)",
             backgroundImage: "var(--theme-asset-bg)",
@@ -52,10 +31,6 @@ export function Backdrop() {
           } as unknown as React.CSSProperties
         }
       >
-        {/* Default filler image only renders when no theme-asset-bg is
-            set. Themes that provide their own `assets.bg` override the
-            <div>'s backgroundImage above, so hiding the <img> in that
-            case prevents the two from compositing incorrectly. */}
         <img
           alt=""
           className="h-[150dvh] w-auto min-w-[100dvw] object-cover object-top-left invert theme-default-filler"
@@ -90,4 +65,18 @@ export function Backdrop() {
       )}
     </>
   );
+}
+
+function useLocalGpuTier() {
+  const [enabled, setEnabled] = useState(true);
+
+  useEffect(() => {
+    const media = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const sync = () => setEnabled(!media.matches);
+    sync();
+    media.addEventListener("change", sync);
+    return () => media.removeEventListener("change", sync);
+  }, []);
+
+  return enabled ? 1 : 0;
 }

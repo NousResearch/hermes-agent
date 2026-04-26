@@ -1,25 +1,31 @@
-import type { DashboardTheme, ThemeTypography, ThemeLayout } from "./types";
+import type { DashboardTheme, ThemeLayout, ThemeTypography } from "./types";
 
 /**
  * Built-in dashboard themes.
  *
- * Each theme defines its own palette, typography, and layout so switching
- * themes produces visible changes beyond just color — fonts, density, and
- * corner-radius all shift to match the theme's personality.
+ * Mission Control stays the default shadcn-style shell, but the original
+ * Hermes dashboard themes remain selectable so users can switch back to the
+ * classic look from the UI.
  *
- * Theme names must stay in sync with the backend's
- * `_BUILTIN_DASHBOARD_THEMES` list in `hermes_cli/web_server.py`.
+ * Names must stay in sync with `_BUILTIN_DASHBOARD_THEMES` in
+ * `hermes_cli/web_server.py`.
  */
 
-// ---------------------------------------------------------------------------
-// Shared typography / layout presets
-// ---------------------------------------------------------------------------
-
-/** Default system stack — neutral, safe fallback for every platform. */
 const SYSTEM_SANS =
   'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
 const SYSTEM_MONO =
   'ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace';
+const GEIST_SANS = `"Geist Sans", ${SYSTEM_SANS}`;
+const GEIST_MONO = `"Geist Mono", "JetBrains Mono", ${SYSTEM_MONO}`;
+
+const MISSION_TYPOGRAPHY: ThemeTypography = {
+  fontSans: GEIST_SANS,
+  fontMono: GEIST_MONO,
+  fontDisplay: GEIST_SANS,
+  baseSize: "15px",
+  lineHeight: "1.5",
+  letterSpacing: "-0.01em",
+};
 
 const DEFAULT_TYPOGRAPHY: ThemeTypography = {
   fontSans: SYSTEM_SANS,
@@ -29,19 +35,116 @@ const DEFAULT_TYPOGRAPHY: ThemeTypography = {
   letterSpacing: "0",
 };
 
+const MISSION_LAYOUT: ThemeLayout = {
+  radius: "0.75rem",
+  density: "comfortable",
+};
+
 const DEFAULT_LAYOUT: ThemeLayout = {
   radius: "0.5rem",
   density: "comfortable",
 };
 
-// ---------------------------------------------------------------------------
-// Themes
-// ---------------------------------------------------------------------------
-
 export const defaultTheme: DashboardTheme = {
   name: "default",
+  label: "Mission Dark",
+  description: "Clean shadcn-style dark cockpit for Hermes Mission Control",
+  palette: {
+    background: { hex: "#09090b", alpha: 1 },
+    midground: { hex: "#fafafa", alpha: 1 },
+    foreground: { hex: "#ffffff", alpha: 1 },
+    warmGlow: "rgba(255, 255, 255, 0)",
+    noiseOpacity: 0,
+  },
+  typography: MISSION_TYPOGRAPHY,
+  layout: MISSION_LAYOUT,
+  colorOverrides: {
+    card: "#111113",
+    cardForeground: "#fafafa",
+    popover: "#111113",
+    popoverForeground: "#fafafa",
+    primary: "#fafafa",
+    primaryForeground: "#09090b",
+    secondary: "#18181b",
+    secondaryForeground: "#fafafa",
+    muted: "#18181b",
+    mutedForeground: "#a1a1aa",
+    accent: "#27272a",
+    accentForeground: "#fafafa",
+    destructive: "#ef4444",
+    destructiveForeground: "#ffffff",
+    success: "#22c55e",
+    warning: "#f59e0b",
+    border: "#27272a",
+    input: "#27272a",
+    ring: "#a1a1aa",
+  },
+  componentStyles: {
+    sidebar: {
+      background: "#0f0f11",
+      foreground: "#fafafa",
+      border: "#27272a",
+      accent: "#18181b",
+      accentForeground: "#fafafa",
+      primary: "#fafafa",
+      primaryForeground: "#09090b",
+      ring: "#a1a1aa",
+    },
+  },
+};
+
+export const missionLightTheme: DashboardTheme = {
+  name: "mission-light",
+  label: "Mission Light",
+  description: "Clean shadcn-style light cockpit for Hermes Mission Control",
+  palette: {
+    background: { hex: "#fafafa", alpha: 1 },
+    midground: { hex: "#09090b", alpha: 1 },
+    foreground: { hex: "#09090b", alpha: 1 },
+    warmGlow: "rgba(255, 255, 255, 0)",
+    noiseOpacity: 0,
+  },
+  typography: MISSION_TYPOGRAPHY,
+  layout: MISSION_LAYOUT,
+  colorOverrides: {
+    card: "#ffffff",
+    cardForeground: "#09090b",
+    popover: "#ffffff",
+    popoverForeground: "#09090b",
+    primary: "#18181b",
+    primaryForeground: "#fafafa",
+    secondary: "#f4f4f5",
+    secondaryForeground: "#18181b",
+    muted: "#f4f4f5",
+    mutedForeground: "#71717a",
+    accent: "#f4f4f5",
+    accentForeground: "#18181b",
+    destructive: "#dc2626",
+    destructiveForeground: "#ffffff",
+    success: "#16a34a",
+    warning: "#d97706",
+    border: "#e4e4e7",
+    input: "#e4e4e7",
+    ring: "#71717a",
+  },
+  componentStyles: {
+    sidebar: {
+      background: "#ffffff",
+      foreground: "#18181b",
+      border: "#e4e4e7",
+      accent: "#f4f4f5",
+      accentForeground: "#18181b",
+      primary: "#18181b",
+      primaryForeground: "#fafafa",
+      ring: "#71717a",
+    },
+  },
+};
+
+export const hermesTealTheme: DashboardTheme = {
+  name: "hermes-teal",
   label: "Hermes Teal",
-  description: "Classic dark teal — the canonical Hermes look",
+  description: "Classic dark teal — the original Hermes dashboard look",
   palette: {
     background: { hex: "#041c1c", alpha: 1 },
     midground: { hex: "#ffe6cb", alpha: 1 },
@@ -194,6 +297,8 @@ export const roseTheme: DashboardTheme = {
 
 export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   default: defaultTheme,
+  "mission-light": missionLightTheme,
+  "hermes-teal": hermesTealTheme,
   midnight: midnightTheme,
   ember: emberTheme,
   mono: monoTheme,

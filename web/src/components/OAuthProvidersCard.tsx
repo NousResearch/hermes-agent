@@ -138,7 +138,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                   <div className="flex flex-col min-w-0 gap-0.5">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-medium text-sm">{p.name}</span>
-                      <Badge variant="outline" className="text-[11px] uppercase tracking-wide">
+                      <Badge variant="outline" className="text-xs font-medium">
                         {t.oauth.flowLabels[p.flow]}
                       </Badge>
                       {p.status.logged_in && (

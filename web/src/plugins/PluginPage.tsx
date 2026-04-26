@@ -35,7 +35,7 @@ export function PluginPage({ name }: { name: string }) {
       <div
         className={cn(
           "max-w-lg p-4",
-          "font-mondwest text-sm tracking-[0.08em] text-midground/80",
+          "font-medium text-sm tracking-[0.08em] text-muted-foreground",
         )}
         role="alert"
       >
@@ -48,7 +48,7 @@ export function PluginPage({ name }: { name: string }) {
     <div
       className={cn(
         "flex items-center gap-2 p-4",
-        "font-mondwest text-sm tracking-[0.1em] text-midground/60",
+        "text-sm font-medium text-muted-foreground",
       )}
     >
       <Loader2 className="h-4 w-4 shrink-0 animate-spin" aria-hidden />

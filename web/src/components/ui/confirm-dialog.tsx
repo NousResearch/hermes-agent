@@ -17,7 +17,6 @@ export function ConfirmDialog({
 }: ConfirmDialogProps) {
   const dialogRef = useRef<HTMLDivElement>(null);
 
-  // Focus the confirm button when opened; trap ESC to cancel.
   useEffect(() => {
     if (!open) return;
 
@@ -64,25 +63,24 @@ export function ConfirmDialog({
       <div
         ref={dialogRef}
         className={cn(
-          "relative w-full max-w-md mx-4",
-          "border border-border bg-card shadow-lg",
+          "relative mx-4 w-full max-w-md rounded-xl border border-border bg-card text-card-foreground shadow-lg",
           "animate-[dialog-in_180ms_ease-out]",
         )}
       >
-        <div className="flex items-start gap-3 p-4 border-b border-border">
+        <div className="flex items-start gap-3 border-b border-border p-5">
           {destructive && (
             <div
               aria-hidden
-              className="mt-0.5 shrink-0 text-destructive"
+              className="mt-0.5 shrink-0 rounded-full bg-destructive/10 p-2 text-destructive"
             >
               <AlertTriangle className="h-4 w-4" />
             </div>
           )}
 
-          <div className="flex-1 min-w-0 flex flex-col gap-1">
+          <div className="flex min-w-0 flex-1 flex-col gap-2">
             <h2
               id="confirm-dialog-title"
-              className="font-expanded text-sm font-bold tracking-[0.08em] uppercase blend-lighter"
+              className="text-base font-semibold tracking-tight text-card-foreground"
             >
               {title}
             </h2>
@@ -90,7 +88,7 @@ export function ConfirmDialog({
             {description && (
               <p
                 id="confirm-dialog-desc"
-                className="font-mondwest text-xs text-muted-foreground leading-relaxed"
+                className="text-sm leading-relaxed text-muted-foreground"
               >
                 {description}
               </p>
@@ -98,7 +96,7 @@ export function ConfirmDialog({
           </div>
         </div>
 
-        <div className="flex items-center justify-end gap-2 p-3">
+        <div className="flex items-center justify-end gap-2 p-4">
           <Button
             type="button"
             variant="ghost"

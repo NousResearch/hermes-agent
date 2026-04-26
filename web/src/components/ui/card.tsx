@@ -1,19 +1,9 @@
 import { cn } from "@/lib/utils";
 
 /**
- * Themed card primitive. Themes can restyle every card without touching
- * call sites by setting CSS vars under the `card` component-style bucket:
- *
- *   componentStyles:
- *     card:
- *       clipPath: "polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px)"
- *       border: "1px solid var(--color-ring)"
- *       background: "linear-gradient(180deg, var(--color-card) 0%, transparent 100%)"
- *       boxShadow: "0 0 0 1px var(--color-ring) inset, 0 0 24px -8px var(--warm-glow)"
- *
- * All properties are optional — vars that aren't set compute to their
- * CSS initial value, so the default shadcn-y card keeps looking normal
- * for themes that don't override anything.
+ * Shadcn-style card primitive. Themes can still restyle cards through the
+ * optional component-style CSS variables, but the default typography and
+ * contrast stay plain Geist/system UI instead of the old Hermes display font.
  */
 const CARD_STYLE: React.CSSProperties = {
   clipPath: "var(--component-card-clip-path)",
@@ -26,7 +16,7 @@ export function Card({ className, style, ...props }: React.HTMLAttributes<HTMLDi
   return (
     <div
       className={cn(
-        "border border-border bg-card/80 text-card-foreground w-full",
+        "w-full rounded-xl border border-border bg-card text-card-foreground shadow-sm",
         className,
       )}
       style={{ ...CARD_STYLE, ...style }}
@@ -36,17 +26,17 @@ export function Card({ className, style, ...props }: React.HTMLAttributes<HTMLDi
 }
 
 export function CardHeader({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn("flex flex-col gap-1.5 p-4 border-b border-border", className)} {...props} />;
+  return <div className={cn("flex flex-col gap-1.5 p-4", className)} {...props} />;
 }
 
 export function CardTitle({ className, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
-  return <h3 className={cn("font-expanded text-sm font-bold tracking-[0.08em] uppercase blend-lighter", className)} {...props} />;
+  return <h3 className={cn("text-base font-semibold leading-none tracking-tight text-card-foreground", className)} {...props} />;
 }
 
 export function CardDescription({ className, ...props }: React.HTMLAttributes<HTMLParagraphElement>) {
-  return <p className={cn("font-mondwest text-xs text-muted-foreground", className)} {...props} />;
+  return <p className={cn("text-sm text-muted-foreground", className)} {...props} />;
 }
 
 export function CardContent({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn("p-4", className)} {...props} />;
+  return <div className={cn("p-4 pt-0", className)} {...props} />;
 }

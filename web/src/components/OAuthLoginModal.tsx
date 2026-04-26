@@ -1,6 +1,5 @@
 import { useEffect, useRef, useState } from "react";
 import { ExternalLink, Copy, X, Check, Loader2 } from "lucide-react";
-import { H2 } from "@nous-research/ui";
 import { api, type OAuthProvider, type OAuthStartResponse } from "@/lib/api";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -194,14 +193,12 @@ export function OAuthLoginModal({
         </button>
         <div className="p-6 flex flex-col gap-4">
           <div>
-            <H2
+            <h2
               id="oauth-modal-title"
-              variant="sm"
-              mondwest
-              className="tracking-wider uppercase"
+              className="text-base font-semibold tracking-tight text-card-foreground"
             >
               {t.oauth.connect} {provider.name}
-            </H2>
+            </h2>
             {secondsLeft !== null &&
               phase !== "approved" &&
               phase !== "error" && (

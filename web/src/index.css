@@ -1,9 +1,12 @@
 @import 'tailwindcss';
-@import '@nous-research/ui/styles/globals.css';
+@import '@fontsource/geist-sans/400.css';
+@import '@fontsource/geist-sans/500.css';
+@import '@fontsource/geist-sans/600.css';
+@import '@fontsource/geist-sans/700.css';
+@import '@fontsource/geist-mono/400.css';
+@import '@fontsource/geist-mono/600.css';
 
-/* Scan the published design-system bundle so its utility classes survive
-   Tailwind's JIT purge. */
-@source '../node_modules/@nous-research/ui/dist';
+@custom-variant dark (&:is(.dark *));
 
 /* ------------------------------------------------------------------ */
 /* JetBrains Mono — bundled for the embedded TUI (/chat tab).          */
@@ -46,19 +49,19 @@
   /* LENS_0 — from design-language/src/ui/components/overlays/index.tsx.
      These are the defaults for the `default` (Hermes Teal) dashboard theme;
      ThemeProvider rewrites them as inline styles when a user switches themes. */
-  --foreground: color-mix(in srgb, #ffffff 0%, transparent);
-  --foreground-base: #ffffff;
-  --foreground-alpha: 0;
-  --midground: color-mix(in srgb, #ffe6cb 100%, transparent);
-  --midground-base: #ffe6cb;
+  --foreground: color-mix(in srgb, #fafafa 100%, transparent);
+  --foreground-base: #fafafa;
+  --foreground-alpha: 1;
+  --midground: color-mix(in srgb, #fafafa 100%, transparent);
+  --midground-base: #fafafa;
   --midground-alpha: 1;
-  --background: color-mix(in srgb, #041c1c 100%, transparent);
-  --background-base: #041c1c;
+  --background: color-mix(in srgb, #09090b 100%, transparent);
+  --background-base: #09090b;
   --background-alpha: 1;
 
-  /* Consumed by <Backdrop />; also theme-switchable. */
-  --warm-glow: rgba(255, 189, 56, 0.35);
-  --noise-opacity-mul: 1;
+  /* Mission Control intentionally avoids decorative glow/noise by default. */
+  --warm-glow: rgba(255, 255, 255, 0);
+  --noise-opacity-mul: 0;
 
   /* Typography tokens — rewritten by ThemeProvider. Defaults match the
      system stack so themes that don't override look native. */
@@ -76,6 +79,14 @@
   --theme-radius: 0.5rem;
   --theme-spacing-mul: 1;
   --theme-density: comfortable;
+  --sidebar: var(--component-sidebar-background, #0f0f11);
+  --sidebar-foreground: var(--component-sidebar-foreground, #fafafa);
+  --sidebar-primary: var(--component-sidebar-primary, #fafafa);
+  --sidebar-primary-foreground: var(--component-sidebar-primary-foreground, #09090b);
+  --sidebar-accent: var(--component-sidebar-accent, #18181b);
+  --sidebar-accent-foreground: var(--component-sidebar-accent-foreground, #fafafa);
+  --sidebar-border: var(--component-sidebar-border, #27272a);
+  --sidebar-ring: var(--component-sidebar-ring, #a1a1aa);
 }
 
 /* Theme tokens cascade into the document root so every descendant inherits
@@ -108,6 +119,14 @@ code, kbd, pre, samp, .font-mono, .font-mono-ui {
    all proportionally in Tailwind v4. */
 @theme inline {
   --spacing: calc(0.25rem * var(--theme-spacing-mul, 1));
+  --color-sidebar-ring: var(--sidebar-ring);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar: var(--sidebar);
 }
 
 #root {
@@ -128,8 +147,7 @@ code { font-size: 0.875rem; }
    extensively. Rather than rewrite every call site, we expose those
    tokens on top of the Nous palette so classes continue to resolve. */
 @theme inline {
-  /* Remap foreground to midground so `text-foreground` / `bg-foreground`
-     stay visible — in LENS_0, `--foreground` itself has alpha 0. */
+  --color-background: var(--background);
   --color-foreground: var(--midground);
 
   --color-card: color-mix(in srgb, var(--midground-base) 4%, var(--background-base));
@@ -157,7 +175,6 @@ code { font-size: 0.875rem; }
   --radius-lg: var(--theme-radius);
   --radius-xl: calc(var(--theme-radius) + 4px);
 }
-
 
 /* Toast animations used by `components/Toast.tsx`. */
 @keyframes toast-in {
@@ -188,32 +205,10 @@ code { font-size: 0.875rem; }
   display: none;
 }
 
-/* Plus-lighter blend used by logos/titles for a subtle glow. */
-.blend-lighter {
-  mix-blend-mode: plus-lighter;
-}
-
-/* System UI-monospace stack — distinct from `font-courier` (Courier
-   Prime), used for dense data readouts where the display font would
-   break the grid. Routes through the theme's mono stack so themes
-   with a different monospace (JetBrains Mono, IBM Plex Mono, etc.)
-   still apply here. */
+/* System UI-monospace stack for dense data readouts. Routes through the
+   theme's mono stack so themes with a different monospace still apply. */
 .font-mono-ui {
   font-family: var(--theme-font-mono);
-}
-
-/* Subtle grain overlay for badges. */
-.grain {
-  position: relative;
-}
-.grain::after {
-  content: '';
-  position: absolute;
-  inset: 0;
-  opacity: 0.12;
-  pointer-events: none;
-  background: repeating-conic-gradient(currentColor 0% 25%, #0000 0% 50%) 0 0 /
-    2px 2px;
 }
 
 /* When a theme provides `assets.bg`, the backdrop's <div> renders it as

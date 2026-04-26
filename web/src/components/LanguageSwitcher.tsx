@@ -1,10 +1,6 @@
-import { Typography } from "@nous-research/ui";
 import { useI18n } from "@/i18n/context";
 
-/**
- * Compact language toggle — shows a clickable flag that switches between
- * English and Chinese.  Persists choice to localStorage.
- */
+/** Compact language toggle. Shows the current language and persists choice. */
 export function LanguageSwitcher() {
   const { locale, setLocale, t } = useI18n();
 
@@ -14,20 +10,16 @@ export function LanguageSwitcher() {
     <button
       type="button"
       onClick={toggle}
-      className="group relative inline-flex items-center gap-1.5 px-2 py-1 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+      className="inline-flex h-8 items-center gap-1.5 rounded-md px-2 text-xs font-medium text-muted-foreground transition-colors cursor-pointer hover:bg-sidebar-accent hover:text-sidebar-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
       title={t.language.switchTo}
       aria-label={t.language.switchTo}
     >
-      {/* Show the *current* language's flag — tooltip advertises the click action */}
       <span className="text-base leading-none">
         {locale === "en" ? "🇬🇧" : "🇨🇳"}
       </span>
-      <Typography
-        mondwest
-        className="hidden sm:inline tracking-wide uppercase text-[0.65rem]"
-      >
+      <span className="hidden sm:inline">
         {locale === "en" ? "EN" : "中文"}
-      </Typography>
+      </span>
     </button>
   );
 }

@@ -2297,6 +2297,21 @@ _VALID_CHANNEL_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 # loopback so tests don't need to rewrite request scope.
 _LOOPBACK_HOSTS = frozenset({"127.0.0.1", "::1", "localhost", "testclient"})
 
+
+def _is_allowed_ws_peer(client_host: str) -> bool:
+    """Return True when a WebSocket peer may use dashboard chat endpoints.
+
+    Loopback binds only allow loopback clients. When the operator explicitly
+    starts the dashboard on a non-loopback interface (requires --insecure),
+    allow remote peers too; the ephemeral session token still gates access.
+    This is needed for remote dashboard chat.
+    """
+    if not client_host or client_host in _LOOPBACK_HOSTS:
+        return True
+    bound_host = getattr(app.state, "bound_host", "127.0.0.1")
+    return bound_host not in _LOOPBACK_HOSTS
+
+
 # Per-channel subscriber registry used by /api/pub (PTY-side gateway → dashboard)
 # and /api/events (dashboard → browser sidebar).  Keyed by an opaque channel id
 # the chat tab generates on mount; entries auto-evict when the last subscriber
@@ -2390,7 +2405,7 @@ async def pty_ws(ws: WebSocket) -> None:
         return
 
     client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
+    if not _is_allowed_ws_peer(client_host):
         await ws.close(code=4403)
         return
 
@@ -2498,7 +2513,7 @@ async def gateway_ws(ws: WebSocket) -> None:
         return
 
     client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
+    if not _is_allowed_ws_peer(client_host):
         await ws.close(code=4403)
         return
 
@@ -2531,7 +2546,7 @@ async def pub_ws(ws: WebSocket) -> None:
         return
 
     client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
+    if not _is_allowed_ws_peer(client_host):
         await ws.close(code=4403)
         return
 
@@ -2561,7 +2576,7 @@ async def events_ws(ws: WebSocket) -> None:
         return
 
     client_host = ws.client.host if ws.client else ""
-    if client_host and client_host not in _LOOPBACK_HOSTS:
+    if not _is_allowed_ws_peer(client_host):
         await ws.close(code=4403)
         return
 
@@ -2649,12 +2664,14 @@ def mount_spa(application: FastAPI):
 # Built-in dashboard themes — label + description only.  The actual color
 # definitions live in the frontend (web/src/themes/presets.ts).
 _BUILTIN_DASHBOARD_THEMES = [
-    {"name": "default",   "label": "Hermes Teal",  "description": "Classic dark teal — the canonical Hermes look"},
-    {"name": "midnight",  "label": "Midnight",      "description": "Deep blue-violet with cool accents"},
-    {"name": "ember",     "label": "Ember",          "description": "Warm crimson and bronze — forge vibes"},
-    {"name": "mono",      "label": "Mono",           "description": "Clean grayscale — minimal and focused"},
-    {"name": "cyberpunk", "label": "Cyberpunk",      "description": "Neon green on black — matrix terminal"},
-    {"name": "rose",      "label": "Rosé",           "description": "Soft pink and warm ivory — easy on the eyes"},
+    {"name": "default",       "label": "Mission Dark",  "description": "Clean shadcn-style dark cockpit for Hermes Mission Control"},
+    {"name": "mission-light", "label": "Mission Light", "description": "Clean shadcn-style light cockpit for Hermes Mission Control"},
+    {"name": "hermes-teal",   "label": "Hermes Teal",   "description": "Classic dark teal — the original Hermes dashboard look"},
+    {"name": "midnight",      "label": "Midnight",      "description": "Deep blue-violet with cool accents"},
+    {"name": "ember",         "label": "Ember",         "description": "Warm crimson and bronze — forge vibes"},
+    {"name": "mono",          "label": "Mono",          "description": "Clean grayscale — minimal and focused"},
+    {"name": "cyberpunk",     "label": "Cyberpunk",     "description": "Neon green on black — matrix terminal"},
+    {"name": "rose",          "label": "Rosé",          "description": "Soft pink and warm ivory — easy on the eyes"},
 ]
 
 

@@ -13,6 +13,8 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@fontsource/geist-mono": "^5.2.7",
+    "@fontsource/geist-sans": "^5.2.5",
     "@nous-research/ui": "^0.4.0",
     "@observablehq/plot": "^0.6.17",
     "@react-three/fiber": "^9.6.0",
@@ -24,9 +26,11 @@
     "@xterm/xterm": "^6.0.0",
     "class-variance-authority": "^0.7.1",
     "clsx": "^2.1.1",
+    "cmdk": "^1.1.1",
     "gsap": "^3.15.0",
     "leva": "^0.10.1",
     "lucide-react": "^0.577.0",
+    "radix-ui": "^1.4.3",
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-router-dom": "^7.14.1",

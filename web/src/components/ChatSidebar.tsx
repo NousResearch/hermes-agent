@@ -306,7 +306,7 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
     >
       <Card className="flex items-center justify-between gap-2 px-3 py-2">
         <div className="min-w-0">
-          <div className="text-xs uppercase tracking-wider text-muted-foreground">
+          <div className="text-xs font-medium text-muted-foreground">
             model
           </div>
 
@@ -351,7 +351,7 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
       )}
 
       <Card className="flex min-h-0 flex-1 flex-col px-2 py-2">
-        <div className="px-1 pb-2 text-xs uppercase tracking-wider text-muted-foreground">
+        <div className="px-1 pb-2 text-xs font-medium text-muted-foreground">
           tools
         </div>
 

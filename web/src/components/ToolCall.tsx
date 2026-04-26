@@ -186,7 +186,7 @@ function Section({
   return (
     <div className="flex gap-3">
       <span
-        className={`uppercase tracking-wider text-[0.6rem] shrink-0 w-14 pt-0.5 ${
+        className={`shrink-0 w-14 pt-0.5 text-xs font-medium ${
           tone === "error" ? "text-destructive/80" : "text-muted-foreground/60"
         }`}
       >

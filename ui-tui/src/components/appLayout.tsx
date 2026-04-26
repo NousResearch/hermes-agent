@@ -8,6 +8,7 @@ import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStor
 import { $uiState } from '../app/uiStore.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
 import { inputVisualHeight, stableComposerColumns } from '../lib/inputMetrics.js'
+import { PerfPane } from '../lib/perfPane.js'
 
 import { AgentsOverlay } from './agentsOverlay.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
@@ -248,23 +249,31 @@ export const AppLayout = memo(function AppLayout({
       <Box flexDirection="column" flexGrow={1}>
         <Box flexDirection="row" flexGrow={1}>
           {overlay.agents ? (
-            <AgentsOverlayPane />
+            <PerfPane id="agents">
+              <AgentsOverlayPane />
+            </PerfPane>
           ) : (
-            <TranscriptPane actions={actions} composer={composer} progress={progress} transcript={transcript} />
+            <PerfPane id="transcript">
+              <TranscriptPane actions={actions} composer={composer} progress={progress} transcript={transcript} />
+            </PerfPane>
           )}
         </Box>
 
         {!overlay.agents && (
           <>
-            <PromptZone
-              cols={composer.cols}
-              onApprovalChoice={actions.answerApproval}
-              onClarifyAnswer={actions.answerClarify}
-              onSecretSubmit={actions.answerSecret}
-              onSudoSubmit={actions.answerSudo}
-            />
+            <PerfPane id="prompt">
+              <PromptZone
+                cols={composer.cols}
+                onApprovalChoice={actions.answerApproval}
+                onClarifyAnswer={actions.answerClarify}
+                onSecretSubmit={actions.answerSecret}
+                onSudoSubmit={actions.answerSudo}
+              />
+            </PerfPane>
 
-            <ComposerPane actions={actions} composer={composer} status={status} />
+            <PerfPane id="composer">
+              <ComposerPane actions={actions} composer={composer} status={status} />
+            </PerfPane>
           </>
         )}
       </Box>

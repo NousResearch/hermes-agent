@@ -263,7 +263,13 @@ class TestTryCodex:
     def test_pool_without_selected_entry_falls_back_to_auth_store(self):
         with (
             patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)),
-            patch("agent.auxiliary_client._read_codex_access_token", return_value="codex-auth-token"),
+            patch(
+                "hermes_cli.auth.resolve_codex_runtime_credentials",
+                return_value={
+                    "api_key": "codex-auth-token",
+                    "base_url": "https://chatgpt.com/backend-api/codex",
+                },
+            ),
             patch("agent.auxiliary_client.OpenAI") as mock_openai,
         ):
             mock_openai.return_value = MagicMock()
@@ -275,6 +281,54 @@ class TestTryCodex:
         assert model == "gpt-5.2-codex"
         assert mock_openai.call_args.kwargs["api_key"] == "codex-auth-token"
         assert mock_openai.call_args.kwargs["base_url"] == "https://chatgpt.com/backend-api/codex"
+
+    def test_auth_store_fallback_uses_runtime_base_url(self):
+        with (
+            patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)),
+            patch(
+                "hermes_cli.auth.resolve_codex_runtime_credentials",
+                return_value={
+                    "api_key": "codex-auth-token",
+                    "base_url": "https://codex-lb.example.com/backend-api/codex",
+                },
+            ),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import _try_codex
+
+            client, model = _try_codex()
+
+        assert client is not None
+        assert model == "gpt-5.2-codex"
+        assert mock_openai.call_args.kwargs["api_key"] == "codex-auth-token"
+        assert mock_openai.call_args.kwargs["base_url"] == "https://codex-lb.example.com/backend-api/codex"
+
+    def test_raw_codex_uses_runtime_base_url(self):
+        with (
+            patch("agent.auxiliary_client._select_pool_entry", return_value=(False, None)),
+            patch(
+                "hermes_cli.auth.resolve_codex_runtime_credentials",
+                return_value={
+                    "api_key": "codex-auth-token",
+                    "base_url": "https://codex-lb.example.com/backend-api/codex",
+                },
+            ),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            mock_openai.return_value = MagicMock()
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, model = resolve_provider_client(
+                "openai-codex",
+                "gpt-5.5",
+                raw_codex=True,
+            )
+
+        assert client is not None
+        assert model == "gpt-5.5"
+        assert mock_openai.call_args.kwargs["api_key"] == "codex-auth-token"
+        assert mock_openai.call_args.kwargs["base_url"] == "https://codex-lb.example.com/backend-api/codex"
 
 
 class TestExpiredCodexFallback:

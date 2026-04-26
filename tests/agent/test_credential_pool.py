@@ -381,6 +381,35 @@ def test_load_pool_removes_stale_seeded_env_entry(tmp_path, monkeypatch):
     assert auth_payload["credential_pool"]["openrouter"] == []
 
 
+def test_load_pool_seeds_codex_provider_state_with_runtime_base_url(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    monkeypatch.setenv("HERMES_CODEX_BASE_URL", "https://codex-lb.example.com/backend-api/codex/")
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "providers": {
+                "openai-codex": {
+                    "tokens": {
+                        "access_token": "codex-access-token",
+                        "refresh_token": "codex-refresh-token",
+                    },
+                    "last_refresh": "2026-04-26T00:00:00Z",
+                }
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("openai-codex")
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.source == "device_code"
+    assert entry.base_url == "https://codex-lb.example.com/backend-api/codex"
+
+
 def test_load_pool_migrates_nous_provider_state(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(

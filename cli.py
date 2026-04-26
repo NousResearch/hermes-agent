@@ -6313,6 +6313,12 @@ class HermesCLI:
         turn_route = self._resolve_turn_agent_config(prompt)
 
         def run_background():
+            set_sudo_password_callback(self._sudo_password_callback)
+            set_approval_callback(self._approval_callback)
+            try:
+                set_secret_capture_callback(self._secret_capture_callback)
+            except Exception:
+                pass
             try:
                 bg_agent = AIAgent(
                     model=turn_route["model"],
@@ -6410,6 +6416,12 @@ class HermesCLI:
                 print()
                 _cprint(f"  ❌ Background task #{task_num} failed: {e}")
             finally:
+                try:
+                    set_sudo_password_callback(None)
+                    set_approval_callback(None)
+                    set_secret_capture_callback(None)
+                except Exception:
+                    pass
                 self._background_tasks.pop(task_id, None)
                 # Clear spinner only if no foreground agent owns it
                 if not self._agent_running:

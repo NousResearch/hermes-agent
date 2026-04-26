@@ -2840,7 +2840,12 @@ def check_browser_requirements() -> bool:
     if _is_camofox_mode():
         return True
 
-    # The agent-browser CLI is always required
+    # CDP override mode can connect to an existing remote/local browser endpoint
+    # without requiring the local agent-browser binary on PATH.
+    if _get_cdp_override():
+        return True
+
+    # The agent-browser CLI is required for local launch and cloud-provider flows.
     try:
         browser_cmd = _find_agent_browser()
     except FileNotFoundError:

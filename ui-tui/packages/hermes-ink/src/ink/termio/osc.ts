@@ -198,11 +198,33 @@ export async function setClipboard(text: string): Promise<string> {
 // Cached after first attempt so repeated mouse-ups skip the probe chain.
 let linuxCopy: 'wl-copy' | 'xclip' | 'xsel' | null | undefined
 
+/** Internal: probe once and cache — wl-copy first, then xclip, then xsel. */
+async function probeLinuxCopy(): Promise<'wl-copy' | 'xclip' | 'xsel' | null> {
+  const opts = { useCwd: false, timeout: 500 }
+
+  const r = await execFileNoThrow('wl-copy', [], opts)
+  if (r.code === 0) {
+    return 'wl-copy'
+  }
+
+  const r2 = await execFileNoThrow('xclip', ['-selection', 'clipboard'], opts)
+  if (r2.code === 0) {
+    return 'xclip'
+  }
+
+  const r3 = await execFileNoThrow('xsel', ['--clipboard', '--input'], opts)
+  return r3.code === 0 ? 'xsel' : null
+}
+
 /**
  * Shell out to a native clipboard utility as a safety net for OSC 52.
  * Only called when not in an SSH session (over SSH, these would write to
  * the remote machine's clipboard — OSC 52 is the right path there).
  * Fire-and-forget: failures are silent since OSC 52 may have succeeded.
+ *
+ * Linux behaviour: if DISPLAY and WAYLAND_DISPLAY are both unset, native
+ * clipboard tools cannot work (they need a display server). In that case
+ * we skip probing entirely and treat linuxCopy as permanently null.
  */
 function copyNative(text: string): void {
   const opts = { input: text, useCwd: false, timeout: 2000 }
@@ -210,51 +232,44 @@ function copyNative(text: string): void {
   switch (process.platform) {
     case 'darwin':
       void execFileNoThrow('pbcopy', [], opts)
-
       return
+
     case 'linux': {
-      if (linuxCopy === null) {
-        return
-      }
-
-      if (linuxCopy === 'wl-copy') {
-        void execFileNoThrow('wl-copy', [], opts)
-
-        return
-      }
-
-      if (linuxCopy === 'xclip') {
-        void execFileNoThrow('xclip', ['-selection', 'clipboard'], opts)
-
-        return
-      }
-
-      if (linuxCopy === 'xsel') {
-        void execFileNoThrow('xsel', ['--clipboard', '--input'], opts)
-
-        return
-      }
-
-      // First call: probe wl-copy (Wayland) then xclip/xsel (X11), cache winner.
-      void execFileNoThrow('wl-copy', [], opts).then(r => {
-        if (r.code === 0) {
-          linuxCopy = 'wl-copy'
-
+      // If we already probed (success or hard-fail), short-circuit.
+      if (linuxCopy !== undefined) {
+        if (linuxCopy === null) {
+          // No working native tool — skip silently.
           return
         }
+        // linuxCopy is a known-working tool; fire-and-forget.
+        void execFileNoThrow(linuxCopy, linuxCopy === 'wl-copy' ? [] : ['-selection', 'clipboard'], opts)
+        return
+      }
 
-        void execFileNoThrow('xclip', ['-selection', 'clipboard'], opts).then(r2 => {
-          if (r2.code === 0) {
-            linuxCopy = 'xclip'
+      // No display server → native tools will fail immediately. Cache null.
+      if (!process.env.DISPLAY && !process.env.WAYLAND_DISPLAY) {
+        if (process.env.HERMES_TUI_DEBUG_CLIPBOARD) {
+          console.error('[clipboard] [native] Linux: no DISPLAY or WAYLAND_DISPLAY — native clipboard unavailable')
+        }
+        linuxCopy = null
+        return
+      }
 
-            return
-          }
+      // First call: probe in the background and cache the result for future copies.
+      // We don't await — this is fire-and-forget.
+      void (async () => {
+        const winner = await probeLinuxCopy()
+        linuxCopy = winner
 
-          void execFileNoThrow('xsel', ['--clipboard', '--input'], opts).then(r3 => {
-            linuxCopy = r3.code === 0 ? 'xsel' : null
-          })
-        })
-      })
+        if (process.env.HERMES_TUI_DEBUG_CLIPBOARD) {
+          console.error(`[clipboard] [native] Linux: clipboard probe complete → ${winner ?? 'no tool available'}`)
+        }
+
+        // Actually perform the copy with the discovered tool.
+        if (winner) {
+          void execFileNoThrow(winner, winner === 'wl-copy' ? [] : ['-selection', 'clipboard'], opts)
+        }
+      })()
 
       return
     }
@@ -263,7 +278,6 @@ function copyNative(text: string): void {
       // clip.exe is always available on Windows. Unicode handling is
       // imperfect (system locale encoding) but good enough for a fallback.
       void execFileNoThrow('clip', [], opts)
-
       return
   }
 }

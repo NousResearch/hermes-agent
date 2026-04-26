@@ -45,6 +45,46 @@ def test_resolve_last_session_prefers_last_active_over_started_at(monkeypatch):
     assert fake_db.closed
 
 
+def test_search_sessions_exposes_last_active_column(tmp_path, monkeypatch):
+    # End-to-end: the actual SessionDB must surface a last_active column so
+    # _resolve_last_session's sort works. A previous bug had last_active=None
+    # on every row because search_sessions used `SELECT *` with no computed
+    # column, silently breaking the -c resume behavior.
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr("pathlib.Path.home", lambda: tmp_path)
+
+    import hermes_state
+
+    from pathlib import Path
+
+    db = hermes_state.SessionDB(db_path=Path(tmp_path / "state.db"))
+    try:
+        db.create_session("s_started_later", source="cli")
+        db.create_session("s_active_later", source="cli")
+        # Force started_at ordering so the test is deterministic regardless
+        # of how quickly the two inserts land.
+        with db._lock:
+            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (2000.0, "s_started_later"))
+            db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (1000.0, "s_active_later"))
+            db._conn.commit()
+
+        db.append_message("s_active_later", role="user", content="hi")
+        with db._lock:
+            db._conn.execute(
+                "UPDATE messages SET timestamp=? WHERE session_id=?",
+                (3000.0, "s_active_later"),
+            )
+            db._conn.commit()
+
+        rows = db.search_sessions(source="cli", limit=5)
+        ids = {r["id"]: r.get("last_active") for r in rows}
+
+        assert ids["s_started_later"] == 2000.0
+        assert ids["s_active_later"] == 3000.0
+    finally:
+        db.close()
+
+
 def test_resolve_last_session_returns_none_when_empty(monkeypatch):
     monkeypatch.setattr("hermes_state.SessionDB", lambda: _FakeDB([]))
     assert _resolve_last_session("cli") is None

@@ -31,6 +31,7 @@ from concurrent.futures import (
 )
 from typing import Any, Dict, List, Optional
 
+from agent.worker_registry import WorkerRegistry, WorkerState
 from toolsets import TOOLSETS
 from tools import file_state
 from utils import base_url_hostname, is_truthy_value
@@ -90,6 +91,7 @@ _active_subagents_lock = threading.Lock()
 # subagent_id -> mutable record tracking the live child agent.  Stays only
 # for the lifetime of the run; _run_single_child is the owner.
 _active_subagents: Dict[str, Dict[str, Any]] = {}
+_worker_registry = WorkerRegistry()
 
 
 def set_spawn_paused(paused: bool) -> bool:
@@ -1122,6 +1124,7 @@ def _run_single_child(
     # hand us a MagicMock don't carry stable ids; skip registration then.
     _raw_sid = getattr(child, "_subagent_id", None)
     _subagent_id = _raw_sid if isinstance(_raw_sid, str) else None
+    _worker_id = _subagent_id
     if _subagent_id:
         _raw_depth = getattr(child, "_delegate_depth", 1)
         _tui_depth = max(0, _raw_depth - 1) if isinstance(_raw_depth, int) else 0
@@ -1143,6 +1146,10 @@ def _run_single_child(
                 "agent": child,
             }
         )
+        try:
+            _worker_registry.update_state(_worker_id, WorkerState.RUNNING)
+        except KeyError:
+            logger.debug("Worker %s missing from registry at run start", _worker_id)
 
     try:
         if child_progress_cb:
@@ -1209,6 +1216,16 @@ def _run_single_child(
                     )
                 except Exception:
                     pass
+            if _worker_id:
+                _worker_registry.update_state(
+                    _worker_id,
+                    WorkerState.TIMEOUT if is_timeout else WorkerState.FAILED,
+                    error=(
+                        f"Subagent timed out after {child_timeout}s"
+                        if is_timeout
+                        else str(_timeout_exc)
+                    ),
+                )
 
             return {
                 "task_index": task_index,
@@ -1423,6 +1440,14 @@ def _run_single_child(
                 child_progress_cb("subagent.complete", **complete_kwargs)
             except Exception as e:
                 logger.debug("Progress callback completion failed: %s", e)
+        if _worker_id:
+            final_state = WorkerState.FINISHED if status == "completed" else WorkerState.FAILED
+            _worker_registry.update_state(
+                _worker_id,
+                final_state,
+                result=summary if status == "completed" else None,
+                error=entry.get("error"),
+            )
 
         return entry
 
@@ -1440,6 +1465,10 @@ def _run_single_child(
                 )
             except Exception as e:
                 logger.debug("Progress callback failure relay failed: %s", e)
+        if _worker_id:
+            _worker_registry.update_state(
+                _worker_id, WorkerState.FAILED, error=str(exc)
+            )
         return {
             "task_index": task_index,
             "status": "error",
@@ -1646,6 +1675,14 @@ def delegate_task(
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
+            child_worker_id = getattr(child, "_subagent_id", None) or f"subagent-{i}"
+            _worker_registry.register(
+                child_worker_id,
+                goal=t["goal"],
+                task_index=i,
+                role=effective_role,
+            )
+            _worker_registry.update_state(child_worker_id, WorkerState.READY)
             children.append((i, t, child))
     finally:
         # Authoritative restore: reset global to parent's tool names after all children built

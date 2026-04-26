@@ -220,7 +220,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const text = ev.payload?.text
 
         if (text !== undefined) {
-          scheduleThinkingStatus(text ? String(text) : statusFromBusy())
+          const value = String(text)
+          scheduleThinkingStatus(value || statusFromBusy())
+
+          if (value) {
+            turnController.recordReasoningDelta(value)
+          }
         }
 
         return

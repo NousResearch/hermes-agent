@@ -42,7 +42,8 @@ def build_plan_path(
     them against the active working directory for local, docker, ssh, modal,
     daytona, and similar terminal backends.
     """
-    slug_source = (user_instruction or "").strip().splitlines()[0] if user_instruction else ""
+    _lines = (user_instruction or "").splitlines()
+    slug_source = _lines[0].strip() if _lines else ""
     slug = _PLAN_SLUG_RE.sub("-", slug_source.lower()).strip("-")
     if slug:
         slug = "-".join(part for part in slug.split("-")[:8] if part)[:48].strip("-")

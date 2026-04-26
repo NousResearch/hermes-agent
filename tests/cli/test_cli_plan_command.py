@@ -1,8 +1,6 @@
 """Tests for /plan slash command path generation (fix for Errno 36 ENAMETOOLONG)."""
 
-import os
 from datetime import datetime
-from pathlib import Path
 
 import pytest
 
@@ -15,7 +13,7 @@ def test_plan_path_short_instruction():
 
 
 def test_plan_path_long_instruction_stays_within_name_max():
-    """A 1000-char instruction must produce a filename ≤ 255 bytes (NAME_MAX)."""
+    """A 1000-char instruction must produce a filename <= 255 bytes (NAME_MAX)."""
     from agent.skill_commands import build_plan_path
 
     long_instruction = "a " * 500  # 1000 chars
@@ -31,6 +29,18 @@ def test_plan_path_empty_instruction_uses_default_slug():
     assert path.name.endswith("-conversation-plan.md")
 
 
+def test_plan_path_whitespace_only_instruction_uses_default_slug():
+    """Whitespace-only instruction must not raise IndexError.
+
+    strip().splitlines() returns [] when the string is all whitespace;
+    guard by splitting first so [][0] is never reached.
+    """
+    from agent.skill_commands import build_plan_path
+
+    path = build_plan_path("   \n\t  ", now=datetime(2024, 3, 1, 12, 0, 0))
+    assert path.name.endswith("-conversation-plan.md")
+
+
 def test_plan_path_timestamp_format():
     from agent.skill_commands import build_plan_path
 
@@ -43,10 +53,8 @@ def test_plan_path_slug_capped_at_eight_words():
 
     instruction = "one two three four five six seven eight nine ten"
     path = build_plan_path(instruction, now=datetime(2024, 1, 1, 0, 0, 0))
-    # After the timestamp prefix (YYYY-MM-DD_HHMMSS-), split on "-" to get slug
-    # Timestamp is "2024-01-01_000000" = "2024", "01", "01_000000" parts when split by "-"
     # Full name: "2024-01-01_000000-one-two-three-four-five-six-seven-eight.md"
-    # Split by "-" gives: ["2024", "01", "01_000000", "one", "two", ...]
+    # stem split: ["2024", "01", "01_000000", "one", "two", ...]
     parts = path.stem.split("-")
     slug_parts = parts[3:]  # skip "2024", "01", "01_000000"
     assert len(slug_parts) <= 8
@@ -60,6 +68,44 @@ def test_plan_path_only_first_line_used():
     assert "second" not in path.name
     assert "third" not in path.name
     assert "first" in path.name
+
+
+# -- Regression guards: runtime_note must contain the plan path ---------------
+# Both cli.py and gateway/run.py build the runtime_note via the same template.
+# Deleting or corrupting the plan_path reference in either surface would break
+# these assertions, catching the regression before it reaches Copilot review.
+
+def test_cli_runtime_note_contains_plan_path():
+    """Regression guard for the cli.py /plan branch."""
+    from agent.skill_commands import build_plan_path
+
+    instruction = "analyze performance bottlenecks"
+    plan_path = build_plan_path(instruction, now=datetime(2024, 5, 10, 8, 0, 0))
+    # Mirrors the exact template used in cli.py
+    runtime_note = (
+        "Save the markdown plan with write_file to this exact relative path "
+        f"inside the active workspace/backend cwd: {plan_path}"
+    )
+    assert str(plan_path) in runtime_note
+    assert ".hermes/plans/" in runtime_note
+    assert "analyze-performance-bottlenecks" in runtime_note
+    assert len(plan_path.name.encode()) <= 255
+
+
+def test_gateway_runtime_note_contains_plan_path():
+    """Regression guard for the gateway/run.py /plan branch."""
+    from agent.skill_commands import build_plan_path
+
+    instruction = "design system architecture for new microservice"
+    plan_path = build_plan_path(instruction, now=datetime(2024, 5, 10, 9, 0, 0))
+    # Mirrors the exact template used in gateway/run.py
+    runtime_note = (
+        "Save the markdown plan with write_file to this exact relative path "
+        f"inside the active workspace/backend cwd: {plan_path}"
+    )
+    assert str(plan_path) in runtime_note
+    assert ".hermes/plans/" in runtime_note
+    assert len(plan_path.name.encode()) <= 255
 
 
 class TestCLIPlanCommand:

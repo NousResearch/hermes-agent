@@ -1,8 +1,7 @@
 """MentisDB memory plugin — MemoryProvider for MentisDB semantic memory.
 
-Connects to a MentisDB MCP server and provides persistent, searchable
-memory via the MemoryProvider interface.  Replaces markdown-file-based
-memory with a proper append-only semantic store.
+Connects to a MentisDB MCP server via synchronous JSON-RPC over HTTP.
+Replaces markdown-file-based memory with a proper append-only semantic store.
 
 The provider:
   - Bootstraps the MentisDB chain on session start
@@ -10,62 +9,39 @@ The provider:
   - Injects relevant context before each turn (via prefetch)
   - Provides instructions for using MentisDB tools (via system_prompt_block)
 
-Requires: mcp, httpx packages + a running MentisDB MCP server.
+Architecture: pure synchronous HTTP + JSON-RPC 2.0.  No asyncio, no
+thread-locals, no anyio cancel-scope traps.  A background writer thread
+flushes a write queue every 2 seconds.
+
+Requires: requests package + a running MentisDB MCP server.
 
 Config: reads the MentisDB URL + protocol_version from
-  ~/.hermes/config.yaml → mcp_servers.mentisdb
+  ~/.hermes/config.yaml -> mcp_servers.mentisdb
 """
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 import threading
 import time
 from typing import Any, Dict, List, Optional
 
+import requests
+
 from agent.memory_provider import MemoryProvider
-from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
-# Dedicated event loop for MentisDB async calls
+# Sentry log to verify this module version is loaded
 # ---------------------------------------------------------------------------
-
-_loop: Optional[asyncio.AbstractEventLoop] = None
-_loop_thread: Optional[threading.Thread] = None
-_loop_lock = threading.Lock()
-
-
-def _get_loop() -> asyncio.AbstractEventLoop:
-    global _loop, _loop_thread
-    with _loop_lock:
-        if _loop is not None and _loop.is_running():
-            return _loop
-        _loop = asyncio.new_event_loop()
-
-        def _run() -> None:
-            asyncio.set_event_loop(_loop)
-            _loop.run_forever()
-
-        _loop_thread = threading.Thread(target=_run, daemon=True, name="mentisdb-loop")
-        _loop_thread.start()
-        return _loop
-
-
-def _run_async(coro) -> Any:
-    """Run a coroutine on the dedicated event loop, blocking the caller."""
-    loop = _get_loop()
-    future = asyncio.run_coroutine_threadsafe(coro, loop)
-    return future.result(timeout=30)
+logger.info("MentisDB plugin v2 (sync HTTP/JSON-RPC) loaded from %s", __file__)
 
 
 # ---------------------------------------------------------------------------
 # Config helpers
 # ---------------------------------------------------------------------------
-
 
 def _get_mentisdb_config() -> Optional[Dict[str, Any]]:
     """Read mentisdb MCP server config from ~/.hermes/config.yaml."""
@@ -80,24 +56,122 @@ def _get_mentisdb_config() -> Optional[Dict[str, Any]]:
 
 
 # ---------------------------------------------------------------------------
+# JSON-RPC 2.0 client for MentisDB MCP (sync)
+# ---------------------------------------------------------------------------
+
+class MentisDbRpcClient:
+    """Synchronous JSON-RPC 2.0 client for a MentisDB MCP HTTP endpoint.
+
+    Talks to the MentisDB streamable-HTTP MCP transport directly,
+    avoiding the async MCP SDK and its anyio cancel-scope issues.
+    """
+
+    def __init__(self, url: str, protocol_version: Optional[str] = None,
+                 timeout: float = 30):
+        self._url = url.rstrip("/")
+        self._proto_ver = protocol_version
+        self._session_id: Optional[str] = None
+        self._req_id: int = 0
+        self._sess = requests.Session()
+        self._sess.headers["Content-Type"] = "application/json"
+        self._sess.headers["Accept"] = "application/json, text/event-stream"
+        if protocol_version:
+            self._sess.headers["mcp-protocol-version"] = protocol_version
+        self._sess.timeout = timeout
+
+    def initialize(self) -> bool:
+        """Send MCP initialize request.  Returns True on success."""
+        params = {
+            "protocolVersion": self._proto_ver or "2025-11-25",
+            "clientInfo": {"name": "hermes-mentisdb-memory-plugin", "version": "1.0"},
+            "capabilities": {},
+        }
+        try:
+            resp = self._rpc("initialize", params)
+            if not resp:
+                return False
+            result = resp.get("result", {})
+            server_ver = result.get("protocolVersion", "?")
+            logger.info("MentisDB: initialized (server proto=%s)", server_ver)
+            return True
+        except Exception as e:
+            logger.warning("MentisDB: initialize failed: %s", e)
+            return False
+
+    def call_tool(self, tool_name: str, arguments: dict) -> dict:
+        """Call a MentisDB MCP tool.  Returns parsed JSON result dict."""
+        params = {"name": tool_name, "arguments": arguments}
+        resp = self._rpc("tools/call", params)
+        if not resp:
+            return {}
+        result = resp.get("result", {})
+        # Extract text from content blocks
+        content = result.get("content", [])
+        if content and isinstance(content, list):
+            for block in content:
+                if isinstance(block, dict) and block.get("type") == "text":
+                    try:
+                        return json.loads(block.get("text", "{}"))
+                    except json.JSONDecodeError:
+                        return {"raw": block.get("text", "")}
+        return result
+
+    def _rpc(self, method: str, params: dict) -> Optional[dict]:
+        """Send a JSON-RPC 2.0 request.  Returns parsed response or None."""
+        self._req_id += 1
+        payload = {
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+            "id": self._req_id,
+        }
+        headers = {}
+        if self._session_id:
+            headers["mcp-session-id"] = self._session_id
+
+        try:
+            r = self._sess.post(self._url, json=payload, headers=headers)
+            if r.status_code == 400:
+                logger.debug("MentisDB RPC: 400 Bad Request — %s",
+                              r.text[:200])
+            # Capture session ID from response header
+            sid = r.headers.get("mcp-session-id")
+            if sid:
+                self._session_id = sid
+            # SSE responses (notifications) have no body
+            if not r.text or not r.text.strip():
+                return {}
+            return r.json()
+        except requests.RequestException as e:
+            logger.debug("MentisDB RPC: request error: %s", e)
+            return None
+        except Exception as e:
+            logger.debug("MentisDB RPC: unexpected error: %s", e)
+            return None
+
+    def close(self) -> None:
+        """Close the HTTP session."""
+        try:
+            self._sess.close()
+        except Exception:
+            pass
+
+
+# ---------------------------------------------------------------------------
 # Provider implementation
 # ---------------------------------------------------------------------------
 
 
 class MentisDbMemoryProvider(MemoryProvider):
-    """Memory provider backed by a MentisDB MCP server."""
+    """Memory provider backed by a MentisDB MCP server via sync JSON-RPC."""
 
     def __init__(self) -> None:
-        self._session: Any = None
-        self._read_stream: Any = None
-        self._write_stream: Any = None
-        self._http_client: Any = None
-        self._ctx_mgr: Any = None
         self._available: Optional[bool] = None
         self._initialized: bool = False
         self._chain_key: Optional[str] = None
         self._agent_id: str = "hermes-agent"
         self._session_id: str = ""
+        self._rpc: Optional[MentisDbRpcClient] = None
         self._connected: bool = False
         self._write_queue: List[Dict[str, Any]] = []
         self._queue_lock = threading.Lock()
@@ -112,15 +186,12 @@ class MentisDbMemoryProvider(MemoryProvider):
         if self._available is not None:
             return self._available
 
-        # Check deps
         try:
-            import mcp  # noqa: F401
-            import httpx  # noqa: F401
+            import requests  # noqa: F401
         except ImportError:
             self._available = False
             return False
 
-        # Check config
         cfg = _get_mentisdb_config()
         if not cfg or not cfg.get("url"):
             logger.debug("MentisDB: no URL configured in mcp_servers.mentisdb")
@@ -134,15 +205,15 @@ class MentisDbMemoryProvider(MemoryProvider):
         self._session_id = session_id
         self._initialized = True
 
-        # Derive agent identity from context
         agent_identity = kwargs.get("agent_identity", "")
         agent_workspace = kwargs.get("agent_workspace", "")
         if agent_identity:
             self._agent_id = f"hermes-{agent_identity}"
-
-        # Derive a stable chain key from workspace/session
         if agent_workspace:
             self._chain_key = agent_workspace
+
+        # Connect to MentisDB now
+        self._ensure_connected()
 
         # Start background writer
         self._shutdown_requested = False
@@ -156,9 +227,13 @@ class MentisDbMemoryProvider(MemoryProvider):
             self._agent_id, self._chain_key or "default", session_id,
         )
 
+    # ------------------------------------------------------------------
+    # Connection
+    # ------------------------------------------------------------------
+
     def _ensure_connected(self) -> bool:
-        """Connect to MentisDB MCP server if not already connected."""
-        if self._connected:
+        """Connect and bootstrap if not already connected."""
+        if self._connected and self._rpc is not None:
             return True
 
         cfg = _get_mentisdb_config()
@@ -168,136 +243,69 @@ class MentisDbMemoryProvider(MemoryProvider):
         url = cfg["url"]
         proto_ver = cfg.get("protocol_version")
 
-        async def _connect() -> bool:
-            import httpx
-            from mcp.client.streamable_http import streamable_http_client
-            from mcp import ClientSession
-            import mcp.types as _mcp_types
+        self._rpc = MentisDbRpcClient(url, protocol_version=proto_ver)
 
-            headers = {}
-            if proto_ver:
-                headers["mcp-protocol-version"] = proto_ver
-
-            try:
-                self._http_client = httpx.AsyncClient(
-                    headers=headers,
-                    timeout=httpx.Timeout(30, read=300),
-                    follow_redirects=True,
-                )
-                self._ctx_mgr = streamable_http_client(url, http_client=self._http_client)
-                read_stream, write_stream, _ = await self._ctx_mgr.__aenter__()
-                self._read_stream = read_stream
-                self._write_stream = write_stream
-
-                session = ClientSession(read_stream, write_stream)
-
-                # Protocol version override
-                saved_lpv = _mcp_types.LATEST_PROTOCOL_VERSION
-                if proto_ver:
-                    _mcp_types.LATEST_PROTOCOL_VERSION = proto_ver
-                try:
-                    await session.initialize()
-                finally:
-                    _mcp_types.LATEST_PROTOCOL_VERSION = saved_lpv
-
-                self._session = session
-                self._connected = True
-                logger.info("MentisDB: connected to %s", url)
-
-                # Get or infer chain key
-                if not self._chain_key:
-                    tools = await session.list_tools()
-                    # Use list_chains tool to pick a chain
-                    chains_result = await session.call_tool(
-                        "mentisdb_list_chains", {}
-                    )
-                    chains = json.loads(
-                        getattr(chains_result.content[0], "text", "{}")
-                        if hasattr(chains_result, "content") and chains_result.content
-                        else "{}"
-                    )
-                    chain_keys = chains.get("chains", [chains.get("default_chain_key", "default")])
-                    if isinstance(chain_keys, list):
-                        self._chain_key = chain_keys[0] if chain_keys else "default"
-                    elif isinstance(chain_keys, str):
-                        self._chain_key = chain_keys
-
-                # Bootstrap the chain
-                await session.call_tool(
-                    "mentisdb_bootstrap",
-                    {
-                        "content": f"Bootstrap from {self._agent_id} (Hermes Agent memory provider).",
-                        "agent_id": self._agent_id,
-                    },
-                )
-                # Register agent
-                await session.call_tool(
-                    "mentisdb_upsert_agent",
-                    {
-                        "agent_id": self._agent_id,
-                        "display_name": f"Hermes Agent ({self._agent_id})",
-                        "description": "Primary Hermes AI assistant agent",
-                    },
-                )
-                return True
-            except Exception as e:
-                logger.warning("MentisDB: connection failed: %s", e)
-                await self._disconnect()
-                return False
-
-        try:
-            return _run_async(_connect())
-        except Exception as e:
-            logger.warning("MentisDB: connect error: %s", e)
+        if not self._rpc.initialize():
+            logger.warning("MentisDB: failed to initialize RPC connection")
             return False
 
-    async def _disconnect(self) -> None:
-        """Tear down the MCP connection."""
+        # Determine chain key — prefer configured, then "hermes" as default
+        if not self._chain_key:
+            self._chain_key = "hermes"
+
+        # Bootstrap
         try:
-            if self._session:
-                self._session = None
-            if self._ctx_mgr:
-                await self._ctx_mgr.__aexit__(None, None, None)
-                self._ctx_mgr = None
-        except Exception:
-            pass
+            self._rpc.call_tool("mentisdb_bootstrap", {
+                "content": f"Bootstrap from {self._agent_id} "
+                           f"(Hermes Agent memory provider).",
+                "agent_id": self._agent_id,
+            })
+        except Exception as e:
+            logger.debug("MentisDB: bootstrap warning: %s", e)
+
+        # Register agent
         try:
-            if self._http_client:
-                await self._http_client.aclose()
-                self._http_client = None
-        except Exception:
-            pass
-        self._connected = False
+            self._rpc.call_tool("mentisdb_upsert_agent", {
+                "agent_id": self._agent_id,
+                "display_name": f"Hermes Agent ({self._agent_id})",
+                "description": "Primary Hermes AI assistant agent",
+            })
+        except Exception as e:
+            logger.debug("MentisDB: upsert_agent warning: %s", e)
+
+        self._connected = True
+        logger.info(
+            "MentisDB: connected (chain=%s, agent=%s)",
+            self._chain_key, self._agent_id,
+        )
+        return True
 
     # ------------------------------------------------------------------
     # System prompt
     # ------------------------------------------------------------------
 
     def system_prompt_block(self) -> str:
-        if not self._connected and not self._ensure_connected():
+        if not self._connected:
             return ""
 
         return (
             "## Persistent Memory (MentisDB)\n\n"
-            "You have access to MentisDB — an append-only semantic memory server "
-            "accessible through the following MCP tools:\n\n"
+            "You have access to MentisDB — an append-only semantic memory "
+            "server backed by the MentisDB MCP tools.\n\n"
             "**Core memory operations:**\n"
-            "- `mcp_mentisdb_append` — Save durable facts, preferences, corrections, "
-            "insights, lessons learned, decisions, and checkpoints.\n"
-            "- `mcp_mentisdb_ranked_search` — Best flat retrieval; use for most lookups.\n"
-            "- `mcp_mentisdb_context_bundles` — Seed-anchored context; use when you need "
-            "supporting context grouped around key concepts.\n"
-            "- `mcp_mentisdb_search` — Search by type, role, tags, concepts, importance.\n"
+            "- `mcp_mentisdb_append` — Save durable facts, preferences, "
+            "corrections, insights, lessons learned, decisions, checkpoints.\n"
+            "- `mcp_mentisdb_ranked_search` — Best flat retrieval; use for "
+            "most lookups.\n"
+            "- `mcp_mentisdb_context_bundles` — Seed-anchored context.\n"
+            "- `mcp_mentisdb_search` — Search by type, role, tags, concepts.\n"
             "- `mcp_mentisdb_recent_context` — Quick resumption context.\n\n"
             "**Usage:**\n"
-            "- Use `mcp_mentisdb_append` INSTEAD of the `memory` tool. Save facts with "
-            "appropriate ThoughtType (PreferenceUpdate, Decision, Insight, Correction, "
-            "Mistake, LessonLearned, Summary, etc.).\n"
-            "- Prefer `mcp_mentisdb_ranked_search` over generic search for retrieving facts.\n"
-            "- Write a Summary checkpoint with `mcp_mentisdb_append` before context "
-            "compaction, truncation, or handoff.\n"
-            "- The `memory` tool (markdown files) is deprecated in favor of MentisDB. "
-            "Only use it as a fallback.\n\n"
+            "- Use `mcp_mentisdb_append` INSTEAD of the `memory` tool.\n"
+            "- Prefer `mcp_mentisdb_ranked_search` over generic search.\n"
+            "- Write a Summary checkpoint before context compaction or "
+            "handoff.\n"
+            "- The built-in `memory` tool is deprecated; use MentisDB.\n\n"
             f"**Identity:** agent_id=`{self._agent_id}`, "
             f"chain=`{self._chain_key or 'default'}`"
         )
@@ -309,42 +317,30 @@ class MentisDbMemoryProvider(MemoryProvider):
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if not query or len(query.strip()) < 3:
             return ""
-
-        if not self._connected and not self._ensure_connected():
+        if not self._connected or self._rpc is None:
             return ""
-
-        async def _prefetch() -> str:
-            try:
-                result = await self._session.call_tool(
-                    "mentisdb_ranked_search",
-                    {
-                        "text": query,
-                        "limit": 5,
-                        "chain_key": self._chain_key,
-                    },
-                )
-                text = getattr(result.content[0], "text", "") if result.content else ""
-                data = json.loads(text) if text else {}
-                memories = data.get("results", data.get("thoughts", []))
-
-                if not memories:
-                    return ""
-
-                lines = ["[MentisDB recalled context]"]
-                for m in memories[:5]:
-                    content = m.get("content", str(m))[:300]
-                    ttype = m.get("thought_type", m.get("type", ""))
-                    prefix = f"[{ttype}] " if ttype else ""
-                    lines.append(f"- {prefix}{content}")
-                return "\n".join(lines)
-            except Exception as e:
-                logger.debug("MentisDB prefetch error: %s", e)
-                return ""
 
         try:
-            return _run_async(_prefetch())
-        except Exception:
+            data = self._rpc.call_tool("mentisdb_ranked_search", {
+                "text": query,
+                "limit": 5,
+                "chain_key": self._chain_key,
+            })
+        except Exception as e:
+            logger.debug("MentisDB prefetch error: %s", e)
             return ""
+
+        memories = data.get("results", data.get("thoughts", []))
+        if not memories:
+            return ""
+
+        lines = ["[MentisDB recalled context]"]
+        for m in memories[:5]:
+            content = m.get("content", str(m))[:300]
+            ttype = m.get("thought_type", m.get("type", ""))
+            prefix = f"[{ttype}] " if ttype else ""
+            lines.append(f"- {prefix}{content}")
+        return "\n".join(lines)
 
     # ------------------------------------------------------------------
     # Mirror memory writes
@@ -357,7 +353,6 @@ class MentisDbMemoryProvider(MemoryProvider):
         content: str,
         metadata: Optional[Dict[str, Any]] = None,
     ) -> None:
-        """Mirror built-in memory writes to MentisDB."""
         if not content:
             return
         ttype = "PreferenceUpdate" if target == "user" else "Memory"
@@ -371,12 +366,20 @@ class MentisDbMemoryProvider(MemoryProvider):
             self._write_queue.append(entry)
 
     # ------------------------------------------------------------------
-    # Turn sync (capture conversation)
+    # Turn sync
     # ------------------------------------------------------------------
 
-    def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
-        """Log the turn to MentisDB as an Insight."""
-        content = f"Turn: user='{user_content[:200]}', assistant='{assistant_content[:200]}'"
+    def sync_turn(
+        self,
+        user_content: str,
+        assistant_content: str,
+        *,
+        session_id: str = "",
+    ) -> None:
+        content = (
+            f"Turn: user='{user_content[:200]}', "
+            f"assistant='{assistant_content[:200]}'"
+        )
         entry = {
             "thought_type": "Insight",
             "content": content,
@@ -392,43 +395,34 @@ class MentisDbMemoryProvider(MemoryProvider):
     # ------------------------------------------------------------------
 
     def _writer_loop(self) -> None:
-        """Background thread that flushes the write queue to MentisDB."""
+        """Background thread that flushes the write queue every 2s."""
         while not self._shutdown_requested:
-            time.sleep(2)  # Batch writes every 2 seconds
+            time.sleep(2)
+            self._flush_writes()
 
-            with self._queue_lock:
-                if not self._write_queue:
-                    continue
-                batch = self._write_queue[:]
-                self._write_queue.clear()
+    def _flush_writes(self) -> None:
+        if not self._connected or self._rpc is None:
+            return
 
-            if not self._connected and not self._ensure_connected():
-                # Re-queue on failure
+        with self._queue_lock:
+            if not self._write_queue:
+                return
+            batch = list(self._write_queue)
+            self._write_queue.clear()
+
+        for entry in batch:
+            try:
+                self._rpc.call_tool("mentisdb_append", entry)
+            except Exception:
                 with self._queue_lock:
-                    self._write_queue = batch + self._write_queue
-                continue
-
-            for entry in batch:
-                try:
-                    self._write_one(entry)
-                except Exception:
-                    with self._queue_lock:
-                        self._write_queue.append(entry)
-                    break
-
-    def _write_one(self, entry: Dict[str, Any]) -> None:
-        """Write a single entry to MentisDB via the MCP session."""
-        async def _append() -> None:
-            await self._session.call_tool("mentisdb_append", entry)
-
-        _run_async(_append())
+                    self._write_queue.append(entry)
+                break
 
     # ------------------------------------------------------------------
-    # Tools (empty — MCP tools are registered separately)
+    # Tools (none — MCP tools are registered by the built-in MCP client)
     # ------------------------------------------------------------------
 
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
-        """The mentisdb tools are registered via MCP discovery, not here."""
         return []
 
     # ------------------------------------------------------------------
@@ -439,22 +433,11 @@ class MentisDbMemoryProvider(MemoryProvider):
         self._shutdown_requested = True
 
         # Flush remaining writes
-        with self._queue_lock:
-            remaining = list(self._write_queue)
-            self._write_queue.clear()
+        self._flush_writes()
 
-        for entry in remaining:
-            try:
-                if self._connected:
-                    self._write_one(entry)
-            except Exception:
-                pass
-
-        # Disconnect
-        try:
-            _run_async(self._disconnect())
-        except Exception:
-            pass
+        if self._rpc:
+            self._rpc.close()
+            self._rpc = None
 
         self._connected = False
         logger.info("MentisDB provider shut down")

@@ -35,7 +35,7 @@ export const MessageLine = memo(function MessageLine({
 
   if (msg.kind === 'trail' && (msg.tools?.length || thinking)) {
     return thinkingMode !== 'hidden' || toolsMode !== 'hidden' || activityMode !== 'hidden' ? (
-      <Box flexDirection="column" marginTop={1}>
+      <Box flexDirection="column">
         <ToolTrail
           detailsMode={detailsMode}
           reasoning={thinking}

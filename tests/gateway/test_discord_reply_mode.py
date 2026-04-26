@@ -321,6 +321,7 @@ def _make_message(*, content: str = "hi", reference=None):
         created_at=datetime.now(timezone.utc),
         channel=FakeDMChannel(),
         author=author,
+        guild=None,
     )
 
 

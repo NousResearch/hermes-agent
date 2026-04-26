@@ -147,6 +147,42 @@ class TestLaunchdPlistReplace:
         replace_idx = string_values.index("--replace")
         assert replace_idx == run_idx + 1
 
+    def test_plist_uses_hermes_binary_not_python(self):
+        """First ProgramArguments entry is the hermes entry-point, not python.
+
+        macOS names the Login Item after ProgramArguments[0]; using the hermes
+        binary instead of the Python interpreter fixes the confusing "python"
+        attribution in System Settings → Login Items & Extensions.
+        """
+        plist = gateway_cli.generate_launchd_plist()
+        # Extract only the strings inside the <array> that follows <key>ProgramArguments</key>
+        lines = [line.strip() for line in plist.splitlines()]
+        in_prog_args = False
+        prog_arg_values: list[str] = []
+        for line in lines:
+            if "<key>ProgramArguments</key>" in line:
+                in_prog_args = True
+                continue
+            if in_prog_args:
+                if "<array>" in line:
+                    continue
+                if "</array>" in line:
+                    break
+                if "<string>" in line and "</string>" in line:
+                    prog_arg_values.append(
+                        line.replace("<string>", "").replace("</string>", "")
+                    )
+        assert prog_arg_values, "ProgramArguments array is empty"
+        # First ProgramArgument must end with /hermes, not python/python3
+        first_arg = prog_arg_values[0]
+        assert first_arg.endswith("/hermes"), (
+            f"Expected first ProgramArgument to end with '/hermes', got: {first_arg!r}"
+        )
+        assert "-m" not in prog_arg_values, "'-m' flag should not appear in ProgramArguments"
+        assert "hermes_cli.main" not in prog_arg_values, (
+            "'hermes_cli.main' should not appear in ProgramArguments"
+        )
+
 
 class TestLaunchdPlistPath:
     def test_plist_contains_environment_variables(self):

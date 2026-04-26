@@ -2010,7 +2010,6 @@ def _launchd_domain() -> str:
 
 
 def generate_launchd_plist() -> str:
-    python_path = get_python_path()
     working_dir = str(PROJECT_ROOT)
     hermes_home = str(get_hermes_home().resolve())
     log_dir = get_hermes_home() / "logs"
@@ -2038,11 +2037,12 @@ def generate_launchd_plist() -> str:
         dict.fromkeys(priority_dirs + [p for p in os.environ.get("PATH", "").split(":") if p])
     )
 
+    # Use the venv hermes entry-point so macOS registers the Login Item as
+    # "hermes" rather than "python" in System Settings → Login Items & Extensions.
+    hermes_bin = f"{venv_bin}/hermes"
     # Build ProgramArguments array, including --profile when using a named profile
     prog_args = [
-        f"<string>{python_path}</string>",
-        "<string>-m</string>",
-        "<string>hermes_cli.main</string>",
+        f"<string>{hermes_bin}</string>",
     ]
     if profile_arg:
         for part in profile_arg.split():

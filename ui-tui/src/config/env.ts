@@ -12,3 +12,8 @@ export const NO_CONFIRM_DESTRUCTIVE = /^(?:1|true|yes|on)$/i.test((process.env.H
 // here just disables AlternateScreen so we can measure whether native
 // scrolling beats our virtualization on the same pipeline.
 export const INLINE_MODE = /^(?:1|true|yes|on)$/i.test((process.env.HERMES_TUI_INLINE ?? '').trim())
+// Show a small FPS counter overlay in the bottom-right corner. Fed by
+// ink's onFrame callback (so it's the REAL render rate, not a synthetic
+// timer).  Useful during scroll-perf tuning to watch behavior in real
+// time instead of running a separate profile harness.
+export const SHOW_FPS = /^(?:1|true|yes|on)$/i.test((process.env.HERMES_TUI_FPS ?? '').trim())

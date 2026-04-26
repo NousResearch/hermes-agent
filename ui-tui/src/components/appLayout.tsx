@@ -6,7 +6,7 @@ import { useGateway } from '../app/gatewayContext.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $uiState } from '../app/uiStore.js'
-import { INLINE_MODE } from '../config/env.js'
+import { INLINE_MODE, SHOW_FPS } from '../config/env.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
 import { inputVisualHeight, stableComposerColumns } from '../lib/inputMetrics.js'
 import { PerfPane } from '../lib/perfPane.js'
@@ -15,6 +15,7 @@ import { AgentsOverlay } from './agentsOverlay.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
 import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
+import { FpsOverlay } from './fpsOverlay.js'
 import { MessageLine } from './messageLine.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
@@ -290,6 +291,15 @@ export const AppLayout = memo(function AppLayout({
             <PerfPane id="composer">
               <ComposerPane actions={actions} composer={composer} status={status} />
             </PerfPane>
+
+            {/* FPS counter overlay: pinned to the bottom row, right
+                aligned, gated on HERMES_TUI_FPS. Returns null + skips
+                this subtree when disabled (zero cost). */}
+            {SHOW_FPS && (
+              <Box flexShrink={0} justifyContent="flex-end" paddingRight={1}>
+                <FpsOverlay />
+              </Box>
+            )}
           </>
         )}
       </Box>

@@ -3,7 +3,7 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
-import { useStdin } from '@hermes/ink'
+import { useStdin, withInkSuspended } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { useCallback, useMemo, useState } from 'react'
 
@@ -253,14 +253,16 @@ export function useComposerState({
     [handleResolvedPaste, onClipboardPaste, querier]
   )
 
-  const openEditor = useCallback(() => {
+  const openEditor = useCallback(async () => {
     const editor = process.env.EDITOR || process.env.VISUAL || 'vi'
     const file = join(mkdtempSync(join(tmpdir(), 'hermes-')), 'prompt.md')
+    let code: null | number = null
 
     writeFileSync(file, [...inputBuf, input].join('\n'))
-    process.stdout.write('\x1b[?1049l')
-    const { status: code } = spawnSync(editor, [file], { stdio: 'inherit' })
-    process.stdout.write('\x1b[?1049h\x1b[2J\x1b[H')
+
+    await withInkSuspended(async () => {
+      code = spawnSync(editor, [file], { stdio: 'inherit' }).status
+    })
 
     if (code === 0) {
       const text = readFileSync(file, 'utf8').trimEnd()

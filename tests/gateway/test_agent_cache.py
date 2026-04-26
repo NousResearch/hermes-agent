@@ -1045,6 +1045,9 @@ class TestAgentCacheIdleResume:
             pass
 
 
+_FAKE_NOW = 10_000.0  # Fixed epoch for deterministic time assertions
+
+
 class TestCachedAgentInactivityReset:
     """Inactivity-clock reset must be gated on _interrupt_depth == 0.
 
@@ -1057,9 +1060,8 @@ class TestCachedAgentInactivityReset:
     """
 
     def _fake_agent(self, stale_seconds: float = 1800.0):
-        import time as _t
         m = MagicMock()
-        m._last_activity_ts = _t.time() - stale_seconds
+        m._last_activity_ts = _FAKE_NOW - stale_seconds
         m._api_call_count = 10
         m._last_activity_desc = "previous turn activity"
         return m
@@ -1067,21 +1069,33 @@ class TestCachedAgentInactivityReset:
     def test_fresh_turn_resets_idle_clock(self):
         """interrupt_depth=0: clock resets so a post-idle turn gets a
         fresh 30-min inactivity window (guard for #9051)."""
-        import time as _t
         from gateway.run import GatewayRunner
 
         agent = self._fake_agent(stale_seconds=1800.0)
         old_ts = agent._last_activity_ts
-        before = _t.time()
 
-        GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=0)
+        with patch("gateway.run.time") as mock_time:
+            mock_time.time.return_value = _FAKE_NOW
+            GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=0)
 
-        assert agent._last_activity_ts >= before, (
+        assert agent._last_activity_ts == _FAKE_NOW, (
             "_last_activity_ts was not reset on a fresh turn (interrupt_depth=0)"
         )
         assert agent._last_activity_ts > old_ts, (
             "Stale idle time should be cleared so the new turn gets a fresh window"
         )
+
+    def test_fresh_turn_resets_desc(self):
+        """interrupt_depth=0: description is updated to reflect the new turn."""
+        from gateway.run import GatewayRunner
+
+        agent = self._fake_agent()
+
+        with patch("gateway.run.time") as mock_time:
+            mock_time.time.return_value = _FAKE_NOW
+            GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=0)
+
+        assert agent._last_activity_desc == "starting new turn (cached)"
 
     def test_interrupt_turn_preserves_idle_clock(self):
         """interrupt_depth=1: clock preserved so accumulated stuck-turn
@@ -1096,6 +1110,19 @@ class TestCachedAgentInactivityReset:
         assert agent._last_activity_ts == old_ts, (
             "_last_activity_ts must not be reset on interrupt-recursive turns "
             "(interrupt_depth>0) — the watchdog needs the accumulated idle time"
+        )
+
+    def test_interrupt_turn_preserves_desc(self):
+        """interrupt_depth=1: desc preserved — it is semantically paired with ts."""
+        from gateway.run import GatewayRunner
+
+        agent = self._fake_agent(stale_seconds=1200.0)
+
+        GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=1)
+
+        assert agent._last_activity_desc == "previous turn activity", (
+            "_last_activity_desc must not change on interrupt-recursive turns; "
+            "it describes the activity *at* _last_activity_ts"
         )
 
     def test_deep_interrupt_recursion_preserves_idle_clock(self):
@@ -1116,7 +1143,9 @@ class TestCachedAgentInactivityReset:
         agent_fresh = self._fake_agent()
         agent_interrupted = self._fake_agent()
 
-        GatewayRunner._init_cached_agent_for_turn(agent_fresh, interrupt_depth=0)
+        with patch("gateway.run.time") as mock_time:
+            mock_time.time.return_value = _FAKE_NOW
+            GatewayRunner._init_cached_agent_for_turn(agent_fresh, interrupt_depth=0)
         GatewayRunner._init_cached_agent_for_turn(agent_interrupted, interrupt_depth=1)
 
         assert agent_fresh._api_call_count == 0
@@ -1128,7 +1157,6 @@ class TestCachedAgentInactivityReset:
         The idle time seen by the watchdog must reflect the full stuck
         duration, not restart from zero on the recursive re-entry.
         """
-        import time as _t
         from gateway.run import GatewayRunner
 
         STUCK_FOR = 1750.0
@@ -1139,7 +1167,7 @@ class TestCachedAgentInactivityReset:
         GatewayRunner._init_cached_agent_for_turn(agent, interrupt_depth=1)
 
         # Watchdog sees time.time() - _last_activity_ts ≥ STUCK_FOR.
-        idle_secs = _t.time() - agent._last_activity_ts
+        idle_secs = _FAKE_NOW - agent._last_activity_ts
         assert idle_secs >= STUCK_FOR - 1.0, (
             f"Watchdog would see {idle_secs:.0f}s idle, expected ~{STUCK_FOR}s. "
             "Inactivity timeout could not fire for a stuck interrupted turn."

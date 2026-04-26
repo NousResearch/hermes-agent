@@ -366,10 +366,13 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return voiceRecordToggle()
     }
 
-    // Ctrl+G, plus Alt+G fallback for VSCode/Cursor (they bind Ctrl+G to
-    // "Find Next" before the TUI sees it; Alt+G arrives as meta+g).
+    // Cmd/Ctrl+G, plus Alt+G fallback for VSCode/Cursor (they bind the
+    // primary keystroke to "Find Next" before the TUI sees it; Alt+G
+    // arrives as meta+g across platforms).
     if (ch.toLowerCase() === 'g' && (isAction(key, ch, 'g') || key.meta)) {
-      return cActions.openEditor()
+      return void cActions.openEditor().catch((err: unknown) => {
+        actions.sys(err instanceof Error ? `failed to open editor: ${err.message}` : 'failed to open editor')
+      })
     }
 
     // shift-tab flips yolo without spending a turn (claude-code parity)

@@ -19,22 +19,29 @@ const isExecutable = (path: string): boolean => {
 }
 
 /**
- * Resolve the editor to launch when the user hits Ctrl+G / Alt+G.
+ * Resolve the editor invocation argv (without the file argument).
  *
- *   1. $VISUAL / $EDITOR (user's explicit choice)
- *   2. first FALLBACKS entry resolvable on $PATH
- *   3. literal `'vi'` so spawnSync still has something to try
+ *   1. $VISUAL / $EDITOR, shell-tokenized so `EDITOR="code --wait"` works
+ *   2. on POSIX: first FALLBACKS entry resolvable on $PATH
+ *   3. on Windows: `notepad.exe`
+ *   4. literal `['vi']` as the last-resort POSIX floor
  */
-export const resolveEditor = (env: NodeJS.ProcessEnv = process.env): string => {
-  if (env.VISUAL) {
-    return env.VISUAL
+export const resolveEditor = (
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform
+): string[] => {
+  const explicit = env.VISUAL ?? env.EDITOR
+
+  if (explicit?.trim()) {
+    return explicit.trim().split(/\s+/)
   }
 
-  if (env.EDITOR) {
-    return env.EDITOR
+  if (platform === 'win32') {
+    return ['notepad.exe']
   }
 
   const dirs = (env.PATH ?? '').split(delimiter).filter(Boolean)
+  const found = FALLBACKS.flatMap(name => dirs.map(d => join(d, name))).find(isExecutable)
 
-  return FALLBACKS.flatMap(name => dirs.map(d => join(d, name))).find(isExecutable) ?? 'vi'
+  return [found ?? 'vi']
 }

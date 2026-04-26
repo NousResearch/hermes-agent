@@ -798,6 +798,30 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
 
     try:
         raw = json.loads(auth_file.read_text())
+    except PermissionError as exc:
+        # Distinct from "corrupt": file exists, looks valid on disk, but
+        # the current process can't read it.  Most common in containers
+        # where ``hermes login`` ran as a different user than the gateway
+        # (#15718).  Don't pollute the path with a .corrupt copy.
+        try:
+            file_stat = auth_file.stat()
+            owner_info = f"uid={file_stat.st_uid} gid={file_stat.st_gid} mode={oct(file_stat.st_mode & 0o777)}"
+        except OSError:
+            owner_info = "stat failed"
+        try:
+            current_uid = os.getuid() if hasattr(os, "getuid") else "n/a"
+        except OSError:
+            current_uid = "n/a"
+        logger.warning(
+            "auth: %s exists but is not readable by the current process "
+            "(running uid=%s, file %s). Treating as empty store. "
+            "If this followed `docker exec -it ... hermes login` as root, "
+            "chown the file to the gateway user: chown %s %s",
+            auth_file, current_uid, owner_info,
+            os.environ.get("HERMES_UID") or current_uid,
+            auth_file,
+        )
+        return {"version": AUTH_STORE_VERSION, "providers": {}}
     except Exception as exc:
         corrupt_path = auth_file.with_suffix(".json.corrupt")
         try:
@@ -829,6 +853,42 @@ def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
                 "active_provider": "nous" if providers else None}
 
     return {"version": AUTH_STORE_VERSION, "providers": {}}
+
+
+def _align_owner_to_parent(path: Path) -> None:
+    """If running as root and *path*'s parent is owned by a non-root user,
+    chown *path* to match the parent's UID/GID.
+
+    This is the fix for the ``docker exec -it ... hermes login`` flow
+    (#15718): the ``hermes`` user's data dir is owned by UID 10000, but
+    ``docker exec`` defaults to root inside the container.  Without
+    this, ``auth.json`` ends up ``root:root 0600`` and the gateway
+    process — running as the non-root user — silently can't read it.
+
+    Best-effort: any failure is logged at debug level and swallowed.
+    """
+    if os.name != "posix" or not hasattr(os, "geteuid"):
+        return
+    try:
+        if os.geteuid() != 0:
+            return
+    except OSError:
+        return
+    try:
+        parent_stat = path.parent.stat()
+    except OSError:
+        return
+    parent_uid = parent_stat.st_uid
+    parent_gid = parent_stat.st_gid
+    if parent_uid == 0:
+        return  # Parent is root-owned: leave the file as root too.
+    try:
+        os.chown(path, parent_uid, parent_gid)
+    except OSError as exc:
+        logger.debug(
+            "auth: could not align %s owner to parent (uid=%s gid=%s): %s",
+            path, parent_uid, parent_gid, exc,
+        )
 
 
 def _save_auth_store(auth_store: Dict[str, Any]) -> Path:
@@ -864,6 +924,10 @@ def _save_auth_store(auth_store: Dict[str, Any]) -> Path:
         auth_file.chmod(stat.S_IRUSR | stat.S_IWUSR)
     except OSError:
         pass
+    # When ``hermes login`` runs as root inside a container whose data
+    # dir is owned by a non-root user, hand ownership of auth.json over
+    # to that user so the gateway can read its own credentials.
+    _align_owner_to_parent(auth_file)
     return auth_file
 
 

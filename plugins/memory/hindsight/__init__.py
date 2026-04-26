@@ -1231,9 +1231,19 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._client is not None:
             try:
                 if self._mode == "local_embedded":
-                    # Use the public close() API. The RuntimeError from
-                    # aiohttp's "attached to a different loop" is expected
-                    # and harmless — the daemon keeps running independently.
+                    # HindsightEmbedded.close() delegates to its sync client.close().
+                    # When Hermes created/used that client on the shared async loop,
+                    # closing it from this thread can raise "attached to a different
+                    # loop" before aiohttp releases the session. Close the embedded
+                    # inner async client on the shared loop first, then let the
+                    # wrapper clean up daemon/UI bookkeeping.
+                    inner_client = getattr(self._client, "_client", None)
+                    if inner_client is not None and hasattr(inner_client, "aclose"):
+                        _run_sync(inner_client.aclose())
+                        try:
+                            self._client._client = None
+                        except Exception:
+                            pass
                     try:
                         self._client.close()
                     except RuntimeError:

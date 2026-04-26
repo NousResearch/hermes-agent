@@ -31,7 +31,11 @@ Hermes' own session keys.
 from __future__ import annotations
 
 import json
+import logging
+import re
 from typing import Set
+
+logger = logging.getLogger(__name__)
 
 from hermes_constants import get_hermes_home
 
@@ -81,6 +85,8 @@ def expand_whatsapp_aliases(identifier: str) -> Set[str]:
         current = queue.pop(0)
         if not current or current in resolved:
             continue
+        if not re.match(r'^[\w@.+-]+$', current):
+            continue
 
         resolved.add(current)
         for suffix in ("", "_reverse"):
@@ -91,7 +97,8 @@ def expand_whatsapp_aliases(identifier: str) -> Set[str]:
                 mapped = normalize_whatsapp_identifier(
                     json.loads(mapping_path.read_text(encoding="utf-8"))
                 )
-            except Exception:
+            except (OSError, json.JSONDecodeError) as exc:
+                logger.debug("whatsapp_identity: failed to read %s: %s", mapping_path, exc)
                 continue
             if mapped and mapped not in resolved:
                 queue.append(mapped)

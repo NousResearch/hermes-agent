@@ -18,7 +18,6 @@ import { Banner, Panel, SessionPanel } from './branding.js'
 import { MessageLine } from './messageLine.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { TextInput } from './textInput.js'
-import { ToolTrail } from './thinking.js'
 
 const StreamingAssistant = memo(function StreamingAssistant({
   busy,
@@ -36,28 +35,6 @@ const StreamingAssistant = memo(function StreamingAssistant({
 
   return (
     <>
-      {progress.showProgressArea && (
-        <Box flexDirection="column" marginBottom={progress.streamSegments.length || progress.showStreamingArea ? 1 : 0}>
-          <ToolTrail
-            activity={progress.activity}
-            busy={busy}
-            commandOverride={detailsModeCommandOverride}
-            detailsMode={detailsMode}
-            outcome={progress.outcome}
-            reasoning={progress.reasoning}
-            reasoningActive={progress.reasoningActive}
-            reasoningStreaming={progress.reasoningStreaming}
-            reasoningTokens={progress.reasoningTokens}
-            sections={sections}
-            subagents={progress.subagents}
-            t={t}
-            tools={progress.tools}
-            toolTokens={progress.toolTokens}
-            trail={progress.turnTrail}
-          />
-        </Box>
-      )}
-
       {progress.streamSegments.map((msg, i) => (
         <MessageLine
           cols={cols}

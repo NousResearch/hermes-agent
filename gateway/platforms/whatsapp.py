@@ -273,7 +273,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
             return ""
         normalized = str(value).strip()
         if ":" in normalized and "@" in normalized:
-            normalized = normalized.replace(":", "@", 1)
+            # Strip device suffix: "number:10@domain" → "number@domain"
+            # The old replace(":", "@", 1) produced "number@10@domain" which
+            # never matched group participant JIDs (no device suffix).
+            normalized = re.sub(r":\d+@", "@", normalized)
         return normalized
 
     def _bot_ids_from_message(self, data: Dict[str, Any]) -> set[str]:

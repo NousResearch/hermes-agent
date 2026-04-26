@@ -64,7 +64,10 @@ function formatOutgoingMessage(message) {
 
 function normalizeWhatsAppId(value) {
   if (!value) return '';
-  return String(value).replace(':', '@');
+  // Strip device suffix: "number:10@domain" → "number@domain"
+  // The old replace(':', '@') produced "number@10@domain" which never matched
+  // group participant JIDs (which have no device suffix).
+  return String(value).replace(/:\d+@/, '@');
 }
 
 function getMessageContent(msg) {

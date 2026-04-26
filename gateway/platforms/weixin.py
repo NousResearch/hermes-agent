@@ -1982,7 +1982,29 @@ async def send_weixin_direct(
 
     live_adapter = _LIVE_ADAPTERS.get(resolved_token)
     send_session = getattr(live_adapter, '_send_session', None)
-    if live_adapter is not None and send_session is not None and not send_session.closed:
+    # Verify the cached session belongs to the *current* event loop. Reusing
+    # an aiohttp ClientSession across event loops (e.g. when cron jobs run on
+    # a different loop than the gateway main loop) raises:
+    #   "Timeout context manager should be used inside a task"
+    # In that case, fall through to the fresh-session branch below.
+    same_loop = True
+    if send_session is not None:
+        try:
+            current_loop = asyncio.get_running_loop()
+            session_loop = getattr(send_session, '_loop', None)
+            if session_loop is not None and session_loop is not current_loop:
+                same_loop = False
+        except RuntimeError:
+            # No running loop — extremely unlikely here since we're in async
+            # code, but be defensive.
+            same_loop = False
+
+    if (
+        live_adapter is not None
+        and send_session is not None
+        and not send_session.closed
+        and same_loop
+    ):
         last_result: Optional[SendResult] = None
         cleaned = live_adapter.format_message(message)
         if cleaned:

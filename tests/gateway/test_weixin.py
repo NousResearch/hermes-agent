@@ -758,3 +758,124 @@ class TestWeixinVoiceSending:
         assert voice_item["encode_type"] == 6
         assert voice_item["sample_rate"] == 24000
         assert voice_item["bits_per_sample"] == 16
+
+
+class TestWeixinSendDirectCrossEventLoop:
+    """Regression tests for upstream issue #13099.
+
+    `send_weixin_direct` previously reused `live_adapter._send_session`
+    unconditionally when a live WeChat adapter was running. Because
+    `aiohttp.ClientSession` is bound to the event loop that created it,
+    reusing it from a different loop (e.g. cron-triggered delivery) raised:
+
+        Timeout context manager should be used inside a task
+
+    The fix detects loop mismatch and falls through to creating a fresh
+    session for the call.
+    """
+
+    def _make_fake_live_adapter(self, session_loop):
+        """Build a stub live adapter whose _send_session reports the given loop."""
+        class _FakeSession:
+            def __init__(self, loop):
+                self._loop = loop
+                self.closed = False
+
+        adapter = object.__new__(weixin.WeixinAdapter)
+        adapter._send_session = _FakeSession(session_loop)
+        return adapter
+
+    def test_cross_loop_falls_through_to_fresh_session(self):
+        """When the live adapter's session belongs to a different loop, the
+        function must NOT try to reuse it. We verify this by checking that
+        the live-adapter `send` is not invoked, and the code instead enters
+        the fresh-session branch (which calls aiohttp.ClientSession())."""
+
+        # Loop A: where the "live adapter" was created
+        loop_a = asyncio.new_event_loop()
+        try:
+            fake_adapter = self._make_fake_live_adapter(loop_a)
+            fake_adapter.send = AsyncMock(
+                return_value=SendResult(success=True, message_id="should-not-be-called"),
+            )
+            fake_adapter.format_message = lambda m: m
+
+            token = "cross-loop-token"
+            weixin._LIVE_ADAPTERS[token] = fake_adapter
+
+            # We patch ClientSession so the fresh-session branch short-circuits
+            # without making real network calls. The mere fact that the patched
+            # ClientSession is invoked proves we did NOT reuse the cross-loop
+            # session.
+            class _FakeClientSession:
+                def __init__(self, *a, **kw):
+                    pass
+                async def __aenter__(self):
+                    return self
+                async def __aexit__(self, *a):
+                    return False
+
+            with patch.object(weixin.aiohttp, "ClientSession", _FakeClientSession), \
+                 patch.object(weixin, "WeixinAdapter") as adapter_cls_mock:
+                # Make WeixinAdapter() return a stub that short-circuits the
+                # fresh-session path (so we don't actually hit the API).
+                inner_adapter = AsyncMock()
+                inner_adapter.connect = AsyncMock()
+                inner_adapter.send = AsyncMock(
+                    return_value=SendResult(success=True, message_id="fresh-session-ok"),
+                )
+                inner_adapter.format_message = lambda m: m
+                inner_adapter.disconnect = AsyncMock()
+                adapter_cls_mock.return_value = inner_adapter
+
+                # Run on loop_b (different from loop_a) — this is what cron does.
+                loop_b = asyncio.new_event_loop()
+                try:
+                    result = loop_b.run_until_complete(
+                        weixin.send_weixin_direct(
+                            extra={"account_id": "acct", "base_url": "https://example.com"},
+                            token=token,
+                            chat_id="wxid_test",
+                            message="hello",
+                        )
+                    )
+                finally:
+                    loop_b.close()
+
+            # The cross-loop adapter's send must NOT have been called.
+            fake_adapter.send.assert_not_awaited()
+        finally:
+            weixin._LIVE_ADAPTERS.pop(token, None)
+            loop_a.close()
+
+    def test_same_loop_reuses_live_adapter(self):
+        """When the live adapter's session belongs to the *current* loop, the
+        function should reuse it (preserving existing behaviour)."""
+
+        loop = asyncio.new_event_loop()
+        try:
+            fake_adapter = self._make_fake_live_adapter(loop)
+            fake_adapter.send = AsyncMock(
+                return_value=SendResult(success=True, message_id="reused-ok"),
+            )
+            fake_adapter.format_message = lambda m: m
+
+            token = "same-loop-token"
+            weixin._LIVE_ADAPTERS[token] = fake_adapter
+
+            try:
+                result = loop.run_until_complete(
+                    weixin.send_weixin_direct(
+                        extra={"account_id": "acct", "base_url": "https://example.com"},
+                        token=token,
+                        chat_id="wxid_test",
+                        message="hello",
+                    )
+                )
+                assert result["success"] is True
+                assert result["message_id"] == "reused-ok"
+                fake_adapter.send.assert_awaited_once()
+            finally:
+                weixin._LIVE_ADAPTERS.pop(token, None)
+        finally:
+            loop.close()

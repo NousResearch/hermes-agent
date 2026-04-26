@@ -214,6 +214,11 @@ _read_tracker: dict = {}
 _READ_HISTORY_CAP = 500       # set; used only by get_read_files_summary
 _DEDUP_CAP = 1000             # dict; skip-identical-reread guard
 _READ_TIMESTAMPS_CAP = 1000   # dict; external-edit detection for write/patch
+_READ_DEDUP_STATUS_MESSAGE = (
+    "File unchanged since last read. The content from "
+    "the earlier read_file result in this conversation is "
+    "still current — refer to that instead of re-reading."
+)
 
 
 def _cap_read_tracker_data(task_data: dict) -> None:
@@ -256,6 +261,13 @@ def _cap_read_tracker_data(task_data: dict) -> None:
                 ts.pop(next(iter(ts)))
             except (StopIteration, KeyError):
                 break
+
+
+def _is_internal_file_status_text(content: str) -> bool:
+    """Return True when content is an internal file-tool status, not file bytes."""
+    if not isinstance(content, str):
+        return False
+    return content.strip() == _READ_DEDUP_STATUS_MESSAGE
 
 
 def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
@@ -451,13 +463,11 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
                 current_mtime = os.path.getmtime(resolved_str)
                 if current_mtime == cached_mtime:
                     return json.dumps({
-                        "content": (
-                            "File unchanged since last read. The content from "
-                            "the earlier read_file result in this conversation is "
-                            "still current — refer to that instead of re-reading."
-                        ),
+                        "status": "unchanged",
+                        "message": _READ_DEDUP_STATUS_MESSAGE,
                         "path": path,
                         "dedup": True,
+                        "content_returned": False,
                     }, ensure_ascii=False)
             except OSError:
                 pass  # stat failed — fall through to full read
@@ -702,6 +712,11 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
     sensitive_err = _check_sensitive_path(path, task_id)
     if sensitive_err:
         return tool_error(sensitive_err)
+    if _is_internal_file_status_text(content):
+        return tool_error(
+            "Refusing to write internal read_file status text as file content. "
+            "Re-read the file or reconstruct the intended file contents before writing."
+        )
     try:
         # Resolve once for the registry lock + stale check.  Failures here
         # fall back to the legacy path — write proceeds, per-task staleness

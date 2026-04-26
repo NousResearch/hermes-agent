@@ -409,6 +409,155 @@ class TestTranscribeLocalCommand:
         assert result["transcript"] == "hello from local command"
         assert result["provider"] == "local_command"
 
+    def test_reads_command_from_config_yaml(self, monkeypatch):
+        """stt.local_command.command in config.yaml is used when env var is absent."""
+        monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
+        monkeypatch.setattr("tools.transcription_tools._find_whisper_binary", lambda: None)
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config",
+            lambda: {"local_command": {"command": "/opt/mywhisper {input_path}"}},
+        )
+
+        from tools.transcription_tools import _get_local_command_template
+
+        template = _get_local_command_template()
+
+        assert template == "/opt/mywhisper {input_path}"
+
+    def test_env_var_takes_precedence_over_config(self, monkeypatch):
+        """HERMES_LOCAL_STT_COMMAND env var wins over stt.local_command.command."""
+        monkeypatch.setenv("HERMES_LOCAL_STT_COMMAND", "/env/whisper {input_path}")
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config",
+            lambda: {"local_command": {"command": "/config/whisper {input_path}"}},
+        )
+
+        from tools.transcription_tools import _get_local_command_template
+
+        template = _get_local_command_template()
+
+        assert template == "/env/whisper {input_path}"
+
+    def test_file_placeholder_alias(self, monkeypatch, sample_ogg, tmp_path):
+        """{file} is accepted as an alias for {input_path}."""
+        out_dir = tmp_path / "local-out"
+        out_dir.mkdir()
+
+        monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config",
+            lambda: {"local_command": {"command": '/opt/mywhisper "{file}"'}},
+        )
+
+        captured = []
+
+        def fake_tempdir(prefix=None):
+            class _TempDir:
+                def __enter__(self_inner):
+                    return str(out_dir)
+
+                def __exit__(self_inner, *_):
+                    return False
+
+            return _TempDir()
+
+        def fake_run(cmd, *args, **kwargs):
+            if isinstance(cmd, list):
+                # ffmpeg conversion call — write a dummy WAV so prepare succeeds
+                converted = cmd[-1]
+                with open(converted, "wb") as fh:
+                    fh.write(b"RIFF\x00\x00\x00\x00WAVEfmt ")
+            else:
+                captured.append(cmd)
+                (out_dir / "audio.txt").write_text("transcribed via file alias\n", encoding="utf-8")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr("tools.transcription_tools.tempfile.TemporaryDirectory", fake_tempdir)
+        monkeypatch.setattr("tools.transcription_tools._find_ffmpeg_binary", lambda: "/usr/bin/ffmpeg")
+        monkeypatch.setattr("tools.transcription_tools.subprocess.run", fake_run)
+
+        from tools.transcription_tools import _transcribe_local_command
+
+        result = _transcribe_local_command(sample_ogg, "base")
+
+        assert result["success"] is True
+        assert result["transcript"] == "transcribed via file alias"
+        # The shell command must not contain the literal {file} placeholder
+        assert captured and "{file}" not in captured[0]
+
+    def test_language_from_local_command_config(self, monkeypatch, sample_ogg, tmp_path):
+        """stt.local_command.language is passed to the command."""
+        out_dir = tmp_path / "local-out"
+        out_dir.mkdir()
+
+        monkeypatch.delenv("HERMES_LOCAL_STT_COMMAND", raising=False)
+        monkeypatch.delenv("HERMES_LOCAL_STT_LANGUAGE", raising=False)
+
+        captured = []
+
+        monkeypatch.setattr(
+            "tools.transcription_tools._load_stt_config",
+            lambda: {
+                "local_command": {
+                    "command": "whisper {input_path} --language {language} --output_dir {output_dir}",
+                    "language": "ru",
+                }
+            },
+        )
+
+        def fake_tempdir(prefix=None):
+            class _TempDir:
+                def __enter__(self_inner):
+                    return str(out_dir)
+
+                def __exit__(self_inner, *_):
+                    return False
+
+            return _TempDir()
+
+        def fake_run(cmd, *args, **kwargs):
+            if isinstance(cmd, list):
+                converted = cmd[-1]
+                with open(converted, "wb") as fh:
+                    fh.write(b"RIFF\x00\x00\x00\x00WAVEfmt ")
+            else:
+                captured.append(cmd)
+                (out_dir / "audio.txt").write_text("здравствуйте\n", encoding="utf-8")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        monkeypatch.setattr("tools.transcription_tools.tempfile.TemporaryDirectory", fake_tempdir)
+        monkeypatch.setattr("tools.transcription_tools._find_ffmpeg_binary", lambda: "/usr/bin/ffmpeg")
+        monkeypatch.setattr("tools.transcription_tools.subprocess.run", fake_run)
+
+        from tools.transcription_tools import _transcribe_local_command
+
+        result = _transcribe_local_command(sample_ogg, "small")
+
+        assert result["success"] is True
+        assert captured and "ru" in captured[0]
+
+    def test_model_from_local_command_config(self, monkeypatch, sample_ogg):
+        """stt.local_command.model is used for provider=local_command."""
+        import tools.transcription_tools as ttools
+
+        calls = []
+
+        def fake_transcribe(file_path, model_name):
+            calls.append(model_name)
+            return {"success": True, "transcript": "ok", "provider": "local_command"}
+
+        monkeypatch.setattr(ttools, "_transcribe_local_command", fake_transcribe)
+        monkeypatch.setattr(ttools, "_get_provider", lambda _cfg: "local_command")
+        monkeypatch.setattr(
+            ttools,
+            "_load_stt_config",
+            lambda: {"provider": "local_command", "local_command": {"model": "small"}},
+        )
+
+        ttools.transcribe_audio(str(sample_ogg))
+
+        assert calls == ["small"]
+
 
 # ============================================================================
 # _transcribe_local — additional tests

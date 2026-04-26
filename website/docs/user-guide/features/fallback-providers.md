@@ -168,7 +168,6 @@ Hermes uses separate lightweight models for side tasks. Each task has its own pr
 | Session Search | Past session summarization | `auxiliary.session_search` |
 | Skills Hub | Skill search and discovery | `auxiliary.skills_hub` |
 | MCP | MCP helper operations | `auxiliary.mcp` |
-| Memory Flush | Memory consolidation | `auxiliary.flush_memories` |
 | Approval | Smart command-approval classification | `auxiliary.approval` |
 | Title Generation | Session title summaries | `auxiliary.title_generation` |
 
@@ -224,10 +223,6 @@ auxiliary:
     model: ""
 
   mcp:
-    provider: "auto"
-    model: ""
-
-  flush_memories:
     provider: "auto"
     model: ""
 ```
@@ -365,7 +360,6 @@ See [Scheduled Tasks (Cron)](/docs/user-guide/features/cron) for full configurat
 | Session search | Auto-detection chain | `auxiliary.session_search` |
 | Skills hub | Auto-detection chain | `auxiliary.skills_hub` |
 | MCP helpers | Auto-detection chain | `auxiliary.mcp` |
-| Memory flush | Auto-detection chain | `auxiliary.flush_memories` |
 | Approval classification | Auto-detection chain | `auxiliary.approval` |
 | Title generation | Auto-detection chain | `auxiliary.title_generation` |
 | Delegation | Provider override only (no automatic fallback) | `delegation.provider` / `delegation.model` |

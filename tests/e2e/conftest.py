@@ -346,6 +346,7 @@ def make_discord_message(
 
     return SimpleNamespace(
         id=message_id, content=content, author=author, channel=channel,
+        guild=getattr(channel, "guild", None),
         mentions=mentions, attachments=attachments,
         type=getattr(discord, "MessageType", SimpleNamespace()).default,
         reference=None, created_at=datetime.now(timezone.utc),

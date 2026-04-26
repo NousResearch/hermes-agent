@@ -226,7 +226,10 @@ describe('createGatewayEventHandler', () => {
     const inlineDiff = '--- a/foo.ts\n+++ b/foo.ts\n@@\n-old\n+new'
     const assistantText = 'Done. Clean swap:\n\n```diff\n-old\n+new\n```'
 
-    onEvent({ payload: { inline_diff: inlineDiff, summary: 'patched', tool_id: 'tool-1' }, type: 'tool.complete' } as any)
+    onEvent({
+      payload: { inline_diff: inlineDiff, summary: 'patched', tool_id: 'tool-1' },
+      type: 'tool.complete'
+    } as any)
     onEvent({ payload: { text: assistantText }, type: 'message.complete' } as any)
 
     expect(appended).toHaveLength(1)

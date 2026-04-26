@@ -300,6 +300,7 @@ class TurnController {
 
     const hasDiffSegment = segments.some(msg => msg.kind === 'diff')
     const detailsBelongBeforeDiff = hasDiffSegment && (tools.length > 0 || Boolean(savedReasoning))
+
     const finalMessages = detailsBelongBeforeDiff
       ? insertBeforeFirstDiff(segments, {
           kind: 'trail',

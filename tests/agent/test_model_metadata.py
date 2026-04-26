@@ -459,9 +459,10 @@ class TestGetModelContextLength:
 
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_api_missing_context_length_key(self, mock_fetch):
-        """Model in API but without context_length → defaults to 128000."""
+        """Model in API but without context_length → defaults to the top
+        probe tier (currently 256K)."""
         mock_fetch.return_value = {"test/model": {"name": "Test"}}
-        assert get_model_context_length("test/model") == 128000
+        assert get_model_context_length("test/model") == CONTEXT_PROBE_TIERS[0]
 
     @patch("agent.model_metadata.fetch_model_metadata")
     def test_cache_takes_priority_over_api(self, mock_fetch, tmp_path):
@@ -814,14 +815,17 @@ class TestContextProbeTiers:
         for i in range(len(CONTEXT_PROBE_TIERS) - 1):
             assert CONTEXT_PROBE_TIERS[i] > CONTEXT_PROBE_TIERS[i + 1]
 
-    def test_first_tier_is_128k(self):
-        assert CONTEXT_PROBE_TIERS[0] == 128_000
+    def test_first_tier_is_256k(self):
+        assert CONTEXT_PROBE_TIERS[0] == 256_000
 
     def test_last_tier_is_8k(self):
         assert CONTEXT_PROBE_TIERS[-1] == 8_000
 
 
 class TestGetNextProbeTier:
+    def test_from_256k(self):
+        assert get_next_probe_tier(256_000) == 128_000
+
     def test_from_128k(self):
         assert get_next_probe_tier(128_000) == 64_000
 
@@ -841,8 +845,8 @@ class TestGetNextProbeTier:
         assert get_next_probe_tier(100_000) == 64_000
 
     def test_above_max_tier(self):
-        """Value above 128K should return 128K."""
-        assert get_next_probe_tier(500_000) == 128_000
+        """Value above 256K should return 256K."""
+        assert get_next_probe_tier(500_000) == 256_000
 
     def test_zero_returns_none(self):
         assert get_next_probe_tier(0) is None

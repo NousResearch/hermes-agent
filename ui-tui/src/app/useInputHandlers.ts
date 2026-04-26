@@ -8,7 +8,7 @@ import type {
   SudoRespondResponse,
   VoiceRecordResponse
 } from '../gatewayTypes.js'
-import { isAction, isMac, isVoiceToggleKey } from '../lib/platform.js'
+import { isAction, isCopyShortcut, isMac, isVoiceToggleKey } from '../lib/platform.js'
 
 import { getInputSelection } from './inputSelectionStore.js'
 import type { InputHandlerContext, InputHandlerResult } from './interfaces.js'
@@ -30,11 +30,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const copySelection = () => {
     // ink's copySelection() already calls setClipboard() which handles
     // pbcopy (macOS), wl-copy/xclip (Linux), tmux, and OSC 52 fallback.
-    const text = terminal.selection.copySelection()
-
-    if (text) {
-      actions.sys(`copied ${text.length} chars`)
-    }
+    terminal.selection.copySelection()
   }
 
   const clearSelection = () => {
@@ -159,16 +155,14 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       voice.setProcessing(false)
     }
 
-    gateway
-      .rpc<VoiceRecordResponse>('voice.record', { action })
-      .catch((e: Error) => {
-        // Revert optimistic UI on failure.
-        if (starting) {
-          voice.setRecording(false)
-        }
+    gateway.rpc<VoiceRecordResponse>('voice.record', { action }).catch((e: Error) => {
+      // Revert optimistic UI on failure.
+      if (starting) {
+        voice.setRecording(false)
+      }
 
-        actions.sys(`voice error: ${e.message}`)
-      })
+      actions.sys(`voice error: ${e.message}`)
+    })
   }
 
   useInput((ch, key) => {
@@ -317,7 +311,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       }
     }
 
-    if (isAction(key, ch, 'c')) {
+    if (isCopyShortcut(key, ch)) {
       if (terminal.hasSelection) {
         return copySelection()
       }
@@ -372,8 +366,13 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return voiceRecordToggle()
     }
 
-    if (isAction(key, ch, 'g')) {
-      return cActions.openEditor()
+    // Cmd/Ctrl+G, plus Alt+G fallback for VSCode/Cursor (they bind the
+    // primary keystroke to "Find Next" before the TUI sees it; Alt+G
+    // arrives as meta+g across platforms).
+    if (ch.toLowerCase() === 'g' && (isAction(key, ch, 'g') || key.meta)) {
+      return void cActions.openEditor().catch((err: unknown) => {
+        actions.sys(err instanceof Error ? `failed to open editor: ${err.message}` : 'failed to open editor')
+      })
     }
 
     // shift-tab flips yolo without spending a turn (claude-code parity)

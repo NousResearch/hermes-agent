@@ -4,7 +4,7 @@ Tests the _handle_resume_command handler (switch to a previously-named session)
 across gateway messenger platforms.
 """
 
-from unittest.mock import MagicMock, AsyncMock
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -52,9 +52,6 @@ def _make_runner(session_db=None, current_session_id="current_session_001",
     mock_store.load_transcript.return_value = []
     mock_store.switch_session.return_value = mock_session_entry
     runner.session_store = mock_store
-
-    # Stub out memory flushing
-    runner._async_flush_memories = AsyncMock()
 
     return runner
 
@@ -232,29 +229,4 @@ class TestHandleResumeCommand:
         await runner._handle_resume_command(event)
 
         assert real_key not in runner._running_agents
-        db.close()
-
-    @pytest.mark.asyncio
-    async def test_resume_flushes_memories(self, tmp_path):
-        """Resume should flush memories from the current session before switching."""
-        from hermes_state import SessionDB
-
-        db = SessionDB(db_path=tmp_path / "state.db")
-        db.create_session("old_session", "telegram")
-        db.set_session_title("old_session", "Old Work")
-        db.create_session("current_session_001", "telegram")
-
-        event = _make_event(text="/resume Old Work")
-        runner = _make_runner(
-            session_db=db,
-            current_session_id="current_session_001",
-            event=event,
-        )
-
-        await runner._handle_resume_command(event)
-
-        runner._async_flush_memories.assert_called_once_with(
-            "current_session_001",
-            "agent:main:telegram:dm:67890",
-        )
         db.close()

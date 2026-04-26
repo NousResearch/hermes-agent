@@ -943,6 +943,33 @@ def test_normalize_codex_response_marks_commentary_only_message_as_incomplete(mo
     assert "inspect the repository" in (assistant_message.content or "")
 
 
+def test_normalize_codex_response_preserves_message_status_for_replay(monkeypatch):
+    """Incomplete Codex output messages must not be replayed as completed."""
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import _normalize_codex_response
+
+    response = SimpleNamespace(
+        output=[
+            SimpleNamespace(
+                type="message",
+                id="msg_partial",
+                phase="commentary",
+                status="in_progress",
+                content=[SimpleNamespace(type="output_text", text="Still working...")],
+            )
+        ],
+        usage=SimpleNamespace(input_tokens=4, output_tokens=2, total_tokens=6),
+        status="in_progress",
+        model="gpt-5-codex",
+    )
+
+    assistant_message, finish_reason = _normalize_codex_response(response)
+
+    assert finish_reason == "incomplete"
+    assert assistant_message.codex_message_items[0]["id"] == "msg_partial"
+    assert assistant_message.codex_message_items[0]["status"] == "in_progress"
+
+
 def test_normalize_codex_response_detects_leaked_tool_call_text(monkeypatch):
     """Harmony-style `to=functions.foo` leaked into assistant content with no
     structured function_call items must be treated as incomplete so the
@@ -1403,6 +1430,44 @@ def test_chat_messages_to_responses_input_reasoning_only_has_following_item(monk
     assert following.get("role") == "assistant"
 
 
+def test_codex_message_item_status_survives_conversion_and_preflight(monkeypatch):
+    """Stored Codex assistant message statuses must survive replay normalization."""
+    agent = _build_agent(monkeypatch)
+    from agent.codex_responses_adapter import (
+        _chat_messages_to_responses_input,
+        _preflight_codex_input_items,
+    )
+
+    items = _chat_messages_to_responses_input([
+        {
+            "role": "assistant",
+            "content": "partial",
+            "codex_message_items": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "incomplete",
+                    "id": "msg_incomplete",
+                    "phase": "commentary",
+                    "content": [{"type": "output_text", "text": "partial"}],
+                }
+            ],
+        }
+    ])
+    replay_item = next(item for item in items if item.get("type") == "message")
+    assert replay_item["status"] == "incomplete"
+
+    normalized = _preflight_codex_input_items([
+        {
+            "type": "message",
+            "role": "assistant",
+            "status": "in_progress",
+            "content": [{"type": "output_text", "text": "working"}],
+        }
+    ])
+    assert normalized[0]["status"] == "in_progress"
+
+
 def test_duplicate_detection_distinguishes_different_codex_reasoning(monkeypatch):
     """Two consecutive reasoning-only responses with different encrypted content
     must NOT be treated as duplicates."""
@@ -1451,6 +1516,58 @@ def test_duplicate_detection_distinguishes_different_codex_reasoning(monkeypatch
     ]
     assert "enc_first" in encrypted_contents
     assert "enc_second" in encrypted_contents
+
+
+def test_duplicate_detection_distinguishes_different_codex_message_items(monkeypatch):
+    """Incomplete turns with new message ids/phases/statuses must not be collapsed."""
+    agent = _build_agent(monkeypatch)
+    responses = [
+        SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    id="msg_first",
+                    phase="commentary",
+                    status="in_progress",
+                    content=[SimpleNamespace(type="output_text", text="Still working...")],
+                )
+            ],
+            usage=SimpleNamespace(input_tokens=50, output_tokens=10, total_tokens=60),
+            status="in_progress",
+            model="gpt-5-codex",
+        ),
+        SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    id="msg_second",
+                    phase="commentary",
+                    status="in_progress",
+                    content=[SimpleNamespace(type="output_text", text="Still working...")],
+                )
+            ],
+            usage=SimpleNamespace(input_tokens=50, output_tokens=10, total_tokens=60),
+            status="in_progress",
+            model="gpt-5-codex",
+        ),
+        _codex_message_response("Final answer after progress updates."),
+    ]
+    monkeypatch.setattr(agent, "_interruptible_api_call", lambda api_kwargs: responses.pop(0))
+
+    result = agent.run_conversation("keep going")
+
+    assert result["completed"] is True
+    interim_msgs = [
+        msg for msg in result["messages"]
+        if msg.get("role") == "assistant"
+        and msg.get("finish_reason") == "incomplete"
+    ]
+    assert len(interim_msgs) == 2
+    assert [msg["codex_message_items"][0]["id"] for msg in interim_msgs] == [
+        "msg_first",
+        "msg_second",
+    ]
+    assert all(msg["codex_message_items"][0]["status"] == "in_progress" for msg in interim_msgs)
 
 
 def test_chat_messages_to_responses_input_deduplicates_reasoning_ids(monkeypatch):

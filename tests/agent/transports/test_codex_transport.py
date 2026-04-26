@@ -194,6 +194,36 @@ class TestCodexNormalizeResponse:
         assert nr.content == "Hello world"
         assert nr.finish_reason == "stop"
 
+    def test_message_items_preserved_in_provider_data(self, transport):
+        """Codex assistant message item ids/phases must survive transport normalization."""
+        r = SimpleNamespace(
+            output=[
+                SimpleNamespace(
+                    type="message",
+                    role="assistant",
+                    id="msg_abc",
+                    phase="final_answer",
+                    content=[SimpleNamespace(type="output_text", text="Hello world")],
+                    status="completed",
+                ),
+            ],
+            status="completed",
+            incomplete_details=None,
+            usage=SimpleNamespace(input_tokens=10, output_tokens=5,
+                                  input_tokens_details=None, output_tokens_details=None),
+        )
+        nr = transport.normalize_response(r)
+        assert nr.codex_message_items == [
+            {
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [{"type": "output_text", "text": "Hello world"}],
+                "id": "msg_abc",
+                "phase": "final_answer",
+            }
+        ]
+
     def test_tool_call_response(self, transport):
         """Normalize a Codex response with tool calls."""
         r = SimpleNamespace(

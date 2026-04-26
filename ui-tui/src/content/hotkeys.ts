@@ -1,17 +1,24 @@
-import { isMac } from '../lib/platform.js'
+import { isMac, isRemoteShell } from '../lib/platform.js'
 
 const action = isMac ? 'Cmd' : 'Ctrl'
 const paste = isMac ? 'Cmd' : 'Alt'
 
+const copyHotkeys: [string, string][] = isMac
+  ? [
+      ['Cmd+C', 'copy selection'],
+      ['Ctrl+C', 'interrupt / clear draft / exit']
+    ]
+  : isRemoteShell()
+    ? [
+        ['Cmd+C', 'copy selection when forwarded by the terminal'],
+        ['Ctrl+C', 'copy selection / interrupt / clear draft / exit']
+      ]
+    : [['Ctrl+C', 'copy selection / interrupt / clear draft / exit']]
+
 export const HOTKEYS: [string, string][] = [
-  ...(isMac
-    ? ([
-        ['Cmd+C', 'copy selection'],
-        ['Ctrl+C', 'interrupt / clear draft / exit']
-      ] as [string, string][])
-    : ([['Ctrl+C', 'copy selection / interrupt / clear draft / exit']] as [string, string][])),
+  ...copyHotkeys,
   [action + '+D', 'exit'],
-  [action + '+G', 'open $EDITOR for prompt'],
+  [action + '+G / Alt+G', 'open $EDITOR (Alt+G fallback for VSCode/Cursor)'],
   [action + '+L', 'new session (clear)'],
   [paste + '+V / /paste', 'paste text; /paste attaches clipboard image'],
   ['Tab', 'apply completion'],

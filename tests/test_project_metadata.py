@@ -1,5 +1,6 @@
 """Regression tests for packaging metadata in pyproject.toml."""
 
+from datetime import datetime, timezone
 from pathlib import Path
 import tomllib
 
@@ -52,3 +53,22 @@ def test_feishu_extra_includes_qrcode_for_qr_login():
 
     feishu_extra = optional_dependencies["feishu"]
     assert any(dep.startswith("qrcode") for dep in feishu_extra)
+
+
+def test_exclude_newer_date_is_fresh():
+    """exclude-newer must be a valid ISO datetime and refreshed regularly.
+
+    We use a fixed date because uv < 0.9.17 rejects duration strings like
+    ``\"7 days\"``. This test ensures the date is bumped at least every 60 days
+    so the supply-chain protection does not go stale.
+    """
+    pyproject_path = Path(__file__).resolve().parents[1] / "pyproject.toml"
+    with pyproject_path.open("rb") as handle:
+        data = tomllib.load(handle)
+
+    raw = data["tool"]["uv"]["exclude-newer"]
+    # uv accepts ISO 8601 with or without Z; tomllib returns a string here.
+    assert isinstance(raw, str)
+    dt = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    age_days = (datetime.now(timezone.utc) - dt).days
+    assert age_days < 60, f"exclude-newer date {raw!r} is {age_days} days old; refresh it"

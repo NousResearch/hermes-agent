@@ -317,7 +317,8 @@ Fires **immediately after** every tool execution returns.
 **Callback signature:**
 
 ```python
-def my_callback(tool_name: str, args: dict, result: str, task_id: str, **kwargs):
+def my_callback(tool_name: str, args: dict, result: str, task_id: str,
+                duration_ms: int, **kwargs):
 ```
 
 | Parameter | Type | Description |
@@ -326,24 +327,27 @@ def my_callback(tool_name: str, args: dict, result: str, task_id: str, **kwargs)
 | `args` | `dict` | The arguments the model passed to the tool |
 | `result` | `str` | The tool's return value (always a JSON string) |
 | `task_id` | `str` | Session/task identifier. Empty string if not set. |
+| `duration_ms` | `int` | How long the tool's dispatch took, in milliseconds (measured with `time.monotonic()` around `registry.dispatch()`). |
 
 **Fires:** In `model_tools.py`, inside `handle_function_call()`, after the tool's handler returns. Fires once per tool call. Does **not** fire if the tool raised an unhandled exception (the error is caught and returned as an error JSON string instead, and `post_tool_call` fires with that error string as `result`).
 
 **Return value:** Ignored.
 
-**Use cases:** Logging tool results, metrics collection, tracking tool success/failure rates, sending notifications when specific tools complete.
+**Use cases:** Logging tool results, metrics collection, tracking tool success/failure rates, latency dashboards, per-tool budget alerts, sending notifications when specific tools complete.
 
 **Example — track tool usage metrics:**
 
 ```python
-from collections import Counter
+from collections import Counter, defaultdict
 import json
 
 _tool_counts = Counter()
 _error_counts = Counter()
+_latency_ms = defaultdict(list)
 
-def track_metrics(tool_name, result, **kwargs):
+def track_metrics(tool_name, result, duration_ms=0, **kwargs):
     _tool_counts[tool_name] += 1
+    _latency_ms[tool_name].append(duration_ms)
     try:
         parsed = json.loads(result)
         if "error" in parsed:

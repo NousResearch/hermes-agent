@@ -169,4 +169,7 @@ not-iterable = "ignore"
 exclude = ["*"]
 
 [tool.uv]
-exclude-newer = "2026-04-25T00:00:00Z"
+# Rolling window not used because older uv versions (< 0.9.17) reject duration
+# strings in this field. Refresh this date periodically (at least every 60 days)
+# to maintain supply-chain protection.
+exclude-newer = "2026-05-02T00:00:00Z"

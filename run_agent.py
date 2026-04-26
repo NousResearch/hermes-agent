@@ -7547,6 +7547,13 @@ class AIAgent:
             or base_url_host_matches(self.base_url, "api.deepseek.com")
         )
 
+        # Gemini detection — model name contains "gemini" (covers Liaobots,
+        # OpenRouter, and other OpenAI-compatible proxies). The native Gemini
+        # adapter (gemini_native_adapter.py) is used only when the base URL
+        # matches generativelanguage.googleapis.com — this flag is for the
+        # chat_completions transport path.
+        _is_gemini = "gemini" in (self.model or "").lower()
+
         # Temperature: _fixed_temperature_for_model may return OMIT_TEMPERATURE
         # sentinel (temperature omitted entirely), a numeric override, or None.
         try:
@@ -7615,6 +7622,7 @@ class AIAgent:
             is_nvidia_nim=_is_nvidia,
             is_kimi=_is_kimi,
             is_deepseek=_is_deepseek,
+            is_gemini=_is_gemini,
             is_custom_provider=self.provider == "custom",
             ollama_num_ctx=self._ollama_num_ctx,
             provider_preferences=_prefs or None,

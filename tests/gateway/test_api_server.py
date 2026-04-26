@@ -318,6 +318,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app.router.add_post("/v1/responses", adapter._handle_responses)
     app.router.add_get("/v1/responses/{response_id}", adapter._handle_get_response)
     app.router.add_delete("/v1/responses/{response_id}", adapter._handle_delete_response)
+    app.router.add_post("/v1/runs", adapter._handle_runs)
     return app
 
 
@@ -2315,3 +2316,144 @@ class TestSessionIdHeader:
             call_kwargs = mock_run.call_args.kwargs
             assert call_kwargs["conversation_history"] == []
             assert call_kwargs["session_id"] == "some-session"
+
+
+# ---------------------------------------------------------------------------
+# /v1/runs — session header tests
+# ---------------------------------------------------------------------------
+
+
+class TestRunsSessionHeader:
+    """Test that /v1/runs supports X-Hermes-Session-Id for session continuity."""
+
+    @pytest.mark.asyncio
+    async def test_runs_loads_history_from_db_when_session_header_provided(self, auth_adapter):
+        """When X-Hermes-Session-Id is provided to /v1/runs, full history (including
+        tool messages) is loaded from SessionDB instead of from the request body."""
+        db_history = [
+            {"role": "user", "content": "search for cats"},
+            {"role": "assistant", "content": "", "tool_calls": [{"id": "tc_1", "type": "function", "function": {"name": "web_search", "arguments": "{}"}}]},
+            {"role": "tool", "tool_call_id": "tc_1", "content": "found cats"},
+            {"role": "assistant", "content": "Cats are cute!"},
+            {"role": "user", "content": "tell me more"},
+        ]
+        mock_db = MagicMock()
+        mock_db.get_messages_as_conversation.return_value = db_history
+        auth_adapter._session_db = mock_db
+
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "More cats!", "messages": []}
+        mock_agent.session_prompt_tokens = 10
+        mock_agent.session_completion_tokens = 5
+        mock_agent.session_total_tokens = 15
+
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_create_agent", return_value=mock_agent):
+                resp = await cli.post(
+                    "/v1/runs",
+                    headers={"X-Hermes-Session-Id": "runs-session-42", "Authorization": "Bearer sk-secret"},
+                    json={
+                        "input": "even more cats",
+                        "conversation_history": [
+                            # This should be overridden by DB history
+                            {"role": "user", "content": "old from client"},
+                        ],
+                    },
+                )
+
+            assert resp.status == 202
+            body = await resp.json()
+            assert "run_id" in body
+            # Verify agent was created with DB history, not client history
+            call_kwargs = mock_agent.run_conversation.call_args.kwargs
+            assert call_kwargs["conversation_history"] == db_history
+            assert call_kwargs["user_message"] == "even more cats"
+
+    @pytest.mark.asyncio
+    async def test_runs_without_session_header_uses_body_history(self, auth_adapter):
+        """Without X-Hermes-Session-Id, /v1/runs uses conversation_history from request body."""
+        body_history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi"},
+        ]
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "Hey!", "messages": []}
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_create_agent", return_value=mock_agent):
+                resp = await cli.post(
+                    "/v1/runs",
+                    headers={"Authorization": "Bearer sk-secret"},
+                    json={
+                        "input": "what's up",
+                        "conversation_history": body_history,
+                    },
+                )
+
+            assert resp.status == 202
+            # Wait for the background run to complete
+            for _ in range(50):
+                if mock_agent.run_conversation.called:
+                    break
+                await asyncio.sleep(0.1)
+            assert mock_agent.run_conversation.called
+            call_kwargs = mock_agent.run_conversation.call_args.kwargs
+            assert call_kwargs["conversation_history"] == body_history
+
+    @pytest.mark.asyncio
+    async def test_runs_session_header_requires_api_key(self, adapter):
+        """Without API key configured, X-Hermes-Session-Id is rejected with 403."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/v1/runs",
+                headers={"X-Hermes-Session-Id": "some-session"},
+                json={"input": "hello"},
+            )
+
+        assert resp.status == 403
+
+    @pytest.mark.asyncio
+    async def test_runs_session_header_rejects_control_characters(self, auth_adapter):
+        """Session IDs with control characters are rejected (400)."""
+        # aiohttp's test client rejects \r\n in headers at the client level,
+        # so we test the server-side validation directly.
+        mock_request = MagicMock()
+        mock_request.headers = {"X-Hermes-Session-Id": "bad\r\nsession", "Authorization": "Bearer sk-secret"}
+        mock_request.json = AsyncMock(return_value={"input": "hello"})
+        mock_request.__getitem__ = lambda self, key: mock_request.headers.get(key, "")
+
+        app = _create_app(auth_adapter)
+        resp = await auth_adapter._handle_runs(mock_request)
+        assert resp.status == 400
+
+    @pytest.mark.asyncio
+    async def test_runs_db_failure_falls_back_gracefully(self, auth_adapter):
+        """If SessionDB fails, runs still proceeds with empty history."""
+        auth_adapter._session_db = None
+        mock_agent = MagicMock()
+        mock_agent.run_conversation.return_value = {"final_response": "OK", "messages": []}
+        mock_agent.session_prompt_tokens = 0
+        mock_agent.session_completion_tokens = 0
+        mock_agent.session_total_tokens = 0
+
+        app = _create_app(auth_adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(auth_adapter, "_create_agent", return_value=mock_agent), \
+                 patch("gateway.platforms.api_server.APIServerAdapter._ensure_session_db", return_value=None):
+                resp = await cli.post(
+                    "/v1/runs",
+                    headers={"X-Hermes-Session-Id": "some-session", "Authorization": "Bearer sk-secret"},
+                    json={"input": "hello"},
+                )
+
+            assert resp.status == 202
+            await asyncio.sleep(0.1)
+            call_kwargs = mock_agent.run_conversation.call_args.kwargs
+            assert call_kwargs["conversation_history"] == []
+            assert call_kwargs["user_message"] == "hello"

@@ -2342,6 +2342,24 @@ def _(rid, params: dict) -> dict:
                     logger.warning("voice TTS skipped: hermes_cli.voice unavailable")
                 except Exception as e:
                     logger.warning("voice TTS dispatch failed: %s", e)
+
+            # CLI/gateway parity: auto-generate a session title after the first
+            # exchange (#15949 — tui_gateway/server.py was the only entry point
+            # that didn't call maybe_auto_title).
+            if status == "complete" and raw and text:
+                try:
+                    from agent.title_generator import maybe_auto_title
+                    all_msgs = result.get("messages", []) if isinstance(result, dict) else []
+                    maybe_auto_title(
+                        _get_db(),
+                        session["session_key"],
+                        text,
+                        raw,
+                        all_msgs,
+                    )
+                except Exception:
+                    pass
+
         except Exception as e:
             import traceback
 

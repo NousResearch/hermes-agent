@@ -29,13 +29,36 @@ the steps below.
 
 ## Step 1: Create a Slack App
 
+The fastest path is to paste a manifest Hermes generates for you. It
+declares every built-in slash command (`/btw`, `/stop`, `/model`, …),
+every required OAuth scope, every event subscription, and enables Socket
+Mode — all at once.
+
+### Option A: From a Hermes-generated manifest (recommended)
+
+1. Generate the manifest:
+   ```bash
+   hermes slack manifest --write
+   ```
+   This writes `~/.hermes/slack-manifest.json` and prints paste-in
+   instructions.
+2. Go to [https://api.slack.com/apps](https://api.slack.com/apps) →
+   **Create New App** → **From an app manifest**
+3. Pick your workspace, paste the JSON contents, review, click **Next**
+   → **Create**
+4. Skip ahead to **Step 6: Install App to Workspace**. The manifest
+   handled scopes, events, and slash commands for you.
+
+### Option B: From scratch (manual)
+
 1. Go to [https://api.slack.com/apps](https://api.slack.com/apps)
 2. Click **Create New App**
 3. Choose **From scratch**
 4. Enter an app name (e.g., "Hermes Agent") and select your workspace
 5. Click **Create App**
 
-You'll land on the app's **Basic Information** page.
+You'll land on the app's **Basic Information** page. Continue with
+Steps 2–6 below.
 
 ---
 
@@ -200,6 +223,57 @@ After starting the gateway, you need to **invite the bot** to any channel where 
 ```
 
 The bot will **not** automatically join channels. You must invite it to each channel individually.
+
+---
+
+## Slash Commands
+
+Every Hermes command (`/btw`, `/stop`, `/new`, `/model`, `/help`, ...)
+is a native Slack slash command — exactly the way they work on Telegram
+and Discord. Type `/` in Slack and the autocomplete picker lists every
+Hermes command with its description.
+
+Under the hood: Hermes ships with a generated Slack app manifest (see
+Step 1, Option A) that declares every command in
+[`COMMAND_REGISTRY`](https://github.com/NousResearch/hermes-agent/blob/main/hermes_cli/commands.py)
+as a slash command. In Socket Mode, Slack routes the command event
+through the WebSocket regardless of the manifest's `url` field.
+
+### Refreshing slash commands after updates
+
+When Hermes adds new commands (e.g. after `hermes update`), regenerate
+the manifest and update your Slack app:
+
+```bash
+hermes slack manifest --write
+```
+
+Then in Slack:
+1. Open [https://api.slack.com/apps](https://api.slack.com/apps) →
+   your Hermes app
+2. **Features → App Manifest → Edit**
+3. Paste the new contents of `~/.hermes/slack-manifest.json`
+4. **Save**. Slack will prompt to reinstall the app if scopes or slash
+   commands changed.
+
+### Legacy `/hermes <subcommand>` still works
+
+For backward compatibility with older manifests, you can still type
+`/hermes btw run the tests` — Hermes routes it the same way as `/btw
+run the tests`. Free-form questions also work: `/hermes what's the
+weather?` is treated as a regular message.
+
+### Advanced: emit only the slash-commands array
+
+If you maintain your Slack manifest by hand and just want the slash
+command list:
+
+```bash
+hermes slack manifest --slashes-only > /tmp/slashes.json
+```
+
+Paste that array into the `features.slash_commands` key of your
+existing manifest.
 
 ---
 

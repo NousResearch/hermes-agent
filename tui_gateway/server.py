@@ -913,8 +913,16 @@ def _probe_config_health(cfg: dict) -> str:
 
 
 def _session_info(agent) -> dict:
+    reasoning_config = getattr(agent, "reasoning_config", None)
+    reasoning_effort = ""
+    if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is not False:
+        reasoning_effort = str(reasoning_config.get("effort", "") or "")
+    service_tier = getattr(agent, "service_tier", None) or ""
     info: dict = {
         "model": getattr(agent, "model", ""),
+        "reasoning_effort": reasoning_effort,
+        "service_tier": service_tier,
+        "fast": service_tier == "priority",
         "tools": {},
         "skills": {},
         "cwd": os.getcwd(),
@@ -1013,7 +1021,7 @@ def _tool_summary(name: str, result: str, duration_s: float | None) -> str | Non
         if n is not None:
             text = f"Extracted {n} {'page' if n == 1 else 'pages'}"
 
-    return f"{text or 'Completed'}{suffix}" if (text or dur) else None
+    return f"{text}{suffix}" if text else None
 
 
 def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
@@ -1029,10 +1037,13 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
             pass
         session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
     if _tool_progress_enabled(sid):
+        payload = {"tool_id": tool_call_id, "name": name, "context": _tool_ctx(name, args)}
+        if name == "todo" and isinstance(args, dict) and isinstance(args.get("todos"), list):
+            payload["todos"] = args.get("todos")
         _emit(
             "tool.start",
             sid,
-            {"tool_id": tool_call_id, "name": name, "context": _tool_ctx(name, args)},
+            payload,
         )
 
 
@@ -1050,6 +1061,13 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     summary = _tool_summary(name, result, duration_s)
     if summary:
         payload["summary"] = summary
+    if name == "todo":
+        try:
+            data = json.loads(result)
+            if isinstance(data, dict) and isinstance(data.get("todos"), list):
+                payload["todos"] = data.get("todos")
+        except Exception:
+            pass
     try:
         from agent.display import render_edit_diff_with_delta
 
@@ -1698,7 +1716,8 @@ def _(rid, params: dict) -> dict:
     try:
         db.reopen_session(target)
         history = db.get_messages_as_conversation(target)
-        messages = _history_to_messages(history)
+        display_history = db.get_messages_as_conversation(target, include_ancestors=True)
+        messages = _history_to_messages(display_history)
         tokens = _set_session_context(target)
         try:
             agent = _make_agent(sid, target, session_id=target)
@@ -1746,11 +1765,20 @@ def _(rid, params: dict) -> dict:
 @method("session.history")
 def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
-    return err or _ok(
+    if err:
+        return err
+    history = list(session.get("history", []))
+    db = _get_db()
+    if db is not None and session.get("session_key"):
+        try:
+            history = db.get_messages_as_conversation(session["session_key"], include_ancestors=True)
+        except Exception:
+            pass
+    return _ok(
         rid,
         {
             "count": len(session.get("history", [])),
-            "messages": _history_to_messages(list(session.get("history", []))),
+            "messages": _history_to_messages(history),
         },
     )
 

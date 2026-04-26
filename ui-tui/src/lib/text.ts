@@ -1,4 +1,4 @@
-import { THINKING_COT_MAX } from '../config/limits.js'
+import { LIVE_RENDER_MAX_CHARS, LIVE_RENDER_MAX_LINES, THINKING_COT_MAX } from '../config/limits.js'
 import { VERBS } from '../content/verbs.js'
 import type { ThinkingMode } from '../types.js'
 
@@ -88,6 +88,61 @@ export const thinkingPreview = (reasoning: string, mode: ThinkingMode, max: numb
   return !raw || mode === 'collapsed' ? '' : mode === 'full' ? raw : compactPreview(raw.replace(WS_RE, ' '), max)
 }
 
+export const boundedLiveRenderText = (
+  text: string,
+  { maxChars = LIVE_RENDER_MAX_CHARS, maxLines = LIVE_RENDER_MAX_LINES } = {}
+) => {
+  if (text.length <= maxChars && text.split('\n', maxLines + 1).length <= maxLines) {
+    return text
+  }
+
+  let start = 0
+  let idx = text.length
+
+  for (let seen = 0; seen < maxLines && idx > 0; seen++) {
+    idx = text.lastIndexOf('\n', idx - 1)
+    start = idx < 0 ? 0 : idx + 1
+
+    if (idx < 0) {
+      break
+    }
+  }
+
+  const lineStart = start
+  start = Math.max(lineStart, text.length - maxChars)
+
+  if (start > lineStart) {
+    const nextBreak = text.indexOf('\n', start)
+
+    if (nextBreak >= 0 && nextBreak < text.length - 1) {
+      start = nextBreak + 1
+    }
+  }
+
+  const tail = text.slice(start).trimStart()
+  const omittedLines = countNewlines(text, start)
+  const omittedChars = Math.max(0, text.length - tail.length)
+
+  const label =
+    omittedLines > 0
+      ? `[showing live tail; omitted ${fmtK(omittedLines)} lines / ${fmtK(omittedChars)} chars]\n`
+      : `[showing live tail; omitted ${fmtK(omittedChars)} chars]\n`
+
+  return `${label}${tail}`
+}
+
+const countNewlines = (text: string, end: number) => {
+  let count = 0
+
+  for (let i = 0; i < end; i++) {
+    if (text.charCodeAt(i) === 10) {
+      count++
+    }
+  }
+
+  return count
+}
+
 export const stripTrailingPasteNewlines = (text: string) => (/[^\n]/.test(text) ? text.replace(/\n+$/, '') : text)
 
 export const toolTrailLabel = (name: string) =>
@@ -104,10 +159,17 @@ export const formatToolCall = (name: string, context = '') => {
   return preview ? `${label}("${preview}")` : label
 }
 
-export const buildToolTrailLine = (name: string, context: string, error?: boolean, note?: string) => {
+export const buildToolTrailLine = (
+  name: string,
+  context: string,
+  error?: boolean,
+  note?: string,
+  duration?: number
+) => {
   const detail = compactPreview(note ?? '', 72)
+  const took = duration !== undefined ? ` (${duration.toFixed(1)}s)` : ''
 
-  return `${formatToolCall(name, context)}${detail ? ` :: ${detail}` : ''} ${error ? ' ✗' : ' ✓'}`
+  return `${formatToolCall(name, context)}${took}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
 }
 
 export const isToolTrailResultLine = (line: string) => line.endsWith(' ✓') || line.endsWith(' ✗')
@@ -132,6 +194,12 @@ export const parseToolTrailResultLine = (line: string) => {
   }
 
   return { call: body, detail: '', mark }
+}
+
+export const splitToolDuration = (call: string) => {
+  const match = call.match(/^(.*?)( \(\d+(?:\.\d)?s\))$/)
+
+  return match ? { label: match[1]!, duration: match[2]! } : { label: call, duration: '' }
 }
 
 export const isTransientTrailLine = (line: string) => line.startsWith('drafting ') || line === 'analyzing tool output…'

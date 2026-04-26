@@ -16,12 +16,14 @@ import {
   widthByDepth
 } from '../lib/subagentTree.js'
 import {
+  boundedLiveRenderText,
   compactPreview,
   estimateTokensRough,
   fmtK,
   formatToolCall,
   parseToolTrailResultLine,
   pick,
+  splitToolDuration,
   thinkingPreview,
   toolTrailLabel
 } from '../lib/text.js'
@@ -633,7 +635,12 @@ export const Thinking = memo(function Thinking({
   streaming?: boolean
   t: Theme
 }) {
-  const preview = useMemo(() => thinkingPreview(reasoning, mode, THINKING_COT_MAX), [mode, reasoning])
+  const preview = useMemo(() => {
+    const raw = thinkingPreview(reasoning, mode, THINKING_COT_MAX)
+
+    return mode === 'full' ? boundedLiveRenderText(raw) : raw
+  }, [mode, reasoning])
+
   const lines = useMemo(() => preview.split('\n').map(line => line.replace(/\t/g, '  ')), [preview])
 
   if (!preview && !active) {
@@ -790,7 +797,7 @@ export const ToolTrail = memo(function ToolTrail({
     if (parsed) {
       groups.push({
         color: parsed.mark === '✗' ? t.color.error : t.color.cornsilk,
-        content: parsed.detail ? parsed.call : `${parsed.call} ${parsed.mark}`,
+        content: parsed.call,
         details: [],
         key: `tr-${i}`,
         label: parsed.call
@@ -885,6 +892,21 @@ export const ToolTrail = memo(function ToolTrail({
   const totalTokensLabel = tokenCount > 0 && toolTokenCount > 0 ? `~${fmtK(totalTokenCount)} total` : null
   const delegateGroups = groups.filter(g => g.label.startsWith('Delegate Task'))
   const inlineDelegateKey = hasSubagents && delegateGroups.length === 1 ? delegateGroups[0]!.key : null
+
+  const toolLabel = (group: Group) => {
+    const { duration, label } = splitToolDuration(String(group.content))
+
+    return duration ? (
+      <>
+        {label}
+        <Text color={t.color.dim} dim>
+          {duration}
+        </Text>
+      </>
+    ) : (
+      group.content
+    )
+  }
 
   // ── Backstop: floating alerts when every panel is hidden ─────────
   //
@@ -1051,7 +1073,7 @@ export const ToolTrail = memo(function ToolTrail({
                   content={
                     <>
                       <Text color={t.color.amber}>● </Text>
-                      {group.content}
+                      {toolLabel(group)}
                     </>
                   }
                   rails={rails}

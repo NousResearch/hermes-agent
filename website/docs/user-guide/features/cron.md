@@ -30,7 +30,7 @@ Cron-run sessions cannot recursively create more cron jobs. Hermes disables cron
 /cron add 30m "Remind me to check the build"
 /cron add "every 2h" "Check server status"
 /cron add "every 1h" "Summarize new feed items" --skill blogwatcher
-/cron add "every 1h" "Use both skills and combine the result" --skill blogwatcher --skill find-nearby
+/cron add "every 1h" "Use both skills and combine the result" --skill blogwatcher --skill maps
 ```
 
 ### From the standalone CLI
@@ -40,7 +40,7 @@ hermes cron create "every 2h" "Check server status"
 hermes cron create "every 1h" "Summarize new feed items" --skill blogwatcher
 hermes cron create "every 1h" "Use both skills and combine the result" \
   --skill blogwatcher \
-  --skill find-nearby \
+  --skill maps \
   --name "Skill combo"
 ```
 
@@ -77,7 +77,7 @@ Skills are loaded in order. The prompt becomes the task instruction layered on t
 ```python
 cronjob(
     action="create",
-    skills=["blogwatcher", "find-nearby"],
+    skills=["blogwatcher", "maps"],
     prompt="Look for new local events and interesting nearby places, then combine them into one short brief.",
     schedule="every 6h",
     name="Local brief",
@@ -85,6 +85,38 @@ cronjob(
 ```
 
 This is useful when you want a scheduled agent to inherit reusable workflows without stuffing the full skill text into the cron prompt itself.
+
+## Running a job inside a project directory
+
+Cron jobs default to running detached from any repo — no `AGENTS.md`, `CLAUDE.md`, or `.cursorrules` is loaded, and the terminal / file / code-exec tools run from whatever working directory the gateway started in. Pass `--workdir` (CLI) or `workdir=` (tool call) to change that:
+
+```bash
+# Standalone CLI
+hermes cron create --schedule "every 1d at 09:00" \
+  --workdir /home/me/projects/acme \
+  --prompt "Audit open PRs, summarize CI health, and post to #eng"
+```
+
+```python
+# From a chat, via the cronjob tool
+cronjob(
+    action="create",
+    schedule="every 1d at 09:00",
+    workdir="/home/me/projects/acme",
+    prompt="Audit open PRs, summarize CI health, and post to #eng",
+)
+```
+
+When `workdir` is set:
+
+- `AGENTS.md`, `CLAUDE.md`, and `.cursorrules` from that directory are injected into the system prompt (same discovery order as the interactive CLI)
+- `terminal`, `read_file`, `write_file`, `patch`, `search_files`, and `execute_code` all use that directory as their working directory (via `TERMINAL_CWD`)
+- The path must be an absolute directory that exists — relative paths and missing directories are rejected at create / update time
+- Pass `--workdir ""` (or `workdir=""` via the tool) on edit to clear it and restore the old behaviour
+
+:::note Serialization
+Jobs with a `workdir` run sequentially on the scheduler tick, not in the parallel pool. This is deliberate — `TERMINAL_CWD` is process-global, so two workdir jobs running at the same time would corrupt each other's cwd. Workdir-less jobs still run in parallel as before.
+:::
 
 ## Editing jobs
 
@@ -95,7 +127,7 @@ You do not need to delete and recreate jobs just to change them.
 ```bash
 /cron edit <job_id> --schedule "every 4h"
 /cron edit <job_id> --prompt "Use the revised task"
-/cron edit <job_id> --skill blogwatcher --skill find-nearby
+/cron edit <job_id> --skill blogwatcher --skill maps
 /cron edit <job_id> --remove-skill blogwatcher
 /cron edit <job_id> --clear-skills
 ```
@@ -105,8 +137,8 @@ You do not need to delete and recreate jobs just to change them.
 ```bash
 hermes cron edit <job_id> --schedule "every 4h"
 hermes cron edit <job_id> --prompt "Use the revised task"
-hermes cron edit <job_id> --skill blogwatcher --skill find-nearby
-hermes cron edit <job_id> --add-skill find-nearby
+hermes cron edit <job_id> --skill blogwatcher --skill maps
+hermes cron edit <job_id> --add-skill maps
 hermes cron edit <job_id> --remove-skill blogwatcher
 hermes cron edit <job_id> --clear-skills
 ```
@@ -204,6 +236,7 @@ When scheduling jobs, you specify where the output goes:
 | `"wecom"` | WeCom | |
 | `"weixin"` | Weixin (WeChat) | |
 | `"bluebubbles"` | BlueBubbles (iMessage) | |
+| `"qqbot"` | QQ Bot (Tencent QQ) | |
 
 The agent's final response is automatically delivered. You do not need to call `send_message` in the cron prompt.
 
@@ -336,6 +369,8 @@ For `update`, pass `skills=[]` to remove all attached skills.
 ## Job storage
 
 Jobs are stored in `~/.hermes/cron/jobs.json`. Output from job runs is saved to `~/.hermes/cron/output/{job_id}/{timestamp}.md`.
+
+Jobs may store `model` and `provider` as `null`. When those fields are omitted, Hermes resolves them at execution time from the global configuration. They only appear in the job record when a per-job override is set.
 
 The storage uses atomic file writes so interrupted writes do not leave a partially written job file behind.
 

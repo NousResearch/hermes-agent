@@ -2,11 +2,13 @@
 
 import ast
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch as mock_patch
 
 import tools.approval as approval_module
 from tools.approval import (
     _get_approval_mode,
+    _smart_approve,
     approve_session,
     detect_dangerous_command,
     is_approved,
@@ -24,6 +26,21 @@ class TestApprovalModeParsing:
     def test_string_off_still_maps_to_off(self):
         with mock_patch("hermes_cli.config.load_config", return_value={"approvals": {"mode": "off"}}):
             assert _get_approval_mode() == "off"
+
+
+class TestSmartApproval:
+    def test_smart_approval_uses_call_llm(self):
+        response = SimpleNamespace(
+            choices=[SimpleNamespace(message=SimpleNamespace(content="APPROVE"))]
+        )
+        with mock_patch("agent.auxiliary_client.call_llm", return_value=response) as mock_call:
+            result = _smart_approve("python -c \"print('hello')\"", "script execution via -c flag")
+
+        assert result == "approve"
+        mock_call.assert_called_once()
+        assert mock_call.call_args.kwargs["task"] == "approval"
+        assert mock_call.call_args.kwargs["temperature"] == 0
+        assert mock_call.call_args.kwargs["max_tokens"] == 16
 
 
 class TestDetectDangerousRm:
@@ -417,6 +434,76 @@ class TestSensitiveRedirectPattern:
         assert dangerous is False
         assert key is None
 
+    def test_redirect_to_local_dotenv_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("echo TOKEN=x > .env")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_redirect_to_nested_config_yaml_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("echo mode: prod > deploy/config.yaml")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_redirect_from_local_dotenv_source_is_safe(self):
+        dangerous, key, desc = detect_dangerous_command("cat .env > backup.txt")
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+
+class TestProjectSensitiveCopyPattern:
+    def test_cp_to_local_dotenv_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("cp .env.local .env")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_cp_absolute_path_to_dotenv_requires_approval(self):
+        # Regression: the real-world bug report was `cp /opt/data/.env.local /opt/data/.env`.
+        # The regex must cover absolute paths, not just `./` / bare relative paths.
+        dangerous, key, desc = detect_dangerous_command(
+            "cp /opt/data/.env.local /opt/data/.env"
+        )
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_redirect_absolute_path_to_dotenv_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command(
+            "cat /opt/data/.env.local > /opt/data/.env"
+        )
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_mv_to_nested_config_yaml_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("mv tmp/generated.yaml config/config.yaml")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_install_to_dotenv_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("install -m 600 template.env .env.production")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
+    def test_cp_from_config_yaml_source_is_safe(self):
+        dangerous, key, desc = detect_dangerous_command("cp config.yaml backup.yaml")
+        assert dangerous is False
+        assert key is None
+        assert desc is None
+
+
+class TestProjectSensitiveTeePattern:
+    def test_tee_to_local_dotenv_requires_approval(self):
+        dangerous, key, desc = detect_dangerous_command("printenv | tee .env.local")
+        assert dangerous is True
+        assert key is not None
+        assert "project env/config" in desc.lower()
+
 
 class TestPatternKeyUniqueness:
     """Bug: pattern_key is derived by splitting on \\b and taking [1], so
@@ -550,11 +637,12 @@ class TestGatewayProtection:
         dangerous, key, desc = detect_dangerous_command(cmd)
         assert dangerous is False
 
-    def test_systemctl_restart_not_flagged(self):
-        """Using systemctl to manage the gateway is the correct approach."""
+    def test_systemctl_restart_flagged(self):
+        """systemctl restart kills running agents and should require approval."""
         cmd = "systemctl --user restart hermes-gateway"
         dangerous, key, desc = detect_dangerous_command(cmd)
-        assert dangerous is False
+        assert dangerous is True
+        assert "stop/restart" in desc
 
     def test_pkill_hermes_detected(self):
         """pkill targeting hermes/gateway processes must be caught."""
@@ -818,5 +906,3 @@ class TestChmodExecuteCombo:
         cmd = "chmod +x script.sh"
         dangerous, _, _ = detect_dangerous_command(cmd)
         assert dangerous is False
-
-

@@ -1,19 +1,47 @@
-import { useMemo } from "react";
+import { useMemo, type ReactNode } from "react";
 
 /**
  * Lightweight markdown renderer for LLM output.
  * Handles: code blocks, inline code, bold, italic, headers, links, lists, horizontal rules.
  * NOT a full CommonMark parser — optimized for typical assistant message patterns.
+ *
+ * `streaming` renders a blinking caret at the tail of the last block so it
+ * appears to hug the final character instead of wrapping onto a new line
+ * after a block element (paragraph/list/code/…).
  */
-export function Markdown({ content, highlightTerms }: { content: string; highlightTerms?: string[] }) {
+export function Markdown({
+  content,
+  highlightTerms,
+  streaming,
+}: {
+  content: string;
+  highlightTerms?: string[];
+  streaming?: boolean;
+}) {
   const blocks = useMemo(() => parseBlocks(content), [content]);
+  const caret = streaming ? <StreamingCaret /> : null;
 
   return (
     <div className="text-sm text-foreground leading-relaxed space-y-2">
       {blocks.map((block, i) => (
-        <Block key={i} block={block} highlightTerms={highlightTerms} />
+        <Block
+          key={i}
+          block={block}
+          highlightTerms={highlightTerms}
+          caret={caret && i === blocks.length - 1 ? caret : null}
+        />
       ))}
+      {blocks.length === 0 && caret}
     </div>
+  );
+}
+
+function StreamingCaret() {
+  return (
+    <span
+      aria-hidden
+      className="inline-block w-[0.5em] h-[1em] ml-0.5 align-[-0.15em] bg-foreground/50 animate-pulse"
+    />
   );
 }
 
@@ -58,7 +86,11 @@ function parseBlocks(text: string): BlockNode[] {
     // Heading
     const headingMatch = line.match(/^(#{1,4})\s+(.+)/);
     if (headingMatch) {
-      blocks.push({ type: "heading", level: headingMatch[1].length, content: headingMatch[2] });
+      blocks.push({
+        type: "heading",
+        level: headingMatch[1].length,
+        content: headingMatch[2],
+      });
       i++;
       continue;
     }
@@ -124,12 +156,23 @@ function parseBlocks(text: string): BlockNode[] {
 /*  Block renderer                                                     */
 /* ------------------------------------------------------------------ */
 
-function Block({ block, highlightTerms }: { block: BlockNode; highlightTerms?: string[] }) {
+function Block({
+  block,
+  highlightTerms,
+  caret,
+}: {
+  block: BlockNode;
+  highlightTerms?: string[];
+  caret?: ReactNode;
+}) {
   switch (block.type) {
     case "code":
       return (
-        <pre className="rounded-md bg-secondary/60 border border-border px-3 py-2.5 text-xs font-mono leading-relaxed overflow-x-auto">
-          <code>{block.content}</code>
+        <pre className="bg-secondary/60 border border-border px-3 py-2.5 text-xs font-mono leading-relaxed overflow-x-auto">
+          <code>
+            {block.content}
+            {caret}
+          </code>
         </pre>
       );
 
@@ -141,25 +184,46 @@ function Block({ block, highlightTerms }: { block: BlockNode; highlightTerms?: s
         h3: "text-sm font-semibold",
         h4: "text-sm font-medium",
       };
-      return <Tag className={sizes[Tag]}><InlineContent text={block.content} highlightTerms={highlightTerms} /></Tag>;
+      return (
+        <Tag className={sizes[Tag]}>
+          <InlineContent text={block.content} highlightTerms={highlightTerms} />
+          {caret}
+        </Tag>
+      );
     }
 
     case "hr":
-      return <hr className="border-border" />;
+      return (
+        <>
+          <hr className="border-border" />
+          {caret}
+        </>
+      );
 
     case "list": {
       const Tag = block.ordered ? "ol" : "ul";
+      const last = block.items.length - 1;
       return (
-        <Tag className={`space-y-0.5 ${block.ordered ? "list-decimal" : "list-disc"} pl-5 text-sm`}>
+        <Tag
+          className={`space-y-0.5 ${block.ordered ? "list-decimal" : "list-disc"} pl-5 text-sm`}
+        >
           {block.items.map((item, i) => (
-            <li key={i}><InlineContent text={item} highlightTerms={highlightTerms} /></li>
+            <li key={i}>
+              <InlineContent text={item} highlightTerms={highlightTerms} />
+              {i === last ? caret : null}
+            </li>
           ))}
         </Tag>
       );
     }
 
     case "paragraph":
-      return <p><InlineContent text={block.content} highlightTerms={highlightTerms} /></p>;
+      return (
+        <p>
+          <InlineContent text={block.content} highlightTerms={highlightTerms} />
+          {caret}
+        </p>
+      );
   }
 }
 
@@ -178,7 +242,8 @@ type InlineNode =
 function parseInline(text: string): InlineNode[] {
   const nodes: InlineNode[] = [];
   // Pattern priority: code > link > bold > italic > bare URL > line break
-  const pattern = /(`[^`]+`)|(\[([^\]]+)\]\(([^)]+)\))|(\*\*([^*]+)\*\*)|(\*([^*]+)\*)|(\bhttps?:\/\/[^\s<>)\]]+)|(\n)/g;
+  const pattern =
+    /(`[^`]+`)|(\[([^\]]+)\]\(([^)]+)\))|(\*\*([^*]+)\*\*)|(\*([^*]+)\*)|(\bhttps?:\/\/[^\s<>)\]]+)|(\n)/g;
   let lastIndex = 0;
   let match: RegExpExecArray | null;
 
@@ -217,7 +282,13 @@ function parseInline(text: string): InlineNode[] {
   return nodes;
 }
 
-function InlineContent({ text, highlightTerms }: { text: string; highlightTerms?: string[] }) {
+function InlineContent({
+  text,
+  highlightTerms,
+}: {
+  text: string;
+  highlightTerms?: string[];
+}) {
   const nodes = useMemo(() => parseInline(text), [text]);
 
   return (
@@ -225,17 +296,34 @@ function InlineContent({ text, highlightTerms }: { text: string; highlightTerms?
       {nodes.map((node, i) => {
         switch (node.type) {
           case "text":
-            return <HighlightedText key={i} text={node.content} terms={highlightTerms} />;
+            return (
+              <HighlightedText
+                key={i}
+                text={node.content}
+                terms={highlightTerms}
+              />
+            );
           case "code":
             return (
-              <code key={i} className="rounded bg-secondary/60 px-1.5 py-0.5 text-xs font-mono text-primary/90">
+              <code
+                key={i}
+                className="bg-secondary/60 px-1.5 py-0.5 text-xs font-mono text-primary/90"
+              >
                 {node.content}
               </code>
             );
           case "bold":
-            return <strong key={i} className="font-semibold"><HighlightedText text={node.content} terms={highlightTerms} /></strong>;
+            return (
+              <strong key={i} className="font-semibold">
+                <HighlightedText text={node.content} terms={highlightTerms} />
+              </strong>
+            );
           case "italic":
-            return <em key={i}><HighlightedText text={node.content} terms={highlightTerms} /></em>;
+            return (
+              <em key={i}>
+                <HighlightedText text={node.content} terms={highlightTerms} />
+              </em>
+            );
           case "link":
             return (
               <a
@@ -269,10 +357,12 @@ function HighlightedText({ text, terms }: { text: string; terms?: string[] }) {
     <>
       {parts.map((part, i) =>
         regex.test(part) ? (
-          <mark key={i} className="bg-warning/30 text-warning rounded-sm px-0.5">{part}</mark>
+          <mark key={i} className="bg-warning/30 text-warning px-0.5">
+            {part}
+          </mark>
         ) : (
           <span key={i}>{part}</span>
-        )
+        ),
       )}
     </>
   );

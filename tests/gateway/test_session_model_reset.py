@@ -1,4 +1,4 @@
-"""Tests that /new (and its /reset alias) clears the session-scoped model override."""
+"""Tests that /new (and its /reset alias) clears session-scoped overrides."""
 from datetime import datetime
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -37,6 +37,7 @@ def _make_runner():
     runner._voice_mode = {}
     runner.hooks = SimpleNamespace(emit=AsyncMock(), loaded_hooks=False)
     runner._session_model_overrides = {}
+    runner._session_reasoning_overrides = {}
     runner._pending_model_notes = {}
     runner._background_tasks = set()
 
@@ -75,14 +76,16 @@ async def test_new_command_clears_session_model_override():
     runner._session_model_overrides[session_key] = {
         "model": "gpt-4o",
         "provider": "openai",
-        "api_key": "sk-test",
+        "api_key": "***",
         "base_url": "",
         "api_mode": "openai",
     }
+    runner._session_reasoning_overrides[session_key] = {"enabled": True, "effort": "high"}
 
     await runner._handle_reset_command(_make_event("/new"))
 
     assert session_key not in runner._session_model_overrides
+    assert session_key not in runner._session_reasoning_overrides
 
 
 @pytest.mark.asyncio
@@ -92,10 +95,12 @@ async def test_new_command_no_override_is_noop():
     session_key = build_session_key(_make_source())
 
     assert session_key not in runner._session_model_overrides
+    assert session_key not in runner._session_reasoning_overrides
 
     await runner._handle_reset_command(_make_event("/new"))
 
     assert session_key not in runner._session_model_overrides
+    assert session_key not in runner._session_reasoning_overrides
 
 
 @pytest.mark.asyncio
@@ -115,12 +120,16 @@ async def test_new_command_only_clears_own_session():
     runner._session_model_overrides[other_key] = {
         "model": "claude-sonnet-4-6",
         "provider": "anthropic",
-        "api_key": "sk-ant-test",
+        "api_key": "***",
         "base_url": "",
         "api_mode": "anthropic",
     }
+    runner._session_reasoning_overrides[session_key] = {"enabled": True, "effort": "high"}
+    runner._session_reasoning_overrides[other_key] = {"enabled": True, "effort": "low"}
 
     await runner._handle_reset_command(_make_event("/new"))
 
     assert session_key not in runner._session_model_overrides
     assert other_key in runner._session_model_overrides
+    assert session_key not in runner._session_reasoning_overrides
+    assert other_key in runner._session_reasoning_overrides

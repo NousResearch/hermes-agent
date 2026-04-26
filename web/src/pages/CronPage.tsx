@@ -1,15 +1,20 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Clock, Pause, Play, Plus, Trash2, Zap } from "lucide-react";
+import { H2 } from "@nous-research/ui";
 import { api } from "@/lib/api";
 import type { CronJob } from "@/lib/api";
+import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useToast } from "@/hooks/useToast";
+import { useConfirmDelete } from "@/hooks/useConfirmDelete";
 import { Toast } from "@/components/Toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select } from "@/components/ui/select";
+import { Select, SelectOption } from "@/components/ui/select";
+import { useI18n } from "@/i18n";
+import { PluginSlot } from "@/plugins";
 
 function formatTime(iso?: string | null): string {
   if (!iso) return "—";
@@ -29,6 +34,7 @@ export default function CronPage() {
   const [jobs, setJobs] = useState<CronJob[]>([]);
   const [loading, setLoading] = useState(true);
   const { toast, showToast } = useToast();
+  const { t } = useI18n();
 
   // New job form state
   const [prompt, setPrompt] = useState("");
@@ -37,21 +43,21 @@ export default function CronPage() {
   const [deliver, setDeliver] = useState("local");
   const [creating, setCreating] = useState(false);
 
-  const loadJobs = () => {
+  const loadJobs = useCallback(() => {
     api
       .getCronJobs()
       .then(setJobs)
-      .catch(() => showToast("Failed to load cron jobs", "error"))
+      .catch(() => showToast(t.common.loading, "error"))
       .finally(() => setLoading(false));
-  };
+  }, [showToast, t.common.loading]);
 
   useEffect(() => {
     loadJobs();
-  }, []);
+  }, [loadJobs]);
 
   const handleCreate = async () => {
     if (!prompt.trim() || !schedule.trim()) {
-      showToast("Prompt and schedule are required", "error");
+      showToast(`${t.cron.prompt} & ${t.cron.schedule} required`, "error");
       return;
     }
     setCreating(true);
@@ -62,14 +68,14 @@ export default function CronPage() {
         name: name.trim() || undefined,
         deliver,
       });
-      showToast("Cron job created", "success");
+      showToast(t.common.create + " ✓", "success");
       setPrompt("");
       setSchedule("");
       setName("");
       setDeliver("local");
       loadJobs();
     } catch (e) {
-      showToast(`Failed to create job: ${e}`, "error");
+      showToast(`${t.config.failedToSave}: ${e}`, "error");
     } finally {
       setCreating(false);
     }
@@ -80,36 +86,55 @@ export default function CronPage() {
       const isPaused = job.state === "paused";
       if (isPaused) {
         await api.resumeCronJob(job.id);
-        showToast(`Resumed "${job.name || job.prompt.slice(0, 30)}"`, "success");
+        showToast(
+          `${t.cron.resume}: "${job.name || job.prompt.slice(0, 30)}"`,
+          "success",
+        );
       } else {
         await api.pauseCronJob(job.id);
-        showToast(`Paused "${job.name || job.prompt.slice(0, 30)}"`, "success");
+        showToast(
+          `${t.cron.pause}: "${job.name || job.prompt.slice(0, 30)}"`,
+          "success",
+        );
       }
       loadJobs();
     } catch (e) {
-      showToast(`Action failed: ${e}`, "error");
+      showToast(`${t.status.error}: ${e}`, "error");
     }
   };
 
   const handleTrigger = async (job: CronJob) => {
     try {
       await api.triggerCronJob(job.id);
-      showToast(`Triggered "${job.name || job.prompt.slice(0, 30)}"`, "success");
+      showToast(
+        `${t.cron.triggerNow}: "${job.name || job.prompt.slice(0, 30)}"`,
+        "success",
+      );
       loadJobs();
     } catch (e) {
-      showToast(`Trigger failed: ${e}`, "error");
+      showToast(`${t.status.error}: ${e}`, "error");
     }
   };
 
-  const handleDelete = async (job: CronJob) => {
-    try {
-      await api.deleteCronJob(job.id);
-      showToast(`Deleted "${job.name || job.prompt.slice(0, 30)}"`, "success");
-      loadJobs();
-    } catch (e) {
-      showToast(`Delete failed: ${e}`, "error");
-    }
-  };
+  const jobDelete = useConfirmDelete({
+    onDelete: useCallback(
+      async (id: string) => {
+        const job = jobs.find((j) => j.id === id);
+        try {
+          await api.deleteCronJob(id);
+          showToast(
+            `${t.common.delete}: "${job?.name || (job?.prompt ?? "").slice(0, 30) || id}"`,
+            "success",
+          );
+          loadJobs();
+        } catch (e) {
+          showToast(`${t.status.error}: ${e}`, "error");
+          throw e;
+        }
+      },
+      [jobs, loadJobs, showToast, t.common.delete, t.status.error],
+    ),
+  });
 
   if (loading) {
     return (
@@ -119,36 +144,54 @@ export default function CronPage() {
     );
   }
 
+  const pendingJob = jobDelete.pendingId
+    ? jobs.find((j) => j.id === jobDelete.pendingId)
+    : null;
+
   return (
     <div className="flex flex-col gap-6">
+      <PluginSlot name="cron:top" />
       <Toast toast={toast} />
+
+      <DeleteConfirmDialog
+        open={jobDelete.isOpen}
+        onCancel={jobDelete.cancel}
+        onConfirm={jobDelete.confirm}
+        title={t.cron.confirmDeleteTitle}
+        description={
+          pendingJob
+            ? `"${pendingJob.name || pendingJob.prompt.slice(0, 40)}" — ${t.cron.confirmDeleteMessage}`
+            : t.cron.confirmDeleteMessage
+        }
+        loading={jobDelete.isDeleting}
+      />
 
       {/* Create new job form */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
             <Plus className="h-4 w-4" />
-            New Cron Job
+            {t.cron.newJob}
           </CardTitle>
         </CardHeader>
         <CardContent>
           <div className="grid gap-4">
             <div className="grid gap-2">
-              <Label htmlFor="cron-name">Name (optional)</Label>
+              <Label htmlFor="cron-name">{t.cron.nameOptional}</Label>
               <Input
                 id="cron-name"
-                placeholder="e.g. Daily summary"
+                placeholder={t.cron.namePlaceholder}
                 value={name}
                 onChange={(e) => setName(e.target.value)}
               />
             </div>
 
             <div className="grid gap-2">
-              <Label htmlFor="cron-prompt">Prompt</Label>
+              <Label htmlFor="cron-prompt">{t.cron.prompt}</Label>
               <textarea
                 id="cron-prompt"
-                className="flex min-h-[80px] w-full rounded-md border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
-                placeholder="What should the agent do on each run?"
+                className="flex min-h-[80px] w-full border border-input bg-transparent px-3 py-2 text-sm shadow-sm placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring"
+                placeholder={t.cron.promptPlaceholder}
                 value={prompt}
                 onChange={(e) => setPrompt(e.target.value)}
               />
@@ -156,34 +199,48 @@ export default function CronPage() {
 
             <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
               <div className="grid gap-2">
-                <Label htmlFor="cron-schedule">Schedule (cron expression)</Label>
+                <Label htmlFor="cron-schedule">{t.cron.schedule}</Label>
                 <Input
                   id="cron-schedule"
-                  placeholder="0 9 * * *"
+                  placeholder={t.cron.schedulePlaceholder}
                   value={schedule}
                   onChange={(e) => setSchedule(e.target.value)}
                 />
               </div>
 
               <div className="grid gap-2">
-                <Label htmlFor="cron-deliver">Deliver to</Label>
+                <Label htmlFor="cron-deliver">{t.cron.deliverTo}</Label>
                 <Select
                   id="cron-deliver"
                   value={deliver}
-                  onChange={(e) => setDeliver(e.target.value)}
+                  onValueChange={(v) => setDeliver(v)}
                 >
-                  <option value="local">Local</option>
-                  <option value="telegram">Telegram</option>
-                  <option value="discord">Discord</option>
-                  <option value="slack">Slack</option>
-                  <option value="email">Email</option>
+                  <SelectOption value="local">
+                    {t.cron.delivery.local}
+                  </SelectOption>
+                  <SelectOption value="telegram">
+                    {t.cron.delivery.telegram}
+                  </SelectOption>
+                  <SelectOption value="discord">
+                    {t.cron.delivery.discord}
+                  </SelectOption>
+                  <SelectOption value="slack">
+                    {t.cron.delivery.slack}
+                  </SelectOption>
+                  <SelectOption value="email">
+                    {t.cron.delivery.email}
+                  </SelectOption>
                 </Select>
               </div>
 
               <div className="flex items-end">
-                <Button onClick={handleCreate} disabled={creating} className="w-full">
+                <Button
+                  onClick={handleCreate}
+                  disabled={creating}
+                  className="w-full"
+                >
                   <Plus className="h-3 w-3" />
-                  {creating ? "Creating..." : "Create"}
+                  {creating ? t.common.creating : t.common.create}
                 </Button>
               </div>
             </div>
@@ -193,15 +250,18 @@ export default function CronPage() {
 
       {/* Jobs list */}
       <div className="flex flex-col gap-3">
-        <h2 className="text-sm font-medium text-muted-foreground flex items-center gap-2">
+        <H2
+          variant="sm"
+          className="flex items-center gap-2 text-muted-foreground"
+        >
           <Clock className="h-4 w-4" />
-          Scheduled Jobs ({jobs.length})
-        </h2>
+          {t.cron.scheduledJobs} ({jobs.length})
+        </H2>
 
         {jobs.length === 0 && (
           <Card>
             <CardContent className="py-8 text-center text-sm text-muted-foreground">
-              No cron jobs configured. Create one above.
+              {t.cron.noJobs}
             </CardContent>
           </Card>
         )}
@@ -213,7 +273,9 @@ export default function CronPage() {
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-1">
                   <span className="font-medium text-sm truncate">
-                    {job.name || job.prompt.slice(0, 60) + (job.prompt.length > 60 ? "..." : "")}
+                    {job.name ||
+                      job.prompt.slice(0, 60) +
+                        (job.prompt.length > 60 ? "..." : "")}
                   </span>
                   <Badge variant={STATUS_VARIANT[job.state] ?? "secondary"}>
                     {job.state}
@@ -224,16 +286,23 @@ export default function CronPage() {
                 </div>
                 {job.name && (
                   <p className="text-xs text-muted-foreground truncate mb-1">
-                    {job.prompt.slice(0, 100)}{job.prompt.length > 100 ? "..." : ""}
+                    {job.prompt.slice(0, 100)}
+                    {job.prompt.length > 100 ? "..." : ""}
                   </p>
                 )}
                 <div className="flex items-center gap-4 text-xs text-muted-foreground">
                   <span className="font-mono">{job.schedule_display}</span>
-                  <span>Last: {formatTime(job.last_run_at)}</span>
-                  <span>Next: {formatTime(job.next_run_at)}</span>
+                  <span>
+                    {t.cron.last}: {formatTime(job.last_run_at)}
+                  </span>
+                  <span>
+                    {t.cron.next}: {formatTime(job.next_run_at)}
+                  </span>
                 </div>
                 {job.last_error && (
-                  <p className="text-xs text-destructive mt-1">{job.last_error}</p>
+                  <p className="text-xs text-destructive mt-1">
+                    {job.last_error}
+                  </p>
                 )}
               </div>
 
@@ -242,8 +311,10 @@ export default function CronPage() {
                 <Button
                   variant="ghost"
                   size="icon"
-                  title={job.state === "paused" ? "Resume" : "Pause"}
-                  aria-label={job.state === "paused" ? "Resume job" : "Pause job"}
+                  title={job.state === "paused" ? t.cron.resume : t.cron.pause}
+                  aria-label={
+                    job.state === "paused" ? t.cron.resume : t.cron.pause
+                  }
                   onClick={() => handlePauseResume(job)}
                 >
                   {job.state === "paused" ? (
@@ -256,8 +327,8 @@ export default function CronPage() {
                 <Button
                   variant="ghost"
                   size="icon"
-                  title="Trigger now"
-                  aria-label="Trigger job now"
+                  title={t.cron.triggerNow}
+                  aria-label={t.cron.triggerNow}
                   onClick={() => handleTrigger(job)}
                 >
                   <Zap className="h-4 w-4" />
@@ -266,9 +337,9 @@ export default function CronPage() {
                 <Button
                   variant="ghost"
                   size="icon"
-                  title="Delete"
-                  aria-label="Delete job"
-                  onClick={() => handleDelete(job)}
+                  title={t.common.delete}
+                  aria-label={t.common.delete}
+                  onClick={() => jobDelete.requestDelete(job.id)}
                 >
                   <Trash2 className="h-4 w-4 text-destructive" />
                 </Button>
@@ -277,6 +348,7 @@ export default function CronPage() {
           </Card>
         ))}
       </div>
+      <PluginSlot name="cron:bottom" />
     </div>
   );
 }

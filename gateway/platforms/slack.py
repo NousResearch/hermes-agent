@@ -38,6 +38,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    ProcessingOutcome,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
     safe_url_for_log,
@@ -113,6 +114,11 @@ class SlackAdapter(BasePlatformAdapter):
         # Cache for _fetch_thread_context results: cache_key → _ThreadContextCache
         self._thread_context_cache: Dict[str, _ThreadContextCache] = {}
         self._THREAD_CACHE_TTL = 60.0
+        # Track message IDs that should get reaction lifecycle (DMs / @mentions).
+        self._reacting_message_ids: set = set()
+        # Track active assistant thread status indicators so stop_typing can
+        # clear them (chat_id → thread_ts).
+        self._active_status_threads: Dict[str, str] = {}
 
     async def connect(self) -> bool:
         """Connect to Slack via Socket Mode."""
@@ -150,9 +156,11 @@ class SlackAdapter(BasePlatformAdapter):
             except Exception as e:
                 logger.warning("[Slack] Failed to read %s: %s", tokens_file, e)
 
+        lock_acquired = False
         try:
             if not self._acquire_platform_lock('slack-app-token', app_token, 'Slack app token'):
                 return False
+            lock_acquired = True
 
             # First token is the primary — used for AsyncApp / Socket Mode
             primary_token = bot_tokens[0]
@@ -228,6 +236,9 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[Slack] Connection failed: %s", e, exc_info=True)
             return False
+        finally:
+            if lock_acquired and not self._running:
+                self._release_platform_lock()
 
     async def disconnect(self) -> None:
         """Disconnect from Slack."""
@@ -316,6 +327,8 @@ class SlackAdapter(BasePlatformAdapter):
         chat_id: str,
         message_id: str,
         content: str,
+        *,
+        finalize: bool = False,
     ) -> SendResult:
         """Edit a previously sent Slack message."""
         if not self._app:
@@ -355,6 +368,7 @@ class SlackAdapter(BasePlatformAdapter):
         if not thread_ts:
             return  # Can only set status in a thread context
 
+        self._active_status_threads[chat_id] = thread_ts
         try:
             await self._get_client(chat_id).assistant_threads_setStatus(
                 channel_id=chat_id,
@@ -365,6 +379,36 @@ class SlackAdapter(BasePlatformAdapter):
             # Silently ignore — may lack assistant:write scope or not be
             # in an assistant-enabled context. Falls back to reactions.
             logger.debug("[Slack] assistant.threads.setStatus failed: %s", e)
+
+    async def stop_typing(self, chat_id: str) -> None:
+        """Clear the assistant thread status indicator."""
+        if not self._app:
+            return
+        thread_ts = self._active_status_threads.pop(chat_id, None)
+        if not thread_ts:
+            return
+        try:
+            await self._get_client(chat_id).assistant_threads_setStatus(
+                channel_id=chat_id,
+                thread_ts=thread_ts,
+                status="",
+            )
+        except Exception as e:
+            logger.debug("[Slack] assistant.threads.setStatus clear failed: %s", e)
+
+    def _dm_top_level_threads_as_sessions(self) -> bool:
+        """Whether top-level Slack DMs get per-message session threads.
+
+        Defaults to ``True`` so each visible DM reply thread is isolated as its
+        own Hermes session — matching the per-thread behavior channels already
+        have.  Set ``platforms.slack.extra.dm_top_level_threads_as_sessions``
+        to ``false`` in config.yaml to revert to the legacy behavior where all
+        top-level DMs share one continuous session.
+        """
+        raw = self.config.extra.get("dm_top_level_threads_as_sessions")
+        if raw is None:
+            return True  # default: each DM thread is its own session
+        return str(raw).strip().lower() in ("1", "true", "yes", "on")
 
     def _resolve_thread_ts(
         self,
@@ -562,6 +606,38 @@ class SlackAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.debug("[Slack] reactions.remove failed (%s): %s", emoji, e)
             return False
+
+    def _reactions_enabled(self) -> bool:
+        """Check if message reactions are enabled via config/env."""
+        return os.getenv("SLACK_REACTIONS", "true").lower() not in ("false", "0", "no")
+
+    async def on_processing_start(self, event: MessageEvent) -> None:
+        """Add an in-progress reaction when message processing begins."""
+        if not self._reactions_enabled():
+            return
+        ts = getattr(event, "message_id", None)
+        if not ts or ts not in self._reacting_message_ids:
+            return
+        channel_id = getattr(event.source, "chat_id", None)
+        if channel_id:
+            await self._add_reaction(channel_id, ts, "eyes")
+
+    async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
+        """Swap the in-progress reaction for a final success/failure reaction."""
+        if not self._reactions_enabled():
+            return
+        ts = getattr(event, "message_id", None)
+        if not ts or ts not in self._reacting_message_ids:
+            return
+        self._reacting_message_ids.discard(ts)
+        channel_id = getattr(event.source, "chat_id", None)
+        if not channel_id:
+            return
+        await self._remove_reaction(channel_id, ts, "eyes")
+        if outcome == ProcessingOutcome.SUCCESS:
+            await self._add_reaction(channel_id, ts, "white_check_mark")
+        elif outcome == ProcessingOutcome.FAILURE:
+            await self._add_reaction(channel_id, ts, "x")
 
     # ----- User identity resolution -----
 
@@ -996,10 +1072,14 @@ class SlackAdapter(BasePlatformAdapter):
         # Build thread_ts for session keying.
         # In channels: fall back to ts so each top-level @mention starts a
         #   new thread/session (the bot always replies in a thread).
-        # In DMs: only use the real thread_ts — top-level DMs should share
-        #   one continuous session, threaded DMs get their own session.
+        # In DMs: fall back to ts so each top-level DM reply thread gets
+        #   its own session key (matching channel behavior). Set
+        #   dm_top_level_threads_as_sessions: false in config to revert to
+        #   legacy single-session-per-DM-channel behavior.
         if is_dm:
-            thread_ts = event.get("thread_ts") or assistant_meta.get("thread_ts")  # None for top-level DMs
+            thread_ts = event.get("thread_ts") or assistant_meta.get("thread_ts")
+            if not thread_ts and self._dm_top_level_threads_as_sessions():
+                thread_ts = ts
         else:
             thread_ts = event.get("thread_ts") or ts  # ts fallback for channels
 
@@ -1167,6 +1247,12 @@ class SlackAdapter(BasePlatformAdapter):
             thread_id=thread_ts,
         )
 
+        # Per-channel ephemeral prompt
+        from gateway.platforms.base import resolve_channel_prompt
+        _channel_prompt = resolve_channel_prompt(
+            self.config.extra, channel_id, None,
+        )
+
         msg_event = MessageEvent(
             text=text,
             message_type=msg_type,
@@ -1176,21 +1262,17 @@ class SlackAdapter(BasePlatformAdapter):
             media_urls=media_urls,
             media_types=media_types,
             reply_to_message_id=thread_ts if thread_ts != ts else None,
+            channel_prompt=_channel_prompt,
         )
 
         # Only react when bot is directly addressed (DM or @mention).
         # In listen-all channels (require_mention=false), reacting to every
         # casual message would be noisy.
-        _should_react = is_dm or is_mentioned
-
+        _should_react = (is_dm or is_mentioned) and self._reactions_enabled()
         if _should_react:
-            await self._add_reaction(channel_id, ts, "eyes")
+            self._reacting_message_ids.add(ts)
 
         await self.handle_message(msg_event)
-
-        if _should_react:
-            await self._remove_reaction(channel_id, ts, "eyes")
-            await self._add_reaction(channel_id, ts, "white_check_mark")
 
     # ----- Approval button support (Block Kit) -----
 
@@ -1568,11 +1650,9 @@ class SlackAdapter(BasePlatformAdapter):
 
     async def _download_slack_file(self, url: str, ext: str, audio: bool = False, team_id: str = "") -> str:
         """Download a Slack file using the bot token for auth, with retry."""
-        import asyncio
         import httpx
 
         bot_token = self._team_clients[team_id].token if team_id and team_id in self._team_clients else self.config.token
-        last_exc = None
 
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             for attempt in range(3):
@@ -1602,7 +1682,6 @@ class SlackAdapter(BasePlatformAdapter):
                         from gateway.platforms.base import cache_image_from_bytes
                         return cache_image_from_bytes(response.content, ext)
                 except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
-                    last_exc = exc
                     if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
                         raise
                     if attempt < 2:
@@ -1611,15 +1690,12 @@ class SlackAdapter(BasePlatformAdapter):
                         await asyncio.sleep(1.5 * (attempt + 1))
                         continue
                     raise
-        raise last_exc
 
     async def _download_slack_file_bytes(self, url: str, team_id: str = "") -> bytes:
         """Download a Slack file and return raw bytes, with retry."""
-        import asyncio
         import httpx
 
         bot_token = self._team_clients[team_id].token if team_id and team_id in self._team_clients else self.config.token
-        last_exc = None
 
         async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
             for attempt in range(3):
@@ -1631,7 +1707,6 @@ class SlackAdapter(BasePlatformAdapter):
                     response.raise_for_status()
                     return response.content
                 except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
-                    last_exc = exc
                     if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
                         raise
                     if attempt < 2:
@@ -1640,7 +1715,6 @@ class SlackAdapter(BasePlatformAdapter):
                         await asyncio.sleep(1.5 * (attempt + 1))
                         continue
                     raise
-        raise last_exc
 
     # ── Channel mention gating ─────────────────────────────────────────────
 

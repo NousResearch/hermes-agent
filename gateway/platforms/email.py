@@ -545,6 +545,7 @@ class EmailAdapter(BasePlatformAdapter):
         caption: Optional[str] = None,
         file_name: Optional[str] = None,
         reply_to: Optional[str] = None,
+        **kwargs,
     ) -> SendResult:
         """Send a file as an email attachment."""
         try:

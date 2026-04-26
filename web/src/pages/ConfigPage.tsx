@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useMemo } from "react";
+import { useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
 import {
   Code,
   Download,
@@ -8,9 +8,25 @@ import {
   Search,
   Upload,
   X,
-  ChevronRight,
   Settings2,
   FileText,
+  Settings,
+  Bot,
+  Monitor,
+  Palette,
+  Users,
+  Brain,
+  Package,
+  Lock,
+  Globe,
+  Mic,
+  Volume2,
+  Ear,
+  ClipboardList,
+  MessageCircle,
+  Wrench,
+  FileQuestion,
+  Filter,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import { getNestedValue, setNestedValue } from "@/lib/nested";
@@ -21,33 +37,35 @@ import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
+import { useI18n } from "@/i18n";
+import { usePageHeader } from "@/contexts/usePageHeader";
+import { PluginSlot } from "@/plugins";
 
 /* ------------------------------------------------------------------ */
 /*  Helpers                                                            */
 /* ------------------------------------------------------------------ */
 
-const CATEGORY_ICONS: Record<string, string> = {
-  general: "⚙️",
-  agent: "🤖",
-  terminal: "💻",
-  display: "🎨",
-  delegation: "👥",
-  memory: "🧠",
-  compression: "📦",
-  security: "🔒",
-  browser: "🌐",
-  voice: "🎙️",
-  tts: "🔊",
-  stt: "👂",
-  logging: "📋",
-  discord: "💬",
-  auxiliary: "🔧",
+const CATEGORY_ICONS: Record<string, React.ComponentType<{ className?: string }>> = {
+  general: Settings,
+  agent: Bot,
+  terminal: Monitor,
+  display: Palette,
+  delegation: Users,
+  memory: Brain,
+  compression: Package,
+  security: Lock,
+  browser: Globe,
+  voice: Mic,
+  tts: Volume2,
+  stt: Ear,
+  logging: ClipboardList,
+  discord: MessageCircle,
+  auxiliary: Wrench,
 };
 
-function prettyCategoryName(cat: string): string {
-  if (cat === "tts") return "Text-to-Speech";
-  if (cat === "stt") return "Speech-to-Text";
-  return cat.charAt(0).toUpperCase() + cat.slice(1);
+function CategoryIcon({ category, className }: { category: string; className?: string }) {
+  const Icon = CATEGORY_ICONS[category] ?? FileQuestion;
+  return <Icon className={className ?? "h-4 w-4"} />;
 }
 
 /* ------------------------------------------------------------------ */
@@ -68,6 +86,42 @@ export default function ConfigPage() {
   const [activeCategory, setActiveCategory] = useState<string>("");
   const { toast, showToast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
+  const { t } = useI18n();
+  const { setEnd } = usePageHeader();
+
+  useLayoutEffect(() => {
+    if (!config || !schema) {
+      setEnd(null);
+      return;
+    }
+    setEnd(
+      <div className="relative w-full min-w-0 sm:max-w-xs">
+        <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
+        <Input
+          className="h-8 pl-8 pr-7 text-xs"
+          placeholder={t.common.search}
+          value={searchQuery}
+          onChange={(e) => setSearchQuery(e.target.value)}
+        />
+        {searchQuery && (
+          <button
+            type="button"
+            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+            onClick={() => setSearchQuery("")}
+          >
+            <X className="h-3 w-3" />
+          </button>
+        )}
+      </div>,
+    );
+    return () => setEnd(null);
+  }, [config, schema, searchQuery, setEnd, t.common.search]);
+
+  function prettyCategoryName(cat: string): string {
+    const key = cat as keyof typeof t.config.categories;
+    if (t.config.categories[key]) return t.config.categories[key];
+    return cat.charAt(0).toUpperCase() + cat.slice(1);
+  }
 
   useEffect(() => {
     api.getConfig().then(setConfig).catch(() => {});
@@ -95,7 +149,7 @@ export default function ConfigPage() {
       api
         .getConfigRaw()
         .then((resp) => setYamlText(resp.yaml))
-        .catch(() => showToast("Failed to load raw config", "error"))
+        .catch(() => showToast(t.config.failedToLoadRaw, "error"))
         .finally(() => setYamlLoading(false));
     }
   }, [yamlMode]);
@@ -152,9 +206,9 @@ export default function ConfigPage() {
     setSaving(true);
     try {
       await api.saveConfig(config);
-      showToast("Configuration saved", "success");
+      showToast(t.config.configSaved, "success");
     } catch (e) {
-      showToast(`Failed to save: ${e}`, "error");
+      showToast(`${t.config.failedToSave}: ${e}`, "error");
     } finally {
       setSaving(false);
     }
@@ -164,10 +218,10 @@ export default function ConfigPage() {
     setYamlSaving(true);
     try {
       await api.saveConfigRaw(yamlText);
-      showToast("YAML config saved", "success");
+      showToast(t.config.yamlConfigSaved, "success");
       api.getConfig().then(setConfig).catch(() => {});
     } catch (e) {
-      showToast(`Failed to save YAML: ${e}`, "error");
+      showToast(`${t.config.failedToSaveYaml}: ${e}`, "error");
     } finally {
       setYamlSaving(false);
     }
@@ -196,9 +250,9 @@ export default function ConfigPage() {
       try {
         const imported = JSON.parse(reader.result as string);
         setConfig(imported);
-        showToast("Config imported — review and save", "success");
+        showToast(t.config.configImported, "success");
       } catch {
-        showToast("Invalid JSON file", "error");
+        showToast(t.config.invalidJson, "error");
       }
     };
     reader.readAsText(file);
@@ -230,7 +284,7 @@ export default function ConfigPage() {
         <div key={key}>
           {showCatBadge && (
             <div className="flex items-center gap-2 pt-4 pb-2 first:pt-0">
-              <span className="text-base">{CATEGORY_ICONS[cat] || "📄"}</span>
+              <CategoryIcon category={cat} className="h-4 w-4 text-muted-foreground" />
               <span className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
                 {prettyCategoryName(cat)}
               </span>
@@ -260,25 +314,26 @@ export default function ConfigPage() {
 
   return (
     <div className="flex flex-col gap-4">
+      <PluginSlot name="config:top" />
       <Toast toast={toast} />
 
       {/* ═══════════════ Header Bar ═══════════════ */}
       <div className="flex items-center justify-between gap-4">
         <div className="flex items-center gap-2">
           <Settings2 className="h-4 w-4 text-muted-foreground" />
-          <code className="text-xs text-muted-foreground bg-muted/50 px-2 py-0.5 rounded">
-            ~/.hermes/config.yaml
+          <code className="text-xs text-muted-foreground bg-muted/50 px-2 py-0.5">
+            {t.config.configPath}
           </code>
         </div>
         <div className="flex items-center gap-1.5">
-          <Button variant="ghost" size="sm" onClick={handleExport} title="Export config as JSON" aria-label="Export config">
+          <Button variant="ghost" size="sm" onClick={handleExport} title={t.config.exportConfig} aria-label={t.config.exportConfig}>
             <Download className="h-3.5 w-3.5" />
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => fileInputRef.current?.click()} title="Import config from JSON" aria-label="Import config">
+          <Button variant="ghost" size="sm" onClick={() => fileInputRef.current?.click()} title={t.config.importConfig} aria-label={t.config.importConfig}>
             <Upload className="h-3.5 w-3.5" />
           </Button>
           <input ref={fileInputRef} type="file" accept=".json" className="hidden" onChange={handleImport} />
-          <Button variant="ghost" size="sm" onClick={handleReset} title="Reset to defaults" aria-label="Reset to defaults">
+          <Button variant="ghost" size="sm" onClick={handleReset} title={t.config.resetDefaults} aria-label={t.config.resetDefaults}>
             <RotateCcw className="h-3.5 w-3.5" />
           </Button>
 
@@ -293,7 +348,7 @@ export default function ConfigPage() {
             {yamlMode ? (
               <>
                 <FormInput className="h-3.5 w-3.5" />
-                Form
+                {t.common.form}
               </>
             ) : (
               <>
@@ -306,12 +361,12 @@ export default function ConfigPage() {
           {yamlMode ? (
             <Button size="sm" onClick={handleYamlSave} disabled={yamlSaving} className="gap-1.5">
               <Save className="h-3.5 w-3.5" />
-              {yamlSaving ? "Saving..." : "Save"}
+              {yamlSaving ? t.common.saving : t.common.save}
             </Button>
           ) : (
             <Button size="sm" onClick={handleSave} disabled={saving} className="gap-1.5">
               <Save className="h-3.5 w-3.5" />
-              {saving ? "Saving..." : "Save"}
+              {saving ? t.common.saving : t.common.save}
             </Button>
           )}
         </div>
@@ -323,7 +378,7 @@ export default function ConfigPage() {
           <CardHeader className="py-3 px-4">
             <CardTitle className="text-sm flex items-center gap-2">
               <FileText className="h-4 w-4" />
-              Raw YAML Configuration
+              {t.config.rawYaml}
             </CardTitle>
           </CardHeader>
           <CardContent className="p-0">
@@ -343,60 +398,66 @@ export default function ConfigPage() {
         </Card>
       ) : (
         /* ═══════════════ Form Mode ═══════════════ */
-        <div className="flex gap-4" style={{ minHeight: "calc(100vh - 180px)" }}>
-          {/* ---- Sidebar ---- */}
-          <div className="w-52 shrink-0">
-            <div className="sticky top-[72px] flex flex-col gap-1">
-              {/* Search */}
-              <div className="relative mb-2">
-                <Search className="absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" />
-                <Input
-                  className="pl-8 h-8 text-xs"
-                  placeholder="Search..."
-                  value={searchQuery}
-                  onChange={(e) => setSearchQuery(e.target.value)}
-                />
-                {searchQuery && (
-                  <button
-                    type="button"
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
-                    onClick={() => setSearchQuery("")}
-                  >
-                    <X className="h-3 w-3" />
-                  </button>
-                )}
-              </div>
+        <div className="flex flex-col sm:flex-row gap-4">
+          {/* ---- Filter panel ---- */}
+          <aside aria-label={t.config.filters} className="sm:w-56 sm:shrink-0">
+            <div className="sm:sticky sm:top-4">
+              <div className="flex flex-col border border-border bg-muted/20">
+                {/* Panel heading */}
+                <div className="hidden sm:flex items-center gap-2 px-3 py-2 border-b border-border">
+                  <Filter className="h-3 w-3 text-muted-foreground" />
+                  <span className="font-mondwest text-[0.65rem] tracking-[0.12em] uppercase text-muted-foreground">
+                    {t.config.filters}
+                  </span>
+                </div>
 
-              {/* Category nav */}
-              {categories.map((cat) => {
-                const isActive = !isSearching && activeCategory === cat;
-                return (
-                  <button
-                    key={cat}
-                    type="button"
-                    onClick={() => {
-                      setSearchQuery("");
-                      setActiveCategory(cat);
-                    }}
-                    className={`group flex items-center gap-2 rounded-md px-2.5 py-1.5 text-left text-xs transition-colors cursor-pointer ${
-                      isActive
-                        ? "bg-primary/10 text-primary font-medium"
-                        : "text-muted-foreground hover:text-foreground hover:bg-muted/50"
-                    }`}
-                  >
-                    <span className="text-sm leading-none">{CATEGORY_ICONS[cat] || "📄"}</span>
-                    <span className="flex-1 truncate">{prettyCategoryName(cat)}</span>
-                    <span className={`text-[10px] tabular-nums ${isActive ? "text-primary/60" : "text-muted-foreground/50"}`}>
-                      {categoryCounts[cat] || 0}
-                    </span>
-                    {isActive && (
-                      <ChevronRight className="h-3 w-3 text-primary/50 shrink-0" />
-                    )}
-                  </button>
-                );
-              })}
+                {/* Sections heading (hidden on mobile since it becomes a horizontal scroll) */}
+                <div className="hidden sm:block px-3 pt-2 pb-1 font-mondwest text-[0.6rem] tracking-[0.12em] uppercase text-muted-foreground/70">
+                  {t.config.sections}
+                </div>
+
+                {/* Category nav — horizontal scroll on mobile, pill list on sm+ */}
+                <div className="flex sm:flex-col gap-1 sm:gap-px p-2 sm:pt-1 overflow-x-auto sm:overflow-x-visible scrollbar-none sm:max-h-[calc(100vh-260px)] sm:overflow-y-auto">
+                  {categories.map((cat) => {
+                    const isActive = !isSearching && activeCategory === cat;
+
+                    return (
+                      <button
+                        key={cat}
+                        type="button"
+                        onClick={() => {
+                          setSearchQuery("");
+                          setActiveCategory(cat);
+                        }}
+                        className={`
+                          group flex items-center gap-2 px-2 py-1
+                          rounded-sm text-left text-[11px] cursor-pointer whitespace-nowrap
+                          transition-colors
+                          ${
+                            isActive
+                              ? "bg-foreground/10 text-foreground"
+                              : "text-muted-foreground hover:text-foreground hover:bg-foreground/5"
+                          }
+                        `}
+                      >
+                        <CategoryIcon category={cat} className="h-3.5 w-3.5 shrink-0" />
+                        <span className="flex-1 truncate">{prettyCategoryName(cat)}</span>
+                        <span
+                          className={`text-[10px] tabular-nums ${
+                            isActive
+                              ? "text-foreground/60"
+                              : "text-muted-foreground/50"
+                          }`}
+                        >
+                          {categoryCounts[cat] || 0}
+                        </span>
+                      </button>
+                    );
+                  })}
+                </div>
+              </div>
             </div>
-          </div>
+          </aside>
 
           {/* ---- Content ---- */}
           <div className="flex-1 min-w-0">
@@ -407,17 +468,17 @@ export default function ConfigPage() {
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-sm flex items-center gap-2">
                       <Search className="h-4 w-4" />
-                      Search Results
+                      {t.config.searchResults}
                     </CardTitle>
                     <Badge variant="secondary" className="text-[10px]">
-                      {searchMatchedFields.length} field{searchMatchedFields.length !== 1 ? "s" : ""}
+                      {searchMatchedFields.length} {t.config.fields.replace("{s}", searchMatchedFields.length !== 1 ? "s" : "")}
                     </Badge>
                   </div>
                 </CardHeader>
                 <CardContent className="grid gap-2 px-4 pb-4">
                   {searchMatchedFields.length === 0 ? (
                     <p className="text-sm text-muted-foreground text-center py-8">
-                      No fields match "<span className="text-foreground">{searchQuery}</span>"
+                      {t.config.noFieldsMatch.replace("{query}", searchQuery)}
                     </p>
                   ) : (
                     renderFields(searchMatchedFields, true)
@@ -430,11 +491,11 @@ export default function ConfigPage() {
                 <CardHeader className="py-3 px-4">
                   <div className="flex items-center justify-between">
                     <CardTitle className="text-sm flex items-center gap-2">
-                      <span className="text-base">{CATEGORY_ICONS[activeCategory] || "📄"}</span>
+                      <CategoryIcon category={activeCategory} className="h-4 w-4" />
                       {prettyCategoryName(activeCategory)}
                     </CardTitle>
                     <Badge variant="secondary" className="text-[10px]">
-                      {activeFields.length} field{activeFields.length !== 1 ? "s" : ""}
+                      {activeFields.length} {t.config.fields.replace("{s}", activeFields.length !== 1 ? "s" : "")}
                     </Badge>
                   </div>
                 </CardHeader>
@@ -446,6 +507,7 @@ export default function ConfigPage() {
           </div>
         </div>
       )}
+      <PluginSlot name="config:bottom" />
     </div>
   );
 }

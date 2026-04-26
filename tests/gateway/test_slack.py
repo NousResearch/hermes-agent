@@ -150,6 +150,31 @@ class TestAppMentionHandler:
         assert "/hermes" in registered_commands
 
 
+class TestSlackConnectCleanup:
+    """Regression coverage for failed connect() cleanup."""
+
+    @pytest.mark.asyncio
+    async def test_releases_platform_lock_when_auth_fails(self):
+        config = PlatformConfig(enabled=True, token="xoxb-fake")
+        adapter = SlackAdapter(config)
+
+        mock_app = MagicMock()
+        mock_web_client = AsyncMock()
+        mock_web_client.auth_test = AsyncMock(side_effect=RuntimeError("boom"))
+
+        with patch.object(_slack_mod, "AsyncApp", return_value=mock_app), \
+             patch.object(_slack_mod, "AsyncWebClient", return_value=mock_web_client), \
+             patch.object(_slack_mod, "AsyncSocketModeHandler", return_value=MagicMock()), \
+             patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}), \
+             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
+             patch("gateway.status.release_scoped_lock") as mock_release:
+            result = await adapter.connect()
+
+        assert result is False
+        mock_release.assert_called_once_with("slack-app-token", "xapp-fake")
+        assert adapter._platform_lock_identity is None
+
+
 # ---------------------------------------------------------------------------
 # TestSendDocument
 # ---------------------------------------------------------------------------
@@ -1006,7 +1031,7 @@ class TestReactions:
 
     @pytest.mark.asyncio
     async def test_reactions_in_message_flow(self, adapter):
-        """Reactions should be added on receipt and swapped on completion."""
+        """Reactions should be bracketed around actual processing via hooks."""
         adapter._app.client.reactions_add = AsyncMock()
         adapter._app.client.reactions_remove = AsyncMock()
         adapter._app.client.users_info = AsyncMock(return_value={
@@ -1022,14 +1047,146 @@ class TestReactions:
         }
         await adapter._handle_slack_message(event)
 
-        # Should have added 👀, then removed 👀, then added ✅
+        # _handle_slack_message should register the message for reactions
+        assert "1234567890.000001" in adapter._reacting_message_ids
+
+        # Simulate the base class calling on_processing_start
+        from gateway.platforms.base import MessageEvent, MessageType, SessionSource
+        from gateway.config import Platform
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="dm",
+            user_id="U_USER",
+        )
+        msg_event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="1234567890.000001",
+        )
+        await adapter.on_processing_start(msg_event)
+
+        add_calls = adapter._app.client.reactions_add.call_args_list
+        assert len(add_calls) == 1
+        assert add_calls[0].kwargs["name"] == "eyes"
+
+        # Simulate the base class calling on_processing_complete
+        from gateway.platforms.base import ProcessingOutcome
+        await adapter.on_processing_complete(msg_event, ProcessingOutcome.SUCCESS)
+
         add_calls = adapter._app.client.reactions_add.call_args_list
         remove_calls = adapter._app.client.reactions_remove.call_args_list
         assert len(add_calls) == 2
-        assert add_calls[0].kwargs["name"] == "eyes"
         assert add_calls[1].kwargs["name"] == "white_check_mark"
         assert len(remove_calls) == 1
         assert remove_calls[0].kwargs["name"] == "eyes"
+
+        # Message ID should be cleaned up
+        assert "1234567890.000001" not in adapter._reacting_message_ids
+
+    @pytest.mark.asyncio
+    async def test_reactions_failure_outcome(self, adapter):
+        """Failed processing should add :x: instead of :white_check_mark:."""
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+
+        from gateway.platforms.base import MessageEvent, MessageType, SessionSource, ProcessingOutcome
+        from gateway.config import Platform
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="dm",
+            user_id="U_USER",
+        )
+        adapter._reacting_message_ids.add("1234567890.000002")
+        msg_event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="1234567890.000002",
+        )
+        await adapter.on_processing_complete(msg_event, ProcessingOutcome.FAILURE)
+
+        add_calls = adapter._app.client.reactions_add.call_args_list
+        remove_calls = adapter._app.client.reactions_remove.call_args_list
+        assert len(add_calls) == 1
+        assert add_calls[0].kwargs["name"] == "x"
+        assert len(remove_calls) == 1
+        assert remove_calls[0].kwargs["name"] == "eyes"
+
+    @pytest.mark.asyncio
+    async def test_reactions_skipped_for_non_dm_non_mention(self, adapter):
+        """Non-DM, non-mention messages should not get reactions."""
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+        adapter._app.client.users_info = AsyncMock(return_value={
+            "user": {"profile": {"display_name": "Tyler"}}
+        })
+
+        event = {
+            "text": "hello",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "channel",
+            "ts": "1234567890.000003",
+        }
+        await adapter._handle_slack_message(event)
+
+        # Should NOT register for reactions when not mentioned in a channel
+        assert "1234567890.000003" not in adapter._reacting_message_ids
+        adapter._app.client.reactions_add.assert_not_called()
+        adapter._app.client.reactions_remove.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reactions_disabled_via_env(self, adapter, monkeypatch):
+        """SLACK_REACTIONS=false should suppress all reaction lifecycle."""
+        monkeypatch.setenv("SLACK_REACTIONS", "false")
+        adapter._app.client.reactions_add = AsyncMock()
+        adapter._app.client.reactions_remove = AsyncMock()
+        adapter._app.client.users_info = AsyncMock(return_value={
+            "user": {"profile": {"display_name": "Tyler"}}
+        })
+
+        event = {
+            "text": "hello",
+            "user": "U_USER",
+            "channel": "C123",
+            "channel_type": "im",
+            "ts": "1234567890.000004",
+        }
+        await adapter._handle_slack_message(event)
+
+        # Should NOT register for reactions when toggle is off
+        assert "1234567890.000004" not in adapter._reacting_message_ids
+
+        # Hooks should also be no-ops when disabled
+        from gateway.platforms.base import MessageEvent, MessageType, SessionSource, ProcessingOutcome
+        from gateway.config import Platform
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_type="dm",
+            user_id="U_USER",
+        )
+        msg_event = MessageEvent(
+            text="hello",
+            message_type=MessageType.TEXT,
+            source=source,
+            message_id="1234567890.000004",
+        )
+        # Force-add to verify hooks respect the toggle independently
+        adapter._reacting_message_ids.add("1234567890.000004")
+        await adapter.on_processing_start(msg_event)
+        await adapter.on_processing_complete(msg_event, ProcessingOutcome.SUCCESS)
+
+        adapter._app.client.reactions_add.assert_not_called()
+        adapter._app.client.reactions_remove.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_reactions_enabled_by_default(self, adapter):
+        """SLACK_REACTIONS defaults to true (matches existing behavior)."""
+        assert adapter._reactions_enabled() is True
 
 
 # ---------------------------------------------------------------------------
@@ -1678,11 +1835,11 @@ class TestProgressMessageThread:
         msg_event = captured_events[0]
         source = msg_event.source
 
-        # For a top-level DM: source.thread_id should remain None
-        # (session keying must not be affected)
-        assert source.thread_id is None, (
-            "source.thread_id must stay None for top-level DMs "
-            "so they share one continuous session"
+        # With default dm_top_level_threads_as_sessions=True, source.thread_id
+        # should equal the message ts so each DM thread gets its own session.
+        assert source.thread_id == "1234567890.000001", (
+            "source.thread_id must equal the message ts for top-level DMs "
+            "so each reply thread gets its own session"
         )
 
         # The message_id should be the event's ts — this is what the gateway
@@ -1705,6 +1862,34 @@ class TestProgressMessageThread:
         assert call_kwargs.get("thread_ts") == "1234567890.000001", (
             "send() must pass thread_ts when metadata has thread_id, "
             "ensuring progress messages land in the thread"
+        )
+
+    @pytest.mark.asyncio
+    async def test_dm_toplevel_shares_session_when_disabled(self, adapter):
+        """Opting out restores legacy single-session-per-DM-channel behavior."""
+        adapter.config.extra["dm_top_level_threads_as_sessions"] = False
+
+        event = {
+            "channel": "D_DM",
+            "channel_type": "im",
+            "user": "U_USER",
+            "text": "Hello bot",
+            "ts": "1234567890.000001",
+        }
+
+        captured_events = []
+        adapter.handle_message = AsyncMock(side_effect=lambda e: captured_events.append(e))
+
+        with patch.object(adapter, "_resolve_user_name", new=AsyncMock(return_value="testuser")):
+            await adapter._handle_slack_message(event)
+
+        assert len(captured_events) == 1
+        msg_event = captured_events[0]
+        source = msg_event.source
+
+        assert source.thread_id is None, (
+            "source.thread_id must stay None when "
+            "dm_top_level_threads_as_sessions is disabled"
         )
 
     @pytest.mark.asyncio

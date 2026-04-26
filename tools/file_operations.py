@@ -35,6 +35,13 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from tools.binary_extensions import BINARY_EXTENSIONS
 
+from agent.file_safety import (
+    build_write_denied_paths,
+    build_write_denied_prefixes,
+    get_safe_write_root as _shared_get_safe_write_root,
+    is_write_denied as _shared_is_write_denied,
+)
+
 
 # ---------------------------------------------------------------------------
 # Write-path deny list — blocks writes to sensitive system/credential files
@@ -42,41 +49,9 @@ from tools.binary_extensions import BINARY_EXTENSIONS
 
 _HOME = str(Path.home())
 
-WRITE_DENIED_PATHS = {
-    os.path.realpath(p) for p in [
-        os.path.join(_HOME, ".ssh", "authorized_keys"),
-        os.path.join(_HOME, ".ssh", "id_rsa"),
-        os.path.join(_HOME, ".ssh", "id_ed25519"),
-        os.path.join(_HOME, ".ssh", "config"),
-        str(get_hermes_home() / ".env"),
-        os.path.join(_HOME, ".bashrc"),
-        os.path.join(_HOME, ".zshrc"),
-        os.path.join(_HOME, ".profile"),
-        os.path.join(_HOME, ".bash_profile"),
-        os.path.join(_HOME, ".zprofile"),
-        os.path.join(_HOME, ".netrc"),
-        os.path.join(_HOME, ".pgpass"),
-        os.path.join(_HOME, ".npmrc"),
-        os.path.join(_HOME, ".pypirc"),
-        "/etc/sudoers",
-        "/etc/passwd",
-        "/etc/shadow",
-    ]
-}
+WRITE_DENIED_PATHS = build_write_denied_paths(_HOME)
 
-WRITE_DENIED_PREFIXES = [
-    os.path.realpath(p) + os.sep for p in [
-        os.path.join(_HOME, ".ssh"),
-        os.path.join(_HOME, ".aws"),
-        os.path.join(_HOME, ".gnupg"),
-        os.path.join(_HOME, ".kube"),
-        "/etc/sudoers.d",
-        "/etc/systemd",
-        os.path.join(_HOME, ".docker"),
-        os.path.join(_HOME, ".azure"),
-        os.path.join(_HOME, ".config", "gh"),
-    ]
-]
+WRITE_DENIED_PREFIXES = build_write_denied_prefixes(_HOME)
 
 
 def _get_safe_write_root() -> Optional[str]:
@@ -87,33 +62,12 @@ def _get_safe_write_root() -> Optional[str]:
     not on the static deny list.  Opt-in hardening for gateway/messaging
     deployments that should only touch a workspace checkout.
     """
-    root = os.getenv("HERMES_WRITE_SAFE_ROOT", "")
-    if not root:
-        return None
-    try:
-        return os.path.realpath(os.path.expanduser(root))
-    except Exception:
-        return None
+    return _shared_get_safe_write_root()
 
 
 def _is_write_denied(path: str) -> bool:
     """Return True if path is on the write deny list."""
-    resolved = os.path.realpath(os.path.expanduser(str(path)))
-
-    # 1) Static deny list
-    if resolved in WRITE_DENIED_PATHS:
-        return True
-    for prefix in WRITE_DENIED_PREFIXES:
-        if resolved.startswith(prefix):
-            return True
-
-    # 2) Optional safe-root sandbox
-    safe_root = _get_safe_write_root()
-    if safe_root:
-        if not (resolved == safe_root or resolved.startswith(safe_root + os.sep)):
-            return True
-
-    return False
+    return _shared_is_write_denied(path)
 
 
 # =============================================================================
@@ -317,6 +271,45 @@ LINTERS = {
 MAX_LINES = 2000
 MAX_LINE_LENGTH = 2000
 MAX_FILE_SIZE = 50 * 1024  # 50KB
+DEFAULT_READ_OFFSET = 1
+DEFAULT_READ_LIMIT = 500
+DEFAULT_SEARCH_OFFSET = 0
+DEFAULT_SEARCH_LIMIT = 50
+
+
+def _coerce_int(value: Any, default: int) -> int:
+    """Best-effort integer coercion for tool pagination inputs."""
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def normalize_read_pagination(offset: Any = DEFAULT_READ_OFFSET,
+                              limit: Any = DEFAULT_READ_LIMIT) -> tuple[int, int]:
+    """Return safe read_file pagination bounds.
+
+    Tool schemas declare minimum/maximum values, but not every caller or
+    provider enforces schemas before dispatch. Clamp here so invalid values
+    cannot leak into sed ranges like ``0,-1p``.
+
+    The upper bound on ``limit`` comes from ``tool_output.max_lines`` in
+    config.yaml (defaults to the module-level ``MAX_LINES`` constant).
+    """
+    from tools.tool_output_limits import get_max_lines
+    max_lines = get_max_lines()
+    normalized_offset = max(1, _coerce_int(offset, DEFAULT_READ_OFFSET))
+    normalized_limit = _coerce_int(limit, DEFAULT_READ_LIMIT)
+    normalized_limit = max(1, min(normalized_limit, max_lines))
+    return normalized_offset, normalized_limit
+
+
+def normalize_search_pagination(offset: Any = DEFAULT_SEARCH_OFFSET,
+                                limit: Any = DEFAULT_SEARCH_LIMIT) -> tuple[int, int]:
+    """Return safe search pagination bounds for shell head/tail pipelines."""
+    normalized_offset = max(0, _coerce_int(offset, DEFAULT_SEARCH_OFFSET))
+    normalized_limit = max(1, _coerce_int(limit, DEFAULT_SEARCH_LIMIT))
+    return normalized_offset, normalized_limit
 
 
 class ShellFileOperations(FileOperations):
@@ -330,11 +323,26 @@ class ShellFileOperations(FileOperations):
     def __init__(self, terminal_env, cwd: str = None):
         """
         Initialize file operations with a terminal environment.
-        
+
         Args:
             terminal_env: Any object with execute(command, cwd) method.
                          Returns {"output": str, "returncode": int}
-            cwd: Working directory (defaults to env's cwd or current directory)
+            cwd: Optional explicit fallback cwd when the terminal env has
+                 no cwd attribute (rare — most backends track cwd live).
+
+        Note:
+            Every _exec() call prefers the LIVE ``terminal_env.cwd`` over
+            ``self.cwd`` so ``cd`` commands run via the terminal tool are
+            picked up immediately.  ``self.cwd`` is only used as a fallback
+            when the env has no cwd at all — it is NOT the authoritative
+            cwd, despite being settable at init time.
+
+            Historical bug (fixed): prior versions of this class used the
+            init-time cwd for every _exec() call, which caused relative
+            paths passed to patch/read/write to target the wrong directory
+            after the user ran ``cd`` in the terminal.  Patches would
+            claim success and return a plausible diff but land in the
+            original directory, producing apparent silent failures.
         """
         self.env = terminal_env
         # Determine cwd from various possible sources.
@@ -343,25 +351,37 @@ class ShellFileOperations(FileOperations):
         # If nothing provides a cwd, use "/" as a safe universal default.
         self.cwd = cwd or getattr(terminal_env, 'cwd', None) or \
                    getattr(getattr(terminal_env, 'config', None), 'cwd', None) or "/"
-        
+
         # Cache for command availability checks
         self._command_cache: Dict[str, bool] = {}
     
     def _exec(self, command: str, cwd: str = None, timeout: int = None,
               stdin_data: str = None) -> ExecuteResult:
         """Execute command via terminal backend.
-        
+
         Args:
             stdin_data: If provided, piped to the process's stdin instead of
                         embedding in the command string. Bypasses ARG_MAX.
+
+        Cwd resolution order (critical — see class docstring):
+          1. Explicit ``cwd`` arg (if provided)
+          2. Live ``self.env.cwd`` (tracks ``cd`` commands run via terminal)
+          3. Init-time ``self.cwd`` (fallback when env has no cwd attribute)
+
+        This ordering ensures relative paths in file operations follow the
+        terminal's current directory — not the directory this file_ops was
+        originally created in.  See test_file_ops_cwd_tracking.py.
         """
         kwargs = {}
         if timeout:
             kwargs['timeout'] = timeout
         if stdin_data is not None:
             kwargs['stdin_data'] = stdin_data
-        
-        result = self.env.execute(command, cwd=cwd or self.cwd, **kwargs)
+
+        # Resolve cwd from the live env so `cd` commands are picked up.
+        # Fall through to init-time self.cwd only if the env doesn't track cwd.
+        effective_cwd = cwd or getattr(self.env, 'cwd', None) or self.cwd
+        result = self.env.execute(command, cwd=effective_cwd, **kwargs)
         return ExecuteResult(
             stdout=result.get("output", ""),
             exit_code=result.get("returncode", 0)
@@ -399,12 +419,14 @@ class ShellFileOperations(FileOperations):
     
     def _add_line_numbers(self, content: str, start_line: int = 1) -> str:
         """Add line numbers to content in LINE_NUM|CONTENT format."""
+        from tools.tool_output_limits import get_max_line_length
+        max_line_length = get_max_line_length()
         lines = content.split('\n')
         numbered = []
         for i, line in enumerate(lines, start=start_line):
             # Truncate long lines
-            if len(line) > MAX_LINE_LENGTH:
-                line = line[:MAX_LINE_LENGTH] + "... [truncated]"
+            if len(line) > max_line_length:
+                line = line[:max_line_length] + "... [truncated]"
             numbered.append(f"{i:6d}|{line}")
         return '\n'.join(numbered)
     
@@ -480,8 +502,7 @@ class ShellFileOperations(FileOperations):
         # Expand ~ and other shell paths
         path = self._expand_path(path)
         
-        # Clamp limit
-        limit = min(limit, MAX_LINES)
+        offset, limit = normalize_read_pagination(offset, limit)
         
         # Check if file exists and get size (wc -c is POSIX, works on Linux + macOS)
         stat_cmd = f"wc -c < {self._escape_shell_arg(path)} 2>/dev/null"
@@ -556,27 +577,54 @@ class ShellFileOperations(FileOperations):
     
     def _suggest_similar_files(self, path: str) -> ReadResult:
         """Suggest similar files when the requested file is not found."""
-        # Get directory and filename
         dir_path = os.path.dirname(path) or "."
         filename = os.path.basename(path)
-        
-        # List files in directory
-        ls_cmd = f"ls -1 {self._escape_shell_arg(dir_path)} 2>/dev/null | head -20"
+        basename_no_ext = os.path.splitext(filename)[0]
+        ext = os.path.splitext(filename)[1].lower()
+        lower_name = filename.lower()
+
+        # List files in the target directory
+        ls_cmd = f"ls -1 {self._escape_shell_arg(dir_path)} 2>/dev/null | head -50"
         ls_result = self._exec(ls_cmd)
-        
-        similar = []
+
+        scored: list = []  # (score, filepath) — higher is better
         if ls_result.exit_code == 0 and ls_result.stdout.strip():
-            files = ls_result.stdout.strip().split('\n')
-            # Simple similarity: files that share some characters with the target
-            for f in files:
-                # Check if filenames share significant overlap
-                common = set(filename.lower()) & set(f.lower())
-                if len(common) >= len(filename) * 0.5:  # 50% character overlap
-                    similar.append(os.path.join(dir_path, f))
-        
+            for f in ls_result.stdout.strip().split('\n'):
+                if not f:
+                    continue
+                lf = f.lower()
+                score = 0
+
+                # Exact match (shouldn't happen, but guard)
+                if lf == lower_name:
+                    score = 100
+                # Same base name, different extension (e.g. config.yml vs config.yaml)
+                elif os.path.splitext(f)[0].lower() == basename_no_ext.lower():
+                    score = 90
+                # Target is prefix of candidate or vice-versa
+                elif lf.startswith(lower_name) or lower_name.startswith(lf):
+                    score = 70
+                # Substring match (candidate contains query)
+                elif lower_name in lf:
+                    score = 60
+                # Reverse substring (query contains candidate name)
+                elif lf in lower_name and len(lf) > 2:
+                    score = 40
+                # Same extension with some overlap
+                elif ext and os.path.splitext(f)[1].lower() == ext:
+                    common = set(lower_name) & set(lf)
+                    if len(common) >= max(len(lower_name), len(lf)) * 0.4:
+                        score = 30
+
+                if score > 0:
+                    scored.append((score, os.path.join(dir_path, f)))
+
+        scored.sort(key=lambda x: -x[0])
+        similar = [fp for _, fp in scored[:5]]
+
         return ReadResult(
             error=f"File not found: {path}",
-            similar_files=similar[:5]  # Limit to 5 suggestions
+            similar_files=similar
         )
     
     def read_file_raw(self, path: str) -> ReadResult:
@@ -730,17 +778,36 @@ class ShellFileOperations(FileOperations):
             content, old_string, new_string, replace_all
         )
         
-        if error:
-            return PatchResult(error=error)
-        
-        if match_count == 0:
-            return PatchResult(error=f"Could not find match for old_string in {path}")
-        
+        if error or match_count == 0:
+            err_msg = error or f"Could not find match for old_string in {path}"
+            try:
+                from tools.fuzzy_match import format_no_match_hint
+                err_msg += format_no_match_hint(err_msg, match_count, old_string, content)
+            except Exception:
+                pass
+            return PatchResult(error=err_msg)
         # Write back
         write_result = self.write_file(path, new_content)
         if write_result.error:
             return PatchResult(error=f"Failed to write changes: {write_result.error}")
-        
+
+        # Post-write verification — re-read the file and confirm the bytes we
+        # intended to write actually landed. Catches silent persistence
+        # failures (backend FS oddities, race with another task, truncated
+        # pipe, etc.) that would otherwise return success-with-diff while the
+        # file is unchanged on disk.
+        verify_cmd = f"cat {self._escape_shell_arg(path)} 2>/dev/null"
+        verify_result = self._exec(verify_cmd)
+        if verify_result.exit_code != 0:
+            return PatchResult(error=f"Post-write verification failed: could not re-read {path}")
+        if verify_result.stdout != new_content:
+            return PatchResult(error=(
+                f"Post-write verification failed for {path}: on-disk content "
+                f"differs from intended write "
+                f"(wrote {len(new_content)} chars, read back {len(verify_result.stdout)}). "
+                "The patch did not persist. Re-read the file and try again."
+            ))
+
         # Generate diff
         diff = self._unified_diff(content, new_content, path)
         
@@ -839,14 +906,41 @@ class ShellFileOperations(FileOperations):
         Returns:
             SearchResult with matches or file list
         """
+        offset, limit = normalize_search_pagination(offset, limit)
+
         # Expand ~ and other shell paths
         path = self._expand_path(path)
         
         # Validate that the path exists before searching
         check = self._exec(f"test -e {self._escape_shell_arg(path)} && echo exists || echo not_found")
         if "not_found" in check.stdout:
+            # Try to suggest nearby paths
+            parent = os.path.dirname(path) or "."
+            basename_query = os.path.basename(path)
+            hint_parts = [f"Path not found: {path}"]
+            # Check if parent directory exists and list similar entries
+            parent_check = self._exec(
+                f"test -d {self._escape_shell_arg(parent)} && echo yes || echo no"
+            )
+            if "yes" in parent_check.stdout and basename_query:
+                ls_result = self._exec(
+                    f"ls -1 {self._escape_shell_arg(parent)} 2>/dev/null | head -20"
+                )
+                if ls_result.exit_code == 0 and ls_result.stdout.strip():
+                    lower_q = basename_query.lower()
+                    candidates = []
+                    for entry in ls_result.stdout.strip().split('\n'):
+                        if not entry:
+                            continue
+                        le = entry.lower()
+                        if lower_q in le or le in lower_q or le.startswith(lower_q[:3]):
+                            candidates.append(os.path.join(parent, entry))
+                    if candidates:
+                        hint_parts.append(
+                            "Similar paths: " + ", ".join(candidates[:5])
+                        )
             return SearchResult(
-                error=f"Path not found: {path}. Verify the path exists (use 'terminal' to check).",
+                error=". ".join(hint_parts),
                 total_count=0
             )
         
@@ -912,7 +1006,8 @@ class ShellFileOperations(FileOperations):
 
         rg --files respects .gitignore and excludes hidden directories by
         default, and uses parallel directory traversal for ~200x speedup
-        over find on wide trees.
+        over find on wide trees.  Results are sorted by modification time
+        (most recently edited first) when rg >= 13.0 supports --sortr.
         """
         # rg --files -g uses glob patterns; wrap bare names so they match
         # at any depth (equivalent to find -name).
@@ -922,14 +1017,25 @@ class ShellFileOperations(FileOperations):
             glob_pattern = pattern
 
         fetch_limit = limit + offset
-        cmd = (
-            f"rg --files -g {self._escape_shell_arg(glob_pattern)} "
+        # Try mtime-sorted first (rg 13+); fall back to unsorted if not supported.
+        cmd_sorted = (
+            f"rg --files --sortr=modified -g {self._escape_shell_arg(glob_pattern)} "
             f"{self._escape_shell_arg(path)} 2>/dev/null "
             f"| head -n {fetch_limit}"
         )
-        result = self._exec(cmd, timeout=60)
-
+        result = self._exec(cmd_sorted, timeout=60)
         all_files = [f for f in result.stdout.strip().split('\n') if f]
+
+        if not all_files:
+            # --sortr may have failed on older rg; retry without it.
+            cmd_plain = (
+                f"rg --files -g {self._escape_shell_arg(glob_pattern)} "
+                f"{self._escape_shell_arg(path)} 2>/dev/null "
+                f"| head -n {fetch_limit}"
+            )
+            result = self._exec(cmd_plain, timeout=60)
+            all_files = [f for f in result.stdout.strip().split('\n') if f]
+
         page = all_files[offset:offset + limit]
 
         return SearchResult(

@@ -6,9 +6,11 @@ re-sourced before each command. CWD persists via in-band stdout markers (remote)
 or a temp file (local).
 """
 
+import codecs
 import json
 import logging
 import os
+import select
 import shlex
 import subprocess
 import threading
@@ -23,6 +25,19 @@ from tools.interrupt import is_interrupted
 
 logger = logging.getLogger(__name__)
 
+# Opt-in debug tracing for the interrupt/activity/poll machinery.  Set
+# HERMES_DEBUG_INTERRUPT=1 to log loop entry/exit, periodic heartbeats, and
+# every is_interrupted() state change from _wait_for_process.  Off by default
+# to avoid flooding production gateway logs.
+_DEBUG_INTERRUPT = bool(os.getenv("HERMES_DEBUG_INTERRUPT"))
+
+if _DEBUG_INTERRUPT:
+    # AIAgent's quiet_mode path (run_agent.py) forces the `tools` logger to
+    # ERROR on CLI startup, which would silently swallow every trace we emit.
+    # Force this module's own logger back to INFO so the trace is visible in
+    # agent.log regardless of quiet-mode.  Scoped to the opt-in case only.
+    logger.setLevel(logging.INFO)
+
 # Thread-local activity callback.  The agent sets this before a tool call so
 # long-running _wait_for_process loops can report liveness to the gateway.
 _activity_callback_local = threading.local()
@@ -35,6 +50,32 @@ def set_activity_callback(cb: Callable[[str], None] | None) -> None:
 
 def _get_activity_callback() -> Callable[[str], None] | None:
     return getattr(_activity_callback_local, "callback", None)
+
+
+def touch_activity_if_due(
+    state: dict,
+    label: str,
+) -> None:
+    """Fire the activity callback at most once every ``state['interval']`` seconds.
+
+    *state* must contain ``last_touch`` (monotonic timestamp) and ``start``
+    (monotonic timestamp of the operation start).  An optional ``interval``
+    key overrides the default 10 s cadence.
+
+    Swallows all exceptions so callers don't need their own try/except.
+    """
+    now = time.monotonic()
+    interval = state.get("interval", 10.0)
+    if now - state["last_touch"] < interval:
+        return
+    state["last_touch"] = now
+    try:
+        cb = _get_activity_callback()
+        if cb:
+            elapsed = int(now - state["start"])
+            cb(f"{label} ({elapsed}s elapsed)")
+    except Exception:
+        pass
 
 
 def get_sandbox_dir() -> Path:
@@ -327,6 +368,17 @@ class BaseEnvironment(ABC):
     # Command wrapping
     # ------------------------------------------------------------------
 
+    @staticmethod
+    def _quote_cwd_for_cd(cwd: str) -> str:
+        """Quote a ``cd`` target while preserving ``~`` expansion."""
+        if cwd == "~":
+            return cwd
+        if cwd == "~/":
+            return "$HOME"
+        if cwd.startswith("~/"):
+            return f"$HOME/{shlex.quote(cwd[2:])}"
+        return shlex.quote(cwd)
+
     def _wrap_command(self, command: str, cwd: str) -> str:
         """Build the full bash script that sources snapshot, cd's, runs command,
         re-dumps env vars, and emits CWD markers."""
@@ -338,11 +390,10 @@ class BaseEnvironment(ABC):
         if self._snapshot_ready:
             parts.append(f"source {self._snapshot_path} 2>/dev/null || true")
 
-        # cd to working directory — let bash expand ~ natively
-        quoted_cwd = (
-            shlex.quote(cwd) if cwd != "~" and not cwd.startswith("~/") else cwd
-        )
-        parts.append(f"cd {quoted_cwd} || exit 126")
+        # Preserve bare ``~`` expansion, but rewrite ``~/...`` through
+        # ``$HOME`` so suffixes with spaces remain a single shell word.
+        quoted_cwd = self._quote_cwd_for_cd(cwd)
+        parts.append(f"builtin cd {quoted_cwd} || exit 126")
 
         # Run the actual command
         parts.append(f"eval '{escaped}'")
@@ -387,65 +438,201 @@ class BaseEnvironment(ABC):
         Fires the ``activity_callback`` (if set on this instance) every 10s
         while the process is running so the gateway's inactivity timeout
         doesn't kill long-running commands.
+
+        Also wraps the poll loop in a ``try/finally`` that guarantees we
+        call ``self._kill_process(proc)`` if we exit via ``KeyboardInterrupt``
+        or ``SystemExit``.  Without this, the local backend (which spawns
+        subprocesses with ``os.setsid`` into their own process group) leaves
+        an orphan with ``PPID=1`` when python is shut down mid-tool — the
+        ``sleep 300``-survives-30-min bug Physikal and I both hit.
         """
         output_chunks: list[str] = []
 
+        # Non-blocking drain via select().
+        #
+        # The old pattern — ``for line in proc.stdout`` — blocks on
+        # ``readline()`` until the pipe reaches EOF.  When the user's command
+        # backgrounds a process (``cmd &``, ``setsid cmd & disown``, etc.),
+        # that backgrounded grandchild inherits the write-end of our stdout
+        # pipe via ``fork()``.  Even after ``bash`` itself exits, the pipe
+        # stays open because the grandchild still holds it — so the drain
+        # thread never returns and the tool hangs for the full lifetime of
+        # the grandchild (issue #8340: users reported indefinite hangs when
+        # restarting uvicorn with ``setsid ... & disown``).
+        #
+        # The fix: select() with a short poll interval, and stop draining
+        # shortly after ``bash`` exits even if the pipe hasn't EOF'd yet.
+        # Any output the grandchild writes after that point goes to an
+        # orphaned pipe (harmless — the kernel reaps it when our end closes).
+        #
+        # Decoding: we ``os.read()`` raw bytes in fixed-size chunks (4096)
+        # so a single multibyte UTF-8 character can split across reads.  An
+        # incremental decoder buffers partial sequences across chunks, and
+        # ``errors="replace"`` mirrors the baseline ``TextIOWrapper`` (which
+        # was constructed with ``encoding="utf-8", errors="replace"`` on
+        # ``Popen``) so binary or mis-encoded output is preserved with
+        # U+FFFD substitution rather than clobbering the whole buffer.
+        decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
+
         def _drain():
+            fd = proc.stdout.fileno()
+            idle_after_exit = 0
             try:
-                for line in proc.stdout:
-                    output_chunks.append(line)
-            except UnicodeDecodeError:
-                output_chunks.clear()
-                output_chunks.append(
-                    "[binary output detected — raw bytes not displayable]"
-                )
-            except (ValueError, OSError):
-                pass
+                while True:
+                    try:
+                        ready, _, _ = select.select([fd], [], [], 0.1)
+                    except (ValueError, OSError):
+                        break  # fd already closed
+                    if ready:
+                        try:
+                            chunk = os.read(fd, 4096)
+                        except (ValueError, OSError):
+                            break
+                        if not chunk:
+                            break  # true EOF — all writers closed
+                        output_chunks.append(decoder.decode(chunk))
+                        idle_after_exit = 0
+                    elif proc.poll() is not None:
+                        # bash is gone and the pipe was idle for ~100ms.  Give
+                        # it two more cycles to catch any buffered tail, then
+                        # stop — otherwise we wait forever on a grandchild pipe.
+                        idle_after_exit += 1
+                        if idle_after_exit >= 3:
+                            break
+            finally:
+                # Flush any bytes buffered mid-sequence.  With ``errors="replace"``
+                # this emits U+FFFD for any final incomplete sequence rather than
+                # raising.
+                try:
+                    tail = decoder.decode(b"", final=True)
+                    if tail:
+                        output_chunks.append(tail)
+                except Exception:
+                    pass
 
         drain_thread = threading.Thread(target=_drain, daemon=True)
         drain_thread.start()
         deadline = time.monotonic() + timeout
-        _last_activity_touch = time.monotonic()
-        _ACTIVITY_INTERVAL = 10.0  # seconds between activity touches
+        _now = time.monotonic()
+        _activity_state = {
+            "last_touch": _now,
+            "start": _now,
+        }
 
-        while proc.poll() is None:
-            if is_interrupted():
+        # --- Debug tracing (opt-in via HERMES_DEBUG_INTERRUPT=1) -------------
+        # Captures loop entry/exit, interrupt state changes, and periodic
+        # heartbeats so we can diagnose "agent never sees the interrupt"
+        # reports without reproducing locally.
+        _tid = threading.current_thread().ident
+        _pid = getattr(proc, "pid", None)
+        _iter_count = 0
+        _last_heartbeat = _now
+        _last_interrupt_state = False
+        _cb_was_none = _get_activity_callback() is None
+        if _DEBUG_INTERRUPT:
+            logger.info(
+                "[interrupt-debug] _wait_for_process ENTER tid=%s pid=%s "
+                "timeout=%ss activity_cb=%s initial_interrupt=%s",
+                _tid, _pid, timeout,
+                "set" if not _cb_was_none else "MISSING",
+                is_interrupted(),
+            )
+
+        try:
+            while proc.poll() is None:
+                _iter_count += 1
+                if is_interrupted():
+                    if _DEBUG_INTERRUPT:
+                        logger.info(
+                            "[interrupt-debug] _wait_for_process INTERRUPT DETECTED "
+                            "tid=%s pid=%s iter=%d elapsed=%.1fs — killing process group",
+                            _tid, _pid, _iter_count, time.monotonic() - _activity_state["start"],
+                        )
+                    self._kill_process(proc)
+                    drain_thread.join(timeout=2)
+                    return {
+                        "output": "".join(output_chunks) + "\n[Command interrupted]",
+                        "returncode": 130,
+                    }
+                if time.monotonic() > deadline:
+                    if _DEBUG_INTERRUPT:
+                        logger.info(
+                            "[interrupt-debug] _wait_for_process TIMEOUT "
+                            "tid=%s pid=%s iter=%d timeout=%ss",
+                            _tid, _pid, _iter_count, timeout,
+                        )
+                    self._kill_process(proc)
+                    drain_thread.join(timeout=2)
+                    partial = "".join(output_chunks)
+                    timeout_msg = f"\n[Command timed out after {timeout}s]"
+                    return {
+                        "output": partial + timeout_msg
+                        if partial
+                        else timeout_msg.lstrip(),
+                        "returncode": 124,
+                    }
+                # Periodic activity touch so the gateway knows we're alive
+                touch_activity_if_due(_activity_state, "terminal command running")
+
+                # Heartbeat every ~30s: proves the loop is alive and reports
+                # the activity-callback state (thread-local, can get clobbered
+                # by nested tool calls or executor thread reuse).
+                if _DEBUG_INTERRUPT and time.monotonic() - _last_heartbeat >= 30.0:
+                    _cb_now_none = _get_activity_callback() is None
+                    logger.info(
+                        "[interrupt-debug] _wait_for_process HEARTBEAT "
+                        "tid=%s pid=%s iter=%d elapsed=%.0fs "
+                        "interrupt=%s activity_cb=%s%s",
+                        _tid, _pid, _iter_count,
+                        time.monotonic() - _activity_state["start"],
+                        is_interrupted(),
+                        "set" if not _cb_now_none else "MISSING",
+                        " (LOST during run)" if _cb_now_none and not _cb_was_none else "",
+                    )
+                    _last_heartbeat = time.monotonic()
+                    _cb_was_none = _cb_now_none
+
+                time.sleep(0.2)
+        except (KeyboardInterrupt, SystemExit):
+            # Signal arrived (SIGTERM/SIGHUP/SIGINT) or sys.exit() was called
+            # while we were polling.  The local backend spawns subprocesses
+            # with os.setsid, which puts them in their own process group — so
+            # if we let the interrupt propagate without killing the child,
+            # python exits and the child is reparented to init (PPID=1) and
+            # keeps running as an orphan.  Killing the process group here
+            # guarantees the tool's side effects stop when the agent stops.
+            if _DEBUG_INTERRUPT:
+                logger.info(
+                    "[interrupt-debug] _wait_for_process EXCEPTION_EXIT "
+                    "tid=%s pid=%s iter=%d elapsed=%.1fs — killing subprocess group before re-raise",
+                    _tid, _pid, _iter_count,
+                    time.monotonic() - _activity_state["start"],
+                )
+            try:
                 self._kill_process(proc)
                 drain_thread.join(timeout=2)
-                return {
-                    "output": "".join(output_chunks) + "\n[Command interrupted]",
-                    "returncode": 130,
-                }
-            if time.monotonic() > deadline:
-                self._kill_process(proc)
-                drain_thread.join(timeout=2)
-                partial = "".join(output_chunks)
-                timeout_msg = f"\n[Command timed out after {timeout}s]"
-                return {
-                    "output": partial + timeout_msg
-                    if partial
-                    else timeout_msg.lstrip(),
-                    "returncode": 124,
-                }
-            # Periodic activity touch so the gateway knows we're alive
-            _now = time.monotonic()
-            if _now - _last_activity_touch >= _ACTIVITY_INTERVAL:
-                _last_activity_touch = _now
-                _cb = _get_activity_callback()
-                if _cb:
-                    try:
-                        _elapsed = int(_now - (deadline - timeout))
-                        _cb(f"terminal command running ({_elapsed}s elapsed)")
-                    except Exception:
-                        pass
-            time.sleep(0.2)
+            except Exception:
+                pass  # cleanup is best-effort
+            raise
 
-        drain_thread.join(timeout=5)
+        # Drain thread now exits promptly after bash does (~300ms idle
+        # check).  A short join is enough; a long one would be a bug since
+        # it means the non-blocking loop itself stopped cooperating.
+        drain_thread.join(timeout=2)
 
         try:
             proc.stdout.close()
         except Exception:
             pass
+
+        if _DEBUG_INTERRUPT:
+            logger.info(
+                "[interrupt-debug] _wait_for_process EXIT (natural) "
+                "tid=%s pid=%s iter=%d elapsed=%.1fs returncode=%s",
+                _tid, _pid, _iter_count,
+                time.monotonic() - _activity_state["start"],
+                proc.returncode,
+            )
 
         return {"output": "".join(output_chunks), "returncode": proc.returncode}
 
@@ -528,6 +715,13 @@ class BaseEnvironment(ABC):
         self._before_execute()
 
         exec_command, sudo_stdin = self._prepare_command(command)
+        # Guard against the `A && B &` subshell-wait trap: bash forks a
+        # subshell for the compound that then waits for an infinite B (a
+        # server, `yes > /dev/null`, etc.), leaking the subshell forever.
+        # Rewriting to `A && { B & }` runs B as a plain background in the
+        # current shell — no subshell wait.
+        from tools.terminal_tool import _rewrite_compound_background
+        exec_command = _rewrite_compound_background(exec_command)
         effective_timeout = timeout or self.timeout
         effective_cwd = cwd or self.cwd
 

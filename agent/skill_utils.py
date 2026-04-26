@@ -10,7 +10,7 @@ import os
 import re
 import sys
 from pathlib import Path
-from typing import Any, Dict, List, Set, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from hermes_constants import get_config_path, get_skills_dir
 
@@ -435,9 +435,31 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
     Excludes ``.git``, ``.github``, ``.hub`` directories.
     """
     matches = []
-    for root, dirs, files in os.walk(skills_dir):
+    for root, dirs, files in os.walk(skills_dir, followlinks=True):
         dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS]
         if filename in files:
             matches.append(Path(root) / filename)
     for path in sorted(matches, key=lambda p: str(p.relative_to(skills_dir))):
         yield path
+
+
+# ── Namespace helpers for plugin-provided skills ───────────────────────────
+
+_NAMESPACE_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def parse_qualified_name(name: str) -> Tuple[Optional[str], str]:
+    """Split ``'namespace:skill-name'`` into ``(namespace, bare_name)``.
+
+    Returns ``(None, name)`` when there is no ``':'``.
+    """
+    if ":" not in name:
+        return None, name
+    return tuple(name.split(":", 1))  # type: ignore[return-value]
+
+
+def is_valid_namespace(candidate: Optional[str]) -> bool:
+    """Check whether *candidate* is a valid namespace (``[a-zA-Z0-9_-]+``)."""
+    if not candidate:
+        return False
+    return bool(_NAMESPACE_RE.match(candidate))

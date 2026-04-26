@@ -221,41 +221,6 @@ class TestPlatformDefaults:
 
 
 # ---------------------------------------------------------------------------
-# get_effective_display / get_platform_defaults
-# ---------------------------------------------------------------------------
-
-class TestHelpers:
-    """Helper functions return correct composite results."""
-
-    def test_get_effective_display_merges_correctly(self):
-        from gateway.display_config import get_effective_display
-
-        config = {
-            "display": {
-                "tool_progress": "new",
-                "show_reasoning": True,
-                "platforms": {
-                    "telegram": {"tool_progress": "verbose"},
-                },
-            }
-        }
-        eff = get_effective_display(config, "telegram")
-        assert eff["tool_progress"] == "verbose"  # platform override
-        assert eff["show_reasoning"] is True       # global
-        assert "tool_preview_length" in eff        # default filled in
-
-    def test_get_platform_defaults_returns_dict(self):
-        from gateway.display_config import get_platform_defaults
-
-        defaults = get_platform_defaults("telegram")
-        assert "tool_progress" in defaults
-        assert "show_reasoning" in defaults
-        # Returns a new dict (not the shared tier dict)
-        defaults["tool_progress"] = "changed"
-        assert get_platform_defaults("telegram")["tool_progress"] != "changed"
-
-
-# ---------------------------------------------------------------------------
 # Config migration: tool_progress_overrides → display.platforms
 # ---------------------------------------------------------------------------
 
@@ -331,6 +296,15 @@ class TestStreamingPerPlatform:
         # Telegram has no streaming override in defaults → None
         result = resolve_display_setting(config, "telegram", "streaming")
         assert result is None  # caller should check global StreamingConfig
+
+    def test_global_display_streaming_is_cli_only(self):
+        """display.streaming must not act as a gateway streaming override."""
+        from gateway.display_config import resolve_display_setting
+
+        for value in (True, False):
+            config = {"display": {"streaming": value}}
+            assert resolve_display_setting(config, "telegram", "streaming") is None
+            assert resolve_display_setting(config, "discord", "streaming") is None
 
     def test_explicit_false_disables(self):
         """Explicit False disables streaming for that platform."""

@@ -296,7 +296,14 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (key.pageUp || key.pageDown) {
       const viewport = terminal.scrollRef.current?.getViewportHeight() ?? Math.max(6, (terminal.stdout?.rows ?? 24) - 8)
-      const step = Math.max(4, viewport - 2)
+      // Half-viewport per keystroke.  A whole-viewport jump (our old
+      // `viewport - 2`) fully replaces what's on screen — no visual
+      // continuity, the user can't scan — AND it lands right at Ink's
+      // `delta < innerHeight` fast-path threshold, disqualifying the
+      // DECSTBM blit on every press.  Half-viewport keeps 50% continuity,
+      // well under the threshold, and two presses still scroll the same
+      // total distance.
+      const step = Math.max(4, Math.floor(viewport / 2))
 
       return scrollTranscript(key.pageUp ? -step : step)
     }

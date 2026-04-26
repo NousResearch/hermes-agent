@@ -2226,6 +2226,29 @@ class HermesCLI:
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
 
+        self._update_cli_runtime_status("idle")
+        atexit.register(self._remove_cli_runtime_status)
+
+    def _update_cli_runtime_status(self, status: str) -> None:
+        """Best-effort heartbeat used by /wrap-up to detect live CLI state."""
+        try:
+            from hermes_cli.wrapup import write_runtime_record
+            write_runtime_record(
+                session_id=self.session_id,
+                status=status,
+                cwd=Path.cwd(),
+            )
+        except Exception:
+            pass
+
+    def _remove_cli_runtime_status(self) -> None:
+        """Best-effort cleanup for the /wrap-up runtime heartbeat."""
+        try:
+            from hermes_cli.wrapup import remove_runtime_record
+            remove_runtime_record()
+        except Exception:
+            pass
+
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
         now = time.monotonic()
@@ -10906,6 +10929,7 @@ class HermesCLI:
                             # Schedule app exit
                             if app.is_running:
                                 app.exit()
+                        self._update_cli_runtime_status("idle")
                         continue
                     
                     # Expand paste references back to full content
@@ -10923,12 +10947,14 @@ class HermesCLI:
 
                     # Regular chat - run agent
                     self._agent_running = True
+                    self._update_cli_runtime_status("active")
                     app.invalidate()  # Refresh status line
 
                     try:
                         self.chat(user_input, images=submit_images or None)
                     finally:
                         self._agent_running = False
+                        self._update_cli_runtime_status("idle")
                         self._spinner_text = ""
                         self._tool_start_time = 0.0
                         self._pending_tool_info.clear()

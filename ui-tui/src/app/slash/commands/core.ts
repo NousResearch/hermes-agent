@@ -10,6 +10,7 @@ import type {
   SessionTitleResponse,
   SessionUndoResponse
 } from '../../../gatewayTypes.js'
+import { writeClipboardText } from '../../../lib/clipboard.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'
 import { configureDetectedTerminalKeybindings, configureTerminalKeybindings } from '../../../lib/terminalSetup.js'
 import type { Msg, PanelSection } from '../../../types.js'
@@ -318,10 +319,27 @@ export const coreCommands: SlashCommand[] = [
       const target = all[arg ? Math.min(parseInt(arg, 10), all.length) - 1 : all.length - 1]
 
       if (!target) {
-        return sys('nothing to copy')
+        return sys('nothing to copy — start a conversation first')
       }
 
-      writeOsc52Clipboard(target.text)
+      void writeClipboardText(target.text)
+        .then(nativeOk => {
+          if (ctx.stale()) {
+            return
+          }
+
+          if (nativeOk) {
+            sys('copied to clipboard')
+          } else {
+            writeOsc52Clipboard(target.text)
+            sys('sent OSC52 copy sequence (terminal support required)')
+          }
+        })
+        .catch(error => {
+          if (!ctx.stale()) {
+            sys(`copy failed: ${String(error)}`)
+          }
+        })
     }
   },
 

@@ -60,6 +60,7 @@ def _make_runner():
     runner.session_store = MagicMock()
     runner.session_store.get_or_create_session.return_value = new_session_entry
     runner.session_store.reset_session.return_value = new_session_entry
+    runner.session_store.load_transcript.return_value = []
     runner.session_store._entries = {session_key: session_entry}
     runner.session_store._generate_session_key.return_value = session_key
     runner._running_agents = {}
@@ -78,11 +79,23 @@ def _make_runner():
 async def test_reset_fires_finalize_hook(mock_invoke_hook):
     """/new must fire on_session_finalize with the OLD session id."""
     runner = _make_runner()
+    runner.session_store.load_transcript.return_value = [
+        {"role": "system", "content": "sys"},
+        {"role": "user", "content": "hello"},
+    ]
 
     await runner._handle_reset_command(_make_event("/new"))
 
     mock_invoke_hook.assert_any_call(
-        "on_session_finalize", session_id="sess-old", platform="telegram"
+        "on_session_finalize",
+        session_id="sess-old",
+        old_session_id="sess-old",
+        previous_messages=[
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "hello"},
+        ],
+        previous_message_count=2,
+        platform="telegram",
     )
 
 
@@ -95,7 +108,12 @@ async def test_reset_fires_reset_hook(mock_invoke_hook):
     await runner._handle_reset_command(_make_event("/new"))
 
     mock_invoke_hook.assert_any_call(
-        "on_session_reset", session_id="sess-new", platform="telegram"
+        "on_session_reset",
+        session_id="sess-new",
+        old_session_id="sess-old",
+        new_session_id="sess-new",
+        carry_over_context=True,
+        platform="telegram",
     )
 
 

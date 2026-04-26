@@ -4655,31 +4655,48 @@ class HermesCLI:
         flush_tool_summary()
         print()
     
-    def _notify_session_boundary(self, event_type: str) -> None:
+    def _notify_session_boundary(self, event_type: str, **extra_context) -> None:
         """Fire a session-boundary plugin hook (on_session_finalize or on_session_reset).
 
-        Non-blocking — errors are caught and logged.  Safe to call from any
-        lifecycle point (shutdown, /new, /reset).
+        Non-blocking — errors are caught and logged. Safe to call from any
+        lifecycle point (shutdown, /new, /reset). Extra keyword context is
+        passed through verbatim so external plugins can observe richer session
+        boundary metadata without affecting the default built-in behavior.
         """
         try:
             from hermes_cli.plugins import invoke_hook as _invoke_hook
-            _invoke_hook(
-                event_type,
-                session_id=self.agent.session_id if self.agent else None,
-                platform=getattr(self, "platform", None) or "cli",
-            )
+            payload = {
+                "session_id": self.agent.session_id if self.agent else None,
+                "platform": getattr(self, "platform", None) or "cli",
+            }
+            payload.update(extra_context)
+            _invoke_hook(event_type, **payload)
         except Exception:
             pass
 
     def new_session(self, silent=False):
         """Start a fresh session with a new session ID and cleared agent state."""
+        _old_history = list(self.conversation_history)
+        _boundary_old_session_id = (
+            getattr(self.agent, "session_id", None) if self.agent else None
+        ) or self.session_id
         if self.agent and self.conversation_history:
             # Trigger memory extraction on the old session before session_id rotates.
             self.agent.commit_memory_session(self.conversation_history)
-            self._notify_session_boundary("on_session_finalize")
+            self._notify_session_boundary(
+                "on_session_finalize",
+                old_session_id=_boundary_old_session_id,
+                previous_messages=_old_history,
+                previous_message_count=len(_old_history),
+            )
         elif self.agent:
             # First session or empty history — still finalize the old session
-            self._notify_session_boundary("on_session_finalize")
+            self._notify_session_boundary(
+                "on_session_finalize",
+                old_session_id=_boundary_old_session_id,
+                previous_messages=[],
+                previous_message_count=0,
+            )
 
         old_session_id = self.session_id
         if self._session_db and old_session_id:
@@ -4729,7 +4746,12 @@ class HermesCLI:
                     )
                 except Exception:
                     pass
-            self._notify_session_boundary("on_session_reset")
+            self._notify_session_boundary(
+                "on_session_reset",
+                old_session_id=_boundary_old_session_id,
+                new_session_id=self.session_id,
+                carry_over_context=True,
+            )
 
         if not silent:
             print("(^_^)v New session started!")

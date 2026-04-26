@@ -44,6 +44,10 @@ sys.path.insert(0, str(_Path(__file__).resolve().parents[2]))
 from gateway.config import Platform, PlatformConfig
 import re
 
+from gateway.platforms.discord_thread_rename import (
+    load_config_from_env as _load_auto_rename_config,
+    maybe_auto_rename_thread,
+)
 from gateway.platforms.helpers import MessageDeduplicator, ThreadParticipationTracker
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -529,6 +533,14 @@ class DiscordAdapter(BasePlatformAdapter):
         # chunk only, default), "all" (reply-reference on every chunk).
         self._reply_to_mode: str = getattr(config, 'reply_to_mode', 'first') or 'first'
         self._slash_commands: bool = self.config.extra.get("slash_commands", True)
+        # Auto-rename Hermes-owned threads with a short conversation-style
+        # title after the first assistant response.  Per-thread state lives
+        # on the adapter so we never rename twice or stomp on user-set
+        # names.  Per-thread user prompts are captured in _handle_message
+        # and consumed in send().
+        self._auto_rename_cfg = _load_auto_rename_config()
+        self._renamed_threads: set = set()
+        self._pending_user_messages: Dict[str, str] = {}
 
     async def connect(self) -> bool:
         """Connect to Discord and start receiving events."""
@@ -1150,6 +1162,18 @@ class DiscordAdapter(BasePlatformAdapter):
                         raise
                 message_ids.append(str(msg.id))
 
+            # Hermes-owned thread? Schedule a one-shot auto-rename in the
+            # background so the user-facing reply isn't blocked on the
+            # auxiliary LLM round-trip or Discord PATCH.
+            thread_cls = getattr(discord, "Thread", None) if discord is not None else None
+            if (
+                self._auto_rename_cfg.enabled
+                and message_ids
+                and thread_cls is not None
+                and isinstance(channel, thread_cls)
+            ):
+                self._schedule_thread_auto_rename(channel, content)
+
             return SendResult(
                 success=True,
                 message_id=message_ids[0] if message_ids else None,
@@ -1159,6 +1183,45 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:  # pragma: no cover - defensive logging
             logger.error("[%s] Failed to send Discord message: %s", self.name, e, exc_info=True)
             return SendResult(success=False, error=str(e))
+
+    def _schedule_thread_auto_rename(self, thread: Any, assistant_response: str) -> None:
+        """Fire-and-forget: rename ``thread`` based on the captured user prompt.
+
+        Pops the pending user message so a second send into the same
+        thread doesn't re-trigger a rename mid-conversation; the
+        ``_renamed_threads`` set is the persistent guard.
+        """
+        thread_id = str(getattr(thread, "id", "") or "")
+        if not thread_id:
+            return
+        if thread_id in self._renamed_threads:
+            return
+        if thread_id not in self._threads:
+            return
+        user_message = self._pending_user_messages.pop(thread_id, None)
+        if not user_message:
+            return
+
+        cfg = self._auto_rename_cfg
+        renamed_threads = self._renamed_threads
+
+        async def _runner():
+            await maybe_auto_rename_thread(
+                thread,
+                user_message,
+                assistant_response,
+                cfg,
+                is_renamed=lambda: thread_id in renamed_threads,
+                on_renamed=lambda _title: renamed_threads.add(thread_id),
+            )
+
+        try:
+            asyncio.create_task(_runner())
+        except RuntimeError:
+            # No running loop (rare: send() called outside the bot loop —
+            # e.g. in unit tests).  Silently skip — auto-rename is
+            # non-essential.
+            logger.debug("[%s] No event loop available to auto-rename %s", self.name, thread_id)
 
     async def _send_to_forum(self, forum_channel: Any, content: str) -> SendResult:
         """Create a thread post in a forum channel with the message as starter content.
@@ -3310,6 +3373,21 @@ class DiscordAdapter(BasePlatformAdapter):
         # For threads whose parent is a forum channel, inherit the parent's topic
         # so forum descriptions (e.g. project instructions) appear in the session context.
         chat_topic = self._get_effective_topic(message.channel, is_thread=is_thread)
+
+        # Capture the user prompt so the auto-rename hook in send() can
+        # generate a title from the same exchange.  Only stash for threads
+        # that Hermes owns (auto-created or already-participated) so we
+        # don't accidentally rename arbitrary threads someone happened to
+        # @mention us in.
+        if (
+            self._auto_rename_cfg.enabled
+            and is_thread
+            and thread_id
+            and thread_id in self._threads
+            and thread_id not in self._renamed_threads
+            and normalized_content
+        ):
+            self._pending_user_messages[thread_id] = normalized_content
 
         # Build source
         source = self.build_source(

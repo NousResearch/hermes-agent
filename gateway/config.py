@@ -631,6 +631,15 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["DISCORD_FREE_RESPONSE_CHANNELS"] = str(frc)
                 if "auto_thread" in discord_cfg and not os.getenv("DISCORD_AUTO_THREAD"):
                     os.environ["DISCORD_AUTO_THREAD"] = str(discord_cfg["auto_thread"]).lower()
+                # Auto-rename of Hermes-owned threads after first reply.
+                # See gateway/platforms/discord_thread_rename.py for the
+                # supported delay modes and length cap.
+                if "auto_rename_threads" in discord_cfg and not os.getenv("DISCORD_AUTO_RENAME_THREADS"):
+                    os.environ["DISCORD_AUTO_RENAME_THREADS"] = str(discord_cfg["auto_rename_threads"]).lower()
+                if "auto_rename_max_length" in discord_cfg and not os.getenv("DISCORD_AUTO_RENAME_MAX_LENGTH"):
+                    os.environ["DISCORD_AUTO_RENAME_MAX_LENGTH"] = str(discord_cfg["auto_rename_max_length"])
+                if "auto_rename_delay" in discord_cfg and not os.getenv("DISCORD_AUTO_RENAME_DELAY"):
+                    os.environ["DISCORD_AUTO_RENAME_DELAY"] = str(discord_cfg["auto_rename_delay"])
                 if "reactions" in discord_cfg and not os.getenv("DISCORD_REACTIONS"):
                     os.environ["DISCORD_REACTIONS"] = str(discord_cfg["reactions"]).lower()
                 # ignored_channels: channels where bot never responds (even when mentioned)

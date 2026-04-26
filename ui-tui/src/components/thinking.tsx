@@ -681,6 +681,7 @@ interface Group {
 
 export const ToolTrail = memo(function ToolTrail({
   busy = false,
+  commandOverride = false,
   detailsMode = 'collapsed',
   outcome = '',
   reasoningActive = false,
@@ -696,6 +697,7 @@ export const ToolTrail = memo(function ToolTrail({
   activity = []
 }: {
   busy?: boolean
+  commandOverride?: boolean
   detailsMode?: DetailsMode
   outcome?: string
   reasoningActive?: boolean
@@ -712,12 +714,12 @@ export const ToolTrail = memo(function ToolTrail({
 }) {
   const visible = useMemo(
     () => ({
-      thinking: sectionMode('thinking', detailsMode, sections),
-      tools: sectionMode('tools', detailsMode, sections),
-      subagents: sectionMode('subagents', detailsMode, sections),
-      activity: sectionMode('activity', detailsMode, sections)
+      thinking: sectionMode('thinking', detailsMode, sections, commandOverride),
+      tools: sectionMode('tools', detailsMode, sections, commandOverride),
+      subagents: sectionMode('subagents', detailsMode, sections, commandOverride),
+      activity: sectionMode('activity', detailsMode, sections, commandOverride)
     }),
-    [detailsMode, sections]
+    [commandOverride, detailsMode, sections]
   )
 
   const [now, setNow] = useState(() => Date.now())

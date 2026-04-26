@@ -119,6 +119,7 @@ describe('createSlashHandler', () => {
     expect(getUiState().detailsMode).toBe('collapsed')
     expect(createSlashHandler(ctx)('/details toggle')).toBe(true)
     expect(getUiState().detailsMode).toBe('expanded')
+    expect(getUiState().detailsModeCommandOverride).toBe(true)
     expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
       key: 'details_mode',
       value: 'expanded'

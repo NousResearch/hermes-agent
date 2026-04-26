@@ -90,6 +90,7 @@ export interface UiState {
   busy: boolean
   compact: boolean
   detailsMode: DetailsMode
+  detailsModeCommandOverride: boolean
   info: null | SessionInfo
   inlineDiffs: boolean
   mouseTracking: boolean

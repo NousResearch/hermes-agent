@@ -26,6 +26,7 @@ import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
 import { type GatewayRpc, type TranscriptRow } from './interfaces.js'
 import { $overlayState, patchOverlayState } from './overlayStore.js'
+import { scrollWithSelectionBy } from './scroll.js'
 import { turnController } from './turnController.js'
 import { $turnState, patchTurnState } from './turnStore.js'
 import { $uiState, getUiState, patchUiState } from './uiStore.js'
@@ -33,7 +34,6 @@ import { useComposerState } from './useComposerState.js'
 import { useConfigSync } from './useConfigSync.js'
 import { useInputHandlers } from './useInputHandlers.js'
 import { useLongRunToolCharms } from './useLongRunToolCharms.js'
-import { scrollWithSelectionBy } from './scroll.js'
 import { useSessionLifecycle } from './useSessionLifecycle.js'
 import { useSubmission } from './useSubmission.js'
 
@@ -593,7 +593,9 @@ export function useMainApp(gw: GatewayClient) {
   // resolved to hidden, the only thing ToolTrail will surface is the
   // floating-alert backstop (errors/warnings).  Mirror that so we don't
   // render an empty wrapper Box above the streaming area in quiet mode.
-  const anyPanelVisible = SECTION_NAMES.some(s => sectionMode(s, ui.detailsMode, ui.sections) !== 'hidden')
+  const anyPanelVisible = SECTION_NAMES.some(
+    s => sectionMode(s, ui.detailsMode, ui.sections, ui.detailsModeCommandOverride) !== 'hidden'
+  )
 
   const showProgressArea = anyPanelVisible
     ? Boolean(

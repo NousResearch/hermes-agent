@@ -307,6 +307,7 @@ export function TextInput({
   const editVersionRef = useRef(0)
   const parentChangeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pendingParentValue = useRef<string | null>(null)
+  const lineWidthRef = useRef(stringWidth(value.includes('\n') ? value.slice(value.lastIndexOf('\n') + 1) : value))
   const undo = useRef<{ cursor: number; value: string }[]>([])
   const redo = useRef<{ cursor: number; value: string }[]>([])
 
@@ -359,6 +360,7 @@ export function TextInput({
       curRef.current = value.length
       selRef.current = null
       vRef.current = value
+      lineWidthRef.current = stringWidth(value.includes('\n') ? value.slice(value.lastIndexOf('\n') + 1) : value)
       undo.current = []
       redo.current = []
     }
@@ -422,6 +424,31 @@ export function TextInput({
     parentChangeTimer.current = setTimeout(flushParentChange, 16)
   }
 
+  const canFastEchoBase = () => focus && termFocus && !selected && !mask && !!stdout?.isTTY
+
+  const canFastAppend = (current: string, cursor: number, text: string) => {
+    const sw = stringWidth(text)
+
+    return (
+      canFastEchoBase() &&
+      cursor === current.length &&
+      current.length > 0 &&
+      !current.includes('\n') &&
+      sw === text.length &&
+      lineWidthRef.current + sw < Math.max(1, columns)
+    )
+  }
+
+  const canFastBackspace = (current: string, cursor: number) => {
+    if (!canFastEchoBase() || cursor !== current.length || cursor <= 0 || current.includes('\n')) {
+      return false
+    }
+
+    const prev = current[cursor - 1]
+
+    return !!prev && stringWidth(prev) === 1
+  }
+
   const commit = (next: string, nextCur: number, track = true, syncParent = true) => {
     const prev = vRef.current
     const c = snapPos(next, nextCur)
@@ -445,6 +472,7 @@ export function TextInput({
     setCur(c)
     curRef.current = c
     vRef.current = next
+    lineWidthRef.current = stringWidth(next.includes('\n') ? next.slice(next.lastIndexOf('\n') + 1) : next)
 
     if (next !== prev) {
       if (syncParent) {
@@ -706,6 +734,14 @@ export function TextInput({
           const t = wordLeft(v, c)
           v = v.slice(0, t) + v.slice(c)
           c = t
+        } else if (canFastBackspace(v, c)) {
+          const t = prevPos(v, c)
+          v = v.slice(0, t) + v.slice(c)
+          c = t
+          stdout!.write('\b \b')
+          commit(v, c, true, false)
+
+          return
         } else {
           const t = prevPos(v, c)
           v = v.slice(0, t) + v.slice(c)
@@ -783,17 +819,7 @@ export function TextInput({
             v = v.slice(0, range.start) + text + v.slice(range.end)
             c = range.start + text.length
           } else {
-            const simpleAppend =
-              focus &&
-              termFocus &&
-              !selected &&
-              !mask &&
-              !placeholder &&
-              !!stdout?.isTTY &&
-              c === v.length &&
-              !v.includes('\n') &&
-              stringWidth(text) === text.length &&
-              stringWidth(v) + text.length < Math.max(1, columns)
+            const simpleAppend = canFastAppend(v, c, text)
 
             v = v.slice(0, c) + text + v.slice(c)
             c += text.length

@@ -16,6 +16,7 @@ export const MessageLine = memo(function MessageLine({
   cols,
   compact,
   detailsMode = 'collapsed',
+  detailsModeCommandOverride = false,
   isStreaming = false,
   msg,
   sections,
@@ -28,15 +29,16 @@ export const MessageLine = memo(function MessageLine({
   // feeds Thinking + Tool calls.  Gating on every section would let
   // `thinking` (expanded by default) keep an empty wrapper alive when only
   // `tools` is hidden — exactly the empty-Box bug Copilot caught.
-  const thinkingMode = sectionMode('thinking', detailsMode, sections)
-  const toolsMode = sectionMode('tools', detailsMode, sections)
-  const activityMode = sectionMode('activity', detailsMode, sections)
+  const thinkingMode = sectionMode('thinking', detailsMode, sections, detailsModeCommandOverride)
+  const toolsMode = sectionMode('tools', detailsMode, sections, detailsModeCommandOverride)
+  const activityMode = sectionMode('activity', detailsMode, sections, detailsModeCommandOverride)
   const thinking = msg.thinking?.trim() ?? ''
 
   if (msg.kind === 'trail' && (msg.tools?.length || thinking)) {
     return thinkingMode !== 'hidden' || toolsMode !== 'hidden' || activityMode !== 'hidden' ? (
       <Box flexDirection="column">
         <ToolTrail
+          commandOverride={detailsModeCommandOverride}
           detailsMode={detailsMode}
           reasoning={thinking}
           reasoningTokens={msg.thinkingTokens}
@@ -118,6 +120,7 @@ export const MessageLine = memo(function MessageLine({
       {showDetails && (
         <Box flexDirection="column" marginBottom={1}>
           <ToolTrail
+            commandOverride={detailsModeCommandOverride}
             detailsMode={detailsMode}
             reasoning={thinking}
             reasoningTokens={msg.thinkingTokens}
@@ -146,6 +149,7 @@ interface MessageLineProps {
   cols: number
   compact?: boolean
   detailsMode?: DetailsMode
+  detailsModeCommandOverride?: boolean
   isStreaming?: boolean
   msg: Msg
   sections?: SectionVisibility

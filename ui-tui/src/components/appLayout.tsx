@@ -25,6 +25,7 @@ const StreamingAssistant = memo(function StreamingAssistant({
   cols,
   compact,
   detailsMode,
+  detailsModeCommandOverride,
   progress,
   sections,
   t
@@ -40,6 +41,7 @@ const StreamingAssistant = memo(function StreamingAssistant({
           cols={cols}
           compact={compact}
           detailsMode={detailsMode}
+          detailsModeCommandOverride={detailsModeCommandOverride}
           key={`seg:${i}`}
           msg={msg}
           sections={sections}
@@ -52,6 +54,7 @@ const StreamingAssistant = memo(function StreamingAssistant({
           <ToolTrail
             activity={progress.activity}
             busy={busy}
+            commandOverride={detailsModeCommandOverride}
             detailsMode={detailsMode}
             outcome={progress.outcome}
             reasoning={progress.reasoning}
@@ -73,6 +76,7 @@ const StreamingAssistant = memo(function StreamingAssistant({
           cols={cols}
           compact={compact}
           detailsMode={detailsMode}
+          detailsModeCommandOverride={detailsModeCommandOverride}
           isStreaming
           msg={{
             role: 'assistant',
@@ -89,6 +93,7 @@ const StreamingAssistant = memo(function StreamingAssistant({
           cols={cols}
           compact={compact}
           detailsMode={detailsMode}
+          detailsModeCommandOverride={detailsModeCommandOverride}
           msg={{ kind: 'trail', role: 'system', text: '', tools: progress.streamPendingTools }}
           sections={sections}
           t={t}
@@ -127,6 +132,7 @@ const TranscriptPane = memo(function TranscriptPane({
                   cols={composer.cols}
                   compact={ui.compact}
                   detailsMode={ui.detailsMode}
+                  detailsModeCommandOverride={ui.detailsModeCommandOverride}
                   msg={row.msg}
                   sections={ui.sections}
                   t={ui.theme}
@@ -142,6 +148,7 @@ const TranscriptPane = memo(function TranscriptPane({
             cols={composer.cols}
             compact={ui.compact}
             detailsMode={ui.detailsMode}
+            detailsModeCommandOverride={ui.detailsModeCommandOverride}
             progress={progress}
             sections={ui.sections}
             t={ui.theme}
@@ -353,6 +360,7 @@ interface StreamingAssistantProps {
   cols: number
   compact?: boolean
   detailsMode: DetailsMode
+  detailsModeCommandOverride: boolean
   progress: AppLayoutProgressProps
   sections?: SectionVisibility
   t: Theme

@@ -803,6 +803,31 @@ def clear_task_env_overrides(task_id: str):
     """
     _task_env_overrides.pop(task_id, None)
 
+
+def _resolve_container_task_id(task_id: Optional[str]) -> str:
+    """
+    Map a tool-call ``task_id`` to the container/sandbox key used by
+    ``_active_environments``.
+
+    The top-level agent passes ``task_id=None`` and lands on ``"default"``.
+    ``delegate_task`` children pass their own subagent ID so that
+    file-state tracking, the active-subagents registry, and TUI events stay
+    distinct per child -- but we deliberately collapse that ID back to
+    ``"default"`` here so subagents share the parent's long-lived container
+    (one bash, one /workspace, one set of installed packages).
+
+    Exception: RL / benchmark environments (TerminalBench2, HermesSweEnv, ...)
+    call ``register_task_env_overrides(task_id, {...})`` to request a
+    per-task Docker/Modal image. When an override is registered for a
+    task_id, we honour it by returning the task_id unchanged -- those
+    rollouts need their own isolated sandbox, which is the whole point of
+    the override.
+    """
+    if task_id and task_id in _task_env_overrides:
+        return task_id
+    return "default"
+
+
 # Configuration from environment variables
 
 def _parse_env_var(name: str, default: str, converter=int, type_label: str = "integer"):
@@ -1139,8 +1164,9 @@ def _stop_cleanup_thread():
 
 def get_active_env(task_id: str):
     """Return the active BaseEnvironment for *task_id*, or None."""
+    lookup = _resolve_container_task_id(task_id)
     with _env_lock:
-        return _active_environments.get(task_id)
+        return _active_environments.get(lookup) or _active_environments.get(task_id)
 
 
 def is_persistent_env(task_id: str) -> bool:
@@ -1473,8 +1499,11 @@ def terminal_tool(
         config = _get_env_config()
         env_type = config["env_type"]
 
-        # Use task_id for environment isolation
-        effective_task_id = task_id or "default"
+        # Use task_id for environment isolation. By default all subagent
+        # task_ids collapse back to "default" so the top-level agent and
+        # every delegate_task child share one container; only task_ids with
+        # a registered env override (RL benchmarks) get isolated sandboxes.
+        effective_task_id = _resolve_container_task_id(task_id)
 
         # Check per-task overrides (set by environments like TerminalBench2Env)
         # before falling back to global env var config

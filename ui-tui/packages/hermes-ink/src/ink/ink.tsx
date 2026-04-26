@@ -19,6 +19,7 @@ import App from './components/App.js'
 import type { CursorDeclaration, CursorDeclarationSetter } from './components/CursorDeclarationContext.js'
 import { FRAME_INTERVAL_MS } from './constants.js'
 import * as dom from './dom.js'
+import { markDirty } from './dom.js'
 import { KeyboardEvent } from './events/keyboard-event.js'
 import { FocusManager } from './focus.js'
 import { emptyFrame, type Frame, type FrameEvent } from './frame.js'
@@ -251,6 +252,10 @@ export default class Ink {
   // into one follow-up microtask instead of stacking renders.
   private isRendering = false
   private immediateRerenderRequested = false
+  private selectionNotifyQueued = false
+  private selectionDragCell: { col: number; row: number } | null = null
+  private selectionAutoScrollTimer: ReturnType<typeof setInterval> | null = null
+  private selectionAutoScrollDir: -1 | 0 | 1 = 0
   constructor(private readonly options: Options) {
     autoBind(this)
 
@@ -1601,7 +1606,13 @@ export default class Ink {
     return () => this.selectionListeners.delete(cb)
   }
   private notifySelectionChange(): void {
-    this.scheduleRender()
+    if (!this.selectionNotifyQueued) {
+      this.selectionNotifyQueued = true
+      queueMicrotask(() => {
+        this.selectionNotifyQueued = false
+        this.scheduleRender()
+      })
+    }
 
     const active = hasSelection(this.selection)
 
@@ -1635,6 +1646,8 @@ export default class Ink {
       return undefined
     }
 
+    this.stopSelectionAutoScroll()
+
     return dispatchMouse(
       this.rootNode,
       col,
@@ -1649,6 +1662,7 @@ export default class Ink {
       return
     }
 
+    this.stopSelectionAutoScroll()
     dispatchMouse(this.rootNode, col, row, 'onMouseUp', button, isEmptyCellAt(this.frontFrame.screen, col, row), target)
   }
   dispatchMouseDrag(target: dom.DOMElement, col: number, row: number, button: number): void {
@@ -1774,6 +1788,17 @@ export default class Ink {
       return
     }
 
+    if (this.selectionDragCell?.col === col && this.selectionDragCell.row === row) {
+      this.updateSelectionAutoScroll(row)
+      return
+    }
+
+    this.selectionDragCell = { col, row }
+    this.applySelectionDrag(col, row)
+    this.updateSelectionAutoScroll(row)
+  }
+
+  private applySelectionDrag(col: number, row: number): void {
     const sel = this.selection
 
     if (sel.anchorSpan) {
@@ -1783,6 +1808,94 @@ export default class Ink {
     }
 
     this.notifySelectionChange()
+  }
+
+  private updateSelectionAutoScroll(row: number): void {
+    if (!this.selection.isDragging || !this.altScreenActive) {
+      this.stopSelectionAutoScroll()
+      return
+    }
+
+    const dir: -1 | 0 | 1 = row <= 0 ? -1 : row >= this.terminalRows - 1 ? 1 : 0
+
+    if (dir === 0) {
+      this.stopSelectionAutoScroll()
+      return
+    }
+
+    if (this.selectionAutoScrollDir === dir && this.selectionAutoScrollTimer) {
+      return
+    }
+
+    this.stopSelectionAutoScroll()
+    this.selectionAutoScrollDir = dir
+    this.selectionAutoScrollTimer = setInterval(() => this.stepSelectionAutoScroll(), 50)
+  }
+
+  private stepSelectionAutoScroll(): void {
+    if (!this.selection.isDragging || !this.altScreenActive || this.selectionAutoScrollDir === 0) {
+      this.stopSelectionAutoScroll()
+      return
+    }
+
+    const box = this.findPrimaryScrollBox()
+
+    if (!box) {
+      this.stopSelectionAutoScroll()
+      return
+    }
+
+    const viewport = Math.max(0, box.scrollViewportHeight ?? 0)
+    const max = Math.max(0, (box.scrollHeight ?? 0) - viewport)
+    const current = box.scrollTop ?? 0
+    const next = Math.max(0, Math.min(max, current + this.selectionAutoScrollDir))
+
+    if (next === current) {
+      return
+    }
+
+    if (this.selectionAutoScrollDir > 0) {
+      captureScrolledRows(this.selection, this.frontFrame.screen, box.scrollViewportTop ?? 0, box.scrollViewportTop ?? 0, 'above')
+    } else {
+      const bottom = (box.scrollViewportTop ?? 0) + viewport - 1
+      captureScrolledRows(this.selection, this.frontFrame.screen, bottom, bottom, 'below')
+    }
+
+    box.stickyScroll = false
+    box.pendingScrollDelta = undefined
+    box.scrollAnchor = undefined
+    box.scrollTop = next
+    markDirty(box)
+    shiftAnchor(this.selection, -this.selectionAutoScrollDir, box.scrollViewportTop ?? 0, (box.scrollViewportTop ?? 0) + viewport - 1)
+    this.applySelectionDrag(this.selectionDragCell?.col ?? 0, this.selectionAutoScrollDir > 0 ? this.terminalRows - 1 : 0)
+  }
+
+  private stopSelectionAutoScroll(): void {
+    if (this.selectionAutoScrollTimer) {
+      clearInterval(this.selectionAutoScrollTimer)
+      this.selectionAutoScrollTimer = null
+    }
+
+    this.selectionAutoScrollDir = 0
+    this.selectionDragCell = null
+  }
+
+  private findPrimaryScrollBox(): dom.DOMElement | undefined {
+    const stack = [this.rootNode]
+
+    while (stack.length) {
+      const node = stack.shift()!
+
+      if (node.style.overflowY === 'scroll' && node.scrollHeight !== undefined && node.scrollViewportHeight !== undefined) {
+        return node
+      }
+
+      for (const child of node.childNodes) {
+        if (child.nodeName !== '#text') {
+          stack.push(child)
+        }
+      }
+    }
   }
 
   // Methods to properly suspend stdin for external editor usage

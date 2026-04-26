@@ -431,13 +431,11 @@ export function TextInput({
     parentChangeTimer.current = setTimeout(flushParentChange, 16)
   }
 
-  const flushLocalRender = () => {
+  const cancelLocalRender = () => {
     if (localRenderTimer.current) {
       clearTimeout(localRenderTimer.current)
       localRenderTimer.current = null
     }
-
-    setCur(curRef.current)
   }
 
   const scheduleLocalRender = () => {
@@ -445,7 +443,10 @@ export function TextInput({
       return
     }
 
-    localRenderTimer.current = setTimeout(flushLocalRender, 16)
+    localRenderTimer.current = setTimeout(() => {
+      localRenderTimer.current = null
+      setCur(curRef.current)
+    }, 16)
   }
 
   const canFastEchoBase = () => focus && termFocus && !selected && !mask && !!stdout?.isTTY
@@ -468,9 +469,7 @@ export function TextInput({
       return false
     }
 
-    const prev = current[cursor - 1]
-
-    return !!prev && stringWidth(prev) === 1
+    return stringWidth(current.slice(prevPos(current, cursor), cursor)) === 1
   }
 
   const commit = (next: string, nextCur: number, track = true, syncParent = true, syncLocal = true) => {
@@ -494,7 +493,7 @@ export function TextInput({
     }
 
     if (syncLocal) {
-      flushLocalRender()
+      cancelLocalRender()
       setCur(c)
     } else {
       scheduleLocalRender()

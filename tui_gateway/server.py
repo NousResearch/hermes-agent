@@ -3743,7 +3743,13 @@ def _details_completions(text: str) -> list[dict] | None:
         return [
             _details_completion_item(
                 candidate,
-                "section override" if candidate in sections else "global mode",
+                (
+                    "section override"
+                    if candidate in sections
+                    else "cycle global mode"
+                    if candidate == "cycle"
+                    else "global mode"
+                ),
             )
             for candidate in candidates
             if candidate.startswith(prefix) and candidate != prefix

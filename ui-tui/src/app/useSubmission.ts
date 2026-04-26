@@ -51,24 +51,29 @@ export function useSubmission(opts: UseSubmissionOptions) {
   const typingIdleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
-    if (composerState.input || composerState.inputBuf.length) {
-      if (getUiState().busy) {
-        turnController.boostStreamingForTyping()
-      }
-
-      if (typingIdleTimer.current) {
-        clearTimeout(typingIdleTimer.current)
-      }
-
-      typingIdleTimer.current = setTimeout(() => {
-        typingIdleTimer.current = null
-        turnController.relaxStreaming()
-      }, TYPING_IDLE_MS)
+    if (typingIdleTimer.current) {
+      clearTimeout(typingIdleTimer.current)
+      typingIdleTimer.current = null
     }
+
+    if (!composerState.input && !composerState.inputBuf.length) {
+      turnController.relaxStreaming()
+      return
+    }
+
+    if (getUiState().busy) {
+      turnController.boostStreamingForTyping()
+    }
+
+    typingIdleTimer.current = setTimeout(() => {
+      typingIdleTimer.current = null
+      turnController.relaxStreaming()
+    }, TYPING_IDLE_MS)
 
     return () => {
       if (typingIdleTimer.current) {
         clearTimeout(typingIdleTimer.current)
+        typingIdleTimer.current = null
       }
     }
   }, [composerState.input, composerState.inputBuf])

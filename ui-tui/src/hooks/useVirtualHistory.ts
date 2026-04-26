@@ -235,7 +235,7 @@ export function useVirtualHistory(
     if (dirty) {
       setVer(v => v + 1)
     }
-  }, [end, hasScrollRef, items, n, offsets, scrollRef, start, total, vp])
+  }, [end, hasScrollRef, items, n, offsets, scrollRef, start, sticky, total, vp])
 
   return {
     bottomSpacer: Math.max(0, total - (offsets[end] ?? total)),

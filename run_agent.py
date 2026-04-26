@@ -85,7 +85,7 @@ from agent.retry_utils import jittered_backoff
 from agent.error_classifier import classify_api_error, FailoverReason
 from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY, PLATFORM_HINTS,
-    MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE,
+    MEMORY_GUIDANCE, SESSION_SEARCH_GUIDANCE, SKILLS_GUIDANCE, BTW_GUIDANCE,
     build_nous_subscription_prompt,
 )
 from agent.model_metadata import (
@@ -4077,7 +4077,7 @@ class AIAgent:
             with _steer_lock:
                 self._pending_steer = None
 
-    def steer(self, text: str) -> bool:
+    def steer(self, text: str, label: str = "User guidance") -> bool:
         """
         Inject a user message into the next tool result without interrupting.
 
@@ -4091,13 +4091,15 @@ class AIAgent:
 
         Args:
             text: The user text to inject. Empty strings are ignored.
+            label: Cosmetic prefix for the injected message.
+                    "User guidance" for /steer, "BTW" for /btw.
 
         Returns:
             True if the steer was accepted, False if the text was empty.
         """
         if not text or not text.strip():
             return False
-        cleaned = text.strip()
+        cleaned = f"{label}: {text.strip()}"
         _lock = getattr(self, "_pending_steer_lock", None)
         if _lock is None:
             # Test stubs that built AIAgent via object.__new__ skip __init__.
@@ -4172,7 +4174,7 @@ class AIAgent:
                 existing = getattr(self, "_pending_steer", None)
                 self._pending_steer = (existing + "\n" + steer_text) if existing else steer_text
             return
-        marker = f"\n\nUser guidance: {steer_text}"
+        marker = f"\n\n{steer_text}"
         existing_content = messages[target_idx].get("content", "")
         if not isinstance(existing_content, str):
             # Anthropic multimodal content blocks — preserve them and append
@@ -4506,6 +4508,7 @@ class AIAgent:
             tool_guidance.append(SESSION_SEARCH_GUIDANCE)
         if "skill_manage" in self.valid_tool_names:
             tool_guidance.append(SKILLS_GUIDANCE)
+        tool_guidance.append(BTW_GUIDANCE)
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
 
@@ -9648,7 +9651,7 @@ class AIAgent:
                 for _si in range(len(messages) - 1, -1, -1):
                     _sm = messages[_si]
                     if isinstance(_sm, dict) and _sm.get("role") == "tool":
-                        marker = f"\n\nUser guidance: {_pre_api_steer}"
+                        marker = f"\n\n{_pre_api_steer}"
                         existing = _sm.get("content", "")
                         if isinstance(existing, str):
                             _sm["content"] = existing + marker

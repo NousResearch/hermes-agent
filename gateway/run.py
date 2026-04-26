@@ -3599,10 +3599,48 @@ class GatewayRunner:
             if _cmd_def_inner and _cmd_def_inner.name == "agents":
                 return await self._handle_agents_command(event)
 
-            # /background must bypass the running-agent guard — it starts a
-            # parallel task and must never interrupt the active conversation.
-            # /btw is an alias of /background and resolves to the same canonical
-            # name, so this branch handles both commands.
+            # /btw <comment> — routes through /steer's mid-run injection path
+            # with cosmetic label "BTW" instead of "User guidance".
+            # Like /steer, it lands between tool-call iterations without
+            # interrupting the model.
+            if _cmd_def_inner and _cmd_def_inner.name == "btw":
+                btw_text = event.get_command_args().strip()
+                if not btw_text:
+                    return "Usage: /btw <comment>"
+                running_agent = self._running_agents.get(_quick_key)
+                if running_agent is _AGENT_PENDING_SENTINEL:
+                    adapter = self.adapters.get(source.platform)
+                    if adapter:
+                        queued_event = MessageEvent(
+                            text=btw_text,
+                            message_type=MessageType.TEXT,
+                            source=event.source,
+                            message_id=event.message_id,
+                            channel_prompt=event.channel_prompt,
+                        )
+                        adapter._pending_messages[_quick_key] = queued_event
+                    return "Agent still starting — /btw queued for the next turn."
+                if running_agent and hasattr(running_agent, "steer"):
+                    try:
+                        accepted = running_agent.steer(btw_text, label="BTW")
+                    except Exception as exc:
+                        logger.warning("BTW steer failed for session %s: %s", _quick_key, exc)
+                        return f"⚠️ /btw failed: {exc}"
+                    if accepted:
+                        preview = btw_text[:60] + ("..." if len(btw_text) > 60 else "")
+                        return f"💬 /btw — arrives after the next tool call: '{preview}'"
+                    return "/btw rejected (empty payload)."
+                adapter = self.adapters.get(source.platform)
+                if adapter:
+                    queued_event = MessageEvent(
+                        text=btw_text,
+                        message_type=MessageType.TEXT,
+                        source=event.source,
+                        message_id=event.message_id,
+                        channel_prompt=event.channel_prompt,
+                    )
+                    adapter._pending_messages[_quick_key] = queued_event
+                return "No active agent — /btw queued for the next turn."
             if _cmd_def_inner and _cmd_def_inner.name == "background":
                 return await self._handle_background_command(event)
 
@@ -3875,8 +3913,22 @@ class GatewayRunner:
         if canonical == "rollback":
             return await self._handle_rollback_command(event)
 
+        # /background — fire-and-forget command that works even when
+        # no agent is running. Spawns a parallel agent.
         if canonical == "background":
             return await self._handle_background_command(event)
+        if canonical == "btw":
+            # No active agent — /btw routes through /steer's idle path.
+            # Strip the prefix so downstream treats it as a normal user
+            # message. If the payload is empty, surface the usage hint.
+            btw_payload = event.get_command_args().strip()
+            if not btw_payload:
+                return "Usage: /btw <comment>  (no agent is running; sending as a normal message)"
+            try:
+                event.text = btw_payload
+            except Exception:
+                pass
+            # Fall through to _handle_message_with_agent as a normal turn.
 
         if canonical == "steer":
             # No active agent — /steer has no tool call to inject into.

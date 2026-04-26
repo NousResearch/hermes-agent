@@ -2315,6 +2315,11 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_background(interaction: discord.Interaction, prompt: str):
             await self._run_simple_slash(interaction, f"/background {prompt}", "Background task started~")
 
+        @tree.command(name="btw", description="Hold a side comment (doesn't interrupt the model)")
+        @discord.app_commands.describe(comment="Your side comment (held until model finishes)")
+        async def slash_btw(interaction: discord.Interaction, comment: str):
+            await self._run_simple_slash(interaction, f"/btw {comment}")
+
         # ── Auto-register any gateway-available commands not yet on the tree ──
         # This ensures new commands added to COMMAND_REGISTRY in
         # hermes_cli/commands.py automatically appear as Discord slash

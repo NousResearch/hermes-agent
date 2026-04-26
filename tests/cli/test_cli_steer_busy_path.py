@@ -69,38 +69,38 @@ def _make_cli():
 
 
 class TestSteerInlineDetector:
-    """_should_handle_steer_command_inline gates the busy-path fast dispatch."""
+    """_should_handle_steer_and_btw_inline gates the busy-path fast dispatch."""
 
     def test_detects_steer_when_agent_running(self):
         cli = _make_cli()
         cli._agent_running = True
-        assert cli._should_handle_steer_command_inline("/steer focus on error handling") is True
+        assert cli._should_handle_steer_and_btw_inline("/steer focus on error handling") is True
 
     def test_ignores_steer_when_agent_idle(self):
         """Idle-path /steer should fall through to the normal process_loop
         dispatch so the queue-style fallback message is emitted."""
         cli = _make_cli()
         cli._agent_running = False
-        assert cli._should_handle_steer_command_inline("/steer do something") is False
+        assert cli._should_handle_steer_and_btw_inline("/steer do something") is False
 
     def test_ignores_non_slash_input(self):
         cli = _make_cli()
         cli._agent_running = True
-        assert cli._should_handle_steer_command_inline("steer without slash") is False
-        assert cli._should_handle_steer_command_inline("") is False
+        assert cli._should_handle_steer_and_btw_inline("steer without slash") is False
+        assert cli._should_handle_steer_and_btw_inline("") is False
 
     def test_ignores_other_slash_commands(self):
         cli = _make_cli()
         cli._agent_running = True
-        assert cli._should_handle_steer_command_inline("/queue hello") is False
-        assert cli._should_handle_steer_command_inline("/stop") is False
-        assert cli._should_handle_steer_command_inline("/help") is False
+        assert cli._should_handle_steer_and_btw_inline("/queue hello") is False
+        assert cli._should_handle_steer_and_btw_inline("/stop") is False
+        assert cli._should_handle_steer_and_btw_inline("/help") is False
 
     def test_ignores_steer_with_attached_images(self):
         """Image payloads take the normal path; steer doesn't accept images."""
         cli = _make_cli()
         cli._agent_running = True
-        assert cli._should_handle_steer_command_inline("/steer text", has_images=True) is False
+        assert cli._should_handle_steer_and_btw_inline("/steer text", has_images=True) is False
 
 
 class TestSteerBusyPathDispatch:

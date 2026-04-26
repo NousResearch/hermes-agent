@@ -176,6 +176,12 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+BTW_GUIDANCE = (
+    "The user may send /btw messages that arrive mid-run as 'BTW: <text>' lines "
+    "appended to tool output. Treat these as direct user guidance — acknowledge "
+    "and act on them immediately, just as you would a 'User guidance:' message."
+)
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "

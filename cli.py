@@ -2080,6 +2080,10 @@ class HermesCLI:
         self._approval_deadline = 0
         self._approval_lock = threading.Lock()
         self._model_picker_state = None
+        self._btw_queue: list[str] = []        # idle /btw messages accumulated during agent runs
+        self._btw_dialog_state = None          # modal dialog state when /btw opened with no args
+        self._btw_dialog_dismissed = False     # true when user closed dialog; suppresses auto-open
+        self._btw_debounce_timer = None         # threading.Timer for 10s idle-then-open
         self._secret_state = None
         self._secret_deadline = 0
         self._spinner_text: str = ""  # thinking spinner text for TUI
@@ -4695,6 +4699,8 @@ class HermesCLI:
         self.conversation_history = []
         self._pending_title = None
         self._resumed = False
+        self._btw_queue.clear()
+        self._btw_dialog_dismissed = False
 
         if self.agent:
             self.agent.session_id = self.session_id
@@ -5096,6 +5102,66 @@ class HermesCLI:
         self._restore_modal_input_snapshot()
         self._invalidate(min_interval=0.0)
 
+    # ── /btw modal dialog ──────────────────────────────────────────────
+
+    def _start_btw_debounce(self) -> None:
+        """Start/cancel the 10s idle debounce timer for auto-opening the /btw dialog."""
+        self._cancel_btw_debounce()
+        if self._btw_queue and not self._btw_dialog_dismissed:
+            self._btw_debounce_timer = threading.Timer(10.0, self._btw_debounce_fire)
+            self._btw_debounce_timer.daemon = True
+            self._btw_debounce_timer.start()
+
+    def _cancel_btw_debounce(self) -> None:
+        """Cancel any pending debounce timer."""
+        if self._btw_debounce_timer is not None:
+            self._btw_debounce_timer.cancel()
+            self._btw_debounce_timer = None
+
+    def _btw_debounce_fire(self) -> None:
+        """Debounce timer expired — open dialog once, set dismissed so it won't reopen."""
+        self._btw_debounce_timer = None
+        self._btw_dialog_dismissed = True
+        self._open_btw_dialog()
+
+    def _open_btw_dialog(self) -> None:
+        """Open the /btw modal: review, toggle, edit, and send queued messages."""
+        if not self._btw_queue:
+            return
+        if self._btw_dialog_state is not None:
+            return  # already open, don't clobber
+        self._btw_dialog_dismissed = False  # reset dismiss flag on explicit open
+        self._cancel_btw_debounce()         # stop idle timer — dialog is open now
+        self._capture_modal_input_snapshot()
+        self._btw_dialog_state = {
+            "messages": list(self._btw_queue),
+            "checked": set(range(len(self._btw_queue))),  # all checked by default
+            "selected": 0,
+            "editing": None,  # index being edited, or None
+        }
+        self._invalidate(min_interval=0.0)
+
+    def _close_btw_dialog(self) -> None:
+        self._btw_dialog_state = None
+        self._btw_dialog_dismissed = True  # suppress auto-reopen
+        self._restore_modal_input_snapshot()
+        self._invalidate(min_interval=0.0)
+
+    def _confirm_btw_dialog(self) -> list[str]:
+        """Confirm checked messages and close dialog. Returns selected messages."""
+        state = self._btw_dialog_state
+        if not state:
+            return []
+        checked = state["checked"]
+        messages = state["messages"]
+        selected = [messages[i] for i in sorted(checked) if i < len(messages)]
+        # Clear consumed messages from queue; keep unchecked ones
+        self._btw_queue = [messages[i] for i in range(len(messages)) if i not in checked]
+        self._close_btw_dialog()
+        return selected
+
+    # ── model picker viewport ──────────────────────────────────────────
+
     @staticmethod
     def _compute_model_picker_viewport(
         selected: int,
@@ -5443,10 +5509,10 @@ class HermesCLI:
         except Exception:
             return False
 
-    def _should_handle_steer_command_inline(self, text: str, has_images: bool = False) -> bool:
-        """Return True when /steer should be dispatched immediately while the agent is running.
+    def _should_handle_steer_and_btw_inline(self, text: str, has_images: bool = False) -> bool:
+        """Return True when /steer or /btw should be dispatched immediately while the agent is running.
 
-        /steer MUST bypass the normal _pending_input → process_loop path when
+        /steer and /btw MUST bypass the normal _pending_input → process_loop path when
         the agent is active, because process_loop is blocked inside
         self.chat() for the duration of the run.  By the time the queued
         command is pulled from _pending_input, _agent_running has already
@@ -5463,7 +5529,7 @@ class HermesCLI:
             from hermes_cli.commands import resolve_command
             base = text.split(None, 1)[0].lower().lstrip('/')
             cmd = resolve_command(base)
-            return bool(cmd and cmd.name == "steer")
+            return bool(cmd and cmd.name in ("steer", "btw"))
         except Exception:
             return False
 
@@ -6135,6 +6201,22 @@ class HermesCLI:
             self._handle_agents_command()
         elif canonical == "background":
             self._handle_background_command(cmd_original)
+        elif canonical == "btw":
+            # /btw with no args: open modal dialog to review/edit/send queue.
+            # /btw <msg>: append to _btw_queue only (never injects mid-run).
+            # Uses the steer hook for mid-run inline dispatch, but behavior is always append.
+            parts = cmd_original.split(None, 1)
+            payload = parts[1].strip() if len(parts) > 1 else ""
+            if not payload:
+                if not self._btw_queue:
+                    _cprint("  /btw: no queued messages. Use /btw <msg> to add one.")
+                else:
+                    self._btw_dialog_dismissed = False  # explicit open resets
+                    self._open_btw_dialog()
+            else:
+                self._btw_queue.append(payload)
+                self._btw_dialog_dismissed = False  # new item resets
+                _cprint(f"  📝 /btw #{len(self._btw_queue)} queued — type /btw to review")
         elif canonical == "queue":
             # Extract prompt after "/queue " or "/q "
             parts = cmd_original.split(None, 1)
@@ -8875,6 +8957,11 @@ class HermesCLI:
             return _state_fragment("class:clarify-selected", "✎")
         if self._clarify_state:
             return _state_fragment("class:prompt-working", "?")
+        if self._btw_dialog_state:
+            editing = self._btw_dialog_state.get("editing")
+            if editing is not None:
+                return _state_fragment("class:clarify-selected", "✎", f"btw #{editing+1}")
+            return _state_fragment("class:prompt-working", "📝")
         if self._command_running:
             return _state_fragment("class:prompt-working", self._command_spinner_frame())
         if self._agent_running:
@@ -8939,6 +9026,7 @@ class HermesCLI:
         approval_widget,
         clarify_widget,
         model_picker_widget=None,
+        btw_dialog_widget=None,
         spinner_widget=None,
         spacer,
         status_bar,
@@ -8963,6 +9051,7 @@ class HermesCLI:
                 approval_widget,
                 clarify_widget,
                 model_picker_widget,
+                btw_dialog_widget,
                 spinner_widget,
                 spacer,
                 *self._get_extra_tui_widgets(),
@@ -9152,6 +9241,31 @@ class HermesCLI:
                 event.app.invalidate()
                 return
 
+            # --- /btw dialog modal ---
+            if self._btw_dialog_state:
+                state = self._btw_dialog_state
+                editing = state.get("editing")
+                if editing is not None:
+                    # Save edit and return to list
+                    new_text = event.app.current_buffer.text.strip()
+                    if new_text:
+                        state["messages"][editing] = new_text
+                    state["editing"] = None
+                    event.app.current_buffer.reset()
+                    event.app.invalidate()
+                else:
+                    # Confirm selected messages
+                    selected = self._confirm_btw_dialog()
+                    if selected:
+                        # Only inject into _pending_input — NOT the buffer.
+                        # The buffer is not visible to the user while dialog is
+                        # open, and process_loop already drains _pending_input
+                        # on the next turn, so filling the buffer would double-send.
+                        combined = "\n".join(selected)
+                        self._pending_input.put(combined)
+                    event.app.invalidate()
+                return
+
             # --- Clarify freetext mode: user typed their own answer ---
             if self._clarify_freetext and self._clarify_state:
                 text = event.app.current_buffer.text.strip()
@@ -9198,7 +9312,7 @@ class HermesCLI:
                 # blocked inside self.chat()), which turns /steer into a
                 # post-run next-turn message — defeating mid-run injection.
                 # agent.steer() is thread-safe (holds _pending_steer_lock).
-                if self._should_handle_steer_command_inline(text, has_images=has_images):
+                if self._should_handle_steer_and_btw_inline(text, has_images=has_images):
                     self.process_command(text)
                     event.app.current_buffer.reset(append_to_history=True)
                     return
@@ -9386,6 +9500,82 @@ class HermesCLI:
             event.app.current_buffer.reset()
             event.app.invalidate()
 
+        # --- /btw dialog key bindings ---
+        @kb.add('up', filter=Condition(lambda: bool(self._btw_dialog_state)))
+        def btw_dialog_up(event):
+            state = self._btw_dialog_state
+            if state and state.get("editing") is None:
+                state["selected"] = max(0, state.get("selected", 0) - 1)
+                event.app.invalidate()
+
+        @kb.add('down', filter=Condition(lambda: bool(self._btw_dialog_state)))
+        def btw_dialog_down(event):
+            state = self._btw_dialog_state
+            if state and state.get("editing") is None:
+                n = len(state.get("messages") or [])
+                state["selected"] = min(n - 1, state.get("selected", 0) + 1) if n else 0
+                event.app.invalidate()
+
+        @kb.add(' ', filter=Condition(lambda: bool(self._btw_dialog_state)))
+        def btw_dialog_toggle(event):
+            """Space toggles the checkbox on the highlighted message."""
+            state = self._btw_dialog_state
+            if state and state.get("editing") is None:
+                idx = state.get("selected", 0)
+                checked = state.get("checked", set())
+                if idx in checked:
+                    checked.discard(idx)
+                else:
+                    checked.add(idx)
+                event.app.invalidate()
+
+        @kb.add('a', filter=Condition(lambda: bool(self._btw_dialog_state)))
+        def btw_dialog_toggle_all(event):
+            """'a' toggles all checkboxes."""
+            state = self._btw_dialog_state
+            if state and state.get("editing") is None:
+                n = len(state.get("messages") or [])
+                checked = state.get("checked", set())
+                if len(checked) >= n // 2:  # majority checked → uncheck all
+                    checked.clear()
+                else:
+                    checked.update(range(n))
+                event.app.invalidate()
+
+        @kb.add('e', filter=Condition(lambda: bool(self._btw_dialog_state)))
+        def btw_dialog_edit(event):
+            """'e' enters edit mode on the highlighted message. Esc to finish."""
+            state = self._btw_dialog_state
+            if state and state.get("editing") is None:
+                idx = state.get("selected", 0)
+                messages = state.get("messages") or []
+                if idx < len(messages):
+                    state["editing"] = idx
+                    event.app.current_buffer.text = messages[idx]
+                    event.app.current_buffer.cursor_position = len(messages[idx])
+                    event.app.invalidate()
+
+        @kb.add('escape', filter=Condition(lambda: bool(self._btw_dialog_state and self._btw_dialog_state.get("editing") is not None)), eager=True)
+        def btw_dialog_edit_done(event):
+            """Esc while editing: save edit and return to list."""
+            state = self._btw_dialog_state
+            if state:
+                idx = state.get("editing")
+                if idx is not None:
+                    new_text = event.app.current_buffer.text.strip()
+                    if new_text:
+                        state["messages"][idx] = new_text
+                    state["editing"] = None
+                    event.app.current_buffer.reset()
+                    event.app.invalidate()
+
+        @kb.add('escape', filter=Condition(lambda: bool(self._btw_dialog_state and self._btw_dialog_state.get("editing") is None)), eager=True)
+        def btw_dialog_esc(event):
+            """Esc while not editing: cancel dialog, keep all messages in queue."""
+            self._close_btw_dialog()
+            event.app.current_buffer.reset()
+            event.app.invalidate()
+
         # Number keys for quick approval selection (1-9, 0 for 10th item)
         def _make_approval_number_handler(idx):
             def handler(event):
@@ -9405,7 +9595,7 @@ class HermesCLI:
         # Buffer.auto_up/auto_down handle both: cursor movement when multi-line,
         # history browsing when on the first/last line (or single-line input).
         _normal_input = Condition(
-            lambda: not self._clarify_state and not self._approval_state and not self._sudo_state and not self._secret_state and not self._model_picker_state
+            lambda: not self._clarify_state and not self._approval_state and not self._sudo_state and not self._secret_state and not self._model_picker_state and not self._btw_dialog_state
         )
 
         @kb.add('up', filter=_normal_input)
@@ -9859,7 +10049,7 @@ class HermesCLI:
                 status = cli_ref._command_status or "Processing command..."
                 return f"{frame} {status}"
             if cli_ref._agent_running:
-                return "msg=interrupt · /queue · /bg · /steer · Ctrl+C cancel"
+                return "msg=interrupt · /queue · /btw · /bg · /steer · Ctrl+C cancel"
             if cli_ref._voice_mode:
                 return "type or Ctrl+B to record"
             return ""
@@ -10288,6 +10478,67 @@ class HermesCLI:
             filter=Condition(lambda: cli_ref._model_picker_state is not None),
         )
 
+        # --- /btw dialog widget ---
+        def _get_btw_dialog_display():
+            state = cli_ref._btw_dialog_state
+            if not state:
+                return []
+            messages = state.get("messages") or []
+            checked = state.get("checked") or set()
+            selected = state.get("selected", 0)
+            editing = state.get("editing")
+
+            n = len(messages)
+            title = f"📝 /btw — {len(checked)}/{n} selected"
+            hint_parts = ["↑↓:nav", "␣:toggle", "a:all", "e:edit", "enter:send", "esc:cancel"]
+            if editing is not None:
+                hint_parts.insert(0, "editing… esc:done")
+            hint = " · ".join(hint_parts)
+
+            # Build choice lines: each is "☑ msg..." or "☐ msg..." with truncation
+            choices = []
+            for i, msg in enumerate(messages):
+                mark = "☑" if i in checked else "☐"
+                # Truncate to ~60 chars for panel fit
+                short = msg[:60] + ("…" if len(msg) > 60 else "")
+                choices.append(f"{mark} {short}")
+
+            box_width = _panel_box_width(title, [hint] + choices, min_width=46, max_width=84)
+            inner_text_width = max(8, box_width - 6)
+
+            lines = []
+            lines.append(('class:clarify-border', '╭─ '))
+            lines.append(('class:clarify-title', title))
+            lines.append(('class:clarify-border', ' ' + ('─' * max(0, box_width - len(title) - 3)) + '╮\n'))
+            _append_blank_panel_line(lines, 'class:clarify-border', box_width)
+            _append_panel_line(lines, 'class:clarify-border', 'class:clarify-hint', hint, box_width)
+            _append_blank_panel_line(lines, 'class:clarify-border', box_width)
+
+            if n == 0:
+                _append_panel_line(lines, 'class:clarify-border', '', '(empty)', box_width)
+            else:
+                for idx in range(n):
+                    choice = choices[idx]
+                    if idx == selected:
+                        style = 'class:clarify-selected'
+                        prefix = '❯ '
+                    else:
+                        style = 'class:clarify-choice'
+                        prefix = '  '
+                    for wrapped in _wrap_panel_text(prefix + choice, inner_text_width, subsequent_indent='  '):
+                        _append_panel_line(lines, 'class:clarify-border', style, wrapped, box_width)
+            _append_blank_panel_line(lines, 'class:clarify-border', box_width)
+            lines.append(('class:clarify-border', '╰' + ('─' * box_width) + '╯\n'))
+            return lines
+
+        btw_dialog_widget = ConditionalContainer(
+            Window(
+                FormattedTextControl(_get_btw_dialog_display),
+                wrap_lines=True,
+            ),
+            filter=Condition(lambda: cli_ref._btw_dialog_state is not None),
+        )
+
         # Horizontal rules above and below the input.
         # On narrow/mobile terminals we keep the top separator for structure but
         # hide the bottom one to recover a full row for conversation content.
@@ -10364,6 +10615,7 @@ class HermesCLI:
                     approval_widget=approval_widget,
                     clarify_widget=clarify_widget,
                     model_picker_widget=model_picker_widget,
+                    btw_dialog_widget=btw_dialog_widget,
                     spinner_widget=spinner_widget,
                     spacer=spacer,
                     status_bar=status_bar,
@@ -10580,6 +10832,7 @@ class HermesCLI:
 
                     # Regular chat - run agent
                     self._agent_running = True
+                    self._cancel_btw_debounce()  # user submitted — stop idle timer
                     app.invalidate()  # Refresh status line
 
                     try:
@@ -10592,6 +10845,10 @@ class HermesCLI:
                         self._last_scrollback_tool = ""
 
                         app.invalidate()  # Refresh status line
+
+                        # Start /btw 10s idle-debounce timer — user's turn begins.
+                        # Resets on every keystroke. Fires dialog once after 10s idle.
+                        self._start_btw_debounce()
 
                         # Continuous voice: auto-restart recording after agent responds.
                         # Dispatch to a daemon thread so play_beep (sd.wait) and

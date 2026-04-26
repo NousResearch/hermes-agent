@@ -29,7 +29,7 @@ class TestSteerAcceptance:
     def test_accepts_non_empty_text(self):
         agent = _bare_agent()
         assert agent.steer("go ahead and check the logs") is True
-        assert agent._pending_steer == "go ahead and check the logs"
+        assert agent._pending_steer == "User guidance: go ahead and check the logs"
 
     def test_rejects_empty_string(self):
         agent = _bare_agent()
@@ -49,21 +49,21 @@ class TestSteerAcceptance:
     def test_strips_surrounding_whitespace(self):
         agent = _bare_agent()
         assert agent.steer("  hello world  \n") is True
-        assert agent._pending_steer == "hello world"
+        assert agent._pending_steer == "User guidance: hello world"
 
     def test_concatenates_multiple_steers_with_newlines(self):
         agent = _bare_agent()
         agent.steer("first note")
         agent.steer("second note")
         agent.steer("third note")
-        assert agent._pending_steer == "first note\nsecond note\nthird note"
+        assert agent._pending_steer == "User guidance: first note\nUser guidance: second note\nUser guidance: third note"
 
 
 class TestSteerDrain:
     def test_drain_returns_and_clears(self):
         agent = _bare_agent()
         agent.steer("hello")
-        assert agent._drain_pending_steer() == "hello"
+        assert agent._drain_pending_steer() == "User guidance: hello"
         assert agent._pending_steer is None
 
     def test_drain_on_empty_returns_none(self):
@@ -105,7 +105,7 @@ class TestSteerInjection:
         messages = [{"role": "user", "content": "hi"}]
         agent._apply_pending_steer_to_tool_results(messages, num_tool_msgs=0)
         # Steer should remain pending (nothing to drain into)
-        assert agent._pending_steer == "steer"
+        assert agent._pending_steer == "User guidance: steer"
 
     def test_marker_labels_text_as_user_guidance(self):
         """The injection marker must label the appended text as user
@@ -154,7 +154,7 @@ class TestSteerInjection:
         # Messages untouched
         assert messages[-1]["content"] == "y"
         # And the steer is back in pending so the fallback can grab it
-        assert agent._pending_steer == "ping"
+        assert agent._pending_steer == "User guidance: ping"
 
 
 class TestSteerThreadSafety:
@@ -176,7 +176,7 @@ class TestSteerThreadSafety:
         # Every single note must be preserved — none dropped by the lock.
         lines = text.split("\n")
         assert len(lines) == N
-        assert set(lines) == {f"note-{i}" for i in range(N)}
+        assert set(lines) == {f"User guidance: note-{i}" for i in range(N)}
 
 
 class TestSteerClearedOnInterrupt:
@@ -194,7 +194,7 @@ class TestSteerClearedOnInterrupt:
         agent._tool_worker_threads_lock = None
 
         agent.steer("will be dropped")
-        assert agent._pending_steer == "will be dropped"
+        assert agent._pending_steer == "User guidance: will be dropped"
 
         agent.clear_interrupt()
         assert agent._pending_steer is None
@@ -223,11 +223,11 @@ class TestPreApiCallSteerDrain:
         agent.steer("focus on error handling")
         # Simulate what the pre-API-call drain does:
         _pre_api_steer = agent._drain_pending_steer()
-        assert _pre_api_steer == "focus on error handling"
+        assert _pre_api_steer == "User guidance: focus on error handling"
         # Inject into last tool msg (mirrors the new code in run_conversation)
         for _si in range(len(messages) - 1, -1, -1):
             if messages[_si].get("role") == "tool":
-                messages[_si]["content"] += f"\n\nUser guidance: {_pre_api_steer}"
+                messages[_si]["content"] += f"\n\n{_pre_api_steer}"
                 break
         assert "User guidance:" in messages[-1]["content"]
         assert "focus on error handling" in messages[-1]["content"]
@@ -242,7 +242,7 @@ class TestPreApiCallSteerDrain:
         ]
         agent.steer("early steer")
         _pre_api_steer = agent._drain_pending_steer()
-        assert _pre_api_steer == "early steer"
+        assert _pre_api_steer == "User guidance: early steer"
         # No tool message found — put it back
         found = False
         for _si in range(len(messages) - 1, -1, -1):
@@ -252,7 +252,7 @@ class TestPreApiCallSteerDrain:
         assert not found
         # Restash
         agent._pending_steer = _pre_api_steer
-        assert agent._pending_steer == "early steer"
+        assert agent._pending_steer == "User guidance: early steer"
 
     def test_pre_api_drain_finds_tool_msg_past_assistant(self):
         """The pre-API drain should scan backwards past a non-tool message
@@ -271,7 +271,7 @@ class TestPreApiCallSteerDrain:
         assert _pre_api_steer is not None
         for _si in range(len(messages) - 1, -1, -1):
             if messages[_si].get("role") == "tool":
-                messages[_si]["content"] += f"\n\nUser guidance: {_pre_api_steer}"
+                messages[_si]["content"] += f"\n\n{_pre_api_steer}"
                 break
         assert "change approach" in messages[2]["content"]
 

@@ -169,22 +169,24 @@ async def test_reasoning_rejected_mid_run():
 
 @pytest.mark.asyncio
 async def test_btw_dispatches_mid_run():
-    """/btw mid-run must dispatch to /background's handler, not hit the catch-all.
+    """/btw mid-run must route through steer injection, not hit the catch-all.
 
-    /btw is an alias of /background (see hermes_cli/commands.py). Typing
-    /btw mid-turn must spawn a parallel background task — that's the whole
-    point of the command. Before the mid-turn bypass was added for
-    /background, /btw fell through to the "Agent is running — wait or
-    /stop first" catch-all, making it useless in exactly the scenario it
-    was designed for. The alias and the bypass together make it work.
+    /btw injects a side comment into the agent's next tool result via
+    agent.steer() with label="BTW". It must NOT fall through to the
+    "Agent is running — wait or /stop first" catch-all. Unlike the old
+    /btw (which was an alias of /background), the new /btw lands between
+    tool-call iterations without interrupting the model.
     """
     runner = _make_runner()
-    runner._handle_background_command = AsyncMock(
-        return_value='🚀 Background task started: "what module owns titles?"'
-    )
+    sk = build_session_key(_make_source())
+    # The fake agent in _make_runner is a MagicMock — give it a steer()
+    # that accepts the text and returns True.
+    runner._running_agents[sk].steer = MagicMock(return_value=True)
 
     result = await runner._handle_message(_make_event("/btw what module owns titles?"))
 
-    runner._handle_background_command.assert_awaited_once()
+    runner._running_agents[sk].steer.assert_called_once_with(
+        "what module owns titles?", label="BTW"
+    )
     assert result is not None
     assert "can't run mid-turn" not in result

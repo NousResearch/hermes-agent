@@ -1,11 +1,12 @@
 import { AlternateScreen, Box, NoSelect, ScrollBox, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
-import { memo } from 'react'
+import { Fragment, memo } from 'react'
 
 import { useGateway } from '../app/gatewayContext.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $uiState } from '../app/uiStore.js'
+import { INLINE_MODE } from '../config/env.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
 import { inputVisualHeight, stableComposerColumns } from '../lib/inputMetrics.js'
 import { PerfPane } from '../lib/perfPane.js'
@@ -244,8 +245,23 @@ export const AppLayout = memo(function AppLayout({
 }: AppLayoutProps) {
   const overlay = useStore($overlayState)
 
+  // Inline mode: skip <AlternateScreen> so the TUI renders into the
+  // primary buffer and the terminal's native scrollback can capture rows
+  // that scroll off the top.  Mouse tracking is still enabled via
+  // AlternateScreen when the wrapper is on; in inline mode we leave it
+  // to the host terminal, which typically does wheel → scrollback.
+  //
+  // `Fragment` (via alias so the JSX stays legible) drops the alt-screen
+  // constraint while keeping the inner layout identical.  Content height
+  // will then follow flex-column growth, which means the ScrollBox below
+  // grows beyond the viewport — the terminal's primary buffer scrolls
+  // old rows off the top into native scrollback.  Composer + progress
+  // stay at the bottom via normal flow (they're the last siblings).
+  const Shell = INLINE_MODE ? Fragment : AlternateScreen
+  const shellProps = INLINE_MODE ? {} : { mouseTracking }
+
   return (
-    <AlternateScreen mouseTracking={mouseTracking}>
+    <Shell {...shellProps}>
       <Box flexDirection="column" flexGrow={1}>
         <Box flexDirection="row" flexGrow={1}>
           {overlay.agents ? (
@@ -277,6 +293,6 @@ export const AppLayout = memo(function AppLayout({
           </>
         )}
       </Box>
-    </AlternateScreen>
+    </Shell>
   )
 })

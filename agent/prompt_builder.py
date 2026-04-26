@@ -1074,10 +1074,18 @@ def build_context_files_prompt(cwd: Optional[str] = None, skip_soul: bool = Fals
     Priority (first found wins — only ONE project context type is loaded):
       1. .hermes.md / HERMES.md  (walk to git root)
       2. AGENTS.md / agents.md   (cwd only)
-            3. .cursorrules / .cursor/rules/*.mdc  (cwd only)
+      3. .cursorrules / .cursor/rules/*.mdc  (cwd only)
 
     SOUL.md from HERMES_HOME is independent and always included when present.
     Each context source is capped at 20,000 chars.
+
+    .. note::
+       ``CLAUDE.md`` / ``claude.md`` was removed from this priority list as
+       part of the SWE-skill consolidation that moved Claude/Codex/Opencode
+       delegation to the new ``copilot`` toolset (see
+       ``website/docs/user-guide/features/copilot-remote.md``). Projects
+       relying on ``CLAUDE.md`` for repo conventions should rename to
+       ``AGENTS.md`` (already in the priority list above) or ``.hermes.md``.
 
     When *skip_soul* is True, SOUL.md is not included here (it was already
     loaded via ``load_soul_md()`` for the identity slot).

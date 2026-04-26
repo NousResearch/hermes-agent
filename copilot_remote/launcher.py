@@ -39,6 +39,7 @@ from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 from copilot_remote.models import RepoEntry
+from copilot_remote.router import _sanitize_for_log
 
 logger = logging.getLogger(__name__)
 
@@ -153,7 +154,16 @@ def _wait_for_remote_task_id(
     prior_logs = prior_logs or {}
 
     while time.time() < deadline:
-        for path in sorted(logs_dir.glob("process-*.log"), key=lambda item: item.stat().st_mtime, reverse=True):
+        # Snapshot (path, mtime) up-front with try/except so a log rotated or
+        # deleted between glob() and stat() doesn't crash the launch flow.
+        log_paths_with_mtime = []
+        for path in logs_dir.glob("process-*.log"):
+            try:
+                log_paths_with_mtime.append((path, path.stat().st_mtime))
+            except OSError:
+                continue
+
+        for path, _mtime in sorted(log_paths_with_mtime, key=lambda item: item[1], reverse=True):
             try:
                 previous_size = prior_logs.get(path)
                 current_size = path.stat().st_size
@@ -510,7 +520,7 @@ def launch_copilot(
                     prompt_delivery["status"],
                 )
             if prompt_delivery["warning"]:
-                logger.warning(prompt_delivery["warning"])
+                logger.warning(_sanitize_for_log(prompt_delivery["warning"]))
 
         return {
             "session_id": session_id,

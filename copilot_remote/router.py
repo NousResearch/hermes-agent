@@ -17,6 +17,19 @@ from copilot_remote.models import RepoEntry
 logger = logging.getLogger(__name__)
 
 
+def _sanitize_for_log(value) -> str:
+    """Strip CR/LF/control chars before logging untrusted strings.
+
+    Prevents log-injection / multiline log spoofing per the Rosenblatt
+    log-sanitization rule (CWE-117).
+    """
+    if value is None:
+        return ""
+    text = str(value)
+    # Drop ASCII control chars (0x00-0x1F) and DEL (0x7F) except space; keep tabs as space.
+    return "".join(" " if (ord(c) < 0x20 or ord(c) == 0x7F) else c for c in text)
+
+
 def _get_default_branch(repo_path: Path) -> str:
     """Detect default branch from git remote HEAD. Falls back to 'main'."""
     try:
@@ -46,7 +59,7 @@ def _discover_repos(workspace_path: Path = None) -> List[RepoEntry]:
 
     repos_dir = workspace_path / "repos"
     if not repos_dir.is_dir():
-        logger.warning("Repos directory not found: %s", repos_dir)
+        logger.warning("Repos directory not found: %s", _sanitize_for_log(repos_dir))
         return []
 
     entries = []
@@ -119,7 +132,7 @@ def _parse_routing_response(text: str, entries: List[RepoEntry]) -> Optional[Rep
     try:
         data = json.loads(text)
     except (json.JSONDecodeError, TypeError):
-        logger.warning("Router LLM returned non-JSON: %s", text[:200])
+        logger.warning("Router LLM returned non-JSON: %s", _sanitize_for_log(text[:200]))
         return None
 
     slug = data.get("slug")
@@ -131,7 +144,7 @@ def _parse_routing_response(text: str, entries: List[RepoEntry]) -> Optional[Rep
         if entry.slug.lower() == slug_lower:
             return entry
 
-    logger.warning("Router LLM returned unknown slug: %s", slug)
+    logger.warning("Router LLM returned unknown slug: %s", _sanitize_for_log(slug))
     return None
 
 

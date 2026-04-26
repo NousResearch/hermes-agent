@@ -149,9 +149,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _MARKDOWN_HINT_RE = re.compile(
-    r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
+    r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^\*\n].+?\*\*)|(~~[^\n].+?~~)|(<u>.+?</u>)|(\*[^\*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)|(^\s*\|)",
     re.MULTILINE,
 )
+_MARKDOWN_TABLE_RE = re.compile(r"^\s*\|.*\|\s*$", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
@@ -564,6 +565,139 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
 
     _flush_current()
     return rows or [[{"tag": "md", "text": content}]]
+
+
+# ---------------------------------------------------------------------------
+# Markdown table parsing and Feishu table card generation
+# ---------------------------------------------------------------------------
+
+def _parse_table_row(line: str) -> List[str]:
+    """Parse a single Markdown table row into cell values."""
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    return [cell.strip() for cell in stripped.split("|")]
+
+
+def _parse_markdown_table(content: str) -> Optional[Dict[str, Any]]:
+    """Parse a Markdown table from content.
+    
+    Returns a dict with:
+    - before_table: text before the table
+    - headers: list of column headers
+    - rows: list of row data (each row is a list of cell values)
+    - after_table: text after the table
+    - has_table: True if a table was found
+    
+    Returns None if no valid table is found.
+    """
+    lines = content.split("\n")
+    table_start = -1
+    table_end = -1
+    headers = []
+    rows_data = []
+    
+    # Find table boundaries: look for header + separator pattern
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("|") or (stripped.count("|") >= 2 and not stripped.startswith("#")):
+            if table_start == -1 and i + 1 < len(lines):
+                next_line = lines[i + 1].strip()
+                # Separator line pattern: |---|---| or |:---:|
+                if next_line.startswith("|") and re.match(r"^\|[\s\-:]+\|[\s\-:]+\|", next_line):
+                    table_start = i
+                    table_end = i + 1
+                    headers = _parse_table_row(line)
+                    # Find data rows after separator
+                    for j in range(i + 2, len(lines)):
+                        data_line = lines[j].strip()
+                        if data_line.startswith("|") or (data_line.count("|") >= 2):
+                            if not re.match(r"^\|[\s\-:]+\|", data_line):
+                                table_end = j
+                                rows_data.append(_parse_table_row(data_line))
+                        elif data_line == "":
+                            if j + 1 < len(lines) and not lines[j + 1].strip().startswith("|"):
+                                break
+                        else:
+                            break
+                    break
+    
+    if table_start == -1 or not headers:
+        return None
+    
+    before_table = "\n".join(lines[:table_start]).strip()
+    after_table = "\n".join(lines[table_end + 1:]).strip()
+    
+    return {
+        "before_table": before_table,
+        "headers": headers,
+        "rows": rows_data,
+        "after_table": after_table,
+        "has_table": True,
+    }
+
+
+def _build_table_card_payload(table_data: Dict[str, Any]) -> str:
+    """Build a Feishu interactive card with table component.
+    
+    Feishu table format:
+    - columns: [{name, display_name, data_type, width}]
+    - rows: [{col_0: "value", col_1: "value", ...}]  # object format!
+    """
+    headers = table_data["headers"]
+    rows = table_data["rows"]
+    before_table = table_data.get("before_table", "")
+    after_table = table_data.get("after_table", "")
+    
+    elements = []
+    
+    # Content before table (as lark_md for formatting)
+    if before_table:
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": before_table}
+        })
+    
+    # Build columns with unique keys (col_0, col_1, ...)
+    column_keys = ["col_" + str(i) for i in range(len(headers))]
+    table_columns = [
+        {"name": column_keys[i], "display_name": h, "data_type": "text", "width": "auto"}
+        for i, h in enumerate(headers)
+    ]
+    
+    # Build rows as objects (keys must match column names)
+    table_rows = []
+    for row in rows:
+        row_obj = {}
+        for i, cell in enumerate(row):
+            if i < len(column_keys):
+                row_obj[column_keys[i]] = cell
+        table_rows.append(row_obj)
+    
+    # Add table element
+    elements.append({
+        "tag": "table",
+        "columns": table_columns,
+        "rows": table_rows,
+        "page_size": 20,
+        "row_height": "low"
+    })
+    
+    # Content after table
+    if after_table:
+        elements.append({
+            "tag": "div",
+            "text": {"tag": "lark_md", "content": after_table}
+        })
+    
+    card = {
+        "config": {"wide_screen_mode": True},
+        "elements": elements
+    }
+    
+    return json.dumps(card, ensure_ascii=False)
 
 
 def parse_feishu_post_payload(
@@ -3830,6 +3964,11 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
         if _MARKDOWN_HINT_RE.search(content):
+            # Check if content contains a Markdown table
+            table_data = _parse_markdown_table(content)
+            if table_data and table_data.get("has_table"):
+                # Use interactive card with table component for proper rendering
+                return "interactive", _build_table_card_payload(table_data)
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)

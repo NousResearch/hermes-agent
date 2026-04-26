@@ -26,6 +26,7 @@ describe('turnStore live progress helpers', () => {
         kind: 'trail',
         role: 'system',
         text: '',
+        todoCollapsedByDefault: true,
         todos: [
           { content: 'prep', id: 'prep', status: 'completed' },
           { content: 'serve', id: 'serve', status: 'completed' }

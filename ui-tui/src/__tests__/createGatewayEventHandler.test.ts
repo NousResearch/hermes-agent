@@ -93,7 +93,13 @@ describe('createGatewayEventHandler', () => {
     onEvent({ payload: { text: 'done' }, type: 'message.complete' } as any)
 
     expect(getTurnState().todos).toEqual([])
-    expect(appended).toContainEqual({ kind: 'trail', role: 'system', text: '', todos })
+    expect(appended).toContainEqual({
+      kind: 'trail',
+      role: 'system',
+      text: '',
+      todoCollapsedByDefault: true,
+      todos
+    })
   })
 
   it('keeps the current todo list visible when the next message starts', () => {

@@ -295,6 +295,8 @@ export function useSubmission(opts: UseSubmissionOptions) {
         if (doubleTap && live.sid && composerRefs.queueRef.current.length) {
           const next = composerActions.dequeue()
 
+          composerActions.syncQueue()
+
           if (next) {
             composerActions.setQueueEdit(null)
             dispatchSubmission(next)

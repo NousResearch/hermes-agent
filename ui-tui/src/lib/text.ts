@@ -1,4 +1,5 @@
 import { THINKING_COT_MAX } from '../config/limits.js'
+import { VERBS } from '../content/verbs.js'
 import type { ThinkingMode } from '../types.js'
 
 const ESC = String.fromCharCode(27)
@@ -70,32 +71,8 @@ export const pasteTokenLabel = (text: string, lineCount: number) => {
     : `[[ ${preview} [${fmtK(lineCount)} lines] ]]`
 }
 
-const THINKING_STATUS_WORDS = [
-  'pondering',
-  'contemplating',
-  'musing',
-  'cogitating',
-  'ruminating',
-  'deliberating',
-  'mulling',
-  'reflecting',
-  'processing',
-  'reasoning',
-  'analyzing',
-  'computing',
-  'synthesizing',
-  'formulating',
-  'brainstorming'
-]
-
-const THINKING_STATUS_RE = new RegExp(`^(?:${THINKING_STATUS_WORDS.join('|')})\\.{0,3}$`, 'i')
-
-const THINKING_FACE_SOURCE = '[^A-Za-z\n]+'
-
-const THINKING_STATUS_CHUNK_RE = new RegExp(
-  `${THINKING_FACE_SOURCE}\\s*(?:${THINKING_STATUS_WORDS.join('|')})\\.{0,3}\\s*`,
-  'giu'
-)
+const THINKING_STATUS_RE = new RegExp(`^(?:${VERBS.join('|')})\\.{0,3}$`, 'i')
+const THINKING_STATUS_CHUNK_RE = new RegExp(`[^A-Za-z\n]+\\s*(?:${VERBS.join('|')})\\.{0,3}\\s*`, 'giu')
 
 export const cleanThinkingText = (reasoning: string) =>
   reasoning

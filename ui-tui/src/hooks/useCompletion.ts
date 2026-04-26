@@ -1,8 +1,10 @@
 import { useEffect, useRef, useState } from 'react'
 
 import type { CompletionItem } from '../app/interfaces.js'
+import { SLASH_COMMANDS } from '../app/slash/registry.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { CompletionResponse } from '../gatewayTypes.js'
+import { mergeLocalSlashCompletions } from '../lib/localSlashCompletion.js'
 import { asRpcResult } from '../lib/rpc.js'
 
 const TAB_PATH_RE = /((?:["']?(?:[A-Za-z]:[\\/]|\.{1,2}\/|~\/|\/|@|[^"'`\s]+\/))[^\s]*)$/
@@ -60,10 +62,11 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
           }
 
           const r = asRpcResult<CompletionResponse>(raw)
+          const merged = isSlash ? mergeLocalSlashCompletions(r, SLASH_COMMANDS, input) : r
 
-          setCompletions(r?.items ?? [])
+          setCompletions(merged?.items ?? [])
           setCompIdx(0)
-          setCompReplace(isSlash ? (r?.replace_from ?? 1) : pathReplace)
+          setCompReplace(isSlash ? (merged?.replace_from ?? 1) : pathReplace)
         })
         .catch((e: unknown) => {
           if (ref.current !== input) {

@@ -1195,6 +1195,29 @@ class SlackAdapter(BasePlatformAdapter):
         media_types = []
         files = event.get("files", [])
         for f in files:
+            # Slack Connect channels return stub file objects with
+            # file_access="check_file_info" and no URL fields. We must
+            # call files.info to retrieve the full object (including url_private_download)
+            # before we can download it.
+            # https://docs.slack.dev/reference/objects/file-object/#slack_connect_files
+            if f.get("file_access") == "check_file_info":
+                file_id = f.get("id")
+                if not file_id:
+                    continue
+                try:
+                    info_resp = await self._get_client(channel_id).files_info(file=file_id)
+                    if info_resp.get("ok"):
+                        f = info_resp["file"]
+                    else:
+                        logger.warning(
+                            "[Slack] files.info failed for %s: %s",
+                            file_id, info_resp.get("error"),
+                        )
+                        continue
+                except Exception as e:
+                    logger.warning("[Slack] files.info error for %s: %s", file_id, e, exc_info=True)
+                    continue
+
             mimetype = f.get("mimetype", "unknown")
             url = f.get("url_private_download") or f.get("url_private", "")
             if mimetype.startswith("image/") and url:

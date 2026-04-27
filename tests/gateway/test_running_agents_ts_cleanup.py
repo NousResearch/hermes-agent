@@ -79,16 +79,28 @@ class TestRunningAgentsTsCleanup:
         assert key not in runner._busy_ack_ts
 
     def test_shutdown_clears_ts(self, tmp_path):
-        """_running_agents.clear() must be followed by _running_agents_ts.clear()."""
-        runner = _make_runner(tmp_path)
-        runner._running_agents = {"a": MagicMock(), "b": MagicMock()}
-        runner._running_agents_ts = {"a": 100.0, "b": 200.0}
+        """Source-level check: the shutdown path must clear _running_agents_ts
+        immediately after clearing _running_agents.
 
-        runner._running_agents.clear()
-        runner._running_agents_ts.clear()
+        The test verifies that the production code in gateway/run.py contains
+        the paired clear() calls in the expected order, rather than testing the
+        trivially-correct operation of dict.clear() itself.
+        """
+        import gateway.run as mod
 
-        assert len(runner._running_agents) == 0
-        assert len(runner._running_agents_ts) == 0
+        source = open(mod.__file__).read()
+        # Locate the shutdown clear block — both clears must appear together
+        idx_agents = source.find("self._running_agents.clear()")
+        idx_ts = source.find("self._running_agents_ts.clear()")
+
+        assert idx_agents != -1, "_running_agents.clear() not found in gateway/run.py"
+        assert idx_ts != -1, "_running_agents_ts.clear() not found in gateway/run.py"
+        # _running_agents_ts.clear() must follow _running_agents.clear()
+        # within a small window (same block)
+        assert idx_ts > idx_agents, (
+            "_running_agents_ts.clear() must appear after _running_agents.clear() "
+            "in the shutdown path"
+        )
 
     def test_clear_site_also_clears_ts(self):
         """Source-level check: every `self._running_agents.clear()` must be

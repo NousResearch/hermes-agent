@@ -361,6 +361,7 @@ class CopilotACPClient:
         timeout: float | None = None,
         tools: list[dict[str, Any]] | None = None,
         tool_choice: Any = None,
+        stream: bool = False,
         **_: Any,
     ) -> Any:
         prompt_text = _format_messages_as_prompt(
@@ -407,11 +408,35 @@ class CopilotACPClient:
         )
         finish_reason = "tool_calls" if tool_calls else "stop"
         choice = SimpleNamespace(message=assistant_message, finish_reason=finish_reason)
-        return SimpleNamespace(
+        response = SimpleNamespace(
             choices=[choice],
             usage=usage,
             model=model or "copilot-acp",
         )
+
+        if stream:
+            # When stream=True the caller iterates over the return value
+            # (e.g. ``for chunk in stream: ...``).  Wrap the single response
+            # in a generator so it is iterable, avoiding the TypeError:
+            # "'types.SimpleNamespace' object is not iterable".
+            def _stream_chunks():
+                delta = SimpleNamespace(
+                    content=cleaned_text,
+                    tool_calls=tool_calls or None,
+                    reasoning=reasoning_text or None,
+                    reasoning_content=reasoning_text or None,
+                    reasoning_details=None,
+                )
+                chunk_choice = SimpleNamespace(delta=delta, finish_reason=finish_reason)
+                yield SimpleNamespace(
+                    choices=[chunk_choice],
+                    usage=usage,
+                    model=model or "copilot-acp",
+                )
+
+            return _stream_chunks()
+
+        return response
 
     def _run_prompt(self, prompt_text: str, *, timeout_seconds: float) -> tuple[str, str]:
         try:

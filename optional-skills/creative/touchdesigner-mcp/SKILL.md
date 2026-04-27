@@ -1,7 +1,7 @@
 ---
 name: touchdesigner-mcp
 description: "Control a running TouchDesigner instance via twozero MCP — create operators, set parameters, wire connections, execute Python, build real-time visuals. 36 native tools."
-version: 1.0.0
+version: 1.1.0
 author: kshitijk4poor
 license: MIT
 metadata:
@@ -332,6 +332,12 @@ See `references/network-patterns.md` for complete build scripts + shader code.
 | `references/mcp-tools.md` | Full twozero MCP tool parameter schemas |
 | `references/python-api.md` | TD Python: op(), scripting, extensions |
 | `references/troubleshooting.md` | Connection diagnostics, debugging |
+| `references/glsl.md` | GLSL uniforms, built-in functions, shader templates |
+| `references/postfx.md` | Post-FX: bloom, CRT, chromatic aberration, feedback glow |
+| `references/layout-compositor.md` | HUD layout patterns, panel grids, BSP-style layouts |
+| `references/operator-tips.md` | Wireframe rendering, feedback TOP setup |
+| `references/geometry-comp.md` | Geometry COMP: instancing, POP vs SOP, morphing |
+| `references/audio-reactive.md` | Audio band extraction, beat detection, envelope following |
 | `scripts/setup.sh` | Automated setup script |
 
 ---

@@ -14,6 +14,15 @@ metadata:
 
 Delegate coding tasks to [Codex](https://github.com/openai/codex) via the Hermes terminal. Codex is OpenAI's autonomous coding agent CLI.
 
+## When to use
+
+- Building features
+- Refactoring
+- PR reviews
+- Batch issue fixing
+
+Requires the codex CLI and a git repository.
+
 ## Prerequisites
 
 - Codex installed: `npm install -g @openai/codex`

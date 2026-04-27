@@ -6,14 +6,15 @@ description: "Run custom code at key lifecycle points — log activity, send ale
 
 # Event Hooks
 
-Hermes has two hook systems that run custom code at key lifecycle points:
+Hermes has three hook systems that run custom code at key lifecycle points:
 
 | System | Registered via | Runs in | Use case |
 |--------|---------------|---------|----------|
 | **[Gateway hooks](#gateway-event-hooks)** | `HOOK.yaml` + `handler.py` in `~/.hermes/hooks/` | Gateway only | Logging, alerts, webhooks |
 | **[Plugin hooks](#plugin-hooks)** | `ctx.register_hook()` in a [plugin](/docs/user-guide/features/plugins) | CLI + Gateway | Tool interception, metrics, guardrails |
+| **[Shell hooks](#shell-hooks)** | `hooks:` block in `~/.hermes/config.yaml` pointing at shell scripts | CLI + Gateway | Drop-in scripts for blocking, auto-formatting, context injection |
 
-Both systems are non-blocking — errors in any hook are caught and logged, never crashing the agent.
+All three systems are non-blocking — errors in any hook are caught and logged, never crashing the agent.
 
 ## Gateway Event Hooks
 
@@ -231,20 +232,22 @@ def register(ctx):
 
 - Callbacks receive **keyword arguments**. Always accept `**kwargs` for forward compatibility — new parameters may be added in future versions without breaking your plugin.
 - If a callback **crashes**, it's logged and skipped. Other hooks and the agent continue normally. A misbehaving plugin can never break the agent.
-- All hooks are **fire-and-forget observers** whose return values are ignored — except `pre_llm_call`, which can [inject context](#pre_llm_call).
+- Two hooks' return values affect behavior: [`pre_tool_call`](#pre_tool_call) can **block** the tool, and [`pre_llm_call`](#pre_llm_call) can **inject context** into the LLM call. All other hooks are fire-and-forget observers.
 
 ### Quick reference
 
 | Hook | Fires when | Returns |
 |------|-----------|---------|
-| [`pre_tool_call`](#pre_tool_call) | Before any tool executes | ignored |
+| [`pre_tool_call`](#pre_tool_call) | Before any tool executes | `{"action": "block", "message": str}` to veto the call |
 | [`post_tool_call`](#post_tool_call) | After any tool returns | ignored |
-| [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | context injection |
+| [`pre_llm_call`](#pre_llm_call) | Once per turn, before the tool-calling loop | `{"context": str}` to prepend context to the user message |
 | [`post_llm_call`](#post_llm_call) | Once per turn, after the tool-calling loop | ignored |
 | [`on_session_start`](#on_session_start) | New session created (first turn only) | ignored |
 | [`on_session_end`](#on_session_end) | Session ends | ignored |
 | [`on_session_finalize`](#on_session_finalize) | CLI/gateway tears down an active session (flush, save, stats) | ignored |
 | [`on_session_reset`](#on_session_reset) | Gateway swaps in a fresh session key (e.g. `/new`, `/reset`) | ignored |
+| [`subagent_stop`](#subagent_stop) | A `delegate_task` child has exited | ignored |
+| [`pre_gateway_dispatch`](#pre_gateway_dispatch) | Gateway received a user message, before auth + dispatch | `{"action": "skip" \| "rewrite" \| "allow", ...}` to influence flow |
 
 ---
 
@@ -266,9 +269,15 @@ def my_callback(tool_name: str, args: dict, task_id: str, **kwargs):
 
 **Fires:** In `model_tools.py`, inside `handle_function_call()`, before the tool's handler runs. Fires once per tool call — if the model calls 3 tools in parallel, this fires 3 times.
 
-**Return value:** Ignored.
+**Return value — veto the call:**
 
-**Use cases:** Logging, audit trails, tool call counters, blocking dangerous operations (print a warning), rate limiting.
+```python
+return {"action": "block", "message": "Reason the tool call was blocked"}
+```
+
+The agent short-circuits the tool with `message` as the error returned to the model. The first matching block directive wins (Python plugins registered first, then shell hooks). Any other return value is ignored, so existing observer-only callbacks keep working unchanged.
+
+**Use cases:** Logging, audit trails, tool call counters, blocking dangerous operations, rate limiting, per-user policy enforcement.
 
 **Example — tool call audit log:**
 
@@ -308,7 +317,8 @@ Fires **immediately after** every tool execution returns.
 **Callback signature:**
 
 ```python
-def my_callback(tool_name: str, args: dict, result: str, task_id: str, **kwargs):
+def my_callback(tool_name: str, args: dict, result: str, task_id: str,
+                duration_ms: int, **kwargs):
 ```
 
 | Parameter | Type | Description |
@@ -317,24 +327,27 @@ def my_callback(tool_name: str, args: dict, result: str, task_id: str, **kwargs)
 | `args` | `dict` | The arguments the model passed to the tool |
 | `result` | `str` | The tool's return value (always a JSON string) |
 | `task_id` | `str` | Session/task identifier. Empty string if not set. |
+| `duration_ms` | `int` | How long the tool's dispatch took, in milliseconds (measured with `time.monotonic()` around `registry.dispatch()`). |
 
 **Fires:** In `model_tools.py`, inside `handle_function_call()`, after the tool's handler returns. Fires once per tool call. Does **not** fire if the tool raised an unhandled exception (the error is caught and returned as an error JSON string instead, and `post_tool_call` fires with that error string as `result`).
 
 **Return value:** Ignored.
 
-**Use cases:** Logging tool results, metrics collection, tracking tool success/failure rates, sending notifications when specific tools complete.
+**Use cases:** Logging tool results, metrics collection, tracking tool success/failure rates, latency dashboards, per-tool budget alerts, sending notifications when specific tools complete.
 
 **Example — track tool usage metrics:**
 
 ```python
-from collections import Counter
+from collections import Counter, defaultdict
 import json
 
 _tool_counts = Counter()
 _error_counts = Counter()
+_latency_ms = defaultdict(list)
 
-def track_metrics(tool_name, result, **kwargs):
+def track_metrics(tool_name, result, duration_ms=0, **kwargs):
     _tool_counts[tool_name] += 1
+    _latency_ms[tool_name].append(duration_ms)
     try:
         parsed = json.loads(result)
         if "error" in parsed:
@@ -649,3 +662,309 @@ def my_callback(session_id: str, platform: str, **kwargs):
 ---
 
 See the **[Build a Plugin guide](/docs/guides/build-a-hermes-plugin)** for the full walkthrough including tool schemas, handlers, and advanced hook patterns.
+
+---
+
+### `subagent_stop`
+
+Fires **once per child agent** after `delegate_task` finishes. Whether you delegated a single task or a batch of three, this hook fires once for each child, serialised on the parent thread.
+
+**Callback signature:**
+
+```python
+def my_callback(parent_session_id: str, child_role: str | None,
+                child_summary: str | None, child_status: str,
+                duration_ms: int, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `parent_session_id` | `str` | Session ID of the delegating parent agent |
+| `child_role` | `str \| None` | Orchestrator role tag set on the child (`None` if the feature isn't enabled) |
+| `child_summary` | `str \| None` | The final response the child returned to the parent |
+| `child_status` | `str` | `"completed"`, `"failed"`, `"interrupted"`, or `"error"` |
+| `duration_ms` | `int` | Wall-clock time spent running the child, in milliseconds |
+
+**Fires:** In `tools/delegate_tool.py`, after `ThreadPoolExecutor.as_completed()` drains all child futures. Firing is marshalled to the parent thread so hook authors don't have to reason about concurrent callback execution.
+
+**Return value:** Ignored.
+
+**Use cases:** Logging orchestration activity, accumulating child durations for billing, writing post-delegation audit records.
+
+**Example — log orchestrator activity:**
+
+```python
+import logging
+logger = logging.getLogger(__name__)
+
+def log_subagent(parent_session_id, child_role, child_status, duration_ms, **kwargs):
+    logger.info(
+        "SUBAGENT parent=%s role=%s status=%s duration_ms=%d",
+        parent_session_id, child_role, child_status, duration_ms,
+    )
+
+def register(ctx):
+    ctx.register_hook("subagent_stop", log_subagent)
+```
+
+:::info
+With heavy delegation (e.g. orchestrator roles × 5 leaves × nested depth), `subagent_stop` fires many times per turn. Keep your callback fast; push expensive work to a background queue.
+:::
+
+---
+
+### `pre_gateway_dispatch`
+
+Fires **once per incoming `MessageEvent`** in the gateway, after the internal-event guard but **before** auth/pairing and agent dispatch. This is the interception point for gateway-level message-flow policies (listen-only windows, human handover, per-chat routing, etc.) that don't fit cleanly into any single platform adapter.
+
+**Callback signature:**
+
+```python
+def my_callback(event, gateway, session_store, **kwargs):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `event` | `MessageEvent` | The normalized inbound message (has `.text`, `.source`, `.message_id`, `.internal`, etc.). |
+| `gateway` | `GatewayRunner` | The active gateway runner, so plugins can call `gateway.adapters[platform].send(...)` for side-channel replies (owner notifications, etc.). |
+| `session_store` | `SessionStore` | For silent transcript ingestion via `session_store.append_to_transcript(...)`. |
+
+**Fires:** In `gateway/run.py`, inside `GatewayRunner._handle_message()`, immediately after `is_internal` is computed. **Internal events skip the hook entirely** (they are system-generated — background-process completions, etc. — and must not be gate-kept by user-facing policy).
+
+**Return value:** `None` or a dict. The first recognized action dict wins; remaining plugin results are ignored. Exceptions in plugin callbacks are caught and logged; the gateway always falls through to normal dispatch on error.
+
+| Return | Effect |
+|--------|--------|
+| `{"action": "skip", "reason": "..."}` | Drop the message — no agent reply, no pairing flow, no auth. Plugin is assumed to have handled it (e.g. silent-ingested into the transcript). |
+| `{"action": "rewrite", "text": "new text"}` | Replace `event.text`, then continue normal dispatch with the modified event. Useful for collapsing buffered ambient messages into a single prompt. |
+| `{"action": "allow"}` / `None` | Normal dispatch — runs the full auth / pairing / agent-loop chain. |
+
+**Use cases:** Listen-only group chats (only respond when tagged; buffer ambient messages into context); human handover (silent-ingest customer messages while owner handles the chat manually); per-profile rate limiting; policy-driven routing.
+
+**Example — drop unauthorized DMs silently without triggering the pairing code:**
+
+```python
+def deny_unauthorized_dms(event, **kwargs):
+    src = event.source
+    if src.chat_type == "dm" and not _is_approved_user(src.user_id):
+        return {"action": "skip", "reason": "unauthorized-dm"}
+    return None
+
+def register(ctx):
+    ctx.register_hook("pre_gateway_dispatch", deny_unauthorized_dms)
+```
+
+**Example — rewrite an ambient-message buffer into a single prompt on mention:**
+
+```python
+_buffers = {}
+
+def buffer_or_rewrite(event, **kwargs):
+    key = (event.source.platform, event.source.chat_id)
+    buf = _buffers.setdefault(key, [])
+    if _bot_mentioned(event.text):
+        combined = "\n".join(buf + [event.text])
+        buf.clear()
+        return {"action": "rewrite", "text": combined}
+    buf.append(event.text)
+    return {"action": "skip", "reason": "ambient-buffered"}
+
+def register(ctx):
+    ctx.register_hook("pre_gateway_dispatch", buffer_or_rewrite)
+```
+
+---
+
+## Shell Hooks
+
+Declare shell-script hooks in your `cli-config.yaml` and Hermes will run them as subprocesses whenever the corresponding plugin-hook event fires — in both CLI and gateway sessions. No Python plugin authoring required.
+
+Use shell hooks when you want a drop-in, single-file script (Bash, Python, anything with a shebang) to:
+
+- **Block a tool call** — reject dangerous `terminal` commands, enforce per-directory policies, require approval for destructive `write_file` / `patch` operations.
+- **Run after a tool call** — auto-format Python or TypeScript files that the agent just wrote, log API calls, trigger a CI workflow.
+- **Inject context into the next LLM turn** — prepend `git status` output, the current weekday, or retrieved documents to the user message (see [`pre_llm_call`](#pre_llm_call)).
+- **Observe lifecycle events** — write a log line when a subagent completes (`subagent_stop`) or a session starts (`on_session_start`).
+
+Shell hooks are registered by calling `agent.shell_hooks.register_from_config(cfg)` at both CLI startup (`hermes_cli/main.py`) and gateway startup (`gateway/run.py`). They compose naturally with Python plugin hooks — both flow through the same dispatcher.
+
+### Comparison at a glance
+
+| Dimension | Shell hooks | [Plugin hooks](#plugin-hooks) | [Gateway hooks](#gateway-event-hooks) |
+|-----------|-------------|-------------------------------|---------------------------------------|
+| Declared in | `hooks:` block in `~/.hermes/config.yaml` | `register()` in a `plugin.yaml` plugin | `HOOK.yaml` + `handler.py` directory |
+| Lives under | `~/.hermes/agent-hooks/` (by convention) | `~/.hermes/plugins/<name>/` | `~/.hermes/hooks/<name>/` |
+| Language | Any (Bash, Python, Go binary, …) | Python only | Python only |
+| Runs in | CLI + Gateway | CLI + Gateway | Gateway only |
+| Events | `VALID_HOOKS` (incl. `subagent_stop`) | `VALID_HOOKS` | Gateway lifecycle (`gateway:startup`, `agent:*`, `command:*`) |
+| Can block a tool call | Yes (`pre_tool_call`) | Yes (`pre_tool_call`) | No |
+| Can inject LLM context | Yes (`pre_llm_call`) | Yes (`pre_llm_call`) | No |
+| Consent | First-use prompt per `(event, command)` pair | Implicit (Python plugin trust) | Implicit (dir trust) |
+| Inter-process isolation | Yes (subprocess) | No (in-process) | No (in-process) |
+
+### Configuration schema
+
+```yaml
+hooks:
+  <event_name>:                  # Must be in VALID_HOOKS
+    - matcher: "<regex>"         # Optional; used for pre/post_tool_call only
+      command: "<shell command>" # Required; runs via shlex.split, shell=False
+      timeout: <seconds>         # Optional; default 60, capped at 300
+
+hooks_auto_accept: false         # See "Consent model" below
+```
+
+Event names must be one of the [plugin hook events](#plugin-hooks); typos produce a "Did you mean X?" warning and are skipped. Unknown keys inside a single entry are ignored; missing `command` is a skip-with-warning. `timeout > 300` is clamped with a warning.
+
+### JSON wire protocol
+
+Each time the event fires, Hermes spawns a subprocess for every matching hook (matcher permitting), pipes a JSON payload to **stdin**, and reads **stdout** back as JSON.
+
+**stdin — payload the script receives:**
+
+```json
+{
+  "hook_event_name": "pre_tool_call",
+  "tool_name":       "terminal",
+  "tool_input":      {"command": "rm -rf /"},
+  "session_id":      "sess_abc123",
+  "cwd":             "/home/user/project",
+  "extra":           {"task_id": "...", "tool_call_id": "..."}
+}
+```
+
+`tool_name` and `tool_input` are `null` for non-tool events (`pre_llm_call`, `subagent_stop`, session lifecycle). The `extra` dict carries all event-specific kwargs (`user_message`, `conversation_history`, `child_role`, `duration_ms`, …). Unserialisable values are stringified rather than omitted.
+
+**stdout — optional response:**
+
+```jsonc
+// Block a pre_tool_call (both shapes accepted; normalised internally):
+{"decision": "block", "reason":  "Forbidden: rm -rf"}   // Claude-Code style
+{"action":   "block", "message": "Forbidden: rm -rf"}   // Hermes-canonical
+
+// Inject context for pre_llm_call:
+{"context": "Today is Friday, 2026-04-17"}
+
+// Silent no-op — any empty / non-matching output is fine:
+```
+
+Malformed JSON, non-zero exit codes, and timeouts log a warning but never abort the agent loop.
+
+### Worked examples
+
+#### 1. Auto-format Python files after every write
+
+```yaml
+# ~/.hermes/config.yaml
+hooks:
+  post_tool_call:
+    - matcher: "write_file|patch"
+      command: "~/.hermes/agent-hooks/auto-format.sh"
+```
+
+```bash
+#!/usr/bin/env bash
+# ~/.hermes/agent-hooks/auto-format.sh
+payload="$(cat -)"
+path=$(echo "$payload" | jq -r '.tool_input.path // empty')
+[[ "$path" == *.py ]] && command -v black >/dev/null && black "$path" 2>/dev/null
+printf '{}\n'
+```
+
+The agent's in-context view of the file is **not** re-read automatically — the reformat only affects the file on disk. Subsequent `read_file` calls pick up the formatted version.
+
+#### 2. Block destructive `terminal` commands
+
+```yaml
+hooks:
+  pre_tool_call:
+    - matcher: "terminal"
+      command: "~/.hermes/agent-hooks/block-rm-rf.sh"
+      timeout: 5
+```
+
+```bash
+#!/usr/bin/env bash
+# ~/.hermes/agent-hooks/block-rm-rf.sh
+payload="$(cat -)"
+cmd=$(echo "$payload" | jq -r '.tool_input.command // empty')
+if echo "$cmd" | grep -qE 'rm[[:space:]]+-rf?[[:space:]]+/'; then
+  printf '{"decision": "block", "reason": "blocked: rm -rf / is not permitted"}\n'
+else
+  printf '{}\n'
+fi
+```
+
+#### 3. Inject `git status` into every turn (Claude-Code `UserPromptSubmit` equivalent)
+
+```yaml
+hooks:
+  pre_llm_call:
+    - command: "~/.hermes/agent-hooks/inject-cwd-context.sh"
+```
+
+```bash
+#!/usr/bin/env bash
+# ~/.hermes/agent-hooks/inject-cwd-context.sh
+cat - >/dev/null   # discard stdin payload
+if status=$(git status --porcelain 2>/dev/null) && [[ -n "$status" ]]; then
+  jq --null-input --arg s "$status" \
+     '{context: ("Uncommitted changes in cwd:\n" + $s)}'
+else
+  printf '{}\n'
+fi
+```
+
+Claude Code's `UserPromptSubmit` event is intentionally not a separate Hermes event — `pre_llm_call` fires at the same place and already supports context injection. Use it here.
+
+#### 4. Log every subagent completion
+
+```yaml
+hooks:
+  subagent_stop:
+    - command: "~/.hermes/agent-hooks/log-orchestration.sh"
+```
+
+```bash
+#!/usr/bin/env bash
+# ~/.hermes/agent-hooks/log-orchestration.sh
+log=~/.hermes/logs/orchestration.log
+jq -c '{ts: now, parent: .session_id, extra: .extra}' < /dev/stdin >> "$log"
+printf '{}\n'
+```
+
+### Consent model
+
+Each unique `(event, command)` pair prompts the user for approval the first time Hermes sees it, then persists the decision to `~/.hermes/shell-hooks-allowlist.json`. Subsequent runs (CLI or gateway) skip the prompt.
+
+Three escape hatches bypass the interactive prompt — any one is sufficient:
+
+1. `--accept-hooks` flag on the CLI (e.g. `hermes --accept-hooks chat`)
+2. `HERMES_ACCEPT_HOOKS=1` environment variable
+3. `hooks_auto_accept: true` in `cli-config.yaml`
+
+Non-TTY runs (gateway, cron, CI) need one of these three — otherwise any newly-added hook silently stays un-registered and logs a warning.
+
+**Script edits are silently trusted.** The allowlist keys on the exact command string, not the script's hash, so editing the script on disk does not invalidate consent. `hermes hooks doctor` flags mtime drift so you can spot edits and decide whether to re-approve.
+
+### The `hermes hooks` CLI
+
+| Command | What it does |
+|---------|--------------|
+| `hermes hooks list` | Dump configured hooks with matcher, timeout, and consent status |
+| `hermes hooks test <event> [--for-tool X] [--payload-file F]` | Fire every matching hook against a synthetic payload and print the parsed response |
+| `hermes hooks revoke <command>` | Remove every allowlist entry matching `<command>` (takes effect on next restart) |
+| `hermes hooks doctor` | For every configured hook: check exec bit, allowlist status, mtime drift, JSON output validity, and rough execution time |
+
+### Security
+
+Shell hooks run with **your full user credentials** — same trust boundary as a cron entry or a shell alias. Treat the `hooks:` block in `config.yaml` as privileged configuration:
+
+- Only reference scripts you wrote or fully reviewed.
+- Keep scripts inside `~/.hermes/agent-hooks/` so the path is easy to audit.
+- Re-run `hermes hooks doctor` after you pull a shared config to spot newly-added hooks before they register.
+- If your config.yaml is version-controlled across a team, review PRs that change the `hooks:` section the same way you'd review CI config.
+
+### Ordering and precedence
+
+Both Python plugin hooks and shell hooks flow through the same `invoke_hook()` dispatcher. Python plugins are registered first (`discover_and_load()`), shell hooks second (`register_from_config()`), so Python `pre_tool_call` block decisions take precedence in tie cases. The first valid block wins — the aggregator returns as soon as any callback produces `{"action": "block", "message": str}` with a non-empty message.

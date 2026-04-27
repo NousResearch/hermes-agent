@@ -20,6 +20,8 @@ from hermes_cli.commands import (
     discord_skill_commands,
     gateway_help_lines,
     resolve_command,
+    slack_app_manifest,
+    slack_native_slashes,
     slack_subcommand_map,
     telegram_bot_commands,
     telegram_menu_commands,
@@ -189,11 +191,14 @@ class TestGatewayHelpLines:
         assert len(lines) > 10
 
     def test_excludes_cli_only_commands_without_config_gate(self):
+        import re
         lines = gateway_help_lines()
         joined = "\n".join(lines)
         for cmd in COMMAND_REGISTRY:
             if cmd.cli_only and not cmd.gateway_config_gate:
-                assert f"`/{cmd.name}" not in joined, \
+                # Word-boundary match so `/reload` doesn't match `/reload-mcp`
+                pattern = rf'`/{re.escape(cmd.name)}(?![-_\w])'
+                assert not re.search(pattern, joined), \
                     f"cli_only command /{cmd.name} should not be in gateway help"
 
     def test_includes_alias_note_for_bg(self):
@@ -251,6 +256,115 @@ class TestSlackSubcommandMap:
         for cmd in COMMAND_REGISTRY:
             if cmd.cli_only and not cmd.gateway_config_gate:
                 assert cmd.name not in mapping
+
+
+class TestSlackNativeSlashes:
+    """Slack native slash command generation — used to register every
+    COMMAND_REGISTRY entry as a first-class Slack slash, matching Discord
+    and Telegram."""
+
+    def test_returns_triples(self):
+        slashes = slack_native_slashes()
+        assert len(slashes) >= 10
+        for entry in slashes:
+            assert isinstance(entry, tuple) and len(entry) == 3
+            name, desc, hint = entry
+            assert isinstance(name, str) and name
+            assert isinstance(desc, str)
+            assert isinstance(hint, str)
+
+    def test_hermes_catchall_is_first(self):
+        """``/hermes`` must be reserved as the first slot so the legacy
+        ``/hermes <subcommand>`` form keeps working after we add new
+        commands and hit the 50-slash cap."""
+        slashes = slack_native_slashes()
+        assert slashes[0][0] == "hermes"
+
+    def test_names_respect_slack_limits(self):
+        for name, _desc, _hint in slack_native_slashes():
+            # Slack: lowercase a-z, 0-9, hyphens, underscores; max 32 chars
+            assert len(name) <= 32, f"slash {name!r} exceeds 32 chars"
+            assert name == name.lower()
+            for ch in name:
+                assert ch.isalnum() or ch in "-_", f"invalid char {ch!r} in {name!r}"
+
+    def test_under_fifty_command_cap(self):
+        """Slack allows at most 50 slash commands per app."""
+        assert len(slack_native_slashes()) <= 50
+
+    def test_unique_names(self):
+        names = [n for n, _d, _h in slack_native_slashes()]
+        assert len(names) == len(set(names)), "duplicate Slack slash names"
+
+    def test_includes_canonical_commands(self):
+        names = {n for n, _d, _h in slack_native_slashes()}
+        # Sample of gateway-available canonical commands
+        for expected in ("new", "stop", "background", "model", "help", "status"):
+            assert expected in names, f"missing canonical /{expected}"
+
+    def test_includes_aliases_as_first_class_slashes(self):
+        """Aliases (/btw, /bg, /reset, /q) must be registered as standalone
+        slashes — this is the whole point of native-slashes parity."""
+        names = {n for n, _d, _h in slack_native_slashes()}
+        assert "btw" in names
+        assert "bg" in names
+        assert "reset" in names
+        assert "q" in names
+
+    def test_telegram_parity(self):
+        """Every Telegram bot command must be registerable on Slack too.
+
+        This catches the old behavior where Slack users couldn't invoke
+        commands like /btw natively. If a future command surfaces on
+        Telegram but not Slack (because of Slack's 50-slash cap), this
+        test fails loudly so we can curate the list rather than silently
+        dropping parity.
+        """
+        slack_names = {n for n, _d, _h in slack_native_slashes()}
+        tg_names = {n for n, _d in telegram_bot_commands()}
+        # Some Telegram names have underscores where Slack uses hyphens
+        # (e.g. set_home vs sethome). Normalize both sides for comparison.
+        def _norm(s: str) -> str:
+            return s.replace("-", "_").replace("__", "_").strip("_")
+
+        slack_norm = {_norm(n) for n in slack_names}
+        tg_norm = {_norm(n) for n in tg_names}
+        missing = tg_norm - slack_norm
+        assert not missing, (
+            f"commands on Telegram but missing from Slack native slashes: {sorted(missing)}"
+        )
+
+
+class TestSlackAppManifest:
+    """Generated Slack app manifest (used by `hermes slack manifest`)."""
+
+    def test_returns_dict(self):
+        m = slack_app_manifest()
+        assert isinstance(m, dict)
+        assert "features" in m
+        assert "slash_commands" in m["features"]
+
+    def test_each_slash_has_required_fields(self):
+        m = slack_app_manifest()
+        for entry in m["features"]["slash_commands"]:
+            assert entry["command"].startswith("/")
+            assert "description" in entry
+            assert "url" in entry
+            # should_escape must be present (Slack defaults to True which
+            # HTML-escapes args — we want the raw text)
+            assert "should_escape" in entry
+
+    def test_btw_is_in_manifest(self):
+        """Regression: /btw must be a native Slack slash, not just a
+        /hermes subcommand."""
+        m = slack_app_manifest()
+        commands = [c["command"] for c in m["features"]["slash_commands"]]
+        assert "/btw" in commands
+
+    def test_custom_request_url(self):
+        m = slack_app_manifest(request_url="https://example.com/slack")
+        for entry in m["features"]["slash_commands"]:
+            assert entry["url"] == "https://example.com/slack"
 
 
 # ---------------------------------------------------------------------------
@@ -687,6 +801,32 @@ class TestTelegramMenuCommands:
             assert 1 <= len(name) <= _TG_NAME_LIMIT, (
                 f"Command '{name}' is {len(name)} chars (limit {_TG_NAME_LIMIT})"
             )
+
+    def test_includes_plugin_commands_via_lazy_discovery(self, tmp_path, monkeypatch):
+        """Telegram menu generation should discover plugin slash commands on first access."""
+        from unittest.mock import patch
+        import hermes_cli.plugins as plugins_mod
+
+        plugin_dir = tmp_path / "plugins" / "cmd-plugin"
+        plugin_dir.mkdir(parents=True, exist_ok=True)
+        (plugin_dir / "plugin.yaml").write_text(
+            "name: cmd-plugin\nversion: 0.1.0\ndescription: Test plugin\n"
+        )
+        (plugin_dir / "__init__.py").write_text(
+            "def register(ctx):\n"
+            "    ctx.register_command('lcm', lambda args: 'ok', description='LCM status and diagnostics')\n"
+        )
+        # Opt-in: plugins are opt-in by default, so enable in config.yaml
+        (tmp_path / "config.yaml").write_text(
+            "plugins:\n  enabled:\n    - cmd-plugin\n"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        with patch.object(plugins_mod, "_plugin_manager", None):
+            menu, _ = telegram_menu_commands(max_commands=100)
+
+        menu_names = {name for name, _ in menu}
+        assert "lcm" in menu_names
 
     def test_excludes_telegram_disabled_skills(self, tmp_path, monkeypatch):
         """Skills disabled for telegram should not appear in the menu."""
@@ -1182,3 +1322,119 @@ class TestDiscordSkillCommandsByCategory:
         assert "axolotl" in names
         assert "vllm" in names
         assert len(uncategorized) == 0
+
+
+# ---------------------------------------------------------------------------
+# Plugin slash command integration
+# ---------------------------------------------------------------------------
+
+class TestPluginCommandEnumeration:
+    """Plugin commands registered via ctx.register_command() must be surfaced
+    by every gateway enumerator (Telegram menu, Slack subcommand map, etc.).
+    """
+
+    def _patch_plugin_commands(self, monkeypatch, commands):
+        """Monkeypatch hermes_cli.plugins.get_plugin_commands() to a fixed dict."""
+        from hermes_cli import plugins as _plugins_mod
+
+        monkeypatch.setattr(
+            _plugins_mod, "get_plugin_commands", lambda: dict(commands)
+        )
+
+    def test_plugin_command_appears_in_telegram_menu(self, monkeypatch):
+        """/metricas registered by a plugin must appear in Telegram BotCommand menu."""
+        self._patch_plugin_commands(monkeypatch, {
+            "metricas": {
+                "handler": lambda _a: "ok",
+                "description": "Metrics dashboard",
+                "args_hint": "dias:7",
+                "plugin": "metrics-plugin",
+            }
+        })
+        names = {name for name, _desc in telegram_bot_commands()}
+        assert "metricas" in names
+
+    def test_plugin_command_appears_in_slack_subcommand_map(self, monkeypatch):
+        """/hermes metricas must route through the Slack subcommand map."""
+        self._patch_plugin_commands(monkeypatch, {
+            "metricas": {
+                "handler": lambda _a: "ok",
+                "description": "Metrics",
+                "args_hint": "",
+                "plugin": "metrics-plugin",
+            }
+        })
+        mapping = slack_subcommand_map()
+        assert mapping.get("metricas") == "/metricas"
+
+    def test_plugin_command_does_not_shadow_builtin_in_slack(self, monkeypatch):
+        """If a plugin registers a name that collides with a built-in, the built-in mapping wins."""
+        self._patch_plugin_commands(monkeypatch, {
+            "status": {
+                "handler": lambda _a: "plugin-status",
+                "description": "Plugin status",
+                "args_hint": "",
+                "plugin": "shadow-plugin",
+            }
+        })
+        mapping = slack_subcommand_map()
+        # Built-in /status must still be present and not overwritten.
+        assert mapping.get("status") == "/status"
+
+    def test_plugin_command_with_hyphens_sanitized_for_telegram(self, monkeypatch):
+        """Plugin names containing hyphens must be underscore-normalized for Telegram."""
+        self._patch_plugin_commands(monkeypatch, {
+            "my-plugin-cmd": {
+                "handler": lambda _a: "ok",
+                "description": "desc",
+                "args_hint": "",
+                "plugin": "p",
+            }
+        })
+        names = {name for name, _desc in telegram_bot_commands()}
+        assert "my_plugin_cmd" in names
+        assert "my-plugin-cmd" not in names
+
+    def test_is_gateway_known_command_recognizes_plugin_commands(self, monkeypatch):
+        """is_gateway_known_command() must return True for plugin commands."""
+        from hermes_cli.commands import is_gateway_known_command
+
+        self._patch_plugin_commands(monkeypatch, {
+            "metricas": {
+                "handler": lambda _a: "ok",
+                "description": "Metrics",
+                "args_hint": "",
+                "plugin": "p",
+            }
+        })
+        assert is_gateway_known_command("metricas") is True
+        assert is_gateway_known_command("definitely-not-registered") is False
+
+    def test_is_gateway_known_command_still_recognizes_builtins(self, monkeypatch):
+        """Built-in commands must remain known even when plugin discovery fails."""
+        from hermes_cli import plugins as _plugins_mod
+        from hermes_cli.commands import is_gateway_known_command
+
+        def _boom():
+            raise RuntimeError("plugin system down")
+
+        monkeypatch.setattr(_plugins_mod, "get_plugin_commands", _boom)
+
+        assert is_gateway_known_command("status") is True
+        assert is_gateway_known_command(None) is False
+        assert is_gateway_known_command("") is False
+
+    def test_plugin_enumerator_handles_missing_plugin_manager(self, monkeypatch):
+        """Enumerators must never raise when plugin discovery raises."""
+        from hermes_cli import plugins as _plugins_mod
+
+        def _boom():
+            raise RuntimeError("plugin system down")
+
+        monkeypatch.setattr(_plugins_mod, "get_plugin_commands", _boom)
+
+        # Both calls should succeed and just return the built-in set.
+        tg_names = {name for name, _desc in telegram_bot_commands()}
+        slack_names = set(slack_subcommand_map())
+        assert "status" in tg_names
+        assert "status" in slack_names

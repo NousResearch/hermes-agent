@@ -108,6 +108,7 @@ def make_restart_runner(
     runner.hooks.emit = AsyncMock()
     runner.pairing_store = MagicMock()
     runner.session_store = MagicMock()
+    runner.session_store._entries = {}
     runner.delivery_router = MagicMock()
 
     platform_adapter = adapter or RestartTestAdapter()

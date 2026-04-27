@@ -440,9 +440,10 @@ def _get_or_create_env(task_id: str):
         _active_environments, _env_lock, _create_environment,
         _get_env_config, _last_activity, _start_cleanup_thread,
         _creation_locks, _creation_locks_lock, _task_env_overrides,
+        _resolve_container_task_id,
     )
 
-    effective_task_id = task_id or "default"
+    effective_task_id = _resolve_container_task_id(task_id)
 
     # Fast path: environment already exists
     with _env_lock:
@@ -979,6 +980,7 @@ def execute_code(
         # --- Start UDS server ---
         server_sock = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
         server_sock.bind(sock_path)
+        os.chmod(sock_path, 0o600)
         server_sock.listen(1)
 
         rpc_thread = threading.Thread(

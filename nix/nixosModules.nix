@@ -28,7 +28,7 @@
 
   let
     cfg = config.services.hermes-agent;
-    hermes-agent = inputs.self.packages.${pkgs.system}.default;
+    hermes-agent = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.default;
 
     # Deep-merge config type (from 0xrsydn/nix-hermes-agent)
     deepConfigType = lib.types.mkOptionType {
@@ -148,15 +148,14 @@
         su -s /bin/sh "$TARGET_USER" -c 'curl -LsSf https://astral.sh/uv/install.sh | sh' || true
       fi
 
-      # Python 3.11 venv — gives the agent a writable Python with pip.
-      # Uses uv to install Python 3.11 (Ubuntu 24.04 ships 3.12).
+      # Python 3.12 venv — gives the agent a writable Python with pip.
       # --seed includes pip/setuptools so bare `pip install` works.
       _UV_BIN="$TARGET_HOME/.local/bin/uv"
       if [ ! -d "$TARGET_HOME/.venv" ] && [ -x "$_UV_BIN" ]; then
         su -s /bin/sh "$TARGET_USER" -c "
           export PATH=\"\$HOME/.local/bin:\$PATH\"
-          uv python install 3.11
-          uv venv --python 3.11 --seed \"\$HOME/.venv\"
+          uv python install 3.12
+          uv venv --python 3.12 --seed \"\$HOME/.venv\"
         " || true
       fi
 
@@ -778,7 +777,10 @@ HERMES_NIX_ENV_EOF
             NoNewPrivileges = true;
             ProtectSystem = "strict";
             ProtectHome = false;
-            ReadWritePaths = [ cfg.stateDir ];
+            ReadWritePaths = [
+              cfg.stateDir
+              cfg.workingDirectory
+            ];
             PrivateTmp = true;
           };
 

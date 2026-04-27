@@ -37,7 +37,30 @@ json.dump(sorted(leaf_paths(DEFAULT_CONFIG)), sys.stdout, indent=2)
     in {
       packages.configKeys = configKeys;
 
-      checks = lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
+      checks = {
+        # Cross-platform evaluation — catches "not supported for interpreter"
+        # errors (e.g. sphinx dropping python311) without needing a darwin builder.
+        # Evaluation is pure and instant; it doesn't build anything.
+        cross-eval = let
+          targetSystems = builtins.filter
+            (s: inputs.self.packages ? ${s})
+            [ "x86_64-linux" "aarch64-linux" "aarch64-darwin" "x86_64-darwin" ];
+          tryEvalPkg = sys:
+            let pkg = inputs.self.packages.${sys}.default;
+            in builtins.tryEval (builtins.seq pkg.drvPath true);
+          results = map (sys: { inherit sys; result = tryEvalPkg sys; }) targetSystems;
+          failures = builtins.filter (r: !r.result.success) results;
+          failMsg = lib.concatMapStringsSep "\n" (r: "  - ${r.sys}") failures;
+        in pkgs.runCommand "hermes-cross-eval" { } (
+          if failures != [] then
+            builtins.throw "Package fails to evaluate on:\n${failMsg}"
+          else ''
+            echo "PASS: package evaluates on all ${toString (builtins.length targetSystems)} platforms"
+            mkdir -p $out
+            echo "ok" > $out/result
+          ''
+        );
+      } // lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
         # Verify binaries exist and are executable
         package-contents = pkgs.runCommand "hermes-package-contents" { } ''
           set -e

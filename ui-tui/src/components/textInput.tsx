@@ -334,10 +334,15 @@ export function TextInput({
   const layout = useMemo(() => cursorLayout(display, cur, columns), [columns, cur, display])
   const capturePad = Math.max(0, leftCaptureColumns)
 
+  // During selection we still anchor the hardware cursor inside the input
+  // box so it can't auto-wrap onto the row below when the rendered text
+  // exactly fills the column width (terminals advance the cursor past the
+  // last cell, which lands at col 0 of the next row and shows as a ghost
+  // block).
   const boxRef = useDeclaredCursor({
-    line: layout.line,
-    column: layout.column + capturePad,
-    active: focus && termFocus && !selected
+    line: selected ? 0 : layout.line,
+    column: selected ? 0 : layout.column + capturePad,
+    active: focus && termFocus
   })
 
   const nativeCursor = focus && termFocus && !selected && !!stdout?.isTTY

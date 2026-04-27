@@ -831,17 +831,36 @@ class MessageEvent:
 
     # Timestamps
     timestamp: datetime = field(default_factory=datetime.now)
-    
+
+    # Zero-width / format-control characters commonly injected by mobile IMs
+    # (WeCom, Telegram, iOS keyboard). Strip these so command parsing works.
+    _ZW_SURROUNDS = re.compile(
+        r"^["
+        r"\u200b"   # ZERO WIDTH SPACE
+        r"\u200c"   # ZERO WIDTH NON-JOINER
+        r"\u200d"   # ZERO WIDTH JOINER
+        r"\u2060"   # WORD JOINER
+        r"\ufeff"   # BOM / ZERO WIDTH NO-BREAK SPACE
+        r"\u200e"   # LEFT-TO-RIGHT MARK
+        r"\u200f"   # RIGHT-TO-LEFT MARK
+        r"]+"
+    )
+
+    def _strip_zw(self, text: str) -> str:
+        """Strip zero-width characters from the leading edge of text."""
+        return self._ZW_SURROUNDS.sub("", text)
+
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""
-        return self.text.startswith("/")
-    
+        return self._strip_zw(self.text).startswith("/")
+
     def get_command(self) -> Optional[str]:
         """Extract command name if this is a command message."""
         if not self.is_command():
             return None
         # Split on space and get first word, strip the /
-        parts = self.text.split(maxsplit=1)
+        cleaned = self._strip_zw(self.text)
+        parts = cleaned.split(maxsplit=1)
         raw = parts[0][1:].lower() if parts else None
         if raw and "@" in raw:
             raw = raw.split("@", 1)[0]

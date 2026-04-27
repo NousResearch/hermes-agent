@@ -487,6 +487,30 @@ class TestExplicitProviderRouting:
             for record in caplog.records
         )
 
+    def test_custom_main_uses_configured_named_main_provider(self, monkeypatch, caplog):
+        """custom/main should inherit named main providers instead of warning."""
+        with (
+            patch("agent.auxiliary_client._resolve_custom_runtime", return_value=(None, None, None)),
+            patch("agent.auxiliary_client._read_main_provider", return_value="cliproxyapi_local"),
+            patch("agent.auxiliary_client._read_main_model", return_value="gpt-5.4-mini"),
+            patch("hermes_cli.runtime_provider._get_named_custom_provider", return_value={
+                "base_url": "http://127.0.0.1:8317/v1/",
+                "api_key": "test-key",
+                "model": "gpt-5.4-mini",
+            }),
+            patch("agent.auxiliary_client.OpenAI") as mock_openai,
+        ):
+            mock_openai.return_value = MagicMock(base_url="http://127.0.0.1:8317/v1/", api_key="test-key")
+            with caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"):
+                client, model = resolve_provider_client("custom", "main")
+
+        assert client is not None
+        assert model == "gpt-5.4-mini"
+        assert not any(
+            "custom/main requested but no endpoint credentials found" in record.message
+            for record in caplog.records
+        )
+
 class TestGetTextAuxiliaryClient:
     """Test the full resolution chain for get_text_auxiliary_client."""
 

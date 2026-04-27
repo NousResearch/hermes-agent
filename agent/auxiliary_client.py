@@ -1861,6 +1861,37 @@ def resolve_provider_client(
                 client = _wrap_if_needed(client, final_model, _cbase)
                 return (_to_async_client(client, final_model) if async_mode
                         else (client, final_model))
+        # ``custom/main`` is used by some older auxiliary call sites as a
+        # shorthand for "use whatever the main chat endpoint is".  In v12+
+        # configs the main endpoint may be a named custom provider (for
+        # example ``cliproxyapi_local``) rather than the anonymous
+        # OPENAI_BASE_URL/OPENAI_API_KEY pair handled above.  Falling through
+        # directly would emit a misleading warning even though a valid main
+        # provider is configured, so resolve through the configured main
+        # provider once before declaring custom/main unavailable.
+        if (model or "").strip().lower() in ("", "main"):
+            main_provider = _read_main_provider()
+            main_model = _read_main_model()
+            if (
+                main_provider
+                and main_provider not in ("auto", "", "custom")
+                and not main_provider.startswith("custom:")
+            ):
+                client, resolved = resolve_provider_client(
+                    main_provider,
+                    main_model or None,
+                    async_mode=async_mode,
+                    raw_codex=raw_codex,
+                )
+                if client is not None:
+                    logger.info(
+                        "resolve_provider_client: custom/main resolved via "
+                        "configured main provider %s (%s)",
+                        main_provider,
+                        resolved or main_model or "default",
+                    )
+                    return client, resolved or main_model
+
         logger.warning("resolve_provider_client: custom/main requested "
                        "but no endpoint credentials found")
         return None, None

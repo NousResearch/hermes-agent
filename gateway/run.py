@@ -4339,7 +4339,14 @@ class GatewayRunner:
         session_entry = self.session_store.get_or_create_session(source)
         session_key = session_entry.session_key
         if getattr(session_entry, "was_auto_reset", False):
+            # Treat auto-reset as a full conversation boundary — drop every
+            # session-scoped transient state so the fresh session does not
+            # inherit the previous conversation's model/reasoning overrides
+            # or a queued "/model switched" note.
+            self._session_model_overrides.pop(session_key, None)
             self._set_session_reasoning_override(session_key, None)
+            if hasattr(self, "_pending_model_notes"):
+                self._pending_model_notes.pop(session_key, None)
         
         # Emit session:start for new or auto-reset sessions
         _is_new_session = (
@@ -5019,6 +5026,8 @@ class GatewayRunner:
                 self._evict_cached_agent(session_key)
                 self._session_model_overrides.pop(session_key, None)
                 self._set_session_reasoning_override(session_key, None)
+                if hasattr(self, "_pending_model_notes"):
+                    self._pending_model_notes.pop(session_key, None)
                 response = (response or "") + (
                     "\n\n🔄 Session auto-reset — the conversation exceeded the "
                     "maximum context size and could not be compressed further. "

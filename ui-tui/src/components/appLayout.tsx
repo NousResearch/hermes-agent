@@ -30,14 +30,18 @@ const TranscriptPane = memo(function TranscriptPane({
 }: Pick<AppLayoutProps, 'actions' | 'composer' | 'progress' | 'transcript'>) {
   const ui = useStore($uiState)
 
-  // Index of the latest user message — LiveTodoPanel is rendered as a child
-  // of that row so it visually belongs to the user's prompt and follows it
-  // during scroll. Falls back to -1 when no user message exists yet (empty
-  // session); LiveTodoPanel then doesn't render at all.
+  // LiveTodoPanel rides as a child of the latest user-message row so it
+  // visually belongs to the prompt and follows it during scroll. -1 when
+  // empty → row.index === -1 is always false → no render.
   const lastUserIdx = useMemo(() => {
-    for (let i = transcript.historyItems.length - 1; i >= 0; i--) {
-      if (transcript.historyItems[i].role === 'user') return i
+    const items = transcript.historyItems
+
+    for (let i = items.length - 1; i >= 0; i--) {
+      if (items[i].role === 'user') {
+        return i
+      }
     }
+
     return -1
   }, [transcript.historyItems])
 
@@ -259,18 +263,9 @@ export const AppLayout = memo(function AppLayout({
 }: AppLayoutProps) {
   const overlay = useStore($overlayState)
 
-  // Inline mode: skip <AlternateScreen> so the TUI renders into the
-  // primary buffer and the terminal's native scrollback can capture rows
-  // that scroll off the top.  Mouse tracking is still enabled via
-  // AlternateScreen when the wrapper is on; in inline mode we leave it
-  // to the host terminal, which typically does wheel → scrollback.
-  //
-  // `Fragment` (via alias so the JSX stays legible) drops the alt-screen
-  // constraint while keeping the inner layout identical.  Content height
-  // will then follow flex-column growth, which means the ScrollBox below
-  // grows beyond the viewport — the terminal's primary buffer scrolls
-  // old rows off the top into native scrollback.  Composer + progress
-  // stay at the bottom via normal flow (they're the last siblings).
+  // Inline mode skips AlternateScreen so the host terminal's native
+  // scrollback captures rows scrolled off the top; composer + progress
+  // stay anchored via normal flex-column flow.
   const Shell = INLINE_MODE ? Fragment : AlternateScreen
   const shellProps = INLINE_MODE ? {} : { mouseTracking }
 
@@ -305,9 +300,6 @@ export const AppLayout = memo(function AppLayout({
               <ComposerPane actions={actions} composer={composer} status={status} />
             </PerfPane>
 
-            {/* FPS counter overlay: pinned to the bottom row, right
-                aligned, gated on HERMES_TUI_FPS. Returns null + skips
-                this subtree when disabled (zero cost). */}
             {SHOW_FPS && (
               <Box flexShrink={0} justifyContent="flex-end" paddingRight={1}>
                 <FpsOverlay />

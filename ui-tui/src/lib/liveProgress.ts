@@ -38,8 +38,7 @@ const isBarrierMessage = (msg: Msg | undefined) => {
   return false
 }
 
-const isToolCarryingTrail = (msg: Msg | undefined) =>
-  Boolean(msg?.kind === 'trail' && !msg.text && msg.tools?.length)
+const isToolCarryingTrail = (msg: Msg | undefined) => Boolean(msg?.kind === 'trail' && !msg.text && msg.tools?.length)
 
 export const appendToolShelfMessage = (prev: readonly Msg[], msg: Msg): Msg[] => {
   if (!isToolShelfMessage(msg)) {

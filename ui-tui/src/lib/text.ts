@@ -80,20 +80,15 @@ export const pasteTokenLabel = (text: string, lineCount: number) => {
 const THINKING_STATUS_RE = new RegExp(`^(?:${VERBS.join('|')})\\.{0,3}$`, 'i')
 const THINKING_STATUS_CHUNK_RE = new RegExp(`[^A-Za-z\n]+\\s*(?:${VERBS.join('|')})\\.{0,3}\\s*`, 'giu')
 
-const normalizeThinkingParagraphs = (text: string) =>
-  text
+export const cleanThinkingText = (reasoning: string) =>
+  reasoning
+    .split('\n')
+    .map(line => line.replace(THINKING_STATUS_CHUNK_RE, '').trim())
+    .filter(line => line && !THINKING_STATUS_RE.test(line.replace(/\.\.\.$/, '').trim()))
+    .join('\n')
     .replace(/([^\n])(?=\*\*[^*\n][^\n]*?\*\*)/g, '$1\n\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim()
-
-export const cleanThinkingText = (reasoning: string) =>
-  normalizeThinkingParagraphs(
-    reasoning
-      .split('\n')
-      .map(line => line.replace(THINKING_STATUS_CHUNK_RE, '').trim())
-      .filter(line => line && !THINKING_STATUS_RE.test(line.replace(/\.\.\.$/, '').trim()))
-      .join('\n')
-  )
 
 export const thinkingPreview = (reasoning: string, mode: ThinkingMode, max: number = THINKING_COT_MAX) => {
   const raw = cleanThinkingText(reasoning)

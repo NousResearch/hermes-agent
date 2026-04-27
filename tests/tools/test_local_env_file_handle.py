@@ -77,5 +77,38 @@ class TestLocalEnvFileHandle:
                 mock_open.assert_called_once_with(cwd_file)
                 # __enter__ should have been called (context manager used)
                 mock_file.__enter__.assert_called()
+                # __exit__ should also have been called (context manager cleaned up)
+                mock_file.__exit__.assert_called()
+        finally:
+            os.unlink(cwd_file)
+
+    def test_update_cwd_closes_file_handle_on_read_exception(self):
+        """_update_cwd must close the file descriptor even when read() raises."""
+        with tempfile.NamedTemporaryFile(mode='wb', suffix=".cwd", delete=False) as f:
+            # Write invalid UTF-8 bytes so open(...).read() raises UnicodeDecodeError
+            f.write(b"/test/\xff\xfe/path")
+            cwd_file = f.name
+
+        try:
+            env = _make_local_env(cwd_file)
+
+            captured_fh = []
+            real_open = open
+
+            def tracking_open(path, *args, **kwargs):
+                fh = real_open(path, *args, **kwargs)
+                captured_fh.append(fh)
+                return fh
+
+            with patch("builtins.open", tracking_open):
+                try:
+                    env._update_cwd({"output": ""})
+                except UnicodeDecodeError:
+                    pass  # pre-existing: except clause doesn't catch UnicodeDecodeError
+
+            assert captured_fh, "open() was not called"
+            assert captured_fh[0].closed, (
+                "File descriptor was not closed after UnicodeDecodeError"
+            )
         finally:
             os.unlink(cwd_file)

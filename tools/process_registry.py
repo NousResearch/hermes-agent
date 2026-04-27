@@ -115,6 +115,7 @@ class ProcessSession:
     watcher_user_name: str = ""
     watcher_thread_id: str = ""
     watcher_message_id: str = ""                # Triggering message id — reply anchor for topic routing
+    conversation_session_id: str = ""           # Logical Hermes session_id when spawned
     watcher_interval: int = 0                   # 0 = no watcher configured
     notify_on_complete: bool = False             # Queue agent notification on exit
     # Watch patterns — trigger agent notification when output matches any pattern
@@ -161,6 +162,10 @@ class ProcessRegistry:
         self._running: Dict[str, ProcessSession] = {}
         self._finished: Dict[str, ProcessSession] = {}
         self._lock = threading.Lock()
+        # Serialize snapshot + atomic replacement as one checkpoint generation.
+        # Without this, an older snapshot can finish writing after a newer one
+        # and silently regress recently stamped watcher/session metadata.
+        self._checkpoint_lock = threading.Lock()
 
         # Side-channel for check_interval watchers (gateway reads after agent run)
         self.pending_watchers: List[Dict[str, Any]] = []
@@ -318,6 +323,7 @@ class ProcessRegistry:
                     "user_name": session.watcher_user_name,
                     "thread_id": session.watcher_thread_id,
                     "message_id": session.watcher_message_id,
+                    "conversation_session_id": session.conversation_session_id,
                     "message": (
                         f"Watch patterns disabled for process {session.id} — "
                         f"{WATCH_STRIKE_LIMIT} consecutive rate-limit windows triggered "
@@ -351,6 +357,7 @@ class ProcessRegistry:
             "user_name": session.watcher_user_name,
             "thread_id": session.watcher_thread_id,
             "message_id": session.watcher_message_id,
+            "conversation_session_id": session.conversation_session_id,
         })
 
     def _global_watch_admit(self, now: float) -> bool:
@@ -1091,6 +1098,7 @@ class ProcessRegistry:
                 "completion_reason": session.completion_reason,
                 "termination_source": session.termination_source,
                 "output": output_tail,
+                "conversation_session_id": session.conversation_session_id,
             })
 
     # ----- Query Methods -----
@@ -1791,17 +1799,18 @@ class ProcessRegistry:
 
     def _write_checkpoint(self):
         """Write running process metadata to checkpoint file atomically."""
-        try:
-            with self._lock:
-                entries = []
-                for s in self._running.values():
-                    if not s.exited:
-                        # Lazily backfill the kernel start time for host PIDs so
-                        # recovery after restart can detect PID recycling even
-                        # for sessions spawned before this field existed.
-                        if s.host_start_time is None and s.pid_scope == "host" and s.pid:
-                            s.host_start_time = self._safe_host_start_time(s.pid)
-                        entries.append({
+        with self._checkpoint_lock:
+            try:
+                with self._lock:
+                    entries = []
+                    for s in self._running.values():
+                        if not s.exited:
+                            # Lazily backfill the kernel start time for host PIDs so
+                            # recovery after restart can detect PID recycling even
+                            # for sessions spawned before this field existed.
+                            if s.host_start_time is None and s.pid_scope == "host" and s.pid:
+                                s.host_start_time = self._safe_host_start_time(s.pid)
+                            entries.append({
                             "session_id": s.id,
                             "command": s.command,
                             "pid": s.pid,
@@ -1817,16 +1826,18 @@ class ProcessRegistry:
                             "watcher_user_name": s.watcher_user_name,
                             "watcher_thread_id": s.watcher_thread_id,
                             "watcher_message_id": s.watcher_message_id,
+                            "conversation_session_id": s.conversation_session_id,
                             "watcher_interval": s.watcher_interval,
                             "notify_on_complete": s.notify_on_complete,
                             "watch_patterns": s.watch_patterns,
-                        })
-            
-            # Atomic write to avoid corruption on crash
-            from utils import atomic_json_write
-            atomic_json_write(CHECKPOINT_PATH, entries)
-        except Exception as e:
-            logger.debug("Failed to write checkpoint file: %s", e, exc_info=True)
+                            })
+
+                # Atomic write to avoid corruption on crash. Keep the generation
+                # lock through replacement so an older snapshot cannot land last.
+                from utils import atomic_json_write
+                atomic_json_write(CHECKPOINT_PATH, entries)
+            except Exception as e:
+                logger.debug("Failed to write checkpoint file: %s", e, exc_info=True)
 
     def recover_from_checkpoint(self) -> int:
         """
@@ -1895,6 +1906,7 @@ class ProcessRegistry:
                 watcher_user_name=entry.get("watcher_user_name", ""),
                 watcher_thread_id=entry.get("watcher_thread_id", ""),
                 watcher_message_id=entry.get("watcher_message_id", ""),
+                conversation_session_id=entry.get("conversation_session_id", ""),
                 watcher_interval=entry.get("watcher_interval", 0),
                 notify_on_complete=entry.get("notify_on_complete", False),
                 watch_patterns=entry.get("watch_patterns", []),
@@ -1916,6 +1928,7 @@ class ProcessRegistry:
                     "user_name": session.watcher_user_name,
                     "thread_id": session.watcher_thread_id,
                     "message_id": session.watcher_message_id,
+                    "conversation_session_id": session.conversation_session_id,
                     "notify_on_complete": session.notify_on_complete,
                 })
 

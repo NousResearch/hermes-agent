@@ -10,7 +10,7 @@ Covers the three Phase 0 deliverables:
 """
 import pytest
 from datetime import datetime
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 import yaml
 
 from hermes_constants import reset_hermes_home_override, set_hermes_home_override
@@ -103,6 +103,27 @@ class TestSessionKeyNamespacedWhenOn:
         assert d[0] == n[0] == "agent"
         assert d[1] == "main" and n[1] == "coder"
         assert d[2:] == n[2:]  # everything after the namespace is identical
+
+    @pytest.mark.asyncio
+    async def test_adapter_internal_session_resolver_binds_profile(self):
+        from gateway.run import GatewayRunner
+
+        runner = object.__new__(GatewayRunner)
+        entry = object()
+        runner._get_or_create_session_at_process_delivery_boundary = AsyncMock(
+            return_value=entry
+        )
+        resolver = runner._make_profile_session_resolver("coder")
+        source = _src(chat_id="99", chat_type="dm")
+
+        assert await resolver(source) is entry
+        assert source.profile == "coder"
+        resolved_source = (
+            runner._get_or_create_session_at_process_delivery_boundary.await_args.args[0]
+        )
+        assert build_session_key(
+            resolved_source, profile=resolved_source.profile
+        ) == "agent:coder:telegram:dm:99"
 
 
 class TestMultiplexConfigFlag:

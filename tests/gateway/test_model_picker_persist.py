@@ -19,6 +19,8 @@ closure the PR changed, against a real temp ``HERMES_HOME``.
 """
 
 import types
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import yaml
 import pytest
@@ -201,3 +203,32 @@ async def test_picker_tap_session_flag_does_not_persist(tmp_path, monkeypatch):
     written = yaml.safe_load(cfg_path.read_text(encoding="utf-8"))
     assert written["model"]["default"] == "old-model"
     assert written["model"]["provider"] == "openai-codex"
+
+
+@pytest.mark.asyncio
+async def test_picker_callback_uses_boundary_guarded_session_lookup(
+    tmp_path, monkeypatch
+):
+    adapter = _FakePickerAdapter()
+    _setup_isolated_home(
+        tmp_path,
+        monkeypatch,
+        {"default": "old-model", "provider": "openai-codex"},
+    )
+    runner = _make_runner(adapter)
+    event = _make_event("/model --session")
+    session_key = runner._session_key_for_source(event.source)
+    guarded_lookup = AsyncMock(
+        return_value=SimpleNamespace(session_id="sess-current")
+    )
+    runner._get_or_create_session_at_process_delivery_boundary = guarded_lookup
+    runner._session_db = SimpleNamespace(update_session_model=AsyncMock())
+    runner._async_session_store = SimpleNamespace(set_model_override=AsyncMock())
+
+    confirmation = await _drive_picker(runner, event)
+
+    assert confirmation is not None
+    guarded_lookup.assert_awaited_once_with(event.source, session_key)
+    runner._session_db.update_session_model.assert_awaited_once_with(
+        "sess-current", "gpt-5.5"
+    )

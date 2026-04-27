@@ -1,5 +1,6 @@
 """Tests for gateway proxy mode — forwarding messages to a remote API server."""
 
+import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -226,6 +227,213 @@ class TestRunAgentProxyDispatch:
 
 class TestRunAgentViaProxy:
     """Test the actual proxy HTTP forwarding logic."""
+
+    @pytest.mark.asyncio
+    async def test_stamped_process_proxy_run_exposes_interruptible_handle(
+        self, monkeypatch
+    ):
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        runner = _make_runner()
+        source = _make_source()
+        session_key = "agent:main:matrix:group:test"
+        generation = runner._begin_session_run_generation(session_key)
+        monkeypatch.setattr(
+            runner, "_is_stale_process_notification", lambda _payload: False
+        )
+
+        request_started = asyncio.Event()
+        hold_request = asyncio.Event()
+
+        class _BlockingResponse(_FakeSSEResponse):
+            async def __aenter__(self):
+                request_started.set()
+                await hold_request.wait()
+                return self
+
+        session = _FakeSession(_BlockingResponse())
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    task = asyncio.create_task(
+                        runner._run_agent_via_proxy(
+                            message="stale completion",
+                            context_prompt="",
+                            history=[],
+                            source=source,
+                            session_id="sess-old",
+                            session_key=session_key,
+                            run_generation=generation,
+                            expected_process_session_id="sess-old",
+                        )
+                    )
+                    await request_started.wait()
+                    handle = runner._running_agents[session_key]
+
+                    # Mirrors /new: invalidate before interrupting the concrete
+                    # execution handle, so no pending-sentinel gap remains.
+                    runner._invalidate_session_run_generation(
+                        session_key, reason="test-reset"
+                    )
+                    handle.interrupt("test reset")
+                    with pytest.raises(asyncio.CancelledError):
+                        await task
+
+        # Direct backend invocation has no outer gateway turn finalizer; emulate
+        # the explicit reset cleanup that owns the published identities.
+        runner._release_running_agent_state(session_key)
+        assert session_key not in runner._running_agents
+        assert session_key not in runner._stamped_process_running_agents
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("busy_mode", ["interrupt", "steer"])
+    async def test_foreground_input_does_not_interrupt_stamped_proxy_process_turn(
+        self, monkeypatch, busy_mode
+    ):
+        from types import SimpleNamespace
+
+        from gateway.platforms.base import MessageEvent, MessageType
+
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        monkeypatch.setenv("HERMES_GATEWAY_BUSY_ACK_ENABLED", "false")
+        runner = _make_runner()
+        runner._stamped_process_running_agents = {}
+        runner._draining = False
+        runner._busy_input_mode = busy_mode
+        runner._busy_text_mode = "interrupt"
+        monkeypatch.setattr(runner, "_is_user_authorized", lambda _source: True)
+        source = _make_source()
+        adapter = SimpleNamespace(_pending_messages={})
+        runner.adapters[source.platform] = adapter
+        session_key = "agent:main:matrix:group:!room:server.org:@user:server.org"
+        generation = runner._begin_session_run_generation(session_key)
+        monkeypatch.setattr(
+            runner, "_is_stale_process_notification", lambda _payload: False
+        )
+        request_started = asyncio.Event()
+        hold_request = asyncio.Event()
+
+        class _BlockingResponse(_FakeSSEResponse):
+            async def __aenter__(self):
+                request_started.set()
+                await hold_request.wait()
+                return self
+
+        session = _FakeSession(
+            _BlockingResponse(
+                sse_chunks=[b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n']
+            )
+        )
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    proxy_task = asyncio.create_task(
+                        runner._run_agent_via_proxy(
+                            message="stale completion",
+                            context_prompt="",
+                            history=[],
+                            source=source,
+                            session_id="sess-old",
+                            session_key=session_key,
+                            run_generation=generation,
+                            expected_process_session_id="sess-old",
+                        )
+                    )
+                    await request_started.wait()
+                    handle = runner._running_agents[session_key]
+                    assert runner._stamped_process_running_agents[session_key] is handle
+                    foreground = MessageEvent(
+                        text="real foreground request",
+                        message_type=MessageType.TEXT,
+                        source=source,
+                    )
+
+                    handled = await runner._handle_active_session_busy_message(
+                        foreground, session_key
+                    )
+
+                    assert handled is True
+                    assert not proxy_task.done()
+                    assert adapter._pending_messages[session_key] is foreground
+                    hold_request.set()
+                    result = await proxy_task
+
+        assert result["final_response"] == "ok"
+        # Backend completion is not the turn boundary: ownership remains visible
+        # until the outer gateway lifecycle releases the complete synthetic turn.
+        handle = runner._running_agents[session_key]
+        assert runner._stamped_process_running_agents[session_key] is handle
+        runner._release_running_agent_state(session_key)
+        assert session_key not in runner._running_agents
+        assert session_key not in runner._stamped_process_running_agents
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("busy_mode", ["interrupt", "steer"])
+    async def test_proxy_backend_completion_keeps_stamped_tail_owned(
+        self, monkeypatch, busy_mode
+    ):
+        from types import SimpleNamespace
+
+        from gateway.platforms.base import MessageEvent, MessageType
+
+        monkeypatch.setenv("GATEWAY_PROXY_URL", "http://host:8642")
+        monkeypatch.delenv("GATEWAY_PROXY_KEY", raising=False)
+        runner = _make_runner()
+        runner._stamped_process_running_agents = {}
+        runner._draining = False
+        runner._busy_input_mode = busy_mode
+        runner._busy_text_mode = "interrupt"
+        monkeypatch.setattr(runner, "_is_user_authorized", lambda _source: True)
+        source = _make_source()
+        adapter = SimpleNamespace(_pending_messages={})
+        runner.adapters[source.platform] = adapter
+        session_key = "agent:main:matrix:group:proxy-tail"
+        generation = runner._begin_session_run_generation(session_key)
+        monkeypatch.setattr(
+            runner, "_is_stale_process_notification", lambda _payload: False
+        )
+        session = _FakeSession(
+            _FakeSSEResponse(
+                sse_chunks=[b'data: {"choices":[{"delta":{"content":"ok"}}]}\n\n']
+            )
+        )
+
+        with patch("gateway.run._load_gateway_config", return_value={}):
+            with _patch_aiohttp(session):
+                with patch("aiohttp.ClientTimeout"):
+                    result = await runner._run_agent_via_proxy(
+                        message="stale completion",
+                        context_prompt="",
+                        history=[],
+                        source=source,
+                        session_id="sess-old",
+                        session_key=session_key,
+                        run_generation=generation,
+                        expected_process_session_id="sess-old",
+                    )
+
+        assert result["final_response"] == "ok"
+        handle = runner._running_agents[session_key]
+        assert runner._stamped_process_running_agents[session_key] is handle
+        handle.interrupt = MagicMock()
+        handle.steer = MagicMock(return_value=True)
+        tail_foreground = MessageEvent(
+            text="foreground during proxy postprocessing tail",
+            message_type=MessageType.TEXT,
+            source=source,
+        )
+
+        handled = await runner._handle_active_session_busy_message(
+            tail_foreground, session_key
+        )
+
+        assert handled is True
+        handle.interrupt.assert_not_called()
+        handle.steer.assert_not_called()
+        assert adapter._pending_messages[session_key] is tail_foreground
+        runner._release_running_agent_state(session_key)
+        assert session_key not in runner._running_agents
+        assert session_key not in runner._stamped_process_running_agents
 
     @pytest.mark.asyncio
     async def test_builds_correct_request(self, monkeypatch):

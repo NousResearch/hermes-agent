@@ -2349,6 +2349,7 @@ class BasePlatformAdapter(ABC):
         self.config = config
         self.platform = platform
         self._message_handler: Optional[MessageHandler] = None
+        self._session_resolver: Optional[Callable[[Any], Awaitable[Any]]] = None
         # Optional hook (e.g. Telegram DM topic recovery) that rewrites
         # ``event.source.thread_id`` before session keying. Returns the
         # corrected thread_id or None to leave the source untouched.
@@ -2876,12 +2877,39 @@ class BasePlatformAdapter(ABC):
     def set_session_store(self, session_store: Any) -> None:
         """
         Set the session store for checking active sessions.
-        
+
         Used by adapters that need to check if a thread/conversation
         has an active session before processing messages (e.g., Slack
         thread replies without explicit mentions).
         """
         self._session_store = session_store
+
+    def set_session_resolver(
+        self,
+        resolver: Optional[Callable[[Any], Awaitable[Any]]],
+    ) -> None:
+        """Set the runner-owned, boundary-aware session lookup callback."""
+        self._session_resolver = resolver
+
+    async def resolve_session_entry(
+        self,
+        source: Any,
+        *,
+        operation: Optional[Callable[[Any], Any]] = None,
+    ) -> Any:
+        """Resolve a session without bypassing runner delivery boundaries."""
+        resolver = getattr(self, "_session_resolver", None)
+        if resolver is not None:
+            return await resolver(source, operation=operation)
+        store = getattr(self, "_session_store", None)
+        if store is None:
+            raise RuntimeError("Session store is not configured")
+        entry = await asyncio.to_thread(store.get_or_create_session, source)
+        if operation is not None:
+            result = operation(entry)
+            if inspect.isawaitable(result):
+                await result
+        return entry
     
     @abstractmethod
     async def connect(self, *, is_reconnect: bool = False) -> bool:

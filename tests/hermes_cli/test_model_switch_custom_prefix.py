@@ -10,9 +10,7 @@ Regression for #16259: is_custom guard only checked for bare "custom" and
 to silently switch to openrouter when it recognized the model slug.
 """
 
-from unittest.mock import patch, MagicMock
-
-import pytest
+from unittest.mock import patch
 
 from hermes_cli.model_switch import switch_model
 
@@ -128,4 +126,4 @@ class TestCustomPrefixIsCustomGuard:
             detect_return=("openrouter", "nvidia/nemotron-3-super-120b-a12b"),
         )
         mock_detect.assert_not_called()
-        assert result.target_provider != "openrouter" or not result.success
+        assert result.target_provider == "custom:custom"

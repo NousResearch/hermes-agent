@@ -251,11 +251,59 @@ class _SlashWorker:
                 pass
 
 
-atexit.register(
-    lambda: [
-        s.get("slash_worker") and s["slash_worker"].close() for s in _sessions.values()
-    ]
-)
+def _load_busy_input_mode() -> str:
+    display = _load_cfg().get("display")
+    if not isinstance(display, dict):
+        display = {}
+    raw = str(display.get("busy_input_mode", "") or "").strip().lower()
+    return raw if raw in {"queue", "steer", "interrupt"} else "interrupt"
+
+
+def _notify_session_boundary(event_type: str, session_id: str | None) -> None:
+    """Fire session lifecycle hooks with CLI parity."""
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+        _invoke_hook(event_type, session_id=session_id, platform="tui")
+    except Exception:
+        pass
+
+
+def _finalize_session(session: dict | None) -> None:
+    """Best-effort finalize hook + memory commit for a session."""
+    if not session or session.get("_finalized"):
+        return
+    session["_finalized"] = True
+
+    agent = session.get("agent")
+    lock = session.get("history_lock")
+    if lock is not None:
+        with lock:
+            history = list(session.get("history", []))
+    else:
+        history = list(session.get("history", []))
+    if agent is not None and history and hasattr(agent, "commit_memory_session"):
+        try:
+            agent.commit_memory_session(history)
+        except Exception:
+            pass
+
+    session_id = getattr(agent, "session_id", None) or session.get("session_key")
+    _notify_session_boundary("on_session_finalize", session_id)
+
+
+def _shutdown_sessions() -> None:
+    for session in list(_sessions.values()):
+        _finalize_session(session)
+        try:
+            worker = session.get("slash_worker")
+            if worker:
+                worker.close()
+        except Exception:
+            pass
+
+
+atexit.register(_shutdown_sessions)
 
 
 # ── Plumbing ──────────────────────────────────────────────────────────
@@ -1420,6 +1468,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
     except Exception:
         pass
     _wire_callbacks(sid)
+    _notify_session_boundary("on_session_reset", key)
     _emit("session.info", sid, _session_info(agent))
 
 
@@ -1637,6 +1686,7 @@ def _(rid, params: dict) -> dict:
                 pass
 
             _wire_callbacks(sid)
+            _notify_session_boundary("on_session_reset", key)
 
             info = _session_info(agent)
             warn = _probe_credentials(agent)
@@ -1960,6 +2010,7 @@ def _(rid, params: dict) -> dict:
     session = _sessions.pop(sid, None)
     if not session:
         return _ok(rid, {"closed": False})
+    _finalize_session(session)
     try:
         from tools.approval import unregister_gateway_notify
 
@@ -2827,6 +2878,75 @@ def _(rid, params: dict) -> dict:
         except Exception as e:
             return _err(rid, 5001, str(e))
 
+    if key == "fast":
+        raw = str(value or "").strip().lower()
+        agent = session.get("agent") if session else None
+        if agent is not None:
+            current_fast = getattr(agent, "service_tier", None) == "priority"
+        else:
+            current_fast = _load_service_tier() == "priority"
+
+        if raw in {"status"}:
+            return _ok(
+                rid,
+                {"key": key, "value": "fast" if current_fast else "normal"},
+            )
+
+        if raw in ("", "toggle"):
+            nv = "normal" if current_fast else "fast"
+        elif raw in {"fast", "on"}:
+            nv = "fast"
+        elif raw in {"normal", "off"}:
+            nv = "normal"
+        else:
+            return _err(rid, 4002, f"unknown fast mode: {value}")
+
+        overrides = None
+        if nv == "fast":
+            from hermes_cli.models import resolve_fast_mode_overrides
+
+            target_model = (
+                getattr(agent, "model", None) if agent is not None else _resolve_model()
+            )
+            if not target_model:
+                return _err(
+                    rid,
+                    4002,
+                    "fast mode is not available without a selected model",
+                )
+            overrides = resolve_fast_mode_overrides(target_model)
+            if overrides is None:
+                return _err(
+                    rid,
+                    4002,
+                    "fast mode is not available for this model",
+                )
+
+        _write_config_key("agent.service_tier", nv)
+        if agent is not None:
+            agent.service_tier = "priority" if nv == "fast" else None
+            current_overrides = dict(getattr(agent, "request_overrides", {}) or {})
+            current_overrides.pop("service_tier", None)
+            current_overrides.pop("speed", None)
+            if nv == "fast":
+                current_overrides.update(overrides)
+            agent.request_overrides = current_overrides
+            _emit(
+                "session.info",
+                params.get("session_id", ""),
+                _session_info(agent),
+            )
+        return _ok(rid, {"key": key, "value": nv})
+
+    if key == "busy":
+        raw = str(value or "").strip().lower()
+        if raw in ("", "status"):
+            return _ok(rid, {"key": key, "value": _load_busy_input_mode()})
+        if raw not in {"queue", "steer", "interrupt"}:
+            return _err(rid, 4002, f"unknown busy mode: {value}")
+        _write_config_key("display.busy_input_mode", raw)
+        return _ok(rid, {"key": key, "value": raw})
+
     if key == "verbose":
         cycle = ["off", "new", "all", "verbose"]
         cur = (
@@ -3100,6 +3220,21 @@ def _(rid, params: dict) -> dict:
             else "hide"
         )
         return _ok(rid, {"value": effort, "display": display})
+    if key == "fast":
+        return _ok(
+            rid,
+            {
+                "value": (
+                    "fast"
+                    if (session := _sessions.get(params.get("session_id", "")))
+                    and getattr(session.get("agent"), "service_tier", None)
+                    == "priority"
+                    else ("fast" if _load_service_tier() == "priority" else "normal")
+                ),
+            },
+        )
+    if key == "busy":
+        return _ok(rid, {"value": _load_busy_input_mode()})
     if key == "details_mode":
         allowed_dm = frozenset({"hidden", "collapsed", "expanded"})
         raw = (
@@ -4126,10 +4261,6 @@ def _(rid, params: dict) -> dict:
 
     # Skill slash commands and _pending_input commands must NOT go through the
     # slash worker — see _PENDING_INPUT_COMMANDS definition above.
-    # (/browser connect/disconnect also uses _pending_input for context
-    # notes, but the actual browser operations need the slash worker's
-    # env-var side effects, so they stay in slash.exec — only the context
-    # note to the model is lost, which is low-severity.)
     _cmd_parts = cmd.split() if not cmd.startswith("/") else cmd.lstrip("/").split()
     _cmd_base = _cmd_parts[0] if _cmd_parts else ""
 

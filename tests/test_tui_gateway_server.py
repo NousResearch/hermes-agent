@@ -274,6 +274,69 @@ def _session(agent=None, **extra):
     }
 
 
+def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
+    calls = {"hooks": []}
+
+    agent = types.SimpleNamespace(session_id="session-key")
+    agent.commit_memory_session = lambda history: calls.setdefault("history", history)
+    server._sessions["sid"] = _session(
+        agent=agent, history=[{"role": "user", "content": "hello"}]
+    )
+    monkeypatch.setattr(
+        server,
+        "_notify_session_boundary",
+        lambda event, session_id: calls["hooks"].append((event, session_id)),
+    )
+
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.close", "params": {"session_id": "sid"}}
+        )
+        assert resp["result"]["closed"] is True
+        assert calls["history"] == [{"role": "user", "content": "hello"}]
+        assert ("on_session_finalize", "session-key") in calls["hooks"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_init_session_fires_reset_hook(monkeypatch):
+    hooks = []
+
+    class _FakeWorker:
+        def __init__(self, key, model):
+            self.key = key
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_notify_session_boundary",
+        lambda event, session_id: hooks.append((event, session_id)),
+    )
+
+    import tools.approval as _approval
+
+    monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
+    monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
+
+    sid = "sid"
+    try:
+        server._init_session(
+            sid,
+            "session-key",
+            types.SimpleNamespace(model="x"),
+            history=[],
+            cols=80,
+        )
+        assert ("on_session_reset", "session-key") in hooks
+    finally:
+        server._sessions.pop(sid, None)
+
+
 def test_session_title_queues_when_db_row_not_ready(monkeypatch):
     class _FakeDB:
         def get_session_title(self, _key):
@@ -564,7 +627,9 @@ def test_session_create_drops_pending_title_on_valueerror(monkeypatch):
     monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
     monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
 
-    resp = server.handle_request({"id": "1", "method": "session.create", "params": {"cols": 80}})
+    resp = server.handle_request(
+        {"id": "1", "method": "session.create", "params": {"cols": 80}}
+    )
     sid = resp["result"]["session_id"]
     session = server._sessions[sid]
     session["pending_title"] = "duplicate title"
@@ -604,6 +669,176 @@ def test_config_set_yolo_toggles_session_scope():
         server._sessions.clear()
 
 
+def test_config_set_fast_updates_live_agent_and_config(monkeypatch):
+    writes = []
+    emits = []
+    agent = types.SimpleNamespace(
+        model="openai/gpt-5.4",
+        request_overrides={"foo": "bar", "speed": "slow"},
+        service_tier=None,
+    )
+    server._sessions["sid"] = _session(agent=agent)
+
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda path, value: writes.append((path, value))
+    )
+    monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "x"})
+    monkeypatch.setattr(server, "_emit", lambda *args: emits.append(args))
+    monkeypatch.setattr(
+        "hermes_cli.models.resolve_fast_mode_overrides",
+        lambda _model_id: {"service_tier": "priority"},
+    )
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {"session_id": "sid", "key": "fast", "value": "fast"},
+            }
+        )
+        assert resp["result"]["value"] == "fast"
+        assert agent.service_tier == "priority"
+        assert agent.request_overrides == {
+            "foo": "bar",
+            "service_tier": "priority",
+        }
+        assert ("agent.service_tier", "fast") in writes
+        assert ("session.info", "sid", {"model": "x"}) in emits
+
+        resp_normal = server.handle_request(
+            {
+                "id": "2",
+                "method": "config.set",
+                "params": {"session_id": "sid", "key": "fast", "value": "normal"},
+            }
+        )
+        assert resp_normal["result"]["value"] == "normal"
+        assert agent.service_tier is None
+        assert agent.request_overrides == {"foo": "bar"}
+        assert ("agent.service_tier", "normal") in writes
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_config_set_fast_status_is_non_mutating(monkeypatch):
+    writes = []
+    emits = []
+    agent = types.SimpleNamespace(service_tier="priority")
+    server._sessions["sid"] = _session(agent=agent)
+
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda path, value: writes.append((path, value))
+    )
+    monkeypatch.setattr(server, "_emit", lambda *args: emits.append(args))
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {"session_id": "sid", "key": "fast", "value": "status"},
+            }
+        )
+        assert resp["result"]["value"] == "fast"
+        assert writes == []
+        assert emits == []
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_config_set_fast_rejects_unsupported_model(monkeypatch):
+    writes = []
+    agent = types.SimpleNamespace(
+        model="unsupported-model",
+        request_overrides={},
+        service_tier=None,
+    )
+    server._sessions["sid"] = _session(agent=agent)
+
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda path, value: writes.append((path, value))
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.resolve_fast_mode_overrides",
+        lambda _model_id: None,
+    )
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {"session_id": "sid", "key": "fast", "value": "fast"},
+            }
+        )
+        assert resp["error"]["code"] == 4002
+        assert "not available" in resp["error"]["message"]
+        assert agent.service_tier is None
+        assert agent.request_overrides == {}
+        assert writes == []
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_config_set_fast_rejects_missing_model(monkeypatch):
+    writes = []
+    agent = types.SimpleNamespace(
+        model="",
+        request_overrides={},
+        service_tier=None,
+    )
+    server._sessions["sid"] = _session(agent=agent)
+
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda path, value: writes.append((path, value))
+    )
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {"session_id": "sid", "key": "fast", "value": "fast"},
+            }
+        )
+        assert resp["error"]["code"] == 4002
+        assert "without a selected model" in resp["error"]["message"]
+        assert agent.service_tier is None
+        assert agent.request_overrides == {}
+        assert writes == []
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_config_busy_get_and_set(monkeypatch):
+    writes = []
+
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"display": {"busy_input_mode": "steer"}},
+    )
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda path, value: writes.append((path, value))
+    )
+
+    get_resp = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "busy"}}
+    )
+    assert get_resp["result"]["value"] == "steer"
+
+    set_resp = server.handle_request(
+        {
+            "id": "2",
+            "method": "config.set",
+            "params": {"key": "busy", "value": "interrupt"},
+        }
+    )
+    assert set_resp["result"]["value"] == "interrupt"
+    assert ("display.busy_input_mode", "interrupt") in writes
+
+
 def test_config_get_statusbar_survives_non_dict_display(monkeypatch):
     monkeypatch.setattr(server, "_load_cfg", lambda: {"display": "broken"})
 
@@ -612,6 +847,16 @@ def test_config_get_statusbar_survives_non_dict_display(monkeypatch):
     )
 
     assert resp["result"]["value"] == "top"
+
+
+def test_config_get_busy_survives_non_dict_display(monkeypatch):
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"display": "broken"})
+
+    resp = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "busy"}}
+    )
+
+    assert resp["result"]["value"] == "interrupt"
 
 
 def test_config_set_statusbar_survives_non_dict_display(tmp_path, monkeypatch):

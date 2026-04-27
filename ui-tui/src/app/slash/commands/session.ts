@@ -299,6 +299,85 @@ export const sessionCommands: SlashCommand[] = [
   },
 
   {
+    help: 'toggle fast mode [normal|fast|status|on|off|toggle]',
+    name: 'fast',
+    run: (arg, ctx) => {
+      const mode = arg.trim().toLowerCase()
+      const valid = new Set(['', 'status', 'normal', 'fast', 'on', 'off', 'toggle'])
+
+      if (!valid.has(mode)) {
+        return ctx.transcript.sys('usage: /fast [normal|fast|status|on|off|toggle]')
+      }
+
+      if (!mode || mode === 'status') {
+        return ctx.gateway
+          .rpc<ConfigGetValueResponse>('config.get', { key: 'fast', session_id: ctx.sid })
+          .then(
+            ctx.guarded<ConfigGetValueResponse>(r =>
+              ctx.transcript.sys(`fast mode: ${r.value === 'fast' ? 'fast' : 'normal'}`)
+            )
+          )
+          .catch(ctx.guardedErr)
+      }
+
+      ctx.gateway
+        .rpc<ConfigSetResponse>('config.set', { key: 'fast', session_id: ctx.sid, value: mode })
+        .then(
+          ctx.guarded<ConfigSetResponse>(r => {
+            const next = r.value === 'fast' ? 'fast' : 'normal'
+            ctx.transcript.sys(`fast mode: ${next}`)
+            patchUiState(state => ({
+              ...state,
+              info: state.info
+                ? {
+                    ...state.info,
+                    fast: next === 'fast',
+                    service_tier: next === 'fast' ? 'priority' : ''
+                  }
+                : state.info
+            }))
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
+    help: 'control busy enter mode [queue|steer|interrupt|status]',
+    name: 'busy',
+    run: (arg, ctx) => {
+      const mode = arg.trim().toLowerCase()
+      const valid = new Set(['', 'status', 'queue', 'steer', 'interrupt'])
+
+      if (!valid.has(mode)) {
+        return ctx.transcript.sys('usage: /busy [queue|steer|interrupt|status]')
+      }
+
+      if (!mode || mode === 'status') {
+        return ctx.gateway
+          .rpc<ConfigGetValueResponse>('config.get', { key: 'busy' })
+          .then(
+            ctx.guarded<ConfigGetValueResponse>(r => {
+              const current = r.value || 'interrupt'
+              ctx.transcript.sys(`busy input mode: ${current}`)
+            })
+          )
+          .catch(ctx.guardedErr)
+      }
+
+      ctx.gateway
+        .rpc<ConfigSetResponse>('config.set', { key: 'busy', value: mode })
+        .then(
+          ctx.guarded<ConfigSetResponse>(r => {
+            const next = r.value || mode
+            ctx.transcript.sys(`busy input mode: ${next}`)
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
     help: 'cycle verbose tool-output mode (updates live agent)',
     name: 'verbose',
     run: (arg, ctx) => {

@@ -69,9 +69,9 @@ class TestHermesTokenStorage:
         )
         asyncio.run(storage.set_client_info(client_info))
 
-        client_path = tmp_path / "mcp-tokens" / "test-server.client.json"
-        assert client_path.exists()
-        data = json.loads(client_path.read_text())
+        identity_path = tmp_path / "mcp-tokens" / "test-server.identity.json"
+        assert identity_path.exists()
+        data = json.loads(identity_path.read_text())
         assert data["client_id"] == "hermes-123"
         assert data["client_secret"] == "secret"
         assert data["token_endpoint_auth_method"] == "client_secret_post"
@@ -84,7 +84,8 @@ class TestHermesTokenStorage:
 
         d = tmp_path / "mcp-tokens"
         d.mkdir(parents=True)
-        (d / "legacy-server.client.json").write_text(json.dumps({
+        legacy_path = d / "legacy-server.client.json"
+        legacy_path.write_text(json.dumps({
             "client_id": "legacy-client",
             "client_secret": "legacy-secret",
             "redirect_uris": ["http://127.0.0.1:58741/callback"],
@@ -100,6 +101,39 @@ class TestHermesTokenStorage:
         assert identity.client_secret == "legacy-secret"
         assert identity.token_endpoint_auth_method == "client_secret_post"
         assert identity.scope == "projects:read"
+        assert legacy_path.exists()
+        identity_path = d / "legacy-server.identity.json"
+        assert identity_path.exists()
+
+    def test_legacy_confidential_registration_backfills_post_auth_method(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        storage = HermesTokenStorage("legacy-server")
+        import asyncio
+
+        d = tmp_path / "mcp-tokens"
+        d.mkdir(parents=True)
+        (d / "legacy-server.client.json").write_text(json.dumps({
+            "client_id": "legacy-client",
+            "client_secret": "legacy-secret",
+            "redirect_uris": ["http://127.0.0.1:58741/callback"],
+            "grant_types": ["authorization_code", "refresh_token"],
+            "response_types": ["code"],
+        }))
+
+        identity = asyncio.run(storage.get_client_identity())
+        assert identity is not None
+        assert identity.token_endpoint_auth_method == "client_secret_post"
+
+    def test_refresh_identity_defaults_confidential_auth_to_basic(self):
+        from tools.mcp_oauth import HermesOAuthClientIdentity
+
+        identity = HermesOAuthClientIdentity(
+            client_id="client-123",
+            client_secret="secret",
+        )
+
+        client_info = identity.to_client_info("http://127.0.0.1:54321/callback")
+        assert client_info.token_endpoint_auth_method == "client_secret_basic"
 
     def test_remove_cleans_up(self, tmp_path, monkeypatch):
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -184,9 +218,9 @@ class TestBuildOAuthAuth:
             "scope": "channels:read",
         })
 
-        client_path = tmp_path / "mcp-tokens" / "slack.client.json"
-        assert client_path.exists()
-        data = json.loads(client_path.read_text())
+        identity_path = tmp_path / "mcp-tokens" / "slack.identity.json"
+        assert identity_path.exists()
+        data = json.loads(identity_path.read_text())
         assert data["client_id"] == "my-app-id"
         assert data["client_secret"] == "my-secret"
 

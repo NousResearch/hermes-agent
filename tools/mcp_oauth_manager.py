@@ -128,23 +128,9 @@ def _make_hermes_provider_class() -> Optional[type]:
             self._initialized = True
 
             tokens = self.context.current_tokens
-            if tokens is not None and tokens.refresh_token:
-                get_identity = getattr(storage, "get_client_identity", None)
-                if callable(get_identity):
-                    identity = await get_identity()
-                    if identity is not None:
-                        redirect_uri = str(self.context.client_metadata.redirect_uris[0])
-                        self.context.client_info = identity.to_client_info(redirect_uri)
-                        self._hermes_uses_refresh_identity = True
-
             if tokens is not None and tokens.expires_in is not None:
                 self.context.update_token_expiry(tokens)
 
-            # Pre-flight OAuth AS discovery so ``_refresh_token`` has a
-            # correct ``token_endpoint`` before the first refresh attempt.
-            # Only runs when we have tokens on cold-load but no cached
-            # metadata — i.e. the exact scenario where the SDK's built-in
-            # 401-branch discovery hasn't had a chance to run yet.
             if (
                 tokens is not None
                 and self.context.oauth_metadata is None
@@ -152,13 +138,23 @@ def _make_hermes_provider_class() -> Optional[type]:
                 try:
                     await self._prefetch_oauth_metadata()
                 except Exception as exc:  # pragma: no cover — defensive
-                    # Non-fatal: if discovery fails, the SDK's normal 401-
-                    # branch discovery will run on the next request.
                     logger.debug(
                         "MCP OAuth '%s': pre-flight metadata discovery "
                         "failed (non-fatal): %s",
                         self._hermes_server_name, exc,
                     )
+
+            if tokens is not None and tokens.refresh_token:
+                get_identity = getattr(storage, "get_client_identity", None)
+                if callable(get_identity):
+                    identity = await get_identity()
+                    if identity is not None:
+                        redirect_uri = str(self.context.client_metadata.redirect_uris[0])
+                        self.context.client_info = identity.to_client_info(
+                            redirect_uri,
+                            self.context.oauth_metadata,
+                        )
+                        self._hermes_uses_refresh_identity = True
 
         async def _prefetch_oauth_metadata(self) -> None:
             """Fetch PRM + ASM from the well-known endpoints, cache on context.
@@ -227,6 +223,30 @@ def _make_hermes_provider_class() -> Optional[type]:
                             self._hermes_server_name, asm.token_endpoint,
                         )
                         break
+
+        async def _handle_token_response(self, response):  # type: ignore[override]
+            await super()._handle_token_response(response)
+            if self.context.client_info is not None:
+                try:
+                    from tools.mcp_oauth import HermesOAuthClientIdentity
+
+                    identity = HermesOAuthClientIdentity.from_client_info(
+                        self.context.client_info
+                    )
+                    resolved_method = identity.resolved_auth_method(
+                        self.context.oauth_metadata,
+                    )
+                    if resolved_method != self.context.client_info.token_endpoint_auth_method:
+                        self.context.client_info = self.context.client_info.model_copy(
+                            update={"token_endpoint_auth_method": resolved_method}
+                        )
+                    await self.context.storage.set_client_info(self.context.client_info)
+                except Exception as exc:  # pragma: no cover — defensive
+                    logger.debug(
+                        "MCP OAuth '%s': failed to persist client identity after token response: %s",
+                        self._hermes_server_name,
+                        exc,
+                    )
 
         async def _handle_refresh_response(self, response):  # type: ignore[override]
             ok = await super()._handle_refresh_response(response)

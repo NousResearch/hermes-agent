@@ -257,8 +257,150 @@ async def test_provider_initializes_refresh_identity_with_current_redirect_uri(t
     await flow.aclose()
 
 
+@pytest.mark.asyncio
+async def test_expired_token_refreshes_before_any_browser_redirect(tmp_path, monkeypatch):
+    """Cold-start with an expired token should refresh before interactive auth."""
+    import httpx
+    from mcp.shared.auth import OAuthClientMetadata
+    from pydantic import AnyUrl
+
+    from tools.mcp_oauth import HermesTokenStorage, _get_token_dir
+    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+
+    assert _HERMES_PROVIDER_CLS is not None
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    reset_manager_for_tests()
+
+    token_dir = _get_token_dir()
+    token_dir.mkdir(parents=True, exist_ok=True)
+    (token_dir / "srv.json").write_text(
+        '{"access_token": "stale-access", "token_type": "Bearer", '
+        '"expires_in": 3600, "expires_at": 0, "refresh_token": "refresh-token"}'
+    )
+
+    storage = HermesTokenStorage("srv")
+    (token_dir / "srv.client.json").write_text(
+        '{"client_id": "test-client", "token_endpoint_auth_method": "none"}'
+    )
+
+    redirect_calls: list[str] = []
+
+    async def _record_redirect(url: str) -> None:
+        redirect_calls.append(url)
+
+    metadata = OAuthClientMetadata(
+        redirect_uris=[AnyUrl("http://127.0.0.1:54321/callback")],
+        client_name="Hermes Agent",
+    )
+    provider = _HERMES_PROVIDER_CLS(
+        server_name="srv",
+        server_url="https://example.com/mcp",
+        client_metadata=metadata,
+        storage=storage,
+        redirect_handler=_record_redirect,
+        callback_handler=_noop_callback,
+    )
+    provider._prefetch_oauth_metadata = _noop_prefetch  # type: ignore[attr-defined]
+
+    req = httpx.Request("POST", "https://example.com/mcp")
+    flow = provider.async_auth_flow(req)
+    refresh_request = await flow.__anext__()
+
+    assert refresh_request.method == "POST"
+    assert refresh_request.url.path == "/token"
+    assert redirect_calls == []
+
+    refresh_response = httpx.Response(
+        200,
+        request=refresh_request,
+        json={
+            "access_token": "fresh-access",
+            "refresh_token": "fresh-refresh",
+            "expires_in": 3600,
+            "token_type": "Bearer",
+        },
+    )
+    outbound = await flow.asend(refresh_response)
+    assert outbound.headers["Authorization"] == "Bearer fresh-access"
+
+    with pytest.raises(StopAsyncIteration):
+        await flow.asend(httpx.Response(200, request=outbound))
+
+    assert redirect_calls == []
+
+
+@pytest.mark.asyncio
+async def test_refresh_identity_uses_oauth_metadata_auth_method_hint(tmp_path, monkeypatch):
+    """Missing auth method should be resolved from OAuth metadata when available."""
+    import httpx
+    from mcp.shared.auth import OAuthClientMetadata, OAuthToken, OAuthMetadata
+    from pydantic import AnyUrl
+
+    from tools.mcp_oauth import HermesTokenStorage
+    from tools.mcp_oauth_manager import _HERMES_PROVIDER_CLS, reset_manager_for_tests
+
+    assert _HERMES_PROVIDER_CLS is not None
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    reset_manager_for_tests()
+
+    storage = HermesTokenStorage("srv")
+    await storage.set_tokens(
+        OAuthToken(
+            access_token="cached-access",
+            token_type="Bearer",
+            expires_in=3600,
+            refresh_token="cached-refresh",
+        )
+    )
+
+    token_dir = tmp_path / "mcp-tokens"
+    token_dir.mkdir(parents=True, exist_ok=True)
+    (token_dir / "srv.identity.json").write_text(
+        '{"client_id": "test-client", "client_secret": "test-secret"}'
+    )
+
+    metadata = OAuthClientMetadata(
+        redirect_uris=[AnyUrl("http://127.0.0.1:54321/callback")],
+        client_name="Hermes Agent",
+    )
+    provider = _HERMES_PROVIDER_CLS(
+        server_name="srv",
+        server_url="https://example.com/mcp",
+        client_metadata=metadata,
+        storage=storage,
+        redirect_handler=_noop_redirect,
+        callback_handler=_noop_callback,
+    )
+
+    async def _prefetch_with_post_only() -> None:
+        provider.context.oauth_metadata = OAuthMetadata(
+            issuer="https://auth.example.com",
+            authorization_endpoint="https://auth.example.com/authorize",
+            token_endpoint="https://auth.example.com/token",
+            token_endpoint_auth_methods_supported=["client_secret_post"],
+        )
+
+    provider._prefetch_oauth_metadata = _prefetch_with_post_only  # type: ignore[attr-defined]
+
+    req = httpx.Request("POST", "https://example.com/mcp")
+    flow = provider.async_auth_flow(req)
+    outbound = await flow.__anext__()
+
+    assert provider.context.client_info is not None
+    assert provider.context.client_info.token_endpoint_auth_method == "client_secret_post"
+
+    await flow.aclose()
+
+
 async def _noop_redirect(_url: str) -> None:
     """Redirect handler that does nothing (won't be invoked in these tests)."""
+    return None
+
+
+async def _noop_prefetch() -> None:
+    """Prefetch stub used when a test should not touch the network."""
     return None
 
 

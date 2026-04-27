@@ -45,7 +45,7 @@ import webbrowser
 from dataclasses import dataclass
 from http.server import BaseHTTPRequestHandler, HTTPServer
 from pathlib import Path
-from typing import Any
+from typing import Any, Sequence
 from urllib.parse import parse_qs, urlparse
 
 logger = logging.getLogger(__name__)
@@ -198,6 +198,18 @@ class HermesOAuthClientIdentity:
         )
 
     @classmethod
+    def from_legacy_client_info_data(cls, data: dict) -> "HermesOAuthClientIdentity":
+        identity = cls.from_data(data)
+        if identity.client_secret and not identity.token_endpoint_auth_method:
+            identity = cls(
+                client_id=identity.client_id,
+                client_secret=identity.client_secret,
+                token_endpoint_auth_method="client_secret_post",
+                scope=identity.scope,
+            )
+        return identity
+
+    @classmethod
     def from_client_info(
         cls,
         client_info: "OAuthClientInformationFull",
@@ -209,31 +221,48 @@ class HermesOAuthClientIdentity:
             scope=client_info.scope,
         )
 
-    def normalized_auth_method(self) -> str:
+    def resolved_auth_method(
+        self,
+        oauth_metadata: Any | None = None,
+    ) -> str:
         if self.token_endpoint_auth_method:
             return self.token_endpoint_auth_method
-        if self.client_secret:
-            return "client_secret_post"
-        return "none"
+        if not self.client_secret:
+            return "none"
+
+        supported = getattr(oauth_metadata, "token_endpoint_auth_methods_supported", None)
+        if isinstance(supported, Sequence):
+            supported_set = {item for item in supported if isinstance(item, str)}
+            if "client_secret_basic" in supported_set and "client_secret_post" not in supported_set:
+                return "client_secret_basic"
+            if "client_secret_post" in supported_set and "client_secret_basic" not in supported_set:
+                return "client_secret_post"
+            if "client_secret_basic" in supported_set and "client_secret_post" in supported_set:
+                return "client_secret_basic"
+
+        return "client_secret_basic"
 
     def to_storage_dict(self) -> dict[str, Any]:
         payload: dict[str, Any] = {"client_id": self.client_id}
         if self.client_secret:
             payload["client_secret"] = self.client_secret
-        auth_method = self.normalized_auth_method()
-        if auth_method:
-            payload["token_endpoint_auth_method"] = auth_method
+        if self.token_endpoint_auth_method:
+            payload["token_endpoint_auth_method"] = self.token_endpoint_auth_method
         if self.scope:
             payload["scope"] = self.scope
         return payload
 
-    def to_client_info(self, redirect_uri: str) -> "OAuthClientInformationFull":
+    def to_client_info(
+        self,
+        redirect_uri: str,
+        oauth_metadata: Any | None = None,
+    ) -> "OAuthClientInformationFull":
         payload: dict[str, Any] = {
             "client_id": self.client_id,
             "redirect_uris": [redirect_uri],
             "grant_types": ["authorization_code", "refresh_token"],
             "response_types": ["code"],
-            "token_endpoint_auth_method": self.normalized_auth_method(),
+            "token_endpoint_auth_method": self.resolved_auth_method(oauth_metadata),
         }
         if self.client_secret:
             payload["client_secret"] = self.client_secret
@@ -261,6 +290,9 @@ class HermesTokenStorage:
 
     def _tokens_path(self) -> Path:
         return _get_token_dir() / f"{self._server_name}.json"
+
+    def _client_identity_path(self) -> Path:
+        return _get_token_dir() / f"{self._server_name}.identity.json"
 
     def _client_info_path(self) -> Path:
         return _get_token_dir() / f"{self._server_name}.client.json"
@@ -329,11 +361,21 @@ class HermesTokenStorage:
     # -- client info -------------------------------------------------------
 
     async def get_client_identity(self) -> "HermesOAuthClientIdentity | None":
-        data = _read_json(self._client_info_path())
-        if data is None:
+        data = _read_json(self._client_identity_path())
+        if data is not None:
+            try:
+                return HermesOAuthClientIdentity.from_data(data)
+            except (ValueError, TypeError, KeyError) as exc:
+                logger.warning("Corrupt client identity at %s -- ignoring: %s", self._client_identity_path(), exc)
+                return None
+
+        legacy_data = _read_json(self._client_info_path())
+        if legacy_data is None:
             return None
         try:
-            return HermesOAuthClientIdentity.from_data(data)
+            identity = HermesOAuthClientIdentity.from_legacy_client_info_data(legacy_data)
+            _write_json(self._client_identity_path(), identity.to_storage_dict())
+            return identity
         except (ValueError, TypeError, KeyError) as exc:
             logger.warning("Corrupt client info at %s -- ignoring: %s", self._client_info_path(), exc)
             return None
@@ -350,14 +392,14 @@ class HermesTokenStorage:
 
     async def set_client_info(self, client_info: "OAuthClientInformationFull") -> None:
         identity = HermesOAuthClientIdentity.from_client_info(client_info)
-        _write_json(self._client_info_path(), identity.to_storage_dict())
+        _write_json(self._client_identity_path(), identity.to_storage_dict())
         logger.debug("OAuth client info saved for %s", self._server_name)
 
     # -- cleanup -----------------------------------------------------------
 
     def remove(self) -> None:
         """Delete all stored OAuth state for this server."""
-        for p in (self._tokens_path(), self._client_info_path()):
+        for p in (self._tokens_path(), self._client_identity_path(), self._client_info_path()):
             p.unlink(missing_ok=True)
 
     def has_cached_tokens(self) -> bool:
@@ -601,7 +643,7 @@ def _maybe_preregister_client(
 
     client_info = OAuthClientInformationFull.model_validate(info_dict)
     identity = HermesOAuthClientIdentity.from_client_info(client_info)
-    _write_json(storage._client_info_path(), identity.to_storage_dict())
+    _write_json(storage._client_identity_path(), identity.to_storage_dict())
     logger.debug("Pre-registered client_id=%s for '%s'", client_id, storage._server_name)
 
 

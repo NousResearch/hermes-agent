@@ -1,0 +1,11 @@
+[Unit]
+Description=Enzyme workspace reindex for ~/business
+After=enzyme-embedding-daemon.service network-online.target
+Wants=enzyme-embedding-daemon.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/ubuntu/business
+ExecStart=/home/ubuntu/.local/bin/enzyme init -q -p /home/ubuntu/business
+StandardOutput=journal
+StandardError=journal

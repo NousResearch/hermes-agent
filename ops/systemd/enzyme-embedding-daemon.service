@@ -1,0 +1,16 @@
+[Unit]
+Description=Enzyme embedding daemon for ~/business
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/ubuntu/business
+ExecStartPre=/usr/bin/rm -f /home/ubuntu/.enzyme/embedding_daemon.sock /home/ubuntu/.enzyme/embedding_daemon.pid
+ExecStart=/home/ubuntu/.local/bin/enzyme __daemon -p /home/ubuntu/business -v
+Restart=always
+RestartSec=2
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=default.target

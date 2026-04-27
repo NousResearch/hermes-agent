@@ -1792,6 +1792,52 @@ class SkillToggle(BaseModel):
     enabled: bool
 
 
+class SkillChangeReviewUpdate(BaseModel):
+    status: str = "reviewed"
+    note: Optional[str] = None
+
+
+@app.get("/api/skills/changes")
+async def get_skill_changes(
+    skill: Optional[str] = None,
+    limit: int = 50,
+    unreviewed: Optional[bool] = None,
+):
+    from tools.skill_change_ledger import list_skill_changes
+
+    return list_skill_changes(skill=skill, limit=limit, unreviewed=unreviewed)
+
+
+@app.get("/api/skills/{name}/history")
+async def get_skill_history(name: str, limit: int = 50):
+    from tools.skill_change_ledger import list_skill_changes
+
+    return list_skill_changes(skill=name, limit=limit)
+
+
+@app.get("/api/skills/changes/{event_id}")
+async def get_skill_change_detail(event_id: str):
+    from tools.skill_change_ledger import get_skill_change
+
+    event = get_skill_change(event_id)
+    if event is None:
+        raise HTTPException(status_code=404, detail="Skill change event not found")
+    return event
+
+
+@app.post("/api/skills/changes/{event_id}/review")
+async def review_skill_change(event_id: str, body: SkillChangeReviewUpdate):
+    from tools.skill_change_ledger import mark_skill_change_reviewed
+
+    try:
+        event = mark_skill_change_reviewed(event_id, status=body.status, note=body.note)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    if event is None:
+        raise HTTPException(status_code=404, detail="Skill change event not found")
+    return event
+
+
 @app.get("/api/skills")
 async def get_skills():
     from tools.skills_tool import _find_all_skills

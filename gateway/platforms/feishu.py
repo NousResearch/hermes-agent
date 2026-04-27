@@ -156,6 +156,9 @@ _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
+# Matches @Name patterns in outbound text for real <at> tag conversion.
+# CJK names (\u4e00-\u9fff + \u3400-\u4dbf), ASCII alphanumerics, underscores.
+_OUTBOUND_MENTION_RE = re.compile(r"@([\u4e00-\u9fff\u3400-\u4dbf\w]{1,32})(?=[\s\W]|$)")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
 # ---------------------------------------------------------------------------
@@ -1366,6 +1369,10 @@ class FeishuAdapter(BasePlatformAdapter):
         # Feishu reaction deletion requires the opaque reaction_id returned
         # by create, so we cache it per message_id.
         self._pending_processing_reactions: "OrderedDict[str, str]" = OrderedDict()
+        # Mention registry: display name / open_id → real open_id for outbound @ conversion.
+        # Populated from inbound message mentions and optional FEISHU_MENTION_MAP env var.
+        self._mention_registry: Dict[str, str] = {}
+        self._init_mention_registry()
         self._load_seen_message_ids()
 
     @staticmethod
@@ -3168,6 +3175,9 @@ class FeishuAdapter(BasePlatformAdapter):
             mentions=getattr(message, "mentions", None),
             bot=self._bot_identity(),
         )
+        # Passive learning: register inbound mentions for future outbound @ conversion.
+        if normalized.mentions:
+            self.register_inbound_mentions(normalized.mentions)
         media_urls, media_types = await self._download_feishu_message_resources(
             message_id=message_id,
             normalized=normalized,
@@ -3825,14 +3835,159 @@ class FeishuAdapter(BasePlatformAdapter):
             return False
 
     # =========================================================================
+    # Outbound @mention registry — name→open_id mapping for real <at> tags
+    # =========================================================================
+
+    def _init_mention_registry(self) -> None:
+        """Seed the mention registry from FEISHU_MENTION_MAP env var.
+
+        Format: ``name1=open_id1,name2=open_id2`` or
+                ``ou_xxx1,ou_xxx2`` (open_ids map to themselves).
+
+        Example: ``FEISHU_MENTION_MAP=龍朝=ou_4e9..16b,玄商=ou_753d..39e``
+        """
+        raw = os.getenv("FEISHU_MENTION_MAP", "").strip()
+        if not raw:
+            return
+        for entry in raw.split(","):
+            entry = entry.strip()
+            if not entry:
+                continue
+            if "=" in entry:
+                name, oid = entry.split("=", 1)
+                name = name.strip()
+                oid = oid.strip()
+                if name and oid:
+                    self._mention_registry[name.lower()] = oid
+                    # Also allow lookup by open_id directly (handles @ou_xxx style)
+                    if not oid.lower().startswith("ou_") or name != oid:
+                        self._mention_registry[oid] = oid
+            elif entry.startswith("ou_") or entry.startswith("ui_"):
+                self._mention_registry[entry] = entry
+
+    def register_mention(self, name: str, open_id: str) -> None:
+        """Register a name→open_id mapping for outbound @ conversion."""
+        if name and open_id:
+            self._mention_registry[name.lower()] = open_id
+            if name.lower() != open_id.lower():
+                self._mention_registry[open_id] = open_id
+
+    def register_inbound_mentions(self, mentions: List[FeishuMentionRef]) -> None:
+        """Feed inbound mention refs into the registry (passive learning).
+
+        Called during message ingestion so future outbound messages can
+        resolve @Name into real <at user_id=\"...\"> tags.
+        """
+        # Guard for test adapters created via __new__() that skip __init__.
+        registry = getattr(self, "_mention_registry", None)
+        if registry is None:
+            return
+        for ref in mentions:
+            if ref.is_all or not ref.open_id:
+                continue
+            if ref.name:
+                registry[ref.name.lower()] = ref.open_id
+            # Always index by open_id itself
+            registry[ref.open_id] = ref.open_id
+
+    def _resolve_mention_name(self, name: str) -> Optional[str]:
+        """Look up a display name in the mention registry. Returns open_id or None."""
+        registry = getattr(self, "_mention_registry", None)
+        if registry is None:
+            return None
+        return registry.get(name.lower())
+
+    def _extract_outbound_mentions(
+        self, content: str,
+    ) -> List[tuple[str, str, int, int]]:
+        """Find all @Name patterns in *content* that match the registry.
+
+        Returns a list of ``(name, open_id, start, end)`` tuples ordered by position.
+        """
+        registry = getattr(self, "_mention_registry", None)
+        if not registry:
+            return []
+        results: List[tuple[str, str, int, int]] = []
+        for m in _OUTBOUND_MENTION_RE.finditer(content):
+            mention_name = m.group(1)
+            open_id = self._resolve_mention_name(mention_name)
+            if open_id:
+                results.append((mention_name, open_id, m.start(), m.end()))
+        return results
+
+    # =========================================================================
     # Outbound payload construction and send pipeline
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
+        # Fast path: check if content contains resolvable @mentions first.
+        mentions = self._extract_outbound_mentions(content)
+        if mentions:
+            payload = self._build_mention_post_payload(content, mentions)
+            if payload is not None:
+                return "post", payload
+        # Fall through to existing logic (md post or plain text).
         if _MARKDOWN_HINT_RE.search(content):
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
+
+    def _build_mention_post_payload(
+        self,
+        content: str,
+        mentions: List[tuple[str, str, int, int]],
+    ) -> Optional[str]:
+        """Build a Feishu post payload with real <at> tags for outbound mentions.
+
+        Scans *content* for @Name patterns that have matching entries in the
+        mention registry and converts each into a proper
+        ``{"tag": "at", "user_id": "ou_xxx"}`` element in the post body.
+
+        The resulting payload uses mixed-element rows (``at + text``) so Feishu
+        renders them as clickable, notification-triggering @mentions.
+
+        Args:
+            content: The raw message text (may contain ``@Name`` markers).
+            mentions: Sorted list of ``(name, open_id, start, end)`` from
+                      :meth:`_extract_outbound_mentions`.
+
+        Returns:
+            A JSON string suitable for the ``content`` field of
+            ``/im/v1/messages``, or *None* if the payload cannot be built.
+        """
+        # Build segments: alternating [text, at_tag, text, at_tag, ...]
+        # Each row is a list of elements.  We keep it simple: one row with
+        # interleaved text and <at> elements.
+        pos = 0
+        elements: List[Dict[str, str]] = []
+
+        for name, open_id, start, end in mentions:
+            # Text before this @mention
+            if start > pos:
+                preceding = content[pos:start].strip()
+                if preceding:
+                    elements.append({"tag": "text", "text": f" {preceding}"})
+            # The <at> element itself
+            elements.append({"tag": "at", "user_id": open_id})
+            pos = end
+
+        # Trailing text after last @mention
+        if pos < len(content):
+            trailing = content[pos:].strip()
+            if trailing:
+                elements.append({"tag": "text", "text": f" {trailing}"})
+
+        if not elements:
+            return None
+
+        return json.dumps(
+            {
+                "zh_cn": {
+                    "content": [elements],
+                }
+            },
+            ensure_ascii=False,
+        )
 
     async def _send_uploaded_file_message(
         self,

@@ -4517,3 +4517,149 @@ class TestFeishuMentionEndToEnd(unittest.TestCase):
         # Body: leading @Hermes stripped, Alice preserved, trailing text intact.
         self.assertIn("@Alice review the spec with Alice", event.text)
         self.assertNotIn("@Hermes @Alice", event.text)
+
+
+class TestFeishuOutboundMentions(unittest.TestCase):
+    """Verify that outbound messages with @Name produce real <at> tags."""
+
+    def _make_adapter(self) -> "FeishuAdapter":
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+        adapter = FeishuAdapter(PlatformConfig())
+        # Pre-populate registry with known contacts.
+        adapter.register_mention("龍朝", "ou_4e914b47f32702e686ffcd546131516b")
+        adapter.register_mention("Alice", "ou_alice001")
+        adapter.register_mention("玄商", "ou_753d8b0ad39e")
+        return adapter
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_single_mention_produces_at_tag(self):
+        adapter = self._make_adapter()
+        msg_type, payload = adapter._build_outbound_payload("@龍朝 你好")
+        self.assertEqual(msg_type, "post")
+        data = json.loads(payload)
+        row = data["zh_cn"]["content"][0]
+        self.assertEqual(row[0], {"tag": "at", "user_id": "ou_4e914b47f32702e686ffcd546131516b"})
+        self.assertEqual(row[1], {"tag": "text", "text": " 你好"})
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_mention_with_trailing_text(self):
+        adapter = self._make_adapter()
+        msg_type, payload = adapter._build_outbound_payload("请 @Alice 帮忙看一下")
+        self.assertEqual(msg_type, "post")
+        data = json.loads(payload)
+        row = data["zh_cn"]["content"][0]
+        self.assertEqual(row[0], {"tag": "text", "text": " 请"})
+        self.assertEqual(row[1], {"tag": "at", "user_id": "ou_alice001"})
+        self.assertEqual(row[2], {"tag": "text", "text": " 帮忙看一下"})
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_multiple_mentions_in_one_message(self):
+        adapter = self._make_adapter()
+        msg_type, payload = adapter._build_outbound_payload(
+            "@龍朝 和 @Alice 请确认"
+        )
+        self.assertEqual(msg_type, "post")
+        data = json.loads(payload)
+        row = data["zh_cn"]["content"][0]
+        self.assertEqual(row[0], {"tag": "at", "user_id": "ou_4e914b47f32702e686ffcd546131516b"})
+        self.assertIn(row[1], [{"tag": "text", "text": " 和"}, {"tag": "text", "text": " 和 "}])
+        self.assertEqual(row[2], {"tag": "at", "user_id": "ou_alice001"})
+        self.assertEqual(row[3], {"tag": "text", "text": " 请确认"})
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_unknown_name_falls_through_to_plain_text(self):
+        """@UnknownName not in registry → no <at> tag, falls to normal path."""
+        adapter = self._make_adapter()
+        msg_type, payload = adapter._build_outbound_payload("@陌生人 你好")
+        # Should NOT be a mention post — should fall through
+        self.assertNotEqual(msg_type, "post", "Unknown name should not produce post type with at tags")
+        # It becomes plain text (no markdown hint either)
+        data = json.loads(payload)
+        self.assertIn("text", data)
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_no_mention_preserves_existing_behavior(self):
+        """Message without any @ should use existing md/text logic."""
+        adapter = self._make_adapter()
+        # Plain text
+        msg_type, payload = adapter._build_outbound_payload("hello world")
+        self.assertEqual(msg_type, "text")
+        # Markdown content still uses post+md
+        msg_type, payload = adapter._build_outbound_payload("**bold** text")
+        self.assertEqual(msg_type, "post")
+        rows = json.loads(payload)["zh_cn"]["content"]
+        inner = rows[0]  # first row is a list of elements
+        self.assertEqual(inner[0]["tag"], "md")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_mention_takes_priority_over_markdown(self):
+        """If both @mention and markdown are present, mention path wins."""
+        adapter = self._make_adapter()
+        msg_type, payload = adapter._build_outbound_payload(
+            "@龍朝 请看 **这个**"
+        )
+        self.assertEqual(msg_type, "post")
+        data = json.loads(payload)
+        row = data["zh_cn"]["content"][0]
+        # First element should be <at>, not <md>
+        self.assertEqual(row[0]["tag"], "at")
+        self.assertEqual(row[0]["user_id"], "ou_4e914b47f32702e686ffcd546131516b")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_register_inbound_mentions_populates_registry(self):
+        from gateway.platforms.feishu import FeishuAdapter, FeishuMentionRef
+        adapter = object.__new__(FeishuAdapter)
+        adapter._mention_registry = {}
+        mentions = [
+            FeishuMentionRef(name="Bob", open_id="ou_bob"),
+            FeishuMentionRef(name="", open_id="ou_noname"),  # nameless
+            FeishuMentionRef(is_all=True),                   # skip @all
+        ]
+        adapter.register_inbound_mentions(mentions)
+        self.assertEqual(adapter._resolve_mention_name("Bob"), "ou_bob")
+        self.assertEqual(adapter._resolve_mention_name("ou_bob"), "ou_bob")
+        # is_all and nameless should not be registered by display name
+        self.assertIsNone(adapter._resolve_mention_name(""))
+
+    @patch.dict(os.environ, {"FEISHU_MENTION_MAP": "TestUser=ou_test123,ou_direct456"}, clear=True)
+    def test_env_var_seeds_registry_on_init(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+        adapter = FeishuAdapter(PlatformConfig())
+        self.assertEqual(adapter._resolve_mention_name("TestUser"), "ou_test123")
+        self.assertEqual(adapter._resolve_mention_name("ou_direct456"), "ou_direct456")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_with_mention_produces_correct_api_call(self):
+        """End-to-end: send() with @name calls API with post + <at> payload."""
+        adapter = self._make_adapter()
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_mention"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(v1=SimpleNamespace(message=_MessageAPI()))
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(
+                adapter.send(chat_id="oc_test", content="@龍朝 收到请回复")
+            )
+
+        self.assertTrue(result.success)
+        body = captured["request"].request_body
+        self.assertEqual(body.msg_type, "post")
+        content = json.loads(body.content)
+        row = content["zh_cn"]["content"][0]
+        self.assertEqual(row[0], {"tag": "at", "user_id": "ou_4e914b47f32702e686ffcd546131516b"})
+        self.assertEqual(row[1], {"tag": "text", "text": " 收到请回复"})

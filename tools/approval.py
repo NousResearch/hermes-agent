@@ -536,6 +536,33 @@ def prompt_dangerous_approval(command: str, description: str,
             logger.error("Approval callback failed: %s", e, exc_info=True)
             return "deny"
 
+    # Fail-closed guard: if prompt_toolkit owns the terminal (interactive
+    # CLI session) and no approval callback is registered on this thread,
+    # the input() fallback below would spawn a daemon thread whose read
+    # can never see Enter -- the user's keystrokes go to prompt_toolkit,
+    # not input(), producing an invisible 60s deadlock (issue #15216).
+    # Deny fast and log loudly instead so the caller can surface a real
+    # error to the agent. Any thread that needs interactive approval must
+    # install a callback via tools.terminal_tool.set_approval_callback()
+    # before reaching this point (see delegate_tool.py, run_agent.py
+    # _execute_tool_calls_concurrent / _spawn_background_review for the
+    # established pattern).
+    try:
+        from prompt_toolkit.application.current import get_app_or_none
+        if get_app_or_none() is not None:
+            logger.warning(
+                "Dangerous-command approval requested on a thread with no "
+                "approval callback while prompt_toolkit is active; denying "
+                "to avoid stdin deadlock. command=%r description=%r",
+                command, description,
+            )
+            return "deny"
+    except Exception:
+        # prompt_toolkit not installed, or detection failed -- fall through
+        # to the legacy input() path (safe in non-TUI contexts: scripts,
+        # tests, sshd, etc.).
+        pass
+
     os.environ["HERMES_SPINNER_PAUSE"] = "1"
     try:
         while True:

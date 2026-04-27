@@ -3828,7 +3828,29 @@ def _model_flow_kimi(config, current_model=""):
             print("API key saved.")
             print()
     else:
-        print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
+        print(f"  {pconfig.name} API key: {existing_key[:8]}... (stored, not validated)")
+        from hermes_cli.setup import prompt_choice
+        action = prompt_choice(
+            "What would you like to do?",
+            [
+                "Keep current key",
+                "Replace with a new key",
+                "Remove key",
+            ],
+            default=0,
+        )
+        if action == 1:
+            new_key = getpass.getpass(f"{key_env}: ").strip()
+            if new_key:
+                save_env_value(key_env, new_key)
+                existing_key = new_key
+                print("API key replaced.")
+            else:
+                print("Key unchanged.")
+        elif action == 2:
+            save_env_value(key_env, "")
+            existing_key = ""
+            print("API key removed.")
         print()
 
     # Step 2: Auto-detect endpoint from key prefix
@@ -3947,7 +3969,29 @@ def _model_flow_stepfun(config, current_model=""):
             print("API key saved.")
             print()
     else:
-        print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
+        print(f"  {pconfig.name} API key: {existing_key[:8]}... (stored, not validated)")
+        from hermes_cli.setup import prompt_choice
+        action = prompt_choice(
+            "What would you like to do?",
+            [
+                "Keep current key",
+                "Replace with a new key",
+                "Remove key",
+            ],
+            default=0,
+        )
+        if action == 1:
+            new_key = getpass.getpass(f"{key_env}: ").strip()
+            if new_key:
+                save_env_value(key_env, new_key)
+                existing_key = new_key
+                print("API key replaced.")
+            else:
+                print("Key unchanged.")
+        elif action == 2:
+            save_env_value(key_env, "")
+            existing_key = ""
+            print("API key removed.")
         print()
 
     current_base = ""
@@ -4341,7 +4385,29 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
             print("API key saved.")
             print()
     else:
-        print(f"  {pconfig.name} API key: {existing_key[:8]}... ✓")
+        print(f"  {pconfig.name} API key: {existing_key[:8]}... (stored, not validated)")
+        from hermes_cli.setup import prompt_choice
+        action = prompt_choice(
+            "What would you like to do?",
+            [
+                "Keep current key",
+                "Replace with a new key",
+                "Remove key",
+            ],
+            default=0,
+        )
+        if action == 1:
+            new_key = getpass.getpass(f"{key_env}: ").strip()
+            if new_key:
+                save_env_value(key_env, new_key)
+                existing_key = new_key
+                print("API key replaced.")
+            else:
+                print("Key unchanged.")
+        elif action == 2:
+            save_env_value(key_env, "")
+            existing_key = ""
+            print("API key removed.")
         print()
 
     # Gemini free-tier gate: free-tier daily quotas (<= 250 RPD for Flash)

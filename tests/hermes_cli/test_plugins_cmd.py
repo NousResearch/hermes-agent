@@ -651,12 +651,42 @@ class TestProviderDiscovery:
             assert result == []
 
     def test_discover_context_engines_empty(self):
-        """Discovery returns empty list when import fails."""
+        """Discovery returns empty list when both discovery paths are unavailable."""
         with patch("plugins.context_engine.discover_context_engines",
-                    side_effect=ImportError("no module")):
+                    side_effect=ImportError("no module")), \
+             patch("hermes_cli.plugins.discover_plugins", side_effect=ImportError("no plugins")):
             from hermes_cli.plugins_cmd import _discover_context_engines
             result = _discover_context_engines()
             assert result == []
+
+    def test_discover_context_engines_includes_external_plugin_engine(self):
+        """External context-engine plugins should appear in the provider picker."""
+
+        class StubPluginEngine:
+            name = "lcm"
+
+        with patch("plugins.context_engine.discover_context_engines", return_value=[]), \
+             patch("hermes_cli.plugins.discover_plugins") as mock_discover_plugins, \
+             patch("hermes_cli.plugins.get_plugin_context_engine", return_value=StubPluginEngine()):
+            from hermes_cli.plugins_cmd import _discover_context_engines
+            result = _discover_context_engines()
+
+        mock_discover_plugins.assert_called_once()
+        assert result == [("lcm", "installed plugin")]
+
+    def test_discover_context_engines_deduplicates_repo_and_plugin_engine(self):
+        """Repo-shipped context engines keep their richer description when names collide."""
+
+        class StubPluginEngine:
+            name = "lcm"
+
+        with patch("plugins.context_engine.discover_context_engines", return_value=[("lcm", "repo engine", True)]), \
+             patch("hermes_cli.plugins.discover_plugins"), \
+             patch("hermes_cli.plugins.get_plugin_context_engine", return_value=StubPluginEngine()):
+            from hermes_cli.plugins_cmd import _discover_context_engines
+            result = _discover_context_engines()
+
+        assert result == [("lcm", "repo engine")]
 
 
 # ── Auto-activation fix ──────────────────────────────────────────────────

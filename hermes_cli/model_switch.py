@@ -1180,6 +1180,15 @@ def list_authenticated_providers(
 
         if hermes_slug in {"copilot", "copilot-acp"}:
             model_ids = provider_model_ids(hermes_slug)
+        # For aws_sdk providers (bedrock), use live discovery so the list
+        # reflects the active region (eu.*, ap.*) not the static us.* list.
+        elif overlay.auth_type == "aws_sdk":
+            try:
+                from agent.bedrock_adapter import bedrock_model_ids_or_none
+                _ids = bedrock_model_ids_or_none()
+                model_ids = _ids if _ids is not None else (curated.get(hermes_slug, []) or curated.get(pid, []))
+            except Exception:
+                model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
         else:
             # Use curated list — look up by Hermes slug, fall back to overlay key
             model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
@@ -1242,10 +1251,30 @@ def list_authenticated_providers(
             except Exception:
                 pass
 
+        # Special case: aws_sdk auth (bedrock) — no API key env vars,
+        # credentials come from the boto3 credential chain (env vars,
+        # ~/.aws/credentials, instance roles, etc.)
+        if not _cp_has_creds and _cp_config and getattr(_cp_config, "auth_type", "") == "aws_sdk":
+            try:
+                from agent.bedrock_adapter import has_aws_credentials
+                _cp_has_creds = has_aws_credentials()
+            except Exception:
+                pass
+
         if not _cp_has_creds:
             continue
 
-        _cp_model_ids = curated.get(_cp.slug, [])
+        # For bedrock, use live discovery so the list reflects the active
+        # region (eu.*, us.*, ap.*) instead of the hardcoded us.* static list.
+        if _cp_config and getattr(_cp_config, "auth_type", "") == "aws_sdk":
+            try:
+                from agent.bedrock_adapter import bedrock_model_ids_or_none
+                _ids = bedrock_model_ids_or_none()
+                _cp_model_ids = _ids if _ids is not None else curated.get(_cp.slug, [])
+            except Exception:
+                _cp_model_ids = curated.get(_cp.slug, [])
+        else:
+            _cp_model_ids = curated.get(_cp.slug, [])
         _cp_total = len(_cp_model_ids)
         _cp_top = _cp_model_ids[:max_models]
 

@@ -2880,8 +2880,9 @@ def _(rid, params: dict) -> dict:
 
     if key == "fast":
         raw = str(value or "").strip().lower()
-        if session and session.get("agent") is not None:
-            current_fast = getattr(session["agent"], "service_tier", None) == "priority"
+        agent = session.get("agent") if session else None
+        if agent is not None:
+            current_fast = getattr(agent, "service_tier", None) == "priority"
         else:
             current_fast = _load_service_tier() == "priority"
 
@@ -2900,19 +2901,27 @@ def _(rid, params: dict) -> dict:
         else:
             return _err(rid, 4002, f"unknown fast mode: {value}")
 
+        overrides = None
+        if nv == "fast":
+            from hermes_cli.models import resolve_fast_mode_overrides
+
+            target_model = getattr(agent, "model", None) if agent is not None else _resolve_model()
+            overrides = resolve_fast_mode_overrides(target_model)
+            if not overrides:
+                return _err(
+                    rid,
+                    4002,
+                    "fast mode is not available for this model",
+                )
+
         _write_config_key("agent.service_tier", nv)
-        if session and session.get("agent") is not None:
-            agent = session["agent"]
+        if agent is not None:
             agent.service_tier = "priority" if nv == "fast" else None
             current_overrides = dict(getattr(agent, "request_overrides", {}) or {})
             current_overrides.pop("service_tier", None)
             current_overrides.pop("speed", None)
             if nv == "fast":
-                from hermes_cli.models import resolve_fast_mode_overrides
-
-                current_overrides.update(
-                    resolve_fast_mode_overrides(getattr(agent, "model", None)) or {}
-                )
+                current_overrides.update(overrides)
             agent.request_overrides = current_overrides
             _emit(
                 "session.info",

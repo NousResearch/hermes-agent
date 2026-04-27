@@ -747,6 +747,40 @@ def test_config_set_fast_status_is_non_mutating(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_config_set_fast_rejects_unsupported_model(monkeypatch):
+    writes = []
+    agent = types.SimpleNamespace(
+        model="unsupported-model",
+        request_overrides={},
+        service_tier=None,
+    )
+    server._sessions["sid"] = _session(agent=agent)
+
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda path, value: writes.append((path, value))
+    )
+    monkeypatch.setattr(
+        "hermes_cli.models.resolve_fast_mode_overrides",
+        lambda _model_id: None,
+    )
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {"session_id": "sid", "key": "fast", "value": "fast"},
+            }
+        )
+        assert resp["error"]["code"] == 4002
+        assert "not available" in resp["error"]["message"]
+        assert agent.service_tier is None
+        assert agent.request_overrides == {}
+        assert writes == []
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_config_busy_get_and_set(monkeypatch):
     writes = []
 

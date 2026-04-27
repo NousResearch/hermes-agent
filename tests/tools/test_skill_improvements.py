@@ -41,6 +41,11 @@ class TestFuzzyPatchSkill:
         skills_dir.mkdir()
         monkeypatch.setattr("tools.skill_manager_tool.SKILLS_DIR", skills_dir)
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        # skill_manage now defaults to disabled (security audit M-4).
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda *a, **kw: {"skills": {"skill_manage_enabled": True}},
+        )
         self.skills_dir = skills_dir
 
     def test_exact_match_still_works(self):

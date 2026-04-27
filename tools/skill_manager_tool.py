@@ -591,15 +591,20 @@ def skill_manage(
         from hermes_cli.config import load_config as _load_cfg
         _cfg = _load_cfg()
         _skills_cfg = _cfg.get("skills", {})
-        if not _skills_cfg.get("skill_manage_enabled", True):
+        if not _skills_cfg.get("skill_manage_enabled", False):
             return tool_error(
                 "skill_manage is disabled (skills.skill_manage_enabled=false). "
                 "Global skills in ~/.hermes/skills/ are shared across all users; "
                 "use a per-user mechanism (e.g. save_user_skill) instead.",
                 success=False,
             )
-    except Exception:
-        pass  # Config unavailable — allow the call
+    except Exception as e:
+        logger.warning("skill_manage config load failed; failing closed: %s", type(e).__name__)
+        return tool_error(
+            "skill_manage unavailable: configuration could not be loaded. "
+            "Refusing the call to avoid writing to a shared global skills directory.",
+            success=False,
+        )
 
     if action == "create":
         if not content:

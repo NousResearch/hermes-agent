@@ -397,6 +397,8 @@ class HonchoMemoryProvider(MemoryProvider):
                     attempts,
                     e,
                 )
+                # This bootstrap path is synchronous; callers must not invoke it
+                # directly from async contexts without switching to asyncio.sleep.
                 time.sleep(1.0)
 
         if last_error is not None:

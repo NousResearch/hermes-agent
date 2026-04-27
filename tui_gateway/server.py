@@ -1630,33 +1630,25 @@ def _(rid, params: dict) -> dict:
     if db is None:
         return _db_unavailable_error(rid, code=5006)
     try:
-        # Resume picker should include human conversation surfaces beyond
-        # tui/cli (notably telegram from blitz row #7), but avoid internal
-        # sources that clutter the modal (tool/acp/etc).
-        allow = frozenset(
-            {
-                "cli",
-                "tui",
-                "telegram",
-                "discord",
-                "slack",
-                "whatsapp",
-                "wecom",
-                "weixin",
-                "feishu",
-                "signal",
-                "mattermost",
-                "matrix",
-                "qq",
-            }
-        )
+        # Resume picker should surface human conversation sessions from every
+        # user-facing surface — CLI, TUI, all gateway platforms (including new
+        # ones not enumerated here), ACP adapter clients, webhook sessions,
+        # custom `HERMES_SESSION_SOURCE` values, and older installs with
+        # different source labels. We deny-list only the noisy internal
+        # sources (``tool`` sub-agent runs) rather than allow-listing a
+        # fixed set of platform names that goes stale whenever a new
+        # platform is added or a user names their own source.
+        deny = frozenset({"tool"})
 
-        limit = int(params.get("limit", 20) or 20)
-        fetch_limit = max(limit * 5, 100)
+        limit = int(params.get("limit", 200) or 200)
+        # Over-fetch modestly so per-source filtering doesn't leave us
+        # short; the compression-tip projection in ``list_sessions_rich``
+        # can also merge rows.
+        fetch_limit = max(limit * 2, 200)
         rows = [
             s
             for s in db.list_sessions_rich(source=None, limit=fetch_limit)
-            if (s.get("source") or "").strip().lower() in allow
+            if (s.get("source") or "").strip().lower() not in deny
         ][:limit]
         return _ok(
             rid,

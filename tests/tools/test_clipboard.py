@@ -12,6 +12,7 @@ import os
 import queue
 import subprocess
 import sys
+from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch, MagicMock, PropertyMock, mock_open
 
@@ -226,44 +227,50 @@ class TestIsWsl:
 
         hermes_constants._wsl_detected = None
 
-    def _patch_proc_open(self, read_data: str):
-        """Patch ``hermes_constants._builtin_open`` (bound name tests can reach on all Pythons)."""
+    @contextmanager
+    def _mock_proc_version(self, *, read_data: str | None = None, open_exc=None):
+        """Patch ``hermes_constants._builtin_open`` and ``builtins.open`` together.
+
+        Some CI / interpreter builds resolve ``open`` via builtins even when the
+        source uses ``from builtins import open as _builtin_open``; patching both
+        plus ``sys.modules['hermes_constants']`` avoids duplicate-module edge cases.
+        """
         import hermes_constants
 
-        return patch.object(
-            hermes_constants,
-            "_builtin_open",
-            mock_open(read_data=read_data),
-        )
+        hc = sys.modules["hermes_constants"]
+        if open_exc is not None:
+            with patch.object(hc, "_builtin_open", side_effect=open_exc), patch(
+                "builtins.open", side_effect=open_exc
+            ):
+                yield None
+            return
+        assert read_data is not None
+        m = mock_open(read_data=read_data)
+        with patch.object(hc, "_builtin_open", m), patch("builtins.open", m):
+            yield m
 
     def test_wsl2_detected(self):
         content = "Linux version 5.15.0 (microsoft-standard-WSL2)"
-        with self._patch_proc_open(content):
+        with self._mock_proc_version(read_data=content):
             assert _is_wsl() is True
 
     def test_wsl1_detected(self):
         content = "Linux version 4.4.0-microsoft-standard"
-        with self._patch_proc_open(content):
+        with self._mock_proc_version(read_data=content):
             assert _is_wsl() is True
 
     def test_regular_linux(self):
         content = "Linux version 6.14.0-37-generic (buildd@lcy02-amd64-049)"
-        with self._patch_proc_open(content):
+        with self._mock_proc_version(read_data=content):
             assert _is_wsl() is False
 
     def test_proc_version_missing(self):
-        import hermes_constants
-
-        with patch.object(
-            hermes_constants,
-            "_builtin_open",
-            side_effect=FileNotFoundError,
-        ):
+        with self._mock_proc_version(open_exc=FileNotFoundError):
             assert _is_wsl() is False
 
     def test_result_is_cached(self):
         content = "Linux version 5.15.0 (microsoft-standard-WSL2)"
-        with self._patch_proc_open(content) as m:
+        with self._mock_proc_version(read_data=content) as m:
             assert _is_wsl() is True
             assert _is_wsl() is True
             m.assert_called_once()  # only read once

@@ -33,18 +33,16 @@ def repro_is_wsl() -> None:
         "(gcc (GCC) 11.2.0) #1 SMP Thu Jan 11 04:09:03 UTC 2024\n"
     )
 
-    orig_exists = hermes_constants.os.path.exists
+    hc = sys.modules["hermes_constants"]
+    orig_exists = hc.os.path.exists
+    m = mock_open(read_data=fake)
     with patch.object(
-        hermes_constants.os.path,
+        hc.os.path,
         "exists",
         side_effect=_stub_wslinterop_exists(orig_exists),
     ):
-        with patch.object(
-            hermes_constants,
-            "_builtin_open",
-            mock_open(read_data=fake),
-        ):
-            assert hermes_constants.is_wsl() is True, "is_wsl + mocked /proc/version"
+        with patch.object(hc, "_builtin_open", m), patch("builtins.open", m):
+            assert hc.is_wsl() is True, "is_wsl + mocked /proc/version"
 
 
 class _SyncThread:

@@ -64,7 +64,7 @@ class TestGmiAliases:
 
 class TestGmiConfigRegistry:
     def test_optional_env_vars_include_gmi(self):
-        from hermes_cli.config import ENV_VARS_BY_VERSION, OPTIONAL_ENV_VARS
+        from hermes_cli.config import OPTIONAL_ENV_VARS
 
         assert "GMI_API_KEY" in OPTIONAL_ENV_VARS
         assert OPTIONAL_ENV_VARS["GMI_API_KEY"]["category"] == "provider"
@@ -74,9 +74,9 @@ class TestGmiConfigRegistry:
         assert "GMI_BASE_URL" in OPTIONAL_ENV_VARS
         assert OPTIONAL_ENV_VARS["GMI_BASE_URL"]["category"] == "provider"
         assert OPTIONAL_ENV_VARS["GMI_BASE_URL"]["password"] is False
-
-        assert "GMI_API_KEY" in ENV_VARS_BY_VERSION[17]
-        assert "GMI_BASE_URL" in ENV_VARS_BY_VERSION[17]
+        # ENV_VARS_BY_VERSION entries are not needed for providers added after
+        # _config_version 22 (the current baseline) — users discover GMI via
+        # hermes model, not via upgrade prompts.
 
 
 class TestGmiModelCatalog:
@@ -158,7 +158,7 @@ class TestGmiDoctor:
         home = tmp_path / ".hermes"
         home.mkdir(parents=True, exist_ok=True)
         (home / "config.yaml").write_text("memory: {}\n", encoding="utf-8")
-        (home / ".env").write_text("GMI_API_KEY=gmi-test-key\n", encoding="utf-8")
+        (home / ".env").write_text("GMI_API_KEY=***\n", encoding="utf-8")
         project = tmp_path / "project"
         project.mkdir(exist_ok=True)
 
@@ -271,7 +271,7 @@ class TestGmiAuxiliary:
     def test_aux_default_model(self):
         from agent.auxiliary_client import _API_KEY_PROVIDER_AUX_MODELS
 
-        assert _API_KEY_PROVIDER_AUX_MODELS["gmi"] == "anthropic/claude-opus-4.6"
+        assert _API_KEY_PROVIDER_AUX_MODELS["gmi"] == "google/gemini-3.1-flash-lite-preview"
 
     def test_resolve_provider_client_uses_gmi_aux_default(self, monkeypatch):
         monkeypatch.setenv("GMI_API_KEY", "gmi-test-key")
@@ -281,7 +281,7 @@ class TestGmiAuxiliary:
             client, model = resolve_provider_client("gmi")
 
         assert client is not None
-        assert model == "anthropic/claude-opus-4.6"
+        assert model == "google/gemini-3.1-flash-lite-preview"
         assert mock_openai.call_args.kwargs["api_key"] == "gmi-test-key"
         assert mock_openai.call_args.kwargs["base_url"] == "https://api.gmi-serving.com/v1"
 
@@ -293,7 +293,7 @@ class TestGmiAuxiliary:
             client, model = resolve_provider_client("gmi-cloud")
 
         assert client is not None
-        assert model == "anthropic/claude-opus-4.6"
+        assert model == "google/gemini-3.1-flash-lite-preview"
 
 
 class TestGmiMainFlow:

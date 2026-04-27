@@ -6056,6 +6056,51 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
             )
             return True  # handled (silently dropped); do not fall through
 
+        # Plugin hooks normally run on the idle path inside _handle_message.
+        # The busy path bypasses that, so handover / listen-only / ambient-buffer
+        # plugins never get a chance to silence an inbound that arrives while
+        # an agent is mid-run (the user types during a customer handover,
+        # owner sends an aside, etc.).  Consult pre_gateway_dispatch first and
+        # short-circuit on `skip`.  Other return shapes (rewrite/allow) are
+        # intentionally NOT honored on the busy path: rewriting an event
+        # we're about to interrupt with is racy, and the only consumer that
+        # emits skip today is gateway-policy (handover / listen-only).  The
+        # invocation signature mirrors the idle path in _handle_message so
+        # plugin contracts stay identical for the skip case.
+        is_internal = bool(getattr(event, "internal", False))
+        if not is_internal:
+            try:
+                from hermes_cli.plugins import invoke_hook as _invoke_hook
+                _hook_results = _invoke_hook(
+                    "pre_gateway_dispatch",
+                    event=event,
+                    gateway=self,
+                    session_store=self.session_store,
+                )
+            except Exception as _hook_exc:
+                logger.warning("pre_gateway_dispatch (busy path) invocation failed: %s", _hook_exc)
+                _hook_results = []
+
+            for _result in _hook_results or []:
+                if not isinstance(_result, dict):
+                    continue
+                if _result.get("action") == "skip":
+                    try:
+                        _platform_str = (
+                            event.source.platform.value
+                            if event.source.platform
+                            else "unknown"
+                        )
+                    except Exception:
+                        _platform_str = "unknown"
+                    logger.info(
+                        "pre_gateway_dispatch skip (busy path): reason=%s platform=%s chat=%s",
+                        _result.get("reason"),
+                        _platform_str,
+                        getattr(event.source, "chat_id", None) or "unknown",
+                    )
+                    return True
+
         # --- Draining case (gateway restarting/stopping) ---
         if self._draining:
             adapter = self._adapter_for_source(event.source)

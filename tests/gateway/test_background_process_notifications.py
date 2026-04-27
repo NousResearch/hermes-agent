@@ -373,6 +373,155 @@ def test_build_process_event_source_returns_none_for_short_session_key(monkeypat
     assert source is None
 
 
+@pytest.mark.asyncio
+async def test_register_deferred_watch_notifications_preserves_existing_callback(monkeypatch, tmp_path):
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    session_key = "agent:main:telegram:group:-100:42"
+    sequence = []
+
+    class _Adapter:
+        def __init__(self):
+            self.send = AsyncMock()
+            self.handle_message = AsyncMock()
+            self._post_delivery_callbacks = {}
+
+        def register_post_delivery_callback(self, session_key, callback, *, generation=None):
+            if generation is None:
+                self._post_delivery_callbacks[session_key] = callback
+            else:
+                self._post_delivery_callbacks[session_key] = (int(generation), callback)
+
+        def pop_post_delivery_callback(self, session_key, *, generation=None):
+            entry = self._post_delivery_callbacks.get(session_key)
+            if entry is None:
+                return None
+            if isinstance(entry, tuple):
+                entry_generation, callback = entry
+                if generation is not None and entry_generation != generation:
+                    return None
+                self._post_delivery_callbacks.pop(session_key, None)
+                return callback
+            if generation is not None:
+                return None
+            return self._post_delivery_callbacks.pop(session_key, None)
+
+    adapter = _Adapter()
+    runner.adapters[Platform.TELEGRAM] = adapter
+
+    def _existing_callback():
+        sequence.append("existing")
+
+    adapter.register_post_delivery_callback(session_key, _existing_callback, generation=7)
+
+    async def _record_injection(synth_text, evt):
+        sequence.append(("inject", synth_text, evt["session_id"]))
+
+    runner._inject_watch_notification = AsyncMock(side_effect=_record_injection)
+    notifications = [
+        (
+            "[SYSTEM: Background process matched]",
+            {"session_id": "proc_watch", "session_key": session_key},
+        )
+    ]
+
+    runner._register_deferred_watch_notifications(adapter, session_key, 7, notifications)
+
+    stored = adapter._post_delivery_callbacks[session_key]
+    assert isinstance(stored, tuple)
+    assert stored[0] == 7
+    assert sequence == []
+
+    callback = adapter.pop_post_delivery_callback(session_key, generation=7)
+    assert callable(callback)
+
+    callback()
+    await asyncio.sleep(0)
+
+    assert sequence == [
+        "existing",
+        ("inject", "[SYSTEM: Background process matched]", "proc_watch"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_register_deferred_watch_notifications_preserves_multi_watch_order(monkeypatch, tmp_path):
+    runner = _build_runner(monkeypatch, tmp_path, "all")
+    session_key = "agent:main:telegram:group:-100:42"
+    sequence = []
+    scheduled = []
+    original_create_task = asyncio.create_task
+
+    class _Adapter:
+        def __init__(self):
+            self.send = AsyncMock()
+            self.handle_message = AsyncMock()
+            self._post_delivery_callbacks = {}
+
+        def register_post_delivery_callback(self, session_key, callback, *, generation=None):
+            if generation is None:
+                self._post_delivery_callbacks[session_key] = callback
+            else:
+                self._post_delivery_callbacks[session_key] = (int(generation), callback)
+
+        def pop_post_delivery_callback(self, session_key, *, generation=None):
+            entry = self._post_delivery_callbacks.get(session_key)
+            if entry is None:
+                return None
+            if isinstance(entry, tuple):
+                entry_generation, callback = entry
+                if generation is not None and entry_generation != generation:
+                    return None
+                self._post_delivery_callbacks.pop(session_key, None)
+                return callback
+            if generation is not None:
+                return None
+            return self._post_delivery_callbacks.pop(session_key, None)
+
+    def _capture_task(coro):
+        task = original_create_task(coro)
+        scheduled.append(task)
+        return task
+
+    monkeypatch.setattr(asyncio, "create_task", _capture_task)
+
+    adapter = _Adapter()
+    runner.adapters[Platform.TELEGRAM] = adapter
+
+    def _existing_callback():
+        sequence.append("existing")
+
+    adapter.register_post_delivery_callback(session_key, _existing_callback, generation=9)
+
+    async def _record_injection(synth_text, evt):
+        sequence.append(("inject", synth_text, evt["session_id"]))
+
+    runner._inject_watch_notification = AsyncMock(side_effect=_record_injection)
+    notifications = [
+        (
+            "[SYSTEM: First watch match]",
+            {"session_id": "proc_watch_1", "session_key": session_key},
+        ),
+        (
+            "[SYSTEM: Second watch match]",
+            {"session_id": "proc_watch_2", "session_key": session_key},
+        ),
+    ]
+
+    runner._register_deferred_watch_notifications(adapter, session_key, 9, notifications)
+
+    callback = adapter.pop_post_delivery_callback(session_key, generation=9)
+    assert callable(callback)
+
+    callback()
+    await asyncio.gather(*scheduled)
+
+    assert sequence == [
+        "existing",
+        ("inject", "[SYSTEM: First watch match]", "proc_watch_1"),
+        ("inject", "[SYSTEM: Second watch match]", "proc_watch_2"),
+    ]
+
+
 # ---------------------------------------------------------------------------
 # _parse_session_key helper
 # ---------------------------------------------------------------------------

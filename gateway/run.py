@@ -4724,20 +4724,34 @@ class GatewayRunner:
             # inject watch-type events here.
             try:
                 from tools.process_registry import process_registry as _pr
-                _watch_events = []
+                _watch_notifications = []
                 while not _pr.completion_queue.empty():
                     evt = _pr.completion_queue.get_nowait()
                     evt_type = evt.get("type", "completion")
                     if evt_type in ("watch_match", "watch_disabled"):
-                        _watch_events.append(evt)
+                        synth_text = _format_gateway_process_notification(evt)
+                        if synth_text:
+                            _watch_notifications.append((synth_text, evt))
                     # else: completion events are handled by the watcher task
-                for evt in _watch_events:
-                    synth_text = _format_gateway_process_notification(evt)
-                    if synth_text:
+                if _watch_notifications:
+                    _watch_adapter = self.adapters.get(source.platform)
+                    _deferred = False
+                    if _watch_adapter and session_key:
                         try:
-                            await self._inject_watch_notification(synth_text, evt)
+                            _deferred = self._register_deferred_watch_notifications(
+                                _watch_adapter,
+                                session_key,
+                                run_generation,
+                                _watch_notifications,
+                            )
                         except Exception as e2:
-                            logger.error("Watch notification injection error: %s", e2)
+                            logger.error("Watch notification deferral error: %s", e2)
+                    if not _deferred:
+                        for synth_text, evt in _watch_notifications:
+                            try:
+                                await self._inject_watch_notification(synth_text, evt)
+                            except Exception as e2:
+                                logger.error("Watch notification injection error: %s", e2)
             except Exception as e:
                 logger.debug("Watch queue drain error: %s", e)
 
@@ -8477,6 +8491,73 @@ class GatewayRunner:
             await adapter.handle_message(synth_event)
         except Exception as e:
             logger.error("Watch notification injection error: %s", e)
+
+    def _register_deferred_watch_notifications(
+        self,
+        adapter: Any,
+        session_key: str,
+        run_generation: int | None,
+        notifications: list[tuple[str, dict]],
+    ) -> bool:
+        """Deliver watch notifications after the main response for this run.
+
+        This avoids routing a synthetic internal message through the active-session
+        busy path while the foreground turn is still unwinding. If a post-delivery
+        callback is already registered for the same run (e.g. background-review
+        release), preserve it and run it first.
+        """
+        if not adapter or not session_key or not notifications:
+            return False
+
+        existing_callback = None
+        if getattr(type(adapter), "pop_post_delivery_callback", None) is not None:
+            existing_callback = adapter.pop_post_delivery_callback(
+                session_key,
+                generation=run_generation,
+            )
+        else:
+            _pdc = getattr(adapter, "_post_delivery_callbacks", None)
+            if isinstance(_pdc, dict):
+                entry = _pdc.get(session_key)
+                if isinstance(entry, tuple) and len(entry) == 2:
+                    entry_generation, callback = entry
+                    if run_generation is not None and int(entry_generation) != int(run_generation):
+                        return False
+                    _pdc.pop(session_key, None)
+                    existing_callback = callback if callable(callback) else None
+                elif run_generation is None:
+                    existing_callback = _pdc.pop(session_key, None)
+                else:
+                    return False
+
+        def _deliver_deferred_watch_notifications() -> None:
+            if callable(existing_callback):
+                try:
+                    existing_callback()
+                except Exception:
+                    pass
+            for synth_text, evt in notifications:
+                try:
+                    asyncio.create_task(self._inject_watch_notification(synth_text, evt))
+                except Exception as e:
+                    logger.debug("deferred watch notification scheduling error: %s", e)
+
+        if getattr(type(adapter), "register_post_delivery_callback", None) is not None:
+            adapter.register_post_delivery_callback(
+                session_key,
+                _deliver_deferred_watch_notifications,
+                generation=run_generation,
+            )
+            return True
+
+        _pdc = getattr(adapter, "_post_delivery_callbacks", None)
+        if isinstance(_pdc, dict):
+            if run_generation is None:
+                _pdc[session_key] = _deliver_deferred_watch_notifications
+            else:
+                _pdc[session_key] = (int(run_generation), _deliver_deferred_watch_notifications)
+            return True
+        return False
 
     async def _run_process_watcher(self, watcher: dict) -> None:
         """

@@ -153,14 +153,15 @@ class TestDisplayResumedHistory:
         assert "Found 5 results" not in output
         assert "Page content" not in output
 
-    def test_tool_calls_shown_as_summary(self):
+    def test_pure_tool_call_assistant_messages_hidden(self):
         cli = _make_cli()
         cli.conversation_history = _tool_call_history()
         output = self._capture_display(cli)
 
-        assert "2 tool calls" in output
-        assert "web_search" in output
-        assert "web_extract" in output
+        assert "2 tool calls" not in output
+        assert "web_search" not in output
+        assert "web_extract" not in output
+        assert "Here are some great Python tutorials" in output
 
     def test_long_user_message_truncated(self):
         cli = _make_cli()
@@ -487,6 +488,48 @@ class TestDisplayResumedHistory:
         assert "Let me search for that." in output
         assert "1 tool call" in output
         assert "terminal" in output
+
+
+# ── Tests for /resume command display ──────────────────────────────
+
+
+class TestResumeCommandDisplay:
+    """Mid-session /resume should show the same recap users see on startup."""
+
+    def test_resume_other_session_displays_previous_conversation(self):
+        cli = _make_cli()
+        messages = _simple_history()
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = {"id": "target_session", "title": "Target"}
+        mock_db.resolve_resume_session_id.return_value = "target_session"
+        mock_db.get_messages_as_conversation.return_value = messages
+        cli._session_db = mock_db
+
+        buf = StringIO()
+        cli.console.file = buf
+        cli._handle_resume_command("/resume target_session")
+
+        output = buf.getvalue()
+        assert "Previous Conversation" in output
+        assert "What is Python?" in output
+        assert "You can install Python from python.org." in output
+
+    def test_resume_current_session_replays_previous_conversation(self):
+        cli = _make_cli()
+        cli.session_id = "current_session"
+        cli.conversation_history = _simple_history()
+        mock_db = MagicMock()
+        mock_db.get_session.return_value = {"id": "current_session", "title": "Current"}
+        mock_db.resolve_resume_session_id.return_value = "current_session"
+        cli._session_db = mock_db
+
+        buf = StringIO()
+        cli.console.file = buf
+        cli._handle_resume_command("/resume current_session")
+
+        output = buf.getvalue()
+        assert "Previous Conversation" in output
+        assert "How do I install it?" in output
 
 
 # ── Tests for _preload_resumed_session ──────────────────────────────

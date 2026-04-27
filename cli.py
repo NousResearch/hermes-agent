@@ -3708,9 +3708,12 @@ class HermesCLI:
                     if len(text) > MAX_ASST_LEN:
                         text = text[:MAX_ASST_LEN] + "..."
                     parts.append(text)
-                if tool_calls:
+                if tool_calls and text:
+                    # If the assistant also provided user-visible text, keep a
+                    # compact hint that tools were involved.  Pure tool-call
+                    # assistant messages are skipped below so resume panels
+                    # don't become a wall of implementation noise.
                     tc_count = len(tool_calls)
-                    # Extract tool names
                     names = []
                     for tc in tool_calls:
                         fn = tc.get("function", {})
@@ -3725,7 +3728,8 @@ class HermesCLI:
                     parts.append(tc_summary)
                     full_parts.append(tc_summary)
                 if not parts:
-                    # Skip pure-reasoning messages that have no visible output
+                    # Skip pure-reasoning messages and pure tool-call messages
+                    # that have no user-visible assistant text.
                     continue
                 entries.append(("assistant", " ".join(parts)))
                 _last_asst_idx = len(entries) - 1
@@ -4837,7 +4841,15 @@ class HermesCLI:
                 session_meta = resolved_meta
 
         if target_id == self.session_id:
+            # The user may be trying to re-display context after losing the
+            # visible terminal scrollback.  Reload history if needed and show
+            # the same recap panel used by startup resume.
+            if not self.conversation_history:
+                restored = self._session_db.get_messages_as_conversation(target_id)
+                restored = [m for m in (restored or []) if m.get("role") != "session_meta"]
+                self.conversation_history = restored
             _cprint("  Already on that session.")
+            self._display_resumed_history()
             return
 
         # End current session
@@ -4885,6 +4897,7 @@ class HermesCLI:
                 f" ({msg_count} user message{'s' if msg_count != 1 else ''},"
                 f" {len(self.conversation_history)} total)"
             )
+            self._display_resumed_history()
         else:
             _cprint(f"  ↻ Resumed session {target_id}{title_part} — no messages, starting fresh.")
 

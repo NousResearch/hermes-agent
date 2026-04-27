@@ -579,6 +579,17 @@ class APIServerAdapter(BasePlatformAdapter):
         self._model_name: str = self._resolve_model_name(
             extra.get("model_name", os.getenv("API_SERVER_MODEL_NAME", "")),
         )
+        # Opt-in per-request model override (issue #16216).  When enabled,
+        # callers can route a single request to a non-default model via the
+        # ``X-Router-Model`` header or ``metadata.override_model`` in the body.
+        # Useful for external routing layers that classify requests (cost/
+        # quality tiers) before handing them to Hermes.  Defaults off.
+        self._allow_model_override: bool = bool(
+            extra.get(
+                "allow_model_override",
+                os.getenv("API_SERVER_ALLOW_MODEL_OVERRIDE", "").lower() in ("1", "true", "yes"),
+            )
+        )
         self._app: Optional["web.Application"] = None
         self._runner: Optional["web.AppRunner"] = None
         self._site: Optional["web.TCPSite"] = None
@@ -606,6 +617,64 @@ class APIServerAdapter(BasePlatformAdapter):
             items = [str(value)]
 
         return tuple(str(item).strip() for item in items if str(item).strip())
+
+    # Cap on the length of a per-request model override, large enough for
+    # ``provider/model`` shapes but small enough to reject obvious abuse.
+    _MAX_OVERRIDE_LEN = 256
+    _OVERRIDE_INVALID_CHARS = re.compile(r"[\r\n\x00]")
+
+    def _resolve_request_model_override(
+        self,
+        request: "web.Request",
+        body: Optional[Dict[str, Any]],
+    ) -> Optional[str]:
+        """Pick a per-request model override from header / body, if allowed.
+
+        Lookup order (first non-empty wins):
+          1. ``X-Router-Model`` HTTP header.
+          2. ``metadata.override_model`` in the JSON body.
+
+        Returns ``None`` when the feature is disabled, the override is empty,
+        contains control characters, exceeds ``_MAX_OVERRIDE_LEN``, or matches
+        the advertised default (no-op).  ``body.model`` is intentionally
+        *not* used as a fallback — many OpenAI clients send the advertised
+        ``hermes-agent`` model id verbatim, so reading from there would
+        produce false positives.  Routing layers that want a per-request
+        override must opt in via the dedicated header / metadata field.
+        """
+        if not self._allow_model_override:
+            return None
+
+        candidate = (request.headers.get("X-Router-Model") or "").strip()
+        if not candidate and isinstance(body, dict):
+            meta = body.get("metadata")
+            if isinstance(meta, dict):
+                raw = meta.get("override_model")
+                if isinstance(raw, str):
+                    candidate = raw.strip()
+
+        if not candidate:
+            return None
+        if len(candidate) > self._MAX_OVERRIDE_LEN:
+            logger.warning(
+                "Per-request model override rejected: exceeds %d chars",
+                self._MAX_OVERRIDE_LEN,
+            )
+            return None
+        if self._OVERRIDE_INVALID_CHARS.search(candidate):
+            logger.warning(
+                "Per-request model override rejected: control characters present",
+            )
+            return None
+        if candidate == self._model_name:
+            # Caller asked for the advertised default — same as no override.
+            return None
+
+        logger.info(
+            "Honouring per-request model override: %s (advertised=%s)",
+            candidate, self._model_name,
+        )
+        return candidate
 
     @staticmethod
     def _resolve_model_name(explicit: str) -> str:
@@ -713,6 +782,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        model_override: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -721,13 +791,19 @@ class APIServerAdapter(BasePlatformAdapter):
         base_url, etc. from config.yaml / env vars.  Toolsets are resolved
         from config.yaml platform_toolsets.api_server (same as all other
         gateway platforms), falling back to the hermes-api-server default.
+
+        When *model_override* is provided (issue #16216), it replaces the
+        config-resolved model for this single agent.  Provider credentials
+        are still resolved from config — the override is intended for
+        models that share the same provider routing, e.g. multiple Claude
+        SKUs on the same Anthropic key.
         """
         from run_agent import AIAgent
         from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config
         from hermes_cli.tools_config import _get_platform_tools
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
-        model = _resolve_gateway_model()
+        model = (model_override or "").strip() or _resolve_gateway_model()
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
@@ -914,7 +990,11 @@ class APIServerAdapter(BasePlatformAdapter):
             # history already set from request body above
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
-        model_name = body.get("model", self._model_name)
+        model_override = self._resolve_request_model_override(request, body)
+        # ``model_name`` is what the OpenAI response echoes back — when an
+        # override is honoured, surface it so external routers can see which
+        # model actually served the turn.
+        model_name = model_override or body.get("model", self._model_name)
         created = int(time.time())
 
         if stream:
@@ -974,6 +1054,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 stream_delta_callback=_on_delta,
                 tool_progress_callback=_on_tool_progress,
                 agent_ref=agent_ref,
+                model_override=model_override,
             ))
 
             return await self._write_sse_chat_completion(
@@ -988,11 +1069,21 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                model_override=model_override,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
-            fp = _make_request_fingerprint(body, keys=["model", "messages", "tools", "tool_choice", "stream"])
+            fp_body = dict(body)
+            if model_override:
+                # Fold the override into the fingerprint so two requests
+                # with the same Idempotency-Key but different routed models
+                # don't collide on the cached response.
+                fp_body["__override_model__"] = model_override
+            fp = _make_request_fingerprint(
+                fp_body,
+                keys=["model", "messages", "tools", "tool_choice", "stream", "__override_model__"],
+            )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
             except Exception as e:
@@ -1776,6 +1867,8 @@ class APIServerAdapter(BasePlatformAdapter):
         # groups the entire conversation under one session entry.
         session_id = stored_session_id or str(uuid.uuid4())
 
+        model_override = self._resolve_request_model_override(request, body)
+
         stream = bool(body.get("stream", False))
         if stream:
             # Streaming branch — emit OpenAI Responses SSE events as the
@@ -1828,10 +1921,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_start_callback=_on_tool_start,
                 tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
+                model_override=model_override,
             ))
 
             response_id = f"resp_{uuid.uuid4().hex[:28]}"
-            model_name = body.get("model", self._model_name)
+            model_name = model_override or body.get("model", self._model_name)
             created_at = int(time.time())
 
             return await self._write_sse_responses(
@@ -1856,13 +1950,17 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=conversation_history,
                 ephemeral_system_prompt=instructions,
                 session_id=session_id,
+                model_override=model_override,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
         if idempotency_key:
+            fp_body = dict(body)
+            if model_override:
+                fp_body["__override_model__"] = model_override
             fp = _make_request_fingerprint(
-                body,
-                keys=["input", "instructions", "previous_response_id", "conversation", "model", "tools"],
+                fp_body,
+                keys=["input", "instructions", "previous_response_id", "conversation", "model", "tools", "__override_model__"],
             )
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response)
@@ -1908,7 +2006,7 @@ class APIServerAdapter(BasePlatformAdapter):
             "object": "response",
             "status": "completed",
             "created_at": created_at,
-            "model": body.get("model", self._model_name),
+            "model": model_override or body.get("model", self._model_name),
             "output": output_items,
             "usage": {
                 "input_tokens": usage.get("input_tokens", 0),
@@ -2252,6 +2350,7 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
+        model_override: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -2274,6 +2373,7 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
+                model_override=model_override,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent

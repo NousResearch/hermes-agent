@@ -290,6 +290,211 @@ class TestAuth:
 
 
 # ---------------------------------------------------------------------------
+# Per-request model override (issue #16216)
+# ---------------------------------------------------------------------------
+
+
+def _request_with_headers(headers: dict) -> MagicMock:
+    req = MagicMock()
+    req.headers = headers
+    return req
+
+
+class TestRequestModelOverride:
+    """``_resolve_request_model_override`` — opt-in routing of a single
+    request to a non-default model via header or body metadata."""
+
+    def test_disabled_by_default_returns_none(self):
+        config = PlatformConfig(enabled=True)
+        adapter = APIServerAdapter(config)
+        req = _request_with_headers({"X-Router-Model": "anthropic/claude-haiku-4-5"})
+        assert adapter._resolve_request_model_override(req, {}) is None
+
+    def test_enabled_via_extra_picks_up_header(self):
+        config = PlatformConfig(enabled=True, extra={"allow_model_override": True})
+        adapter = APIServerAdapter(config)
+        req = _request_with_headers({"X-Router-Model": "anthropic/claude-haiku-4-5"})
+        assert (
+            adapter._resolve_request_model_override(req, {})
+            == "anthropic/claude-haiku-4-5"
+        )
+
+    def test_enabled_via_env(self, monkeypatch):
+        monkeypatch.setenv("API_SERVER_ALLOW_MODEL_OVERRIDE", "true")
+        config = PlatformConfig(enabled=True)
+        adapter = APIServerAdapter(config)
+        req = _request_with_headers({"X-Router-Model": "openrouter/sonnet-4"})
+        assert (
+            adapter._resolve_request_model_override(req, {})
+            == "openrouter/sonnet-4"
+        )
+
+    def test_body_metadata_fallback(self):
+        config = PlatformConfig(enabled=True, extra={"allow_model_override": True})
+        adapter = APIServerAdapter(config)
+        req = _request_with_headers({})
+        body = {"metadata": {"override_model": "anthropic/opus-4-7"}}
+        assert (
+            adapter._resolve_request_model_override(req, body)
+            == "anthropic/opus-4-7"
+        )
+
+    def test_header_takes_precedence_over_body(self):
+        config = PlatformConfig(enabled=True, extra={"allow_model_override": True})
+        adapter = APIServerAdapter(config)
+        req = _request_with_headers({"X-Router-Model": "from-header"})
+        body = {"metadata": {"override_model": "from-body"}}
+        assert adapter._resolve_request_model_override(req, body) == "from-header"
+
+    def test_empty_string_treated_as_unset(self):
+        config = PlatformConfig(enabled=True, extra={"allow_model_override": True})
+        adapter = APIServerAdapter(config)
+        req = _request_with_headers({"X-Router-Model": "   "})
+        body = {"metadata": {"override_model": ""}}
+        assert adapter._resolve_request_model_override(req, body) is None
+
+    def test_advertised_model_treated_as_no_override(self):
+        config = PlatformConfig(
+            enabled=True,
+            extra={"allow_model_override": True, "model_name": "hermes-fast"},
+        )
+        adapter = APIServerAdapter(config)
+        req = _request_with_headers({"X-Router-Model": "hermes-fast"})
+        # Caller is asking for the advertised default — same as no override.
+        assert adapter._resolve_request_model_override(req, {}) is None
+
+    def test_oversized_value_rejected(self):
+        config = PlatformConfig(enabled=True, extra={"allow_model_override": True})
+        adapter = APIServerAdapter(config)
+        req = _request_with_headers({"X-Router-Model": "a" * 257})
+        assert adapter._resolve_request_model_override(req, {}) is None
+
+    def test_control_chars_rejected(self):
+        """CR/LF/NUL must not slip through (header-injection guard)."""
+        config = PlatformConfig(enabled=True, extra={"allow_model_override": True})
+        adapter = APIServerAdapter(config)
+        for bad in ("evil\r\nX-Other: 1", "model\nbad", "with\x00null"):
+            req = _request_with_headers({"X-Router-Model": bad})
+            assert adapter._resolve_request_model_override(req, {}) is None, bad
+
+    def test_non_string_metadata_ignored(self):
+        config = PlatformConfig(enabled=True, extra={"allow_model_override": True})
+        adapter = APIServerAdapter(config)
+        req = _request_with_headers({})
+        body = {"metadata": {"override_model": 42}}  # numeric value, not a string
+        assert adapter._resolve_request_model_override(req, body) is None
+
+    def test_metadata_not_a_dict_ignored(self):
+        config = PlatformConfig(enabled=True, extra={"allow_model_override": True})
+        adapter = APIServerAdapter(config)
+        req = _request_with_headers({})
+        for bad_meta in ("scalar", ["list"], 123):
+            body = {"metadata": bad_meta}
+            assert adapter._resolve_request_model_override(req, body) is None
+
+
+class TestCreateAgentWithOverride:
+    """``_create_agent`` routes to ``model_override`` when provided."""
+
+    def test_override_replaces_resolved_model(self):
+        config = PlatformConfig(enabled=True, extra={"allow_model_override": True})
+        adapter = APIServerAdapter(config)
+
+        captured = {}
+
+        def fake_aiagent(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        with patch("run_agent.AIAgent", side_effect=fake_aiagent), \
+             patch(
+                 "gateway.run._resolve_runtime_agent_kwargs",
+                 return_value={"api_key": "k", "base_url": "u", "provider": "p"},
+             ), \
+             patch(
+                 "gateway.run._resolve_gateway_model",
+                 return_value="default-model",
+             ), \
+             patch("gateway.run._load_gateway_config", return_value={}), \
+             patch(
+                 "hermes_cli.tools_config._get_platform_tools",
+                 return_value=set(),
+             ), \
+             patch(
+                 "gateway.run.GatewayRunner._load_fallback_model",
+                 return_value=None,
+             ):
+            adapter._create_agent(model_override="anthropic/haiku")
+
+        assert captured["model"] == "anthropic/haiku"
+
+    def test_no_override_uses_default(self):
+        config = PlatformConfig(enabled=True)
+        adapter = APIServerAdapter(config)
+
+        captured = {}
+
+        def fake_aiagent(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        with patch("run_agent.AIAgent", side_effect=fake_aiagent), \
+             patch(
+                 "gateway.run._resolve_runtime_agent_kwargs",
+                 return_value={"api_key": "k", "base_url": "u", "provider": "p"},
+             ), \
+             patch(
+                 "gateway.run._resolve_gateway_model",
+                 return_value="default-model",
+             ), \
+             patch("gateway.run._load_gateway_config", return_value={}), \
+             patch(
+                 "hermes_cli.tools_config._get_platform_tools",
+                 return_value=set(),
+             ), \
+             patch(
+                 "gateway.run.GatewayRunner._load_fallback_model",
+                 return_value=None,
+             ):
+            adapter._create_agent()
+
+        assert captured["model"] == "default-model"
+
+    def test_blank_override_falls_through_to_default(self):
+        """An empty / whitespace override must NOT clobber the resolved model."""
+        config = PlatformConfig(enabled=True)
+        adapter = APIServerAdapter(config)
+
+        captured = {}
+
+        def fake_aiagent(**kwargs):
+            captured.update(kwargs)
+            return MagicMock()
+
+        with patch("run_agent.AIAgent", side_effect=fake_aiagent), \
+             patch(
+                 "gateway.run._resolve_runtime_agent_kwargs",
+                 return_value={"api_key": "k", "base_url": "u", "provider": "p"},
+             ), \
+             patch(
+                 "gateway.run._resolve_gateway_model",
+                 return_value="default-model",
+             ), \
+             patch("gateway.run._load_gateway_config", return_value={}), \
+             patch(
+                 "hermes_cli.tools_config._get_platform_tools",
+                 return_value=set(),
+             ), \
+             patch(
+                 "gateway.run.GatewayRunner._load_fallback_model",
+                 return_value=None,
+             ):
+            adapter._create_agent(model_override="   ")
+
+        assert captured["model"] == "default-model"
+
+
+# ---------------------------------------------------------------------------
 # Helpers for HTTP tests
 # ---------------------------------------------------------------------------
 

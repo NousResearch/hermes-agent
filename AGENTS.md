@@ -854,6 +854,58 @@ Isolation model:
 
 Full user-facing docs: `website/docs/user-guide/features/kanban.md`.
 
+### Skill triggers — unified event routing
+
+Skills can opt into receiving inbound gateway events (button clicks,
+reactions, mentions, slash commands, cron firings) via a
+`metadata.hermes.triggers:` block. The schema is type-keyed:
+
+```yaml
+metadata:
+  hermes:
+    triggers:
+      mention: { regex: "approve\\s+\\d+" }
+      button:  { custom_id_pattern: "skill_approver_*" }
+      reaction: { emoji: "✅", age_limit: "14d" }
+```
+
+**Event flow** (cross-adapter):
+
+```
+Adapter (Discord/Feishu/Matrix)
+  └── inbound event (button click, reaction add/remove, ...)
+        └── adapter wrapper builds payload + skill snapshot
+              └── gateway.skill_resolver.resolve_event_skills(...)
+                    └── returns list of matching skill names
+                          └── adapter dispatches MessageEvent(auto_skill=[...])
+```
+
+**Adapter coverage today:**
+
+- Discord: buttons (always available) + raw reactions (opt-in via
+  `config.extra.reactions.inbound_routing`, default false). Wiring lives
+  in `gateway/platforms/discord_interactions.py` (composition handler) and
+  `gateway/platforms/discord.py` `__init__` + `connect()` (~89 LoC diff).
+- Feishu: reactions, with explicit broadcast fallback for skills that have
+  not opted in (`gateway/platforms/feishu.py` `_handle_reaction_event`).
+- Matrix: stub-only at `gateway/platforms/matrix.py:1528` (`_on_reaction`).
+  Mechanically identical refactor to Feishu's BC fork — deferred to a
+  follow-up PR.
+
+**BC contract:** Skills WITHOUT a `triggers:` field continue to work
+exactly as before. The existing prompt-builder injection path is
+untouched. See `docs/migration/triggers-v1.md` for full migration
+semantics including the Feishu broadcast fallback rules.
+
+**Source of truth:**
+
+- `agent/skill_utils.py` — frontmatter parser + `derive_implicit_triggers`
+  (BC for legacy `metadata.hermes.slash_command` field).
+- `gateway/skill_resolver.py` — adapter-agnostic resolver +
+  `snapshot_skills()` lazy walker.
+- `gateway/platforms/discord_interactions.py` — Discord composition handler
+  + `SkillButtonView` helper.
+
 ---
 
 ## Important Policies

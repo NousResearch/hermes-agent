@@ -441,6 +441,73 @@ metadata:
 
 The filtering happens at prompt build time in `agent/prompt_builder.py`. The `build_skills_system_prompt()` function receives the set of available tools and toolsets from the agent and uses `_skill_should_show()` to evaluate each skill's conditions.
 
+### Skill triggers — unified event routing
+
+Skills can declare explicit triggers under `metadata.hermes.triggers` to receive
+inbound events from gateway adapters: button clicks, reactions, mentions, slash
+commands, and cron firings. The schema is **type-keyed** — each trigger type has
+its own field shape:
+
+```yaml
+metadata:
+  hermes:
+    triggers:
+      mention:
+        regex: "approve\\s+\\d+"
+        channel_filter: ["bot-commands"]   # optional
+      slash:
+        name: "approve"
+      button:
+        custom_id_pattern: "skill_approve_*"
+      reaction:
+        emoji: "✅"
+        channel_filter: ["bot-commands"]   # optional
+        age_limit: "30d"                    # optional, format: <int><s|m|h|d|w>
+      cron:
+        schedule: "0 9 * * *"
+```
+
+**Three worked examples:**
+
+```yaml
+# 1. Mention-driven approver — handles "approve 42"-style commands
+metadata:
+  hermes:
+    triggers:
+      mention:
+        regex: "approve\\s+\\d+"
+
+# 2. Button-driven approver — receives clicks on buttons emitted via SkillButtonView
+#    (custom_id shape: "skill_<skill_name>_<action>")
+metadata:
+  hermes:
+    triggers:
+      button:
+        custom_id_pattern: "skill_approver_*"
+
+# 3. Reaction-driven completer — fires on ✅ within 14 days of message creation
+metadata:
+  hermes:
+    triggers:
+      reaction:
+        emoji: "✅"
+        age_limit: "14d"
+```
+
+**Backward compatibility (no migration required):**
+
+Skills without a `triggers:` field continue to work exactly as before. The
+existing prompt-builder injection path is untouched. Skills with a legacy
+`metadata.hermes.slash_command` field automatically get an implicit slash
+trigger derived from that field — no rewrite needed.
+
+**Adapter support:** Discord (buttons + reactions, opt-in via
+`config.extra.reactions.inbound_routing`) and Feishu (reactions). Resolver
+implementation: `gateway/skill_resolver.py`. Discord wiring:
+`gateway/platforms/discord_interactions.py`. See
+`docs/migration/triggers-v1.md` for the full migration guide and Feishu BC
+fallback semantics.
+
 ### Skill setup metadata
 
 Skills can declare secure setup-on-load metadata via the `required_environment_variables` frontmatter field. Missing values do not hide the skill from discovery; they trigger a CLI-only secure prompt when the skill is actually loaded.

@@ -253,6 +253,15 @@ def _cap_read_tracker_data(task_data: dict) -> None:
             except (StopIteration, KeyError):
                 break
 
+    dedup_hits = task_data.get("dedup_hits")
+    if dedup_hits is not None and len(dedup_hits) > _DEDUP_CAP:
+        excess = len(dedup_hits) - _DEDUP_CAP
+        for _ in range(excess):
+            try:
+                dedup_hits.pop(next(iter(dedup_hits)))
+            except (StopIteration, KeyError):
+                break
+
     ts = task_data.get("read_timestamps")
     if ts is not None and len(ts) > _READ_TIMESTAMPS_CAP:
         excess = len(ts) - _READ_TIMESTAMPS_CAP
@@ -479,13 +488,43 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
             task_data = _read_tracker.setdefault(task_id, {
                 "last_key": None, "consecutive": 0,
                 "read_history": set(), "dedup": {},
+                "dedup_hits": {},
             })
+            # Backward-compat for pre-existing tracker entries that predate
+            # dedup_hits (long-lived task or crossed an upgrade boundary).
+            if "dedup_hits" not in task_data:
+                task_data["dedup_hits"] = {}
             cached_mtime = task_data.get("dedup", {}).get(dedup_key)
 
         if cached_mtime is not None:
             try:
                 current_mtime = os.path.getmtime(resolved_str)
                 if current_mtime == cached_mtime:
+                    # Count repeated stub returns so weak tool-followers that
+                    # ignore the "refer to earlier result" hint don't burn
+                    # their iteration budget in an infinite read loop.  After
+                    # 2 stubs for the same key we escalate to a hard block
+                    # mirroring the count>=4 path on real reads.
+                    with _read_tracker_lock:
+                        hits = task_data["dedup_hits"].get(dedup_key, 0) + 1
+                        task_data["dedup_hits"][dedup_key] = hits
+                        _cap_read_tracker_data(task_data)
+
+                    if hits >= 2:
+                        return json.dumps({
+                            "error": (
+                                f"BLOCKED: You have called read_file on this "
+                                f"exact region {hits + 1} times and the file "
+                                "has NOT changed. STOP calling read_file for "
+                                "this path — the content from your earlier "
+                                "read_file result in this conversation is "
+                                "still current. Proceed with your task using "
+                                "the information you already have."
+                            ),
+                            "path": path,
+                            "already_read": hits + 1,
+                        }, ensure_ascii=False)
+
                     return json.dumps({
                         "status": "unchanged",
                         "message": _READ_DEDUP_STATUS_MESSAGE,
@@ -544,9 +583,16 @@ def read_file_tool(path: str, offset: int = 1, limit: int = 500, task_id: str = 
         # ── Track for consecutive-loop detection ──────────────────────
         read_key = ("read", path, offset, limit)
         with _read_tracker_lock:
-            # Ensure "dedup" key exists (backward compat with old tracker state)
+            # Ensure "dedup" / "dedup_hits" keys exist (backward compat with
+            # old tracker state from pre-dedup-guard sessions).
             if "dedup" not in task_data:
                 task_data["dedup"] = {}
+            if "dedup_hits" not in task_data:
+                task_data["dedup_hits"] = {}
+            # Real read succeeded — this key is no longer in a stub-loop, so
+            # reset its hit counter.  (File either changed or stat failed
+            # earlier and we fell through.)
+            task_data["dedup_hits"].pop(dedup_key, None)
             task_data["read_history"].add((path, offset, limit))
             if task_data["last_key"] == read_key:
                 task_data["consecutive"] += 1
@@ -622,12 +668,17 @@ def reset_file_dedup(task_id: str = None):
     with _read_tracker_lock:
         if task_id:
             task_data = _read_tracker.get(task_id)
-            if task_data and "dedup" in task_data:
-                task_data["dedup"].clear()
+            if task_data:
+                if "dedup" in task_data:
+                    task_data["dedup"].clear()
+                if "dedup_hits" in task_data:
+                    task_data["dedup_hits"].clear()
         else:
             for task_data in _read_tracker.values():
                 if "dedup" in task_data:
                     task_data["dedup"].clear()
+                if "dedup_hits" in task_data:
+                    task_data["dedup_hits"].clear()
 
 
 def notify_other_tool_call(task_id: str = "default"):
@@ -644,6 +695,10 @@ def notify_other_tool_call(task_id: str = "default"):
         if task_data:
             task_data["last_key"] = None
             task_data["consecutive"] = 0
+            # An intervening non-read tool call breaks any stub-loop in
+            # progress, so clear per-key dedup hit counters too.
+            if "dedup_hits" in task_data:
+                task_data["dedup_hits"].clear()
 
 
 def _invalidate_dedup_for_path(filepath: str, task_id: str) -> None:

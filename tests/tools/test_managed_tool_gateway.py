@@ -78,6 +78,15 @@ def test_resolve_managed_tool_gateway_is_disabled_without_subscription():
     assert result is None
 
 
+def test_managed_tools_enabled_accepts_delegated_token_env(monkeypatch):
+    from tools.tool_backend_helpers import managed_nous_tools_enabled
+
+    monkeypatch.setenv("HERMES_MANAGED_TOOLS_ENABLED", "1")
+    monkeypatch.setenv("TOOL_GATEWAY_USER_TOKEN", "nous-token")
+
+    assert managed_nous_tools_enabled() is True
+
+
 def test_read_nous_access_token_refreshes_expiring_cached_token(tmp_path, monkeypatch):
     monkeypatch.delenv("TOOL_GATEWAY_USER_TOKEN", raising=False)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))

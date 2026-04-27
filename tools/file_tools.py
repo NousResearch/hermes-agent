@@ -365,6 +365,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             config = _get_env_config()
             env_type = config["env_type"]
             overrides = _task_env_overrides.get(task_id, {})
+            env_type = overrides.get("env_type") or env_type
 
             if env_type == "docker":
                 image = overrides.get("docker_image") or config["docker_image"]
@@ -381,7 +382,9 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
             logger.info("Creating new %s environment for task %s...", env_type, task_id[:8])
 
             container_config = None
-            if env_type in ("docker", "singularity", "modal", "daytona"):
+            from tools.terminal_tool import _BUILTIN_ENV_TYPES, _task_sandbox_config
+
+            if env_type in ("docker", "singularity", "modal", "daytona") or env_type not in _BUILTIN_ENV_TYPES:
                 container_config = {
                     "container_cpu": config.get("container_cpu", 1),
                     "container_memory": config.get("container_memory", 5120),
@@ -390,6 +393,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                     "docker_volumes": config.get("docker_volumes", []),
                     "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                     "docker_forward_env": config.get("docker_forward_env", []),
+                    "sandbox_config": _task_sandbox_config(config, overrides),
                 }
 
             ssh_config = None

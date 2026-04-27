@@ -430,6 +430,32 @@ class PluginContext:
             self.manifest.name, provider.name,
         )
 
+    # -- sandbox provider registration ---------------------------------------
+
+    def register_sandbox_provider(self, provider) -> None:
+        """Register a sandbox execution provider.
+
+        Category loaders such as ``plugins.sandbox`` usually capture providers
+        through a lightweight collector. This method exists for the full plugin
+        context so sandbox providers have the same registration surface as
+        memory, context, and image generation providers.
+        """
+        from agent.sandbox_provider import SandboxProvider
+
+        if not isinstance(provider, SandboxProvider):
+            logger.warning(
+                "Plugin '%s' tried to register a sandbox provider that does not "
+                "inherit from SandboxProvider. Ignoring.",
+                self.manifest.name,
+            )
+            return
+        self._manager._sandbox_providers[provider.name] = provider
+        logger.info(
+            "Plugin '%s' registered sandbox provider: %s",
+            self.manifest.name,
+            provider.name,
+        )
+
     # -- hook registration --------------------------------------------------
 
     def register_hook(self, hook_name: str, callback: Callable) -> None:
@@ -515,6 +541,7 @@ class PluginManager:
         self._cli_ref = None  # Set by CLI after plugin discovery
         # Plugin skill registry: qualified name → metadata dict.
         self._plugin_skills: Dict[str, Dict[str, Any]] = {}
+        self._sandbox_providers: Dict[str, Any] = {}
 
     # -----------------------------------------------------------------------
     # Public
@@ -537,6 +564,7 @@ class PluginManager:
             self._plugin_commands.clear()
             self._plugin_skills.clear()
             self._context_engine = None
+            self._sandbox_providers.clear()
         self._discovered = True
 
         manifests: List[PluginManifest] = []

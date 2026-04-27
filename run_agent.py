@@ -4791,30 +4791,31 @@ class AIAgent:
 
     @staticmethod
     def _cap_delegate_task_calls(tool_calls: list) -> list:
-        """Truncate excess delegate_task calls to max_concurrent_children.
+        """Truncate excess delegation spawn calls to max_concurrent_children.
 
         The delegate_tool caps the task list inside a single call, but the
-        model can emit multiple separate delegate_task tool_calls in one
+        model can emit multiple separate delegate_task/delegate_start tool_calls in one
         turn.  This truncates the excess, preserving all non-delegate calls.
 
         Returns the original list if no truncation was needed.
         """
         from tools.delegate_tool import _get_max_concurrent_children
         max_children = _get_max_concurrent_children()
-        delegate_count = sum(1 for tc in tool_calls if tc.function.name == "delegate_task")
+        spawn_tools = {"delegate_task", "delegate_start"}
+        delegate_count = sum(1 for tc in tool_calls if tc.function.name in spawn_tools)
         if delegate_count <= max_children:
             return tool_calls
         kept_delegates = 0
         truncated = []
         for tc in tool_calls:
-            if tc.function.name == "delegate_task":
+            if tc.function.name in spawn_tools:
                 if kept_delegates < max_children:
                     truncated.append(tc)
                     kept_delegates += 1
             else:
                 truncated.append(tc)
         logger.warning(
-            "Truncated %d excess delegate_task call(s) to enforce "
+            "Truncated %d excess delegation spawn call(s) to enforce "
             "max_concurrent_children=%d limit",
             delegate_count - max_children, max_children,
         )
@@ -8545,11 +8546,73 @@ class AIAgent:
             toolsets=function_args.get("toolsets"),
             tasks=function_args.get("tasks"),
             max_iterations=function_args.get("max_iterations"),
+            async_mode=function_args.get("async"),
+            profile=function_args.get("profile"),
+            model=function_args.get("model"),
+            provider=function_args.get("provider"),
+            skills=function_args.get("skills"),
+            resume=function_args.get("resume"),
+            pass_session_id=function_args.get("pass_session_id"),
             acp_command=function_args.get("acp_command"),
             acp_args=function_args.get("acp_args"),
             role=function_args.get("role"),
+            sandbox=function_args.get("sandbox"),
+            sandbox_mode=function_args.get("sandbox_mode"),
+            sandbox_scope=function_args.get("sandbox_scope"),
+            sandbox_source=function_args.get("sandbox_source"),
             parent_agent=self,
         )
+
+    def _dispatch_delegate_job_tool(self, function_name: str, function_args: dict) -> str:
+        """Dispatch async delegation job-control tools with agent context."""
+        from tools import delegate_tool as _delegate_tool
+
+        if function_name == "delegate_start":
+            return _delegate_tool.delegate_start(
+                goal=function_args.get("goal"),
+                context=function_args.get("context"),
+                toolsets=function_args.get("toolsets"),
+                tasks=function_args.get("tasks"),
+                role=function_args.get("role"),
+                profile=function_args.get("profile"),
+                model=function_args.get("model"),
+                provider=function_args.get("provider"),
+                skills=function_args.get("skills"),
+                resume=function_args.get("resume"),
+                pass_session_id=function_args.get("pass_session_id"),
+                sandbox=function_args.get("sandbox"),
+                sandbox_mode=function_args.get("sandbox_mode"),
+                sandbox_scope=function_args.get("sandbox_scope"),
+                sandbox_source=function_args.get("sandbox_source"),
+                parent_agent=self,
+            )
+        if function_name == "delegate_status":
+            return _delegate_tool.delegate_status(
+                status=function_args.get("status"),
+                profile=function_args.get("profile"),
+                parent_session_id=function_args.get("parent_session_id"),
+                limit=function_args.get("limit", 50),
+            )
+        if function_name == "delegate_wait":
+            return _delegate_tool.delegate_wait(
+                job_ids=function_args.get("job_ids") or [],
+                timeout=function_args.get("timeout", function_args.get("timeout_seconds", 0)),
+            )
+        if function_name == "delegate_result":
+            return _delegate_tool.delegate_result(
+                job_id=function_args.get("job_id", ""),
+                tail_chars=function_args.get("tail_chars", 12000),
+            )
+        if function_name == "delegate_cancel":
+            return _delegate_tool.delegate_cancel(
+                job_ids=function_args.get("job_ids") or function_args.get("job_id") or [],
+            )
+        if function_name == "delegate_message":
+            return _delegate_tool.delegate_message(
+                job_id=function_args.get("job_id", ""),
+                message=function_args.get("message", ""),
+            )
+        return json.dumps({"error": f"Unknown delegation tool: {function_name}"})
 
     def _invoke_tool(self, function_name: str, function_args: dict, effective_task_id: str,
                      tool_call_id: Optional[str] = None, messages: list = None) -> str:
@@ -8625,6 +8688,8 @@ class AIAgent:
             )
         elif function_name == "delegate_task":
             return self._dispatch_delegate_task(function_args)
+        elif function_name.startswith("delegate_"):
+            return self._dispatch_delegate_job_tool(function_name, function_args)
         else:
             return handle_function_call(
                 function_name, function_args, effective_task_id,
@@ -9193,6 +9258,13 @@ class AIAgent:
                         spinner.stop(cute_msg)
                     elif self._should_emit_quiet_tool_messages():
                         self._vprint(f"  {cute_msg}")
+            elif function_name.startswith("delegate_"):
+                function_result = self._dispatch_delegate_job_tool(function_name, function_args)
+                tool_duration = time.time() - tool_start_time
+                if self._should_emit_quiet_tool_messages():
+                    self._vprint(
+                        f"  {_get_cute_tool_message_impl(function_name, function_args, tool_duration, result=function_result)}"
+                    )
             elif self._context_engine_tool_names and function_name in self._context_engine_tool_names:
                 # Context engine tools (lcm_grep, lcm_describe, lcm_expand, etc.)
                 spinner = None

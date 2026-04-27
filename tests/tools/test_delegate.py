@@ -17,6 +17,8 @@ import time
 import unittest
 from unittest.mock import MagicMock, patch
 
+import pytest
+
 from tools.delegate_tool import (
     DELEGATE_BLOCKED_TOOLS,
     DELEGATE_TASK_SCHEMA,
@@ -56,6 +58,28 @@ def _make_mock_parent(depth=0):
     parent.tool_progress_callback = None
     parent.thinking_callback = None
     return parent
+
+
+@pytest.fixture(autouse=True)
+def _legacy_sync_delegation_default(monkeypatch):
+    """Keep legacy delegate_task tests on the blocking path by default.
+
+    Async behavior is covered in tests/tools/test_delegation_jobs.py.
+    """
+    import tools.delegate_tool as delegate_tool
+
+    monkeypatch.setattr(
+        delegate_tool,
+        "_load_config",
+        lambda: {
+            "async_default": False,
+            "max_iterations": 50,
+            "max_concurrent_children": 3,
+            "max_spawn_depth": 1,
+            "orchestrator_enabled": True,
+            "inherit_mcp_toolsets": True,
+        },
+    )
 
 
 class TestDelegateRequirements(unittest.TestCase):
@@ -1504,6 +1528,89 @@ class TestDelegationReasoningEffort(unittest.TestCase):
 
 class TestDispatchDelegateTask(unittest.TestCase):
     """Tests for the _dispatch_delegate_task helper and full param forwarding."""
+
+    def test_run_agent_dispatch_delegate_task_matches_delegate_signature(self):
+        """Fresh child processes dispatch through run_agent._dispatch_delegate_task."""
+        from run_agent import AIAgent
+
+        agent = object.__new__(AIAgent)
+        seen = {}
+
+        def fake_delegate_task(**kwargs):
+            seen.update(kwargs)
+            return '{"ok": true}'
+
+        args = {
+            "goal": "nested work",
+            "async": True,
+            "profile": "coder",
+            "model": "test-model",
+            "provider": "test-provider",
+            "skills": ["python"],
+            "resume": "sess-child",
+            "pass_session_id": True,
+            "role": "orchestrator",
+            "sandbox": "host",
+        }
+        with patch("tools.delegate_tool.delegate_task", side_effect=fake_delegate_task):
+            result = agent._dispatch_delegate_task(args)
+
+        self.assertEqual(result, '{"ok": true}')
+        self.assertEqual(seen["async_mode"], True)
+        self.assertEqual(seen["profile"], "coder")
+        self.assertEqual(seen["model"], "test-model")
+        self.assertEqual(seen["provider"], "test-provider")
+        self.assertEqual(seen["skills"], ["python"])
+        self.assertEqual(seen["resume"], "sess-child")
+        self.assertIs(seen["pass_session_id"], True)
+        self.assertEqual(seen["role"], "orchestrator")
+        self.assertIs(seen["parent_agent"], agent)
+
+    def test_run_agent_dispatch_delegate_job_tools_match_signatures(self):
+        from run_agent import AIAgent
+
+        agent = object.__new__(AIAgent)
+        calls = {}
+        with (
+            patch("tools.delegate_tool.delegate_status", side_effect=lambda **kw: calls.setdefault("status", kw) or "{}"),
+            patch("tools.delegate_tool.delegate_wait", side_effect=lambda **kw: calls.setdefault("wait", kw) or "{}"),
+            patch("tools.delegate_tool.delegate_result", side_effect=lambda **kw: calls.setdefault("result", kw) or "{}"),
+            patch("tools.delegate_tool.delegate_cancel", side_effect=lambda **kw: calls.setdefault("cancel", kw) or "{}"),
+            patch("tools.delegate_tool.delegate_message", side_effect=lambda **kw: calls.setdefault("message", kw) or "{}"),
+        ):
+            agent._dispatch_delegate_job_tool("delegate_status", {"status": "running", "limit": 2})
+            agent._dispatch_delegate_job_tool("delegate_wait", {"job_ids": ["job-1"], "timeout": 1})
+            agent._dispatch_delegate_job_tool("delegate_result", {"job_id": "job-1"})
+            agent._dispatch_delegate_job_tool("delegate_cancel", {"job_id": "job-1"})
+            agent._dispatch_delegate_job_tool("delegate_message", {"job_id": "job-1", "message": "go"})
+
+        self.assertEqual(calls["status"], {"status": "running", "profile": None, "parent_session_id": None, "limit": 2})
+        self.assertEqual(calls["wait"], {"job_ids": ["job-1"], "timeout": 1})
+        self.assertEqual(calls["result"], {"job_id": "job-1", "tail_chars": 12000})
+        self.assertEqual(calls["cancel"], {"job_ids": "job-1"})
+        self.assertEqual(calls["message"], {"job_id": "job-1", "message": "go"})
+
+    def test_delegate_job_control_tools_accept_dispatch_compat_kwargs(self):
+        """Older dispatch paths may still pass parent_agent/timeout_seconds."""
+        import tools.delegate_tool as delegate_tool
+
+        with (
+            patch("tools.delegation_jobs.list_jobs", return_value=[]) as list_jobs,
+            patch("tools.delegation_jobs.wait_jobs", return_value={"completed": [], "running": []}) as wait_jobs,
+            patch("tools.delegation_jobs.get_result", return_value={"status": "missing"}) as get_result,
+            patch("tools.delegation_jobs.cancel_jobs", return_value={"cancelled": ["job-1"]}) as cancel_jobs,
+        ):
+            delegate_tool.delegate_status(parent_agent=object())
+            delegate_tool.delegate_wait(["job-1"], timeout_seconds=2, parent_agent=object())
+            delegate_tool.delegate_result("job-1", parent_agent=object())
+            delegate_tool.delegate_cancel(job_id="job-1", parent_agent=object())
+            msg = json.loads(delegate_tool.delegate_message("job-1", "go", parent_agent=object()))
+
+        list_jobs.assert_called_once()
+        wait_jobs.assert_called_once_with(["job-1"], timeout=2.0)
+        get_result.assert_called_once()
+        cancel_jobs.assert_called_once_with(["job-1"])
+        self.assertFalse(msg["supported"])
 
     @patch("tools.delegate_tool._load_config", return_value={})
     @patch("tools.delegate_tool._resolve_delegation_credentials")

@@ -6,7 +6,7 @@ description: "Spawn isolated child agents for parallel workstreams with delegate
 
 # Subagent Delegation
 
-The `delegate_task` tool spawns child AIAgent instances with isolated context, restricted toolsets, and their own terminal sessions. Each child gets a fresh conversation and works independently — only its final summary enters the parent's context.
+The `delegate_task` tool spawns child AIAgent instances with isolated context, restricted toolsets, and their own terminal sessions. Each child gets a fresh conversation and works independently. By default, delegation is file-backed and async: the parent receives job ids immediately, then uses `delegate_wait` or `delegate_result` to collect the final summaries.
 
 ## Single Task
 
@@ -29,6 +29,30 @@ delegate_task(tasks=[
     {"goal": "Fix the build", "toolsets": ["terminal", "file"]}
 ])
 ```
+
+## Async Job Control
+
+Async delegation persists job metadata under `~/.hermes/delegation/jobs/` so jobs can be inspected from the parent agent, the TUI, or the CLI.
+
+Model-callable job tools:
+
+- `delegate_start` — explicitly start one or more async jobs
+- `delegate_status` — list active or recent jobs
+- `delegate_wait` — wait for jobs to complete
+- `delegate_result` — fetch a final result and stdout/stderr tails
+- `delegate_cancel` — terminate running jobs
+
+Operator CLI:
+
+```bash
+hermes delegate list
+hermes delegate status JOB_ID
+hermes delegate wait JOB_ID
+hermes delegate cancel JOB_ID
+hermes delegate logs JOB_ID
+```
+
+Set `delegation.async_default: false` to restore legacy blocking `delegate_task` behavior for same-profile in-process children. Profile-selected children always run as subprocess jobs.
 
 ## How Subagent Context Works
 
@@ -119,15 +143,15 @@ delegate_task(
 
 ## Batch Mode Details
 
-When you provide a `tasks` array, subagents run in **parallel** using a thread pool:
+When you provide a `tasks` array, subagents run in **parallel** up to the configured concurrency cap:
 
 - **Maximum concurrency:** 3 tasks by default (configurable via `delegation.max_concurrent_children` or the `DELEGATION_MAX_CONCURRENT_CHILDREN` env var; floor of 1, no hard ceiling). Batches larger than the limit return a tool error rather than being silently truncated.
-- **Thread pool:** Uses `ThreadPoolExecutor` with the configured concurrency limit as max workers
-- **Progress display:** In CLI mode, a tree-view shows tool calls from each subagent in real-time with per-task completion lines. In gateway mode, progress is batched and relayed to the parent's progress callback
+- **Runner:** Async/profile-routed delegation starts Hermes subprocess jobs. Legacy blocking same-profile delegation uses an in-process thread pool.
+- **Progress display:** CLI/TUI and gateway surfaces receive subagent/job progress events with job ids, profile, role, status, and child session ids when available.
 - **Result ordering:** Results are sorted by task index to match input order regardless of completion order
 - **Interrupt propagation:** Interrupting the parent (e.g., sending a new message) interrupts all active children
 
-Single-task delegation runs directly without thread pool overhead.
+Single-task async delegation still returns a job id; single-task legacy blocking delegation runs directly without thread pool overhead.
 
 ## Model Override
 
@@ -221,6 +245,11 @@ delegate_task(
 ```yaml
 # In ~/.hermes/config.yaml
 delegation:
+  async_default: true                       # delegate_task returns job ids immediately
+  default_profile: ""                       # Child profile override (empty = inherit active profile)
+  allowed_profiles: []                      # Profiles allowed for delegation (empty = all profiles)
+  job_retention_hours: 24                   # Retain completed job metadata
+  approval_mode: deny                       # Non-interactive child command policy: deny, approve, or inherit
   max_iterations: 50                        # Max turns per child (default: 50)
   # max_concurrent_children: 3              # Parallel children per batch (default: 3)
   # max_spawn_depth: 1                      # Tree depth (1-3, default 1 = flat). Raise to 2 to allow orchestrator children to spawn leaves; 3 for three levels.

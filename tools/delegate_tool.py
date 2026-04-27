@@ -322,6 +322,168 @@ def _normalize_role(r: Optional[str]) -> str:
     return "leaf"
 
 
+def _normalize_sandbox_request(value: Optional[str]) -> Optional[str]:
+    if value is None or value == "":
+        return None
+    normalized = str(value).strip().lower()
+    if normalized in ("inherit", "default", "auto"):
+        return None
+    if normalized in ("0", "false", "no", "off", "host", "local", "none"):
+        return "host"
+    if normalized in ("1", "true", "yes", "on", "sandbox"):
+        return "openshell"
+    return str(value).strip()
+
+
+def _load_full_config() -> dict:
+    try:
+        from cli import CLI_CONFIG
+
+        if isinstance(CLI_CONFIG, dict) and CLI_CONFIG:
+            return CLI_CONFIG
+    except Exception:
+        pass
+    try:
+        from hermes_cli.config import load_config
+
+        return load_config()
+    except Exception:
+        return {}
+
+
+def _env_or_config(env_var: str, cfg: Dict[str, Any], key: str, default: Any = "") -> Any:
+    value = os.getenv(env_var)
+    if value not in (None, ""):
+        return value
+    return cfg.get(key, default)
+
+
+def _env_list_or_config(env_var: str, cfg: Dict[str, Any], key: str, default: Any = None) -> Any:
+    value = os.getenv(env_var)
+    if value in (None, ""):
+        return cfg.get(key, default if default is not None else [])
+    stripped = value.strip()
+    if stripped.startswith("["):
+        try:
+            parsed = json.loads(stripped)
+            if isinstance(parsed, list):
+                return parsed
+        except json.JSONDecodeError:
+            pass
+    return [part.strip() for part in stripped.split(",") if part.strip()]
+
+
+def _env_int_or_config(env_var: str, cfg: Dict[str, Any], key: str, default: int) -> int:
+    value = os.getenv(env_var)
+    if value not in (None, ""):
+        try:
+            return int(value)
+        except ValueError:
+            return default
+    try:
+        return int(cfg.get(key, default))
+    except (TypeError, ValueError):
+        return default
+
+
+def _resolve_child_sandbox_override(
+    task: Dict[str, Any],
+    top_sandbox: Optional[str],
+    top_sandbox_mode: Optional[str],
+    top_sandbox_scope: Optional[str],
+    top_sandbox_source: Optional[str],
+) -> Optional[Dict[str, Any]]:
+    """Resolve delegate_task sandbox override into task env overrides.
+
+    ``None`` means inherit the process/global terminal configuration.
+    """
+
+    requested = task.get("sandbox") if "sandbox" in task else top_sandbox
+    provider = _normalize_sandbox_request(requested)
+
+    full_cfg = _load_full_config()
+    sandbox_cfg = full_cfg.get("sandbox", {}) if isinstance(full_cfg, dict) else {}
+    if not provider:
+        default = os.getenv(
+            "HERMES_SANDBOX_DELEGATION_DEFAULT",
+            str(sandbox_cfg.get("delegation_default", "inherit")) if isinstance(sandbox_cfg, dict) else "inherit",
+        ).strip().lower()
+        if default in ("inherit", "", "default"):
+            return None
+        if default == "host":
+            provider = "host"
+        elif default == "sandbox":
+            provider = str(sandbox_cfg.get("provider") or os.getenv("HERMES_SANDBOX_PROVIDER") or "openshell")
+        else:
+            provider = default
+
+    if provider == "host":
+        return {
+            "env_type": "local",
+            "sandbox_config": {"enabled": False, "provider": "host"},
+        }
+
+    mode = (
+        task.get("sandbox_mode")
+        or top_sandbox_mode
+        or os.getenv("HERMES_SANDBOX_MODE")
+        or (sandbox_cfg.get("mode") if isinstance(sandbox_cfg, dict) else None)
+        or "mirror"
+    )
+    scope = task.get("sandbox_scope") or top_sandbox_scope or ""
+    source = (
+        task.get("sandbox_source")
+        or top_sandbox_source
+        or os.getenv("HERMES_SANDBOX_SOURCE")
+        or os.getenv("HERMES_OPENSHELL_SOURCE")
+        or ""
+    )
+    openshell_cfg = {}
+    if isinstance(sandbox_cfg, dict) and isinstance(sandbox_cfg.get("openshell"), dict):
+        openshell_cfg = dict(sandbox_cfg.get("openshell") or {})
+    config = {
+        "enabled": True,
+        "provider": provider,
+        "mode": mode,
+        "scope": scope,
+        "source": source or openshell_cfg.get("from") or openshell_cfg.get("source") or "",
+        "command": _env_or_config("HERMES_OPENSHELL_COMMAND", openshell_cfg, "command", "openshell"),
+        "policy": _env_or_config("HERMES_OPENSHELL_POLICY", openshell_cfg, "policy", ""),
+        "providers": _env_list_or_config("HERMES_OPENSHELL_PROVIDERS", openshell_cfg, "providers", []),
+        "auto_providers": is_truthy_value(
+            os.getenv("HERMES_OPENSHELL_AUTO_PROVIDERS"),
+            default=bool(openshell_cfg.get("auto_providers", True)),
+        ),
+        "gpu": is_truthy_value(
+            os.getenv("HERMES_OPENSHELL_GPU"),
+            default=bool(openshell_cfg.get("gpu", False)),
+        ),
+        "gateway": _env_or_config("HERMES_OPENSHELL_GATEWAY", openshell_cfg, "gateway", "hermes-openshell"),
+        "gateway_endpoint": _env_or_config("HERMES_OPENSHELL_GATEWAY_ENDPOINT", openshell_cfg, "gateway_endpoint", ""),
+        "gateway_port": _env_int_or_config("HERMES_OPENSHELL_GATEWAY_PORT", openshell_cfg, "gateway_port", 18080),
+        "gateway_host": _env_or_config("HERMES_OPENSHELL_GATEWAY_HOST", openshell_cfg, "gateway_host", ""),
+        "remote_workspace_dir": _env_or_config(
+            "HERMES_SANDBOX_REMOTE_WORKSPACE_DIR", openshell_cfg, "remote_workspace_dir", "/sandbox"
+        ),
+        "remote_agent_workspace_dir": _env_or_config(
+            "HERMES_SANDBOX_REMOTE_AGENT_WORKSPACE_DIR", openshell_cfg, "remote_agent_workspace_dir", "/agent"
+        ),
+        "timeout_seconds": _env_int_or_config("HERMES_SANDBOX_TIMEOUT_SECONDS", openshell_cfg, "timeout_seconds", 120),
+        "mirror_excludes": _env_list_or_config(
+            "HERMES_SANDBOX_MIRROR_EXCLUDES",
+            openshell_cfg,
+            "mirror_excludes",
+            [".git", ".hermes", "node_modules", ".venv", "dist", "build", "target"],
+        ),
+        "extra_syncs": _env_or_config("HERMES_SANDBOX_EXTRA_SYNCS", openshell_cfg, "extra_syncs", []),
+    }
+    return {
+        "env_type": provider,
+        "cwd": str(config["remote_workspace_dir"]),
+        "sandbox_config": config,
+    }
+
+
 def _get_max_concurrent_children() -> int:
     """Read delegation.max_concurrent_children from config, falling back to
     DELEGATION_MAX_CONCURRENT_CHILDREN env var, then the default (3).
@@ -472,6 +634,57 @@ def _preserve_parent_mcp_toolsets(
         if _is_mcp_toolset_name(toolset_name) and toolset_name not in preserved:
             preserved.append(toolset_name)
     return preserved
+
+
+def _resolve_child_toolsets_and_role(
+    parent_agent,
+    requested_toolsets: Optional[List[str]],
+    *,
+    role: str = "leaf",
+) -> tuple[List[str], str, int, int]:
+    """Resolve a child's effective toolsets/role without constructing it.
+
+    This mirrors the legacy in-process child construction rules so async
+    subprocess jobs and synchronous children expose the same bounded tool
+    surface.
+    """
+    child_depth = getattr(parent_agent, "_delegate_depth", 0) + 1
+    max_spawn = _get_max_spawn_depth()
+    orchestrator_ok = _get_orchestrator_enabled() and child_depth < max_spawn
+    effective_role = role if (role == "orchestrator" and orchestrator_ok) else "leaf"
+
+    parent_enabled = getattr(parent_agent, "enabled_toolsets", None)
+    if parent_enabled is not None:
+        parent_toolsets = set(parent_enabled)
+    elif parent_agent and hasattr(parent_agent, "valid_tool_names"):
+        import model_tools
+
+        parent_toolsets = {
+            ts
+            for name in parent_agent.valid_tool_names
+            if (ts := model_tools.get_toolset_for_tool(name)) is not None
+        }
+    else:
+        parent_toolsets = set(DEFAULT_TOOLSETS)
+
+    if requested_toolsets:
+        child_toolsets = [t for t in requested_toolsets if t in parent_toolsets]
+        if _get_inherit_mcp_toolsets():
+            child_toolsets = _preserve_parent_mcp_toolsets(
+                child_toolsets, parent_toolsets
+            )
+        child_toolsets = _strip_blocked_tools(child_toolsets)
+    elif parent_agent and parent_enabled is not None:
+        child_toolsets = _strip_blocked_tools(parent_enabled)
+    elif parent_toolsets:
+        child_toolsets = _strip_blocked_tools(sorted(parent_toolsets))
+    else:
+        child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
+
+    if effective_role == "orchestrator" and "delegation" not in child_toolsets:
+        child_toolsets.append("delegation")
+
+    return child_toolsets, effective_role, child_depth, max_spawn
 
 
 DEFAULT_MAX_ITERATIONS = 50
@@ -866,16 +1079,12 @@ def _build_child_agent(
     from run_agent import AIAgent
     import uuid as _uuid
 
-    # ── Role resolution ─────────────────────────────────────────────────
-    # Honor the caller's role only when BOTH the kill switch and the
-    # child's depth allow it.  This is the single point where role
-    # degrades to 'leaf' — keeps the rule predictable.  Callers pass
-    # the normalised role (_normalize_role ran in delegate_task) so
-    # we only deal with 'leaf' or 'orchestrator' here.
-    child_depth = getattr(parent_agent, "_delegate_depth", 0) + 1
-    max_spawn = _get_max_spawn_depth()
-    orchestrator_ok = _get_orchestrator_enabled() and child_depth < max_spawn
-    effective_role = role if (role == "orchestrator" and orchestrator_ok) else "leaf"
+    # ── Role/toolset resolution ─────────────────────────────────────────
+    child_toolsets, effective_role, child_depth, max_spawn = _resolve_child_toolsets_and_role(
+        parent_agent,
+        toolsets,
+        role=role,
+    )
 
     # ── Subagent identity (stable across events, 0-indexed for TUI) ─────
     # subagent_id is generated here so the progress callback, the
@@ -887,47 +1096,6 @@ def _build_child_agent(
     tui_depth = max(0, child_depth - 1)  # 0 = first-level child for the UI
 
     delegation_cfg = _load_config()
-
-    # When no explicit toolsets given, inherit from parent's enabled toolsets
-    # so disabled tools (e.g. web) don't leak to subagents.
-    # Note: enabled_toolsets=None means "all tools enabled" (the default),
-    # so we must derive effective toolsets from the parent's loaded tools.
-    parent_enabled = getattr(parent_agent, "enabled_toolsets", None)
-    if parent_enabled is not None:
-        parent_toolsets = set(parent_enabled)
-    elif parent_agent and hasattr(parent_agent, "valid_tool_names"):
-        # enabled_toolsets is None (all tools) — derive from loaded tool names
-        import model_tools
-
-        parent_toolsets = {
-            ts
-            for name in parent_agent.valid_tool_names
-            if (ts := model_tools.get_toolset_for_tool(name)) is not None
-        }
-    else:
-        parent_toolsets = set(DEFAULT_TOOLSETS)
-
-    if toolsets:
-        # Intersect with parent — subagent must not gain tools the parent lacks
-        child_toolsets = [t for t in toolsets if t in parent_toolsets]
-        if _get_inherit_mcp_toolsets():
-            child_toolsets = _preserve_parent_mcp_toolsets(
-                child_toolsets, parent_toolsets
-            )
-        child_toolsets = _strip_blocked_tools(child_toolsets)
-    elif parent_agent and parent_enabled is not None:
-        child_toolsets = _strip_blocked_tools(parent_enabled)
-    elif parent_toolsets:
-        child_toolsets = _strip_blocked_tools(sorted(parent_toolsets))
-    else:
-        child_toolsets = _strip_blocked_tools(DEFAULT_TOOLSETS)
-
-    # Orchestrators retain the 'delegation' toolset that _strip_blocked_tools
-    # removed.  The re-add is unconditional on parent-toolset membership because
-    # orchestrator capability is granted by role, not inherited — see the
-    # test_intersection_preserves_delegation_bound test for the design rationale.
-    if effective_role == "orchestrator" and "delegation" not in child_toolsets:
-        child_toolsets.append("delegation")
 
     workspace_hint = _resolve_workspace_hint(parent_agent)
     child_prompt = _build_child_system_prompt(
@@ -1380,6 +1548,8 @@ def _run_single_child(
             }
         )
 
+    child_task_id = None
+    _registered_env_override = False
     try:
         if child_progress_cb:
             try:
@@ -1394,6 +1564,15 @@ def _run_single_child(
         import uuid as _uuid
 
         child_task_id = _subagent_id or f"subagent-{task_index}-{_uuid.uuid4().hex[:8]}"
+        sandbox_override = getattr(child, "_delegate_sandbox_override", None)
+        if isinstance(sandbox_override, dict) and sandbox_override:
+            try:
+                from tools.terminal_tool import register_task_env_overrides
+
+                register_task_env_overrides(child_task_id, sandbox_override)
+                _registered_env_override = True
+            except Exception as exc:
+                logger.debug("Failed to register subagent sandbox override: %s", exc)
         parent_task_id = getattr(parent_agent, "_current_task_id", None)
         wall_start = time.time()
         parent_reads_snapshot = (
@@ -1788,6 +1967,14 @@ def _run_single_child(
         except Exception:
             logger.debug("Failed to close child agent after delegation")
 
+        if _registered_env_override and child_task_id:
+            try:
+                from tools.terminal_tool import clear_task_env_overrides
+
+                clear_task_env_overrides(child_task_id)
+            except Exception:
+                pass
+
 
 def delegate_task(
     goal: Optional[str] = None,
@@ -1798,6 +1985,17 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    async_mode: Optional[bool] = None,
+    profile: Optional[str] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+    skills: Any = None,
+    resume: Optional[str] = None,
+    pass_session_id: Optional[bool] = None,
+    sandbox: Optional[str] = None,
+    sandbox_mode: Optional[str] = None,
+    sandbox_scope: Optional[str] = None,
+    sandbox_source: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -1860,6 +2058,34 @@ def delegate_task(
             max_iterations, default_max_iter,
         )
     effective_max_iter = default_max_iter
+
+    force_async = any(
+        value not in (None, "", [], {})
+        for value in (profile, model, provider, skills, resume)
+    ) or pass_session_id is not None
+    use_async = (
+        _coerce_bool(async_mode, default=_coerce_bool(cfg.get("async_default"), default=False))
+        or force_async
+    )
+    if use_async:
+        return delegate_start(
+            goal=goal,
+            context=context,
+            toolsets=toolsets,
+            tasks=tasks,
+            role=role,
+            profile=profile,
+            model=model,
+            provider=provider,
+            skills=skills,
+            resume=resume,
+            pass_session_id=pass_session_id,
+            sandbox=sandbox,
+            sandbox_mode=sandbox_mode,
+            sandbox_scope=sandbox_scope,
+            sandbox_source=sandbox_source,
+            parent_agent=parent_agent,
+        )
 
     # Resolve delegation credentials (provider:model pair).
     # When delegation.provider is configured, this resolves the full credential
@@ -1944,6 +2170,13 @@ def delegate_task(
                     else (acp_args if acp_args is not None else creds.get("args"))
                 ),
                 role=effective_role,
+            )
+            child._delegate_sandbox_override = _resolve_child_sandbox_override(
+                t,
+                sandbox,
+                sandbox_mode,
+                sandbox_scope,
+                sandbox_source,
             )
             # Override with correct parent tool names (before child construction mutated global)
             child._delegate_saved_tool_names = _parent_tool_names
@@ -2290,6 +2523,290 @@ def _load_config() -> dict:
         return {}
 
 
+def _normalize_string_list(value: Any) -> List[str]:
+    if value in (None, ""):
+        return []
+    if isinstance(value, str):
+        return [part.strip() for part in value.split(",") if part.strip()]
+    if isinstance(value, (list, tuple, set)):
+        return [str(part).strip() for part in value if str(part).strip()]
+    return [str(value).strip()] if str(value).strip() else []
+
+
+def _coerce_bool(value: Any, *, default: bool = False) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    text = str(value).strip().lower()
+    if text in {"1", "true", "yes", "y", "on"}:
+        return True
+    if text in {"0", "false", "no", "n", "off"}:
+        return False
+    return default
+
+
+def _normalize_task_list(
+    *,
+    goal: Optional[str],
+    context: Optional[str],
+    toolsets: Optional[List[str]],
+    tasks: Optional[List[Dict[str, Any]]],
+    top_role: str,
+) -> tuple[Optional[List[Dict[str, Any]]], Optional[str]]:
+    max_children = _get_max_concurrent_children()
+    if tasks and isinstance(tasks, list):
+        if len(tasks) > max_children:
+            return None, (
+                f"Too many tasks: {len(tasks)} provided, but "
+                f"max_concurrent_children is {max_children}. "
+                f"Either reduce the task count, split into multiple "
+                f"delegate_task calls, or increase "
+                f"delegation.max_concurrent_children in config.yaml."
+            )
+        task_list = [dict(t) for t in tasks]
+    elif goal and isinstance(goal, str) and goal.strip():
+        task_list = [
+            {"goal": goal, "context": context, "toolsets": toolsets, "role": top_role}
+        ]
+    else:
+        return None, "Provide either 'goal' (single task) or 'tasks' (batch)."
+
+    if not task_list:
+        return None, "No tasks provided."
+    for i, task in enumerate(task_list):
+        if not str(task.get("goal", "")).strip():
+            return None, f"Task {i} is missing a 'goal'."
+    return task_list, None
+
+
+def _build_async_job_tasks(
+    task_list: List[Dict[str, Any]],
+    *,
+    parent_agent,
+    top_toolsets: Optional[List[str]],
+    top_role: str,
+    top_model: Optional[str],
+    top_provider: Optional[str],
+    top_skills: Any,
+    top_resume: Optional[str],
+    top_pass_session_id: Optional[bool],
+    top_sandbox: Optional[str],
+    top_sandbox_mode: Optional[str],
+    top_sandbox_scope: Optional[str],
+    top_sandbox_source: Optional[str],
+    max_iterations: int,
+) -> List[Dict[str, Any]]:
+    job_tasks: List[Dict[str, Any]] = []
+    workspace_hint = _resolve_workspace_hint(parent_agent)
+    for i, task in enumerate(task_list):
+        effective_role = _normalize_role(task.get("role") or top_role)
+        requested_toolsets = task.get("toolsets") or top_toolsets
+        child_toolsets, child_role, child_depth, max_spawn = _resolve_child_toolsets_and_role(
+            parent_agent,
+            requested_toolsets,
+            role=effective_role,
+        )
+        system_prompt = _build_child_system_prompt(
+            str(task["goal"]),
+            task.get("context"),
+            workspace_path=workspace_hint,
+            role=child_role,
+            max_spawn_depth=max_spawn,
+            child_depth=child_depth,
+        )
+        sandbox_override = _resolve_child_sandbox_override(
+            task,
+            top_sandbox,
+            top_sandbox_mode,
+            top_sandbox_scope,
+            top_sandbox_source,
+        )
+        sandbox_config = (
+            sandbox_override.get("sandbox_config", {})
+            if isinstance(sandbox_override, dict)
+            else {}
+        )
+        job_tasks.append(
+            {
+                "task_index": i,
+                "goal": str(task["goal"]),
+                "context": task.get("context") or "",
+                "toolsets": child_toolsets,
+                "role": child_role,
+                "child_depth": child_depth,
+                "max_spawn_depth": max_spawn,
+                "system_prompt": system_prompt,
+                "model": task.get("model") or top_model or "",
+                "provider": task.get("provider") or top_provider or "",
+                "profile": task.get("profile") or "",
+                "skills": _normalize_string_list(
+                    task.get("skills") if "skills" in task else top_skills
+                ),
+                "resume": task.get("resume") or top_resume or "",
+                "pass_session_id": (
+                    bool(task.get("pass_session_id"))
+                    if "pass_session_id" in task
+                    else bool(top_pass_session_id)
+                ),
+                "max_iterations": int(max_iterations),
+                "sandbox": task.get("sandbox") if "sandbox" in task else top_sandbox,
+                "sandbox_mode": task.get("sandbox_mode") or top_sandbox_mode or "",
+                "sandbox_scope": task.get("sandbox_scope") or top_sandbox_scope or "",
+                "sandbox_source": task.get("sandbox_source") or top_sandbox_source or "",
+                "sandbox_config": sandbox_config,
+            }
+        )
+    return job_tasks
+
+
+def delegate_start(
+    goal: Optional[str] = None,
+    context: Optional[str] = None,
+    toolsets: Optional[List[str]] = None,
+    tasks: Optional[List[Dict[str, Any]]] = None,
+    role: Optional[str] = None,
+    profile: Optional[str] = None,
+    model: Optional[str] = None,
+    provider: Optional[str] = None,
+    skills: Any = None,
+    resume: Optional[str] = None,
+    pass_session_id: Optional[bool] = None,
+    sandbox: Optional[str] = None,
+    sandbox_mode: Optional[str] = None,
+    sandbox_scope: Optional[str] = None,
+    sandbox_source: Optional[str] = None,
+    parent_agent=None,
+) -> str:
+    """Start one or more async delegation jobs and return job handles."""
+    if parent_agent is None:
+        return tool_error("delegate_start requires a parent agent context.")
+    if is_spawn_paused():
+        return tool_error(
+            "Delegation spawning is paused. Clear the pause via the TUI "
+            "(`p` in /agents) or the `delegation.pause` RPC before retrying."
+        )
+
+    depth = getattr(parent_agent, "_delegate_depth", 0)
+    max_spawn = _get_max_spawn_depth()
+    if depth >= max_spawn:
+        return json.dumps(
+            {
+                "error": (
+                    f"Delegation depth limit reached (depth={depth}, "
+                    f"max_spawn_depth={max_spawn})."
+                )
+            }
+        )
+
+    cfg = _load_config()
+    top_role = _normalize_role(role)
+    task_list, error = _normalize_task_list(
+        goal=goal,
+        context=context,
+        toolsets=toolsets,
+        tasks=tasks,
+        top_role=top_role,
+    )
+    if error:
+        return tool_error(error)
+
+    try:
+        effective_max_iter = int(cfg.get("max_iterations", DEFAULT_MAX_ITERATIONS))
+    except (TypeError, ValueError):
+        effective_max_iter = DEFAULT_MAX_ITERATIONS
+
+    job_tasks = _build_async_job_tasks(
+        task_list or [],
+        parent_agent=parent_agent,
+        top_toolsets=toolsets,
+        top_role=top_role,
+        top_model=model or str(cfg.get("model") or "").strip() or None,
+        top_provider=provider or str(cfg.get("provider") or "").strip() or None,
+        top_skills=skills,
+        top_resume=resume,
+        top_pass_session_id=pass_session_id,
+        top_sandbox=sandbox,
+        top_sandbox_mode=sandbox_mode,
+        top_sandbox_scope=sandbox_scope,
+        top_sandbox_source=sandbox_source,
+        max_iterations=effective_max_iter,
+    )
+    try:
+        from tools.delegation_jobs import start_jobs
+
+        return json.dumps(
+            start_jobs(
+                job_tasks,
+                parent_agent=parent_agent,
+                top_profile=profile,
+                cfg=cfg,
+            ),
+            ensure_ascii=False,
+        )
+    except Exception as exc:
+        logger.exception("delegate_start failed")
+        return tool_error(f"delegate_start failed: {exc}")
+
+
+def delegate_status(
+    status: Optional[str] = None,
+    profile: Optional[str] = None,
+    parent_session_id: Optional[str] = None,
+    limit: int = 50,
+    parent_agent=None,
+) -> str:
+    from tools.delegation_jobs import list_jobs
+
+    jobs = list_jobs(
+        status=status,
+        profile=profile,
+        parent_session_id=parent_session_id,
+        limit=int(limit or 50),
+    )
+    return json.dumps({"jobs": jobs, "count": len(jobs)}, ensure_ascii=False)
+
+
+def delegate_wait(
+    job_ids: Any,
+    timeout: float = 0,
+    timeout_seconds: Optional[float] = None,
+    parent_agent=None,
+) -> str:
+    from tools.delegation_jobs import wait_jobs
+
+    ids = _normalize_string_list(job_ids)
+    effective_timeout = timeout_seconds if timeout_seconds is not None else timeout
+    return json.dumps(wait_jobs(ids, timeout=float(effective_timeout or 0)), ensure_ascii=False)
+
+
+def delegate_result(job_id: str, tail_chars: int = 12000, parent_agent=None) -> str:
+    from tools.delegation_jobs import get_result
+
+    return json.dumps(
+        get_result(str(job_id), tail_chars=int(tail_chars or 12000)),
+        ensure_ascii=False,
+    )
+
+
+def delegate_cancel(job_ids: Any = None, job_id: Optional[str] = None, parent_agent=None) -> str:
+    from tools.delegation_jobs import cancel_jobs
+
+    target_ids = job_ids if job_ids not in (None, "", []) else job_id
+    return json.dumps(cancel_jobs(_normalize_string_list(target_ids)), ensure_ascii=False)
+
+
+def delegate_message(job_id: str, message: str, parent_agent=None) -> str:
+    return json.dumps(
+        {
+            "job_id": job_id,
+            "supported": False,
+            "error": "delegate_message is not supported for subprocess delegation jobs yet.",
+        },
+        ensure_ascii=False,
+    )
+
+
 # ---------------------------------------------------------------------------
 # OpenAI Function-Calling Schema
 # ---------------------------------------------------------------------------
@@ -2399,6 +2916,48 @@ DELEGATE_TASK_SCHEMA = {
                             "enum": ["leaf", "orchestrator"],
                             "description": "Per-task role override. See top-level 'role' for semantics.",
                         },
+                        "profile": {
+                            "type": "string",
+                            "description": "Hermes profile for this child. Profile-routed children run as subprocess jobs.",
+                        },
+                        "model": {
+                            "type": "string",
+                            "description": "Per-task model override.",
+                        },
+                        "provider": {
+                            "type": "string",
+                            "description": "Per-task provider override.",
+                        },
+                        "skills": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": "Skills to preload for this child.",
+                        },
+                        "resume": {
+                            "type": "string",
+                            "description": "Child session id to resume.",
+                        },
+                        "pass_session_id": {
+                            "type": "boolean",
+                            "description": "Pass the parent session id through to the child runtime when supported.",
+                        },
+                        "sandbox": {
+                            "type": "string",
+                            "description": "Per-task sandbox override: 'inherit', 'host', or a provider name such as 'openshell'.",
+                        },
+                        "sandbox_mode": {
+                            "type": "string",
+                            "enum": ["mirror", "remote"],
+                            "description": "Per-task sandbox workspace mode when the provider supports it.",
+                        },
+                        "sandbox_scope": {
+                            "type": "string",
+                            "description": "Stable per-task sandbox scope/name seed for provider runtime reuse.",
+                        },
+                        "sandbox_source": {
+                            "type": "string",
+                            "description": "Per-task provider source override, e.g. OpenShell --from source.",
+                        },
                     },
                     "required": ["goal"],
                 },
@@ -2424,6 +2983,35 @@ DELEGATE_TASK_SCHEMA = {
                     "delegation.orchestrator_enabled=false."
                 ),
             },
+            "async": {
+                "type": "boolean",
+                "description": "When true, start subprocess-backed delegation jobs and return job ids immediately. When false, use legacy blocking in-process delegation unless a profile override requires a subprocess.",
+            },
+            "profile": {
+                "type": "string",
+                "description": "Hermes profile for child jobs. Profile-routed children always use subprocess jobs.",
+            },
+            "model": {
+                "type": "string",
+                "description": "Model override for async child jobs.",
+            },
+            "provider": {
+                "type": "string",
+                "description": "Provider override for async child jobs.",
+            },
+            "skills": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Skills to preload for async child jobs.",
+            },
+            "resume": {
+                "type": "string",
+                "description": "Child session id to resume.",
+            },
+            "pass_session_id": {
+                "type": "boolean",
+                "description": "Pass the parent session id through to the child runtime when supported.",
+            },
             "acp_command": {
                 "type": "string",
                 "description": (
@@ -2441,8 +3029,125 @@ DELEGATE_TASK_SCHEMA = {
                     "Only used when acp_command is set. Example: ['--acp', '--stdio', '--model', 'claude-opus-4-6']"
                 ),
             },
+            "sandbox": {
+                "type": "string",
+                "description": (
+                    "Sandbox override for spawned subagents: 'inherit' (default), "
+                    "'host'/'local' for host execution, or a provider name such as 'openshell'."
+                ),
+            },
+            "sandbox_mode": {
+                "type": "string",
+                "enum": ["mirror", "remote"],
+                "description": "Sandbox workspace mode for spawned subagents when the provider supports it.",
+            },
+            "sandbox_scope": {
+                "type": "string",
+                "description": "Stable sandbox scope/name seed for spawned subagents.",
+            },
+            "sandbox_source": {
+                "type": "string",
+                "description": "Provider source override, e.g. OpenShell --from source.",
+            },
         },
         "required": [],
+    },
+}
+
+
+DELEGATE_START_SCHEMA = {
+    "name": "delegate_start",
+    "description": (
+        "Start one or more async delegation jobs and return job ids immediately. "
+        "Supports the same goal/tasks/profile/model/provider/toolsets/sandbox fields as delegate_task."
+    ),
+    "parameters": {
+        "type": "object",
+        "properties": {
+            key: value
+            for key, value in DELEGATE_TASK_SCHEMA["parameters"]["properties"].items()
+            if key not in {"async", "acp_command", "acp_args"}
+        },
+        "required": [],
+    },
+}
+
+DELEGATE_STATUS_SCHEMA = {
+    "name": "delegate_status",
+    "description": "List active or recent async delegation jobs.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "status": {"type": "string", "description": "Optional status filter."},
+            "profile": {"type": "string", "description": "Optional profile filter."},
+            "parent_session_id": {"type": "string", "description": "Optional parent session filter."},
+            "limit": {"type": "integer", "description": "Maximum jobs to return.", "default": 50},
+        },
+        "required": [],
+    },
+}
+
+DELEGATE_WAIT_SCHEMA = {
+    "name": "delegate_wait",
+    "description": "Wait for one or more async delegation jobs to complete.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "job_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Job ids to wait for.",
+            },
+            "timeout": {"type": "number", "description": "Seconds to wait.", "default": 0},
+            "timeout_seconds": {
+                "type": "number",
+                "description": "Alias for timeout, accepted for compatibility.",
+                "default": 0,
+            },
+        },
+        "required": ["job_ids"],
+    },
+}
+
+DELEGATE_RESULT_SCHEMA = {
+    "name": "delegate_result",
+    "description": "Fetch a delegation job result, progress metadata, and stdout/stderr tails.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "job_id": {"type": "string", "description": "Job id."},
+            "tail_chars": {"type": "integer", "description": "Maximum log tail characters.", "default": 12000},
+        },
+        "required": ["job_id"],
+    },
+}
+
+DELEGATE_CANCEL_SCHEMA = {
+    "name": "delegate_cancel",
+    "description": "Cancel one or more async delegation jobs.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "job_ids": {
+                "type": "array",
+                "items": {"type": "string"},
+                "description": "Job ids to cancel.",
+            }
+        },
+        "required": ["job_ids"],
+    },
+}
+
+DELEGATE_MESSAGE_SCHEMA = {
+    "name": "delegate_message",
+    "description": "Send a steer/message to a running delegation job when supported.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "job_id": {"type": "string", "description": "Job id."},
+            "message": {"type": "string", "description": "Message to send."},
+        },
+        "required": ["job_id", "message"],
     },
 }
 
@@ -2463,8 +3168,113 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        async_mode=args.get("async"),
+        profile=args.get("profile"),
+        model=args.get("model"),
+        provider=args.get("provider"),
+        skills=args.get("skills"),
+        resume=args.get("resume"),
+        pass_session_id=args.get("pass_session_id"),
+        sandbox=args.get("sandbox"),
+        sandbox_mode=args.get("sandbox_mode"),
+        sandbox_scope=args.get("sandbox_scope"),
+        sandbox_source=args.get("sandbox_source"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,
     emoji="🔀",
+)
+
+registry.register(
+    name="delegate_start",
+    toolset="delegation",
+    schema=DELEGATE_START_SCHEMA,
+    handler=lambda args, **kw: delegate_start(
+        goal=args.get("goal"),
+        context=args.get("context"),
+        toolsets=args.get("toolsets"),
+        tasks=args.get("tasks"),
+        role=args.get("role"),
+        profile=args.get("profile"),
+        model=args.get("model"),
+        provider=args.get("provider"),
+        skills=args.get("skills"),
+        resume=args.get("resume"),
+        pass_session_id=args.get("pass_session_id"),
+        sandbox=args.get("sandbox"),
+        sandbox_mode=args.get("sandbox_mode"),
+        sandbox_scope=args.get("sandbox_scope"),
+        sandbox_source=args.get("sandbox_source"),
+        parent_agent=kw.get("parent_agent"),
+    ),
+    check_fn=check_delegate_requirements,
+    emoji="⚡",
+)
+
+registry.register(
+    name="delegate_status",
+    toolset="delegation",
+    schema=DELEGATE_STATUS_SCHEMA,
+    handler=lambda args, **kw: delegate_status(
+        status=args.get("status"),
+        profile=args.get("profile"),
+        parent_session_id=args.get("parent_session_id"),
+        limit=args.get("limit") or 50,
+        parent_agent=kw.get("parent_agent"),
+    ),
+    check_fn=check_delegate_requirements,
+    emoji="⚡",
+)
+
+registry.register(
+    name="delegate_wait",
+    toolset="delegation",
+    schema=DELEGATE_WAIT_SCHEMA,
+    handler=lambda args, **kw: delegate_wait(
+        job_ids=args.get("job_ids") or [],
+        timeout=args.get("timeout") or 0,
+        timeout_seconds=args.get("timeout_seconds"),
+        parent_agent=kw.get("parent_agent"),
+    ),
+    check_fn=check_delegate_requirements,
+    emoji="⚡",
+)
+
+registry.register(
+    name="delegate_result",
+    toolset="delegation",
+    schema=DELEGATE_RESULT_SCHEMA,
+    handler=lambda args, **kw: delegate_result(
+        job_id=args.get("job_id") or "",
+        tail_chars=args.get("tail_chars") or 12000,
+        parent_agent=kw.get("parent_agent"),
+    ),
+    check_fn=check_delegate_requirements,
+    emoji="⚡",
+)
+
+registry.register(
+    name="delegate_cancel",
+    toolset="delegation",
+    schema=DELEGATE_CANCEL_SCHEMA,
+    handler=lambda args, **kw: delegate_cancel(
+        job_ids=args.get("job_ids"),
+        job_id=args.get("job_id"),
+        parent_agent=kw.get("parent_agent"),
+    ),
+    check_fn=check_delegate_requirements,
+    emoji="⚡",
+)
+
+registry.register(
+    name="delegate_message",
+    toolset="delegation",
+    schema=DELEGATE_MESSAGE_SCHEMA,
+    handler=lambda args, **kw: delegate_message(
+        job_id=args.get("job_id") or "",
+        message=args.get("message") or "",
+        parent_agent=kw.get("parent_agent"),
+    ),
+    check_fn=check_delegate_requirements,
+    emoji="⚡",
 )

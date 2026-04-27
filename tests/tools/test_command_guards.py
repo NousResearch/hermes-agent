@@ -39,7 +39,13 @@ def _clean_state():
     approval_module._pending.clear()
     approval_module._permanent_approved.clear()
     saved = {}
-    for k in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK", "HERMES_YOLO_MODE"):
+    for k in (
+        "HERMES_INTERACTIVE",
+        "HERMES_GATEWAY_SESSION",
+        "HERMES_EXEC_ASK",
+        "HERMES_YOLO_MODE",
+        "HERMES_DELEGATE_APPROVAL_MODE",
+    ):
         if k in os.environ:
             saved[k] = os.environ.pop(k)
     yield
@@ -48,7 +54,13 @@ def _clean_state():
     approval_module._permanent_approved.clear()
     for k, v in saved.items():
         os.environ[k] = v
-    for k in ("HERMES_INTERACTIVE", "HERMES_GATEWAY_SESSION", "HERMES_EXEC_ASK", "HERMES_YOLO_MODE"):
+    for k in (
+        "HERMES_INTERACTIVE",
+        "HERMES_GATEWAY_SESSION",
+        "HERMES_EXEC_ASK",
+        "HERMES_YOLO_MODE",
+        "HERMES_DELEGATE_APPROVAL_MODE",
+    ):
         os.environ.pop(k, None)
 
 
@@ -72,6 +84,34 @@ class TestContainerSkip:
     def test_daytona_skips_both(self):
         result = check_all_command_guards("rm -rf /", "daytona")
         assert result["approved"] is True
+
+
+class TestDelegationApprovalPolicy:
+    def test_delegate_deny_blocks_without_prompt(self):
+        os.environ["HERMES_INTERACTIVE"] = "1"
+        os.environ["HERMES_DELEGATE_APPROVAL_MODE"] = "deny"
+
+        result = check_all_command_guards(
+            "python3 <<'PY'\nprint('hello')\nPY",
+            "local",
+            approval_callback=lambda *_args, **_kwargs: pytest.fail("should not prompt"),
+        )
+
+        assert result["approved"] is False
+        assert "subprocess delegation is non-interactive" in result["message"]
+
+    def test_delegate_approve_allows_without_prompt(self):
+        os.environ["HERMES_INTERACTIVE"] = "1"
+        os.environ["HERMES_DELEGATE_APPROVAL_MODE"] = "approve"
+
+        result = check_all_command_guards(
+            "python3 <<'PY'\nprint('hello')\nPY",
+            "local",
+            approval_callback=lambda *_args, **_kwargs: pytest.fail("should not prompt"),
+        )
+
+        assert result["approved"] is True
+        assert result["delegate_approved"] is True
 
 
 # ---------------------------------------------------------------------------

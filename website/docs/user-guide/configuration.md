@@ -1395,6 +1395,11 @@ Configure subagent behavior for the delegate tool:
 
 ```yaml
 delegation:
+  async_default: true                         # delegate_task returns job ids by default. Set false for legacy blocking behavior.
+  default_profile: ""                         # Child profile override (empty = inherit active profile)
+  allowed_profiles: []                        # Profiles allowed for delegation (empty = all profiles)
+  job_retention_hours: 24                     # Retain completed job metadata under ~/.hermes/delegation/jobs/
+  approval_mode: deny                         # Subprocess child command policy: deny, approve, or inherit
   # model: "google/gemini-3-flash-preview"  # Override model (empty = inherit parent)
   # provider: "openrouter"                  # Override provider (empty = inherit parent)
   # base_url: "http://localhost:1234/v1"    # Direct OpenAI-compatible endpoint (takes precedence over provider)
@@ -1405,6 +1410,8 @@ delegation:
 ```
 
 **Subagent provider:model override:** By default, subagents inherit the parent agent's provider and model. Set `delegation.provider` and `delegation.model` to route subagents to a different provider:model pair — e.g., use a cheap/fast model for narrowly-scoped subtasks while your primary agent runs an expensive reasoning model.
+
+**Async jobs and profiles:** By default, `delegate_task` starts file-backed delegation jobs and returns job ids immediately. Use `delegate_start`, `delegate_status`, `delegate_wait`, `delegate_result`, and `delegate_cancel` for explicit job control. Profile-selected children run in separate Hermes subprocesses with the requested profile via `--profile`, so profile-specific config, skills, memory, sandbox settings, and model/provider overrides stay isolated from the parent process.
 
 **Direct endpoint override:** If you want the obvious custom-endpoint path, set `delegation.base_url`, `delegation.api_key`, and `delegation.model`. That sends subagents directly to that OpenAI-compatible endpoint and takes precedence over `delegation.provider`. If `delegation.api_key` is omitted, Hermes falls back to `OPENAI_API_KEY` only.
 

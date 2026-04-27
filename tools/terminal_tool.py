@@ -775,6 +775,8 @@ _cleanup_running = False
 # Thread-safe because each task_id is unique per rollout.
 _task_env_overrides: Dict[str, Dict[str, Any]] = {}
 
+_BUILTIN_ENV_TYPES = {"local", "docker", "singularity", "modal", "daytona", "ssh"}
+
 
 def register_task_env_overrides(task_id: str, overrides: Dict[str, Any]):
     """
@@ -846,11 +848,114 @@ def _parse_env_var(name: str, default: str, converter=int, type_label: str = "in
         )
 
 
+def _env_truthy(name: str, default: str = "false") -> bool:
+    return os.getenv(name, default).strip().lower() in ("1", "true", "yes", "on")
+
+
+def _env_list(name: str) -> list[str]:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return []
+    if raw.startswith("["):
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, list):
+                return [str(item) for item in parsed if str(item).strip()]
+        except json.JSONDecodeError:
+            pass
+    return [part.strip() for part in raw.split(",") if part.strip()]
+
+
+def _env_json_or_list(name: str) -> Any:
+    raw = os.getenv(name, "").strip()
+    if not raw:
+        return []
+    try:
+        return json.loads(raw)
+    except json.JSONDecodeError:
+        return _env_list(name)
+
+
+def _resolve_sandbox_request(raw_env_type: str) -> tuple[str, dict[str, Any]]:
+    """Resolve sandbox env aliases into an effective terminal backend."""
+
+    provider = os.getenv("HERMES_SANDBOX_PROVIDER", "host").strip() or "host"
+    request = os.getenv("HERMES_SANDBOX", "").strip()
+    enabled = _env_truthy("HERMES_SANDBOX_ENABLED", "false")
+    forced_host = False
+
+    if request:
+        normalized = request.lower()
+        if normalized in ("0", "false", "no", "off", "host", "local", "none"):
+            provider = "host"
+            enabled = False
+            forced_host = True
+        elif normalized in ("1", "true", "yes", "on", "sandbox"):
+            enabled = True
+            if provider.lower() in ("", "host", "local", "none"):
+                provider = "openshell"
+        else:
+            provider = request
+            enabled = True
+
+    if forced_host:
+        env_type = "local"
+    elif enabled and provider.lower() not in ("host", "local", "none"):
+        env_type = provider
+    else:
+        env_type = raw_env_type
+
+    remote_workspace = os.getenv("HERMES_SANDBOX_REMOTE_WORKSPACE_DIR", "/sandbox").strip() or "/sandbox"
+    remote_agent_workspace = (
+        os.getenv("HERMES_SANDBOX_REMOTE_AGENT_WORKSPACE_DIR", "/agent").strip()
+        or "/agent"
+    )
+    mode = os.getenv("HERMES_SANDBOX_MODE", "mirror").strip().lower() or "mirror"
+    if mode not in ("mirror", "remote"):
+        mode = "mirror"
+
+    source = (
+        os.getenv("HERMES_SANDBOX_SOURCE")
+        or os.getenv("HERMES_OPENSHELL_SOURCE")
+        or os.getenv("HERMES_OPENSHELL_FROM")
+        or ""
+    ).strip()
+
+    sandbox_config = {
+        "enabled": enabled,
+        "provider": provider,
+        "mode": mode,
+        "scope": os.getenv("HERMES_SANDBOX_SCOPE", "").strip(),
+        "source": source,
+        "command": os.getenv("HERMES_OPENSHELL_COMMAND", "openshell").strip() or "openshell",
+        "policy": os.getenv("HERMES_OPENSHELL_POLICY", "").strip(),
+        "providers": _env_list("HERMES_OPENSHELL_PROVIDERS"),
+        "auto_providers": _env_truthy("HERMES_OPENSHELL_AUTO_PROVIDERS", "true"),
+        "gpu": _env_truthy("HERMES_OPENSHELL_GPU", "false"),
+        "gateway": os.getenv("HERMES_OPENSHELL_GATEWAY", "hermes-openshell").strip(),
+        "gateway_endpoint": os.getenv("HERMES_OPENSHELL_GATEWAY_ENDPOINT", "").strip(),
+        "gateway_port": _parse_env_var(
+            "HERMES_OPENSHELL_GATEWAY_PORT", "18080", int, "integer"
+        ),
+        "gateway_host": os.getenv("HERMES_OPENSHELL_GATEWAY_HOST", "").strip(),
+        "remote_workspace_dir": remote_workspace,
+        "remote_agent_workspace_dir": remote_agent_workspace,
+        "timeout_seconds": _parse_env_var(
+            "HERMES_SANDBOX_TIMEOUT_SECONDS", "120", int, "integer"
+        ),
+        "mirror_excludes": _env_list("HERMES_SANDBOX_MIRROR_EXCLUDES")
+        or [".git", ".hermes", "node_modules", ".venv", "dist", "build", "target"],
+        "extra_syncs": _env_json_or_list("HERMES_SANDBOX_EXTRA_SYNCS"),
+    }
+    return env_type, sandbox_config
+
+
 def _get_env_config() -> Dict[str, Any]:
     """Get terminal environment configuration from environment variables."""
     # Default image with Python and Node.js for maximum compatibility
     default_image = "nikolaik/python-nodejs:python3.11-nodejs20"
-    env_type = os.getenv("TERMINAL_ENV", "local")
+    raw_env_type = os.getenv("TERMINAL_ENV", "local")
+    env_type, sandbox_config = _resolve_sandbox_request(raw_env_type)
     
     mount_docker_cwd = os.getenv("TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower() in ("true", "1", "yes")
 
@@ -861,6 +966,8 @@ def _get_env_config() -> Dict[str, Any]:
         default_cwd = os.getcwd()
     elif env_type == "ssh":
         default_cwd = "~"
+    elif env_type not in _BUILTIN_ENV_TYPES:
+        default_cwd = sandbox_config["remote_workspace_dir"]
     else:
         default_cwd = "/root"
 
@@ -871,7 +978,15 @@ def _get_env_config() -> Dict[str, Any]:
     cwd = os.getenv("TERMINAL_CWD", default_cwd)
     host_cwd = None
     host_prefixes = ("/Users/", "/home/", "C:\\", "C:/")
-    if env_type == "docker" and mount_docker_cwd:
+    if env_type not in _BUILTIN_ENV_TYPES:
+        host_candidate = os.path.abspath(os.path.expanduser(os.getenv("TERMINAL_CWD") or os.getcwd()))
+        if os.path.isdir(host_candidate):
+            host_cwd = host_candidate
+        if sandbox_config["mode"] == "mirror":
+            cwd = sandbox_config["remote_workspace_dir"]
+        elif not cwd.startswith(sandbox_config["remote_workspace_dir"]):
+            cwd = sandbox_config["remote_workspace_dir"]
+    elif env_type == "docker" and mount_docker_cwd:
         docker_cwd_source = os.getenv("TERMINAL_CWD") or os.getcwd()
         candidate = os.path.abspath(os.path.expanduser(docker_cwd_source))
         if (
@@ -922,7 +1037,16 @@ def _get_env_config() -> Dict[str, Any]:
         "container_disk": _parse_env_var("TERMINAL_CONTAINER_DISK", "51200"),        # MB (default 50GB)
         "container_persistent": os.getenv("TERMINAL_CONTAINER_PERSISTENT", "true").lower() in ("true", "1", "yes"),
         "docker_volumes": _parse_env_var("TERMINAL_DOCKER_VOLUMES", "[]", json.loads, "valid JSON"),
+        "sandbox_config": sandbox_config,
     }
+
+
+def _task_sandbox_config(config: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
+    sandbox_config = dict(config.get("sandbox_config") or {})
+    override_config = overrides.get("sandbox_config")
+    if isinstance(override_config, dict):
+        sandbox_config.update(override_config)
+    return sandbox_config
 
 
 def _get_modal_backend_state(modal_mode: object | None) -> Dict[str, Any]:
@@ -1060,7 +1184,31 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
         )
 
     else:
-        raise ValueError(f"Unknown environment type: {env_type}. Use 'local', 'docker', 'singularity', 'modal', 'daytona', or 'ssh'")
+        from agent.sandbox_provider import SandboxSpec
+        from plugins.sandbox import load_sandbox_provider
+
+        provider = load_sandbox_provider(env_type)
+        if provider is None:
+            raise ValueError(
+                f"Unknown environment type: {env_type}. Use 'local', 'docker', "
+                "'singularity', 'modal', 'daytona', 'ssh', or install a sandbox provider."
+            )
+        sandbox_config = cc.get("sandbox_config")
+        if not isinstance(sandbox_config, dict):
+            sandbox_config = _get_env_config().get("sandbox_config", {})
+        mode = str(sandbox_config.get("mode") or "mirror")
+        scope = str(sandbox_config.get("scope") or task_id or "default")
+        spec = SandboxSpec(
+            provider=env_type,
+            mode=mode,
+            task_id=task_id,
+            scope=scope,
+            cwd=cwd,
+            host_cwd=host_cwd or os.getcwd(),
+            timeout=timeout,
+            config=sandbox_config,
+        )
+        return provider.create_environment(spec)
 
 
 def _cleanup_inactive_envs(lifetime_seconds: int = 300):
@@ -1508,6 +1656,8 @@ def terminal_tool(
         # Check per-task overrides (set by environments like TerminalBench2Env)
         # before falling back to global env var config
         overrides = _task_env_overrides.get(effective_task_id, {})
+        env_type = overrides.get("env_type") or env_type
+        sandbox_config = _task_sandbox_config(config, overrides)
         
         # Select image based on env type, with per-task override support
         if env_type == "docker":
@@ -1594,7 +1744,7 @@ def terminal_tool(
                             }
 
                         container_config = None
-                        if env_type in ("docker", "singularity", "modal", "daytona"):
+                        if env_type in ("docker", "singularity", "modal", "daytona") or env_type not in _BUILTIN_ENV_TYPES:
                             container_config = {
                                 "container_cpu": config.get("container_cpu", 1),
                                 "container_memory": config.get("container_memory", 5120),
@@ -1605,6 +1755,7 @@ def terminal_tool(
                                 "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                                 "docker_forward_env": config.get("docker_forward_env", []),
                                 "docker_env": config.get("docker_env", {}),
+                                "sandbox_config": sandbox_config,
                             }
 
                         local_config = None
@@ -2021,12 +2172,17 @@ def check_terminal_requirements() -> bool:
             return os.getenv("DAYTONA_API_KEY") is not None
 
         else:
-            logger.error(
-                "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
-                "modal, daytona, ssh.",
-                env_type,
-            )
-            return False
+            from plugins.sandbox import load_sandbox_provider
+
+            provider = load_sandbox_provider(env_type)
+            if provider is None:
+                logger.error(
+                    "Unknown TERMINAL_ENV '%s'. Use one of: local, docker, singularity, "
+                    "modal, daytona, ssh, or install a sandbox provider.",
+                    env_type,
+                )
+                return False
+            return provider.is_available()
     except Exception as e:
         logger.error("Terminal requirements check failed: %s", e, exc_info=True)
         return False

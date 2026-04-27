@@ -129,6 +129,15 @@ def _get_model_config() -> Dict[str, Any]:
     return {}
 
 
+def _model_config_for_target(target_model: Optional[str] = None) -> Dict[str, Any]:
+    model_cfg = _get_model_config()
+    target = str(target_model or "").strip()
+    if target:
+        model_cfg = dict(model_cfg)
+        model_cfg["default"] = target
+    return model_cfg
+
+
 def _provider_supports_explicit_api_mode(provider: Optional[str], configured_provider: Optional[str] = None) -> bool:
     """Check whether a persisted api_mode should be honored for a given provider.
 
@@ -515,8 +524,9 @@ def _resolve_openrouter_runtime(
     requested_provider: str,
     explicit_api_key: Optional[str] = None,
     explicit_base_url: Optional[str] = None,
+    model_cfg: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Any]:
-    model_cfg = _get_model_config()
+    model_cfg = model_cfg or _get_model_config()
     cfg_base_url = model_cfg.get("base_url") if isinstance(model_cfg.get("base_url"), str) else ""
     cfg_provider = model_cfg.get("provider") if isinstance(model_cfg.get("provider"), str) else ""
     cfg_api_key = ""
@@ -853,13 +863,9 @@ def resolve_runtime_provider(
 ) -> Dict[str, Any]:
     """Resolve runtime provider credentials for agent execution.
 
-    target_model: Optional override for model_cfg.get("default") when
-    computing provider-specific api_mode (e.g. OpenCode Zen/Go where different
-    models route through different API surfaces). Callers performing an
-    explicit mid-session model switch should pass the new model here so
-    api_mode is derived from the model they are switching TO, not the stale
-    persisted default. Other callers can leave it None to preserve existing
-    behavior (api_mode derived from config).
+    ``target_model`` lets callers that are about to launch a non-default model
+    ask provider-specific routing logic to evaluate that model instead of the
+    process-wide configured default.
     """
     requested_provider = resolve_requested_provider(requested)
 
@@ -912,7 +918,7 @@ def resolve_runtime_provider(
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
     )
-    model_cfg = _get_model_config()
+    model_cfg = _model_config_for_target(target_model)
     explicit_runtime = _resolve_explicit_runtime(
         provider=provider,
         requested_provider=requested_provider,
@@ -1244,6 +1250,7 @@ def resolve_runtime_provider(
         requested_provider=requested_provider,
         explicit_api_key=explicit_api_key,
         explicit_base_url=explicit_base_url,
+        model_cfg=model_cfg,
     )
     runtime["requested_provider"] = requested_provider
     return runtime

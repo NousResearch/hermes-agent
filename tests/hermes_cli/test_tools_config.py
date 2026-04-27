@@ -26,6 +26,29 @@ def test_get_platform_tools_uses_default_when_platform_not_configured():
     assert enabled.isdisjoint(_DEFAULT_OFF_TOOLSETS)
 
 
+def test_platform_defaults_include_complete_delegation_toolset():
+    """Composite defaults must stay in sync with configurable toolsets.
+
+    _get_platform_tools() reverse-maps platform defaults like hermes-cli back
+    to configurable toolsets by checking whether every tool in the configurable
+    toolset is present in the composite default. If delegation grows a new tool
+    but hermes-cli is not updated, the whole delegation toolset disappears.
+    """
+    from toolsets import resolve_toolset
+
+    delegation_tools = set(resolve_toolset("delegation"))
+
+    for default_toolset in ("hermes-cli", "hermes-acp", "hermes-api-server"):
+        assert delegation_tools.issubset(resolve_toolset(default_toolset))
+
+    enabled = _get_platform_tools(
+        {"platform_toolsets": {"cli": ["hermes-cli"]}},
+        "cli",
+        include_default_mcp_servers=False,
+    )
+    assert "delegation" in enabled
+
+
 def test_configurable_toolsets_include_messaging():
     assert any(ts_key == "messaging" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
 

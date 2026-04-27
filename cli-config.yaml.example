@@ -790,6 +790,11 @@ code_execution:
 # The delegate_task tool spawns child agents with isolated context.
 # Supports single tasks and batch mode (default 3 parallel, configurable).
 delegation:
+  async_default: true                         # delegate_task returns job ids by default; set false for legacy blocking behavior
+  default_profile: ""                         # Profile for child jobs (empty = inherit active profile)
+  allowed_profiles: []                        # Profiles allowed for delegation (empty = all profiles)
+  job_retention_hours: 24                     # How long completed job metadata is retained
+  approval_mode: deny                         # Subprocess child command policy: deny, approve, or inherit
   max_iterations: 50                          # Max tool-calling turns per child (default: 50)
   # max_concurrent_children: 3                # Max parallel child agents per batch (default: 3, floor: 1, no ceiling).
                                               # WARNING: values above 10 multiply API cost linearly.

@@ -53,6 +53,16 @@ _EXTRA_ENV_KEYS = frozenset({
     "QQ_ALLOWED_USERS", "QQ_GROUP_ALLOWED_USERS", "QQ_ALLOW_ALL_USERS", "QQ_MARKDOWN_SUPPORT",
     "QQ_STT_API_KEY", "QQ_STT_BASE_URL", "QQ_STT_MODEL",
     "TERMINAL_ENV", "TERMINAL_SSH_KEY", "TERMINAL_SSH_PORT",
+    "HERMES_SANDBOX", "HERMES_SANDBOX_ENABLED", "HERMES_SANDBOX_PROVIDER",
+    "HERMES_SANDBOX_MODE", "HERMES_SANDBOX_SCOPE", "HERMES_SANDBOX_SOURCE",
+    "HERMES_SANDBOX_REMOTE_WORKSPACE_DIR", "HERMES_SANDBOX_REMOTE_AGENT_WORKSPACE_DIR",
+    "HERMES_SANDBOX_TIMEOUT_SECONDS", "HERMES_SANDBOX_MIRROR_EXCLUDES",
+    "HERMES_SANDBOX_EXTRA_SYNCS",
+    "HERMES_SANDBOX_DELEGATION_DEFAULT", "HERMES_OPENSHELL_COMMAND",
+    "HERMES_OPENSHELL_POLICY", "HERMES_OPENSHELL_PROVIDERS",
+    "HERMES_OPENSHELL_AUTO_PROVIDERS", "HERMES_OPENSHELL_GPU",
+    "HERMES_OPENSHELL_GATEWAY", "HERMES_OPENSHELL_GATEWAY_ENDPOINT",
+    "HERMES_OPENSHELL_GATEWAY_PORT", "HERMES_OPENSHELL_GATEWAY_HOST",
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_REPLY_MODE",
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
@@ -473,6 +483,44 @@ DEFAULT_CONFIG = {
         # via TERMINAL_LOCAL_PERSISTENT env var.
         "persistent_shell": True,
     },
+
+    "sandbox": {
+        "enabled": False,
+        "provider": "host",
+        "mode": "mirror",
+        "delegation_default": "inherit",
+        "openshell": {
+            "command": "openshell",
+            "from": "bundled-hermes-source",
+            "policy": "",
+            "providers": [],
+            "auto_providers": True,
+            "gpu": False,
+            "gateway": "hermes-openshell",
+            "gateway_endpoint": "",
+            "gateway_port": 18080,
+            "gateway_host": "",
+            "remote_workspace_dir": "/sandbox",
+            "remote_agent_workspace_dir": "/agent",
+            "timeout_seconds": 120,
+            "sync_hermes_files": False,
+            "mirror_excludes": [
+                ".git",
+                ".hermes",
+                "node_modules",
+                ".venv",
+                "venv",
+                "__pycache__",
+                ".pytest_cache",
+                ".mypy_cache",
+                ".ruff_cache",
+                "dist",
+                "build",
+                "target",
+            ],
+            "extra_syncs": [],
+        },
+    },
     
     "browser": {
         "inactivity_timeout": 120,
@@ -779,6 +827,11 @@ DEFAULT_CONFIG = {
     # Uses the same runtime provider resolution as CLI/gateway startup, so all
     # configured providers (OpenRouter, Nous, Z.ai, Kimi, etc.) are supported.
     "delegation": {
+        "async_default": True,  # delegate_task returns job ids by default; pass async=false for legacy blocking
+        "default_profile": "",  # empty = inherit active profile
+        "allowed_profiles": [],  # empty = all existing profiles allowed
+        "job_retention_hours": 24,
+        "approval_mode": "deny",  # subprocess children: deny flagged commands without prompting
         "model": "",       # e.g. "google/gemini-3-flash-preview" (empty = inherit parent model)
         "provider": "",    # e.g. "openrouter" (empty = inherit parent provider + credentials)
         "base_url": "",    # direct OpenAI-compatible endpoint for subagents
@@ -2430,7 +2483,7 @@ def check_config_version() -> Tuple[int, int]:
 _KNOWN_ROOT_KEYS = {
     "_config_version", "model", "providers", "fallback_model",
     "fallback_providers", "credential_pool_strategies", "toolsets",
-    "agent", "terminal", "display", "compression", "delegation",
+    "agent", "terminal", "sandbox", "display", "compression", "delegation",
     "auxiliary", "custom_providers", "context", "memory", "gateway",
     "sessions",
 }
@@ -4106,9 +4159,32 @@ def set_config_value(key: str, value: str):
         "terminal.container_memory": "TERMINAL_CONTAINER_MEMORY",
         "terminal.container_disk": "TERMINAL_CONTAINER_DISK",
         "terminal.container_persistent": "TERMINAL_CONTAINER_PERSISTENT",
+        "sandbox.enabled": "HERMES_SANDBOX_ENABLED",
+        "sandbox.provider": "HERMES_SANDBOX_PROVIDER",
+        "sandbox.mode": "HERMES_SANDBOX_MODE",
+        "sandbox.openshell.command": "HERMES_OPENSHELL_COMMAND",
+        "sandbox.openshell.from": "HERMES_SANDBOX_SOURCE",
+        "sandbox.openshell.policy": "HERMES_OPENSHELL_POLICY",
+        "sandbox.openshell.providers": "HERMES_OPENSHELL_PROVIDERS",
+        "sandbox.openshell.auto_providers": "HERMES_OPENSHELL_AUTO_PROVIDERS",
+        "sandbox.openshell.gpu": "HERMES_OPENSHELL_GPU",
+        "sandbox.openshell.gateway": "HERMES_OPENSHELL_GATEWAY",
+        "sandbox.openshell.gateway_endpoint": "HERMES_OPENSHELL_GATEWAY_ENDPOINT",
+        "sandbox.openshell.gateway_port": "HERMES_OPENSHELL_GATEWAY_PORT",
+        "sandbox.openshell.gateway_host": "HERMES_OPENSHELL_GATEWAY_HOST",
+        "sandbox.openshell.remote_workspace_dir": "HERMES_SANDBOX_REMOTE_WORKSPACE_DIR",
+        "sandbox.openshell.remote_agent_workspace_dir": "HERMES_SANDBOX_REMOTE_AGENT_WORKSPACE_DIR",
+        "sandbox.openshell.timeout_seconds": "HERMES_SANDBOX_TIMEOUT_SECONDS",
+        "sandbox.openshell.mirror_excludes": "HERMES_SANDBOX_MIRROR_EXCLUDES",
+        "sandbox.openshell.extra_syncs": "HERMES_SANDBOX_EXTRA_SYNCS",
     }
     if key in _config_to_env_sync:
-        save_env_value(_config_to_env_sync[key], str(value))
+        if isinstance(value, list):
+            import json
+
+            save_env_value(_config_to_env_sync[key], json.dumps(value))
+        else:
+            save_env_value(_config_to_env_sync[key], str(value))
 
     print(f"✓ Set {key} = {value} in {config_path}")
 

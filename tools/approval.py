@@ -647,6 +647,18 @@ def _get_approval_config() -> dict:
         return {}
 
 
+def _get_delegate_approval_mode() -> str:
+    """Return subprocess-delegation approval policy, if one is active."""
+    mode = os.getenv("HERMES_DELEGATE_APPROVAL_MODE", "").strip().lower()
+    if mode in {"approve", "allow", "allowed", "approved"}:
+        return "approve"
+    if mode in {"deny", "block", "blocked", "denied"}:
+        return "deny"
+    if mode in {"inherit", "parent", "manual"}:
+        return "inherit"
+    return ""
+
+
 def _get_approval_mode() -> str:
     """Read the approval mode from config. Returns 'manual', 'smart', or 'off'."""
     mode = _get_approval_config().get("mode", "manual")
@@ -761,6 +773,26 @@ def check_dangerous_command(command: str, env_type: str,
     session_key = get_current_session_key()
     if is_approved(session_key, pattern_key):
         return {"approved": True, "message": None}
+
+    delegate_approval_mode = _get_delegate_approval_mode()
+    if delegate_approval_mode == "approve":
+        return {
+            "approved": True,
+            "message": None,
+            "delegate_approved": True,
+            "description": description,
+        }
+    if delegate_approval_mode == "deny":
+        return {
+            "approved": False,
+            "message": (
+                f"BLOCKED: Command flagged as dangerous ({description}) "
+                "and subprocess delegation is non-interactive. "
+                "Find an alternative approach that avoids this command."
+            ),
+            "pattern_key": pattern_key,
+            "description": description,
+        }
 
     is_cli = os.getenv("HERMES_INTERACTIVE")
     is_gateway = os.getenv("HERMES_GATEWAY_SESSION")
@@ -944,6 +976,27 @@ def check_all_command_guards(command: str, env_type: str,
     # Nothing to warn about
     if not warnings:
         return {"approved": True, "message": None}
+
+    delegate_approval_mode = _get_delegate_approval_mode()
+    if delegate_approval_mode == "approve":
+        return {
+            "approved": True,
+            "message": None,
+            "delegate_approved": True,
+            "description": "; ".join(desc for _, desc, _ in warnings),
+        }
+    if delegate_approval_mode == "deny":
+        return {
+            "approved": False,
+            "message": (
+                "BLOCKED: Command requires approval "
+                f"({'; '.join(desc for _, desc, _ in warnings)}) "
+                "but subprocess delegation is non-interactive. "
+                "Find an alternative approach that avoids this command."
+            ),
+            "pattern_key": warnings[0][0],
+            "description": "; ".join(desc for _, desc, _ in warnings),
+        }
 
     # --- Phase 2.5: Smart approval (auxiliary LLM risk assessment) ---
     # When approvals.mode=smart, ask the aux LLM before prompting the user.

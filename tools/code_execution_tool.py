@@ -466,6 +466,7 @@ def _get_or_create_env(task_id: str):
         config = _get_env_config()
         env_type = config["env_type"]
         overrides = _task_env_overrides.get(effective_task_id, {})
+        env_type = overrides.get("env_type") or env_type
 
         if env_type == "docker":
             image = overrides.get("docker_image") or config["docker_image"]
@@ -481,13 +482,16 @@ def _get_or_create_env(task_id: str):
         cwd = overrides.get("cwd") or config["cwd"]
 
         container_config = None
-        if env_type in ("docker", "singularity", "modal", "daytona"):
+        from tools.terminal_tool import _BUILTIN_ENV_TYPES, _task_sandbox_config
+
+        if env_type in ("docker", "singularity", "modal", "daytona") or env_type not in _BUILTIN_ENV_TYPES:
             container_config = {
                 "container_cpu": config.get("container_cpu", 1),
                 "container_memory": config.get("container_memory", 5120),
                 "container_disk": config.get("container_disk", 51200),
                 "container_persistent": config.get("container_persistent", True),
                 "docker_volumes": config.get("docker_volumes", []),
+                "sandbox_config": _task_sandbox_config(config, overrides),
             }
 
         ssh_config = None

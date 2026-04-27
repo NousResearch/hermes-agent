@@ -758,6 +758,16 @@ def _discover_context_engines() -> list[tuple[str, str]]:
         return []
 
 
+def _discover_sandbox_providers() -> list[tuple[str, str]]:
+    """Return [(name, description), ...] for available sandbox providers."""
+    try:
+        from plugins.sandbox import discover_sandbox_providers
+
+        return [(name, desc) for name, desc, _avail in discover_sandbox_providers()]
+    except Exception:
+        return []
+
+
 def _get_current_memory_provider() -> str:
     """Return the current memory.provider from config (empty = built-in)."""
     try:
@@ -778,6 +788,20 @@ def _get_current_context_engine() -> str:
         return "compressor"
 
 
+def _get_current_sandbox_provider() -> str:
+    """Return the current sandbox.provider from config."""
+    try:
+        from hermes_cli.config import load_config
+
+        config = load_config()
+        sandbox = config.get("sandbox", {}) if isinstance(config.get("sandbox"), dict) else {}
+        if not sandbox.get("enabled", False):
+            return "host"
+        return sandbox.get("provider", "host") or "host"
+    except Exception:
+        return "host"
+
+
 def _save_memory_provider(name: str) -> None:
     """Persist memory.provider to config.yaml."""
     from hermes_cli.config import load_config, save_config
@@ -795,6 +819,21 @@ def _save_context_engine(name: str) -> None:
     if "context" not in config:
         config["context"] = {}
     config["context"]["engine"] = name
+    save_config(config)
+
+
+def _save_sandbox_provider(name: str) -> None:
+    """Persist sandbox.provider to config.yaml."""
+    from hermes_cli.config import load_config, save_config
+
+    config = load_config()
+    if "sandbox" not in config or not isinstance(config.get("sandbox"), dict):
+        config["sandbox"] = {}
+    config["sandbox"]["provider"] = "host" if name == "host" else name
+    config["sandbox"]["enabled"] = name != "host"
+    if name != "host":
+        config["terminal"] = config.get("terminal", {}) if isinstance(config.get("terminal"), dict) else {}
+        config["terminal"]["backend"] = name
     save_config(config)
 
 
@@ -874,6 +913,48 @@ def _configure_context_engine() -> bool:
     return False
 
 
+def _configure_sandbox_provider() -> bool:
+    """Launch a radio picker for sandbox providers. Returns True if changed."""
+    from hermes_cli.curses_ui import curses_radiolist
+
+    current = _get_current_sandbox_provider()
+    providers = _discover_sandbox_providers()
+    items = ["host (default)"]
+    names = ["host"]
+    selected = 0
+
+    for name, desc in providers:
+        names.append(name)
+        label = f"{name} \u2014 {desc}" if desc else name
+        items.append(label)
+        if name == current:
+            selected = len(items) - 1
+
+    if current != "host" and current not in names:
+        names.append(current)
+        items.append(f"{current} (not found)")
+        selected = len(items) - 1
+
+    choice = curses_radiolist(
+        title="Sandbox Provider (select one)",
+        items=items,
+        selected=selected,
+    )
+    new_provider = names[choice]
+    if new_provider != current:
+        _save_sandbox_provider(new_provider)
+        return True
+    return False
+
+
+def _current_provider_value(index: int) -> str:
+    if index == 0:
+        return _get_current_memory_provider() or "built-in"
+    if index == 1:
+        return _get_current_context_engine()
+    return _get_current_sandbox_provider()
+
+
 # ---------------------------------------------------------------------------
 # Composite plugins UI
 # ---------------------------------------------------------------------------
@@ -907,9 +988,11 @@ def cmd_toggle() -> None:
     # -- Provider categories --
     current_memory = _get_current_memory_provider() or "built-in"
     current_context = _get_current_context_engine()
+    current_sandbox = _get_current_sandbox_provider()
     categories = [
         ("Memory Provider", current_memory, _configure_memory_provider),
         ("Context Engine", current_context, _configure_context_engine),
+        ("Sandbox Provider", current_sandbox, _configure_sandbox_provider),
     ]
 
     has_plugins = bool(plugin_names)
@@ -1088,8 +1171,7 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
                             # Refresh current values
                             categories[ci] = (
                                 _cat_name,
-                                _get_current_memory_provider() or "built-in" if ci == 0
-                                else _get_current_context_engine(),
+                                _current_provider_value(ci),
                                 cat_fn,
                             )
                         # Re-enter curses
@@ -1121,8 +1203,7 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
                             result_holder["providers_changed"] = True
                             categories[ci] = (
                                 _cat_name,
-                                _get_current_memory_provider() or "built-in" if ci == 0
-                                else _get_current_context_engine(),
+                                _current_provider_value(ci),
                                 cat_fn,
                             )
                         stdscr = curses.initscr()
@@ -1175,9 +1256,11 @@ def _run_composite_ui(curses, plugin_names, plugin_labels, plugin_selected,
     if result_holder["providers_changed"]:
         new_memory = _get_current_memory_provider() or "built-in"
         new_context = _get_current_context_engine()
+        new_sandbox = _get_current_sandbox_provider()
         console.print(
             f"[green]\u2713[/green] Memory provider: [bold]{new_memory}[/bold]  "
-            f"Context engine: [bold]{new_context}[/bold]"
+            f"Context engine: [bold]{new_context}[/bold]  "
+            f"Sandbox provider: [bold]{new_sandbox}[/bold]"
         )
 
     if n_plugins > 0 or result_holder["providers_changed"]:

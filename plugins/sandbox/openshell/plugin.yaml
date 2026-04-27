@@ -1,0 +1,5 @@
+name: openshell
+version: "0.1.0"
+kind: exclusive
+description: "OpenShell sandbox provider for Hermes tool execution"
+author: "Hermes"

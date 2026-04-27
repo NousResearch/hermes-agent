@@ -26,11 +26,21 @@ Usage:
 from typing import List, Dict, Any, Set, Optional
 
 
+_DELEGATION_TOOLS = [
+    "delegate_task",
+    "delegate_start",
+    "delegate_status",
+    "delegate_wait",
+    "delegate_result",
+    "delegate_cancel",
+]
+
+
 # Shared tool list for CLI and all messaging platform toolsets.
 # Edit this once to update all platforms simultaneously.
 _HERMES_CORE_TOOLS = [
     # Web
-    "web_search", "web_extract",
+    "web_search", "web_extract", "web_crawl", "crawl_status",
     # Terminal + process management
     "terminal", "process",
     # File manipulation
@@ -53,7 +63,7 @@ _HERMES_CORE_TOOLS = [
     # Clarifying questions
     "clarify",
     # Code execution + delegation
-    "execute_code", "delegate_task",
+    "execute_code", *_DELEGATION_TOOLS,
     # Cronjob management
     "cronjob",
     # Cross-platform messaging (gated on gateway running via check_fn)
@@ -188,8 +198,8 @@ TOOLSETS = {
     },
     
     "delegation": {
-        "description": "Spawn subagents with isolated context for complex subtasks",
-        "tools": ["delegate_task"],
+        "description": "Spawn and manage subagents with isolated context for complex subtasks",
+        "tools": _DELEGATION_TOOLS,
         "includes": []
     },
 
@@ -286,7 +296,7 @@ TOOLSETS = {
             "browser_vision", "browser_console", "browser_cdp", "browser_dialog",
             "todo", "memory",
             "session_search",
-            "execute_code", "delegate_task",
+            "execute_code", *_DELEGATION_TOOLS,
         ],
         "includes": []
     },
@@ -314,7 +324,7 @@ TOOLSETS = {
             # Session history search
             "session_search",
             # Code execution + delegation
-            "execute_code", "delegate_task",
+            "execute_code", *_DELEGATION_TOOLS,
             # Cronjob management
             "cronjob",
             # Home Assistant smart home control (gated on HASS_TOKEN via check_fn)

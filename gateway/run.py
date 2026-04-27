@@ -888,9 +888,11 @@ class GatewayRunner:
             return None, None
 
         # Other platforms use the generic edit-based consumer.
-        # Platforms that don't support editing should skip streaming entirely,
-        # otherwise they can emit a partial message that can never be updated
-        # and later send a separate final message.
+        # WeCom is the only non-editable platform that bypasses this path via
+        # a dedicated native stream API consumer above. Other non-editable
+        # platforms should skip generic streaming entirely, otherwise they can
+        # emit a partial message that can never be updated and later send a
+        # separate final message.
         _adapter_supports_edit = getattr(adapter, "SUPPORTS_MESSAGE_EDITING", True)
         if not _adapter_supports_edit:
             return None, None

@@ -170,6 +170,81 @@ class TestResolveProxyUrl:
         assert resolve_proxy_url() == "http://proxy.example:8080"
 
 
+class TestBuildPlatformStreamConsumer:
+    def test_wecom_uses_native_consumer_even_when_platform_is_non_editable(self):
+        runner = _make_runner()
+        source = _make_source(platform=Platform.WECOM)
+        source.chat_id = "wecom-chat"
+        adapter = MagicMock(
+            SUPPORTS_MESSAGE_EDITING=False,
+            _current_reply_req_id="req-123",
+            _thinking_stream_id="stream-123",
+        )
+        scfg = StreamingConfig()
+
+        with patch("gateway.wecom_stream_consumer.WeComStreamConsumer") as mock_consumer_cls:
+            mock_consumer = MagicMock()
+            mock_consumer.on_delta = MagicMock()
+            mock_consumer_cls.return_value = mock_consumer
+
+            consumer, delta_cb = runner._build_platform_stream_consumer(
+                source=source,
+                adapter=adapter,
+                scfg=scfg,
+                metadata=None,
+                want_stream_deltas=True,
+            )
+
+        mock_consumer_cls.assert_called_once()
+        kwargs = mock_consumer_cls.call_args.kwargs
+        assert kwargs["reply_req_id"] == "req-123"
+        assert kwargs["stream_id"] == "stream-123"
+        assert consumer is mock_consumer
+        assert delta_cb == mock_consumer.on_delta
+
+    def test_non_editable_non_wecom_platform_skips_generic_streaming(self):
+        runner = _make_runner()
+        source = _make_source(platform=Platform.QQBOT)
+        adapter = MagicMock(SUPPORTS_MESSAGE_EDITING=False)
+        scfg = StreamingConfig()
+
+        consumer, delta_cb = runner._build_platform_stream_consumer(
+            source=source,
+            adapter=adapter,
+            scfg=scfg,
+            metadata=None,
+            want_stream_deltas=True,
+        )
+
+        assert consumer is None
+        assert delta_cb is None
+
+    def test_telegram_passes_fresh_final_setting_to_generic_consumer(self):
+        runner = _make_runner()
+        source = _make_source(platform=Platform.TELEGRAM)
+        adapter = MagicMock(SUPPORTS_MESSAGE_EDITING=True)
+        scfg = StreamingConfig()
+        scfg.fresh_final_after_seconds = 12.5
+
+        with patch("gateway.stream_consumer.GatewayStreamConsumer") as mock_consumer_cls:
+            mock_consumer = MagicMock()
+            mock_consumer.on_delta = MagicMock()
+            mock_consumer_cls.return_value = mock_consumer
+
+            consumer, delta_cb = runner._build_platform_stream_consumer(
+                source=source,
+                adapter=adapter,
+                scfg=scfg,
+                metadata=None,
+                want_stream_deltas=True,
+            )
+
+        assert consumer is mock_consumer
+        assert delta_cb == mock_consumer.on_delta
+        cfg = mock_consumer_cls.call_args.kwargs["config"]
+        assert cfg.fresh_final_after_seconds == 12.5
+
+
 class TestRunAgentProxyDispatch:
     """Test that _run_agent() delegates to proxy when configured."""
 

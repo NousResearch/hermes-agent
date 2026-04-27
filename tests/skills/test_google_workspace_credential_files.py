@@ -11,8 +11,6 @@ import os
 from pathlib import Path
 from unittest.mock import patch
 
-import pytest
-
 SKILL_MD = (
     Path(__file__).resolve().parents[2]
     / "skills/productivity/google-workspace/SKILL.md"
@@ -36,8 +34,9 @@ class TestGoogleWorkspaceCredentialFiles:
         assert entries, "required_credential_files missing from google-workspace SKILL.md"
         assert isinstance(entries, list), "required_credential_files must be a list"
         paths = {
-            (e["path"] if isinstance(e, dict) else e)
+            (e.get("path") if isinstance(e, dict) else e)
             for e in entries
+            if (isinstance(e, dict) and e.get("path")) or isinstance(e, str)
         }
         assert _EXPECTED_PATHS <= paths, (
             f"Missing entries in required_credential_files: {_EXPECTED_PATHS - paths}"
@@ -49,6 +48,7 @@ class TestGoogleWorkspaceCredentialFiles:
         (hermes_home / "google_token.json").write_text("{}")
         (hermes_home / "google_client_secret.json").write_text("{}")
 
+        import tools.credential_files as _cf
         from tools.credential_files import (
             clear_credential_files,
             get_credential_file_mounts,
@@ -56,6 +56,8 @@ class TestGoogleWorkspaceCredentialFiles:
         )
 
         clear_credential_files()
+        saved_config_files = _cf._config_files
+        _cf._config_files = None
         try:
             content = SKILL_MD.read_text(encoding="utf-8")
             fm = _parse_frontmatter(content)
@@ -63,14 +65,15 @@ class TestGoogleWorkspaceCredentialFiles:
 
             with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
                 missing = register_credential_files(entries)
+                assert missing == [], f"Unexpected missing files: {missing}"
+                mounts = get_credential_file_mounts()
 
-            assert missing == [], f"Unexpected missing files: {missing}"
-            mounts = get_credential_file_mounts()
             container_paths = {m["container_path"] for m in mounts}
             assert "/root/.hermes/google_token.json" in container_paths
             assert "/root/.hermes/google_client_secret.json" in container_paths
         finally:
             clear_credential_files()
+            _cf._config_files = saved_config_files
 
     def test_missing_token_is_reported(self, tmp_path):
         """google_token.json absent (first-time setup) — reported as missing, client secret still mounts."""
@@ -78,6 +81,7 @@ class TestGoogleWorkspaceCredentialFiles:
         hermes_home.mkdir()
         (hermes_home / "google_client_secret.json").write_text("{}")
 
+        import tools.credential_files as _cf
         from tools.credential_files import (
             clear_credential_files,
             get_credential_file_mounts,
@@ -85,6 +89,8 @@ class TestGoogleWorkspaceCredentialFiles:
         )
 
         clear_credential_files()
+        saved_config_files = _cf._config_files
+        _cf._config_files = None
         try:
             content = SKILL_MD.read_text(encoding="utf-8")
             fm = _parse_frontmatter(content)
@@ -92,11 +98,12 @@ class TestGoogleWorkspaceCredentialFiles:
 
             with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}):
                 missing = register_credential_files(entries)
+                mounts = get_credential_file_mounts()
 
             assert "google_token.json" in missing
-            mounts = get_credential_file_mounts()
             container_paths = {m["container_path"] for m in mounts}
             assert "/root/.hermes/google_client_secret.json" in container_paths
             assert "/root/.hermes/google_token.json" not in container_paths
         finally:
             clear_credential_files()
+            _cf._config_files = saved_config_files

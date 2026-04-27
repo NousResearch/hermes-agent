@@ -98,6 +98,44 @@ class TestProviderModelIdsPreferred:
         assert "claude-opus-4-7" in out
         assert "kimi-k2.6" in out
 
+    def test_xai_is_preferred(self):
+        """xAI catalog drifts (e.g. grok-4.20-* date-suffixed renames upstream),
+        so the picker must merge fresh models.dev entries on top of curated.
+        Regression for #16699 — selecting picker entries returned HTTP 400
+        because curated names had no match in xAI's live catalog.
+        """
+        assert "xai" in _MODELS_DEV_PREFERRED
+
+    def test_xai_includes_fresh_models_dev_entries(self):
+        """provider_model_ids('xai') surfaces current xAI IDs from models.dev."""
+        mdev = [
+            "grok-4.20-0309-reasoning",
+            "grok-4.20-0309-non-reasoning",
+            "grok-4-fast",
+            "grok-code-fast-1",
+        ]
+        with patch("agent.models_dev.list_agentic_models", return_value=mdev):
+            out = provider_model_ids("xai")
+        # Fresh models surface (the picker bug from #16699 is fixed).
+        assert "grok-4.20-0309-reasoning" in out
+        assert "grok-4.20-0309-non-reasoning" in out
+        assert "grok-4-fast" in out
+        assert "grok-code-fast-1" in out
+
+    def test_xai_offline_falls_back_to_curated(self):
+        """Offline models.dev → curated-only list, no crash, current IDs only.
+
+        The curated fallback must be valid current IDs (not stale renamed
+        ones), since users on offline/restricted networks see this list.
+        """
+        with patch("agent.models_dev.list_agentic_models", return_value=[]):
+            out = provider_model_ids("xai")
+        # Curated floor must be real current xAI IDs.
+        assert "grok-4.20-0309-reasoning" in out
+        # Stale entries that returned HTTP 400 must be gone.
+        assert "grok-4.20-reasoning" not in out
+        assert "grok-4-1-fast-reasoning" not in out
+
 
 class TestOpenRouterAndNousUnchanged:
     """Per Teknium: openrouter and nous are NEVER merged with models.dev."""

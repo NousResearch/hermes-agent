@@ -193,9 +193,15 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "glm-4.5",
         "glm-4.5-flash",
     ],
+    # Curated fallback used when models.dev is unreachable. xAI is in
+    # _MODELS_DEV_PREFERRED below, so when models.dev is reachable the live
+    # catalog (filtered to tool_call=True) is merged on top of this list.
     "xai": [
-        "grok-4.20-reasoning",
-        "grok-4-1-fast-reasoning",
+        "grok-4.20-0309-reasoning",
+        "grok-4.20-0309-non-reasoning",
+        "grok-4-fast",
+        "grok-4-fast-non-reasoning",
+        "grok-code-fast-1",
     ],
     "nvidia": [
         # NVIDIA flagship reasoning models
@@ -1735,6 +1741,7 @@ _MODELS_DEV_PREFERRED: frozenset[str] = frozenset({
     "zai",
     "gemini",
     "google",
+    "xai",
 })
 
 

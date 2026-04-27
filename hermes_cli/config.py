@@ -877,8 +877,8 @@ DEFAULT_CONFIG = {
     # Approval mode for dangerous commands:
     #   manual — always prompt the user (default)
     #   smart  — use an auxiliary LLM to review flagged commands:
-    #            APPROVE verdicts run, ESCALATE verdicts prompt, and DENY
-    #            verdicts follow approvals.smart_deny
+    #            APPROVE verdicts run, ESCALATE verdicts prompt, and high-risk
+    #            DENY verdicts follow approvals.smart_deny
     #   off    — skip all approval prompts (equivalent to --yolo)
     # smart_deny controls smart DENY verdicts:
     #   block  — hard-block smart DENY verdicts (default/current safety behavior)

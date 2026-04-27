@@ -38,7 +38,7 @@ approvals:
 | Mode | Behavior |
 |------|----------|
 | **manual** (default) | Always prompt the user for approval on dangerous commands |
-| **smart** | Use an auxiliary LLM to review flagged commands. `APPROVE` verdicts run automatically, `ESCALATE` verdicts prompt the user, and `DENY` verdicts follow `approvals.smart_deny` (`block` by default, or prompt when set to `ask`). |
+| **smart** | Use an auxiliary LLM to review flagged commands. `APPROVE` verdicts run automatically, `ESCALATE` verdicts prompt the user, and high-risk `DENY` verdicts follow `approvals.smart_deny` (`block` by default, or prompt when set to `ask`). |
 | **off** | Disable all approval checks — equivalent to running with `--yolo`. All commands execute without prompts. |
 
 :::warning

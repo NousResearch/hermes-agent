@@ -193,17 +193,44 @@ export default function ProfilesPage() {
       });
       return;
     }
-    // Gateway state takes a few seconds to settle; refresh and clear the
-    // spinner once the new pid is visible (or after a hard timeout so we
-    // don't get stuck if the gateway never comes up).
-    setTimeout(() => {
-      load();
+
+    // Poll the listing until the gateway shows running or we time out.
+    // Spawn returns immediately but the gateway process itself can take
+    // 5–15 s to write gateway.pid (clean shutdown + service registration
+    // + init), so a single 3 s reload routinely caught the in-between
+    // state and looked like the restart silently failed.
+    const POLL_INTERVAL = 2000;
+    const MAX_POLLS = 8; // ~16s ceiling
+    let polls = 0;
+    const clearSpinner = () =>
       setRestartingNames((s) => {
         const next = new Set(s);
         next.delete(name);
         return next;
       });
-    }, 3000);
+
+    const poll = async () => {
+      polls += 1;
+      try {
+        const res = await api.getProfiles();
+        setProfiles(res.profiles);
+        setActive(res.active);
+        const target = res.profiles.find((p) => p.name === name);
+        if (target?.gateway_running) {
+          clearSpinner();
+          return;
+        }
+      } catch {
+        /* swallow — keep polling, spinner stays visible */
+      }
+      if (polls >= MAX_POLLS) {
+        clearSpinner();
+        return;
+      }
+      setTimeout(poll, POLL_INTERVAL);
+    };
+
+    setTimeout(poll, POLL_INTERVAL);
   };
 
   const handleRenameSubmit = async () => {

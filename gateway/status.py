@@ -11,8 +11,10 @@ that will be useful when we add named profiles (multiple agents running
 concurrently under distinct configurations).
 """
 
+import functools
 import hashlib
 import json
+import logging
 import os
 import signal
 import subprocess
@@ -26,6 +28,8 @@ if sys.platform == "win32":
     import msvcrt
 else:
     import fcntl
+
+logger = logging.getLogger(__name__)
 
 _GATEWAY_KIND = "hermes-gateway"
 _RUNTIME_STATUS_FILE = "gateway_state.json"
@@ -56,12 +60,55 @@ def _get_runtime_status_path() -> Path:
 
 
 def _get_lock_dir() -> Path:
-    """Return the machine-local directory for token-scoped gateway locks."""
+    """Return the machine-local directory for token-scoped gateway locks.
+
+    Resolution order:
+
+    1. ``HERMES_GATEWAY_LOCK_DIR`` env var — explicit override.
+    2. ``XDG_STATE_HOME`` env var — XDG spec, honored verbatim.
+    3. ``~/.local/state/hermes/<locks>`` — XDG default, when writable.
+    4. ``HERMES_HOME/<locks>`` — fallback when ``$HOME`` is not writable.
+
+    The fallback exists for containers where ``$HOME`` resolves to the image
+    ``WORKDIR`` (e.g. ``/opt/hermes``) which the runtime user cannot write to
+    — common with ``podman`` ``UserNS=keep-id`` + ``User=$UID:$GID`` quadlets,
+    or any ``docker run -u <uid>`` against an image whose WORKDIR is owned by
+    a different UID. ``HERMES_HOME`` is always intended to be writable, so it
+    is the natural backstop.
+
+    The default-path probe is cached after the first successful resolve so
+    repeated lock acquires don't re-issue ``mkdir`` syscalls.
+    """
     override = os.getenv("HERMES_GATEWAY_LOCK_DIR")
     if override:
         return Path(override)
-    state_home = Path(os.getenv("XDG_STATE_HOME", Path.home() / ".local" / "state"))
-    return state_home / "hermes" / _LOCKS_DIRNAME
+
+    state_home_env = os.getenv("XDG_STATE_HOME")
+    if state_home_env:
+        return Path(state_home_env) / "hermes" / _LOCKS_DIRNAME
+
+    return _resolve_default_lock_dir()
+
+
+@functools.lru_cache(maxsize=1)
+def _resolve_default_lock_dir() -> Path:
+    """Probe ``~/.local/state`` and fall back to HERMES_HOME if unwritable.
+
+    Result is memoized — a single ``mkdir`` probe per process. Tests that
+    need to re-evaluate must call ``_resolve_default_lock_dir.cache_clear()``.
+    """
+    default = Path.home() / ".local" / "state" / "hermes" / _LOCKS_DIRNAME
+    try:
+        default.mkdir(parents=True, exist_ok=True)
+        return default
+    except (PermissionError, OSError) as exc:
+        fallback = get_hermes_home() / _LOCKS_DIRNAME
+        logger.warning(
+            "Default gateway lock dir %s is not writable (%s); using %s "
+            "instead. Set HERMES_GATEWAY_LOCK_DIR or XDG_STATE_HOME to override.",
+            default, exc, fallback,
+        )
+        return fallback
 
 
 def _utc_now_iso() -> str:

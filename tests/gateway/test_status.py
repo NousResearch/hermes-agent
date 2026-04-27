@@ -628,3 +628,92 @@ class TestTakeoverMarker:
 
         # We are not the target — must NOT consume as planned
         assert result is False
+
+
+class TestGetLockDir:
+    """Resolution order for ``_get_lock_dir`` — see the docstring there.
+
+    The default-path probe is memoized on ``_resolve_default_lock_dir``;
+    each test below clears that cache to force re-evaluation under its own
+    monkeypatched ``Path.home`` / env state.
+    """
+
+    def setup_method(self) -> None:
+        status._resolve_default_lock_dir.cache_clear()
+
+    def teardown_method(self) -> None:
+        status._resolve_default_lock_dir.cache_clear()
+
+    def test_explicit_override_takes_priority(self, tmp_path, monkeypatch):
+        explicit = tmp_path / "explicit-locks"
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(explicit))
+        # Even with XDG_STATE_HOME set and a writable HOME, override wins.
+        monkeypatch.setenv("XDG_STATE_HOME", str(tmp_path / "xdg"))
+        monkeypatch.setattr(status.Path, "home", classmethod(lambda cls: tmp_path / "home"))
+
+        assert status._get_lock_dir() == explicit
+
+    def test_xdg_state_home_used_when_set(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HERMES_GATEWAY_LOCK_DIR", raising=False)
+        xdg = tmp_path / "xdg-state"
+        monkeypatch.setenv("XDG_STATE_HOME", str(xdg))
+
+        assert status._get_lock_dir() == xdg / "hermes" / "gateway-locks"
+
+    def test_default_path_under_writable_home(self, tmp_path, monkeypatch):
+        monkeypatch.delenv("HERMES_GATEWAY_LOCK_DIR", raising=False)
+        monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setattr(status.Path, "home", classmethod(lambda cls: fake_home))
+
+        result = status._get_lock_dir()
+
+        assert result == fake_home / ".local" / "state" / "hermes" / "gateway-locks"
+        # Probe also creates the directory tree.
+        assert result.exists()
+
+    def test_falls_back_to_hermes_home_when_default_unwritable(
+        self, tmp_path, monkeypatch
+    ):
+        """Container scenario: ``$HOME`` points at a read-only image dir
+        (e.g. ``/opt/hermes`` owned by root, runtime user is non-root).
+        """
+        monkeypatch.delenv("HERMES_GATEWAY_LOCK_DIR", raising=False)
+        monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+
+        readonly_home = tmp_path / "readonly-home"
+        readonly_home.mkdir()
+        readonly_home.chmod(0o500)  # r-x: cannot create children
+        monkeypatch.setattr(status.Path, "home", classmethod(lambda cls: readonly_home))
+
+        hermes_home = tmp_path / "hermes-home"
+        hermes_home.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        try:
+            result = status._get_lock_dir()
+        finally:
+            # Restore so pytest can clean up tmp_path.
+            readonly_home.chmod(0o700)
+
+        assert result == hermes_home / "gateway-locks"
+
+    def test_default_path_probe_is_memoized(self, tmp_path, monkeypatch):
+        """Repeated calls do not re-issue ``mkdir`` once the path resolves."""
+        monkeypatch.delenv("HERMES_GATEWAY_LOCK_DIR", raising=False)
+        monkeypatch.delenv("XDG_STATE_HOME", raising=False)
+        fake_home = tmp_path / "home"
+        fake_home.mkdir()
+        monkeypatch.setattr(status.Path, "home", classmethod(lambda cls: fake_home))
+
+        first = status._get_lock_dir()
+        # Remove the probed directory; if the function re-probed it would
+        # be re-created. The cache should short-circuit instead.
+        import shutil
+        shutil.rmtree(first)
+
+        second = status._get_lock_dir()
+
+        assert second == first
+        assert not second.exists()  # cache short-circuit, no re-probe

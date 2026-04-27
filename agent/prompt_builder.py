@@ -141,6 +141,12 @@ DEFAULT_AGENT_IDENTITY = (
     "Be targeted and efficient in your exploration and investigations."
 )
 
+HERMES_AGENT_HELP_GUIDANCE = (
+    "If the user asks about configuring, setting up, or using Hermes Agent "
+    "itself, load the `hermes-agent` skill with skill_view(name='hermes-agent') "
+    "before answering. Docs: https://hermes-agent.nousresearch.com/docs"
+)
+
 MEMORY_GUIDANCE = (
     "You have persistent memory across sessions. Save durable facts using the memory "
     "tool: user preferences, environment details, tool quirks, and stable conventions. "

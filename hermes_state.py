@@ -1487,22 +1487,25 @@ class SessionDB:
         message timestamp for the session, falling back to ``started_at``),
         ordered by most-recently-used first.
         """
-        select_last_active = (
-            "COALESCE("
-            "(SELECT MAX(m.timestamp) FROM messages m WHERE m.session_id = s.id),"
-            " s.started_at"
-            ") AS last_active"
+        select_with_last_active = (
+            "SELECT s.*, COALESCE(m.last_active, s.started_at) AS last_active "
+            "FROM sessions s "
+            "LEFT JOIN ("
+            "SELECT session_id, MAX(timestamp) AS last_active "
+            "FROM messages GROUP BY session_id"
+            ") m ON m.session_id = s.id "
         )
         with self._lock:
             if source:
                 cursor = self._conn.execute(
-                    f"SELECT s.*, {select_last_active} FROM sessions s "
-                    "WHERE s.source = ? ORDER BY last_active DESC, s.started_at DESC, s.id DESC LIMIT ? OFFSET ?",
+                    f"{select_with_last_active}"
+                    "WHERE s.source = ? "
+                    "ORDER BY last_active DESC, s.started_at DESC, s.id DESC LIMIT ? OFFSET ?",
                     (source, limit, offset),
                 )
             else:
                 cursor = self._conn.execute(
-                    f"SELECT s.*, {select_last_active} FROM sessions s "
+                    f"{select_with_last_active}"
                     "ORDER BY last_active DESC, s.started_at DESC, s.id DESC LIMIT ? OFFSET ?",
                     (limit, offset),
                 )

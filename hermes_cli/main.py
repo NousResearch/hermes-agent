@@ -597,15 +597,21 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
 
 def _resolve_last_session(source: str = "cli") -> Optional[str]:
     """Look up the most recently-used session ID for a source."""
+    db = None
     try:
         from hermes_state import SessionDB
 
         db = SessionDB()
         sessions = db.search_sessions(source=source, limit=1)
-        db.close()
         return sessions[0]["id"] if sessions else None
     except Exception:
         pass
+    finally:
+        if db is not None:
+            try:
+                db.close()
+            except Exception:
+                pass
     return None
 
 

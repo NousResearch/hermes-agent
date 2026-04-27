@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
+import fcntl
 import json
 import os
 import sys
@@ -36,6 +38,7 @@ STATE_DIR = Path(
     or (Path.home() / ".hermes" / "skills" / "claude-code-sdk")
 )
 SESSIONS_FILE = STATE_DIR / "sessions.json"
+LOCK_FILE = STATE_DIR / ".sessions.lock"
 COST_LOG = STATE_DIR / "cost.log"
 IDLE_TTL_SECONDS = int(os.environ.get("HERMES_CLAUDE_SDK_IDLE_TTL", "3600"))
 QUERY_TIMEOUT_SECONDS = int(os.environ.get("HERMES_CLAUDE_SDK_QUERY_TIMEOUT", "300"))
@@ -63,6 +66,27 @@ def _now_iso() -> str:
 
 def _ensure_state_dir() -> None:
     STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+@contextlib.contextmanager
+def _store_lock():
+    """Serialise load-modify-save of sessions.json across concurrent CLI processes.
+
+    Uses an advisory POSIX file lock on a dedicated lock file so that parallel
+    queries on different handles cannot lose each other's last_activity or
+    total_cost_usd updates. The lock is held only around the bookkeeping
+    write, never during the SDK call itself.
+    """
+    _ensure_state_dir()
+    fh = LOCK_FILE.open("w")
+    try:
+        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            fh.close()
 
 
 def _load_store() -> SessionStore:
@@ -177,8 +201,17 @@ async def _run_query(
     finally:
         try:
             await client.disconnect()
-        except Exception:
-            pass
+        except Exception as disc_exc:
+            sys.stderr.write(
+                json.dumps(
+                    {
+                        "warning": "client.disconnect() raised; ignoring",
+                        "type": type(disc_exc).__name__,
+                        "message": str(disc_exc),
+                    }
+                )
+                + "\n"
+            )
 
     return "".join(response_parts), cost_usd, returned_session_id
 
@@ -197,18 +230,18 @@ def cmd_open(args: argparse.Namespace) -> int:
     if not project_path.exists() or not project_path.is_dir():
         _die(f"project_path is not a directory: {project_path}")
 
-    store = _load_store()
-    _reap(store)
-
     handle = uuid.uuid4().hex[:12]
     now = _now_iso()
-    store.sessions[handle] = SessionRecord(
-        handle=handle,
-        project_path=str(project_path),
-        created_at=now,
-        last_activity=now,
-    )
-    _save_store(store)
+    with _store_lock():
+        store = _load_store()
+        _reap(store)
+        store.sessions[handle] = SessionRecord(
+            handle=handle,
+            project_path=str(project_path),
+            created_at=now,
+            last_activity=now,
+        )
+        _save_store(store)
     _print_json({"session_id": handle, "project_path": str(project_path)})
     return 0
 
@@ -216,18 +249,25 @@ def cmd_open(args: argparse.Namespace) -> int:
 def cmd_query(args: argparse.Namespace) -> int:
     handle = args.handle
     message = args.message
-    store = _load_store()
-    _reap(store)
 
-    record = store.sessions.get(handle)
-    if record is None:
-        _die(f"session handle not found: {handle}")
-    assert record is not None
+    # Snapshot the project path and prior claude_session_id under the lock,
+    # then release before the (potentially long) SDK call. This keeps the
+    # lock window short and lets parallel queries on different handles run
+    # concurrently inside the SDK.
+    with _store_lock():
+        store = _load_store()
+        _reap(store)
+        record = store.sessions.get(handle)
+        if record is None:
+            _die(f"session handle not found: {handle}")
+        assert record is not None
+        snapshot_path = record.project_path
+        snapshot_resume = record.claude_session_id
 
     try:
         text, cost_usd, claude_session_id = asyncio.run(
             asyncio.wait_for(
-                _run_query(record.project_path, message, record.claude_session_id),
+                _run_query(snapshot_path, message, snapshot_resume),
                 timeout=QUERY_TIMEOUT_SECONDS,
             )
         )
@@ -236,44 +276,59 @@ def cmd_query(args: argparse.Namespace) -> int:
     except Exception as exc:
         _die(f"query failed: {type(exc).__name__}: {exc}")
 
-    if record.claude_session_id is None and claude_session_id:
-        record.claude_session_id = claude_session_id
-    record.message_count += 1
-    record.last_activity = _now_iso()
-    if cost_usd is not None:
-        record.total_cost_usd = round(record.total_cost_usd + cost_usd, 6)
-    _append_cost_log(handle, cost_usd)
-    _save_store(store)
+    # Re-acquire the lock and reload so a parallel write on another handle
+    # is preserved when we save our own update.
+    with _store_lock():
+        store = _load_store()
+        record = store.sessions.get(handle)
+        if record is None:
+            # Reaped or closed during our query. Cost is still appended to the
+            # log so it is not lost.
+            _append_cost_log(handle, cost_usd)
+            _die(f"session {handle} no longer exists (reaped or closed during query)")
+        assert record is not None
+        if record.claude_session_id is None and claude_session_id:
+            record.claude_session_id = claude_session_id
+        record.message_count += 1
+        record.last_activity = _now_iso()
+        if cost_usd is not None:
+            record.total_cost_usd = round(record.total_cost_usd + cost_usd, 6)
+        _append_cost_log(handle, cost_usd)
+        _save_store(store)
+        total_cost_for_response = record.total_cost_usd
+        message_count_for_response = record.message_count
 
     _print_json(
         {
             "session_id": handle,
             "text": text,
             "cost_usd": cost_usd,
-            "total_cost_usd": record.total_cost_usd,
-            "message_count": record.message_count,
+            "total_cost_usd": total_cost_for_response,
+            "message_count": message_count_for_response,
         }
     )
     return 0
 
 
 def cmd_list(_: argparse.Namespace) -> int:
-    store = _load_store()
-    _reap(store)
-    _save_store(store)
-    payload = [asdict(rec) for rec in store.sessions.values()]
+    with _store_lock():
+        store = _load_store()
+        _reap(store)
+        _save_store(store)
+        payload = [asdict(rec) for rec in store.sessions.values()]
     _print_json(payload)
     return 0
 
 
 def cmd_close(args: argparse.Namespace) -> int:
     handle = args.handle
-    store = _load_store()
-    if handle not in store.sessions:
-        _print_json({"session_id": handle, "status": "not_found"})
-        return 0
-    del store.sessions[handle]
-    _save_store(store)
+    with _store_lock():
+        store = _load_store()
+        if handle not in store.sessions:
+            _print_json({"session_id": handle, "status": "not_found"})
+            return 0
+        del store.sessions[handle]
+        _save_store(store)
     _print_json({"session_id": handle, "status": "closed"})
     return 0
 

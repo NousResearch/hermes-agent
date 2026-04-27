@@ -170,7 +170,7 @@ Why 1 hour was chosen as the default:
 
 3. **`total_cost_usd` is an estimate and may be `None`.** The official SDK docs note this. The skill defensively logs only when the value is present and treats absence as "unknown" rather than zero. Do not display a fake $0.00 to the user when the SDK returns `None`.
 
-4. **Sessions resume only from the same `cwd`.** If you `open` a session against `/repos/api` and later try to query the handle with that same `cwd`, resume works. Changing `cwd` between calls breaks resume; the skill enforces this implicitly because the `project_path` is recorded at `open` time and reused for every `query`.
+4. **Sessions resume from a single `cwd` only.** The `project_path` is fixed at `open` time and reused for every `query` on that handle. You cannot re-target a handle to a different directory mid-session. If you need a different `cwd`, open a new handle.
 
 5. **Concurrent queries on the same handle conflict.** Each `query` spawns a `claude` subprocess that holds the session. Running two queries on the same handle in parallel from two Hermes turns is unsupported. Open separate handles for parallel work, even on the same project.
 

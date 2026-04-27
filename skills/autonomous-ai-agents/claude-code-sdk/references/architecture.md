@@ -50,7 +50,7 @@ Both files live under `~/.hermes/skills/claude-code-sdk/` (override with `HERMES
 }
 ```
 
-Writes are atomic via temp-file plus rename, the same pattern used in the upstream `perplexity-claude-agent` registry.
+Writes are atomic via temp-file plus rename, the same pattern used in the upstream `perplexity-claude-agent` registry. Concurrent CLI invocations that touch the store (parallel `open`/`query`/`close`) coordinate through a POSIX advisory file lock (`fcntl.flock`) on `.sessions.lock`. The lock is held only around the bookkeeping load-modify-save, never during the SDK call itself, so parallel queries on different handles still run concurrently inside the SDK and only serialise the (microsecond-scale) JSON writes.
 
 ### `cost.log`
 

@@ -43,6 +43,7 @@ AUTHOR_MAP = {
     "teknium1@gmail.com": "teknium1",
     "teknium@nousresearch.com": "teknium1",
     "127238744+teknium1@users.noreply.github.com": "teknium1",
+    "johnnncenaaa77@gmail.com": "johnncenae",
     "focusflow.app.help@gmail.com": "yes999zc",
     "343873859@qq.com": "DrStrangerUJN",
     "uzmpsk.dilekakbas@gmail.com": "dlkakbs",

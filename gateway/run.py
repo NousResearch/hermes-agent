@@ -6792,6 +6792,7 @@ class GatewayRunner:
         base_url = None
         api_key = None
         custom_provs = None
+        data = None
 
         try:
             data = _load_gateway_config()
@@ -6813,6 +6814,41 @@ class GatewayRunner:
                     custom_provs = data.get("custom_providers")
         except Exception:
             pass
+
+        # Also check custom_providers for context_length when top-level model.context_length is not set
+        if config_context_length is None and data:
+            try:
+                custom_providers = data.get("custom_providers", [])
+                if custom_providers:
+                    for cp in custom_providers:
+                        if not isinstance(cp, dict):
+                            continue
+                        cp_model = cp.get("model") or ""
+                        cp_models = cp.get("models") or {}
+                        # Match provider model to current model
+                        if cp_model and cp_model == model:
+                            raw_cp_ctx = cp.get("context_length")
+                            if raw_cp_ctx is not None:
+                                try:
+                                    config_context_length = int(raw_cp_ctx)
+                                    break
+                                except (TypeError, ValueError):
+                                    pass
+                        # Also check per-model context_length
+                        if isinstance(cp_models, dict):
+                            model_entry = cp_models.get(model)
+                            if isinstance(model_entry, dict):
+                                model_ctx = model_entry.get("context_length")
+                            else:
+                                model_ctx = model_entry
+                            if model_ctx is not None and isinstance(model_ctx, (int, float)):
+                                try:
+                                    config_context_length = int(model_ctx)
+                                    break
+                                except (TypeError, ValueError):
+                                    pass
+            except Exception:
+                pass
 
         # Resolve runtime credentials for probing
         try:

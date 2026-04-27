@@ -312,9 +312,20 @@ class ResponseStore:
         self._conn.execute(
             """CREATE TABLE IF NOT EXISTS conversations (
                 name TEXT PRIMARY KEY,
-                response_id TEXT NOT NULL
+                response_id TEXT NOT NULL,
+                session_id TEXT
             )"""
         )
+        # Idempotent migration: add session_id to pre-existing conversations
+        # tables (issue #16517 — keep slug → session continuity even after
+        # the response_id row is evicted from the LRU).
+        try:
+            self._conn.execute(
+                "ALTER TABLE conversations ADD COLUMN session_id TEXT"
+            )
+        except sqlite3.OperationalError:
+            # Column already exists; ALTER fails with "duplicate column".
+            pass
         self._conn.commit()
 
     def get(self, response_id: str) -> Optional[Dict[str, Any]]:
@@ -362,12 +373,45 @@ class ResponseStore:
         ).fetchone()
         return row[0] if row else None
 
-    def set_conversation(self, name: str, response_id: str) -> None:
-        """Map a conversation name to its latest response_id."""
-        self._conn.execute(
-            "INSERT OR REPLACE INTO conversations (name, response_id) VALUES (?, ?)",
-            (name, response_id),
-        )
+    def get_session_id_for_conversation(self, name: str) -> Optional[str]:
+        """Get the latest agent session_id for a conversation name.
+
+        Survives LRU eviction of the underlying ``responses`` row — the
+        session_id is stored on the ``conversations`` row directly so that
+        cold-start requests with ``conversation=<slug>`` continue the
+        existing state.db session instead of minting a fresh fork (issue
+        #16517).
+
+        Returns ``None`` when the conversation is unknown or was created
+        before this column existed (legacy rows pre-migration).
+        """
+        row = self._conn.execute(
+            "SELECT session_id FROM conversations WHERE name = ?", (name,)
+        ).fetchone()
+        return row[0] if row and row[0] else None
+
+    def set_conversation(
+        self,
+        name: str,
+        response_id: str,
+        session_id: Optional[str] = None,
+    ) -> None:
+        """Map a conversation name to its latest response_id and session.
+
+        ``session_id`` is optional for backwards compatibility, but callers
+        that have a session_id in hand should pass it so cold-start lookup
+        (issue #16517) works even after the responses LRU evicts the row.
+        """
+        if session_id is not None:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO conversations (name, response_id, session_id) VALUES (?, ?, ?)",
+                (name, response_id, session_id),
+            )
+        else:
+            self._conn.execute(
+                "INSERT OR REPLACE INTO conversations (name, response_id) VALUES (?, ?)",
+                (name, response_id),
+            )
         self._conn.commit()
 
     def close(self) -> None:
@@ -1294,7 +1338,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_id": session_id,
             })
             if conversation:
-                self._response_store.set_conversation(conversation, response_id)
+                self._response_store.set_conversation(
+                    conversation, response_id, session_id=session_id
+                )
 
         def _persist_incomplete_if_needed() -> None:
             """Persist an ``incomplete`` snapshot if no terminal one was written.
@@ -1699,9 +1745,16 @@ class APIServerAdapter(BasePlatformAdapter):
         if conversation and previous_response_id:
             return web.json_response(_openai_error("Cannot use both 'conversation' and 'previous_response_id'"), status=400)
 
-        # Resolve conversation name to latest response_id
+        # Resolve conversation name to latest response_id, plus a stable
+        # slug → session_id fallback for the cold-start path where the
+        # response_id was evicted from the LRU but the conversation slug
+        # is still known (issue #16517).
+        slug_session_id_hint: Optional[str] = None
         if conversation:
             previous_response_id = self._response_store.get_conversation(conversation)
+            slug_session_id_hint = self._response_store.get_session_id_for_conversation(
+                conversation
+            )
             # No error if conversation doesn't exist yet — it's a new conversation
 
         # Normalize input to message list
@@ -1752,12 +1805,38 @@ class APIServerAdapter(BasePlatformAdapter):
         if not conversation_history and previous_response_id:
             stored = self._response_store.get(previous_response_id)
             if stored is None:
-                return web.json_response(_openai_error(f"Previous response not found: {previous_response_id}"), status=404)
-            conversation_history = list(stored.get("conversation_history", []))
-            stored_session_id = stored.get("session_id")
-            # If no instructions provided, carry forward from previous
-            if instructions is None:
-                instructions = stored.get("instructions")
+                # The response_id we held for this conversation has been
+                # evicted from the LRU (or the gateway restarted with a
+                # smaller responses cache). When the request was keyed by
+                # ``conversation``, fall back to the slug → session_id
+                # mapping that is persisted independently of the LRU
+                # (issue #16517) so the agent continues the existing
+                # state.db session instead of minting a brand-new
+                # fork. We cannot recover ``conversation_history`` in
+                # this case — the agent will load it lazily from the
+                # session store via ``session_id`` instead.
+                if conversation:
+                    fallback_session_id = (
+                        self._response_store.get_session_id_for_conversation(conversation)
+                    )
+                    if fallback_session_id:
+                        stored_session_id = fallback_session_id
+                        logger.info(
+                            "response_id %s evicted from LRU; reusing "
+                            "session_id %s for conversation %r via slug fallback (#16517)",
+                            previous_response_id, fallback_session_id, conversation,
+                        )
+                if stored_session_id is None:
+                    return web.json_response(
+                        _openai_error(f"Previous response not found: {previous_response_id}"),
+                        status=404,
+                    )
+            else:
+                conversation_history = list(stored.get("conversation_history", []))
+                stored_session_id = stored.get("session_id")
+                # If no instructions provided, carry forward from previous
+                if instructions is None:
+                    instructions = stored.get("instructions")
 
         # Append new input messages to history (all but the last become history)
         for msg in input_messages[:-1]:
@@ -1773,8 +1852,16 @@ class APIServerAdapter(BasePlatformAdapter):
             conversation_history = conversation_history[-100:]
 
         # Reuse session from previous_response_id chain so the dashboard
-        # groups the entire conversation under one session entry.
-        session_id = stored_session_id or str(uuid.uuid4())
+        # groups the entire conversation under one session entry. When the
+        # caller used ``conversation=<slug>`` and we have a slug-only
+        # mapping (response_id evicted, or the slug is known but the
+        # responses row was never written), continue THAT session instead
+        # of minting a fresh one (issue #16517).
+        session_id = (
+            stored_session_id
+            or slug_session_id_hint
+            or str(uuid.uuid4())
+        )
 
         stream = bool(body.get("stream", False))
         if stream:
@@ -1926,9 +2013,13 @@ class APIServerAdapter(BasePlatformAdapter):
                 "session_id": session_id,
             })
             # Update conversation mapping so the next request with the same
-            # conversation name automatically chains to this response
+            # conversation name automatically chains to this response.
+            # Passing session_id keeps the slug → session link alive even
+            # after the responses LRU evicts this row (issue #16517).
             if conversation:
-                self._response_store.set_conversation(conversation, response_id)
+                self._response_store.set_conversation(
+                    conversation, response_id, session_id=session_id
+                )
 
         return web.json_response(response_data)
 

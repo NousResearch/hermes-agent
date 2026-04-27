@@ -105,6 +105,85 @@ class TestResponseStore:
         store = ResponseStore(max_size=10)
         assert store.delete("resp_missing") is False
 
+    # ── issue #16517: slug → session_id continuity ──
+
+    def test_set_conversation_persists_session_id(self):
+        """set_conversation(slug, response_id, session_id=...) keeps the
+        slug → session_id mapping retrievable independently of the
+        responses LRU."""
+        store = ResponseStore(max_size=10)
+        store.put("resp_1", {"session_id": "sess_abc"})
+        store.set_conversation("my-chat", "resp_1", session_id="sess_abc")
+        assert store.get_session_id_for_conversation("my-chat") == "sess_abc"
+
+    def test_session_id_survives_response_lru_eviction(self):
+        """Regression for #16517: even after the responses row is evicted,
+        the slug-keyed session_id is still queryable so cold-start /v1/responses
+        can continue the existing state.db session."""
+        store = ResponseStore(max_size=2)
+        store.put("resp_1", {"session_id": "sess_abc"})
+        store.set_conversation("my-chat", "resp_1", session_id="sess_abc")
+        # Force eviction of resp_1 from responses.
+        store.put("resp_2", {"session_id": "sess_xyz"})
+        store.put("resp_3", {"session_id": "sess_qrs"})
+        assert store.get("resp_1") is None  # responses row evicted
+        # But the slug → session_id mapping survives.
+        assert store.get_session_id_for_conversation("my-chat") == "sess_abc"
+
+    def test_get_session_id_returns_none_for_unknown_slug(self):
+        store = ResponseStore(max_size=10)
+        assert store.get_session_id_for_conversation("never-seen") is None
+
+    def test_set_conversation_without_session_id_remains_backwards_compatible(self):
+        """The old call signature (no session_id) still works for callers
+        that haven't been updated yet — they just won't get the new
+        cold-start fallback benefit."""
+        store = ResponseStore(max_size=10)
+        store.set_conversation("my-chat", "resp_1")
+        assert store.get_conversation("my-chat") == "resp_1"
+        # session_id stays None until somebody upgrades the row.
+        assert store.get_session_id_for_conversation("my-chat") is None
+
+    def test_set_conversation_overwrites_session_id_on_chain_advance(self):
+        """Each new turn should refresh both response_id and session_id
+        on the conversations row (session_id is stable across the chain,
+        but the column must be re-asserted when callers pass it again)."""
+        store = ResponseStore(max_size=10)
+        store.set_conversation("my-chat", "resp_1", session_id="sess_abc")
+        store.set_conversation("my-chat", "resp_2", session_id="sess_abc")
+        assert store.get_conversation("my-chat") == "resp_2"
+        assert store.get_session_id_for_conversation("my-chat") == "sess_abc"
+
+    def test_legacy_conversations_table_migrates_in_place(self):
+        """A pre-existing conversations table without the session_id
+        column must be migrated transparently when ResponseStore is
+        re-opened, not crash."""
+        import tempfile, os, sqlite3 as _sqlite3
+        with tempfile.TemporaryDirectory() as td:
+            db_path = os.path.join(td, "resp.db")
+            # Build the old (pre-#16517) schema.
+            conn = _sqlite3.connect(db_path)
+            conn.execute(
+                "CREATE TABLE responses (response_id TEXT PRIMARY KEY, data TEXT NOT NULL, accessed_at REAL NOT NULL)"
+            )
+            conn.execute(
+                "CREATE TABLE conversations (name TEXT PRIMARY KEY, response_id TEXT NOT NULL)"
+            )
+            conn.execute(
+                "INSERT INTO conversations (name, response_id) VALUES (?, ?)",
+                ("old-chat", "resp_old"),
+            )
+            conn.commit()
+            conn.close()
+
+            store = ResponseStore(max_size=10, db_path=db_path)
+            # Migration adds the column without dropping the row.
+            assert store.get_conversation("old-chat") == "resp_old"
+            assert store.get_session_id_for_conversation("old-chat") is None
+            # Subsequent writes can populate it.
+            store.set_conversation("old-chat", "resp_new", session_id="sess_zzz")
+            assert store.get_session_id_for_conversation("old-chat") == "sess_zzz"
+
 
 # ---------------------------------------------------------------------------
 # _IdempotencyCache
@@ -2208,6 +2287,129 @@ class TestConversationParameter:
                 assert resp.status == 200
                 # Conversation mapping should NOT be set since store=false
                 assert adapter._response_store.get_conversation("ephemeral-chat") is None
+
+    # ── issue #16517: cold-start with conversation= reuses existing session_id ──
+
+    @pytest.mark.asyncio
+    async def test_first_turn_persists_session_id_on_conversations_row(self, adapter):
+        """After the first turn the slug → session_id mapping must be
+        queryable via the new helper, not just the response_id mapping."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "hi", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+                resp = await cli.post("/v1/responses", json={
+                    "input": "hello",
+                    "conversation": "sticky-chat",
+                })
+                assert resp.status == 200
+                stored_sid = adapter._response_store.get_session_id_for_conversation("sticky-chat")
+                assert stored_sid is not None
+                # And it matches the session_id the agent was actually invoked with.
+                first_call = mock_run.call_args_list[0]
+                kwargs = first_call.kwargs
+                assert kwargs.get("session_id") == stored_sid
+
+    @pytest.mark.asyncio
+    async def test_second_turn_after_lru_eviction_reuses_session_id(self, adapter):
+        """Regression for #16517. When the responses LRU evicts the previous
+        response_id, a follow-up request keyed by the same conversation slug
+        must continue the *same* state.db session_id instead of minting a
+        fresh fork."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "first", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+                # First turn establishes the slug → session_id row.
+                resp1 = await cli.post("/v1/responses", json={
+                    "input": "hello",
+                    "conversation": "persistent-chat",
+                })
+                assert resp1.status == 200
+                first_session_id = mock_run.call_args_list[0].kwargs["session_id"]
+                first_response_id = (await resp1.json())["id"]
+
+                # Simulate LRU eviction (or gateway restart with a smaller
+                # cache) by manually deleting the responses row while
+                # leaving the conversations row intact.
+                adapter._response_store._conn.execute(
+                    "DELETE FROM responses WHERE response_id = ?", (first_response_id,)
+                )
+                adapter._response_store._conn.commit()
+                assert adapter._response_store.get(first_response_id) is None
+
+                # Second turn keyed by slug must continue the SAME session.
+                mock_run.return_value = (
+                    {"final_response": "second", "messages": [], "api_calls": 1},
+                    {"input_tokens": 20, "output_tokens": 10, "total_tokens": 30},
+                )
+                resp2 = await cli.post("/v1/responses", json={
+                    "input": "are you still there",
+                    "conversation": "persistent-chat",
+                })
+                assert resp2.status == 200, await resp2.text()
+                second_session_id = mock_run.call_args_list[1].kwargs["session_id"]
+                assert second_session_id == first_session_id
+
+    @pytest.mark.asyncio
+    async def test_unknown_slug_with_evicted_response_returns_404(self, adapter):
+        """If the response_id was evicted AND the slug has no session_id
+        mapping (legacy row from before this fix), preserve the existing
+        404 behavior — don't silently swallow the missing reference."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            # Seed a conversations row pointing to a never-existed response_id
+            # without a session_id (simulates pre-#16517 row).
+            adapter._response_store._conn.execute(
+                "INSERT INTO conversations (name, response_id, session_id) VALUES (?, ?, ?)",
+                ("legacy-chat", "resp_evicted_xyz", None),
+            )
+            adapter._response_store._conn.commit()
+            resp = await cli.post("/v1/responses", json={
+                "input": "hello",
+                "conversation": "legacy-chat",
+            })
+            assert resp.status == 404
+
+    @pytest.mark.asyncio
+    async def test_brand_new_slug_still_mints_fresh_session_id(self, adapter):
+        """A genuinely new conversation must still get a fresh session_id.
+        Regression guard: the slug fallback should only fire when there's
+        actually a stored session_id for the slug."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (
+                    {"final_response": "hi", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+                resp = await cli.post("/v1/responses", json={
+                    "input": "first time here",
+                    "conversation": "brand-new-slug",
+                })
+                assert resp.status == 200
+                # Got a real UUID-shaped session_id, not None / empty.
+                sid = mock_run.call_args_list[0].kwargs["session_id"]
+                assert sid and len(sid) >= 8
+
+    @pytest.mark.asyncio
+    async def test_previous_response_id_path_still_404s_on_eviction(self, adapter):
+        """Direct previous_response_id (no conversation slug) still 404s
+        when the row is evicted — we don't have anywhere to look up the
+        session, so the original behavior is preserved."""
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post("/v1/responses", json={
+                "input": "hello",
+                "previous_response_id": "resp_does_not_exist_anywhere",
+            })
+            assert resp.status == 404
 
 
 # ---------------------------------------------------------------------------

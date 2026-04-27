@@ -300,39 +300,60 @@ class ToolRegistry:
           for consistent error format.
         * When the tool has a ``timeout`` set (seconds), the handler is
           executed in a thread and terminated if it exceeds the limit.
+          Timeout applies to both sync and async handlers.
         """
         entry = self.get_entry(name)
         if not entry:
             return json.dumps({"error": f"Unknown tool: {name}"})
         try:
+            if entry.timeout is not None:
+                return self._dispatch_with_timeout(entry, args, **kwargs)
             if entry.is_async:
                 from model_tools import _run_async
                 return _run_async(entry.handler(args, **kwargs))
-            if entry.timeout is not None:
-                return self._dispatch_with_timeout(entry, args, **kwargs)
             return entry.handler(args, **kwargs)
         except Exception as e:
             logger.exception("Tool %s dispatch error: %s", name, e)
             return json.dumps({"error": f"Tool execution failed: {type(e).__name__}: {e}"})
 
     def _dispatch_with_timeout(self, entry: ToolEntry, args: dict, **kwargs) -> str:
-        """Run a sync handler with a wall-clock timeout using a thread."""
+        """Run a handler (sync or async) with a wall-clock timeout using a thread.
+
+        The thread is abandoned (not joined) on timeout so that ``dispatch()``
+        returns promptly.  The underlying OS thread will run to completion or
+        block indefinitely if the handler itself does not honour cancellation —
+        this is a known limitation of CPython threads.  Callers should ensure
+        that tools with timeouts use interruptible I/O where possible.
+        """
         import concurrent.futures
+
         result_holder: list = [None]
 
         def _target():
-            result_holder[0] = entry.handler(args, **kwargs)
+            if entry.is_async:
+                from model_tools import _run_async
+                result_holder[0] = _run_async(entry.handler(args, **kwargs))
+            else:
+                result_holder[0] = entry.handler(args, **kwargs)
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:
-            future = pool.submit(_target)
-            try:
-                future.result(timeout=entry.timeout)
-            except concurrent.futures.TimeoutError:
-                logger.warning("Tool %s timed out after %ss", entry.name, entry.timeout)
-                return json.dumps({
-                    "error": f"Tool {entry.name} timed out after {entry.timeout}s",
-                })
-            return result_holder[0]
+        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+        future = pool.submit(_target)
+        try:
+            future.result(timeout=entry.timeout)
+        except concurrent.futures.TimeoutError:
+            logger.warning("Tool %s timed out after %ss", entry.name, entry.timeout)
+            # Abandon the thread immediately; do not block waiting for it.
+            pool.shutdown(wait=False, cancel_futures=True)
+            return json.dumps({
+                "error": f"Tool {entry.name} timed out after {entry.timeout}s",
+            })
+        finally:
+            pool.shutdown(wait=False)
+
+        result = result_holder[0]
+        if result is None:
+            return json.dumps({"error": f"Tool {entry.name} returned no result"})
+        return result
 
     # ------------------------------------------------------------------
     # Query helpers  (replace redundant dicts in model_tools.py)

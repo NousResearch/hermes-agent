@@ -5,6 +5,7 @@ registry.dispatch() wraps the handler invocation in a timeout guard.  If the
 handler exceeds the limit, a JSON error is returned instead of hanging.
 """
 
+import asyncio
 import json
 import time
 
@@ -139,3 +140,64 @@ class TestDispatchTimeoutEnforcement:
         result = reg.dispatch("_test_timeout_info", {})
         parsed = json.loads(result)
         assert "1" in parsed["error"]
+
+    def test_dispatch_returns_promptly_on_timeout(self):
+        """dispatch() must return within ~timeout seconds, not wait for the thread."""
+        reg = ToolRegistry()
+        reg.register(
+            name="_test_prompt_return",
+            toolset="test",
+            schema={"name": "_test_prompt_return", "description": "t"},
+            handler=lambda args, **kw: (time.sleep(10), json.dumps({"ok": True}))[1],
+            timeout=1,
+        )
+        start = time.monotonic()
+        result = reg.dispatch("_test_prompt_return", {})
+        elapsed = time.monotonic() - start
+        # Must return well before the handler's 10s sleep completes.
+        assert elapsed < 3.0, f"dispatch blocked for {elapsed:.2f}s; expected ~1s"
+        parsed = json.loads(result)
+        assert "error" in parsed
+
+    def test_async_tool_timeout_is_enforced(self):
+        """Async handlers with a timeout are subject to the same timeout guard."""
+        reg = ToolRegistry()
+
+        async def slow_async(args, **kw):
+            await asyncio.sleep(10)
+            return json.dumps({"ok": True})
+
+        reg.register(
+            name="_test_async_slow",
+            toolset="test",
+            schema={"name": "_test_async_slow", "description": "t"},
+            handler=slow_async,
+            is_async=True,
+            timeout=1,
+        )
+        start = time.monotonic()
+        result = reg.dispatch("_test_async_slow", {})
+        elapsed = time.monotonic() - start
+        assert elapsed < 3.0, f"async dispatch blocked for {elapsed:.2f}s; expected ~1s"
+        parsed = json.loads(result)
+        assert "error" in parsed
+        assert "_test_async_slow" in parsed["error"]
+
+    def test_async_tool_completes_within_timeout(self):
+        """A fast async handler with a timeout returns its result normally."""
+        reg = ToolRegistry()
+
+        async def fast_async(args, **kw):
+            return json.dumps({"async": True})
+
+        reg.register(
+            name="_test_async_fast",
+            toolset="test",
+            schema={"name": "_test_async_fast", "description": "t"},
+            handler=fast_async,
+            is_async=True,
+            timeout=5,
+        )
+        result = reg.dispatch("_test_async_fast", {})
+        parsed = json.loads(result)
+        assert parsed["async"] is True

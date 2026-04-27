@@ -28,8 +28,10 @@ Usage in run_agent.py:
 
 from __future__ import annotations
 
+import json
 import logging
 import re
+import inspect
 from typing import Any, Dict, List, Optional
 
 from agent.memory_provider import MemoryProvider
@@ -43,11 +45,22 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _FENCE_TAG_RE = re.compile(r'</?\s*memory-context\s*>', re.IGNORECASE)
+_INTERNAL_CONTEXT_RE = re.compile(
+    r'<\s*memory-context\s*>[\s\S]*?</\s*memory-context\s*>',
+    re.IGNORECASE,
+)
+_INTERNAL_NOTE_RE = re.compile(
+    r'\[System note:\s*The following is recalled memory context,\s*NOT new user input\.\s*Treat as informational background data\.\]\s*',
+    re.IGNORECASE,
+)
 
 
 def sanitize_context(text: str) -> str:
-    """Strip fence-escape sequences from provider output."""
-    return _FENCE_TAG_RE.sub('', text)
+    """Strip fence tags, injected context blocks, and system notes from provider output."""
+    text = _INTERNAL_CONTEXT_RE.sub('', text)
+    text = _INTERNAL_NOTE_RE.sub('', text)
+    text = _FENCE_TAG_RE.sub('', text)
+    return text
 
 
 def build_memory_context_block(raw_context: str) -> str:
@@ -300,7 +313,39 @@ class MemoryManager:
                 )
         return "\n\n".join(parts)
 
-    def on_memory_write(self, action: str, target: str, content: str) -> None:
+    @staticmethod
+    def _provider_memory_write_metadata_mode(provider: MemoryProvider) -> str:
+        """Return how to pass metadata to a provider's memory-write hook."""
+        try:
+            signature = inspect.signature(provider.on_memory_write)
+        except (TypeError, ValueError):
+            return "keyword"
+
+        params = list(signature.parameters.values())
+        if any(p.kind == inspect.Parameter.VAR_KEYWORD for p in params):
+            return "keyword"
+        if "metadata" in signature.parameters:
+            return "keyword"
+
+        accepted = [
+            p for p in params
+            if p.kind in (
+                inspect.Parameter.POSITIONAL_ONLY,
+                inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                inspect.Parameter.KEYWORD_ONLY,
+            )
+        ]
+        if len(accepted) >= 4:
+            return "positional"
+        return "legacy"
+
+    def on_memory_write(
+        self,
+        action: str,
+        target: str,
+        content: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> None:
         """Notify external providers when the built-in memory tool writes.
 
         Skips the builtin provider itself (it's the source of the write).
@@ -309,7 +354,15 @@ class MemoryManager:
             if provider.name == "builtin":
                 continue
             try:
-                provider.on_memory_write(action, target, content)
+                metadata_mode = self._provider_memory_write_metadata_mode(provider)
+                if metadata_mode == "keyword":
+                    provider.on_memory_write(
+                        action, target, content, metadata=dict(metadata or {})
+                    )
+                elif metadata_mode == "positional":
+                    provider.on_memory_write(action, target, content, dict(metadata or {}))
+                else:
+                    provider.on_memory_write(action, target, content)
             except Exception as e:
                 logger.debug(
                     "Memory provider '%s' on_memory_write failed: %s",

@@ -702,6 +702,34 @@ class TestBackupEdgeCases:
         # Zip should still be created with the readable files
         assert out_zip.exists()
 
+    def test_pre1980_timestamp_skipped(self, tmp_path, monkeypatch):
+        """Backup skips files with pre-1980 timestamps (ZIP limitation)."""
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        (hermes_home / "config.yaml").write_text("model: test\n")
+
+        # Create a file with epoch timestamp (1970-01-01)
+        old_file = hermes_home / "ancient.txt"
+        old_file.write_text("old data")
+        os.utime(old_file, (0, 0))
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        out_zip = tmp_path / "out.zip"
+        args = Namespace(output=str(out_zip))
+
+        from hermes_cli.backup import run_backup
+        run_backup(args)
+
+        # Zip should still be created with the valid files
+        assert out_zip.exists()
+        with zipfile.ZipFile(out_zip, "r") as zf:
+            names = zf.namelist()
+            assert "config.yaml" in names
+            # The pre-1980 file should be skipped, not crash the backup
+            assert "ancient.txt" not in names
+
     def test_skips_output_zip_inside_hermes(self, tmp_path, monkeypatch):
         """Backup skips its own output zip if it's inside hermes root."""
         hermes_home = tmp_path / ".hermes"
@@ -1113,3 +1141,80 @@ class TestQuickSnapshot:
         deleted = prune_quick_snapshots(keep=3, hermes_home=hermes_home)
         assert deleted == 7
         assert len(list_quick_snapshots(hermes_home=hermes_home)) == 3
+
+    def test_snapshot_includes_pairing_directories(self, hermes_home):
+        """Pairing JSONs live outside state.db — snapshot must capture them
+        recursively (generic + per-platform) so approved-user lists survive
+        disasters like #15733."""
+        from hermes_cli.backup import create_quick_snapshot
+
+        # Generic pairing store (new location)
+        (hermes_home / "platforms" / "pairing").mkdir(parents=True)
+        (hermes_home / "platforms" / "pairing" / "telegram-approved.json").write_text(
+            '{"12345": {"user_name": "alice"}}'
+        )
+        (hermes_home / "platforms" / "pairing" / "discord-approved.json").write_text(
+            '{"67890": {"user_name": "bob"}}'
+        )
+        # Legacy pairing store (old location)
+        (hermes_home / "pairing").mkdir()
+        (hermes_home / "pairing" / "matrix-approved.json").write_text(
+            '{"@charlie:server": {"user_name": "charlie"}}'
+        )
+        # Feishu's separate JSON
+        (hermes_home / "feishu_comment_pairing.json").write_text(
+            '{"doc_abc": {"allow_from": ["user_xyz"]}}'
+        )
+
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        assert snap_id is not None
+
+        snap_dir = hermes_home / "state-snapshots" / snap_id
+        assert (snap_dir / "platforms" / "pairing" / "telegram-approved.json").exists()
+        assert (snap_dir / "platforms" / "pairing" / "discord-approved.json").exists()
+        assert (snap_dir / "pairing" / "matrix-approved.json").exists()
+        assert (snap_dir / "feishu_comment_pairing.json").exists()
+
+        with open(snap_dir / "manifest.json") as f:
+            meta = json.load(f)
+        files = meta["files"]
+        assert "platforms/pairing/telegram-approved.json" in files
+        assert "platforms/pairing/discord-approved.json" in files
+        assert "pairing/matrix-approved.json" in files
+        assert "feishu_comment_pairing.json" in files
+
+    def test_restore_recovers_pairing_data(self, hermes_home):
+        """After restore, deleted pairing files reappear with original content."""
+        from hermes_cli.backup import create_quick_snapshot, restore_quick_snapshot
+
+        pairing_dir = hermes_home / "platforms" / "pairing"
+        pairing_dir.mkdir(parents=True)
+        approved = pairing_dir / "telegram-approved.json"
+        approved.write_text('{"12345": {"user_name": "alice"}}')
+        feishu = hermes_home / "feishu_comment_pairing.json"
+        feishu.write_text('{"doc_abc": {"allow_from": ["user_xyz"]}}')
+
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        assert snap_id is not None
+
+        # Simulate the disaster — user loses both pairing files.
+        approved.unlink()
+        feishu.unlink()
+        assert not approved.exists()
+        assert not feishu.exists()
+
+        assert restore_quick_snapshot(snap_id, hermes_home=hermes_home) is True
+        assert approved.exists()
+        assert '"alice"' in approved.read_text()
+        assert feishu.exists()
+        assert '"user_xyz"' in feishu.read_text()
+
+    def test_empty_pairing_dir_does_not_fail(self, hermes_home):
+        """An empty pairing directory should be silently skipped."""
+        from hermes_cli.backup import create_quick_snapshot
+
+        (hermes_home / "platforms" / "pairing").mkdir(parents=True)
+        # Directory exists but contains no files.
+        snap_id = create_quick_snapshot(hermes_home=hermes_home)
+        # Other state still present → snapshot succeeds.
+        assert snap_id is not None

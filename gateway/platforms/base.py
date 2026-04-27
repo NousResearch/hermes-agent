@@ -6,6 +6,7 @@ and implement the required methods.
 """
 
 import asyncio
+import inspect
 import ipaddress
 import logging
 import os
@@ -17,6 +18,8 @@ import sys
 import uuid
 from abc import ABC, abstractmethod
 from urllib.parse import urlsplit
+
+from utils import normalize_proxy_url
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +148,102 @@ def _detect_macos_system_proxy() -> str | None:
     return None
 
 
-def resolve_proxy_url(platform_env_var: str | None = None) -> str | None:
+def _split_host_port(value: str) -> tuple[str, int | None]:
+    raw = str(value or "").strip()
+    if not raw:
+        return "", None
+    if "://" in raw:
+        parsed = urlsplit(raw)
+        return (parsed.hostname or "").lower().rstrip("."), parsed.port
+    if raw.startswith("[") and "]" in raw:
+        host, _, rest = raw[1:].partition("]")
+        port = None
+        if rest.startswith(":") and rest[1:].isdigit():
+            port = int(rest[1:])
+        return host.lower().rstrip("."), port
+    if raw.count(":") == 1:
+        host, _, maybe_port = raw.rpartition(":")
+        if maybe_port.isdigit():
+            return host.lower().rstrip("."), int(maybe_port)
+    return raw.lower().strip("[]").rstrip("."), None
+
+
+def _no_proxy_entries() -> list[str]:
+    entries: list[str] = []
+    for key in ("NO_PROXY", "no_proxy"):
+        raw = os.environ.get(key, "")
+        entries.extend(part.strip() for part in raw.split(",") if part.strip())
+    return entries
+
+
+def _no_proxy_entry_matches(entry: str, host: str, port: int | None = None) -> bool:
+    token = str(entry or "").strip().lower()
+    if not token:
+        return False
+    if token == "*":
+        return True
+
+    token_host, token_port = _split_host_port(token)
+    if token_port is not None and port is not None and token_port != port:
+        return False
+    if token_port is not None and port is None:
+        return False
+    if not token_host:
+        return False
+
+    try:
+        network = ipaddress.ip_network(token_host, strict=False)
+        try:
+            return ipaddress.ip_address(host) in network
+        except ValueError:
+            return False
+    except ValueError:
+        pass
+
+    try:
+        token_ip = ipaddress.ip_address(token_host)
+        try:
+            return ipaddress.ip_address(host) == token_ip
+        except ValueError:
+            return False
+    except ValueError:
+        pass
+
+    if token_host.startswith("*."):
+        suffix = token_host[1:]
+        return host.endswith(suffix)
+    if token_host.startswith("."):
+        return host == token_host[1:] or host.endswith(token_host)
+    return host == token_host or host.endswith(f".{token_host}")
+
+
+def should_bypass_proxy(target_hosts: str | list[str] | tuple[str, ...] | set[str] | None) -> bool:
+    """Return True when NO_PROXY/no_proxy matches at least one target host.
+
+    Supports exact hosts, domain suffixes, wildcard suffixes, IP literals,
+    CIDR ranges, optional host:port entries, and ``*``.
+    """
+    entries = _no_proxy_entries()
+    if not entries or not target_hosts:
+        return False
+    if isinstance(target_hosts, str):
+        candidates = [target_hosts]
+    else:
+        candidates = list(target_hosts)
+    for candidate in candidates:
+        host, port = _split_host_port(str(candidate))
+        if not host:
+            continue
+        if any(_no_proxy_entry_matches(entry, host, port) for entry in entries):
+            return True
+    return False
+
+
+def resolve_proxy_url(
+    platform_env_var: str | None = None,
+    *,
+    target_hosts: str | list[str] | tuple[str, ...] | set[str] | None = None,
+) -> str | None:
     """Return a proxy URL from env vars, or macOS system proxy.
 
     Check order:
@@ -153,18 +251,26 @@ def resolve_proxy_url(platform_env_var: str | None = None) -> str | None:
       1. HTTPS_PROXY / HTTP_PROXY / ALL_PROXY (and lowercase variants)
       2. macOS system proxy via ``scutil --proxy`` (auto-detect)
 
-    Returns *None* if no proxy is found.
+    Returns *None* if no proxy is found, or if NO_PROXY/no_proxy matches one
+    of ``target_hosts``.
     """
     if platform_env_var:
         value = (os.environ.get(platform_env_var) or "").strip()
         if value:
-            return value
+            if should_bypass_proxy(target_hosts):
+                return None
+            return normalize_proxy_url(value)
     for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                 "https_proxy", "http_proxy", "all_proxy"):
         value = (os.environ.get(key) or "").strip()
         if value:
-            return value
-    return _detect_macos_system_proxy()
+            if should_bypass_proxy(target_hosts):
+                return None
+            return normalize_proxy_url(value)
+    detected = normalize_proxy_url(_detect_macos_system_proxy())
+    if detected and should_bypass_proxy(target_hosts):
+        return None
+    return detected
 
 
 def proxy_kwargs_for_bot(proxy_url: str | None) -> dict:
@@ -228,6 +334,39 @@ def proxy_kwargs_for_aiohttp(proxy_url: str | None) -> tuple[dict, dict]:
             )
             return {}, {}
     return {}, {"proxy": proxy_url}
+
+
+def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = None) -> bool:
+    """Return True when ``hostname`` matches a ``NO_PROXY`` entry.
+
+    Supports comma- or whitespace-separated entries with optional leading dots
+    and ``*.`` wildcards, which match both the apex domain and subdomains.
+    """
+    raw = no_proxy_value
+    if raw is None:
+        raw = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
+
+    raw = raw.strip()
+    if not raw:
+        return False
+
+    lower_hostname = hostname.lower()
+    for entry in re.split(r"[\s,]+", raw):
+        normalized = entry.strip().lower()
+        if not normalized:
+            continue
+        if normalized == "*":
+            return True
+
+        if normalized.startswith("*."):
+            normalized = normalized[2:]
+        elif normalized.startswith("."):
+            normalized = normalized[1:]
+
+        if lower_hostname == normalized or lower_hostname.endswith(f".{normalized}"):
+            return True
+
+    return False
 
 
 from dataclasses import dataclass, field
@@ -390,12 +529,9 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
     if not is_safe_url(url):
         raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
 
-    import asyncio
     import httpx
-    import logging as _logging
-    _log = _logging.getLogger(__name__)
+    _log = logging.getLogger(__name__)
 
-    last_exc = None
     async with httpx.AsyncClient(
         timeout=30.0,
         follow_redirects=True,
@@ -413,7 +549,6 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
                 response.raise_for_status()
                 return cache_image_from_bytes(response.content, ext)
             except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
-                last_exc = exc
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
                     raise
                 if attempt < retries:
@@ -429,7 +564,6 @@ async def cache_image_from_url(url: str, ext: str = ".jpg", retries: int = 2) ->
                     await asyncio.sleep(wait)
                     continue
                 raise
-    raise last_exc
 
 
 def cleanup_image_cache(max_age_hours: int = 24) -> int:
@@ -509,12 +643,9 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
     if not is_safe_url(url):
         raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
 
-    import asyncio
     import httpx
-    import logging as _logging
-    _log = _logging.getLogger(__name__)
+    _log = logging.getLogger(__name__)
 
-    last_exc = None
     async with httpx.AsyncClient(
         timeout=30.0,
         follow_redirects=True,
@@ -532,7 +663,6 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
                 response.raise_for_status()
                 return cache_audio_from_bytes(response.content, ext)
             except (httpx.TimeoutException, httpx.HTTPStatusError) as exc:
-                last_exc = exc
                 if isinstance(exc, httpx.HTTPStatusError) and exc.response.status_code < 429:
                     raise
                 if attempt < retries:
@@ -548,7 +678,39 @@ async def cache_audio_from_url(url: str, ext: str = ".ogg", retries: int = 2) ->
                     await asyncio.sleep(wait)
                     continue
                 raise
-    raise last_exc
+
+
+# ---------------------------------------------------------------------------
+# Video cache utilities
+#
+# Same pattern as image/audio cache -- videos from platforms are downloaded
+# here so the agent can reference them by local file path.
+# ---------------------------------------------------------------------------
+
+VIDEO_CACHE_DIR = get_hermes_dir("cache/videos", "video_cache")
+
+SUPPORTED_VIDEO_TYPES = {
+    ".mp4": "video/mp4",
+    ".mov": "video/quicktime",
+    ".webm": "video/webm",
+    ".mkv": "video/x-matroska",
+    ".avi": "video/x-msvideo",
+}
+
+
+def get_video_cache_dir() -> Path:
+    """Return the video cache directory, creating it if it doesn't exist."""
+    VIDEO_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+    return VIDEO_CACHE_DIR
+
+
+def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
+    """Save raw video bytes to the cache and return the absolute file path."""
+    cache_dir = get_video_cache_dir()
+    filename = f"video_{uuid.uuid4().hex[:12]}{ext}"
+    filepath = cache_dir / filename
+    filepath.write_bytes(data)
+    return str(filepath)
 
 
 # ---------------------------------------------------------------------------
@@ -564,7 +726,15 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".pdf": "application/pdf",
     ".md": "text/markdown",
     ".txt": "text/plain",
+    ".csv": "text/csv",
     ".log": "text/plain",
+    ".json": "application/json",
+    ".xml": "application/xml",
+    ".yaml": "application/yaml",
+    ".yml": "application/yaml",
+    ".toml": "application/toml",
+    ".ini": "text/plain",
+    ".cfg": "text/plain",
     ".zip": "application/zip",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -669,6 +839,15 @@ class MessageEvent:
     # Original platform data
     raw_message: Any = None
     message_id: Optional[str] = None
+
+    # Platform-specific update identifier.  For Telegram this is the
+    # ``update_id`` from the PTB Update wrapper; other platforms currently
+    # ignore it.  Used by ``/restart`` to record the triggering update so the
+    # new gateway can advance the Telegram offset past it and avoid processing
+    # the same ``/restart`` twice if PTB's graceful-shutdown ACK times out
+    # ("Error while calling `get_updates` one more time to mark all fetched
+    # updates" in gateway.log).
+    platform_update_id: Optional[int] = None
     
     # Media attachments
     # media_urls: local file paths (for vision tool access)
@@ -682,6 +861,10 @@ class MessageEvent:
     # Auto-loaded skill(s) for topic/channel bindings (e.g., Telegram DM Topics,
     # Discord channel_skill_bindings).  A single name or ordered list.
     auto_skill: Optional[str | list[str]] = None
+
+    # Per-channel ephemeral system prompt (e.g. Discord channel_prompts).
+    # Applied at API call time and never persisted to transcript history.
+    channel_prompt: Optional[str] = None
     
     # Internal flag — set for synthetic events (e.g. background process
     # completion notifications) that must bypass user authorization checks.
@@ -713,7 +896,10 @@ class MessageEvent:
         if not self.is_command():
             return self.text
         parts = self.text.split(maxsplit=1)
-        return parts[1] if len(parts) > 1 else ""
+        args = parts[1] if len(parts) > 1 else ""
+        # iOS auto-corrects -- to — (em dash) and - to – (en dash)
+        args = args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
+        return args
 
 
 @dataclass 
@@ -730,25 +916,56 @@ def merge_pending_message_event(
     pending_messages: Dict[str, MessageEvent],
     session_key: str,
     event: MessageEvent,
+    *,
+    merge_text: bool = False,
 ) -> None:
     """Store or merge a pending event for a session.
 
     Photo bursts/albums often arrive as multiple near-simultaneous PHOTO
     events. Merge those into the existing queued event so the next turn sees
-    the whole burst, while non-photo follow-ups still replace the pending
-    event normally.
+    the whole burst.
+
+    When ``merge_text`` is enabled, rapid follow-up TEXT events are appended
+    instead of replacing the pending turn. This is used for Telegram bursty
+    follow-ups so a multi-part user thought is not silently truncated to only
+    the last queued fragment.
     """
     existing = pending_messages.get(session_key)
-    if (
-        existing
-        and getattr(existing, "message_type", None) == MessageType.PHOTO
-        and event.message_type == MessageType.PHOTO
-    ):
-        existing.media_urls.extend(event.media_urls)
-        existing.media_types.extend(event.media_types)
-        if event.text:
-            existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
-        return
+    if existing:
+        existing_is_photo = getattr(existing, "message_type", None) == MessageType.PHOTO
+        incoming_is_photo = event.message_type == MessageType.PHOTO
+        existing_has_media = bool(existing.media_urls)
+        incoming_has_media = bool(event.media_urls)
+
+        if existing_is_photo and incoming_is_photo:
+            existing.media_urls.extend(event.media_urls)
+            existing.media_types.extend(event.media_types)
+            if event.text:
+                existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
+            return
+
+        if existing_has_media or incoming_has_media:
+            if incoming_has_media:
+                existing.media_urls.extend(event.media_urls)
+                existing.media_types.extend(event.media_types)
+            if event.text:
+                if existing.text:
+                    existing.text = BasePlatformAdapter._merge_caption(existing.text, event.text)
+                else:
+                    existing.text = event.text
+            if existing_is_photo or incoming_is_photo:
+                existing.message_type = MessageType.PHOTO
+            return
+
+        if (
+            merge_text
+            and getattr(existing, "message_type", None) == MessageType.TEXT
+            and event.message_type == MessageType.TEXT
+        ):
+            if event.text:
+                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            return
+
     pending_messages[session_key] = event
 
 
@@ -776,6 +993,91 @@ _RETRYABLE_ERROR_PATTERNS = (
 MessageHandler = Callable[[MessageEvent], Awaitable[Optional[str]]]
 
 
+def resolve_channel_prompt(
+    config_extra: dict,
+    channel_id: str,
+    parent_id: str | None = None,
+) -> str | None:
+    """Resolve a per-channel ephemeral prompt from platform config.
+
+    Looks up ``channel_prompts`` in the adapter's ``config.extra`` dict.
+    Prefers an exact match on *channel_id*; falls back to *parent_id*
+    (useful for forum threads / child channels inheriting a parent prompt).
+
+    Returns the prompt string, or None if no match is found.  Blank/whitespace-
+    only prompts are treated as absent.
+    """
+    prompts = config_extra.get("channel_prompts") or {}
+    if not isinstance(prompts, dict):
+        return None
+
+    for key in (channel_id, parent_id):
+        if not key:
+            continue
+        prompt = prompts.get(key)
+        if prompt is None:
+            continue
+        prompt = str(prompt).strip()
+        if prompt:
+            return prompt
+    return None
+
+
+def resolve_channel_skills(
+    config_extra: dict,
+    channel_id: str,
+    parent_id: str | None = None,
+) -> list[str] | None:
+    """Resolve auto-loaded skill(s) for a channel/thread from platform config.
+
+    Looks up ``channel_skill_bindings`` in the adapter's ``config.extra`` dict.
+
+    Config format::
+
+        channel_skill_bindings:
+          - id: "C0123"          # Slack channel ID or Discord channel/forum ID
+            skills: ["skill-a", "skill-b"]
+          - id: "D0ABCDE"
+            skill: "solo-skill"  # single string also accepted
+
+    Prefers an exact match on *channel_id*; falls back to *parent_id*
+    (useful for forum threads / Slack threads inheriting the parent channel's
+    binding).
+
+    Returns a deduplicated list of skill names (order preserved), or None if
+    no match is found.
+    """
+    bindings = config_extra.get("channel_skill_bindings") or []
+    if not isinstance(bindings, list) or not bindings:
+        return None
+    ids_to_check: set[str] = set()
+    if channel_id:
+        ids_to_check.add(str(channel_id))
+    if parent_id:
+        ids_to_check.add(str(parent_id))
+    if not ids_to_check:
+        return None
+    for entry in bindings:
+        if not isinstance(entry, dict):
+            continue
+        entry_id = str(entry.get("id", ""))
+        if entry_id in ids_to_check:
+            skills = entry.get("skills") or entry.get("skill")
+            if isinstance(skills, str):
+                s = skills.strip()
+                return [s] if s else None
+            if isinstance(skills, list) and skills:
+                seen: list[str] = []
+                for name in skills:
+                    if not isinstance(name, str):
+                        continue
+                    nm = name.strip()
+                    if nm and nm not in seen:
+                        seen.append(nm)
+                return seen or None
+    return None
+
+
 class BasePlatformAdapter(ABC):
     """
     Base class for platform adapters.
@@ -797,17 +1099,42 @@ class BasePlatformAdapter(ABC):
         self._fatal_error_retryable = True
         self._fatal_error_handler: Optional[Callable[["BasePlatformAdapter"], Awaitable[None] | None]] = None
         
-        # Track active message handlers per session for interrupt support
-        # Key: session_key (e.g., chat_id), Value: (event, asyncio.Event for interrupt)
+        # Track active message handlers per session for interrupt support.
+        # _active_sessions stores the per-session interrupt Event; _session_tasks
+        # maps session → the specific Task currently processing it so that
+        # session-terminating commands (/stop, /new, /reset) can cancel the
+        # right task and release the adapter-level guard deterministically.
+        # Without the owner-task map, an old task's finally block could delete
+        # a newer task's guard, leaving stale busy state.
         self._active_sessions: Dict[str, asyncio.Event] = {}
         self._pending_messages: Dict[str, MessageEvent] = {}
+        self._session_tasks: Dict[str, asyncio.Task] = {}
         # Background message-processing tasks spawned by handle_message().
         # Gateway shutdown cancels these so an old gateway instance doesn't keep
         # working on a task after --replace or manual restarts.
         self._background_tasks: set[asyncio.Task] = set()
+        # One-shot callbacks to fire after the main response is delivered.
+        # Keyed by session_key. Values are either a bare callback (legacy) or
+        # a ``(generation, callback)`` tuple so GatewayRunner can make deferred
+        # deliveries generation-aware and avoid stale runs clearing callbacks
+        # registered by a fresher run for the same session.
+        self._post_delivery_callbacks: Dict[str, Any] = {}
         self._expected_cancelled_tasks: set[asyncio.Task] = set()
         self._busy_session_handler: Optional[Callable[[MessageEvent, str], Awaitable[bool]]] = None
-        # Chats where auto-TTS on voice input is disabled (set by /voice off)
+        # Auto-TTS on voice input: ``_auto_tts_default`` is the global default
+        # (``voice.auto_tts`` in config.yaml, pushed by GatewayRunner on connect).
+        # Per-chat overrides live in two sets populated from ``_voice_mode``:
+        #   - ``_auto_tts_enabled_chats``: chat explicitly opted in via ``/voice on``
+        #     or ``/voice tts`` (mode is ``voice_only`` or ``all``). Fires even when
+        #     the global default is False.
+        #   - ``_auto_tts_disabled_chats``: chat explicitly opted out via
+        #     ``/voice off`` (mode is ``off``). Suppresses auto-TTS even when the
+        #     global default is True.
+        # The gate in _process_message() is:
+        #   fire if chat in _auto_tts_enabled_chats
+        #     OR (_auto_tts_default and chat not in _auto_tts_disabled_chats)
+        self._auto_tts_default: bool = False
+        self._auto_tts_enabled_chats: set = set()
         self._auto_tts_disabled_chats: set = set()
         # Chats where typing indicator is paused (e.g. during approval waits).
         # _keep_typing skips send_typing when the chat_id is in this set.
@@ -828,6 +1155,21 @@ class BasePlatformAdapter(ABC):
     @property
     def fatal_error_retryable(self) -> bool:
         return self._fatal_error_retryable
+
+    def _should_auto_tts_for_chat(self, chat_id: str) -> bool:
+        """Whether auto-TTS on voice input should fire for ``chat_id``.
+
+        Decision layers (Issue #16007):
+          1. Explicit ``/voice on`` or ``/voice tts`` → always fire (even if
+             ``voice.auto_tts`` is False).
+          2. Explicit ``/voice off`` → never fire.
+          3. Fall back to the global ``voice.auto_tts`` config default.
+        """
+        if chat_id in self._auto_tts_enabled_chats:
+            return True
+        if chat_id in self._auto_tts_disabled_chats:
+            return False
+        return bool(self._auto_tts_default)
 
     def set_fatal_error_handler(self, handler: Callable[["BasePlatformAdapter"], Awaitable[None] | None]) -> None:
         self._fatal_error_handler = handler
@@ -975,18 +1317,63 @@ class BasePlatformAdapter(ABC):
         """
         pass
 
+    # Default: the adapter treats ``finalize=True`` on edit_message as a
+    # no-op and is happy to have the stream consumer skip redundant final
+    # edits.  Subclasses that *require* an explicit finalize call to close
+    # out the message lifecycle (e.g. rich card / AI assistant surfaces
+    # such as DingTalk AI Cards) override this to True (class attribute or
+    # property) so the stream consumer knows not to short-circuit.
+    REQUIRES_EDIT_FINALIZE: bool = False
+
     async def edit_message(
         self,
         chat_id: str,
         message_id: str,
         content: str,
+        *,
+        finalize: bool = False,
     ) -> SendResult:
         """
         Edit a previously sent message. Optional — platforms that don't
         support editing return success=False and callers fall back to
         sending a new message.
+
+        ``finalize`` signals that this is the last edit in a streaming
+        sequence.  Most platforms (Telegram, Slack, Discord, Matrix,
+        etc.) treat it as a no-op because their edit APIs have no notion
+        of message lifecycle state — an edit is an edit.  Platforms that
+        render streaming updates with a distinct "in progress" state and
+        require explicit closure (e.g. rich card / AI assistant surfaces
+        such as DingTalk AI Cards) use it to finalize the message and
+        transition the UI out of the streaming indicator — those should
+        also set ``REQUIRES_EDIT_FINALIZE = True`` so callers route a
+        final edit through even when content is unchanged.  Callers
+        should set ``finalize=True`` on the final edit of a streamed
+        response (typically when ``got_done`` fires in the stream
+        consumer) and leave it ``False`` on intermediate edits.
         """
         return SendResult(success=False, error="Not supported")
+
+    async def delete_message(
+        self,
+        chat_id: str,
+        message_id: str,
+    ) -> bool:
+        """
+        Delete a previously sent message.  Optional — platforms that don't
+        support deletion return ``False`` and callers fall back to leaving
+        the message in place.
+
+        Used by the stream consumer's fresh-final cleanup path (see
+        openclaw/openclaw#72038) to remove long-lived preview messages
+        after sending the completed reply as a fresh message so the
+        platform's visible timestamp reflects completion time.
+
+        Returns ``True`` on successful deletion, ``False`` otherwise.
+        Subclasses should override for platforms with a deletion API
+        (e.g. Telegram ``deleteMessage``).
+        """
+        return False
 
     async def send_typing(self, chat_id: str, metadata=None) -> None:
         """
@@ -1213,7 +1600,7 @@ class BasePlatformAdapter(ABC):
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs.
         media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
+            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
         )
         for match in media_pattern.finditer(content):
             path = match.group("path").strip()
@@ -1221,7 +1608,7 @@ class BasePlatformAdapter(ABC):
                 path = path[1:-1].strip()
             path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
             if path:
-                media.append((path, has_voice_tag))
+                media.append((os.path.expanduser(path), has_voice_tag))
 
         # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
         if media:
@@ -1298,7 +1685,13 @@ class BasePlatformAdapter(ABC):
 
         return paths, cleaned
 
-    async def _keep_typing(self, chat_id: str, interval: float = 2.0, metadata=None) -> None:
+    async def _keep_typing(
+        self,
+        chat_id: str,
+        interval: float = 2.0,
+        metadata=None,
+        stop_event: asyncio.Event | None = None,
+    ) -> None:
         """
         Continuously send typing indicator until cancelled.
         
@@ -1312,9 +1705,18 @@ class BasePlatformAdapter(ABC):
         """
         try:
             while True:
+                if stop_event is not None and stop_event.is_set():
+                    return
                 if chat_id not in self._typing_paused:
                     await self.send_typing(chat_id, metadata=metadata)
-                await asyncio.sleep(interval)
+                if stop_event is None:
+                    await asyncio.sleep(interval)
+                    continue
+                try:
+                    await asyncio.wait_for(stop_event.wait(), timeout=interval)
+                except asyncio.TimeoutError:
+                    continue
+                return
         except asyncio.CancelledError:
             pass  # Normal cancellation when handler completes
         finally:
@@ -1340,6 +1742,59 @@ class BasePlatformAdapter(ABC):
     def resume_typing_for_chat(self, chat_id: str) -> None:
         """Resume typing indicator for a chat after approval resolves."""
         self._typing_paused.discard(chat_id)
+
+    async def interrupt_session_activity(self, session_key: str, chat_id: str) -> None:
+        """Signal the active session loop to stop and clear typing immediately."""
+        if session_key:
+            interrupt_event = self._active_sessions.get(session_key)
+            if interrupt_event is not None:
+                interrupt_event.set()
+        try:
+            await self.stop_typing(chat_id)
+        except Exception:
+            pass
+
+    def register_post_delivery_callback(
+        self,
+        session_key: str,
+        callback: Callable,
+        *,
+        generation: int | None = None,
+    ) -> None:
+        """Register a deferred callback to fire after the main response.
+
+        ``generation`` lets callers tie the callback to a specific gateway run
+        generation so stale runs cannot clear callbacks owned by a fresher run.
+        """
+        if not session_key or not callable(callback):
+            return
+        if generation is None:
+            self._post_delivery_callbacks[session_key] = callback
+        else:
+            self._post_delivery_callbacks[session_key] = (int(generation), callback)
+
+    def pop_post_delivery_callback(
+        self,
+        session_key: str,
+        *,
+        generation: int | None = None,
+    ) -> Callable | None:
+        """Pop a deferred callback, optionally requiring generation ownership."""
+        if not session_key:
+            return None
+        entry = self._post_delivery_callbacks.get(session_key)
+        if entry is None:
+            return None
+        if isinstance(entry, tuple) and len(entry) == 2:
+            entry_generation, callback = entry
+            if generation is not None and int(entry_generation) != int(generation):
+                return None
+            self._post_delivery_callbacks.pop(session_key, None)
+            return callback if callable(callback) else None
+        if generation is not None:
+            return None
+        self._post_delivery_callbacks.pop(session_key, None)
+        return entry if callable(entry) else None
 
     # ── Processing lifecycle hooks ──────────────────────────────────────────
     # Subclasses override these to react to message processing events
@@ -1479,6 +1934,222 @@ class BasePlatformAdapter(ABC):
             return f"{existing_text}\n\n{new_text}".strip()
         return existing_text
 
+    # ------------------------------------------------------------------
+    # Session task + guard ownership helpers
+    # ------------------------------------------------------------------
+    # These were introduced together with the _session_tasks owner map to
+    # make session lifecycle reconciliation deterministic across (a) the
+    # normal completion path, (b) /stop/ /new/ /reset bypass commands,
+    # and (c) stale-lock self-heal on the next inbound message.
+
+    def _release_session_guard(
+        self,
+        session_key: str,
+        *,
+        guard: Optional[asyncio.Event] = None,
+    ) -> None:
+        """Release the adapter-level guard for a session.
+
+        When ``guard`` is provided, only release the entry if it still points
+        at that exact Event.  This lets reset-like commands swap in a temporary
+        guard while the old processing task unwinds, without having the old
+        task's cleanup accidentally clear the replacement guard.
+        """
+        current_guard = self._active_sessions.get(session_key)
+        if current_guard is None:
+            return
+        if guard is not None and current_guard is not guard:
+            return
+        del self._active_sessions[session_key]
+
+    def _session_task_is_stale(self, session_key: str) -> bool:
+        """Return True if the owner task for ``session_key`` is done/cancelled.
+
+        A lock is "stale" when the adapter still has ``_active_sessions[key]``
+        AND a known owner task in ``_session_tasks`` that has already exited.
+        When there is no owner task at all, that usually means the guard was
+        installed by some path other than handle_message() (tests sometimes
+        install guards directly) — don't treat that as stale.  The on-entry
+        self-heal only needs to handle the production split-brain case where
+        an owner task was recorded, then exited without clearing its guard.
+        """
+        task = self._session_tasks.get(session_key)
+        if task is None:
+            return False
+        done = getattr(task, "done", None)
+        return bool(done and done())
+
+    def _heal_stale_session_lock(self, session_key: str) -> bool:
+        """Clear a stale session lock if the owner task is already gone.
+
+        Returns True if a stale lock was healed.  Returns False if there is
+        no lock, or the owner task is still alive (the normal busy case).
+
+        This is the on-entry safety net sidbin's issue #11016 analysis calls
+        for: without it, a split-brain — adapter still thinks the session is
+        active, but nothing is actually processing — traps the chat in
+        infinite "Interrupting current task..." until the gateway is
+        restarted.
+        """
+        if session_key not in self._active_sessions:
+            return False
+        if not self._session_task_is_stale(session_key):
+            return False
+        logger.warning(
+            "[%s] Healing stale session lock for %s (owner task is done/absent)",
+            self.name,
+            session_key,
+        )
+        self._active_sessions.pop(session_key, None)
+        self._pending_messages.pop(session_key, None)
+        self._session_tasks.pop(session_key, None)
+        return True
+
+    def _start_session_processing(
+        self,
+        event: MessageEvent,
+        session_key: str,
+        *,
+        interrupt_event: Optional[asyncio.Event] = None,
+    ) -> bool:
+        """Spawn a background processing task under the given session guard.
+
+        Returns True on success.  If the runtime stubs ``create_task`` with a
+        non-Task sentinel (some tests do this), the guard is rolled back and
+        False is returned so the caller isn't left holding a half-installed
+        session lock.
+        """
+        guard = interrupt_event or asyncio.Event()
+        self._active_sessions[session_key] = guard
+
+        task = asyncio.create_task(self._process_message_background(event, session_key))
+        self._session_tasks[session_key] = task
+        try:
+            self._background_tasks.add(task)
+        except TypeError:
+            # Tests stub create_task() with lightweight sentinels that are not
+            # hashable and do not support lifecycle callbacks.
+            self._session_tasks.pop(session_key, None)
+            self._release_session_guard(session_key, guard=guard)
+            return False
+        if hasattr(task, "add_done_callback"):
+            task.add_done_callback(self._background_tasks.discard)
+            task.add_done_callback(self._expected_cancelled_tasks.discard)
+        return True
+
+    async def cancel_session_processing(
+        self,
+        session_key: str,
+        *,
+        release_guard: bool = True,
+        discard_pending: bool = True,
+    ) -> None:
+        """Cancel in-flight processing for a single session.
+
+        ``release_guard=False`` keeps the adapter-level session guard in place
+        so reset-like commands can finish atomically before follow-up messages
+        are allowed to start a fresh background task.
+        """
+        task = self._session_tasks.pop(session_key, None)
+        if task is not None and not task.done():
+            logger.debug(
+                "[%s] Cancelling active processing for session %s",
+                self.name,
+                session_key,
+            )
+            self._expected_cancelled_tasks.add(task)
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+            except Exception:
+                logger.debug(
+                    "[%s] Session cancellation raised while unwinding %s",
+                    self.name,
+                    session_key,
+                    exc_info=True,
+                )
+        if discard_pending:
+            self._pending_messages.pop(session_key, None)
+        if release_guard:
+            self._release_session_guard(session_key)
+
+    async def _drain_pending_after_session_command(
+        self,
+        session_key: str,
+        command_guard: asyncio.Event,
+    ) -> None:
+        """Resume the latest queued follow-up once a session command completes.
+
+        Called at the tail of /stop, /new, and /reset dispatch.  Releases the
+        command-scoped guard, then — if a follow-up message landed while the
+        command was running — spawns a fresh processing task for it.
+        """
+        pending_event = self._pending_messages.pop(session_key, None)
+        self._release_session_guard(session_key, guard=command_guard)
+        if pending_event is None:
+            return
+        self._start_session_processing(pending_event, session_key)
+
+    async def _dispatch_active_session_command(
+        self,
+        event: MessageEvent,
+        session_key: str,
+        cmd: str,
+    ) -> None:
+        """Dispatch a reset-like bypass command while preserving guard ordering.
+
+        /stop, /new, and /reset must:
+          1. Keep the session guard installed while the runner processes the
+             command (so a racing follow-up message stays queued, not
+             dispatched as a second parallel run).
+          2. Cancel the old in-flight adapter task only AFTER the runner has
+             finished handling the command (so the runner sees consistent
+             state and its response is sent in order).
+          3. Release the command-scoped guard and drain the latest queued
+             follow-up exactly once, after 1 and 2 complete.
+        """
+        logger.debug(
+            "[%s] Command '/%s' bypassing active-session guard for %s",
+            self.name,
+            cmd,
+            session_key,
+        )
+
+        current_guard = self._active_sessions.get(session_key)
+        command_guard = asyncio.Event()
+        self._active_sessions[session_key] = command_guard
+        thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+
+        try:
+            response = await self._message_handler(event)
+            # Old adapter task (if any) is cancelled AFTER the runner has
+            # fully handled the command — keeps ordering deterministic.
+            await self.cancel_session_processing(
+                session_key,
+                release_guard=False,
+                discard_pending=False,
+            )
+            if response:
+                await self._send_with_retry(
+                    chat_id=event.source.chat_id,
+                    content=response,
+                    reply_to=event.message_id,
+                    metadata=thread_meta,
+                )
+        except Exception:
+            # On failure, restore the original guard if one still exists so
+            # we don't leave the session in a half-reset state.
+            if self._active_sessions.get(session_key) is command_guard:
+                if session_key in self._session_tasks and current_guard is not None:
+                    self._active_sessions[session_key] = current_guard
+                else:
+                    self._release_session_guard(session_key, guard=command_guard)
+            raise
+
+        await self._drain_pending_after_session_command(session_key, command_guard)
+
     async def handle_message(self, event: MessageEvent) -> None:
         """
         Process an incoming message.
@@ -1495,7 +2166,15 @@ class BasePlatformAdapter(ABC):
             group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
             thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
         )
-        
+
+        # On-entry self-heal: if the adapter still has an _active_sessions
+        # entry for this key but the owner task has already exited (done or
+        # cancelled), the lock is stale.  Clear it and fall through to
+        # normal dispatch so the user isn't trapped behind a dead guard —
+        # this is the split-brain tail described in issue #11016.
+        if session_key in self._active_sessions:
+            self._heal_stale_session_lock(session_key)
+
         # Check if there's already an active handler for this session
         if session_key in self._active_sessions:
             # Certain commands must bypass the active-session guard and be
@@ -1509,7 +2188,26 @@ class BasePlatformAdapter(ABC):
             # session lifecycle and its cleanup races with the running task
             # (see PR #4926).
             cmd = event.get_command()
-            if cmd in ("approve", "deny", "status", "stop", "new", "reset", "background", "restart"):
+            from hermes_cli.commands import should_bypass_active_session
+
+            if should_bypass_active_session(cmd):
+                # /stop, /new, /reset must cancel the in-flight adapter task
+                # and preserve ordering of queued follow-ups.  Route those
+                # through the dedicated handoff path that serializes
+                # cancellation + runner response + pending drain.
+                if cmd in ("stop", "new", "reset"):
+                    try:
+                        await self._dispatch_active_session_command(event, session_key, cmd)
+                    except Exception as e:
+                        logger.error(
+                            "[%s] Command '/%s' dispatch failed: %s",
+                            self.name, cmd, e, exc_info=True,
+                        )
+                    return
+
+                # Other bypass commands (/approve, /deny, /status,
+                # /background, /restart) just need direct dispatch — they
+                # don't cancel the running task.
                 logger.debug(
                     "[%s] Command '/%s' bypassing active-session guard for %s",
                     self.name, cmd, session_key,
@@ -1555,19 +2253,9 @@ class BasePlatformAdapter(ABC):
         # starts would also pass the _active_sessions check and spawn a
         # duplicate task.  (grammY sequentialize / aiogram EventIsolation
         # pattern — set the guard synchronously, not inside the task.)
-        self._active_sessions[session_key] = asyncio.Event()
-
-        # Spawn background task to process this message
-        task = asyncio.create_task(self._process_message_background(event, session_key))
-        try:
-            self._background_tasks.add(task)
-        except TypeError:
-            # Some tests stub create_task() with lightweight sentinels that are not
-            # hashable and do not support lifecycle callbacks.
-            return
-        if hasattr(task, "add_done_callback"):
-            task.add_done_callback(self._background_tasks.discard)
-            task.add_done_callback(self._expected_cancelled_tasks.discard)
+        # _start_session_processing installs the guard AND the owner-task
+        # mapping atomically so stale-lock detection works.
+        self._start_session_processing(event, session_key)
     
     @staticmethod
     def _get_human_delay() -> float:
@@ -1579,8 +2267,6 @@ class BasePlatformAdapter(ABC):
           HERMES_HUMAN_DELAY_MIN_MS: minimum delay in ms (default 800, custom mode)
           HERMES_HUMAN_DELAY_MAX_MS: maximum delay in ms (default 2500, custom mode)
         """
-        import random
-
         mode = os.getenv("HERMES_HUMAN_DELAY_MODE", "off").lower()
         if mode == "off":
             return 0.0
@@ -1609,10 +2295,23 @@ class BasePlatformAdapter(ABC):
         # Fall back to a new Event only if the entry was removed externally.
         interrupt_event = self._active_sessions.get(session_key) or asyncio.Event()
         self._active_sessions[session_key] = interrupt_event
+        callback_generation = getattr(interrupt_event, "_hermes_run_generation", None)
         
         # Start continuous typing indicator (refreshes every 2 seconds)
         _thread_metadata = {"thread_id": event.source.thread_id} if event.source.thread_id else None
-        typing_task = asyncio.create_task(self._keep_typing(event.source.chat_id, metadata=_thread_metadata))
+        _keep_typing_kwargs = {"metadata": _thread_metadata}
+        try:
+            _keep_typing_sig = inspect.signature(self._keep_typing)
+        except (TypeError, ValueError):
+            _keep_typing_sig = None
+        if _keep_typing_sig is None or "stop_event" in _keep_typing_sig.parameters:
+            _keep_typing_kwargs["stop_event"] = interrupt_event
+        typing_task = asyncio.create_task(
+            self._keep_typing(
+                event.source.chat_id,
+                **_keep_typing_kwargs,
+            )
+        )
         
         try:
             await self._run_processing_hook("on_processing_start", event)
@@ -1624,6 +2323,21 @@ class BasePlatformAdapter(ABC):
             # streaming already delivered the text (already_sent=True) or
             # when the message was queued behind an active agent.  Log at
             # DEBUG to avoid noisy warnings for expected behavior.
+            #
+            # Suppress stale response when the session was interrupted by a
+            # new message that hasn't been consumed yet.  The pending message
+            # is processed by the pending-message handler below (#8221/#2483).
+            if (
+                response
+                and interrupt_event.is_set()
+                and session_key in self._pending_messages
+            ):
+                logger.info(
+                    "[%s] Suppressing stale response for interrupted session %s",
+                    self.name,
+                    session_key,
+                )
+                response = None
             if not response:
                 logger.debug("[%s] Handler returned empty/None response for %s", self.name, event.source.chat_id)
             if response:
@@ -1645,12 +2359,14 @@ class BasePlatformAdapter(ABC):
                     logger.info("[%s] extract_local_files found %d file(s) in response", self.name, len(local_files))
                 
                 # Auto-TTS: if voice message, generate audio FIRST (before sending text)
-                # Skipped when the chat has voice mode disabled (/voice off)
+                # Gated via ``_should_auto_tts_for_chat``: fires when the chat has
+                # an explicit ``/voice on|tts`` opt-in OR when ``voice.auto_tts`` is
+                # True globally and no ``/voice off`` has been issued.
                 _tts_path = None
-                if (event.message_type == MessageType.VOICE
+                if (self._should_auto_tts_for_chat(event.source.chat_id)
+                        and event.message_type == MessageType.VOICE
                         and text_content
-                        and not media_files
-                        and event.source.chat_id not in self._auto_tts_disabled_chats):
+                        and not media_files):
                     try:
                         from tools.tts_tool import text_to_speech_tool, check_tts_requirements
                         if check_tts_requirements():
@@ -1806,9 +2522,18 @@ class BasePlatformAdapter(ABC):
             if session_key in self._pending_messages:
                 pending_event = self._pending_messages.pop(session_key)
                 logger.debug("[%s] Processing queued message from interrupt", self.name)
-                # Clean up current session before processing pending
-                if session_key in self._active_sessions:
-                    del self._active_sessions[session_key]
+                # Keep the _active_sessions entry live across the turn chain
+                # and only CLEAR the interrupt Event — do NOT delete the entry.
+                # If we deleted here, a concurrent inbound message arriving
+                # during the awaits below would pass the Level-1 guard, spawn
+                # its own _process_message_background, and run simultaneously
+                # with the recursive drain below.  Two agents on one
+                # session_key = duplicate responses, duplicate tool calls.
+                # Clearing the Event keeps the guard live so follow-ups take
+                # the busy-handler path (queue + interrupt) as intended.
+                _active = self._active_sessions.get(session_key)
+                if _active is not None:
+                    _active.clear()
                 typing_task.cancel()
                 try:
                     await typing_task
@@ -1845,6 +2570,21 @@ class BasePlatformAdapter(ABC):
             except Exception:
                 pass  # Last resort — don't let error reporting crash the handler
         finally:
+            # Fire any one-shot post-delivery callback registered for this
+            # session (e.g. deferred background-review notifications).
+            _callback_generation = callback_generation
+            if hasattr(self, "pop_post_delivery_callback"):
+                _post_cb = self.pop_post_delivery_callback(
+                    session_key,
+                    generation=_callback_generation,
+                )
+            else:
+                _post_cb = getattr(self, "_post_delivery_callbacks", {}).pop(session_key, None)
+            if callable(_post_cb):
+                try:
+                    _post_cb()
+                except Exception:
+                    pass
             # Stop typing indicator
             typing_task.cancel()
             try:
@@ -1858,9 +2598,45 @@ class BasePlatformAdapter(ABC):
                     await self.stop_typing(event.source.chat_id)
             except Exception:
                 pass
-            # Clean up session tracking
-            if session_key in self._active_sessions:
-                del self._active_sessions[session_key]
+            # Late-arrival drain: a message may have arrived during the
+            # cleanup awaits above (typing_task cancel, stop_typing).  Such
+            # messages passed the Level-1 guard (entry still live, Event
+            # possibly set) and landed in _pending_messages via the
+            # busy-handler path.  Without this block, we would delete the
+            # active-session entry and the queued message would be silently
+            # dropped (user never gets a reply).
+            late_pending = self._pending_messages.pop(session_key, None)
+            if late_pending is not None:
+                logger.debug(
+                    "[%s] Late-arrival pending message during cleanup — spawning drain task",
+                    self.name,
+                )
+                _active = self._active_sessions.get(session_key)
+                if _active is not None:
+                    _active.clear()
+                drain_task = asyncio.create_task(
+                    self._process_message_background(late_pending, session_key)
+                )
+                # Hand ownership of the session to the drain task so stale-lock
+                # detection keeps working while it runs.
+                self._session_tasks[session_key] = drain_task
+                try:
+                    self._background_tasks.add(drain_task)
+                    drain_task.add_done_callback(self._background_tasks.discard)
+                except TypeError:
+                    # Tests stub create_task() with non-hashable sentinels; tolerate.
+                    pass
+                # Leave _active_sessions[session_key] populated — the drain
+                # task's own lifecycle will clean it up.
+            else:
+                # Clean up session tracking.  Guard-match both deletes so a
+                # reset-like command that already swapped in its own
+                # command_guard (and cancelled us) can't be accidentally
+                # cleared by our unwind.  The command owns the session now.
+                current_task = asyncio.current_task()
+                if current_task is not None and self._session_tasks.get(session_key) is current_task:
+                    del self._session_tasks[session_key]
+                self._release_session_guard(session_key, guard=interrupt_event)
     
     async def cancel_background_tasks(self) -> None:
         """Cancel any in-flight background message-processing tasks.
@@ -1868,14 +2644,29 @@ class BasePlatformAdapter(ABC):
         Used during gateway shutdown/replacement so active sessions from the old
         process do not keep running after adapters are being torn down.
         """
-        tasks = [task for task in self._background_tasks if not task.done()]
-        for task in tasks:
-            self._expected_cancelled_tasks.add(task)
-            task.cancel()
-        if tasks:
+        # Loop until no new tasks appear.  Without this, a message
+        # arriving during the `await asyncio.gather` below would spawn
+        # a fresh _process_message_background task (added to
+        # self._background_tasks at line ~1668 via handle_message),
+        # and the _background_tasks.clear() at the end of this method
+        # would drop the reference — the task runs untracked against a
+        # disconnecting adapter, logs send-failures, and may linger
+        # until it completes on its own.  Retrying the drain until the
+        # task set stabilizes closes the window.
+        MAX_DRAIN_ROUNDS = 5
+        for _ in range(MAX_DRAIN_ROUNDS):
+            tasks = [task for task in self._background_tasks if not task.done()]
+            if not tasks:
+                break
+            for task in tasks:
+                self._expected_cancelled_tasks.add(task)
+                task.cancel()
             await asyncio.gather(*tasks, return_exceptions=True)
+            # Loop: late-arrival tasks spawned during the gather above
+            # will be in self._background_tasks now.  Re-check.
         self._background_tasks.clear()
         self._expected_cancelled_tasks.clear()
+        self._session_tasks.clear()
         self._pending_messages.clear()
         self._active_sessions.clear()
 
@@ -1898,6 +2689,10 @@ class BasePlatformAdapter(ABC):
         chat_topic: Optional[str] = None,
         user_id_alt: Optional[str] = None,
         chat_id_alt: Optional[str] = None,
+        is_bot: bool = False,
+        guild_id: Optional[str] = None,
+        parent_chat_id: Optional[str] = None,
+        message_id: Optional[str] = None,
     ) -> SessionSource:
         """Helper to build a SessionSource for this platform."""
         # Normalize empty topic to None
@@ -1914,6 +2709,10 @@ class BasePlatformAdapter(ABC):
             chat_topic=chat_topic.strip() if chat_topic else None,
             user_id_alt=user_id_alt,
             chat_id_alt=chat_id_alt,
+            is_bot=is_bot,
+            guild_id=str(guild_id) if guild_id else None,
+            parent_chat_id=str(parent_chat_id) if parent_chat_id else None,
+            message_id=str(message_id) if message_id else None,
         )
     
     @abstractmethod

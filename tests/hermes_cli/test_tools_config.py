@@ -3,11 +3,14 @@
 from unittest.mock import patch
 
 from hermes_cli.tools_config import (
+    _DEFAULT_OFF_TOOLSETS,
+    _apply_toolset_change,
     _configure_provider,
     _get_platform_tools,
     _platform_toolset_summary,
     _save_platform_tools,
     _toolset_has_keys,
+    CONFIGURABLE_TOOLSETS,
     TOOL_CATEGORIES,
     _visible_providers,
     tools_command,
@@ -20,6 +23,52 @@ def test_get_platform_tools_uses_default_when_platform_not_configured():
     enabled = _get_platform_tools(config, "cli")
 
     assert enabled
+    assert enabled.isdisjoint(_DEFAULT_OFF_TOOLSETS)
+
+
+def test_configurable_toolsets_include_messaging():
+    assert any(ts_key == "messaging" for ts_key, _, _ in CONFIGURABLE_TOOLSETS)
+
+def test_get_platform_tools_default_telegram_includes_messaging():
+    enabled = _get_platform_tools({}, "telegram")
+
+    assert "messaging" in enabled
+
+
+def test_get_platform_tools_homeassistant_platform_keeps_homeassistant_toolset():
+    enabled = _get_platform_tools({}, "homeassistant")
+
+    assert "homeassistant" in enabled
+
+
+def test_get_platform_tools_homeassistant_toolset_enabled_for_cron_when_hass_token_set(monkeypatch):
+    """HA toolset is runtime-gated by check_fn (requires HASS_TOKEN).
+
+    When HASS_TOKEN is set, the user has explicitly opted in — _DEFAULT_OFF_TOOLSETS
+    shouldn't also strip HA from platforms (like cron) that run through
+    _get_platform_tools without an explicit saved toolset list.
+
+    Regression guard for Norbert's HA cron breakage after #14798 made cron
+    honor per-platform tool config.
+    """
+    monkeypatch.setenv("HASS_TOKEN", "fake-test-token")
+
+    cron_enabled = _get_platform_tools({}, "cron")
+    assert "homeassistant" in cron_enabled
+    # moa must stay off — the original goal of #14798
+    assert "moa" not in cron_enabled
+
+    cli_enabled = _get_platform_tools({}, "cli")
+    assert "homeassistant" in cli_enabled
+
+
+def test_get_platform_tools_homeassistant_toolset_off_for_cron_when_hass_token_missing(monkeypatch):
+    """Without HASS_TOKEN, HA stays off by default — preserves #14798's behavior
+    for users who never configured HA."""
+    monkeypatch.delenv("HASS_TOKEN", raising=False)
+
+    cron_enabled = _get_platform_tools({}, "cron")
+    assert "homeassistant" not in cron_enabled
 
 
 def test_get_platform_tools_preserves_explicit_empty_selection():
@@ -28,6 +77,45 @@ def test_get_platform_tools_preserves_explicit_empty_selection():
     enabled = _get_platform_tools(config, "cli")
 
     assert enabled == set()
+
+
+def test_apply_toolset_change_from_default_does_not_enable_default_off_toolsets():
+    """Disabling one default toolset on a fresh config must not persist
+    default-off toolsets as explicitly enabled.
+    """
+    config = {}
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _apply_toolset_change(config, "cli", ["memory"], "disable")
+
+    saved = set(config["platform_toolsets"]["cli"])
+    assert "memory" not in saved
+    assert "terminal" in saved
+    assert saved.isdisjoint(_DEFAULT_OFF_TOOLSETS)
+
+
+def test_apply_toolset_change_can_enable_default_off_toolset_from_default():
+    config = {}
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _apply_toolset_change(config, "cli", ["homeassistant"], "enable")
+
+    saved = set(config["platform_toolsets"]["cli"])
+    assert "homeassistant" in saved
+    assert "terminal" in saved
+
+
+def test_get_platform_tools_handles_null_platform_toolsets():
+    """YAML `platform_toolsets:` with no value parses as None — the old
+    ``config.get("platform_toolsets", {})`` pattern would then crash with
+    ``NoneType has no attribute 'get'`` on the next line. Guard against that.
+    """
+    config = {"platform_toolsets": None}
+
+    enabled = _get_platform_tools(config, "cli")
+
+    # Falls through to defaults instead of raising
+    assert enabled
 
 
 def test_platform_toolset_summary_uses_explicit_platform_list():
@@ -286,7 +374,7 @@ def test_save_platform_tools_still_preserves_mcp_with_platform_default_present()
 
 
 def test_visible_providers_include_nous_subscription_when_logged_in(monkeypatch):
-    monkeypatch.setenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", "1")
+    monkeypatch.setattr("hermes_cli.tools_config.managed_nous_tools_enabled", lambda: True)
     config = {"model": {"provider": "nous"}}
 
     monkeypatch.setattr(
@@ -300,7 +388,7 @@ def test_visible_providers_include_nous_subscription_when_logged_in(monkeypatch)
 
 
 def test_visible_providers_hide_nous_subscription_when_feature_flag_is_off(monkeypatch):
-    monkeypatch.delenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", raising=False)
+    monkeypatch.setattr("hermes_cli.tools_config.managed_nous_tools_enabled", lambda: False)
     config = {"model": {"provider": "nous"}}
 
     monkeypatch.setattr(
@@ -328,7 +416,8 @@ def test_local_browser_provider_is_saved_explicitly(monkeypatch):
 
 
 def test_first_install_nous_auto_configures_managed_defaults(monkeypatch):
-    monkeypatch.setenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", "1")
+    monkeypatch.setattr("hermes_cli.tools_config.managed_nous_tools_enabled", lambda: True)
+    monkeypatch.setattr("hermes_cli.nous_subscription.managed_nous_tools_enabled", lambda: True)
     config = {
         "model": {"provider": "nous"},
         "platform_toolsets": {"cli": []},
@@ -404,7 +493,7 @@ class TestPlatformToolsetConsistency:
 
         gateway_includes = set(TOOLSETS["hermes-gateway"]["includes"])
         # Exclude non-messaging platforms from the check
-        non_messaging = {"cli", "api_server"}
+        non_messaging = {"cli", "api_server", "cron"}
         for platform, meta in PLATFORMS.items():
             if platform in non_messaging:
                 continue
@@ -455,3 +544,276 @@ def test_numeric_mcp_server_name_does_not_crash_sorted():
 
     # sorted() must not raise TypeError
     sorted(enabled)
+
+
+# ─── Imagegen Backend Picker Wiring ────────────────────────────────────────
+
+class TestImagegenBackendRegistry:
+    """IMAGEGEN_BACKENDS tags drive the model picker flow in tools_config."""
+
+    def test_fal_backend_registered(self):
+        from hermes_cli.tools_config import IMAGEGEN_BACKENDS
+        assert "fal" in IMAGEGEN_BACKENDS
+
+    def test_fal_catalog_loads_lazily(self):
+        """catalog_fn should defer import to avoid import cycles."""
+        from hermes_cli.tools_config import IMAGEGEN_BACKENDS
+        catalog, default = IMAGEGEN_BACKENDS["fal"]["catalog_fn"]()
+        assert default == "fal-ai/flux-2/klein/9b"
+        assert "fal-ai/flux-2/klein/9b" in catalog
+        assert "fal-ai/flux-2-pro" in catalog
+
+    def test_image_gen_providers_tagged_with_fal_backend(self):
+        """Both Nous Subscription and FAL.ai providers must carry the
+        imagegen_backend tag so _configure_provider fires the picker."""
+        from hermes_cli.tools_config import TOOL_CATEGORIES
+        providers = TOOL_CATEGORIES["image_gen"]["providers"]
+        for p in providers:
+            assert p.get("imagegen_backend") == "fal", (
+                f"{p['name']} missing imagegen_backend tag"
+            )
+
+
+class TestImagegenModelPicker:
+    """_configure_imagegen_model writes selection to config and respects
+    curses fallback semantics (returns default when stdin isn't a TTY)."""
+
+    def test_picker_writes_chosen_model_to_config(self):
+        from hermes_cli.tools_config import _configure_imagegen_model
+        config = {}
+        # Force _prompt_choice to pick index 1 (second-in-ordered-list).
+        with patch("hermes_cli.tools_config._prompt_choice", return_value=1):
+            _configure_imagegen_model("fal", config)
+        # ordered[0] == current (default klein), ordered[1] == first non-default
+        assert config["image_gen"]["model"] != "fal-ai/flux-2/klein/9b"
+        assert config["image_gen"]["model"].startswith("fal-ai/")
+
+    def test_picker_with_gpt_image_does_not_prompt_quality(self):
+        """GPT-Image quality is pinned to medium in the tool's defaults —
+        no follow-up prompt, no config write for quality_setting."""
+        from hermes_cli.tools_config import (
+            _configure_imagegen_model,
+            IMAGEGEN_BACKENDS,
+        )
+        catalog, default_model = IMAGEGEN_BACKENDS["fal"]["catalog_fn"]()
+        model_ids = list(catalog.keys())
+        ordered = [default_model] + [m for m in model_ids if m != default_model]
+        gpt_idx = ordered.index("fal-ai/gpt-image-1.5")
+
+        # Only ONE picker call is expected (for model) — not two (model + quality).
+        call_count = {"n": 0}
+        def fake_prompt(*a, **kw):
+            call_count["n"] += 1
+            return gpt_idx
+
+        config = {}
+        with patch("hermes_cli.tools_config._prompt_choice", side_effect=fake_prompt):
+            _configure_imagegen_model("fal", config)
+
+        assert call_count["n"] == 1, (
+            f"Expected 1 picker call (model only), got {call_count['n']}"
+        )
+        assert config["image_gen"]["model"] == "fal-ai/gpt-image-1.5"
+        assert "quality_setting" not in config["image_gen"]
+
+    def test_picker_no_op_for_unknown_backend(self):
+        from hermes_cli.tools_config import _configure_imagegen_model
+        config = {}
+        _configure_imagegen_model("nonexistent-backend", config)
+        assert config == {}  # untouched
+
+    def test_picker_repairs_corrupt_config_section(self):
+        """When image_gen is a non-dict (user-edit YAML), the picker should
+        replace it with a fresh dict rather than crash."""
+        from hermes_cli.tools_config import _configure_imagegen_model
+        config = {"image_gen": "some-garbage-string"}
+        with patch("hermes_cli.tools_config._prompt_choice", return_value=0):
+            _configure_imagegen_model("fal", config)
+        assert isinstance(config["image_gen"], dict)
+        assert config["image_gen"]["model"] == "fal-ai/flux-2/klein/9b"
+
+
+def test_save_platform_tools_normalizes_numeric_entries():
+    """YAML may parse bare numeric toolset names as int. They should be
+    normalized to str so they survive the save round-trip.
+    """
+    config = {
+        "platform_toolsets": {
+            "cli": ["web", "terminal", 12306, "custom-mcp"]
+        }
+    }
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"web", "browser"})
+
+    saved = config["platform_toolsets"]["cli"]
+    assert "12306" in saved
+    assert 12306 not in saved
+
+
+def test_save_platform_tools_clears_no_mcp_sentinel():
+    """`hermes tools` has no UI for no_mcp, so saving from the picker clears
+    the sentinel unconditionally — otherwise a user who once set no_mcp by
+    hand could never re-enable MCP servers through the UI.
+    """
+    config = {
+        "platform_toolsets": {
+            "cli": ["web", "terminal", "no_mcp"]
+        }
+    }
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"web", "browser"})
+
+    saved = config["platform_toolsets"]["cli"]
+    assert "no_mcp" not in saved
+
+
+def test_save_platform_tools_preserves_mcp_server_names():
+    """Non-sentinel passthrough entries (MCP server names) must still survive
+    the save — we only clear `no_mcp`, not every non-configurable entry.
+    """
+    config = {
+        "platform_toolsets": {
+            "cli": ["web", "terminal", "custom-mcp", "another-mcp"]
+        }
+    }
+
+    with patch("hermes_cli.tools_config.save_config"):
+        _save_platform_tools(config, "cli", {"web", "browser"})
+
+    saved = config["platform_toolsets"]["cli"]
+    assert "custom-mcp" in saved
+    assert "another-mcp" in saved
+
+
+def test_get_platform_tools_recovers_non_configurable_toolsets_from_composite():
+    """Non-configurable toolsets whose tools are in the composite but not in
+    CONFIGURABLE_TOOLSETS should still appear in the result.
+    """
+    from toolsets import TOOLSETS
+    from hermes_cli.tools_config import PLATFORMS
+    from unittest.mock import patch as mock_patch
+
+    fake_toolsets = dict(TOOLSETS)
+    fake_toolsets["_test_platform_tool"] = {
+        "description": "test",
+        "tools": ["_test_special_tool"],
+        "includes": [],
+    }
+    fake_toolsets["hermes-_test_platform"] = {
+        "description": "test composite",
+        "tools": ["web_search", "web_extract", "terminal", "process", "_test_special_tool"],
+        "includes": [],
+    }
+
+    test_platforms = {
+        "_test_platform": {"label": "Test", "default_toolset": "hermes-_test_platform"},
+    }
+
+    with mock_patch("hermes_cli.tools_config.PLATFORMS", {**PLATFORMS, **test_platforms}):
+        with mock_patch("toolsets.TOOLSETS", fake_toolsets):
+            enabled = _get_platform_tools({}, "_test_platform")
+
+    assert "_test_platform_tool" in enabled
+    assert "web" in enabled
+    assert "terminal" in enabled
+
+
+def test_get_platform_tools_second_pass_skips_fully_claimed_toolsets():
+    """Toolsets whose tools are fully covered by configurable keys should NOT
+    be added by the second pass (prevents 'search', 'hermes-acp' noise).
+    """
+    enabled = _get_platform_tools({}, "cli")
+
+    assert "search" not in enabled
+
+
+def test_get_platform_tools_discord_both_off_by_default():
+    """Both `discord` and `discord_admin` are opt-in via `hermes tools`,
+    even on the Discord platform itself.  Users shouldn't auto-inherit 19
+    extra tools just because DISCORD_BOT_TOKEN is set."""
+    enabled = _get_platform_tools({}, "discord")
+    assert "discord" not in enabled
+    assert "discord_admin" not in enabled
+
+
+def test_discord_toolsets_in_configurable_toolsets():
+    keys = {ts_key for ts_key, _, _ in CONFIGURABLE_TOOLSETS}
+    assert "discord" in keys
+    assert "discord_admin" in keys
+
+
+def test_discord_toolsets_in_default_off():
+    assert "discord" in _DEFAULT_OFF_TOOLSETS
+    assert "discord_admin" in _DEFAULT_OFF_TOOLSETS
+
+
+def test_discord_toolsets_not_available_on_other_platforms():
+    """Platform-scoping: discord / discord_admin should not appear on CLI,
+    Telegram, etc. — not even as an opt-in."""
+    from hermes_cli.tools_config import _toolset_allowed_for_platform
+    for plat in ["cli", "telegram", "slack", "whatsapp", "signal"]:
+        assert not _toolset_allowed_for_platform("discord", plat), (
+            f"`discord` toolset leaked onto {plat}"
+        )
+        assert not _toolset_allowed_for_platform("discord_admin", plat), (
+            f"`discord_admin` toolset leaked onto {plat}"
+        )
+    assert _toolset_allowed_for_platform("discord", "discord")
+    assert _toolset_allowed_for_platform("discord_admin", "discord")
+
+
+def test_discord_toolsets_user_enabled_are_honored():
+    """When the user opts in via `hermes tools`, the toolset appears."""
+    config = {"platform_toolsets": {"discord": ["web", "terminal", "discord"]}}
+    enabled = _get_platform_tools(config, "discord")
+    assert "discord" in enabled
+    assert "discord_admin" not in enabled
+
+
+def test_save_platform_tools_strips_restricted_toolsets():
+    """Hand-edited or all-platforms checklist with `discord` selected for
+    Telegram must be stripped at save time."""
+    from hermes_cli.tools_config import _save_platform_tools
+    config = {}
+    _save_platform_tools(config, "telegram", {"web", "terminal", "discord", "discord_admin"})
+    saved = config["platform_toolsets"]["telegram"]
+    assert "discord" not in saved
+    assert "discord_admin" not in saved
+    assert "web" in saved
+    assert "terminal" in saved
+
+
+def test_get_platform_tools_feishu_includes_doc_and_drive():
+    enabled = _get_platform_tools({}, "feishu")
+    assert "feishu_doc" in enabled
+    assert "feishu_drive" in enabled
+
+
+def test_get_platform_tools_feishu_tools_not_on_other_platforms():
+    for plat in ["cli", "telegram", "discord"]:
+        enabled = _get_platform_tools({}, plat)
+        assert "feishu_doc" not in enabled, f"feishu_doc leaked onto {plat}"
+        assert "feishu_drive" not in enabled, f"feishu_drive leaked onto {plat}"
+
+
+def test_get_effective_configurable_toolsets_dedupes_bundled_plugins():
+    """Bundled plugins (plugins/spotify) share their toolset key with the
+    built-in CONFIGURABLE_TOOLSETS entry. The effective list must not list
+    them twice — otherwise `hermes tools` → "reconfigure existing" shows
+    the same toolset two rows in a row.
+    """
+    from hermes_cli.tools_config import _get_effective_configurable_toolsets
+
+    all_ts = _get_effective_configurable_toolsets()
+    keys = [ts_key for ts_key, _, _ in all_ts]
+    assert len(keys) == len(set(keys)), (
+        f"duplicate toolset keys in effective list: "
+        f"{[k for k in keys if keys.count(k) > 1]}"
+    )
+    # Spotify specifically — the bug that motivated the dedupe.
+    spotify_rows = [t for t in all_ts if t[0] == "spotify"]
+    assert len(spotify_rows) == 1, spotify_rows
+    # Built-in label wins over the plugin label.
+    assert spotify_rows[0][1] == "🎵 Spotify"

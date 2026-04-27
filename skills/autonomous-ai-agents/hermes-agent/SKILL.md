@@ -1,6 +1,6 @@
 ---
 name: hermes-agent
-description: Complete guide to using and extending Hermes Agent — CLI usage, setup, configuration, spawning additional agents, gateway platforms, skills, voice, tools, profiles, and a concise contributor reference. Load this skill when helping users configure Hermes, troubleshoot issues, spawn agent instances, or make code contributions.
+description: "Configure, extend, or contribute to Hermes Agent."
 version: 2.0.0
 author: Hermes Agent + Teknium
 license: MIT
@@ -115,7 +115,7 @@ hermes tools disable NAME   Disable a toolset
 
 hermes skills list          List installed skills
 hermes skills search QUERY  Search the skills hub
-hermes skills install ID    Install a skill
+hermes skills install ID    Install a skill (ID can be a hub identifier OR a direct https://…/SKILL.md URL; pass --name to override when frontmatter has no name)
 hermes skills inspect ID    Preview without installing
 hermes skills config        Enable/disable skills per platform
 hermes skills check         Check for updates
@@ -248,7 +248,6 @@ Type these during an interactive chat session.
 ```
 /config              Show config (CLI)
 /model [name]        Show or change model
-/provider            Show provider info
 /personality [name]  Set personality
 /reasoning [level]   Set reasoning (none|minimal|low|medium|high|xhigh|show|hide)
 /verbose             Cycle: off → new → all → verbose
@@ -282,7 +281,6 @@ Type these during an interactive chat session.
 ### Utility
 ```
 /branch (/fork)      Branch the current session
-/btw                 Ephemeral side question (doesn't interrupt main task)
 /fast                Toggle priority/fast processing
 /browser             Open CDP browser connection
 /history             Show conversation history (CLI)
@@ -313,7 +311,7 @@ Type these during an interactive chat session.
 ```
 ~/.hermes/config.yaml       Main configuration
 ~/.hermes/.env              API keys and secrets
-~/.hermes/skills/           Installed skills
+$HERMES_HOME/skills/        Installed skills
 ~/.hermes/sessions/         Session transcripts
 ~/.hermes/logs/             Gateway and error logs
 ~/.hermes/auth.json         OAuth tokens and credential pools
@@ -338,7 +336,6 @@ Edit with `hermes config edit` or `hermes config set section.key value`.
 | `memory` | `memory_enabled`, `user_profile_enabled`, `provider` |
 | `security` | `tirith_enabled`, `website_blocklist` |
 | `delegation` | `model`, `provider`, `base_url`, `api_key`, `max_iterations` (50), `reasoning_effort` |
-| `smart_model_routing` | `enabled`, `cheap_model` |
 | `checkpoints` | `enabled`, `max_snapshots` (50) |
 
 Full config reference: https://hermes-agent.nousresearch.com/docs/user-guide/configuration
@@ -351,8 +348,8 @@ Full config reference: https://hermes-agent.nousresearch.com/docs/user-guide/con
 |----------|------|-------------|
 | OpenRouter | API key | `OPENROUTER_API_KEY` |
 | Anthropic | API key | `ANTHROPIC_API_KEY` |
-| Nous Portal | OAuth | `hermes login --provider nous` |
-| OpenAI Codex | OAuth | `hermes login --provider openai-codex` |
+| Nous Portal | OAuth | `hermes auth` |
+| OpenAI Codex | OAuth | `hermes auth` |
 | GitHub Copilot | Token | `COPILOT_GITHUB_TOKEN` |
 | Google Gemini | API key | `GOOGLE_API_KEY` or `GEMINI_API_KEY` |
 | DeepSeek | API key | `DEEPSEEK_API_KEY` |
@@ -402,6 +399,63 @@ Enable/disable via `hermes tools` (interactive) or `hermes tools enable/disable 
 | `homeassistant` | Smart home control (off by default) |
 
 Tool changes take effect on `/reset` (new session). They do NOT apply mid-conversation to preserve prompt caching.
+
+---
+
+## Security & Privacy Toggles
+
+Common "why is Hermes doing X to my output / tool calls / commands?" toggles — and the exact commands to change them. Most of these need a fresh session (`/reset` in chat, or start a new `hermes` invocation) because they're read once at startup.
+
+### Secret redaction in tool output
+
+Hermes auto-redacts strings that look like API keys, tokens, and secrets in all tool output (terminal stdout, `read_file`, web content, subagent summaries, etc.) so the model never sees raw credentials. If the user is intentionally working with mock tokens, share-management tokens, or their own secrets and the redaction is getting in the way:
+
+```bash
+hermes config set security.redact_secrets false      # disable globally
+```
+
+**Restart required.** `security.redact_secrets` is snapshotted at import time — setting it mid-session (e.g. via `export HERMES_REDACT_SECRETS=false` from a tool call) will NOT take effect for the running process. Tell the user to run `hermes config set security.redact_secrets false` in a terminal, then start a new session. This is deliberate — it prevents an LLM from turning off redaction on itself mid-task.
+
+Re-enable with:
+```bash
+hermes config set security.redact_secrets true
+```
+
+### PII redaction in gateway messages
+
+Separate from secret redaction. When enabled, the gateway hashes user IDs and strips phone numbers from the session context before it reaches the model:
+
+```bash
+hermes config set privacy.redact_pii true    # enable
+hermes config set privacy.redact_pii false   # disable (default)
+```
+
+### Command approval prompts
+
+By default (`approvals.mode: manual`), Hermes prompts the user before running shell commands flagged as destructive (`rm -rf`, `git reset --hard`, etc.). The modes are:
+
+- `manual` — always prompt (default)
+- `smart` — use an auxiliary LLM to auto-approve low-risk commands, prompt on high-risk
+- `off` — skip all approval prompts (equivalent to `--yolo`)
+
+```bash
+hermes config set approvals.mode smart       # recommended middle ground
+hermes config set approvals.mode off         # bypass everything (not recommended)
+```
+
+Per-invocation bypass without changing config:
+- `hermes --yolo …`
+- `export HERMES_YOLO_MODE=1`
+
+Note: YOLO / `approvals.mode: off` does NOT turn off secret redaction. They are independent.
+
+### Shell hooks allowlist
+
+Some shell-hook integrations require explicit allowlisting before they fire. Managed via `~/.hermes/shell-hooks-allowlist.json` — prompted interactively the first time a hook wants to run.
+
+### Disabling the web/browser/image-gen tools
+
+To keep the model away from network or media tools entirely, open `hermes tools` and toggle per-platform. Takes effect on next session (`/reset`). See the Tools & Skills section above.
 
 ---
 
@@ -650,9 +704,9 @@ registry.register(
 )
 ```
 
-**2. Add import** in `model_tools.py` → `_discover_tools()` list.
+**2. Add to `toolsets.py`** → `_HERMES_CORE_TOOLS` list.
 
-**3. Add to `toolsets.py`** → `_HERMES_CORE_TOOLS` list.
+Auto-discovery: any `tools/*.py` file with a top-level `registry.register()` call is imported automatically — no manual list needed.
 
 All handlers must return JSON strings. Use `get_hermes_home()` for paths, never hardcode `~/.hermes`.
 

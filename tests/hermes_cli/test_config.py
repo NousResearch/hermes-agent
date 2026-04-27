@@ -459,7 +459,8 @@ class TestCustomProviderCompatibility:
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
-        assert raw["_config_version"] == 17
+        from hermes_cli.config import DEFAULT_CONFIG
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
         assert raw["providers"]["openai-direct"] == {
             "api": "https://api.openai.com/v1",
             "api_key": "test-key",
@@ -501,7 +502,8 @@ class TestCustomProviderCompatibility:
         assert compatible[0]["provider_key"] == "openai-direct"
         assert compatible[0]["api_mode"] == "codex_responses"
 
-    def test_compatible_custom_providers_prefers_api_then_url_then_base_url(self, tmp_path):
+    def test_compatible_custom_providers_prefers_base_url_then_url_then_api(self, tmp_path):
+        """URL field precedence is base_url > url > api (PR #9332)."""
         config_path = tmp_path / "config.yaml"
         config_path.write_text(
             yaml.safe_dump(
@@ -526,7 +528,7 @@ class TestCustomProviderCompatibility:
         assert compatible == [
             {
                 "name": "My Provider",
-                "base_url": "https://api.example.com/v1",
+                "base_url": "https://base.example.com/v1",
                 "provider_key": "my-provider",
             }
         ]
@@ -606,6 +608,35 @@ class TestInterimAssistantMessageConfig:
             migrate_config(interactive=False, quiet=True)
             raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
-        assert raw["_config_version"] == 17
+        from hermes_cli.config import DEFAULT_CONFIG
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
         assert raw["display"]["tool_progress"] == "off"
         assert raw["display"]["interim_assistant_messages"] is True
+
+
+class TestDiscordChannelPromptsConfig:
+    def test_default_config_includes_discord_channel_prompts(self):
+        assert DEFAULT_CONFIG["discord"]["channel_prompts"] == {}
+
+    def test_migrate_adds_discord_channel_prompts_default(self, tmp_path):
+        config_path = tmp_path / "config.yaml"
+        config_path.write_text(
+            yaml.safe_dump({"_config_version": 17, "discord": {"auto_thread": True}}),
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(tmp_path)}):
+            migrate_config(interactive=False, quiet=True)
+            raw = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+        from hermes_cli.config import DEFAULT_CONFIG
+        assert raw["_config_version"] == DEFAULT_CONFIG["_config_version"]
+        assert raw["discord"]["auto_thread"] is True
+        assert raw["discord"]["channel_prompts"] == {}
+
+
+class TestUserMessagePreviewConfig:
+    def test_default_config_preview_line_counts(self):
+        preview = DEFAULT_CONFIG["display"]["user_message_preview"]
+        assert preview["first_lines"] == 2
+        assert preview["last_lines"] == 2

@@ -16,7 +16,7 @@ model:
   #   "nous"         - Nous Portal OAuth (requires: hermes login)
   #   "nous-api"     - Nous Portal API key (requires: NOUS_API_KEY)
   #   "anthropic"    - Direct Anthropic API (requires: ANTHROPIC_API_KEY)
-  #   "openai-codex" - OpenAI Codex (requires: hermes login --provider openai-codex)
+  #   "openai-codex" - OpenAI Codex (requires: hermes auth)
   #   "copilot"      - GitHub Copilot / GitHub Models (requires: GITHUB_TOKEN)
   #   "gemini"      - Use Google AI Studio direct (requires: GOOGLE_API_KEY or GEMINI_API_KEY)
   #   "zai"         - Use z.ai / ZhipuAI GLM models (requires: GLM_API_KEY)
@@ -24,8 +24,10 @@ model:
   #   "minimax"      - MiniMax global (requires: MINIMAX_API_KEY)
   #   "minimax-cn"   - MiniMax China (requires: MINIMAX_CN_API_KEY)
   #   "huggingface"  - Hugging Face Inference (requires: HF_TOKEN)
+  #   "nvidia"       - NVIDIA NIM / build.nvidia.com (requires: NVIDIA_API_KEY)
   #   "xiaomi"       - Xiaomi MiMo (requires: XIAOMI_API_KEY)
   #   "arcee"        - Arcee AI Trinity models (requires: ARCEEAI_API_KEY)
+  #   "ollama-cloud" - Ollama Cloud (requires: OLLAMA_API_KEY — https://ollama.com/settings)
   #   "kilocode"     - KiloCode gateway (requires: KILOCODE_API_KEY)
   #   "ai-gateway"   - Vercel AI Gateway (requires: AI_GATEWAY_API_KEY)
   #
@@ -36,12 +38,6 @@ model:
   #     provider: "lmstudio"
   #     base_url: "http://localhost:1234/v1"
   #   No API key needed — local servers typically ignore auth.
-  #
-  #   For Ollama Cloud (https://ollama.com/pricing):
-  #     provider: "custom"
-  #     base_url: "https://ollama.com/v1"
-  #   Set OLLAMA_API_KEY in .env — automatically picked up when base_url
-  #   points to ollama.com.
   #
   # Can also be overridden with --provider flag or HERMES_INFERENCE_PROVIDER env var.
   provider: "auto"
@@ -67,7 +63,38 @@ model:
   #   Leave unset to use the model's native output ceiling (recommended).
   #   Set only if you want to deliberately limit individual response length.
   #
-  # max_tokens: 8192
+# max_tokens: 8192
+
+# Named provider overrides (optional)
+# Use this for per-provider request timeouts, non-stream stale timeouts,
+# and per-model exceptions.
+# Applies to the primary turn client on every api_mode (OpenAI-wire, native
+# Anthropic, and Anthropic-compatible providers), the fallback chain, and
+# client rebuilds during credential rotation.  For OpenAI-wire chat
+# completions (streaming and non-streaming) the configured value is also
+# used as the per-request ``timeout=`` kwarg so it wins over the legacy
+# HERMES_API_TIMEOUT env var (which still applies when no config is set).
+# ``stale_timeout_seconds`` controls the non-streaming stale-call detector and
+# wins over the legacy HERMES_API_CALL_STALE_TIMEOUT env var. Leaving these
+# unset keeps the legacy defaults (HERMES_API_TIMEOUT=1800s,
+# HERMES_API_CALL_STALE_TIMEOUT=300s, native Anthropic 900s).
+#
+# Not currently wired for AWS Bedrock (bedrock_converse + AnthropicBedrock
+# SDK paths) — those use boto3 with its own timeout configuration.
+#
+# providers:
+#   ollama-local:
+#     request_timeout_seconds: 300   # Longer timeout for local cold-starts
+#     stale_timeout_seconds: 900     # Explicitly re-enable stale detection on local endpoints
+#   anthropic:
+#     request_timeout_seconds: 30    # Fast-fail cloud requests
+#     models:
+#       claude-opus-4.6:
+#         timeout_seconds: 600       # Longer timeout for extended-thinking Opus calls
+#   openai-codex:
+#     models:
+#       gpt-5.4:
+#         stale_timeout_seconds: 1800  # Longer non-stream stale timeout for slow large-context turns
 
 # =============================================================================
 # OpenRouter Provider Routing (only applies when using OpenRouter)
@@ -94,20 +121,6 @@ model:
 #
 #   # Data policy: "allow" (default) or "deny" to exclude providers that may store data
 #   # data_collection: "deny"
-
-# =============================================================================
-# Smart Model Routing (optional)
-# =============================================================================
-# Use a cheaper model for short/simple turns while keeping your main model for
-# more complex requests. Disabled by default.
-#
-# smart_model_routing:
-#   enabled: true
-#   max_simple_chars: 160
-#   max_simple_words: 28
-#   cheap_model:
-#     provider: openrouter
-#     model: google/gemini-2.5-flash
 
 # =============================================================================
 # Git Worktree Isolation
@@ -314,6 +327,16 @@ compression:
   # auxiliary section below (auxiliary.compression.provider / model).
 
 # =============================================================================
+# Anthropic prompt caching TTL
+# =============================================================================
+# When prompt caching is active (Claude via OpenRouter or native Anthropic),
+# Anthropic supports two TTL tiers for cached prefixes: "5m" (default) and
+# "1h". Other values are ignored and "5m" is used.
+#
+prompt_caching:
+  cache_ttl: "5m" # use "1h" for long sessions with pauses between turns
+
+# =============================================================================
 # Auxiliary Models (Advanced — Experimental)
 # =============================================================================
 # Hermes uses lightweight "auxiliary" models for side tasks: image analysis,
@@ -337,6 +360,7 @@ compression:
 #   "openrouter" - Force OpenRouter (requires OPENROUTER_API_KEY)
 #   "nous"       - Force Nous Portal (requires: hermes login)
 #   "gemini"      - Force Google AI Studio direct (requires: GOOGLE_API_KEY or GEMINI_API_KEY)
+#   "ollama-cloud" - Ollama Cloud (requires: OLLAMA_API_KEY)
 #   "codex"       - Force Codex OAuth (requires: hermes model → Codex).
 #                  Uses gpt-5.3-codex which supports vision.
 #   "main"       - Use your custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY).
@@ -360,6 +384,18 @@ compression:
 #   web_extract:
 #     provider: "auto"
 #     model: ""
+#
+#   # Session search — summarizes matching past sessions
+#   session_search:
+#     provider: "auto"
+#     model: ""
+#     timeout: 30
+#     max_concurrency: 3    # Limit parallel summaries to reduce request-burst 429s
+#     extra_body: {}        # Provider-specific OpenAI-compatible request fields
+#                           # Example for providers that support request-body
+#                           # reasoning controls:
+#                           # extra_body:
+#                           #   enable_thinking: false
 
 # =============================================================================
 # Persistent Memory
@@ -481,6 +517,13 @@ agent:
   # finish, then interrupts anything still running after this timeout.
   # 0 = no drain, interrupt immediately.
   # restart_drain_timeout: 60
+
+  # Max app-level retry attempts for API errors (connection drops, provider
+  # timeouts, 5xx, etc.) before the agent surfaces the failure. Lower this
+  # to 1 if you use fallback providers and want fast failover on flaky
+  # primaries (default 3). The OpenAI SDK does its own low-level retries
+  # underneath this wrapper — this is the Hermes-level loop.
+  # api_max_retries: 3
   
   # Enable verbose logging
   verbose: false
@@ -563,6 +606,19 @@ platform_toolsets:
   signal: [hermes-signal]
   homeassistant: [hermes-homeassistant]
   qqbot: [hermes-qqbot]
+  yuanbao: [hermes-yuanbao]
+
+# =============================================================================
+# Gateway Platform Settings
+# =============================================================================
+# Optional per-platform messaging settings.
+# Platform-specific knobs live under `extra`.
+#
+# platforms:
+#   telegram:
+#     reply_to_mode: "first"  # off | first | all
+#     extra:
+#       disable_link_previews: false  # Set true to suppress Telegram URL previews in bot messages
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Available toolsets (use these names in platform_toolsets or the toolsets list)
@@ -732,10 +788,20 @@ code_execution:
 # Subagent Delegation
 # =============================================================================
 # The delegate_task tool spawns child agents with isolated context.
-# Supports single tasks and batch mode (up to 3 parallel).
+# Supports single tasks and batch mode (default 3 parallel, configurable).
 delegation:
   max_iterations: 50                          # Max tool-calling turns per child (default: 50)
-  default_toolsets: ["terminal", "file", "web"]  # Default toolsets for subagents
+  # max_concurrent_children: 3                # Max parallel child agents per batch (default: 3, floor: 1, no ceiling).
+                                              # WARNING: values above 10 multiply API cost linearly.
+  # max_spawn_depth: 1                        # Delegation tree depth cap (range: 1-3, default: 1 = flat).
+                                              # Raise to 2 to allow workers to spawn their own subagents.
+                                              # Requires role="orchestrator" on intermediate agents.
+  # orchestrator_enabled: true                # Kill switch for role="orchestrator" children (default: true).
+  # subagent_auto_approve: false              # When a subagent hits a dangerous-command approval prompt, auto-deny (default: false)
+                                              # or auto-approve "once" (true) instead of blocking on stdin.
+                                              # The parent TUI owns stdin, so blocking would deadlock; non-interactive resolution is required.
+                                              # Both choices emit a logger.warning audit line. Flip to true only for cron/batch pipelines.
+  # inherit_mcp_toolsets: true                # When explicit child toolsets are narrowed, also keep the parent's MCP toolsets (default: true). Set false for strict intersection.
   # model: "google/gemini-3-flash-preview"    # Override model for subagents (empty = inherit parent)
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
   #                                           # Resolves full credentials (base_url, api_key) automatically.
@@ -759,7 +825,9 @@ delegation:
 # Display
 # =============================================================================
 display:
-  # Use compact banner mode
+  # Use compact banner mode (hides the ASCII-art banner, shows a single line).
+  #   true:  Compact single-line banner
+  #   false: Full ASCII banner with tool/skill summary (default)
   compact: false
 
   # Tool progress display level (CLI and gateway)
@@ -773,12 +841,19 @@ display:
   # Gateway-only natural mid-turn assistant updates.
   # When true, completed assistant status messages are sent as separate chat
   # messages. This is independent of tool_progress and gateway streaming.
+  #   true:  Send mid-turn assistant updates as separate messages (default)
+  #   false: Only send the final response
   interim_assistant_messages: true
 
-  # What Enter does when Hermes is already busy in the CLI.
+  # What Enter does when Hermes is already busy (CLI and gateway platforms).
   #   interrupt: Interrupt the current run and redirect Hermes (default)
   #   queue:     Queue your message for the next turn
-  # Ctrl+C always interrupts regardless of this setting.
+  #   steer:     Inject your message mid-run via /steer, arriving at the agent
+  #              after the next tool call — no interrupt, no role violation.
+  #              Falls back to 'queue' if the agent isn't running yet or if
+  #              images are attached (steer only carries text).
+  # Ctrl+C (or /stop in gateway) always interrupts regardless of this setting.
+  # Toggle at runtime with /busy <interrupt|queue|steer>.
   busy_input_mode: interrupt
 
   # Background process notifications (gateway/messaging only).
@@ -794,17 +869,22 @@ display:
   # Play terminal bell when agent finishes a response.
   # Useful for long-running tasks — your terminal will ding when the agent is done.
   # Works over SSH. Most terminals can be configured to flash the taskbar or play a sound.
+  #   true:  Ring the terminal bell on each response
+  #   false: Silent (default)
   bell_on_complete: false
 
   # Show model reasoning/thinking before each response.
   # When enabled, a dim box shows the model's thought process above the response.
   # Toggle at runtime with /reasoning show or /reasoning hide.
+  #   true:  Show the reasoning box
+  #   false: Hide reasoning (default)
   show_reasoning: false
 
   # Stream tokens to the terminal as they arrive instead of waiting for the
   # full response. The response box opens on first token and text appears
   # line-by-line. Tool calls are still captured silently.
-  # Stream tokens to the terminal in real-time. Disable to wait for full responses.
+  #   true:  Stream tokens as they arrive (default)
+  #   false: Wait for the full response before rendering
   streaming: true
 
   # ───────────────────────────────────────────────────────────────────────────
@@ -814,10 +894,15 @@ display:
   # response box label, and branding text. Change at runtime with /skin <name>.
   #
   # Built-in skins:
-  #   default  — Classic Hermes gold/kawaii
-  #   ares     — Crimson/bronze war-god theme with spinner wings
-  #   mono     — Clean grayscale monochrome
-  #   slate    — Cool blue developer-focused
+  #   default        — Classic Hermes gold/kawaii
+  #   ares           — Crimson/bronze war-god theme with spinner wings
+  #   mono           — Clean grayscale monochrome
+  #   slate          — Cool blue developer-focused
+  #   daylight       — Bright light-mode theme
+  #   warm-lightmode — Warm paper-tone light-mode theme
+  #   poseidon       — Sea-green/teal Olympian theme
+  #   sisyphus       — Earthy stone-and-moss theme
+  #   charizard      — Fiery orange dragon theme
   #
   # Custom skins: drop a YAML file in ~/.hermes/skins/<name>.yaml
   # Schema (all fields optional, missing values inherit from default):
@@ -879,3 +964,39 @@ display:
 #   # Names and usernames are NOT affected (user-chosen, publicly visible).
 #   # Routing/delivery still uses the original values internally.
 #   redact_pii: false
+
+# =============================================================================
+# Shell-script hooks
+# =============================================================================
+# Register shell scripts as plugin-hook callbacks.  Each entry is executed as
+# a subprocess (shell=False, shlex.split) with a JSON payload on stdin.  On
+# stdout the script may return JSON that either blocks the tool call or
+# injects context into the next LLM call.
+#
+# Valid events (mirror hermes_cli.plugins.VALID_HOOKS):
+#   pre_tool_call, post_tool_call, pre_llm_call, post_llm_call,
+#   pre_api_request, post_api_request, on_session_start, on_session_end,
+#   on_session_finalize, on_session_reset, subagent_stop
+#
+# First-use consent: each (event, command) pair prompts once on a TTY, then
+# is persisted to ~/.hermes/shell-hooks-allowlist.json.  Non-interactive
+# runs (gateway, cron) need --accept-hooks, HERMES_ACCEPT_HOOKS=1, or the
+# hooks_auto_accept key below.
+#
+# See website/docs/user-guide/features/hooks.md for the full JSON wire
+# protocol and worked examples.
+#
+# hooks:
+#   pre_tool_call:
+#     - matcher: "terminal"
+#       command: "~/.hermes/agent-hooks/block-rm-rf.sh"
+#       timeout: 10
+#   post_tool_call:
+#     - matcher: "write_file|patch"
+#       command: "~/.hermes/agent-hooks/auto-format.sh"
+#   pre_llm_call:
+#     - command: "~/.hermes/agent-hooks/inject-cwd-context.sh"
+#   subagent_stop:
+#     - command: "~/.hermes/agent-hooks/log-orchestration.sh"
+#
+# hooks_auto_accept: false

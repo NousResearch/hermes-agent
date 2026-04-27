@@ -59,7 +59,7 @@ from tools.managed_tool_gateway import (
     read_nous_access_token as _read_nous_access_token,
     resolve_managed_tool_gateway,
 )
-from tools.tool_backend_helpers import managed_nous_tools_enabled
+from tools.tool_backend_helpers import managed_nous_tools_enabled, prefers_gateway
 from tools.url_safety import is_safe_url
 from tools.website_policy import check_website_access
 
@@ -165,8 +165,8 @@ def _raise_web_backend_configuration_error() -> None:
     )
     if managed_nous_tools_enabled():
         message += (
-            " If you have the hidden Nous-managed tools flag enabled, you can also login to Nous "
-            "(`hermes model`) and provide FIRECRAWL_GATEWAY_URL or TOOL_GATEWAY_DOMAIN."
+            " With your Nous subscription you can also use the Tool Gateway — "
+            "run `hermes tools` and select Nous Subscription as the web provider."
         )
     raise ValueError(message)
 
@@ -176,8 +176,8 @@ def _firecrawl_backend_help_suffix() -> str:
     if not managed_nous_tools_enabled():
         return ""
     return (
-        ", or, if you have the hidden Nous-managed tools flag enabled, login to Nous and use "
-        "FIRECRAWL_GATEWAY_URL or TOOL_GATEWAY_DOMAIN"
+        ", or use the Nous Tool Gateway via your subscription "
+        "(FIRECRAWL_GATEWAY_URL or TOOL_GATEWAY_DOMAIN)"
     )
 
 
@@ -205,13 +205,14 @@ def _web_requires_env() -> list[str]:
 def _get_firecrawl_client():
     """Get or create Firecrawl client.
 
-    Direct Firecrawl takes precedence when explicitly configured. Otherwise
-    Hermes falls back to the Firecrawl tool-gateway for logged-in Nous Subscribers.
+    When ``web.use_gateway`` is set in config, the Tool Gateway is preferred
+    even if direct Firecrawl credentials are present.  Otherwise direct
+    Firecrawl takes precedence when explicitly configured.
     """
     global _firecrawl_client, _firecrawl_client_config
 
     direct_config = _get_direct_firecrawl_config()
-    if direct_config is not None:
+    if direct_config is not None and not prefers_gateway("web"):
         kwargs, client_config = direct_config
     else:
         managed_gateway = resolve_managed_tool_gateway(
@@ -281,7 +282,7 @@ def _get_async_parallel_client():
 
 # ─── Tavily Client ───────────────────────────────────────────────────────────
 
-_TAVILY_BASE_URL = "https://api.tavily.com"
+_TAVILY_BASE_URL = os.getenv("TAVILY_BASE_URL", "https://api.tavily.com")
 
 
 def _tavily_request(endpoint: str, payload: dict) -> dict:

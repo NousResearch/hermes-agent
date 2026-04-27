@@ -380,6 +380,10 @@ def backup_existing(path: Path, backup_root: Path) -> Optional[Path]:
 # Replace OpenClaw brand names with Hermes in migrated text so that
 # memory entries, user profiles, SOUL.md, and workspace instructions
 # read as self-referential to the new agent identity.
+#
+# Case-preserving: ``OpenClaw`` → ``Hermes`` (prose), but lowercase matches
+# like ``openclaw`` → ``hermes`` (so filesystem paths like ``~/.openclaw``
+# become ``~/.hermes`` — the real Hermes home — not the broken ``~/.Hermes``).
 _REBRAND_PATTERNS: List[Tuple[re.Pattern, str]] = [
     (re.compile(r'\bOpen[\s-]?Claw\b', re.IGNORECASE), 'Hermes'),
     (re.compile(r'\bClawdBot\b', re.IGNORECASE), 'Hermes'),
@@ -387,10 +391,31 @@ _REBRAND_PATTERNS: List[Tuple[re.Pattern, str]] = [
 ]
 
 
+def _case_preserving_replacement(replacement: str):
+    """Return a re.sub replacement fn that lowercases the result when the
+    matched text was all-lowercase.
+
+    Keeps ``OpenClaw`` → ``Hermes`` but maps ``openclaw`` → ``hermes`` so a
+    filesystem path like ``~/.openclaw/config.yaml`` rewrites to
+    ``~/.hermes/config.yaml`` (the real Hermes home) instead of the broken
+    ``~/.Hermes/config.yaml``.
+    """
+    def _sub(match: "re.Match[str]") -> str:
+        matched = match.group(0)
+        if matched and matched.islower():
+            return replacement.lower()
+        return replacement
+    return _sub
+
+
 def rebrand_text(text: str) -> str:
-    """Replace OpenClaw / ClawdBot / MoltBot brand names with Hermes."""
+    """Replace OpenClaw / ClawdBot / MoltBot brand names with Hermes.
+
+    Preserves case so filesystem-path matches (lowercase) don't become
+    capitalized directory names that don't exist.
+    """
     for pattern, replacement in _REBRAND_PATTERNS:
-        text = pattern.sub(replacement, text)
+        text = pattern.sub(_case_preserving_replacement(replacement), text)
     return text
 
 

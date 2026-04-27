@@ -440,11 +440,63 @@ def cmd_setup(args) -> None:
     if new_recall in ("hybrid", "context", "tools"):
         hermes_host["recallMode"] = new_recall
 
-    # --- 7. Session strategy ---
-    current_strat = hermes_host.get("sessionStrategy") or cfg.get("sessionStrategy", "per-directory")
+    # --- 7. Context token budget ---
+    current_ctx_tokens = hermes_host.get("contextTokens") or cfg.get("contextTokens")
+    current_display = str(current_ctx_tokens) if current_ctx_tokens else "uncapped"
+    print("\n  Context injection per turn (hybrid/context recall modes only):")
+    print("    uncapped -- no limit (default)")
+    print("    N        -- token limit per turn (e.g. 1200)")
+    new_ctx_tokens = _prompt("Context tokens", default=current_display)
+    if new_ctx_tokens.strip().lower() in ("none", "uncapped", "no limit"):
+        hermes_host.pop("contextTokens", None)
+    elif new_ctx_tokens.strip() == "":
+        pass  # keep current
+    else:
+        try:
+            val = int(new_ctx_tokens)
+            if val >= 0:
+                hermes_host["contextTokens"] = val
+        except (ValueError, TypeError):
+            pass  # keep current
+
+    # --- 7b. Dialectic cadence ---
+    current_dialectic = str(hermes_host.get("dialecticCadence") or cfg.get("dialecticCadence") or "2")
+    print("\n  Dialectic cadence:")
+    print("    How often Honcho rebuilds its user model (LLM call on Honcho backend).")
+    print("    1 = every turn, 2 = every other turn, 3+ = sparser.")
+    print("    Recommended: 1-5.")
+    new_dialectic = _prompt("Dialectic cadence", default=current_dialectic)
+    try:
+        val = int(new_dialectic)
+        if val >= 1:
+            hermes_host["dialecticCadence"] = val
+    except (ValueError, TypeError):
+        hermes_host["dialecticCadence"] = 2
+
+    # --- 7c. Dialectic reasoning level ---
+    current_reasoning = (
+        hermes_host.get("dialecticReasoningLevel")
+        or cfg.get("dialecticReasoningLevel")
+        or "low"
+    )
+    print("\n  Dialectic reasoning level:")
+    print("    Depth Honcho uses when synthesizing user context on auto-injected calls.")
+    print("    minimal  -- quick factual lookups")
+    print("    low      -- straightforward questions (default)")
+    print("    medium   -- multi-aspect synthesis")
+    print("    high     -- complex behavioral patterns")
+    print("    max      -- thorough audit-level analysis")
+    new_reasoning = _prompt("Reasoning level", default=current_reasoning)
+    if new_reasoning in ("minimal", "low", "medium", "high", "max"):
+        hermes_host["dialecticReasoningLevel"] = new_reasoning
+    else:
+        hermes_host["dialecticReasoningLevel"] = "low"
+
+    # --- 8. Session strategy ---
+    current_strat = hermes_host.get("sessionStrategy") or cfg.get("sessionStrategy", "per-session")
     print("\n  Session strategy:")
-    print("    per-directory -- one session per working directory (default)")
-    print("    per-session   -- new Honcho session each run")
+    print("    per-session   -- each run starts clean, Honcho injects context automatically")
+    print("    per-directory -- reuses session per dir, prior context auto-injected each run")
     print("    per-repo      -- one session per git repository")
     print("    global        -- single session across all directories")
     new_strat = _prompt("Session strategy", default=current_strat)
@@ -490,10 +542,11 @@ def cmd_setup(args) -> None:
     print(f"  Recall:    {hcfg.recall_mode}")
     print(f"  Sessions:  {hcfg.session_strategy}")
     print("\n  Honcho tools available in chat:")
-    print("    honcho_context   -- ask Honcho about the user (LLM-synthesized)")
-    print("    honcho_search    -- semantic search over history (no LLM)")
-    print("    honcho_profile   -- peer card, key facts (no LLM)")
-    print("    honcho_conclude  -- persist a user fact to memory (no LLM)")
+    print("    honcho_context   -- session context: summary, representation, card, messages")
+    print("    honcho_search    -- semantic search over history")
+    print("    honcho_profile   -- peer card, key facts")
+    print("    honcho_reasoning -- ask Honcho a question, synthesized answer")
+    print("    honcho_conclude  -- persist a user fact to memory")
     print("\n  Other commands:")
     print("    hermes honcho status     -- show full config")
     print("    hermes honcho mode       -- change recall/observation mode")
@@ -585,13 +638,29 @@ def cmd_status(args) -> None:
     print(f"  Enabled:        {hcfg.enabled}")
     print(f"  API key:        {masked}")
     print(f"  Workspace:      {hcfg.workspace_id}")
-    print(f"  Config path:    {active_path}")
+
+    # Config paths — show where config was read from and where writes go
+    global_path = Path.home() / ".honcho" / "config.json"
+    print(f"  Config:         {active_path}")
     if write_path != active_path:
-        print(f"  Write path:     {write_path}  (instance-local)")
+        print(f"  Write to:       {write_path}  (profile-local)")
+    if active_path == global_path:
+        print(f"  Fallback:       (none — using global ~/.honcho/config.json)")
+    elif global_path.exists():
+        print(f"  Fallback:       {global_path}  (exists, cross-app interop)")
+
     print(f"  AI peer:        {hcfg.ai_peer}")
     print(f"  User peer:      {hcfg.peer_name or 'not set'}")
     print(f"  Session key:    {hcfg.resolve_session_name()}")
+    print(f"  Session strat:  {hcfg.session_strategy}")
     print(f"  Recall mode:    {hcfg.recall_mode}")
+    print(f"  Context budget: {hcfg.context_tokens or '(uncapped)'} tokens")
+    raw = getattr(hcfg, "raw", None) or {}
+    dialectic_cadence = raw.get("dialecticCadence") or 1
+    print(f"  Dialectic cad:  every {dialectic_cadence} turn{'s' if dialectic_cadence != 1 else ''}")
+    reasoning_cap = raw.get("reasoningLevelCap") or hcfg.reasoning_level_cap
+    heuristic_on = "on" if hcfg.reasoning_heuristic else "off"
+    print(f"  Reasoning:      base={hcfg.dialectic_reasoning_level}, cap={reasoning_cap}, heuristic={heuristic_on}")
     print(f"  Observation:    user(me={hcfg.user_observe_me},others={hcfg.user_observe_others}) ai(me={hcfg.ai_observe_me},others={hcfg.ai_observe_others})")
     print(f"  Write freq:     {hcfg.write_frequency}")
 
@@ -599,8 +668,8 @@ def cmd_status(args) -> None:
         print("\n  Connection... ", end="", flush=True)
         try:
             client = get_honcho_client(hcfg)
-            print("OK")
             _show_peer_cards(hcfg, client)
+            print("OK")
         except Exception as e:
             print(f"FAILED ({e})\n")
     else:
@@ -822,6 +891,41 @@ def cmd_mode(args) -> None:
     cfg.setdefault("hosts", {}).setdefault(host, {})["recallMode"] = mode_arg
     _write_config(cfg)
     print(f"  {label}Recall mode -> {mode_arg}  ({MODES[mode_arg]})\n")
+
+
+def cmd_strategy(args) -> None:
+    """Show or set the session strategy."""
+    STRATEGIES = {
+        "per-session": "each run starts clean, Honcho injects context automatically",
+        "per-directory": "reuses session per dir, prior context auto-injected each run",
+        "per-repo": "one session per git repository",
+        "global": "single session across all directories",
+    }
+    cfg = _read_config()
+    strat_arg = getattr(args, "strategy", None)
+
+    if strat_arg is None:
+        current = (
+            (cfg.get("hosts") or {}).get(_host_key(), {}).get("sessionStrategy")
+            or cfg.get("sessionStrategy")
+            or "per-session"
+        )
+        print("\nHoncho session strategy\n" + "─" * 40)
+        for s, desc in STRATEGIES.items():
+            marker = " <-" if s == current else ""
+            print(f"  {s:<15}  {desc}{marker}")
+        print(f"\n  Set with: hermes honcho strategy [per-session|per-directory|per-repo|global]\n")
+        return
+
+    if strat_arg not in STRATEGIES:
+        print(f"  Invalid strategy '{strat_arg}'. Options: {', '.join(STRATEGIES)}\n")
+        return
+
+    host = _host_key()
+    label = f"[{host}] " if host != "hermes" else ""
+    cfg.setdefault("hosts", {}).setdefault(host, {})["sessionStrategy"] = strat_arg
+    _write_config(cfg)
+    print(f"  {label}Session strategy -> {strat_arg}  ({STRATEGIES[strat_arg]})\n")
 
 
 def cmd_tokens(args) -> None:
@@ -1143,10 +1247,11 @@ def cmd_migrate(args) -> None:
     print("              automatically. Files become the seed, not the live store.")
     print()
     print("  Honcho tools (available to the agent during conversation)")
-    print("    honcho_context   — ask Honcho a question, get a synthesized answer (LLM)")
-    print("    honcho_search        — semantic search over stored context (no LLM)")
-    print("    honcho_profile       — fast peer card snapshot (no LLM)")
-    print("    honcho_conclude      — write a conclusion/fact back to memory (no LLM)")
+    print("    honcho_context   — session context: summary, representation, card, messages")
+    print("    honcho_search        — semantic search over stored context")
+    print("    honcho_profile       — fast peer card snapshot")
+    print("    honcho_reasoning     — ask Honcho a question, synthesized answer")
+    print("    honcho_conclude      — write a conclusion/fact back to memory")
     print()
     print("  Session naming")
     print("    OpenClaw: no persistent session concept — files are global.")
@@ -1197,6 +1302,8 @@ def honcho_command(args) -> None:
         cmd_peer(args)
     elif sub == "mode":
         cmd_mode(args)
+    elif sub == "strategy":
+        cmd_strategy(args)
     elif sub == "tokens":
         cmd_tokens(args)
     elif sub == "identity":
@@ -1211,7 +1318,7 @@ def honcho_command(args) -> None:
         cmd_sync(args)
     else:
         print(f"  Unknown honcho command: {sub}")
-        print("  Available: status, sessions, map, peer, mode, tokens, identity, migrate, enable, disable, sync\n")
+        print("  Available: status, sessions, map, peer, mode, strategy, tokens, identity, migrate, enable, disable, sync\n")
 
 
 def register_cli(subparser) -> None:
@@ -1268,6 +1375,15 @@ def register_cli(subparser) -> None:
         "mode", nargs="?", metavar="MODE",
         choices=("hybrid", "context", "tools"),
         help="Recall mode to set (hybrid/context/tools). Omit to show current.",
+    )
+
+    strategy_parser = subs.add_parser(
+        "strategy", help="Show or set session strategy (per-session/per-directory/per-repo/global)",
+    )
+    strategy_parser.add_argument(
+        "strategy", nargs="?", metavar="STRATEGY",
+        choices=("per-session", "per-directory", "per-repo", "global"),
+        help="Session strategy to set. Omit to show current.",
     )
 
     tokens_parser = subs.add_parser(

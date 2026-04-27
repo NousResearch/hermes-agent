@@ -491,7 +491,13 @@ class TestUpdatePromptInterception:
 
     @pytest.mark.asyncio
     async def test_recognized_slash_command_bypasses_pending_update_prompt(self, tmp_path):
-        """Known slash commands must dispatch normally instead of being consumed."""
+        """Known slash commands must dispatch normally instead of being consumed.
+
+        The update subprocess is still blocked on stdin waiting for
+        ``.update_response``, so the gateway writes a blank response to
+        unblock it (``_gateway_prompt`` returns the prompt's default on
+        empty) before falling through to normal command dispatch.
+        """
         runner = _make_runner()
         hermes_home = tmp_path / "hermes"
         hermes_home.mkdir()
@@ -508,8 +514,37 @@ class TestUpdatePromptInterception:
 
         assert result == "reset ok"
         runner._handle_reset_command.assert_awaited_once_with(event)
-        assert not (hermes_home / ".update_response").exists()
-        assert runner._update_prompt_pending[session_key] is True
+        # .update_response was written (empty) to unblock the update
+        # subprocess; _gateway_prompt will read "", strip to "", and
+        # return the prompt's default.
+        response_path = hermes_home / ".update_response"
+        assert response_path.exists()
+        assert response_path.read_text() == ""
+        # Pending flag is cleared so stray future input won't be
+        # re-intercepted for a prompt that is no longer outstanding.
+        assert session_key not in runner._update_prompt_pending
+
+    @pytest.mark.asyncio
+    async def test_unrecognized_slash_command_still_consumed_as_response(self, tmp_path):
+        """Unknown /foo is written verbatim to .update_response (legacy behavior)."""
+        runner = _make_runner()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        event = _make_event(text="/foobarbaz", chat_id="67890")
+        session_key = "agent:main:telegram:dm:67890"
+        runner._update_prompt_pending[session_key] = True
+        runner._is_user_authorized = MagicMock(return_value=True)
+        runner._session_key_for_source = MagicMock(return_value=session_key)
+
+        with patch("gateway.run._hermes_home", hermes_home):
+            result = await runner._handle_message(event)
+
+        response_path = hermes_home / ".update_response"
+        assert response_path.exists()
+        assert response_path.read_text() == "/foobarbaz"
+        assert "Sent" in (result or "")
+        assert session_key not in runner._update_prompt_pending
 
     @pytest.mark.asyncio
     async def test_normal_message_when_no_prompt_pending(self, tmp_path):

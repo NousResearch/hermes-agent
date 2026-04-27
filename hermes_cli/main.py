@@ -9098,9 +9098,11 @@ Examples:
     sessions_export.add_argument("--session-id", help="Export a specific session")
 
     sessions_delete = sessions_subparsers.add_parser(
-        "delete", help="Delete a specific session"
+        "delete", help="Delete one or more sessions"
     )
-    sessions_delete.add_argument("session_id", help="Session ID to delete")
+    sessions_delete.add_argument(
+        "session_ids", nargs="+", help="Session ID(s) to delete"
+    )
     sessions_delete.add_argument(
         "--yes", "-y", action="store_true", help="Skip confirmation"
     )
@@ -9220,20 +9222,58 @@ Examples:
                     print(f"Exported {len(sessions)} sessions to {args.output}")
 
         elif action == "delete":
-            resolved_session_id = db.resolve_session_id(args.session_id)
-            if not resolved_session_id:
-                print(f"Session '{args.session_id}' not found.")
+            resolved_sessions = []
+            missing_sessions = []
+
+            for requested_session_id in args.session_ids:
+                resolved_session_id = db.resolve_session_id(requested_session_id)
+                if resolved_session_id:
+                    resolved_sessions.append((requested_session_id, resolved_session_id))
+                else:
+                    missing_sessions.append(requested_session_id)
+
+            if not resolved_sessions and missing_sessions:
+                for missing_session_id in missing_sessions:
+                    print(f"Session '{missing_session_id}' not found.")
                 return
+
             if not args.yes:
-                if not _confirm_prompt(
-                    f"Delete session '{resolved_session_id}' and all its messages? [y/N] "
-                ):
+                if len(resolved_sessions) == 1:
+                    _requested_session_id, resolved_session_id = resolved_sessions[0]
+                    confirm_prompt = (
+                        f"Delete session '{resolved_session_id}' and all its messages? [y/N] "
+                    )
+                else:
+                    resolved_list = ", ".join(
+                        f"'{resolved_session_id}'"
+                        for _, resolved_session_id in resolved_sessions
+                    )
+                    confirm_prompt = (
+                        f"Delete {len(resolved_sessions)} sessions ({resolved_list}) and all their messages? [y/N] "
+                    )
+                if not _confirm_prompt(confirm_prompt):
                     print("Cancelled.")
                     return
-            if db.delete_session(resolved_session_id):
-                print(f"Deleted session '{resolved_session_id}'.")
-            else:
-                print(f"Session '{args.session_id}' not found.")
+
+            deleted_count = 0
+            failed_count = 0
+
+            for requested_session_id, resolved_session_id in resolved_sessions:
+                if db.delete_session(resolved_session_id):
+                    print(f"Deleted session '{resolved_session_id}'.")
+                    deleted_count += 1
+                else:
+                    print(f"Session '{requested_session_id}' not found.")
+                    failed_count += 1
+
+            for missing_session_id in missing_sessions:
+                print(f"Session '{missing_session_id}' not found.")
+                failed_count += 1
+
+            if deleted_count:
+                print(f"Deleted {deleted_count} session(s).")
+            if failed_count:
+                print(f"Failed to delete {failed_count} session(s).")
 
         elif action == "prune":
             days = args.older_than

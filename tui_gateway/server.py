@@ -759,8 +759,11 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
     custom_provs = None
     try:
         from hermes_cli.config import get_compatible_custom_providers, load_config
+
         cfg = load_config()
-        user_provs = [{"provider": k, **v} for k, v in (cfg.get("providers") or {}).items()]
+        user_provs = [
+            {"provider": k, **v} for k, v in (cfg.get("providers") or {}).items()
+        ]
         custom_provs = get_compatible_custom_providers(cfg)
     except Exception:
         pass
@@ -918,7 +921,10 @@ def _probe_config_health(cfg: dict) -> str:
 def _session_info(agent) -> dict:
     reasoning_config = getattr(agent, "reasoning_config", None)
     reasoning_effort = ""
-    if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is not False:
+    if (
+        isinstance(reasoning_config, dict)
+        and reasoning_config.get("enabled") is not False
+    ):
         reasoning_effort = str(reasoning_config.get("effort", "") or "")
     service_tier = getattr(agent, "service_tier", None) or ""
     info: dict = {
@@ -1042,7 +1048,11 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
     if _tool_progress_enabled(sid):
         # tool.complete is the source of truth for todos (full list from the
         # tool result). args.todos here may be a partial merge update.
-        _emit("tool.start", sid, {"tool_id": tool_call_id, "name": name, "context": _tool_ctx(name, args)})
+        _emit(
+            "tool.start",
+            sid,
+            {"tool_id": tool_call_id, "name": name, "context": _tool_ctx(name, args)},
+        )
 
 
 def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result: str):
@@ -1576,7 +1586,9 @@ def _(rid, params: dict) -> dict:
                             session["pending_title"] = None
                         else:
                             existing_row = db.get_session(key)
-                            existing_title = ((existing_row or {}).get("title") or "").strip()
+                            existing_title = (
+                                (existing_row or {}).get("title") or ""
+                            ).strip()
                             if existing_title == pending_title:
                                 session["pending_title"] = None
                             else:
@@ -1586,6 +1598,16 @@ def _(rid, params: dict) -> dict:
                                     pending_title,
                                     existing_title,
                                 )
+                    except ValueError as e:
+                        # Queued title can become invalid/duplicate between queue time
+                        # and DB row creation. Drop the queue and log the reason so
+                        # future /title reads don't surface a stuck pending value.
+                        session["pending_title"] = None
+                        logger.info(
+                            "Dropping pending title for session %s: %s",
+                            sid,
+                            e,
+                        )
                     except Exception:
                         logger.warning(
                             "Failed to apply pending title for session %s",
@@ -1731,7 +1753,9 @@ def _(rid, params: dict) -> dict:
     try:
         db.reopen_session(target)
         history = db.get_messages_as_conversation(target)
-        display_history = db.get_messages_as_conversation(target, include_ancestors=True)
+        display_history = db.get_messages_as_conversation(
+            target, include_ancestors=True
+        )
         messages = _history_to_messages(display_history)
         tokens = _set_session_context(target)
         try:
@@ -1831,7 +1855,9 @@ def _(rid, params: dict) -> dict:
     db = _get_db()
     if db is not None and session.get("session_key"):
         try:
-            history = db.get_messages_as_conversation(session["session_key"], include_ancestors=True)
+            history = db.get_messages_as_conversation(
+                session["session_key"], include_ancestors=True
+            )
         except Exception:
             pass
     return _ok(
@@ -2969,7 +2995,11 @@ def _(rid, params: dict) -> dict:
 
     if key == "mouse":
         raw = str(value or "").strip().lower()
-        display = _load_cfg().get("display") if isinstance(_load_cfg().get("display"), dict) else {}
+        display = (
+            _load_cfg().get("display")
+            if isinstance(_load_cfg().get("display"), dict)
+            else {}
+        )
         current = bool(display.get("tui_mouse", True))
 
         if raw in ("", "toggle"):
@@ -3833,7 +3863,9 @@ def _details_completion_item(value: str, meta: str = "") -> dict:
     return {"text": value, "display": value, "meta": meta}
 
 
-def _details_root_completion_item(value: str, meta: str, needs_leading_space: bool) -> dict:
+def _details_root_completion_item(
+    value: str, meta: str, needs_leading_space: bool
+) -> dict:
     return _details_completion_item(
         f" {value}" if needs_leading_space else value,
         meta,
@@ -3848,7 +3880,7 @@ def _details_completions(text: str) -> list[dict] | None:
     if stripped and not "/details".startswith(stripped.lower().split()[0]):
         return None
 
-    body = text[len("/details"):]
+    body = text[len("/details") :]
     if body.startswith(" "):
         body = body[1:]
     parts = body.split()
@@ -3859,12 +3891,18 @@ def _details_completions(text: str) -> list[dict] | None:
     if not body or (len(parts) == 0 and has_trailing_space):
         return [
             *[
-                _details_root_completion_item(mode, "global mode", not has_trailing_space)
+                _details_root_completion_item(
+                    mode, "global mode", not has_trailing_space
+                )
                 for mode in modes
             ],
-            _details_root_completion_item("cycle", "cycle global mode", not has_trailing_space),
+            _details_root_completion_item(
+                "cycle", "cycle global mode", not has_trailing_space
+            ),
             *[
-                _details_root_completion_item(section, "section override", not has_trailing_space)
+                _details_root_completion_item(
+                    section, "section override", not has_trailing_space
+                )
                 for section in sections
             ],
         ]
@@ -3878,9 +3916,7 @@ def _details_completions(text: str) -> list[dict] | None:
                 (
                     "section override"
                     if candidate in sections
-                    else "cycle global mode"
-                    if candidate == "cycle"
-                    else "global mode"
+                    else "cycle global mode" if candidate == "cycle" else "global mode"
                 ),
             )
             for candidate in candidates
@@ -3889,7 +3925,10 @@ def _details_completions(text: str) -> list[dict] | None:
 
     if len(parts) == 1 and has_trailing_space and parts[0].lower() in sections:
         return [
-            *[_details_completion_item(mode, f"set {parts[0].lower()}") for mode in modes],
+            *[
+                _details_completion_item(mode, f"set {parts[0].lower()}")
+                for mode in modes
+            ],
             _details_completion_item("reset", f"clear {parts[0].lower()} override"),
         ]
 
@@ -3898,7 +3937,11 @@ def _details_completions(text: str) -> list[dict] | None:
         return [
             _details_completion_item(
                 candidate,
-                f"clear {parts[0].lower()} override" if candidate == "reset" else f"set {parts[0].lower()}",
+                (
+                    f"clear {parts[0].lower()} override"
+                    if candidate == "reset"
+                    else f"set {parts[0].lower()}"
+                ),
             )
             for candidate in (*modes, "reset")
             if candidate.startswith(prefix) and candidate != prefix
@@ -4782,7 +4825,11 @@ def _(rid, params: dict) -> dict:
 
             return _ok(rid, {"skills": get_available_skills()})
         if action == "search":
-            from tools.skills_hub import GitHubAuth, create_source_router, unified_search
+            from tools.skills_hub import (
+                GitHubAuth,
+                create_source_router,
+                unified_search,
+            )
 
             raw = (
                 unified_search(

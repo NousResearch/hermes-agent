@@ -100,20 +100,36 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
 
         def get_messages_as_conversation(self, target, include_ancestors=False):
             captured.setdefault("history_calls", []).append((target, include_ancestors))
-            return [
-                {"role": "user", "content": "root prompt"},
-                {"role": "assistant", "content": "root answer"},
-            ] if include_ancestors else [{"role": "user", "content": "tip prompt"}]
+            return (
+                [
+                    {"role": "user", "content": "root prompt"},
+                    {"role": "assistant", "content": "root answer"},
+                ]
+                if include_ancestors
+                else [{"role": "user", "content": "tip prompt"}]
+            )
 
     monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
     monkeypatch.setattr(server, "_set_session_context", lambda target: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
-    monkeypatch.setattr(server, "_make_agent", lambda *args, **kwargs: types.SimpleNamespace(model="test"))
-    monkeypatch.setattr(server, "_session_info", lambda agent: {"model": "test", "tools": {}, "skills": {}})
-    monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80: None)
+    monkeypatch.setattr(
+        server,
+        "_make_agent",
+        lambda *args, **kwargs: types.SimpleNamespace(model="test"),
+    )
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda agent: {"model": "test", "tools": {}, "skills": {}},
+    )
+    monkeypatch.setattr(
+        server, "_init_session", lambda sid, key, agent, history, cols=80: None
+    )
 
-    resp = server.handle_request({"id": "1", "method": "session.resume", "params": {"session_id": "tip"}})
+    resp = server.handle_request(
+        {"id": "1", "method": "session.resume", "params": {"session_id": "tip"}}
+    )
 
     assert resp["result"]["messages"] == [
         {"role": "user", "text": "root prompt"},
@@ -506,6 +522,57 @@ def test_session_title_set_errors_when_row_lookup_fails_after_noop(monkeypatch):
         assert "row lookup failed" in resp["error"]["message"]
     finally:
         server._sessions.pop("sid", None)
+
+
+def test_session_create_drops_pending_title_on_valueerror(monkeypatch):
+    unblock_agent = threading.Event()
+
+    class _FakeWorker:
+        def __init__(self, key, model):
+            self.key = key
+
+        def close(self):
+            return None
+
+    class _FakeAgent:
+        model = "x"
+        provider = "openrouter"
+        base_url = ""
+        api_key = ""
+
+    class _FakeDB:
+        def create_session(self, _key, source="tui", model=None):
+            return None
+
+        def set_session_title(self, _key, _title):
+            raise ValueError("Title already in use")
+
+    def _make_agent(_sid, _key):
+        unblock_agent.wait(timeout=2.0)
+        return _FakeAgent()
+
+    monkeypatch.setattr(server, "_make_agent", _make_agent)
+    monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_session_info", lambda _a: {"model": "x"})
+    monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+
+    import tools.approval as _approval
+
+    monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
+    monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
+
+    resp = server.handle_request({"id": "1", "method": "session.create", "params": {"cols": 80}})
+    sid = resp["result"]["session_id"]
+    session = server._sessions[sid]
+    session["pending_title"] = "duplicate title"
+    unblock_agent.set()
+    session["agent_ready"].wait(timeout=2.0)
+
+    assert session["pending_title"] is None
+    server._sessions.pop(sid, None)
 
 
 def test_config_set_yolo_toggles_session_scope():
@@ -2048,6 +2115,7 @@ def test_session_create_continues_when_state_db_is_unavailable(monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: emits.append(a))
 
     import tools.approval as _approval
+
     monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
     monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
 
@@ -2155,6 +2223,7 @@ def test_model_options_propagates_list_exception(monkeypatch):
 # prompt.submit — auto-title
 # ---------------------------------------------------------------------------
 
+
 class _ImmediateThread:
     """Runs the target callable synchronously so assertions can follow."""
 
@@ -2169,7 +2238,9 @@ def test_prompt_submit_auto_titles_session_on_complete(monkeypatch):
     """maybe_auto_title is called after a successful (complete) prompt."""
 
     class _Agent:
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
             return {
                 "final_response": "Rome was founded in 753 BC.",
                 "messages": [
@@ -2205,7 +2276,9 @@ def test_prompt_submit_skips_auto_title_when_interrupted(monkeypatch):
     """maybe_auto_title must NOT be called when the agent was interrupted."""
 
     class _Agent:
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
             return {
                 "final_response": "partial answer",
                 "interrupted": True,
@@ -2235,7 +2308,9 @@ def test_prompt_submit_skips_auto_title_when_response_empty(monkeypatch):
     """maybe_auto_title must NOT be called when the agent returns an empty reply."""
 
     class _Agent:
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
             return {
                 "final_response": "",
                 "messages": [],

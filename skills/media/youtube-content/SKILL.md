@@ -5,6 +5,10 @@ description: "YouTube transcripts to summaries, threads, blogs."
 
 # YouTube Content Tool
 
+## When to use
+
+Use when the user shares a YouTube URL or video link, asks to summarize a video, requests a transcript, or wants to extract and reformat content from any YouTube video. Transforms transcripts into structured content (chapters, summaries, threads, blog posts).
+
 Extract transcripts from YouTube videos and convert them into useful formats.
 
 ## Setup

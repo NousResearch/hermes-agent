@@ -16,6 +16,10 @@ metadata:
 
 Search and download GIFs directly via the Tenor API using curl. No extra tools needed.
 
+## When to use
+
+Useful for finding reaction GIFs, creating visual content, and sending GIFs in chat.
+
 ## Setup
 
 Set your Tenor API key in your environment (add to `~/.hermes/.env`):

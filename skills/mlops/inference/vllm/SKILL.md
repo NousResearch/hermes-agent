@@ -13,6 +13,10 @@ metadata:
 
 # vLLM - High-Performance LLM Serving
 
+## When to use
+
+Use when deploying production LLM APIs, optimizing inference latency/throughput, or serving models with limited GPU memory. Supports OpenAI-compatible endpoints, quantization (GPTQ/AWQ/FP8), and tensor parallelism.
+
 ## Quick start
 
 vLLM achieves 24x higher throughput than standard transformers through PagedAttention (block-based KV cache) and continuous batching (mixing prefill/decode requests).

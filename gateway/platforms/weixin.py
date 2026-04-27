@@ -1128,6 +1128,7 @@ class WeixinAdapter(BasePlatformAdapter):
         self._typing_cache = TypingTicketCache()
         self._poll_session: Optional[aiohttp.ClientSession] = None
         self._send_session: Optional[aiohttp.ClientSession] = None
+        self._send_loop: Optional[asyncio.AbstractEventLoop] = None
         self._poll_task: Optional[asyncio.Task] = None
         self._dedup = MessageDeduplicator(ttl_seconds=MESSAGE_DEDUP_TTL_SECONDS)
 
@@ -1204,6 +1205,7 @@ class WeixinAdapter(BasePlatformAdapter):
 
         self._poll_session = aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector())
         self._send_session = aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector())
+        self._send_loop = asyncio.get_running_loop()
         self._token_store.restore(self._account_id)
         self._poll_task = asyncio.create_task(self._poll_loop(), name="weixin-poll")
         self._mark_connected()
@@ -1227,6 +1229,7 @@ class WeixinAdapter(BasePlatformAdapter):
         if self._send_session and not self._send_session.closed:
             await self._send_session.close()
         self._send_session = None
+        self._send_loop = None
         self._release_platform_lock()
         self._mark_disconnected()
         logger.info("[%s] Disconnected", self.name)
@@ -1982,7 +1985,21 @@ async def send_weixin_direct(
 
     live_adapter = _LIVE_ADAPTERS.get(resolved_token)
     send_session = getattr(live_adapter, '_send_session', None)
-    if live_adapter is not None and send_session is not None and not send_session.closed:
+    current_loop: Optional[asyncio.AbstractEventLoop]
+    try:
+        current_loop = asyncio.get_running_loop()
+    except RuntimeError:
+        current_loop = None
+    live_loop = getattr(live_adapter, '_send_loop', None)
+    same_loop_live_adapter = (
+        live_adapter is not None
+        and send_session is not None
+        and not send_session.closed
+        and live_loop is not None
+        and current_loop is live_loop
+        and not live_loop.is_closed()
+    )
+    if same_loop_live_adapter:
         last_result: Optional[SendResult] = None
         cleaned = live_adapter.format_message(message)
         if cleaned:
@@ -2006,6 +2023,11 @@ async def send_weixin_direct(
             "message_id": last_result.message_id if last_result else None,
             "context_token_used": bool(context_token),
         }
+    if live_adapter is not None and send_session is not None and not send_session.closed:
+        logger.debug(
+            "[Weixin] live adapter session exists for %s but is bound to a different event loop; using one-shot session fallback",
+            _safe_id(chat_id),
+        )
 
     async with aiohttp.ClientSession(trust_env=True, connector=_make_ssl_connector()) as session:
         adapter = WeixinAdapter(

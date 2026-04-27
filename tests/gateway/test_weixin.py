@@ -308,6 +308,57 @@ class TestWeixinSendMessageIntegration:
             media_files=[("/tmp/demo.png", False)],
         )
 
+    def test_send_weixin_direct_skips_live_adapter_from_foreign_event_loop(self, monkeypatch, tmp_path):
+        class _FakeSessionContext:
+            async def __aenter__(self):
+                return object()
+
+            async def __aexit__(self, exc_type, exc, tb):
+                return False
+
+        class _FakeAiohttp:
+            class ClientSession:
+                def __init__(self, *args, **kwargs):
+                    pass
+
+                async def __aenter__(self):
+                    return object()
+
+                async def __aexit__(self, exc_type, exc, tb):
+                    return False
+
+        foreign_loop = asyncio.new_event_loop()
+        live_adapter = type("LiveAdapter", (), {})()
+        live_adapter._send_session = type("SendSession", (), {"closed": False})()
+        live_adapter._send_loop = foreign_loop
+        live_adapter.format_message = lambda message: message
+        live_adapter.send = AsyncMock(side_effect=RuntimeError("Timeout context manager should be used inside a task"))
+
+        monkeypatch.setitem(weixin._LIVE_ADAPTERS, "bot-token", live_adapter)
+        monkeypatch.setattr(weixin, "aiohttp", _FakeAiohttp)
+        monkeypatch.setattr(weixin, "_make_ssl_connector", lambda: None)
+        monkeypatch.setattr(weixin, "get_hermes_home", lambda: tmp_path)
+        fallback_send = AsyncMock(return_value=SendResult(success=True, message_id="fallback-msg"))
+        monkeypatch.setattr(weixin.WeixinAdapter, "send", fallback_send)
+
+        try:
+            result = asyncio.run(
+                weixin.send_weixin_direct(
+                    extra={"account_id": "acct", "base_url": "https://weixin.example.com"},
+                    token="bot-token",
+                    chat_id="wxid_test123",
+                    message="hello",
+                )
+            )
+        finally:
+            weixin._LIVE_ADAPTERS.clear()
+            foreign_loop.close()
+
+        assert result["success"] is True
+        assert result["message_id"] == "fallback-msg"
+        live_adapter.send.assert_not_awaited()
+        fallback_send.assert_awaited_once()
+
 
 class TestWeixinChunkDelivery:
     def _connected_adapter(self) -> WeixinAdapter:

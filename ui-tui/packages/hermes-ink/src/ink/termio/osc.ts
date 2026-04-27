@@ -87,7 +87,8 @@ export function shouldEmitClipboardSequence(env: NodeJS.ProcessEnv = process.env
   const override = (
     env.HERMES_TUI_FORCE_OSC52 ??
     env.HERMES_TUI_CLIPBOARD_OSC52 ??
-    env.HERMES_TUI_COPY_OSC52 ?? ''
+    env.HERMES_TUI_COPY_OSC52 ??
+    ''
   ).trim()
 
   if (ENV_ON_RE.test(override)) {
@@ -196,16 +197,13 @@ export async function setClipboard(text: string): Promise<ClipboardResult> {
   // forever but SSH_CONNECTION is in tmux's default update-environment and
   // clears on local attach. Fire-and-forget, but `copyNativeAttempted`
   // tells us whether ANY native path will be tried on this platform.
-  const nativeAttempted =
-    !process.env['SSH_CONNECTION'] && copyNative(text)
+  const nativeAttempted = !process.env['SSH_CONNECTION'] && copyNative(text)
 
   const tmuxBufferLoaded = await tmuxLoadBuffer(text)
 
   // Inner OSC uses BEL directly (not osc()) — ST's ESC would need doubling
   // too, and BEL works everywhere for OSC 52.
-  const sequence = tmuxBufferLoaded
-    ? (emitSequence ? tmuxPassthrough(`${ESC}]52;c;${b64}${BEL}`) : '')
-    : (emitSequence ? raw : '')
+  const sequence = emitSequence ? (tmuxBufferLoaded ? tmuxPassthrough(`${ESC}]52;c;${b64}${BEL}`) : raw) : ''
 
   // Success if any path was taken. Native and tmux are fire-and-forget,
   // so we can't truly confirm the clipboard was written — but if native

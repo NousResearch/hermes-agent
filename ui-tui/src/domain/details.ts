@@ -57,9 +57,20 @@ export const resolveSections = (raw: unknown): SectionVisibility =>
       ) as SectionVisibility)
     : {}
 
-// Effective mode for one section: explicit override → SECTION_DEFAULTS → global.
-// Single source of truth for "is this section open by default / rendered at all".
-export const sectionMode = (name: SectionName, global: DetailsMode, sections?: SectionVisibility): DetailsMode =>
-  sections?.[name] ?? SECTION_DEFAULTS[name] ?? global
+// Effective mode for one section: explicit override → global command mode →
+// built-in live-stream defaults → global config mode.
+//
+// The `commandOverride` flag is set for in-session `/details <mode>` changes.
+// That command should immediately apply to every section, including sections
+// with built-in defaults like thinking/tools=expanded and activity=hidden. On
+// startup/config sync we keep those defaults layered above the persisted global
+// config so the TUI still opens live reasoning/tools by default unless the user
+// pins explicit per-section overrides.
+export const sectionMode = (
+  name: SectionName,
+  global: DetailsMode,
+  sections?: SectionVisibility,
+  commandOverride = false
+): DetailsMode => sections?.[name] ?? (commandOverride ? global : (SECTION_DEFAULTS[name] ?? global))
 
 export const nextDetailsMode = (m: DetailsMode): DetailsMode => MODES[(MODES.indexOf(m) + 1) % MODES.length]!

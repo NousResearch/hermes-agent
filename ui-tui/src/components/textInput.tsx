@@ -4,16 +4,18 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
+import { cursorLayout } from '../lib/inputMetrics.js'
 import { isActionMod, isMac, isMacActionFallback } from '../lib/platform.js'
 
 type InkExt = typeof Ink & {
   stringWidth: (s: string) => number
   useDeclaredCursor: (a: { line: number; column: number; active: boolean }) => (el: any) => void
+  useStdout: () => { stdout?: NodeJS.WriteStream }
   useTerminalFocus: () => boolean
 }
 
 const ink = Ink as unknown as InkExt
-const { Box, Text, useStdin, useInput, stringWidth, useDeclaredCursor, useTerminalFocus } = ink
+const { Box, Text, useStdin, useInput, useStdout, stringWidth, useDeclaredCursor, useTerminalFocus } = ink
 
 const ESC = '\x1b'
 const INV = `${ESC}[7m`
@@ -167,50 +169,6 @@ export function lineNav(s: string, p: number, dir: -1 | 1): null | number {
   return snapPos(s, Math.min(nextBreak + 1 + col, lineEnd))
 }
 
-// mirrors wrap-ansi(..., { wordWrap: false, hard: true }) so the declared
-// cursor lines up with what <Text wrap="wrap-char"> actually renders
-export function cursorLayout(value: string, cursor: number, cols: number) {
-  const pos = Math.max(0, Math.min(cursor, value.length))
-  const w = Math.max(1, cols)
-
-  let col = 0,
-    line = 0
-
-  for (const { segment, index } of seg().segment(value)) {
-    if (index >= pos) {
-      break
-    }
-
-    if (segment === '\n') {
-      line++
-      col = 0
-
-      continue
-    }
-
-    const sw = stringWidth(segment)
-
-    if (!sw) {
-      continue
-    }
-
-    if (col + sw > w) {
-      line++
-      col = 0
-    }
-
-    col += sw
-  }
-
-  // trailing cursor-cell overflows to the next row at the wrap column
-  if (col >= w) {
-    line++
-    col = 0
-  }
-
-  return { column: col, line }
-}
-
 export function offsetFromPosition(value: string, row: number, col: number, cols: number) {
   if (!value.length) {
     return 0
@@ -336,6 +294,7 @@ export function TextInput({
   const [sel, setSel] = useState<null | { end: number; start: number }>(null)
   const fwdDel = useFwdDelete(focus)
   const termFocus = useTerminalFocus()
+  const { stdout } = useStdout()
 
   const curRef = useRef(cur)
   const selRef = useRef<null | { end: number; start: number }>(null)
@@ -346,6 +305,10 @@ export function TextInput({
   const pasteTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const pastePos = useRef(0)
   const editVersionRef = useRef(0)
+  const parentChangeTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const pendingParentValue = useRef<string | null>(null)
+  const localRenderTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const lineWidthRef = useRef(stringWidth(value.includes('\n') ? value.slice(value.lastIndexOf('\n') + 1) : value))
   const undo = useRef<{ cursor: number; value: string }[]>([])
   const redo = useRef<{ cursor: number; value: string }[]>([])
 
@@ -373,21 +336,23 @@ export function TextInput({
     active: focus && termFocus && !selected
   })
 
+  const nativeCursor = focus && termFocus && !selected && !!stdout?.isTTY
+
   const rendered = useMemo(() => {
     if (!focus) {
       return display || dim(placeholder)
     }
 
     if (!display && placeholder) {
-      return invert(placeholder[0] ?? ' ') + dim(placeholder.slice(1))
+      return nativeCursor ? dim(placeholder) : invert(placeholder[0] ?? ' ') + dim(placeholder.slice(1))
     }
 
     if (selected) {
       return renderWithSelection(display, selected.start, selected.end)
     }
 
-    return renderWithCursor(display, cur)
-  }, [cur, display, focus, placeholder, selected])
+    return nativeCursor ? display || ' ' : renderWithCursor(display, cur)
+  }, [cur, display, focus, nativeCursor, placeholder, selected])
 
   useEffect(() => {
     if (self.current) {
@@ -398,6 +363,7 @@ export function TextInput({
       curRef.current = value.length
       selRef.current = null
       vRef.current = value
+      lineWidthRef.current = stringWidth(value.includes('\n') ? value.slice(value.lastIndexOf('\n') + 1) : value)
       undo.current = []
       redo.current = []
     }
@@ -428,11 +394,92 @@ export function TextInput({
       if (pasteTimer.current) {
         clearTimeout(pasteTimer.current)
       }
+
+      if (parentChangeTimer.current) {
+        clearTimeout(parentChangeTimer.current)
+      }
+
+      if (localRenderTimer.current) {
+        clearTimeout(localRenderTimer.current)
+      }
     },
     []
   )
 
-  const commit = (next: string, nextCur: number, track = true) => {
+  const flushParentChange = () => {
+    if (parentChangeTimer.current) {
+      clearTimeout(parentChangeTimer.current)
+      parentChangeTimer.current = null
+    }
+
+    const next = pendingParentValue.current
+    pendingParentValue.current = null
+
+    if (next !== null) {
+      self.current = true
+      cbChange.current(next)
+    }
+  }
+
+  const scheduleParentChange = (next: string) => {
+    pendingParentValue.current = next
+
+    if (parentChangeTimer.current) {
+      return
+    }
+
+    parentChangeTimer.current = setTimeout(flushParentChange, 16)
+  }
+
+  const cancelLocalRender = () => {
+    if (localRenderTimer.current) {
+      clearTimeout(localRenderTimer.current)
+      localRenderTimer.current = null
+    }
+  }
+
+  const scheduleLocalRender = () => {
+    if (localRenderTimer.current) {
+      return
+    }
+
+    localRenderTimer.current = setTimeout(() => {
+      localRenderTimer.current = null
+      setCur(curRef.current)
+    }, 16)
+  }
+
+  const canFastEchoBase = () => focus && termFocus && !selected && !mask && !!stdout?.isTTY
+
+  const canFastAppend = (current: string, cursor: number, text: string) => {
+    const sw = stringWidth(text)
+
+    return (
+      canFastEchoBase() &&
+      cursor === current.length &&
+      current.length > 0 &&
+      !current.includes('\n') &&
+      sw === text.length &&
+      lineWidthRef.current + sw < Math.max(1, columns)
+    )
+  }
+
+  const canFastBackspace = (current: string, cursor: number) => {
+    if (!canFastEchoBase() || cursor !== current.length || cursor <= 0 || current.includes('\n')) {
+      return false
+    }
+
+    return stringWidth(current.slice(prevPos(current, cursor), cursor)) === 1
+  }
+
+  const commit = (
+    next: string,
+    nextCur: number,
+    track = true,
+    syncParent = true,
+    syncLocal = true,
+    nextLineWidth?: number
+  ) => {
     const prev = vRef.current
     const c = snapPos(next, nextCur)
     editVersionRef.current += 1
@@ -452,13 +499,27 @@ export function TextInput({
       redo.current = []
     }
 
-    setCur(c)
+    if (syncLocal) {
+      cancelLocalRender()
+      setCur(c)
+    } else {
+      scheduleLocalRender()
+    }
+
     curRef.current = c
     vRef.current = next
+    lineWidthRef.current =
+      nextLineWidth ?? stringWidth(next.includes('\n') ? next.slice(next.lastIndexOf('\n') + 1) : next)
 
     if (next !== prev) {
-      self.current = true
-      cbChange.current(next)
+      if (syncParent) {
+        flushParentChange()
+        self.current = true
+        cbChange.current(next)
+      } else {
+        self.current = true
+        scheduleParentChange(next)
+      }
     }
   }
 
@@ -640,9 +701,13 @@ export function TextInput({
       }
 
       if (k.return) {
-        k.shift || (isMac ? isActionMod(k) : k.meta)
-          ? commit(ins(vRef.current, curRef.current, '\n'), curRef.current + 1)
-          : cbSubmit.current?.(vRef.current)
+        if (k.shift || k.ctrl || (isMac ? isActionMod(k) : k.meta)) {
+          flushParentChange()
+          commit(ins(vRef.current, curRef.current, '\n'), curRef.current + 1)
+        } else {
+          flushParentChange()
+          cbSubmit.current?.(vRef.current)
+        }
 
         return
       }
@@ -707,6 +772,14 @@ export function TextInput({
           const t = wordLeft(v, c)
           v = v.slice(0, t) + v.slice(c)
           c = t
+        } else if (canFastBackspace(v, c)) {
+          const t = prevPos(v, c)
+          v = v.slice(0, t) + v.slice(c)
+          c = t
+          stdout!.write('\b \b')
+          commit(v, c, true, false, false, Math.max(0, lineWidthRef.current - 1))
+
+          return
         } else {
           const t = prevPos(v, c)
           v = v.slice(0, t) + v.slice(c)
@@ -784,8 +857,17 @@ export function TextInput({
             v = v.slice(0, range.start) + text + v.slice(range.end)
             c = range.start + text.length
           } else {
+            const simpleAppend = canFastAppend(v, c, text)
+
             v = v.slice(0, c) + text + v.slice(c)
             c += text.length
+
+            if (simpleAppend) {
+              stdout!.write(text)
+              commit(v, c, true, false, false, lineWidthRef.current + stringWidth(text))
+
+              return
+            }
           }
         } else {
           return

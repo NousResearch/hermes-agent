@@ -220,7 +220,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const text = ev.payload?.text
 
         if (text !== undefined) {
-          scheduleThinkingStatus(text ? String(text) : statusFromBusy())
+          const value = String(text)
+          scheduleThinkingStatus(value || statusFromBusy())
+
+          if (value) {
+            turnController.recordReasoningDelta(value)
+          }
         }
 
         return
@@ -367,6 +372,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
 
       case 'tool.start':
+        turnController.recordTodos(ev.payload.todos)
         turnController.recordToolStart(ev.payload.tool_id, ev.payload.name ?? 'tool', ev.payload.context ?? '')
 
         return
@@ -374,23 +380,24 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const inlineDiffText =
           ev.payload.inline_diff && getUiState().inlineDiffs ? stripAnsi(String(ev.payload.inline_diff)).trim() : ''
 
-        turnController.recordToolComplete(
-          ev.payload.tool_id,
-          ev.payload.name,
-          ev.payload.error,
-          inlineDiffText ? '' : ev.payload.summary
-        )
-
-        if (!inlineDiffText) {
-          return
+        if (inlineDiffText) {
+          turnController.recordInlineDiffToolComplete(
+            inlineDiffText,
+            ev.payload.tool_id,
+            ev.payload.name,
+            ev.payload.error,
+            ev.payload.duration_s
+          )
+        } else {
+          turnController.recordToolComplete(
+            ev.payload.tool_id,
+            ev.payload.name,
+            ev.payload.error,
+            ev.payload.summary,
+            ev.payload.duration_s,
+            ev.payload.todos
+          )
         }
-
-        // Anchor the diff to where the edit happened in the turn — between
-        // the narration that preceded the tool call and whatever the agent
-        // streams afterwards. The previous end-merge put the diff at the
-        // bottom of the final message even when the edit fired mid-turn,
-        // which read as "the agent wrote this after saying that".
-        turnController.pushInlineDiffSegment(inlineDiffText)
 
         return
       }

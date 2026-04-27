@@ -29,7 +29,7 @@ import {
   FOCUS_IN,
   FOCUS_OUT
 } from '../termio/csi.js'
-import { DBP, DFE, DISABLE_MOUSE_TRACKING, EBP, EFE, HIDE_CURSOR, SHOW_CURSOR } from '../termio/dec.js'
+import { DBP, DFE, DISABLE_MOUSE_TRACKING, EBP, EFE, SHOW_CURSOR } from '../termio/dec.js'
 
 import AppContext from './AppContext.js'
 import { ClockProvider } from './ClockContext.js'
@@ -204,12 +204,6 @@ export default class App extends PureComponent<Props, State> {
         </AppContext.Provider>
       </TerminalSizeContext.Provider>
     )
-  }
-  override componentDidMount() {
-    // In accessibility mode, keep the native cursor visible for screen magnifiers and other tools
-    if (this.props.stdout.isTTY) {
-      this.props.stdout.write(HIDE_CURSOR)
-    }
   }
   override componentWillUnmount() {
     if (this.props.stdout.isTTY) {
@@ -470,7 +464,7 @@ export default class App extends PureComponent<Props, State> {
       }
 
       if (this.props.stdout.isTTY) {
-        this.props.stdout.write(HIDE_CURSOR + EFE)
+        this.props.stdout.write(EFE)
       }
 
       this.inputEmitter.emit('resume')
@@ -569,17 +563,16 @@ function processKeysInBatch(app: App, items: ParsedInput[], _unused1: undefined,
 
 /** Exported for testing. Mutates app.props.selection and click/hover state. */
 export function handleMouseEvent(app: App, m: ParsedMouse): void {
-  // Allow disabling click handling while keeping wheel scroll (which goes
-  // through the keybinding system as 'wheelup'/'wheeldown', not here).
-  if (isMouseClicksDisabled()) {
-    return
-  }
-
   const sel = app.props.selection
   // Terminal coords are 1-indexed; screen buffer is 0-indexed
   const col = m.col - 1
   const row = m.row - 1
   const baseButton = m.button & 0x03
+
+  // Disable app click handling without blocking wheel/right-click dispatch.
+  if (isMouseClicksDisabled() && baseButton === 0) {
+    return
+  }
 
   if (m.action === 'press') {
     if ((m.button & 0x20) !== 0 && baseButton === 3) {

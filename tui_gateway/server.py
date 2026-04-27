@@ -124,6 +124,7 @@ _stdout_lock = threading.Lock()
 _cfg_lock = threading.Lock()
 _cfg_cache: dict | None = None
 _cfg_mtime: float | None = None
+_cfg_path = None
 _SLASH_WORKER_TIMEOUT_S = max(
     5.0, float(os.environ.get("HERMES_TUI_SLASH_TIMEOUT_S", "45") or 45)
 )
@@ -443,14 +444,14 @@ def _normalize_completion_path(path_part: str) -> str:
 
 
 def _load_cfg() -> dict:
-    global _cfg_cache, _cfg_mtime
+    global _cfg_cache, _cfg_mtime, _cfg_path
     try:
         import yaml
 
         p = _hermes_home / "config.yaml"
         mtime = p.stat().st_mtime if p.exists() else None
         with _cfg_lock:
-            if _cfg_cache is not None and _cfg_mtime == mtime:
+            if _cfg_cache is not None and _cfg_mtime == mtime and _cfg_path == p:
                 return copy.deepcopy(_cfg_cache)
         if p.exists():
             with open(p) as f:
@@ -460,6 +461,7 @@ def _load_cfg() -> dict:
         with _cfg_lock:
             _cfg_cache = copy.deepcopy(data)
             _cfg_mtime = mtime
+            _cfg_path = p
         return data
     except Exception:
         pass
@@ -467,7 +469,7 @@ def _load_cfg() -> dict:
 
 
 def _save_cfg(cfg: dict):
-    global _cfg_cache, _cfg_mtime
+    global _cfg_cache, _cfg_mtime, _cfg_path
     import yaml
 
     path = _hermes_home / "config.yaml"
@@ -475,6 +477,7 @@ def _save_cfg(cfg: dict):
         yaml.safe_dump(cfg, f)
     with _cfg_lock:
         _cfg_cache = copy.deepcopy(cfg)
+        _cfg_path = path
         try:
             _cfg_mtime = path.stat().st_mtime
         except Exception:
@@ -913,8 +916,16 @@ def _probe_config_health(cfg: dict) -> str:
 
 
 def _session_info(agent) -> dict:
+    reasoning_config = getattr(agent, "reasoning_config", None)
+    reasoning_effort = ""
+    if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is not False:
+        reasoning_effort = str(reasoning_config.get("effort", "") or "")
+    service_tier = getattr(agent, "service_tier", None) or ""
     info: dict = {
         "model": getattr(agent, "model", ""),
+        "reasoning_effort": reasoning_effort,
+        "service_tier": service_tier,
+        "fast": service_tier == "priority",
         "tools": {},
         "skills": {},
         "cwd": os.getcwd(),
@@ -1013,7 +1024,7 @@ def _tool_summary(name: str, result: str, duration_s: float | None) -> str | Non
         if n is not None:
             text = f"Extracted {n} {'page' if n == 1 else 'pages'}"
 
-    return f"{text or 'Completed'}{suffix}" if (text or dur) else None
+    return f"{text}{suffix}" if text else None
 
 
 def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
@@ -1029,11 +1040,9 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
             pass
         session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
     if _tool_progress_enabled(sid):
-        _emit(
-            "tool.start",
-            sid,
-            {"tool_id": tool_call_id, "name": name, "context": _tool_ctx(name, args)},
-        )
+        # tool.complete is the source of truth for todos (full list from the
+        # tool result). args.todos here may be a partial merge update.
+        _emit("tool.start", sid, {"tool_id": tool_call_id, "name": name, "context": _tool_ctx(name, args)})
 
 
 def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result: str):
@@ -1050,6 +1059,13 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     summary = _tool_summary(name, result, duration_s)
     if summary:
         payload["summary"] = summary
+    if name == "todo":
+        try:
+            data = json.loads(result)
+            if isinstance(data, dict) and isinstance(data.get("todos"), list):
+                payload["todos"] = data.get("todos")
+        except Exception:
+            pass
     try:
         from agent.display import render_edit_diff_with_delta
 
@@ -1690,7 +1706,8 @@ def _(rid, params: dict) -> dict:
     try:
         db.reopen_session(target)
         history = db.get_messages_as_conversation(target)
-        messages = _history_to_messages(history)
+        display_history = db.get_messages_as_conversation(target, include_ancestors=True)
+        messages = _history_to_messages(display_history)
         tokens = _set_session_context(target)
         try:
             agent = _make_agent(sid, target, session_id=target)
@@ -1738,11 +1755,20 @@ def _(rid, params: dict) -> dict:
 @method("session.history")
 def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
-    return err or _ok(
+    if err:
+        return err
+    history = list(session.get("history", []))
+    db = _get_db()
+    if db is not None and session.get("session_key"):
+        try:
+            history = db.get_messages_as_conversation(session["session_key"], include_ancestors=True)
+        except Exception:
+            pass
+    return _ok(
         rid,
         {
-            "count": len(session.get("history", [])),
-            "messages": _history_to_messages(list(session.get("history", []))),
+            "count": len(history),
+            "messages": _history_to_messages(history),
         },
     )
 
@@ -3680,6 +3706,84 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"items": items})
 
 
+def _details_completion_item(value: str, meta: str = "") -> dict:
+    return {"text": value, "display": value, "meta": meta}
+
+
+def _details_root_completion_item(value: str, meta: str, needs_leading_space: bool) -> dict:
+    return _details_completion_item(
+        f" {value}" if needs_leading_space else value,
+        meta,
+    )
+
+
+def _details_completions(text: str) -> list[dict] | None:
+    if not text.lower().startswith("/details"):
+        return None
+
+    stripped = text.strip()
+    if stripped and not "/details".startswith(stripped.lower().split()[0]):
+        return None
+
+    body = text[len("/details"):]
+    if body.startswith(" "):
+        body = body[1:]
+    parts = body.split()
+    has_trailing_space = text.endswith(" ")
+    sections = ("thinking", "tools", "subagents", "activity")
+    modes = ("hidden", "collapsed", "expanded")
+
+    if not body or (len(parts) == 0 and has_trailing_space):
+        return [
+            *[
+                _details_root_completion_item(mode, "global mode", not has_trailing_space)
+                for mode in modes
+            ],
+            _details_root_completion_item("cycle", "cycle global mode", not has_trailing_space),
+            *[
+                _details_root_completion_item(section, "section override", not has_trailing_space)
+                for section in sections
+            ],
+        ]
+
+    if len(parts) == 1 and not has_trailing_space:
+        prefix = parts[0].lower()
+        candidates = [*modes, "cycle", *sections]
+        return [
+            _details_completion_item(
+                candidate,
+                (
+                    "section override"
+                    if candidate in sections
+                    else "cycle global mode"
+                    if candidate == "cycle"
+                    else "global mode"
+                ),
+            )
+            for candidate in candidates
+            if candidate.startswith(prefix) and candidate != prefix
+        ]
+
+    if len(parts) == 1 and has_trailing_space and parts[0].lower() in sections:
+        return [
+            *[_details_completion_item(mode, f"set {parts[0].lower()}") for mode in modes],
+            _details_completion_item("reset", f"clear {parts[0].lower()} override"),
+        ]
+
+    if len(parts) == 2 and not has_trailing_space and parts[0].lower() in sections:
+        prefix = parts[1].lower()
+        return [
+            _details_completion_item(
+                candidate,
+                f"clear {parts[0].lower()} override" if candidate == "reset" else f"set {parts[0].lower()}",
+            )
+            for candidate in (*modes, "reset")
+            if candidate.startswith(prefix) and candidate != prefix
+        ]
+
+    return []
+
+
 @method("complete.slash")
 def _(rid, params: dict) -> dict:
     text = params.get("text", "")
@@ -3713,6 +3817,11 @@ def _(rid, params: dict) -> dict:
                 "meta": "Toggle compact display mode",
             },
             {
+                "text": "/details",
+                "display": "/details",
+                "meta": "Control agent detail visibility",
+            },
+            {
                 "text": "/logs",
                 "display": "/logs",
                 "meta": "Show recent gateway log lines",
@@ -3723,6 +3832,17 @@ def _(rid, params: dict) -> dict:
                 item["text"] == extra["text"] for item in items
             ):
                 items.append(extra)
+
+        details_items = _details_completions(text)
+        if details_items is not None:
+            return _ok(
+                rid,
+                {
+                    "items": details_items,
+                    "replace_from": text.rfind(" ") + 1 if " " in text else len(text),
+                },
+            )
+
         return _ok(
             rid,
             {"items": items, "replace_from": text.rfind(" ") + 1 if " " in text else 1},

@@ -11,6 +11,7 @@ const buildUiState = (): UiState => ({
   busy: false,
   compact: false,
   detailsMode: 'collapsed',
+  detailsModeCommandOverride: false,
   info: null,
   inlineDiffs: true,
   mouseTracking: MOUSE_TRACKING,

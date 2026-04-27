@@ -566,6 +566,8 @@ def load_gateway_config() -> GatewayConfig:
                         existing = {}
                     # Deep-merge extra dicts so gateway.json defaults survive
                     merged_extra = {**existing.get("extra", {}), **plat_block.get("extra", {})}
+                    if plat_name == Platform.SLACK.value and "enabled" in plat_block:
+                        merged_extra["_enabled_explicit"] = True
                     merged = {**existing, **plat_block}
                     if merged_extra:
                         merged["extra"] = merged_extra
@@ -610,16 +612,21 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = {str(k): v for k, v in channel_prompts.items()}
                     else:
                         bridged["channel_prompts"] = channel_prompts
-                if not bridged:
+                enabled_was_explicit = "enabled" in platform_cfg
+                if not bridged and not enabled_was_explicit:
                     continue
                 plat_data = platforms_data.setdefault(plat.value, {})
                 if not isinstance(plat_data, dict):
                     plat_data = {}
                     platforms_data[plat.value] = plat_data
+                if enabled_was_explicit:
+                    plat_data["enabled"] = platform_cfg["enabled"]
                 extra = plat_data.setdefault("extra", {})
                 if not isinstance(extra, dict):
                     extra = {}
                     plat_data["extra"] = extra
+                if plat == Platform.SLACK and enabled_was_explicit:
+                    extra["_enabled_explicit"] = True
                 extra.update(bridged)
 
             # Slack settings → env vars (env vars take precedence)
@@ -941,6 +948,14 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             # No yaml config for Slack — env-only setup, enable it
             config.platforms[Platform.SLACK] = PlatformConfig()
             config.platforms[Platform.SLACK].enabled = True
+        else:
+            slack_config = config.platforms[Platform.SLACK]
+            enabled_was_explicit = bool(slack_config.extra.pop("_enabled_explicit", False))
+            if not slack_config.enabled and not enabled_was_explicit:
+                # Top-level Slack settings such as channel prompts should not
+                # turn an env-token setup into a disabled platform. Only an
+                # explicit slack.enabled/platforms.slack.enabled false should.
+                slack_config.enabled = True
         # If yaml config exists, respect its enabled flag (don't override
         # explicit enabled: false). Token is still stored so skills that
         # send Slack messages can use it without activating the gateway adapter.

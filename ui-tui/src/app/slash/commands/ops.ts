@@ -134,6 +134,10 @@ export const opsCommands: SlashCommand[] = [
     help: 'list, diff, or restore checkpoints',
     name: 'rollback',
     run: (arg, ctx) => {
+      if (!ctx.sid) {
+        return ctx.transcript.sys('no active session — nothing to rollback')
+      }
+
       const trimmed = arg.trim()
       const [first = '', ...rest] = trimmed.split(/\s+/).filter(Boolean)
       const lower = first.toLowerCase()

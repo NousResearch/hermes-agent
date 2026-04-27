@@ -338,6 +338,8 @@ class ContextCompressor(ContextEngine):
         self._context_probe_persistable = False
         self._previous_summary = None
         self._last_summary_error = None
+        self._last_summary_dropped_count = 0
+        self._last_summary_fallback_used = False
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
 
@@ -441,6 +443,11 @@ class ContextCompressor(ContextEngine):
         self._ineffective_compression_count: int = 0
         self._summary_failure_cooldown_until: float = 0.0
         self._last_summary_error: Optional[str] = None
+        # When summary generation fails and a static fallback is inserted,
+        # record how many turns were unrecoverably dropped so callers
+        # (gateway hygiene, /compress) can surface a visible warning.
+        self._last_summary_dropped_count: int = 0
+        self._last_summary_fallback_used: bool = False
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -1196,6 +1203,10 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 related to this topic and be more aggressive about compressing
                 everything else.  Inspired by Claude Code's ``/compact``.
         """
+        # Reset per-call summary failure state — callers inspect these fields
+        # after compress() returns to decide whether to surface a warning.
+        self._last_summary_dropped_count = 0
+        self._last_summary_fallback_used = False
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self.protect_first_n + 3 + 1
@@ -1274,6 +1285,8 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             if not self.quiet_mode:
                 logger.warning("Summary generation failed — inserting static fallback context marker")
             n_dropped = compress_end - compress_start
+            self._last_summary_dropped_count = n_dropped
+            self._last_summary_fallback_used = True
             summary = (
                 f"{SUMMARY_PREFIX}\n"
                 f"Summary generation was unavailable. {n_dropped} conversation turns were "

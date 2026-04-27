@@ -158,6 +158,16 @@ _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
 _MENTION_RE = re.compile(r"@_user_\d+")
 _MULTISPACE_RE = re.compile(r"[ \t]{2,}")
 _POST_CONTENT_INVALID_RE = re.compile(r"content format of the post type is incorrect", re.IGNORECASE)
+# Feishu API error codes that mean "post payload is structurally invalid" and
+# are recoverable by falling back to a plain-text msg_type. Sourced from the
+# Feishu open-platform error reference and the lark_oapi.channel taxonomy:
+#   230001 — invalid message content
+#   230099 — invalid card content
+# These cover all locales (the code is structural) so no CN string matching
+# is required. _POST_CONTENT_INVALID_RE remains as a fallback for code paths
+# that only have an exception message (no response.code attached).
+_FEISHU_POST_FORMAT_ERROR_CODES = frozenset({230001, 230099})
+_TABLE_SEP_CELL_RE = re.compile(r"^\s*:?-+:?\s*$")
 # ---------------------------------------------------------------------------
 # Media type sets and upload constants
 # ---------------------------------------------------------------------------
@@ -505,6 +515,59 @@ def _coerce_required_int(value: Any, default: int, min_value: int = 0) -> int:
 # ---------------------------------------------------------------------------
 
 
+def _looks_like_gfm_table_row(line: str) -> bool:
+    """A GFM table row contains at least one inner pipe; outer pipes optional.
+
+    GFM allows tables both with outer pipes (``| a | b |``) and without
+    (``a | b``). The row check just needs to confirm at least one column
+    boundary is present after stripping any outer pipes.
+    """
+    stripped = line.strip()
+    if "|" not in stripped:
+        return False
+    return len(stripped.strip("|").split("|")) >= 2
+
+
+def _looks_like_gfm_table_separator(line: str) -> bool:
+    """A GFM table separator: every cell matches ``:?-+:?``.
+
+    Each cell must have at least one ``-``; alignment colons are optional.
+    Outer pipes are optional, matching the row form.
+    """
+    stripped = line.strip()
+    if "|" not in stripped:
+        return False
+    cells = stripped.strip("|").split("|")
+    if len(cells) < 2:
+        return False
+    return all(_TABLE_SEP_CELL_RE.match(cell) for cell in cells)
+
+
+def _contains_gfm_table(content: str) -> bool:
+    """Detect a GFM pipe table.
+
+    Strict: a row line whose next line is a separator (cells of ``:?-+:?``).
+    Outer pipes are optional per GFM. Lines inside fenced code blocks are
+    skipped so code samples that contain pipes are not mis-classified.
+    """
+    if not content or "|" not in content:
+        return False
+    lines = content.splitlines()
+    in_fence = False
+    for i in range(len(lines) - 1):
+        stripped = lines[i].strip()
+        if in_fence:
+            if _MARKDOWN_FENCE_CLOSE_RE.match(stripped):
+                in_fence = False
+            continue
+        if _MARKDOWN_FENCE_OPEN_RE.match(stripped):
+            in_fence = True
+            continue
+        if _looks_like_gfm_table_row(lines[i]) and _looks_like_gfm_table_separator(lines[i + 1]):
+            return True
+    return False
+
+
 def _build_markdown_post_payload(content: str) -> str:
     rows = _build_markdown_post_rows(content)
     return json.dumps(
@@ -524,9 +587,17 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
     appears inside one large markdown element. Split the reply at real fence
     lines so prose before/after the code block remains visible while code stays
     in a dedicated row.
+
+    GFM tables are unsupported by Feishu's `md` tag (renders as silent blank
+    or pipe literals). When a table is detected we emit one `text` row with the
+    plain-text projection of the whole content — column alignment is lost, but
+    the content stays visible.
     """
     if not content:
         return [[{"tag": "md", "text": ""}]]
+    if _contains_gfm_table(content):
+        plain = _strip_markdown_to_plain_text(content) or content
+        return [[{"tag": "text", "text": plain}]]
     if "```" not in content:
         return [[{"tag": "md", "text": content}]]
 
@@ -1631,6 +1702,45 @@ class FeishuAdapter(BasePlatformAdapter):
     # Outbound — send / edit / send_image / send_voice / …
     # =========================================================================
 
+    @staticmethod
+    def _is_post_format_error(*, response: Any = None, text: str = "") -> bool:
+        """Detect whether a Feishu post-message rejection is a format error.
+
+        Prefers the structured ``response.code`` field when a response object
+        is available — codes 230001 (invalid message content) and 230099
+        (invalid card content) are language-independent and the canonical
+        signal. Falls back to an English string match against the API error
+        template for code paths that only have an exception message
+        (raised exceptions cannot read ``response.code``).
+        """
+        if response is not None:
+            try:
+                code = int(getattr(response, "code", None))
+            except (TypeError, ValueError):
+                code = None
+            if code is not None and code in _FEISHU_POST_FORMAT_ERROR_CODES:
+                return True
+        return bool(text and _POST_CONTENT_INVALID_RE.search(text))
+
+    @staticmethod
+    def _log_post_fallback(*, where: str, content: str, detail: str) -> None:
+        """Log a post-format fallback. ``has_gfm_table`` is descriptive only.
+
+        The flag tells operators whether the rejected payload contained a
+        GFM table so they can correlate fallback events with the table
+        routing path. It is *not* a leak alarm: Feishu's silent-blank-bubble
+        failure mode for embedded tables returns ``success=True`` and never
+        reaches this code path. Use the flag for diagnostics; do not infer
+        a bug from it alone.
+        """
+        has_table = _contains_gfm_table(content)
+        logger.warning(
+            "[Feishu] Post fallback at %s. has_gfm_table=%s detail=%s",
+            where,
+            has_table,
+            detail[:200],
+        )
+
     async def send(
         self,
         chat_id: str,
@@ -1658,9 +1768,9 @@ class FeishuAdapter(BasePlatformAdapter):
                         metadata=metadata,
                     )
                 except Exception as exc:
-                    if msg_type != "post" or not _POST_CONTENT_INVALID_RE.search(str(exc)):
+                    if msg_type != "post" or not self._is_post_format_error(text=str(exc)):
                         raise
-                    logger.warning("[Feishu] Invalid post payload rejected by API; falling back to plain text")
+                    self._log_post_fallback(where="send.exception", content=chunk, detail=str(exc))
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
                         msg_type="text",
@@ -1671,9 +1781,16 @@ class FeishuAdapter(BasePlatformAdapter):
                 if (
                     msg_type == "post"
                     and not self._response_succeeded(response)
-                    and _POST_CONTENT_INVALID_RE.search(str(getattr(response, "msg", "") or ""))
+                    and self._is_post_format_error(
+                        response=response,
+                        text=str(getattr(response, "msg", "") or ""),
+                    )
                 ):
-                    logger.warning("[Feishu] Post payload rejected by API response; falling back to plain text")
+                    self._log_post_fallback(
+                        where="send.response",
+                        content=chunk,
+                        detail=str(getattr(response, "msg", "") or ""),
+                    )
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
                         msg_type="text",
@@ -1707,8 +1824,12 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_update_message_request(message_id=message_id, request_body=body)
             response = await asyncio.to_thread(self._client.im.v1.message.update, request)
             result = self._finalize_send_result(response, "update failed")
-            if not result.success and msg_type == "post" and _POST_CONTENT_INVALID_RE.search(result.error or ""):
-                logger.warning("[Feishu] Invalid post update payload rejected by API; falling back to plain text")
+            if (
+                not result.success
+                and msg_type == "post"
+                and self._is_post_format_error(response=response, text=result.error or "")
+            ):
+                self._log_post_fallback(where="edit.response", content=content, detail=result.error or "")
                 fallback_body = self._build_update_message_body(
                     msg_type="text",
                     content=json.dumps({"text": _strip_markdown_to_plain_text(content)}, ensure_ascii=False),
@@ -3829,10 +3950,11 @@ class FeishuAdapter(BasePlatformAdapter):
     # =========================================================================
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
-        if _MARKDOWN_HINT_RE.search(content):
-            return "post", _build_markdown_post_payload(content)
-        text_payload = {"text": content}
-        return "text", json.dumps(text_payload, ensure_ascii=False)
+        # Unified post: every outbound chunk goes out as `post` so streaming
+        # edits never cross msg_type. `_build_markdown_post_rows` decides
+        # whether to emit `md` rows or fall back to a `text` element row when
+        # the content contains a GFM table that Feishu's `md` tag cannot render.
+        return "post", _build_markdown_post_payload(content)
 
     async def _send_uploaded_file_message(
         self,
@@ -4084,7 +4206,7 @@ class FeishuAdapter(BasePlatformAdapter):
                 return response
             except Exception as exc:
                 last_error = exc
-                if msg_type == "post" and _POST_CONTENT_INVALID_RE.search(str(exc)):
+                if msg_type == "post" and self._is_post_format_error(text=str(exc)):
                     raise
                 if attempt >= _FEISHU_SEND_ATTEMPTS - 1:
                     raise

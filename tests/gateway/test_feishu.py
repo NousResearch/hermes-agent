@@ -364,10 +364,12 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         self.assertTrue(result.success)
         self.assertEqual(result.message_id, "om_progress")
         self.assertEqual(captured["request"].message_id, "om_progress")
-        self.assertEqual(captured["request"].request_body.msg_type, "text")
+        # Outbound is unified to post so streaming edits never cross msg_type.
+        self.assertEqual(captured["request"].request_body.msg_type, "post")
+        payload = json.loads(captured["request"].request_body.content)
         self.assertEqual(
-            captured["request"].request_body.content,
-            json.dumps({"text": "📖 read_file: \"/tmp/image.png\""}, ensure_ascii=False),
+            payload["zh_cn"]["content"],
+            [[{"tag": "md", "text": "📖 read_file: \"/tmp/image.png\""}]],
         )
 
     @patch.dict(os.environ, {}, clear=True)
@@ -2663,6 +2665,164 @@ class TestAdapterBehavior(unittest.TestCase):
             rows,
             [[{"tag": "md", "text": "---\n1. 第一项\n<u>下划线</u>\n~~删除线~~"}]],
         )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_post_payload_routes_gfm_table_to_text_element(self):
+        """GFM tables must drop to a `text` row. Feishu's `md` tag does
+        not render GFM tables — the bubble would otherwise appear blank.
+        Column alignment is expected to be lost; what matters is that
+        the content stays visible."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = "Intro line\n\n| col1 | col2 |\n| --- | --- |\n| a | b |\n\nClosing."
+        payload = json.loads(adapter._build_post_payload(content))
+        rows = payload["zh_cn"]["content"]
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0][0]["tag"], "text")
+        self.assertIn("col1", rows[0][0]["text"])
+        self.assertIn("a", rows[0][0]["text"])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_post_payload_routes_no_outer_pipe_table_to_text_element(self):
+        """GFM allows tables without outer pipes (`a | b` / `--- | ---`).
+        The detector must catch this form too — it is a frequent shape
+        emitted by LLMs and previously triggered the silent-blank bug."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = "metric | value\n--- | ---\nQPS | 1200\nP95 | 80ms"
+        payload = json.loads(adapter._build_post_payload(content))
+        rows = payload["zh_cn"]["content"]
+        self.assertEqual(rows[0][0]["tag"], "text")
+        self.assertIn("metric", rows[0][0]["text"])
+        self.assertIn("QPS", rows[0][0]["text"])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_post_payload_skips_pipe_inside_fenced_code_block(self):
+        """Pipe characters inside fenced code blocks must not trigger the
+        table heuristic — fenced code is rendered by the `md` element."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = "before\n```\n| col | col |\n| --- | --- |\n```\nafter"
+        payload = json.loads(adapter._build_post_payload(content))
+        rows = payload["zh_cn"]["content"]
+        self.assertTrue(all(row[0]["tag"] == "md" for row in rows))
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_build_post_payload_does_not_misclassify_setext_heading(self):
+        """A setext heading (`Title` followed by `---`) shares the trailing
+        dashes with a table separator, but has no pipes. Detector must not
+        false-positive on it."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        content = "Heading\n---\nbody text"
+        payload = json.loads(adapter._build_post_payload(content))
+        rows = payload["zh_cn"]["content"]
+        self.assertTrue(all(row[0]["tag"] == "md" for row in rows))
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_send_unifies_plain_text_to_post(self):
+        """Plain text (no markdown hints) still goes out as `post` with an
+        `md` row — the unified post path eliminates cross-type edits."""
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        captured = {}
+
+        class _MessageAPI:
+            def create(self, request):
+                captured["request"] = request
+                return SimpleNamespace(
+                    success=lambda: True,
+                    data=SimpleNamespace(message_id="om_plain"),
+                )
+
+        adapter._client = SimpleNamespace(
+            im=SimpleNamespace(
+                v1=SimpleNamespace(
+                    message=_MessageAPI(),
+                )
+            )
+        )
+
+        async def _direct(func, *args, **kwargs):
+            return func(*args, **kwargs)
+
+        with patch("gateway.platforms.feishu.asyncio.to_thread", side_effect=_direct):
+            result = asyncio.run(adapter.send(chat_id="oc_chat", content="hello world"))
+
+        self.assertTrue(result.success)
+        self.assertEqual(captured["request"].request_body.msg_type, "post")
+        payload = json.loads(captured["request"].request_body.content)
+        self.assertEqual(payload["zh_cn"]["content"], [[{"tag": "md", "text": "hello world"}]])
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_post_fallback_log_includes_gfm_table_flag(self):
+        """The post-fallback log line is descriptive: it records whether
+        the rejected payload contained a GFM table so operators can
+        correlate fallback events with the table routing path."""
+        import logging as _logging
+        from gateway.platforms.feishu import FeishuAdapter
+
+        with self.assertLogs("gateway.platforms.feishu", level=_logging.WARNING) as cm:
+            FeishuAdapter._log_post_fallback(
+                where="send.response",
+                content="| a | b |\n| --- | --- |\n| 1 | 2 |",
+                detail="content format of the post type is incorrect",
+            )
+        self.assertTrue(any("has_gfm_table=True" in line for line in cm.output))
+
+        with self.assertLogs("gateway.platforms.feishu", level=_logging.WARNING) as cm:
+            FeishuAdapter._log_post_fallback(
+                where="send.response",
+                content="just prose, no table here",
+                detail="content format of the post type is incorrect",
+            )
+        self.assertTrue(any("has_gfm_table=False" in line for line in cm.output))
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_is_post_format_error_uses_response_code(self):
+        """Detection prefers the structured `response.code` field — codes
+        230001 / 230099 are language-independent and the canonical signal."""
+        from gateway.platforms.feishu import FeishuAdapter
+
+        self.assertTrue(
+            FeishuAdapter._is_post_format_error(
+                response=SimpleNamespace(code=230001, msg=""),
+            )
+        )
+        self.assertTrue(
+            FeishuAdapter._is_post_format_error(
+                response=SimpleNamespace(code=230099, msg=""),
+            )
+        )
+        self.assertFalse(
+            FeishuAdapter._is_post_format_error(
+                response=SimpleNamespace(code=99991663, msg="invalid token"),
+            )
+        )
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_is_post_format_error_falls_back_to_english_template(self):
+        """When only an exception message is available (no response.code),
+        match against the canonical English error template."""
+        from gateway.platforms.feishu import FeishuAdapter
+
+        self.assertTrue(
+            FeishuAdapter._is_post_format_error(
+                text="content format of the post type is incorrect",
+            )
+        )
+        self.assertFalse(FeishuAdapter._is_post_format_error(text="rate limited"))
+        self.assertFalse(FeishuAdapter._is_post_format_error(text=""))
 
 
 @unittest.skipUnless(_HAS_LARK_OAPI, "lark-oapi not installed")

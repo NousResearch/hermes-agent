@@ -90,6 +90,12 @@ RETRY_DELAY_SECONDS = 2
 BACKOFF_DELAY_SECONDS = 30
 SESSION_EXPIRED_ERRCODE = -14
 MESSAGE_DEDUP_TTL_SECONDS = 300
+# Secondary dedup against (sender, content) re-deliveries from the ilinkai
+# long-poll race - see #16182. The same logical message arrives twice within
+# ~3 seconds with two different message_id values, so message_id alone misses
+# it. The bucket has to be wider than the observed gap (3s) but narrow enough
+# that a deliberate user repeat in the same minute still gets through.
+WEIXIN_CONTENT_DEDUP_BUCKET_SECONDS = 60
 
 MEDIA_IMAGE = 1
 MEDIA_VIDEO = 2
@@ -1335,6 +1341,21 @@ class WeixinAdapter(BasePlatformAdapter):
                 await self._collect_media(ref_item, media_paths, media_types)
 
         if not text and not media_paths:
+            return
+
+        # Secondary content-based dedup. The ilinkai long-poll occasionally
+        # redelivers the same message with a fresh message_id within a few
+        # seconds, slipping past the primary message_id check above (#16182).
+        # Skip when the inbound is media-only - we have no stable text to
+        # hash, and image/file payloads already vary per upload.
+        if text and self._dedup.is_duplicate_content(
+            sender_id, text, time_bucket_seconds=WEIXIN_CONTENT_DEDUP_BUCKET_SECONDS,
+        ):
+            logger.info(
+                "[%s] dropping duplicate content from=%s (message_id=%s) within %ds bucket",
+                self.name, _safe_id(sender_id), message_id or "?",
+                WEIXIN_CONTENT_DEDUP_BUCKET_SECONDS,
+            )
             return
 
         source = self.build_source(

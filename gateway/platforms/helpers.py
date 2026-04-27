@@ -6,6 +6,7 @@ and thread participation tracking.
 """
 
 import asyncio
+import hashlib
 import json
 import logging
 import re
@@ -42,6 +43,10 @@ class MessageDeduplicator:
         self._seen: Dict[str, float] = {}
         self._max_size = max_size
         self._ttl = ttl_seconds
+        # Secondary cache for content-based dedup. Same eviction policy as
+        # _seen, separate dict so the primary message_id path stays a hot
+        # one-line dict lookup.
+        self._seen_content: Dict[str, float] = {}
 
     def is_duplicate(self, msg_id: str) -> bool:
         """Return True if *msg_id* was already seen within the TTL window."""
@@ -68,9 +73,77 @@ class MessageDeduplicator:
                 self._seen = dict(newest)
         return False
 
+    @staticmethod
+    def _normalize_content(content: str) -> str:
+        """Lowercase and collapse whitespace so trivial reformatting still hashes equal."""
+        if not content:
+            return ""
+        return re.sub(r"\s+", " ", content.strip().lower())
+
+    @staticmethod
+    def _content_hash(content: str) -> str:
+        """SHA256 of the normalized content. Stable across processes."""
+        return hashlib.sha256(
+            MessageDeduplicator._normalize_content(content).encode("utf-8")
+        ).hexdigest()
+
+    def is_duplicate_content(
+        self,
+        sender: str,
+        content: str,
+        time_bucket_seconds: int = 60,
+    ) -> bool:
+        """Return True if *(sender, content)* was already seen in the same time bucket.
+
+        Secondary dedup layer for adapters whose upstream API redelivers the
+        same logical message with a fresh ``message_id`` (Weixin ilinkai, see
+        #16182). The composite key is ``(sender, sha256(normalized content),
+        floor(now / time_bucket_seconds))`` so two deliveries within the bucket
+        collapse, while a deliberate repeat from the user a few seconds later
+        in a new bucket still gets through.
+
+        Empty *sender* or empty *content* never matches; the caller is
+        responsible for upstream filtering.
+        """
+        if not sender or not content:
+            return False
+        if time_bucket_seconds <= 0:
+            return False
+        now = time.time()
+        bucket = int(now // time_bucket_seconds)
+        # Include neighbouring bucket when ``now`` is near the boundary so a
+        # 3-second redelivery straddling 12:00:59 / 12:01:00 still collapses.
+        # Cheap: at most two dict lookups.
+        candidate_buckets = [bucket]
+        if (now % time_bucket_seconds) < 1.0 and bucket > 0:
+            candidate_buckets.append(bucket - 1)
+        chash = self._content_hash(content)
+        for b in candidate_buckets:
+            key = f"{sender}|{chash}|{b}"
+            if key in self._seen_content:
+                if now - self._seen_content[key] < self._ttl:
+                    return True
+                del self._seen_content[key]
+        # Record under the current bucket only.
+        primary_key = f"{sender}|{chash}|{bucket}"
+        self._seen_content[primary_key] = now
+        if len(self._seen_content) > self._max_size:
+            cutoff = now - self._ttl
+            self._seen_content = {
+                k: v for k, v in self._seen_content.items() if v > cutoff
+            }
+            if len(self._seen_content) > self._max_size:
+                newest = sorted(
+                    self._seen_content.items(),
+                    key=lambda item: item[1],
+                )[-self._max_size:]
+                self._seen_content = dict(newest)
+        return False
+
     def clear(self):
         """Clear all tracked messages."""
         self._seen.clear()
+        self._seen_content.clear()
 
 
 # ─── Text Batch Aggregation ──────────────────────────────────────────────────

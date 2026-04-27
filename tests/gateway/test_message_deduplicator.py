@@ -100,3 +100,93 @@ class TestMessageDeduplicatorTTL:
         # the check is `now - ts < ttl` which is `0 < 0` = False
         # This means TTL=0 effectively disables dedup
         assert dedup.is_duplicate("msg-1") is False
+
+
+class TestMessageDeduplicatorContent:
+    """Secondary (sender, content, time-bucket) dedup for #16182.
+
+    Weixin ilinkai redelivers the same logical message with a fresh
+    message_id within a few seconds, slipping past the primary check.
+    """
+
+    def test_same_sender_same_content_same_bucket_is_duplicate(self):
+        dedup = MessageDeduplicator(ttl_seconds=300)
+        assert dedup.is_duplicate_content("user-1", "你是谁？", time_bucket_seconds=60) is False
+        assert dedup.is_duplicate_content("user-1", "你是谁？", time_bucket_seconds=60) is True
+
+    def test_different_sender_same_content_not_duplicate(self):
+        dedup = MessageDeduplicator(ttl_seconds=300)
+        assert dedup.is_duplicate_content("user-1", "hello", time_bucket_seconds=60) is False
+        assert dedup.is_duplicate_content("user-2", "hello", time_bucket_seconds=60) is False
+
+    def test_same_sender_different_content_not_duplicate(self):
+        dedup = MessageDeduplicator(ttl_seconds=300)
+        assert dedup.is_duplicate_content("user-1", "hello", time_bucket_seconds=60) is False
+        assert dedup.is_duplicate_content("user-1", "world", time_bucket_seconds=60) is False
+
+    def test_normalization_collapses_whitespace_and_case(self):
+        """Trivial reformatting of the same content still hashes equal."""
+        dedup = MessageDeduplicator(ttl_seconds=300)
+        assert dedup.is_duplicate_content("user-1", "Hello  world", 60) is False
+        # uppercase, trailing whitespace, double-space - same normalized form
+        assert dedup.is_duplicate_content("user-1", "HELLO WORLD ", 60) is True
+
+    def test_content_dedup_independent_of_message_id_dedup(self):
+        """Primary and secondary caches are separate dicts."""
+        dedup = MessageDeduplicator(ttl_seconds=300)
+        # Two different msg_ids, same content from same sender (the ilinkai bug)
+        assert dedup.is_duplicate("msg-aaa") is False
+        assert dedup.is_duplicate_content("user-1", "hi", 60) is False
+        assert dedup.is_duplicate("msg-bbb") is False  # different id, primary lets it through
+        assert dedup.is_duplicate_content("user-1", "hi", 60) is True  # secondary catches it
+
+    def test_empty_sender_or_content_never_duplicate(self):
+        dedup = MessageDeduplicator(ttl_seconds=300)
+        assert dedup.is_duplicate_content("", "hello", 60) is False
+        assert dedup.is_duplicate_content("user-1", "", 60) is False
+        # Neither call should have populated the cache
+        assert dedup._seen_content == {}
+
+    def test_zero_or_negative_bucket_disables_dedup(self):
+        dedup = MessageDeduplicator(ttl_seconds=300)
+        assert dedup.is_duplicate_content("user-1", "hello", 0) is False
+        assert dedup.is_duplicate_content("user-1", "hello", 0) is False
+        assert dedup.is_duplicate_content("user-1", "hello", -5) is False
+
+    def test_different_buckets_not_duplicate(self):
+        """A repeat in a *later* bucket falls through, so deliberate retries are not lost."""
+        dedup = MessageDeduplicator(ttl_seconds=300)
+        # Pin the wall clock to a value comfortably mid-bucket so the
+        # neighbour-bucket fallback (within the first second of a bucket)
+        # can't fire. 1_000_000 mod 60 = 40s, well past the 1s window.
+        with patch("gateway.platforms.helpers.time.time", return_value=1_000_000.0):
+            assert dedup.is_duplicate_content("user-1", "hi", 60) is False
+        # Advance 90s -> next bucket. Same content, same sender, but the
+        # bucket component of the composite key differs, so it's not a dup.
+        with patch("gateway.platforms.helpers.time.time", return_value=1_000_090.0):
+            assert dedup.is_duplicate_content("user-1", "hi", 60) is False
+            # And dedup within the new bucket still works.
+            assert dedup.is_duplicate_content("user-1", "hi", 60) is True
+
+    def test_clear_wipes_both_caches(self):
+        dedup = MessageDeduplicator(ttl_seconds=300)
+        dedup.is_duplicate("msg-1")
+        dedup.is_duplicate_content("user-1", "hi", 60)
+        assert dedup._seen and dedup._seen_content
+        dedup.clear()
+        assert dedup._seen == {}
+        assert dedup._seen_content == {}
+
+    def test_max_size_caps_content_cache(self):
+        dedup = MessageDeduplicator(max_size=3, ttl_seconds=300)
+        for i in range(5):
+            dedup.is_duplicate_content(f"user-{i}", "hi", 60)
+        assert len(dedup._seen_content) <= 3
+
+    def test_content_hash_is_stable_across_instances(self):
+        """Hash is deterministic so two adapter instances would agree."""
+        a = MessageDeduplicator._content_hash("Hello World")
+        b = MessageDeduplicator._content_hash("hello  world")
+        assert a == b
+        c = MessageDeduplicator._content_hash("hello universe")
+        assert a != c

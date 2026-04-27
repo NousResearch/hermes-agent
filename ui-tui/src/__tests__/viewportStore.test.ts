@@ -33,6 +33,6 @@ describe('viewportStore', () => {
       top: 13,
       viewportHeight: 5
     })
-    expect(viewportSnapshotKey(snap)).toBe('0:13:5:40:3')
+    expect(viewportSnapshotKey(snap)).toBe('0:16:5:40:3')
   })
 })

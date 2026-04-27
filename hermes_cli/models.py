@@ -9,9 +9,11 @@ from __future__ import annotations
 
 import json
 import os
+import time
 import urllib.request
 import urllib.error
-import time
+import httpx
+from tools.http_tools import retryable_get
 from difflib import get_close_matches
 from pathlib import Path
 from typing import Any, NamedTuple, Optional
@@ -885,12 +887,17 @@ def fetch_openrouter_models(
     preferred_ids = [mid for mid, _ in fallback]
 
     try:
-        req = urllib.request.Request(
-            "https://openrouter.ai/api/v1/models",
-            headers={"Accept": "application/json"},
-        )
-        with urllib.request.urlopen(req, timeout=timeout) as resp:
-            payload = json.loads(resp.read().decode())
+        client = httpx.Client(timeout=timeout)
+        try:
+            resp = retryable_get(
+                client,
+                "https://openrouter.ai/api/v1/models",
+                headers={"Accept": "application/json"},
+            )
+            resp.raise_for_status()
+            payload = resp.json()
+        finally:
+            client.close()
     except Exception:
         return list(_openrouter_catalog_cache or fallback)
 

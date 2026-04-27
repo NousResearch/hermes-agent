@@ -51,6 +51,7 @@ _PROVIDER_PREFIXES: frozenset[str] = frozenset({
     "qwen-oauth",
     "xiaomi",
     "arcee",
+    "groq", "cerebras",
     "custom", "local",
     # Common aliases
     "google", "google-gemini", "google-ai-studio",
@@ -308,6 +309,8 @@ _URL_TO_PROVIDER: Dict[str, str] = {
     "api.xiaomimimo.com": "xiaomi",
     "xiaomimimo.com": "xiaomi",
     "ollama.com": "ollama-cloud",
+    "api.groq.com": "groq",
+    "api.cerebras.ai": "cerebras",
 }
 
 

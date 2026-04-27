@@ -163,6 +163,8 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
     "opencode-go": "glm-5",
     "kilocode": "google/gemini-3-flash-preview",
     "ollama-cloud": "nemotron-3-nano:30b",
+    "groq": "llama-3.3-70b-versatile",
+    "cerebras": "llama3.1-8b",
 }
 
 # Vision-specific model overrides for direct providers.

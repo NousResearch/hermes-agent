@@ -12,6 +12,8 @@ from tools.session_search_tool import (
     _get_session_search_max_concurrency,
     _list_recent_sessions,
     _HIDDEN_SESSION_SOURCES,
+    _RECENT_SESSIONS_FETCH_BUDGET,
+    _list_recent_sessions,
     MAX_SESSION_CHARS,
     SESSION_SEARCH_SCHEMA,
 )
@@ -483,3 +485,63 @@ class TestSessionSearch:
         assert result["count"] == 0
         assert result["results"] == []
         assert result["sessions_searched"] == 0
+
+
+# =========================================================================
+# _list_recent_sessions: cron-flood regression (#16253)
+# =========================================================================
+
+@pytest.fixture()
+def _real_db(tmp_path):
+    """Minimal real SessionDB for integration-style recent-sessions tests."""
+    from hermes_state import SessionDB
+    return SessionDB(db_path=tmp_path / "state.db")
+
+
+class TestListRecentSessionsCronFlood:
+    """After many cron sessions run, interactive sessions must still appear
+    in the recent list (_RECENT_SESSIONS_FETCH_BUDGET fix for #16253)."""
+
+    def test_fetch_budget_constant_is_large_enough(self):
+        assert _RECENT_SESSIONS_FETCH_BUDGET >= 50, (
+            "_RECENT_SESSIONS_FETCH_BUDGET must be large enough to look past "
+            "typical cron-job bursts; 50 is the minimum reasonable floor."
+        )
+
+    def test_interactive_session_survives_cron_flood(self, _real_db):
+        """An interactive session should appear in _list_recent_sessions even
+        when many cron sessions were created after it (#16253)."""
+        db = _real_db
+        # Interactive session created first (lower started_at)
+        db.create_session("interactive_evening", "cli")
+        db.append_message("interactive_evening", "user", "Evening work session content")
+
+        # Simulate a flood of cron sessions created after the interactive one.
+        # Previously, limit+5 = 8 would hide the interactive session if 8+
+        # cron sessions ran afterwards.
+        for i in range(20):
+            sid = f"cron_{i:03d}"
+            db.create_session(sid, "cron")
+            db.append_message(sid, "user", f"automated cron job {i}")
+
+        result = json.loads(_list_recent_sessions(db, limit=3))
+
+        assert result["success"] is True
+        session_ids = [s["session_id"] for s in result["results"]]
+        assert "interactive_evening" in session_ids, (
+            f"Interactive session was dropped from recent list when 20 cron "
+            f"sessions followed it — _RECENT_SESSIONS_FETCH_BUDGET too small. "
+            f"Got: {session_ids}"
+        )
+
+    def test_recent_sessions_count_respects_limit(self, _real_db):
+        """_list_recent_sessions must not return more than `limit` results."""
+        db = _real_db
+        for i in range(10):
+            db.create_session(f"s{i}", "cli")
+
+        result = json.loads(_list_recent_sessions(db, limit=3))
+
+        assert result["success"] is True
+        assert result["count"] <= 3
+        assert len(result["results"]) <= 3

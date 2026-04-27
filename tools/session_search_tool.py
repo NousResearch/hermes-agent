@@ -262,11 +262,17 @@ async def _summarize_session(
 # HERMES_SESSION_SOURCE=tool so they don't clutter the user's session history.
 _HIDDEN_SESSION_SOURCES = ("tool",)
 
+# How many raw sessions to fetch from the DB before filtering down to `limit`
+# results in _list_recent_sessions.  Must be large enough to look past a burst
+# of cron sessions that ran after the last interactive session; otherwise those
+# automated jobs crowd out the user's real conversations (#16253).
+_RECENT_SESSIONS_FETCH_BUDGET = 100
+
 
 def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str:
     """Return metadata for the most recent sessions (no LLM calls)."""
     try:
-        sessions = db.list_sessions_rich(limit=limit + 5, exclude_sources=list(_HIDDEN_SESSION_SOURCES))  # fetch extra to skip current
+        sessions = db.list_sessions_rich(limit=_RECENT_SESSIONS_FETCH_BUDGET, exclude_sources=list(_HIDDEN_SESSION_SOURCES))
 
         # Resolve current session lineage to exclude it
         current_root = None
@@ -284,7 +290,11 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
             except Exception:
                 current_root = current_session_id
 
-        results = []
+        # Two-pass collection: non-cron sessions first so that a burst of
+        # automated cron jobs doesn't crowd out the user's interactive
+        # conversations in the "what were we working on?" view (#16253).
+        non_cron: list = []
+        cron_sessions: list = []
         for s in sessions:
             sid = s.get("id", "")
             if current_root and (sid == current_root or sid == current_session_id):
@@ -292,7 +302,7 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
             # Skip child/delegation sessions (they have parent_session_id)
             if s.get("parent_session_id"):
                 continue
-            results.append({
+            entry = {
                 "session_id": sid,
                 "title": s.get("title") or None,
                 "source": s.get("source", ""),
@@ -300,9 +310,15 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
                 "last_active": s.get("last_active", ""),
                 "message_count": s.get("message_count", 0),
                 "preview": s.get("preview", ""),
-            })
-            if len(results) >= limit:
-                break
+            }
+            if s.get("source") == "cron":
+                cron_sessions.append(entry)
+            else:
+                non_cron.append(entry)
+
+        # Fill results: non-cron sessions first, then cron to fill remaining slots.
+        combined = non_cron + cron_sessions
+        results = combined[:limit]
 
         return json.dumps({
             "success": True,
@@ -355,12 +371,14 @@ def session_search(
         if role_filter and role_filter.strip():
             role_list = [r.strip() for r in role_filter.split(",") if r.strip()]
 
-        # FTS5 search -- get matches ranked by relevance
+        # FTS5 search -- get matches ranked by relevance.  Fetch limit * 50 raw
+        # matches so that a burst of cron sessions with overlapping keywords
+        # doesn't crowd out unique interactive sessions (#16253).
         raw_results = db.search_messages(
             query=query,
             role_filter=role_list,
             exclude_sources=list(_HIDDEN_SESSION_SOURCES),
-            limit=50,  # Get more matches to find unique sessions
+            limit=min(limit * 50, 500),
             offset=0,
         )
 

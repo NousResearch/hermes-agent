@@ -3294,6 +3294,7 @@ class DiscordAdapter(BasePlatformAdapter):
         chat_topic = self._get_effective_topic(message.channel, is_thread=is_thread)
 
         # Build source
+        guild = getattr(message, "guild", None)
         source = self.build_source(
             chat_id=str(effective_channel.id),
             chat_name=chat_name,
@@ -3303,7 +3304,7 @@ class DiscordAdapter(BasePlatformAdapter):
             thread_id=thread_id,
             chat_topic=chat_topic,
             is_bot=getattr(message.author, "bot", False),
-            guild_id=str(message.guild.id) if message.guild else None,
+            guild_id=str(guild.id) if guild else None,
             parent_chat_id=parent_channel_id,
             message_id=str(message.id),
         )

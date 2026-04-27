@@ -5,6 +5,7 @@ from datetime import datetime
 from pathlib import Path
 
 from tools.skill_change_ledger import (
+    MAX_DIFF_TEXT_CHARS,
     compute_text_diff,
     get_skill_change,
     hash_skill_dir,
@@ -172,6 +173,51 @@ def test_get_skill_change_includes_diff_text_when_artifact_exists(monkeypatch, t
     assert detail["event_id"] == event["event_id"]
     assert detail["reason_kind"] == "explicit"
     assert detail["diff_text"] == raw_diff
+
+
+def test_get_skill_change_ignores_diff_path_outside_artifact_root(monkeypatch, tmp_path):
+    hermes_home = _set_hermes_home(monkeypatch, tmp_path)
+    secret = tmp_path / "secret.txt"
+    secret.write_text("do not expose\n", encoding="utf-8")
+    event = record_skill_change(
+        skill="demo-skill",
+        action="patch",
+        actor="hermes-agent",
+        source="unit-test",
+        reason="Create event before tampering.",
+        diff_text="--- a/SKILL.md\n+++ b/SKILL.md\n",
+    )
+
+    ledger_path = hermes_home / "skill_changes.jsonl"
+    tampered = json.loads(ledger_path.read_text(encoding="utf-8").splitlines()[0])
+    tampered["diff_path"] = str(secret)
+    ledger_path.write_text(json.dumps(tampered) + "\n", encoding="utf-8")
+
+    detail = get_skill_change(event["event_id"])
+
+    assert detail is not None
+    assert detail["diff_path"] == str(secret)
+    assert "diff_text" not in detail
+
+
+def test_get_skill_change_truncates_large_diff_text(monkeypatch, tmp_path):
+    _set_hermes_home(monkeypatch, tmp_path)
+    raw_diff = "--- a/SKILL.md\n+++ b/SKILL.md\n" + ("+x\n" * (MAX_DIFF_TEXT_CHARS // 2))
+    event = record_skill_change(
+        skill="demo-skill",
+        action="patch",
+        actor="hermes-agent",
+        source="unit-test",
+        reason="Large diff should be bounded for dashboard reads.",
+        diff_text=raw_diff,
+    )
+
+    detail = get_skill_change(event["event_id"])
+
+    assert detail is not None
+    assert len(detail["diff_text"]) < len(raw_diff)
+    assert detail["diff_text"].startswith("--- a/SKILL.md")
+    assert "diff truncated" in detail["diff_text"]
 
 
 def test_list_skill_changes_filters_by_skill_limit_and_review_state(monkeypatch, tmp_path):

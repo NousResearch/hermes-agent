@@ -3,6 +3,7 @@ import test from "node:test";
 
 import {
   latestChangeBySkill,
+  loadSkillChangesBestEffort,
   reasonKindLabel,
   reviewStatusLabel,
 } from "../src/lib/skillChanges.ts";
@@ -20,6 +21,21 @@ test("reviewStatusLabel maps dashboard review states", () => {
   assert.equal(reviewStatusLabel("reviewed"), "Reviewed");
   assert.equal(reviewStatusLabel("needs_followup"), "Needs follow-up");
   assert.equal(reviewStatusLabel("other"), "other");
+});
+
+test("loadSkillChangesBestEffort degrades to an empty history when the endpoint fails", async () => {
+  let notified = false;
+  const changes = await loadSkillChangesBestEffort(
+    async () => {
+      throw new Error("history unavailable");
+    },
+    () => {
+      notified = true;
+    },
+  );
+
+  assert.deepEqual(changes, []);
+  assert.equal(notified, true);
 });
 
 test("latestChangeBySkill keeps the newest event per skill from a newest-first list", () => {

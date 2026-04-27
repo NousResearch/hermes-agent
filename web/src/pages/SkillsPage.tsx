@@ -16,6 +16,7 @@ import type { SkillChangeDetail, SkillChangeEvent, SkillInfo, ToolsetInfo } from
 import {
   formatSkillChangeTime,
   latestChangeBySkill,
+  loadSkillChangesBestEffort,
   reasonKindLabel,
   reviewStatusLabel,
 } from "@/lib/skillChanges";
@@ -88,7 +89,14 @@ export default function SkillsPage() {
   const { t } = useI18n();
 
   useEffect(() => {
-    Promise.all([api.getSkills(), api.getToolsets(), api.getSkillChanges({ limit: 20 })])
+    Promise.all([
+      api.getSkills(),
+      api.getToolsets(),
+      loadSkillChangesBestEffort(
+        () => api.getSkillChanges({ limit: 20 }),
+        () => showToast("Skill change history unavailable", "error"),
+      ),
+    ])
       .then(([s, tsets, changes]) => {
         setSkills(s);
         setToolsets(tsets);

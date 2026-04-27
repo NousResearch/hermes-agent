@@ -23,6 +23,8 @@ from hermes_constants import get_hermes_home
 
 REASON_KINDS = {"explicit", "system", "unattributed", "model_summary"}
 REVIEW_STATUSES = {"unreviewed", "reviewed", "needs_followup"}
+MAX_DIFF_TEXT_CHARS = 50_000
+_DIFF_TRUNCATION_NOTICE = "\n\n[diff truncated to 50,000 characters for dashboard display]"
 EVENT_FIELDS = (
     "event_id",
     "timestamp",
@@ -345,6 +347,25 @@ def list_skill_changes(
     return recent[: max(0, limit)]
 
 
+def _safe_diff_artifact_path(diff_path: str) -> Path | None:
+    """Resolve a diff path only if it stays under the expected artifact root."""
+    try:
+        path = Path(os.path.expanduser(diff_path)).resolve()
+        root = _default_artifacts_root().resolve()
+        if not path.is_relative_to(root):
+            return None
+        return path
+    except OSError:
+        return None
+
+
+def _bounded_diff_text(text: str) -> str:
+    """Bound diff text returned through APIs while preserving the raw artifact."""
+    if len(text) <= MAX_DIFF_TEXT_CHARS:
+        return text
+    return text[:MAX_DIFF_TEXT_CHARS] + _DIFF_TRUNCATION_NOTICE
+
+
 def get_skill_change(
     event_id: str,
     *,
@@ -359,10 +380,10 @@ def get_skill_change(
     detail = dict(event)
     diff_path = detail.get("diff_path")
     if isinstance(diff_path, str) and diff_path:
-        path = Path(os.path.expanduser(diff_path))
+        path = _safe_diff_artifact_path(diff_path)
         try:
-            if path.exists():
-                detail["diff_text"] = path.read_text(encoding="utf-8")
+            if path is not None and path.exists():
+                detail["diff_text"] = _bounded_diff_text(path.read_text(encoding="utf-8"))
         except OSError:
             pass
     return detail

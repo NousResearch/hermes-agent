@@ -1797,6 +1797,13 @@ class SkillChangeReviewUpdate(BaseModel):
     note: Optional[str] = None
 
 
+_SKILL_CHANGE_LIMIT_MAX = 100
+
+
+def _clamp_skill_change_limit(limit: int) -> int:
+    return max(0, min(limit, _SKILL_CHANGE_LIMIT_MAX))
+
+
 @app.get("/api/skills/changes")
 async def get_skill_changes(
     skill: Optional[str] = None,
@@ -1805,14 +1812,14 @@ async def get_skill_changes(
 ):
     from tools.skill_change_ledger import list_skill_changes
 
-    return list_skill_changes(skill=skill, limit=limit, unreviewed=unreviewed)
+    return list_skill_changes(skill=skill, limit=_clamp_skill_change_limit(limit), unreviewed=unreviewed)
 
 
 @app.get("/api/skills/{name}/history")
 async def get_skill_history(name: str, limit: int = 50):
     from tools.skill_change_ledger import list_skill_changes
 
-    return list_skill_changes(skill=name, limit=limit)
+    return list_skill_changes(skill=name, limit=_clamp_skill_change_limit(limit))
 
 
 @app.get("/api/skills/changes/{event_id}")

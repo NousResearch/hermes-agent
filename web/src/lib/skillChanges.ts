@@ -40,6 +40,18 @@ export function latestChangeBySkill<T extends Pick<SkillChangeEvent, "skill" | "
   return bySkill;
 }
 
+export async function loadSkillChangesBestEffort<T>(
+  loadChanges: () => Promise<T[]>,
+  onError?: (error: unknown) => void,
+): Promise<T[]> {
+  try {
+    return await loadChanges();
+  } catch (error) {
+    onError?.(error);
+    return [];
+  }
+}
+
 export function formatSkillChangeTime(timestamp: string): string {
   const date = new Date(timestamp);
   if (Number.isNaN(date.getTime())) return timestamp;

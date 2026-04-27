@@ -77,6 +77,21 @@ def test_get_skill_changes_filters_by_skill_limit_and_unreviewed(client):
     assert data[0]["review_status"] == "unreviewed"
     assert first["event_id"] != third["event_id"]
 
+def test_get_skill_changes_caps_excessive_limit(client):
+    for idx in range(105):
+        record_skill_change(
+            skill=f"skill-{idx}",
+            action="patch",
+            actor="hermes-agent",
+            source="unit-test",
+            reason="Populate enough events to test endpoint limit clamping.",
+        )
+
+    response = client.get("/api/skills/changes", params={"limit": 500})
+
+    assert response.status_code == 200
+    assert len(response.json()) == 100
+
 
 def test_get_skill_history_returns_events_for_one_skill(client):
     other = record_skill_change(

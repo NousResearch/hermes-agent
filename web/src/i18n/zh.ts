@@ -211,7 +211,7 @@ export const zh: Translations = {
   profiles: {
     newProfile: "新建多Agent配置",
     name: "名称",
-    namePlaceholder: "例如：work、side-project",
+    namePlaceholder: "例如：coder, writer 等",
     nameRequired: "名称必填",
     nameRule:
       "仅允许小写字母、数字、下划线和短横线；首字符必须是字母或数字；最多 64 个字符。",

@@ -214,7 +214,7 @@ export const en: Translations = {
   profiles: {
     newProfile: "New Profile",
     name: "Name",
-    namePlaceholder: "e.g. work, side-project",
+    namePlaceholder: "e.g. coder, writer, etc.",
     nameRequired: "Name is required",
     nameRule:
       "Lowercase letters, digits, _ and - only; must start with a letter or digit; up to 64 characters.",

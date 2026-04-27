@@ -6,8 +6,8 @@ import type {
   ConfigGetValueResponse,
   ConfigSetResponse,
   SessionSaveResponse,
-  SessionTitleResponse,
   SessionSteerResponse,
+  SessionTitleResponse,
   SessionUndoResponse
 } from '../../../gatewayTypes.js'
 import { writeOsc52Clipboard } from '../../../lib/osc52.js'

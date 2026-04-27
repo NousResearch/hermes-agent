@@ -1,4 +1,5 @@
 import { attachedImageNotice, introMsg, toTranscriptMessages } from '../../../domain/messages.js'
+import { TUI_SESSION_MODEL_FLAG } from '../../../domain/slash.js'
 import type {
   BackgroundStartResponse,
   ConfigGetValueResponse,
@@ -10,7 +11,6 @@ import type {
   VoiceToggleResponse
 } from '../../../gatewayTypes.js'
 import { fmtK } from '../../../lib/text.js'
-import { TUI_SESSION_MODEL_FLAG } from '../../../domain/slash.js'
 import type { PanelSection } from '../../../types.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
@@ -27,8 +27,7 @@ const persistedModelArg = (arg: string) => {
   return !trimmed || GLOBAL_MODEL_FLAG_RE.test(trimmed) ? trimmed : `${trimmed} --global`
 }
 
-const stripTuiSessionFlag = (trimmed: string) =>
-  trimmed.replace(TUI_SESSION_STRIP_RE, ' ').replace(/\s+/g, ' ').trim()
+const stripTuiSessionFlag = (trimmed: string) => trimmed.replace(TUI_SESSION_STRIP_RE, ' ').replace(/\s+/g, ' ').trim()
 
 const modelValueForConfigSet = (arg: string) => {
   const trimmed = arg.trim()
@@ -313,6 +312,7 @@ export const sessionCommands: SlashCommand[] = [
     run: (arg, ctx) => {
       const mode = arg.trim().toLowerCase()
       const valid = new Set(['', 'status', 'normal', 'fast', 'on', 'off', 'toggle'])
+
       if (!valid.has(mode)) {
         return ctx.transcript.sys('usage: /fast [normal|fast|status]')
       }
@@ -356,6 +356,7 @@ export const sessionCommands: SlashCommand[] = [
     run: (arg, ctx) => {
       const mode = arg.trim().toLowerCase()
       const valid = new Set(['', 'status', 'queue', 'steer', 'interrupt'])
+
       if (!valid.has(mode)) {
         return ctx.transcript.sys('usage: /busy [queue|steer|interrupt|status]')
       }

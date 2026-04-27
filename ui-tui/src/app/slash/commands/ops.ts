@@ -102,6 +102,7 @@ export const opsCommands: SlashCommand[] = [
       }
 
       const payload: Record<string, unknown> = { action }
+
       if (action === 'connect') {
         payload.url = rest.join(' ').trim() || 'http://localhost:9222'
       }
@@ -115,11 +116,13 @@ export const opsCommands: SlashCommand[] = [
                 r.connected ? `browser connected: ${r.url || '(url unavailable)'}` : 'browser not connected'
               )
             }
+
             if (action === 'connect') {
               return ctx.transcript.sys(
                 r.connected ? `browser connected: ${r.url || '(url unavailable)'}` : 'browser connect failed'
               )
             }
+
             ctx.transcript.sys('browser disconnected')
           })
         )
@@ -143,10 +146,13 @@ export const opsCommands: SlashCommand[] = [
               if (!r.enabled) {
                 return ctx.transcript.sys('checkpoints are not enabled')
               }
+
               const checkpoints = r.checkpoints ?? []
+
               if (!checkpoints.length) {
                 return ctx.transcript.sys('no checkpoints found')
               }
+
               ctx.transcript.panel('Rollback checkpoints', [
                 {
                   rows: checkpoints.map((c, idx) => [
@@ -162,17 +168,21 @@ export const opsCommands: SlashCommand[] = [
 
       if (lower === 'diff') {
         const hash = rest[0]
+
         if (!hash) {
           return ctx.transcript.sys('usage: /rollback diff <checkpoint>')
         }
+
         return ctx.gateway
           .rpc<RollbackDiffResponse>('rollback.diff', { hash, session_id: ctx.sid })
           .then(
             ctx.guarded<RollbackDiffResponse>(r => {
               const body = (r.rendered || r.diff || '').trim()
+
               if (!body && !r.stat) {
                 return ctx.transcript.sys('no changes since this checkpoint')
               }
+
               const text = [r.stat || '', body].filter(Boolean).join('\n\n')
               ctx.transcript.page(text, 'Rollback diff')
             })
@@ -182,6 +192,7 @@ export const opsCommands: SlashCommand[] = [
 
       const hash = first
       const filePath = rest.join(' ').trim()
+
       return ctx.gateway
         .rpc<RollbackRestoreResponse>('rollback.restore', {
           ...(filePath ? { file_path: filePath } : {}),
@@ -193,9 +204,11 @@ export const opsCommands: SlashCommand[] = [
             if (!r.success) {
               return ctx.transcript.sys(`rollback failed: ${r.error || r.message || 'unknown error'}`)
             }
+
             const target = filePath || 'workspace'
             const detail = r.reason || r.message || r.restored_to || 'restored'
             ctx.transcript.sys(`rollback restored ${target}: ${detail}`)
+
             if ((r.history_removed ?? 0) > 0) {
               ctx.transcript.setHistoryItems(prev => ctx.transcript.trimLastExchange(prev))
             }

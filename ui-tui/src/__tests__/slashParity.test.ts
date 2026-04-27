@@ -8,14 +8,7 @@ import { SLASH_COMMANDS } from '../app/slash/registry.js'
 
 type CommandRoute = 'fallback' | 'local' | 'native'
 
-const NATIVE_MUTATING_COMMANDS = new Set([
-  'browser',
-  'busy',
-  'fast',
-  'reload-mcp',
-  'rollback',
-  'stop'
-])
+const NATIVE_MUTATING_COMMANDS = new Set(['browser', 'busy', 'fast', 'reload-mcp', 'rollback', 'stop'])
 
 const MUTATING_COMMANDS = [
   'background',
@@ -57,12 +50,15 @@ const LOCAL_COMMAND_NAMES = new Set(
 
 const classifyRoute = (name: string): CommandRoute => {
   const normalized = name.toLowerCase()
+
   if (NATIVE_MUTATING_COMMANDS.has(normalized)) {
     return 'native'
   }
+
   if (LOCAL_COMMAND_NAMES.has(normalized)) {
     return 'local'
   }
+
   return 'fallback'
 }
 

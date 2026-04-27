@@ -7890,39 +7890,45 @@ class AIAgent:
             api_msg["reasoning_content"] = existing
             return
 
-        # 2. Healthy session: promote 'reasoning' field to 'reasoning_content'
+        needs_thinking_pad = (
+            self._needs_kimi_tool_reasoning()
+            or self._needs_deepseek_tool_reasoning()
+        )
+
+        # 2. Cross-provider poisoned history (#15748): on DeepSeek/Kimi,
+        # if the source turn has tool_calls AND a 'reasoning' field but no
+        # 'reasoning_content' key, the 'reasoning' text was written by a
+        # prior provider (e.g. MiniMax) — DeepSeek's own _build_assistant_message
+        # always pins reasoning_content="" at creation time for tool-call turns,
+        # so the shape (reasoning set, reasoning_content absent, tool_calls
+        # present) is unreachable from same-provider DeepSeek history. Inject
+        # "" to satisfy the API without leaking another provider's chain of
+        # thought to DeepSeek/Kimi.
+        normalized_reasoning = source_msg.get("reasoning")
+        if (
+            needs_thinking_pad
+            and source_msg.get("tool_calls")
+            and isinstance(normalized_reasoning, str)
+            and normalized_reasoning
+        ):
+            api_msg["reasoning_content"] = ""
+            return
+
+        # 3. Healthy session: promote 'reasoning' field to 'reasoning_content'
         # for providers that use the internal 'reasoning' key.
         # This must happen BEFORE the DeepSeek/Kimi tool-call check so that
         # genuine reasoning content is not overwritten by the empty-string
         # fallback (#15812 regression in PR #15478).
-        normalized_reasoning = source_msg.get("reasoning")
         if isinstance(normalized_reasoning, str) and normalized_reasoning:
             api_msg["reasoning_content"] = normalized_reasoning
             return
 
-        # 3. DeepSeek / Kimi thinking mode: tool-call turns that lack
-        # reasoning_content are "poisoned history" — a prior provider (MiniMax,
-        # etc.) left them empty. DeepSeek returns HTTP 400 if reasoning_content
-        # is absent on replay; inject "" to satisfy the provider's requirement
-        # without forwarding any cross-provider reasoning content.
-        needs_empty_reasoning = (
-            source_msg.get("tool_calls")
-            and (
-                self._needs_kimi_tool_reasoning()
-                or self._needs_deepseek_tool_reasoning()
-            )
-        )
-        if needs_empty_reasoning:
-            api_msg["reasoning_content"] = ""
-            return
-
         # 4. DeepSeek / Kimi thinking mode: all assistant messages need
         # reasoning_content. Inject "" to satisfy the provider's requirement
-        # when no explicit reasoning content is present.
-        if (
-            self._needs_kimi_tool_reasoning()
-            or self._needs_deepseek_tool_reasoning()
-        ):
+        # when no explicit reasoning content is present. Covers both
+        # tool-call turns (already-poisoned history with no reasoning at all)
+        # and plain text turns.
+        if needs_thinking_pad:
             api_msg["reasoning_content"] = ""
             return
 

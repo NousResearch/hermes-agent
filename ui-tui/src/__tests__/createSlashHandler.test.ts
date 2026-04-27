@@ -26,7 +26,7 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
-  it('persists typed /model switches by default', async () => {
+  it('keeps typed /model switches session-scoped by default', async () => {
     patchUiState({ sid: 'sid-abc' })
 
     const ctx = buildCtx({
@@ -40,7 +40,7 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
       key: 'model',
       session_id: 'sid-abc',
-      value: 'x-model --global'
+      value: 'x-model'
     })
   })
 

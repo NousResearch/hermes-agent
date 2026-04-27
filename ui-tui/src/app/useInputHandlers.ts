@@ -379,13 +379,8 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (isAction(key, ch, 'l')) {
-      if (actions.guardBusySessionSwitch()) {
-        return
-      }
-
-      patchUiState({ status: 'forging session…' })
-
-      return actions.newSession()
+      clearSelection()
+      return patchUiState(state => ({ ...state }))
     }
 
     if (isVoiceToggleKey(key, ch)) {

@@ -26,6 +26,11 @@ describe('constants', () => {
     })
   })
 
+  it('documents Ctrl/Cmd+L as non-destructive redraw', () => {
+    expect(HOTKEYS.some(([, d]) => d === 'redraw / repaint')).toBe(true)
+    expect(HOTKEYS.some(([, d]) => d.includes('new session'))).toBe(false)
+  })
+
   it('TOOL_VERBS maps known tools (verb-only, no emoji)', () => {
     expect(TOOL_VERBS.terminal).toBe('terminal')
     expect(TOOL_VERBS.read_file).toBe('reading')

@@ -759,9 +759,17 @@ def _run_cleanup():
         pass
     try:
         if _active_agent_ref and hasattr(_active_agent_ref, 'shutdown_memory_provider'):
-            _active_agent_ref.shutdown_memory_provider(
-                getattr(_active_agent_ref, 'conversation_history', None) or []
-            )
+            # Forward the agent's own transcript so memory providers'
+            # ``on_session_end`` hooks see the real conversation instead of
+            # an empty list (#15165). ``_session_messages`` is set on
+            # ``AIAgent.__init__`` and refreshed every turn via
+            # ``_persist_session``. Fall back to no-arg on test stubs /
+            # partially-initialised agents where the attribute is missing.
+            _session_msgs = getattr(_active_agent_ref, '_session_messages', None)
+            if isinstance(_session_msgs, list):
+                _active_agent_ref.shutdown_memory_provider(_session_msgs)
+            else:
+                _active_agent_ref.shutdown_memory_provider()
     except Exception:
         pass
 
@@ -8433,13 +8441,62 @@ class HermesCLI:
         ):
             return None
         
-        # Pre-process images through the vision tool (Gemini Flash) so the
-        # main model receives text descriptions instead of raw base64 image
-        # content — works with any model, not just vision-capable ones.
+        # Route image attachments based on the active model's vision capability.
+        # "native" → pass pixels as OpenAI-style content parts (adapters
+        #            translate for Anthropic/Gemini/Bedrock).
+        # "text"   → pre-analyze each image with vision_analyze and prepend the
+        #            description as text — works with non-vision models.
+        # See agent/image_routing.py for the decision table.
         if images:
-            message = self._preprocess_images_with_vision(
-                message if isinstance(message, str) else "", images
-            )
+            try:
+                from agent.image_routing import (
+                    build_native_content_parts,
+                    decide_image_input_mode,
+                )
+                from hermes_cli.config import load_config
+
+                _img_mode = decide_image_input_mode(
+                    (self.provider or "").strip(),
+                    (self.model or "").strip(),
+                    load_config(),
+                )
+            except Exception as _img_exc:
+                logging.debug("image_routing decision failed, defaulting to text: %s", _img_exc)
+                _img_mode = "text"
+
+            if _img_mode == "native":
+                try:
+                    _text_for_parts = message if isinstance(message, str) else ""
+                    _img_str_paths = [str(p) for p in images]
+                    _parts, _skipped = build_native_content_parts(
+                        _text_for_parts,
+                        _img_str_paths,
+                    )
+                    if _skipped:
+                        _cprint(
+                            f"  {_DIM}⚠ skipped {len(_skipped)} unreadable image path(s){_RST}"
+                        )
+                    if any(p.get("type") == "image_url" for p in _parts):
+                        _img_names = ", ".join(Path(p).name for p in _img_str_paths)
+                        _cprint(
+                            f"  {_DIM}📎 attaching {len(images)} image(s) natively "
+                            f"(model supports vision): {_img_names}{_RST}"
+                        )
+                        message = _parts
+                    else:
+                        # All images unreadable — fall back to text enrichment.
+                        message = self._preprocess_images_with_vision(
+                            message if isinstance(message, str) else "", images
+                        )
+                except Exception as _img_exc:
+                    logging.warning("native image attach failed, falling back to text: %s", _img_exc)
+                    message = self._preprocess_images_with_vision(
+                        message if isinstance(message, str) else "", images
+                    )
+            else:
+                message = self._preprocess_images_with_vision(
+                    message if isinstance(message, str) else "", images
+                )
 
         # Expand @ context references (e.g. @file:main.py, @diff, @folder:src/)
         if isinstance(message, str) and "@" in message:
@@ -9871,6 +9928,12 @@ class HermesCLI:
             placeholder while preserving any existing user text in the
             buffer.
             """
+            # Diagnostic canary: measure how long the paste handler blocks
+            # the prompt_toolkit event loop. If this exceeds ~500ms we log
+            # it so recurring "CLI freezes on paste" reports (issue #16263,
+            # macOS Tahoe 26 + iTerm2/Ghostty) arrive with data attached.
+            _paste_handler_start = time.perf_counter()
+            _paste_raw_size = len(event.data or "")
             pasted_text = event.data or ""
             # Normalise line endings — Windows \r\n and old Mac \r both become \n
             # so the 5-line collapse threshold and display are consistent.
@@ -9899,6 +9962,17 @@ class HermesCLI:
                     buf.insert_text(prefix + placeholder)
                 else:
                     buf.insert_text(pasted_text)
+            _paste_handler_elapsed_ms = (time.perf_counter() - _paste_handler_start) * 1000.0
+            if _paste_handler_elapsed_ms > 500.0:
+                logger.warning(
+                    "Slow bracketed-paste handler: %.1fms to process %d bytes "
+                    "(%d lines) on %s. If the input becomes unresponsive after "
+                    "this, attach this log line to the bug report.",
+                    _paste_handler_elapsed_ms,
+                    _paste_raw_size,
+                    pasted_text.count('\n') + 1 if pasted_text else 0,
+                    sys.platform,
+                )
 
         @kb.add('c-v')
         def handle_ctrl_v(event):

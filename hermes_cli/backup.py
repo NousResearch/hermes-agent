@@ -37,12 +37,22 @@ _EXCLUDED_DIRS = {
     ".git",             # nested git dirs (profiles shouldn't have these, but safety)
     "node_modules",     # js deps if website/ somehow leaks in
     "backups",          # prior auto-backups — don't nest backups exponentially
+    "checkpoints",      # session-local trajectory caches — regenerated per-session,
+                        # session-hash-keyed so they don't port to another machine anyway
 }
 
 # File-name suffixes to skip
 _EXCLUDED_SUFFIXES = (
     ".pyc",
     ".pyo",
+    # SQLite sidecar files — the backup takes a consistent snapshot of ``*.db``
+    # via ``sqlite3.backup()``, so shipping the live WAL / shared-memory /
+    # rollback-journal alongside would pair a fresh snapshot with stale sidecar
+    # state and produce a torn restore on the next open. They're transient and
+    # regenerated on first connection anyway.
+    ".db-wal",
+    ".db-shm",
+    ".db-journal",
 )
 
 # File names to skip (runtime state that's meaningless on another machine)

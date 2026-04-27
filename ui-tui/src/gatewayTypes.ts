@@ -119,6 +119,12 @@ export interface SessionListResponse {
   sessions?: SessionListItem[]
 }
 
+export interface SessionTitleResponse {
+  pending?: boolean
+  session_key?: string
+  title?: string
+}
+
 export interface SessionSaveResponse {
   file?: string
 }

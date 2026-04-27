@@ -100,20 +100,36 @@ def test_session_resume_uses_parent_lineage_for_display(monkeypatch):
 
         def get_messages_as_conversation(self, target, include_ancestors=False):
             captured.setdefault("history_calls", []).append((target, include_ancestors))
-            return [
-                {"role": "user", "content": "root prompt"},
-                {"role": "assistant", "content": "root answer"},
-            ] if include_ancestors else [{"role": "user", "content": "tip prompt"}]
+            return (
+                [
+                    {"role": "user", "content": "root prompt"},
+                    {"role": "assistant", "content": "root answer"},
+                ]
+                if include_ancestors
+                else [{"role": "user", "content": "tip prompt"}]
+            )
 
     monkeypatch.setattr(server, "_get_db", lambda: FakeDB())
     monkeypatch.setattr(server, "_enable_gateway_prompts", lambda: None)
     monkeypatch.setattr(server, "_set_session_context", lambda target: [])
     monkeypatch.setattr(server, "_clear_session_context", lambda tokens: None)
-    monkeypatch.setattr(server, "_make_agent", lambda *args, **kwargs: types.SimpleNamespace(model="test"))
-    monkeypatch.setattr(server, "_session_info", lambda agent: {"model": "test", "tools": {}, "skills": {}})
-    monkeypatch.setattr(server, "_init_session", lambda sid, key, agent, history, cols=80: None)
+    monkeypatch.setattr(
+        server,
+        "_make_agent",
+        lambda *args, **kwargs: types.SimpleNamespace(model="test"),
+    )
+    monkeypatch.setattr(
+        server,
+        "_session_info",
+        lambda agent: {"model": "test", "tools": {}, "skills": {}},
+    )
+    monkeypatch.setattr(
+        server, "_init_session", lambda sid, key, agent, history, cols=80: None
+    )
 
-    resp = server.handle_request({"id": "1", "method": "session.resume", "params": {"session_id": "tip"}})
+    resp = server.handle_request(
+        {"id": "1", "method": "session.resume", "params": {"session_id": "tip"}}
+    )
 
     assert resp["result"]["messages"] == [
         {"role": "user", "text": "root prompt"},
@@ -256,6 +272,307 @@ def _session(agent=None, **extra):
         "tool_progress_mode": "all",
         **extra,
     }
+
+
+def test_session_title_queues_when_db_row_not_ready(monkeypatch):
+    class _FakeDB:
+        def get_session_title(self, _key):
+            return None
+
+        def get_session(self, _key):
+            return None
+
+        def set_session_title(self, _key, _title):
+            return False
+
+    server._sessions["sid"] = _session(pending_title=None)
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    try:
+        set_resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.title",
+                "params": {"session_id": "sid", "title": "queued title"},
+            }
+        )
+
+        assert set_resp["result"]["pending"] is True
+        assert set_resp["result"]["title"] == "queued title"
+        assert server._sessions["sid"]["pending_title"] == "queued title"
+
+        get_resp = server.handle_request(
+            {"id": "2", "method": "session.title", "params": {"session_id": "sid"}}
+        )
+        assert get_resp["result"]["title"] == "queued title"
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_title_clears_pending_after_persist(monkeypatch):
+    class _FakeDB:
+        def __init__(self):
+            self.title = "old"
+
+        def get_session_title(self, _key):
+            return self.title
+
+        def get_session(self, _key):
+            return {"id": _key, "title": self.title}
+
+        def set_session_title(self, _key, title):
+            self.title = title
+            return True
+
+    db = _FakeDB()
+    server._sessions["sid"] = _session(pending_title="stale")
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.title",
+                "params": {"session_id": "sid", "title": "fresh"},
+            }
+        )
+
+        assert resp["result"]["pending"] is False
+        assert resp["result"]["title"] == "fresh"
+        assert server._sessions["sid"]["pending_title"] is None
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_title_does_not_queue_noop_when_row_exists(monkeypatch):
+    class _FakeDB:
+        def __init__(self):
+            self.title = "same title"
+
+        def get_session_title(self, _key):
+            return self.title
+
+        def get_session(self, _key):
+            return {"id": _key, "title": self.title}
+
+        def set_session_title(self, _key, _title):
+            # Simulate sqlite UPDATE rowcount==0 for no-op update.
+            return False
+
+    server._sessions["sid"] = _session(pending_title="stale")
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.title",
+                "params": {"session_id": "sid", "title": "same title"},
+            }
+        )
+
+        assert resp["result"]["pending"] is False
+        assert resp["result"]["title"] == "same title"
+        assert server._sessions["sid"]["pending_title"] is None
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_title_get_falls_back_to_pending_when_db_read_throws(monkeypatch):
+    class _FakeDB:
+        def get_session_title(self, _key):
+            raise RuntimeError("db temporarily locked")
+
+    server._sessions["sid"] = _session(pending_title="queued title")
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.title", "params": {"session_id": "sid"}}
+        )
+        assert resp["result"]["title"] == "queued title"
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_title_get_retries_persist_for_pending_title(monkeypatch):
+    class _FakeDB:
+        def __init__(self):
+            self.title = ""
+
+        def get_session_title(self, _key):
+            return self.title
+
+        def set_session_title(self, _key, title):
+            self.title = title
+            return True
+
+        def get_session(self, _key):
+            return {"id": _key, "title": self.title}
+
+    db = _FakeDB()
+    server._sessions["sid"] = _session(pending_title="queued title")
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.title", "params": {"session_id": "sid"}}
+        )
+        assert resp["result"]["title"] == "queued title"
+        assert server._sessions["sid"]["pending_title"] is None
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_title_get_retries_pending_even_when_db_has_title(monkeypatch):
+    class _FakeDB:
+        def __init__(self):
+            self.title = "auto title"
+
+        def get_session_title(self, _key):
+            return self.title
+
+        def set_session_title(self, _key, title):
+            self.title = title
+            return True
+
+        def get_session(self, _key):
+            return {"id": _key, "title": self.title}
+
+    db = _FakeDB()
+    server._sessions["sid"] = _session(pending_title="queued title")
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.title", "params": {"session_id": "sid"}}
+        )
+        assert resp["result"]["title"] == "queued title"
+        assert server._sessions["sid"]["pending_title"] is None
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_title_rejects_empty_title_with_specific_error_code(monkeypatch):
+    class _FakeDB:
+        def get_session_title(self, _key):
+            return ""
+
+    server._sessions["sid"] = _session()
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.title",
+                "params": {"session_id": "sid", "title": "   "},
+            }
+        )
+        assert "error" in resp
+        assert resp["error"]["code"] == 4021
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_title_set_maps_valueerror_to_user_error(monkeypatch):
+    class _FakeDB:
+        def get_session_title(self, _key):
+            return ""
+
+        def get_session(self, _key):
+            return {"id": _key}
+
+        def set_session_title(self, _key, _title):
+            raise ValueError("Title already in use")
+
+    server._sessions["sid"] = _session()
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.title",
+                "params": {"session_id": "sid", "title": "dup"},
+            }
+        )
+        assert "error" in resp
+        assert resp["error"]["code"] == 4022
+        assert "already in use" in resp["error"]["message"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_title_set_errors_when_row_lookup_fails_after_noop(monkeypatch):
+    class _FakeDB:
+        def get_session_title(self, _key):
+            return ""
+
+        def get_session(self, _key):
+            raise RuntimeError("row lookup failed")
+
+        def set_session_title(self, _key, _title):
+            return False
+
+    server._sessions["sid"] = _session()
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.title",
+                "params": {"session_id": "sid", "title": "fresh"},
+            }
+        )
+        assert "error" in resp
+        assert resp["error"]["code"] == 5007
+        assert "row lookup failed" in resp["error"]["message"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_create_drops_pending_title_on_valueerror(monkeypatch):
+    unblock_agent = threading.Event()
+
+    class _FakeWorker:
+        def __init__(self, key, model):
+            self.key = key
+
+        def close(self):
+            return None
+
+    class _FakeAgent:
+        model = "x"
+        provider = "openrouter"
+        base_url = ""
+        api_key = ""
+
+    class _FakeDB:
+        def create_session(self, _key, source="tui", model=None):
+            return None
+
+        def set_session_title(self, _key, _title):
+            raise ValueError("Title already in use")
+
+    def _make_agent(_sid, _key):
+        unblock_agent.wait(timeout=2.0)
+        return _FakeAgent()
+
+    monkeypatch.setattr(server, "_make_agent", _make_agent)
+    monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    monkeypatch.setattr(server, "_session_info", lambda _a: {"model": "x"})
+    monkeypatch.setattr(server, "_probe_credentials", lambda _a: None)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *a, **kw: None)
+
+    import tools.approval as _approval
+
+    monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
+    monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
+
+    resp = server.handle_request({"id": "1", "method": "session.create", "params": {"cols": 80}})
+    sid = resp["result"]["session_id"]
+    session = server._sessions[sid]
+    session["pending_title"] = "duplicate title"
+    unblock_agent.set()
+    session["agent_ready"].wait(timeout=2.0)
+
+    assert session["pending_title"] is None
+    server._sessions.pop(sid, None)
 
 
 def test_config_set_yolo_toggles_session_scope():
@@ -1798,6 +2115,7 @@ def test_session_create_continues_when_state_db_is_unavailable(monkeypatch):
     monkeypatch.setattr(server, "_emit", lambda *a, **kw: emits.append(a))
 
     import tools.approval as _approval
+
     monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
     monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
 
@@ -1905,6 +2223,7 @@ def test_model_options_propagates_list_exception(monkeypatch):
 # prompt.submit — auto-title
 # ---------------------------------------------------------------------------
 
+
 class _ImmediateThread:
     """Runs the target callable synchronously so assertions can follow."""
 
@@ -1919,7 +2238,9 @@ def test_prompt_submit_auto_titles_session_on_complete(monkeypatch):
     """maybe_auto_title is called after a successful (complete) prompt."""
 
     class _Agent:
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
             return {
                 "final_response": "Rome was founded in 753 BC.",
                 "messages": [
@@ -1955,7 +2276,9 @@ def test_prompt_submit_skips_auto_title_when_interrupted(monkeypatch):
     """maybe_auto_title must NOT be called when the agent was interrupted."""
 
     class _Agent:
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
             return {
                 "final_response": "partial answer",
                 "interrupted": True,
@@ -1985,7 +2308,9 @@ def test_prompt_submit_skips_auto_title_when_response_empty(monkeypatch):
     """maybe_auto_title must NOT be called when the agent returns an empty reply."""
 
     class _Agent:
-        def run_conversation(self, prompt, conversation_history=None, stream_callback=None):
+        def run_conversation(
+            self, prompt, conversation_history=None, stream_callback=None
+        ):
             return {
                 "final_response": "",
                 "messages": [],

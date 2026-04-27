@@ -1057,9 +1057,10 @@ def _launch_tui(
     import tempfile
 
     env = os.environ.copy()
-    active_session_file = os.path.join(
-        tempfile.gettempdir(), f"hermes-tui-active-session-{os.getpid()}.json"
+    active_session_fd, active_session_file = tempfile.mkstemp(
+        prefix="hermes-tui-active-session-", suffix=".json"
     )
+    os.close(active_session_fd)
     env["HERMES_TUI_ACTIVE_SESSION_FILE"] = active_session_file
     env["HERMES_PYTHON_SRC_ROOT"] = os.environ.get(
         "HERMES_PYTHON_SRC_ROOT", str(PROJECT_ROOT)
@@ -1088,18 +1089,20 @@ def _launch_tui(
         env["HERMES_TUI_RESUME"] = resume_session_id
 
     argv, cwd = _make_tui_argv(tui_dir, tui_dev)
+    code: Optional[int] = None
     try:
-        code = subprocess.call(argv, cwd=str(cwd), env=env)
-    except KeyboardInterrupt:
-        code = 130
+        try:
+            code = subprocess.call(argv, cwd=str(cwd), env=env)
+        except KeyboardInterrupt:
+            code = 130
 
-    if code in (0, 130):
-        _print_tui_exit_summary(resume_session_id, active_session_file)
-
-    try:
-        os.unlink(active_session_file)
-    except OSError:
-        pass
+        if code in (0, 130):
+            _print_tui_exit_summary(resume_session_id, active_session_file)
+    finally:
+        try:
+            os.unlink(active_session_file)
+        except OSError:
+            pass
 
     sys.exit(code)
 

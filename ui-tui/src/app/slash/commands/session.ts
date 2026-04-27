@@ -1,4 +1,5 @@
 import { attachedImageNotice, introMsg, toTranscriptMessages } from '../../../domain/messages.js'
+import { TUI_SESSION_MODEL_FLAG } from '../../../domain/slash.js'
 import type {
   BackgroundStartResponse,
   ConfigGetValueResponse,
@@ -10,7 +11,6 @@ import type {
   VoiceToggleResponse
 } from '../../../gatewayTypes.js'
 import { fmtK } from '../../../lib/text.js'
-import { TUI_SESSION_MODEL_FLAG } from '../../../domain/slash.js'
 import type { PanelSection } from '../../../types.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
@@ -19,8 +19,7 @@ import type { SlashCommand } from '../types.js'
 const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\s|$)`)
 const TUI_SESSION_STRIP_RE = new RegExp(`\\s*${TUI_SESSION_MODEL_FLAG}\\b\\s*`, 'g')
 
-const stripTuiSessionFlag = (trimmed: string) =>
-  trimmed.replace(TUI_SESSION_STRIP_RE, ' ').replace(/\s+/g, ' ').trim()
+const stripTuiSessionFlag = (trimmed: string) => trimmed.replace(TUI_SESSION_STRIP_RE, ' ').replace(/\s+/g, ' ').trim()
 
 const modelValueForConfigSet = (arg: string) => {
   const trimmed = arg.trim()

@@ -833,7 +833,25 @@ _NPM_LOCK_RUNTIME_KEYS = frozenset({"ideallyInert"})
 
 
 def _tui_need_npm_install(root: Path) -> bool:
-    """True when @hermes/ink is missing or node_modules is behind package-lock.json."""
+    """True when @hermes/ink is missing or node_modules is behind package-lock.json.
+
+    Compares ``package-lock.json`` against ``node_modules/.package-lock.json``
+    (npm's hidden lockfile) by **content**, not mtime: git checkouts and npm
+    rewrites can bump the root lockfile's timestamp even when installed deps
+    already match, which used to trigger a spurious "Installing TUI
+    dependencies" on every launch.
+
+    For each entry in the root lock's ``packages`` map:
+      - missing from hidden lock → reinstall (unless the entry is marked
+        ``optional`` or ``peer``, which npm may intentionally skip per platform)
+      - present but with differing fields (excluding npm-written runtime
+        annotations like ``ideallyInert``) → reinstall
+
+    Extra entries that exist only in the hidden lock are ignored — stale
+    transitives left over from a removed dependency don't break runtime and
+    we'd rather not force a reinstall for them. Falls back to mtime
+    comparison if either lockfile is unparseable.
+    """
     ink = root / "node_modules" / "@hermes" / "ink" / "package.json"
     if not ink.is_file():
         return True

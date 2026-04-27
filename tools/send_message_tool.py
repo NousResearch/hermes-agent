@@ -6,10 +6,12 @@ human-friendly channel names to IDs. Works in both CLI and gateway contexts.
 """
 
 import asyncio
+import base64
 import json
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Dict, Optional
 import ssl
 import time
@@ -28,6 +30,8 @@ _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::(
 # through to channel-name resolution, which only matches by name and fails.
 _SLACK_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,})\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
+_QQBOT_TARGET_RE = re.compile(r"^\s*([A-Za-z0-9_-]{8,128})\s*$")
+_QQBOT_TYPED_TARGET_RE = re.compile(r"^\s*(c2c|user|group|guild):([A-Za-z0-9_-]{8,128})\s*$", re.IGNORECASE)
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
 _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # Platforms that address recipients by phone number and accept E.164 format
@@ -264,6 +268,11 @@ def _handle_send(args):
             if wx_home:
                 from gateway.config import HomeChannel
                 home = HomeChannel(platform=platform, chat_id=wx_home, name="Weixin Home")
+        if not home and platform_name == "qqbot":
+            qq_home = os.getenv("QQBOT_HOME_CHANNEL", "").strip()
+            if qq_home:
+                from gateway.config import HomeChannel
+                home = HomeChannel(platform=platform, chat_id=qq_home, name="QQBot Home")
         if home:
             chat_id = home.chat_id
             used_home_channel = True
@@ -331,6 +340,14 @@ def _parse_target_ref(platform_name: str, target_ref: str):
             return match.group(1), None, True
     if platform_name == "weixin":
         match = _WEIXIN_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), None, True
+    if platform_name == "qqbot":
+        typed = _QQBOT_TYPED_TARGET_RE.fullmatch(target_ref)
+        if typed:
+            target_type = "c2c" if typed.group(1).lower() == "user" else typed.group(1).lower()
+            return f"{target_type}:{typed.group(2)}", None, True
+        match = _QQBOT_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), None, True
     if platform_name in _PHONE_PLATFORMS:
@@ -539,11 +556,15 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             last_result = result
         return last_result
 
+    # --- QQBot: native C2C/group media upload + message send ---
+    if platform == Platform.QQBOT and media_files:
+        return await _send_qqbot_with_media(pconfig, chat_id, message, media_files)
+
     # --- Non-media platforms ---
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, and signal; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal, and qqbot; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -551,7 +572,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, and signal"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal, and qqbot"
         )
 
     last_result = None
@@ -1473,13 +1494,14 @@ async def _send_qqbot(pconfig, chat_id, message):
     """Send via QQBot using the REST API directly (no WebSocket needed).
 
     Uses the QQ Bot Open Platform REST endpoints to get an access token
-    and post a message. Works for guild channels without requiring
-    a running gateway adapter.
+    and post a message. Supports C2C user OpenIDs, group OpenIDs, and
+    guild channel IDs without requiring a running gateway adapter.
     """
     try:
         import httpx
     except ImportError:
         return _error("QQBot direct send requires httpx. Run: pip install httpx")
+    from gateway.platforms.qqbot.constants import API_BASE, TOKEN_URL
 
     extra = pconfig.extra or {}
     appid = extra.get("app_id") or os.getenv("QQ_APP_ID", "")
@@ -1492,7 +1514,7 @@ async def _send_qqbot(pconfig, chat_id, message):
         async with httpx.AsyncClient(timeout=15) as client:
             # Step 1: Get access token
             token_resp = await client.post(
-                "https://bots.qq.com/app/getAppAccessToken",
+                TOKEN_URL,
                 json={"appId": str(appid), "clientSecret": str(secret)},
             )
             if token_resp.status_code != 200:
@@ -1507,18 +1529,201 @@ async def _send_qqbot(pconfig, chat_id, message):
                 "Authorization": f"QQBot {access_token}",
                 "Content-Type": "application/json",
             }
-            url = f"https://api.sgroup.qq.com/channels/{chat_id}/messages"
-            payload = {"content": message[:4000], "msg_type": 0}
+
+            target_type, target_id = _resolve_qqbot_target(chat_id)
+
+            if target_type == "c2c":
+                url = f"{API_BASE}/v2/users/{target_id}/messages"
+                payload = _build_qqbot_text_body(pconfig, message)
+            elif target_type == "group":
+                url = f"{API_BASE}/v2/groups/{target_id}/messages"
+                payload = _build_qqbot_text_body(pconfig, message)
+            else:
+                url = f"{API_BASE}/channels/{target_id}/messages"
+                payload = _build_qqbot_guild_text_body(message)
 
             resp = await client.post(url, json=payload, headers=headers)
             if resp.status_code in (200, 201):
                 data = resp.json()
-                return {"success": True, "platform": "qqbot", "chat_id": chat_id,
+                return {"success": True, "platform": "qqbot", "chat_id": target_id,
                         "message_id": data.get("id")}
             else:
                 return _error(f"QQBot send failed: {resp.status_code} {resp.text}")
     except Exception as e:
         return _error(f"QQBot send failed: {e}")
+
+
+async def _send_qqbot_with_media(pconfig, chat_id, message, media_files):
+    """Send text plus MEDIA attachments via QQBot C2C/group REST APIs."""
+    try:
+        import httpx
+    except ImportError:
+        return _error("QQBot direct send requires httpx. Run: pip install httpx")
+    from gateway.platforms.qqbot.constants import (
+        API_BASE,
+        FILE_UPLOAD_TIMEOUT,
+        MEDIA_TYPE_FILE,
+        MEDIA_TYPE_IMAGE,
+        MEDIA_TYPE_VIDEO,
+        MEDIA_TYPE_VOICE,
+        MSG_TYPE_MEDIA,
+        TOKEN_URL,
+    )
+
+    target_type, target_id = _resolve_qqbot_target(chat_id)
+    if target_type == "guild":
+        return _error("QQBot MEDIA delivery is only supported for C2C users and groups, not guild channels")
+
+    extra = pconfig.extra or {}
+    appid = extra.get("app_id") or os.getenv("QQ_APP_ID", "")
+    secret = (pconfig.token or extra.get("client_secret")
+              or os.getenv("QQ_CLIENT_SECRET", ""))
+    if not appid or not secret:
+        return _error("QQBot: QQ_APP_ID / QQ_CLIENT_SECRET not configured.")
+
+    upload_path = (
+        f"{API_BASE}/v2/users/{target_id}/files"
+        if target_type == "c2c"
+        else f"{API_BASE}/v2/groups/{target_id}/files"
+    )
+    message_path = (
+        f"{API_BASE}/v2/users/{target_id}/messages"
+        if target_type == "c2c"
+        else f"{API_BASE}/v2/groups/{target_id}/messages"
+    )
+
+    try:
+        async with httpx.AsyncClient(timeout=15) as client:
+            token_resp = await client.post(
+                TOKEN_URL,
+                json={"appId": str(appid), "clientSecret": str(secret)},
+            )
+            if token_resp.status_code != 200:
+                return _error(f"QQBot token request failed: {token_resp.status_code}")
+            access_token = token_resp.json().get("access_token")
+            if not access_token:
+                return _error("QQBot: no access_token in response")
+
+            headers = {
+                "Authorization": f"QQBot {access_token}",
+                "Content-Type": "application/json",
+            }
+
+            last_result = None
+            if message.strip():
+                text_result = await _send_qqbot(pconfig, chat_id, message)
+                if isinstance(text_result, dict) and text_result.get("error"):
+                    return text_result
+                last_result = text_result
+
+            for media_path, is_voice in media_files:
+                file_path = Path(media_path).expanduser()
+                if not file_path.is_absolute():
+                    file_path = (Path.cwd() / file_path).resolve()
+                if not file_path.exists() or not file_path.is_file():
+                    return _error(f"Media file not found: {file_path}")
+
+                ext = file_path.suffix.lower()
+                if ext in _IMAGE_EXTS:
+                    file_type = MEDIA_TYPE_IMAGE
+                elif ext in _VIDEO_EXTS:
+                    file_type = MEDIA_TYPE_VIDEO
+                elif is_voice or ext in _AUDIO_EXTS or ext in _VOICE_EXTS:
+                    file_type = MEDIA_TYPE_VOICE
+                else:
+                    file_type = MEDIA_TYPE_FILE
+
+                file_data = base64.b64encode(file_path.read_bytes()).decode("ascii")
+                upload_body = {
+                    "file_type": file_type,
+                    "file_data": file_data,
+                    "srv_send_msg": False,
+                }
+                if file_type == MEDIA_TYPE_FILE:
+                    upload_body["file_name"] = file_path.name
+
+                upload_resp = await client.post(
+                    upload_path,
+                    json=upload_body,
+                    headers=headers,
+                    timeout=FILE_UPLOAD_TIMEOUT,
+                )
+                if upload_resp.status_code not in (200, 201):
+                    return _error(f"QQBot media upload failed: {upload_resp.status_code} {upload_resp.text}")
+                file_info = upload_resp.json().get("file_info")
+                if not file_info:
+                    return _error(f"QQBot media upload returned no file_info: {upload_resp.text}")
+
+                send_body = {
+                    "msg_type": MSG_TYPE_MEDIA,
+                    "media": {"file_info": file_info},
+                    "msg_seq": _qqbot_msg_seq(),
+                }
+                send_resp = await client.post(message_path, json=send_body, headers=headers)
+                if send_resp.status_code not in (200, 201):
+                    return _error(f"QQBot media send failed: {send_resp.status_code} {send_resp.text}")
+                data = send_resp.json()
+                last_result = {
+                    "success": True,
+                    "platform": "qqbot",
+                    "chat_id": target_id,
+                    "message_id": data.get("id"),
+                    "media": file_path.name,
+                }
+
+            if last_result is None:
+                return _error("No deliverable text or media remained after processing MEDIA tags")
+            return last_result
+    except Exception as e:
+        return _error(f"QQBot media send failed: {e}")
+
+
+def _resolve_qqbot_target(chat_id):
+    """Resolve a QQBot target into (target_type, target_id)."""
+    target_type = "guild" if str(chat_id).lstrip("-").isdigit() else "c2c"
+    target_id = str(chat_id)
+    if ":" in target_id:
+        prefix, raw_id = target_id.split(":", 1)
+        prefix = prefix.lower()
+        if prefix in {"c2c", "user", "group", "guild"}:
+            target_type = "c2c" if prefix == "user" else prefix
+            target_id = raw_id
+    return target_type, target_id
+
+
+def _build_qqbot_text_body(pconfig, message):
+    """Build QQBot C2C/group message body matching the gateway adapter."""
+    from gateway.platforms.qqbot.constants import (
+        MAX_MESSAGE_LENGTH,
+        MSG_TYPE_MARKDOWN,
+        MSG_TYPE_TEXT,
+    )
+
+    markdown_support = bool((pconfig.extra or {}).get("markdown_support", True))
+    msg_seq = _qqbot_msg_seq()
+    if markdown_support:
+        return {
+            "markdown": {"content": message[:MAX_MESSAGE_LENGTH]},
+            "msg_type": MSG_TYPE_MARKDOWN,
+            "msg_seq": msg_seq,
+        }
+    return {
+        "content": message[:MAX_MESSAGE_LENGTH],
+        "msg_type": MSG_TYPE_TEXT,
+        "msg_seq": msg_seq,
+    }
+
+
+def _build_qqbot_guild_text_body(message):
+    """Build QQBot guild channel message body."""
+    from gateway.platforms.qqbot.constants import MAX_MESSAGE_LENGTH
+
+    return {"content": message[:MAX_MESSAGE_LENGTH]}
+
+
+def _qqbot_msg_seq():
+    """Return a compact per-message sequence value accepted by QQBot APIs."""
+    return int(time.time_ns() % 1000000000)
 
 
 # --- Registry ---

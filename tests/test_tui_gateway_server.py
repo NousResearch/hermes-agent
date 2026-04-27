@@ -274,6 +274,69 @@ def _session(agent=None, **extra):
     }
 
 
+def test_session_close_commits_memory_and_fires_finalize_hook(monkeypatch):
+    calls = {"hooks": []}
+
+    agent = types.SimpleNamespace(session_id="session-key")
+    agent.commit_memory_session = lambda history: calls.setdefault("history", history)
+    server._sessions["sid"] = _session(
+        agent=agent, history=[{"role": "user", "content": "hello"}]
+    )
+    monkeypatch.setattr(
+        server,
+        "_notify_session_boundary",
+        lambda event, session_id: calls["hooks"].append((event, session_id)),
+    )
+
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.close", "params": {"session_id": "sid"}}
+        )
+        assert resp["result"]["closed"] is True
+        assert calls["history"] == [{"role": "user", "content": "hello"}]
+        assert ("on_session_finalize", "session-key") in calls["hooks"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_init_session_fires_reset_hook(monkeypatch):
+    hooks = []
+
+    class _FakeWorker:
+        def __init__(self, key, model):
+            self.key = key
+
+        def close(self):
+            return None
+
+    monkeypatch.setattr(server, "_SlashWorker", _FakeWorker)
+    monkeypatch.setattr(server, "_wire_callbacks", lambda _sid: None)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+    monkeypatch.setattr(
+        server,
+        "_notify_session_boundary",
+        lambda event, session_id: hooks.append((event, session_id)),
+    )
+
+    import tools.approval as _approval
+
+    monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
+    monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
+
+    sid = "sid"
+    try:
+        server._init_session(
+            sid,
+            "session-key",
+            types.SimpleNamespace(model="x"),
+            history=[],
+            cols=80,
+        )
+        assert ("on_session_reset", "session-key") in hooks
+    finally:
+        server._sessions.pop(sid, None)
+
+
 def test_session_title_queues_when_db_row_not_ready(monkeypatch):
     class _FakeDB:
         def get_session_title(self, _key):
@@ -602,6 +665,58 @@ def test_config_set_yolo_toggles_session_scope():
     finally:
         clear_session("session-key")
         server._sessions.clear()
+
+
+def test_config_set_fast_updates_live_agent_and_config(monkeypatch):
+    writes = []
+    emits = []
+    agent = types.SimpleNamespace(service_tier=None)
+    server._sessions["sid"] = _session(agent=agent)
+
+    monkeypatch.setattr(server, "_write_config_key", lambda path, value: writes.append((path, value)))
+    monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "x"})
+    monkeypatch.setattr(server, "_emit", lambda *args: emits.append(args))
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {"session_id": "sid", "key": "fast", "value": "fast"},
+            }
+        )
+        assert resp["result"]["value"] == "fast"
+        assert agent.service_tier == "priority"
+        assert ("agent.service_tier", "fast") in writes
+        assert ("session.info", "sid", {"model": "x"}) in emits
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_config_busy_get_and_set(monkeypatch):
+    writes = []
+
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"display": {"busy_input_mode": "steer"}},
+    )
+    monkeypatch.setattr(server, "_write_config_key", lambda path, value: writes.append((path, value)))
+
+    get_resp = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "busy"}}
+    )
+    assert get_resp["result"]["value"] == "steer"
+
+    set_resp = server.handle_request(
+        {
+            "id": "2",
+            "method": "config.set",
+            "params": {"key": "busy", "value": "interrupt"},
+        }
+    )
+    assert set_resp["result"]["value"] == "interrupt"
+    assert ("display.busy_input_mode", "interrupt") in writes
 
 
 def test_config_get_statusbar_survives_non_dict_display(monkeypatch):

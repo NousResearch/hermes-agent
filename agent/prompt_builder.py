@@ -150,7 +150,7 @@ MEMORY_GUIDANCE = (
     "that prevents the user from having to correct or remind you again. "
     "User preferences and recurring corrections matter more than procedural task details.\n"
     "Do NOT save task progress, session outcomes, completed-work logs, or temporary TODO "
-    "state to memory; use session_search to recall those from past transcripts. "
+    "state to memory; use the search_sessions tool to recall those from past transcripts. "
     "If you've discovered a new way to do something, solved a problem that could be "
     "necessary later, save it as a skill with the skill tool.\n"
     "Write memories as declarative facts, not instructions to yourself. "
@@ -163,16 +163,16 @@ MEMORY_GUIDANCE = (
 
 SESSION_SEARCH_GUIDANCE = (
     "When the user references something from a past conversation or you suspect "
-    "relevant cross-session context exists, use session_search to recall it before "
-    "asking them to repeat themselves."
+    "relevant cross-session context exists, use the search_sessions tool to recall it "
+    "before asking them to repeat themselves."
 )
 
 SKILLS_GUIDANCE = (
     "After completing a complex task (5+ tool calls), fixing a tricky error, "
     "or discovering a non-trivial workflow, save the approach as a "
-    "skill with skill_manage so you can reuse it next time.\n"
+    "skill with the manage_skills tool so you can reuse it next time.\n"
     "When using a skill and finding it outdated, incomplete, or wrong, "
-    "patch it immediately with skill_manage(action='patch') — don't wait to be asked. "
+    "patch it immediately with manage_skills(action='patch') — don't wait to be asked. "
     "Skills that aren't maintained become liabilities."
 )
 
@@ -819,13 +819,13 @@ def build_skills_system_prompt(
             "to your task, you MUST load it with skill_view(name) and follow its instructions. "
             "Err on the side of loading — it is always better to have context you don't need "
             "than to miss critical steps, pitfalls, or established workflows. "
-            "Skills contain specialized knowledge — API endpoints, tool-specific commands, "
-            "and proven workflows that outperform general-purpose approaches. Load the skill "
-            "even if you think you could handle the task with basic tools like web_search or terminal. "
+            "Skills contain specialized knowledge — API endpoints, tool-specific commands, and proven workflows "
+            "that outperform general-purpose approaches. Load the skill even if you think you could handle the task "
+            "with basic tools like web_search or terminal. "
             "Skills also encode the user's preferred approach, conventions, and quality standards "
             "for tasks like code review, planning, and testing — load them even for tasks you "
             "already know how to do, because the skill defines how it should be done here.\n"
-            "If a skill has issues, fix it with skill_manage(action='patch').\n"
+            "If a skill has issues, fix it with manage_skills(action='patch').\n"
             "After difficult/iterative tasks, offer to save as a skill. "
             "If a skill you loaded was missing steps, had wrong commands, or needed "
             "pitfalls you discovered, update it before finishing.\n"

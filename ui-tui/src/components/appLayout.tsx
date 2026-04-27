@@ -129,7 +129,7 @@ const ComposerPane = memo(function ComposerPane({
   const inputHeight = inputVisualHeight(composer.input, inputColumns)
   const inputMouseRef = useRef<null | TextInputMouseApi>(null)
 
-  const captureInputDrag = (e: { button: number; localCol?: number; localRow?: number; stopImmediatePropagation?: () => void }) => {
+  const captureInputDrag = (e: GutterMouseEvent) => {
     if (e.button !== 0) {
       return
     }
@@ -138,7 +138,7 @@ const ComposerPane = memo(function ComposerPane({
     inputMouseRef.current?.startAtBeginning()
   }
 
-  const dragIntoInput = (e: { button: number; localCol?: number; localRow?: number; stopImmediatePropagation?: () => void }) => {
+  const dragIntoInput = (e: GutterMouseEvent) => {
     if (e.button !== 0) {
       return
     }
@@ -146,6 +146,8 @@ const ComposerPane = memo(function ComposerPane({
     e.stopImmediatePropagation?.()
     inputMouseRef.current?.dragAt(e.localRow ?? 0, (e.localCol ?? 0) - pw)
   }
+
+  const endInputDrag = () => inputMouseRef.current?.end()
 
   return (
     <NoSelect
@@ -179,12 +181,7 @@ const ComposerPane = memo(function ComposerPane({
           {status.stickyPrompt}
         </Text>
       ) : (
-        <Box
-          height={1}
-          onMouseDown={captureInputDrag}
-          onMouseDrag={dragIntoInput}
-          onMouseUp={() => inputMouseRef.current?.end()}
-        />
+        <Box height={1} onMouseDown={captureInputDrag} onMouseDrag={dragIntoInput} onMouseUp={endInputDrag} />
       )}
 
       <StatusRulePane at="top" composer={composer} status={status} />
@@ -211,12 +208,7 @@ const ComposerPane = memo(function ComposerPane({
               </Box>
             ))}
 
-            <Box
-              onMouseDown={captureInputDrag}
-              onMouseDrag={dragIntoInput}
-              onMouseUp={() => inputMouseRef.current?.end()}
-              position="relative"
-            >
+            <Box onMouseDown={captureInputDrag} onMouseDrag={dragIntoInput} onMouseUp={endInputDrag} position="relative">
               <Box width={pw}>
                 {sh ? (
                   <Text color={ui.theme.color.shellDollar}>$ </Text>
@@ -362,3 +354,10 @@ export const AppLayout = memo(function AppLayout({
     </Shell>
   )
 })
+
+type GutterMouseEvent = {
+  button: number
+  localCol?: number
+  localRow?: number
+  stopImmediatePropagation?: () => void
+}

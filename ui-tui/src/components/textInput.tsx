@@ -282,7 +282,6 @@ const isPasteResultPromise = (
 
 export function TextInput({
   columns = 80,
-  leftCaptureColumns = 0,
   value,
   onChange,
   onPaste,
@@ -332,25 +331,18 @@ export function TextInput({
   )
 
   const layout = useMemo(() => cursorLayout(display, cur, columns), [columns, cur, display])
-  const capturePad = Math.max(0, leftCaptureColumns)
 
   const boxRef = useDeclaredCursor({
     line: layout.line,
-    column: layout.column + capturePad,
+    column: layout.column,
     active: focus && termFocus && !selected
   })
 
-  // Hide the hardware cursor while an input selection is active so it can't
-  // auto-wrap below the prompt when the rendered (inverted) text exactly
-  // fills the row, and so it doesn't paint a ghost block on the first
-  // selected cell when we re-park it. Restore on unmount or when selection
-  // clears so the cursor reappears as soon as the user resumes typing.
+  // Hide the hardware cursor during a selection: prevents auto-wrap into
+  // the row below when inverted text exactly fills the column width, and
+  // avoids parking a ghost block on the first selected cell.
   useEffect(() => {
-    if (!focus || !stdout?.isTTY) {
-      return
-    }
-
-    if (!selected) {
+    if (!focus || !selected || !stdout?.isTTY) {
       return
     }
 
@@ -677,11 +669,6 @@ export function TextInput({
     commit(nextValue, nextCursor)
   }
 
-  const mouseOffset = (e: { localCol?: number; localRow?: number }) => ({
-    col: (e.localCol ?? 0) - capturePad,
-    row: e.localRow ?? 0
-  })
-
   const startMouseSelection = (next: number) => {
     const c = snapPos(vRef.current, next)
 
@@ -716,11 +703,13 @@ export function TextInput({
     }
   }
 
+  const offsetAt = (e: { localCol?: number; localRow?: number }) =>
+    offsetFromPosition(display, e.localRow ?? 0, e.localCol ?? 0, columns)
+
   if (mouseApiRef) {
     mouseApiRef.current = {
       dragAt: (row, col) => dragMouseSelection(offsetFromPosition(display, row, col, columns)),
       end: endMouseSelection,
-      startAt: (row, col) => startMouseSelection(offsetFromPosition(display, row, col, columns)),
       startAtBeginning: () => startMouseSelection(0)
     }
   }
@@ -983,30 +972,24 @@ export function TextInput({
 
   return (
     <Box
-      onClick={(e: { localCol?: number; localRow?: number; stopImmediatePropagation?: () => void }) => {
+      onClick={(e: MouseEventLite) => {
         if (!focus) {
           return
         }
 
         e.stopImmediatePropagation?.()
         clearSel()
-        const pos = mouseOffset(e)
-        const next = offsetFromPosition(display, pos.row, pos.col, columns)
+        const next = offsetAt(e)
         setCur(next)
         curRef.current = next
       }}
-      onMouseDown={(e: {
-        button: number
-        localCol?: number
-        localRow?: number
-        stopImmediatePropagation?: () => void
-      }) => {
+      onMouseDown={(e: MouseEventLite) => {
         if (!focus) {
           return
         }
 
-        // Right-click to paste: route through the same hotkey path as
-        // Alt+V so the composer's clipboard RPC (text or image) handles it.
+        // Right-click → route through the same path as Alt+V so the composer
+        // clipboard RPC (text or image) handles it.
         if (e.button === 2) {
           e.stopImmediatePropagation?.()
           emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
@@ -1019,37 +1002,32 @@ export function TextInput({
         }
 
         e.stopImmediatePropagation?.()
-        const pos = mouseOffset(e)
-        const next = offsetFromPosition(display, pos.row, pos.col, columns)
-        startMouseSelection(next)
+        startMouseSelection(offsetAt(e))
       }}
-      onMouseDrag={(e: {
-        button: number
-        localCol?: number
-        localRow?: number
-        stopImmediatePropagation?: () => void
-      }) => {
+      onMouseDrag={(e: MouseEventLite) => {
         if (!focus || e.button !== 0 || mouseAnchorRef.current === null) {
           return
         }
 
         e.stopImmediatePropagation?.()
-        const pos = mouseOffset(e)
-        const next = offsetFromPosition(display, pos.row, pos.col, columns)
-        dragMouseSelection(next)
+        dragMouseSelection(offsetAt(e))
       }}
-      onMouseUp={(e: { stopImmediatePropagation?: () => void }) => {
+      onMouseUp={(e: MouseEventLite) => {
         e.stopImmediatePropagation?.()
         endMouseSelection()
       }}
-      marginLeft={capturePad ? -capturePad : undefined}
-      paddingLeft={capturePad || undefined}
       ref={boxRef}
-      width={columns + capturePad}
     >
       <Text wrap="wrap-char">{rendered}</Text>
     </Box>
   )
+}
+
+type MouseEventLite = {
+  button?: number
+  localCol?: number
+  localRow?: number
+  stopImmediatePropagation?: () => void
 }
 
 export interface PasteEvent {
@@ -1063,7 +1041,6 @@ export interface PasteEvent {
 interface TextInputProps {
   columns?: number
   focus?: boolean
-  leftCaptureColumns?: number
   mask?: string
   mouseApiRef?: MutableRefObject<null | TextInputMouseApi>
   onChange: (v: string) => void
@@ -1078,6 +1055,5 @@ interface TextInputProps {
 export interface TextInputMouseApi {
   dragAt: (row: number, col: number) => void
   end: () => void
-  startAt: (row: number, col: number) => void
   startAtBeginning: () => void
 }

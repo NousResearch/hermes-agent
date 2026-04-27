@@ -211,6 +211,21 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
     "SIGNAL_ALLOW_ALL_USERS",
     "EMAIL_ALLOW_ALL_USERS",
     "SMS_ALLOW_ALL_USERS",
+    # Platform gating — set by load_gateway_config() as a side effect when
+    # a config.yaml is present, so individual test bodies that call the
+    # loader leak these values into later tests on the same xdist worker.
+    # Force-clear on every test setup so the leak can't happen.
+    "SLACK_REQUIRE_MENTION",
+    "SLACK_STRICT_MENTION",
+    "SLACK_FREE_RESPONSE_CHANNELS",
+    "SLACK_ALLOW_BOTS",
+    "SLACK_REACTIONS",
+    "DISCORD_REQUIRE_MENTION",
+    "DISCORD_FREE_RESPONSE_CHANNELS",
+    "TELEGRAM_REQUIRE_MENTION",
+    "WHATSAPP_REQUIRE_MENTION",
+    "DINGTALK_REQUIRE_MENTION",
+    "MATRIX_REQUIRE_MENTION",
 })
 
 

@@ -7,6 +7,7 @@ turn counting, tags), and schema completeness.
 
 import json
 import re
+import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -18,6 +19,7 @@ from plugins.memory.hindsight import (
     REFLECT_SCHEMA,
     RETAIN_SCHEMA,
     _load_config,
+    _build_embedded_profile_env,
     _normalize_retain_tags,
     _resolve_bank_id_template,
     _sanitize_bank_segment,
@@ -34,7 +36,8 @@ def _clean_env(monkeypatch):
     """Ensure no stale env vars leak between tests."""
     for key in (
         "HINDSIGHT_API_KEY", "HINDSIGHT_API_URL", "HINDSIGHT_BANK_ID",
-        "HINDSIGHT_BUDGET", "HINDSIGHT_MODE", "HINDSIGHT_LLM_API_KEY",
+        "HINDSIGHT_BUDGET", "HINDSIGHT_MODE", "HINDSIGHT_TIMEOUT",
+        "HINDSIGHT_IDLE_TIMEOUT", "HINDSIGHT_LLM_API_KEY",
         "HINDSIGHT_RETAIN_TAGS", "HINDSIGHT_RETAIN_SOURCE",
         "HINDSIGHT_RETAIN_USER_PREFIX", "HINDSIGHT_RETAIN_ASSISTANT_PREFIX",
     ):
@@ -251,6 +254,51 @@ class TestConfig:
         assert cfg["banks"]["hermes"]["bankId"] == "env-bank"
         assert cfg["banks"]["hermes"]["budget"] == "high"
 
+    def test_embedded_profile_env_includes_idle_timeout_from_config(self):
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+            "idle_timeout": 0,
+        })
+
+        assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "0"
+
+    def test_embedded_profile_env_includes_idle_timeout_from_env(self, monkeypatch):
+        monkeypatch.setenv("HINDSIGHT_IDLE_TIMEOUT", "42")
+
+        env = _build_embedded_profile_env({
+            "llm_provider": "openai",
+            "llm_model": "gpt-4o-mini",
+        })
+
+        assert env["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "42"
+
+    def test_get_client_passes_idle_timeout_to_hindsight_embedded(self, monkeypatch):
+        captured = {}
+
+        class FakeHindsightEmbedded:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        monkeypatch.setitem(sys.modules, "hindsight", SimpleNamespace(HindsightEmbedded=FakeHindsightEmbedded))
+        monkeypatch.setattr("plugins.memory.hindsight._check_local_runtime", lambda: (True, ""))
+
+        p = HindsightMemoryProvider()
+        p._mode = "local_embedded"
+        p._config = {
+            "profile": "hermes",
+            "llm_provider": "openai_compatible",
+            "llm_api_key": "test-key",
+            "llm_model": "test-model",
+            "idle_timeout": 0,
+        }
+        p._llm_base_url = "http://localhost:8060/v1"
+
+        p._get_client()
+
+        assert captured["idle_timeout"] == 0
+        assert captured["llm_provider"] == "openai"
+
 
 class TestPostSetup:
     def test_local_embedded_setup_materializes_profile_env(self, tmp_path, monkeypatch):
@@ -272,7 +320,10 @@ class TestPostSetup:
         provider.post_setup(str(hermes_home), {"memory": {}})
 
         assert saved_configs[-1]["memory"]["provider"] == "hindsight"
-        assert (hermes_home / ".env").read_text() == "HINDSIGHT_LLM_API_KEY=sk-local-test\nHINDSIGHT_TIMEOUT=120\n"
+        env_text = (hermes_home / ".env").read_text()
+        assert "HINDSIGHT_LLM_API_KEY=sk-local-test\n" in env_text
+        assert "HINDSIGHT_TIMEOUT=120\n" in env_text
+        assert "HINDSIGHT_IDLE_TIMEOUT=300\n" in env_text
 
         profile_env = user_home / ".hindsight" / "profiles" / "hermes.env"
         assert profile_env.exists()
@@ -281,6 +332,7 @@ class TestPostSetup:
             "HINDSIGHT_API_LLM_API_KEY=sk-local-test\n"
             "HINDSIGHT_API_LLM_MODEL=gpt-4o-mini\n"
             "HINDSIGHT_API_LOG_LEVEL=info\n"
+            "HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT=300\n"
         )
 
     def test_local_embedded_setup_respects_existing_profile_name(self, tmp_path, monkeypatch):
@@ -445,6 +497,28 @@ class TestToolHandlers:
             "hindsight_recall", {"query": "test"}
         ))
         assert "error" in result
+
+    def test_local_embedded_recall_reconnects_after_idle_shutdown(self, provider, monkeypatch):
+        first_client = _make_mock_client()
+        first_client.arecall.side_effect = RuntimeError("Cannot connect to host 127.0.0.1:8888")
+        second_client = _make_mock_client()
+        second_client.arecall.return_value = SimpleNamespace(
+            results=[SimpleNamespace(text="Recovered memory")]
+        )
+        clients = iter([first_client, second_client])
+
+        provider._mode = "local_embedded"
+        provider._client = first_client
+        monkeypatch.setattr(provider, "_get_client", lambda: next(clients))
+
+        result = json.loads(provider.handle_tool_call(
+            "hindsight_recall", {"query": "test"}
+        ))
+
+        assert result["result"] == "1. Recovered memory"
+        assert provider._client is second_client
+        first_client.arecall.assert_called_once()
+        second_client.arecall.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -1102,3 +1176,22 @@ class TestSharedEventLoopLifecycle:
 
         mock_client.aclose.assert_called_once()
         assert provider._client is None
+
+
+class TestShutdown:
+    def test_local_embedded_shutdown_closes_inner_async_client_on_shared_loop(self, provider):
+        inner_client = _make_mock_client()
+        embedded = MagicMock()
+        embedded._client = inner_client
+        embedded.close = MagicMock()
+
+        provider._mode = "local_embedded"
+        provider._client = embedded
+
+        provider.shutdown()
+
+        inner_client.aclose.assert_awaited_once()
+        embedded.close.assert_called_once()
+        assert embedded._client is None
+        assert provider._client is None
+

@@ -67,6 +67,7 @@ from typing import Dict, Any, Optional, List, Tuple
 from pathlib import Path
 from agent.auxiliary_client import call_llm
 from hermes_constants import get_hermes_home
+from utils import is_truthy_value
 
 try:
     from tools.website_policy import check_website_access
@@ -639,7 +640,11 @@ def _allow_private_urls() -> bool:
     try:
         from hermes_cli.config import read_raw_config
         cfg = read_raw_config()
-        _cached_allow_private_urls = bool(cfg.get("browser", {}).get("allow_private_urls"))
+        browser_cfg = cfg.get("browser", {})
+        if isinstance(browser_cfg, dict):
+            _cached_allow_private_urls = is_truthy_value(
+                browser_cfg.get("allow_private_urls"), default=False
+            )
     except Exception as e:
         logger.debug("Could not read allow_private_urls from config: %s", e)
     return _cached_allow_private_urls

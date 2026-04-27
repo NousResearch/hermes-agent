@@ -76,12 +76,32 @@ export const shouldSetVirtualClamp = ({
   viewportHeight: number
 }) => itemCount > 0 && viewportHeight > 0 && !sticky && !liveTailActive
 
+export const ensureVirtualItemHeight = (
+  heights: Map<string, number>,
+  key: string,
+  index: number,
+  estimate: number,
+  estimateHeight?: (index: number, key: string) => number
+) => {
+  const cached = heights.get(key)
+
+  if (cached !== undefined) {
+    return Math.max(1, Math.floor(cached))
+  }
+
+  const seeded = Math.max(1, Math.floor(estimateHeight?.(index, key) ?? estimate))
+  heights.set(key, seeded)
+
+  return seeded
+}
+
 export function useVirtualHistory(
   scrollRef: RefObject<ScrollBoxHandle | null>,
   items: readonly { key: string }[],
   columns: number,
   {
     estimate = ESTIMATE,
+    estimateHeight,
     initialHeights,
     liveTailActive = false,
     onHeightsChange,
@@ -208,7 +228,7 @@ export function useVirtualHistory(
     arr[0] = 0
 
     for (let i = 0; i < n; i++) {
-      arr[i + 1] = arr[i]! + Math.max(1, Math.floor(heights.current.get(items[i]!.key) ?? estimate))
+      arr[i + 1] = arr[i]! + ensureVirtualItemHeight(heights.current, items[i]!.key, i, estimate, estimateHeight)
     }
 
     offsetsCache.current = { arr, n, version: offsetVersion.current }
@@ -280,7 +300,7 @@ export function useVirtualHistory(
     let coverage = 0
 
     for (let i = start; i < end; i++) {
-      coverage += heights.current.get(items[i]!.key) ?? PESSIMISTIC
+      coverage += ensureVirtualItemHeight(heights.current, items[i]!.key, i, PESSIMISTIC, estimateHeight)
     }
 
     if (sticky) {
@@ -288,13 +308,13 @@ export function useVirtualHistory(
 
       while (start > minStart && coverage < needed) {
         start--
-        coverage += heights.current.get(items[start]!.key) ?? PESSIMISTIC
+        coverage += ensureVirtualItemHeight(heights.current, items[start]!.key, start, PESSIMISTIC, estimateHeight)
       }
     } else {
       const maxEnd = Math.min(n, start + maxMounted)
 
       while (end < maxEnd && coverage < needed) {
-        coverage += heights.current.get(items[end]!.key) ?? PESSIMISTIC
+        coverage += ensureVirtualItemHeight(heights.current, items[end]!.key, end, PESSIMISTIC, estimateHeight)
         end++
       }
     }
@@ -498,6 +518,7 @@ interface MeasuredNode {
 interface VirtualHistoryOptions {
   coldStartCount?: number
   estimate?: number
+  estimateHeight?: (index: number, key: string) => number
   initialHeights?: ReadonlyMap<string, number>
   liveTailActive?: boolean
   maxMounted?: number

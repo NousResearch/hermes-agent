@@ -1218,3 +1218,189 @@ class TestQuickSnapshot:
         snap_id = create_quick_snapshot(hermes_home=hermes_home)
         # Other state still present → snapshot succeeds.
         assert snap_id is not None
+
+# ---------------------------------------------------------------------------
+# Pre-update backup (hermes update safety net)
+# ---------------------------------------------------------------------------
+
+class TestPreUpdateBackup:
+    """Tests for create_pre_update_backup — the auto-backup ``hermes update``
+    runs before touching anything."""
+
+    @pytest.fixture
+    def hermes_home(self, tmp_path):
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        _make_hermes_tree(root)
+        return root
+
+    def test_creates_backup_under_backups_dir(self, hermes_home):
+        from hermes_cli.backup import create_pre_update_backup
+        out = create_pre_update_backup(hermes_home=hermes_home)
+        assert out is not None
+        assert out.exists()
+        assert out.parent == hermes_home / "backups"
+        assert out.name.startswith("pre-update-")
+        assert out.suffix == ".zip"
+
+    def test_backup_contents_match_full_backup(self, hermes_home):
+        """Pre-update backup should include the same user data that
+        ``hermes backup`` would, and should exclude the same directories."""
+        from hermes_cli.backup import create_pre_update_backup
+        out = create_pre_update_backup(hermes_home=hermes_home)
+        assert out is not None
+        with zipfile.ZipFile(out) as zf:
+            names = set(zf.namelist())
+        # User data present
+        assert "config.yaml" in names
+        assert ".env" in names
+        assert "sessions/abc123.json" in names
+        assert "skills/my-skill/SKILL.md" in names
+        assert "profiles/coder/config.yaml" in names
+        # hermes-agent repo excluded
+        assert not any(n.startswith("hermes-agent/") for n in names)
+        # __pycache__ excluded
+        assert not any("__pycache__" in n for n in names)
+        # pid files excluded
+        assert "gateway.pid" not in names
+
+    def test_does_not_recurse_into_prior_backups(self, hermes_home):
+        """The ``backups/`` directory must be excluded so that each backup
+        doesn't grow exponentially by including all prior backups."""
+        from hermes_cli.backup import create_pre_update_backup
+        # First backup
+        out1 = create_pre_update_backup(hermes_home=hermes_home)
+        assert out1 is not None
+        # Second backup — must not include the first
+        out2 = create_pre_update_backup(hermes_home=hermes_home)
+        assert out2 is not None
+        with zipfile.ZipFile(out2) as zf:
+            names = zf.namelist()
+        assert not any(n.startswith("backups/") for n in names), (
+            f"Pre-update backup recursed into backups/ — leaked: "
+            f"{[n for n in names if n.startswith('backups/')]}"
+        )
+
+    def test_rotation_keeps_only_n(self, hermes_home):
+        """After more than ``keep`` backups are created, older ones are
+        pruned automatically."""
+        import time as _t
+        from hermes_cli.backup import create_pre_update_backup
+
+        created = []
+        for _ in range(5):
+            out = create_pre_update_backup(hermes_home=hermes_home, keep=3)
+            created.append(out)
+            _t.sleep(1.05)  # ensure distinct seconds in timestamp
+
+        remaining = sorted(
+            p.name for p in (hermes_home / "backups").iterdir()
+            if p.name.startswith("pre-update-")
+        )
+        assert len(remaining) == 3
+        # Oldest two should have been pruned
+        assert created[0].name not in remaining
+        assert created[1].name not in remaining
+        # Newest three should remain
+        assert created[4].name in remaining
+
+    def test_rotation_preserves_manual_files(self, hermes_home):
+        """Hand-dropped zips in ``backups/`` must not be touched by
+        rotation — it only prunes files matching ``pre-update-*.zip``."""
+        import time as _t
+        from hermes_cli.backup import create_pre_update_backup
+
+        (hermes_home / "backups").mkdir(exist_ok=True)
+        manual = hermes_home / "backups" / "my-manual.zip"
+        manual.write_bytes(b"manual backup")
+
+        for _ in range(5):
+            create_pre_update_backup(hermes_home=hermes_home, keep=2)
+            _t.sleep(1.05)
+
+        assert manual.exists(), "Manual backup zip was incorrectly pruned"
+
+    def test_returns_none_if_root_missing(self, tmp_path):
+        from hermes_cli.backup import create_pre_update_backup
+        assert create_pre_update_backup(hermes_home=tmp_path / "does-not-exist") is None
+
+
+class TestRunPreUpdateBackup:
+    """Tests for the ``_run_pre_update_backup`` wrapper in main.py —
+    covers config gate, ``--no-backup`` flag, and user-facing output."""
+
+    @pytest.fixture
+    def hermes_home(self, tmp_path, monkeypatch):
+        root = tmp_path / ".hermes"
+        root.mkdir()
+        _make_hermes_tree(root)
+        # Point HERMES_HOME at the temp dir so config + backup paths resolve here
+        monkeypatch.setenv("HERMES_HOME", str(root))
+        # Make Path.home() point at tmp_path for anything that uses it
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+        # Bust caches for hermes_cli.config + hermes_constants so they pick up HERMES_HOME
+        for mod in list(__import__("sys").modules.keys()):
+            if mod.startswith("hermes_cli.config") or mod == "hermes_constants":
+                del __import__("sys").modules[mod]
+        return root
+
+    def test_default_enabled_creates_backup(self, hermes_home, capsys):
+        from hermes_cli.main import _run_pre_update_backup
+        _run_pre_update_backup(Namespace(no_backup=False))
+        out = capsys.readouterr().out
+        assert "Creating pre-update backup" in out
+        assert "Saved:" in out
+        assert "Restore:" in out
+        assert "hermes import" in out
+        assert "Disable:" in out
+        # Actual backup was created
+        backups = list((hermes_home / "backups").glob("pre-update-*.zip"))
+        assert len(backups) == 1
+
+    def test_no_backup_flag_skips(self, hermes_home, capsys):
+        from hermes_cli.main import _run_pre_update_backup
+        _run_pre_update_backup(Namespace(no_backup=True))
+        out = capsys.readouterr().out
+        assert "skipped (--no-backup)" in out
+        assert "Creating pre-update backup" not in out
+        # No backup written
+        assert not (hermes_home / "backups").exists() or not list(
+            (hermes_home / "backups").glob("pre-update-*.zip")
+        )
+
+    def test_config_disabled_skips(self, hermes_home, capsys):
+        import yaml
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump({
+            "_config_version": 22,
+            "updates": {"pre_update_backup": False},
+        }))
+        # Ensure config module re-reads
+        import sys as _sys
+        for mod in list(_sys.modules.keys()):
+            if mod.startswith("hermes_cli.config"):
+                del _sys.modules[mod]
+
+        from hermes_cli.main import _run_pre_update_backup
+        _run_pre_update_backup(Namespace(no_backup=False))
+        out = capsys.readouterr().out
+        assert "disabled" in out
+        assert "updates.pre_update_backup=false" in out
+        assert not list((hermes_home / "backups").glob("pre-update-*.zip")) \
+            if (hermes_home / "backups").exists() else True
+
+    def test_cli_flag_overrides_enabled_config(self, hermes_home, capsys):
+        """--no-backup wins even when config says pre_update_backup: true."""
+        import yaml
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump({
+            "_config_version": 22,
+            "updates": {"pre_update_backup": True},
+        }))
+        import sys as _sys
+        for mod in list(_sys.modules.keys()):
+            if mod.startswith("hermes_cli.config"):
+                del _sys.modules[mod]
+
+        from hermes_cli.main import _run_pre_update_backup
+        _run_pre_update_backup(Namespace(no_backup=True))
+        out = capsys.readouterr().out
+        assert "skipped (--no-backup)" in out

@@ -260,7 +260,7 @@ class TestStartupGuard:
             "TWILIO_PHONE_NUMBER": "",
             "SMS_WEBHOOK_URL": "",
         }
-        with patch.dict(os.environ, env, clear=False):
+        with patch.dict(os.environ, env, clear=True):
             pc = PlatformConfig(enabled=True, api_key="tok")
             adapter = SmsAdapter(pc)
         await adapter.connect()

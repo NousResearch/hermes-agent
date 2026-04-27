@@ -1,17 +1,23 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
+import asyncio
 import os
-from unittest.mock import patch
+from pathlib import Path
+from unittest.mock import AsyncMock, patch
 
+import pytest
+
+from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
     MessageEvent,
-    MessageType,
+    SendResult,
     safe_url_for_log,
     utf16_len,
     _prefix_within_utf16_limit,
 )
+from gateway.session import SessionSource, build_session_key
 
 
 class TestSecretCaptureGuidance:
@@ -248,6 +254,177 @@ class TestExtractImages:
         assert images[0][0] == "https://fal.media/cat.png"
         # The PDF link must survive in cleaned content
         assert "![report](https://example.com/report.pdf)" in cleaned
+
+
+    def test_markdown_data_uri_image_is_cached_as_local_file(self):
+        """Regression: data URI images must not be sent as giant text blobs."""
+        png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lHGwVwAAAABJRU5ErkJggg=="
+        content = f"Here is the image: ![generated](data:image/png;base64,{png_b64})\nDone"
+
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+
+        assert len(images) == 1
+        image_path, alt_text = images[0]
+        assert alt_text == "generated"
+        assert image_path.endswith(".png")
+        assert Path(image_path).is_file()
+        assert "data:image" not in cleaned
+        assert png_b64 not in cleaned
+        assert cleaned == "Here is the image: \nDone"
+
+    def test_markdown_wrapped_data_uri_image_is_cached_as_local_file(self):
+        """Data URI extraction must tolerate line-wrapped base64 output."""
+        png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lHGwVwAAAABJRU5ErkJggg=="
+        wrapped_b64 = f"{png_b64[:32]}\n{png_b64[32:]}"
+        content = f"Here is the image: ![generated](data:image/png;base64,{wrapped_b64})"
+
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+
+        assert len(images) == 1
+        image_path, alt_text = images[0]
+        assert alt_text == "generated"
+        assert Path(image_path).is_file()
+        assert "data:image" not in cleaned
+        assert png_b64[:32] not in cleaned
+
+    def test_html_wrapped_data_uri_image_is_cached_as_local_file(self):
+        png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lHGwVwAAAABJRU5ErkJggg=="
+        wrapped_b64 = f"{png_b64[:32]}\n{png_b64[32:]}"
+        content = f'Before <img src="data:image/png;base64,{wrapped_b64}"> After'
+
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+
+        assert len(images) == 1
+        image_path, alt_text = images[0]
+        assert alt_text == ""
+        assert Path(image_path).is_file()
+        assert "data:image" not in cleaned
+        assert png_b64[:32] not in cleaned
+        assert cleaned == "Before After"
+
+    def test_html_data_uri_image_is_cached_as_local_file(self):
+        png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lHGwVwAAAABJRU5ErkJggg=="
+        content = f'Before <img src="data:image/png;base64,{png_b64}"> After'
+
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+
+        assert len(images) == 1
+        image_path, alt_text = images[0]
+        assert alt_text == ""
+        assert image_path.endswith(".png")
+        assert Path(image_path).is_file()
+        assert "data:image" not in cleaned
+        assert png_b64 not in cleaned
+        assert cleaned == "Before After"
+
+    def test_html_data_uri_image_with_attributes_after_src_is_cached_as_local_file(self):
+        png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lHGwVwAAAABJRU5ErkJggg=="
+        content = f'Before <img src="data:image/png;base64,{png_b64}" alt="generated"> After'
+
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+
+        assert len(images) == 1
+        image_path, alt_text = images[0]
+        assert alt_text == "generated"
+        assert Path(image_path).is_file()
+        assert "data:image" not in cleaned
+        assert png_b64 not in cleaned
+        assert cleaned == "Before After"
+
+    def test_html_data_uri_image_with_attributes_before_src_is_cached_as_local_file(self):
+        png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lHGwVwAAAABJRU5ErkJggg=="
+        content = f'Before <img alt="generated" class="rounded" src="data:image/png;base64,{png_b64}"> After'
+
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+
+        assert len(images) == 1
+        image_path, alt_text = images[0]
+        assert alt_text == "generated"
+        assert Path(image_path).is_file()
+        assert "data:image" not in cleaned
+        assert png_b64 not in cleaned
+        assert cleaned == "Before After"
+
+    def test_oversized_data_uri_is_stripped_without_decoding(self, monkeypatch):
+        monkeypatch.setattr(BasePlatformAdapter, "MAX_DATA_URI_IMAGE_BASE64_CHARS", 12)
+        payload = "A" * 13
+        content = f"Before ![huge](data:image/png;base64,{payload}) After"
+
+        images, cleaned = BasePlatformAdapter.extract_images(content)
+
+        assert images == []
+        assert "data:image" not in cleaned
+        assert payload not in cleaned
+        assert cleaned == "Before  After"
+
+
+
+
+class _RecordingAdapter(BasePlatformAdapter):
+    def __init__(self):
+        super().__init__(PlatformConfig(enabled=True, token="t"), Platform.TELEGRAM)
+        self.sent_texts = []
+        self.sent_image_urls = []
+        self.sent_image_files = []
+
+    async def connect(self):
+        pass
+
+    async def disconnect(self):
+        pass
+
+    async def send(self, chat_id: str, content: str, **kwargs):
+        self.sent_texts.append({"chat_id": chat_id, "content": content, **kwargs})
+        return SendResult(success=True)
+
+    async def send_image(self, chat_id: str, image_url: str, **kwargs):
+        self.sent_image_urls.append({"chat_id": chat_id, "image_url": image_url, **kwargs})
+        return SendResult(success=True)
+
+    async def send_image_file(self, chat_id: str, image_path: str, **kwargs):
+        self.sent_image_files.append({"chat_id": chat_id, "image_path": image_path, **kwargs})
+        return SendResult(success=True)
+
+    async def get_chat_info(self, chat_id):
+        return {}
+
+
+def _make_event(text="hi", chat_id="42"):
+    return MessageEvent(
+        text=text,
+        source=SessionSource(platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm"),
+    )
+
+
+def _session_key(chat_id="42"):
+    return build_session_key(
+        SessionSource(platform=Platform.TELEGRAM, chat_id=chat_id, chat_type="dm")
+    )
+
+
+@pytest.mark.asyncio
+async def test_process_message_routes_data_uri_image_to_send_image_file():
+    """Regression: cached data URI images must not be sent as URL text/path fallback."""
+    png_b64 = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lHGwVwAAAABJRU5ErkJggg=="
+    adapter = _RecordingAdapter()
+    adapter._message_handler = AsyncMock(
+        return_value=f"Caption\n![generated](data:image/png;base64,{png_b64})"
+    )
+    event = _make_event()
+    session_key = _session_key()
+    guard = asyncio.Event()
+    adapter._active_sessions[session_key] = guard
+
+    await adapter._process_message_background(event, session_key)
+
+    assert adapter.sent_texts == [{"chat_id": "42", "content": "Caption", "reply_to": None, "metadata": None}]
+    assert adapter.sent_image_urls == []
+    assert len(adapter.sent_image_files) == 1
+    image_call = adapter.sent_image_files[0]
+    image_path = image_call["image_path"]
+    assert Path(image_path).is_file()
+    assert image_call["caption"] == "generated"
+    assert session_key not in adapter._active_sessions
 
 
 # ---------------------------------------------------------------------------

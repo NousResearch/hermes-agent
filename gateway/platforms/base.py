@@ -6,6 +6,8 @@ and implement the required methods.
 """
 
 import asyncio
+import base64
+import binascii
 import inspect
 import ipaddress
 import logging
@@ -1088,6 +1090,7 @@ class BasePlatformAdapter(ABC):
     - Sending messages/responses
     - Handling media
     """
+    MAX_DATA_URI_IMAGE_BASE64_CHARS = 20_000_000
     
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
@@ -1435,48 +1438,124 @@ class BasePlatformAdapter(ABC):
         return lower.endswith('.gif')
 
     @staticmethod
+    def _cache_data_uri_image(data_uri: str) -> str | None:
+        """Decode a data:image/*;base64 URI into the image cache.
+
+        Returns a local file path on success, otherwise None. Failures are
+        logged and the original data URI is later stripped from the outbound
+        text by extract_images(), preventing multi-megabyte base64 blobs from
+        being sent to chat platforms as plain text.
+        """
+        match = re.fullmatch(
+            r'data:image/(?P<mime>png|jpe?g|gif|webp);base64,(?P<data>[A-Za-z0-9+/=\s]+)',
+            data_uri,
+            re.IGNORECASE,
+        )
+        if not match:
+            return None
+
+        encoded = re.sub(r'\s+', '', match.group('data'))
+        if len(encoded) > BasePlatformAdapter.MAX_DATA_URI_IMAGE_BASE64_CHARS:
+            logger.warning(
+                "Refusing oversized data URI image (%d encoded chars)",
+                len(encoded),
+            )
+            return None
+
+        mime = match.group('mime').lower()
+        ext = '.jpg' if mime in {'jpg', 'jpeg'} else f'.{mime}'
+        try:
+            raw = base64.b64decode(encoded, validate=True)
+            return cache_image_from_bytes(raw, ext=ext)
+        except (binascii.Error, ValueError, OSError) as exc:
+            logger.warning("Failed to decode data URI image for native delivery: %s", exc)
+            return None
+
+    @staticmethod
+    def _is_supported_image_url(ref_lower: str) -> bool:
+        return ref_lower.startswith(('http://', 'https://')) and any(
+            ref_lower.endswith(ext) or ext in ref_lower
+            for ext in ['.png', '.jpg', '.jpeg', '.gif', '.webp', 'fal.media', 'fal-cdn', 'replicate.delivery']
+        )
+
+    @staticmethod
+    def _extract_html_alt_text(img_tag: str) -> str:
+        match = re.search(r'\balt\s*=\s*(["\'])(.*?)\1', img_tag, re.IGNORECASE | re.DOTALL)
+        return match.group(2) if match else ""
+
+    @staticmethod
+    def _add_image_ref(
+        images: List[Tuple[str, str]],
+        extracted_tokens: set,
+        ref: str,
+        alt_text: str,
+        *,
+        require_image_url: bool,
+    ) -> None:
+        ref_lower = ref.lower()
+        if ref_lower.startswith('data:image/'):
+            cached_path = BasePlatformAdapter._cache_data_uri_image(ref)
+            if cached_path:
+                images.append((cached_path, alt_text))
+            extracted_tokens.add(ref)
+            return
+        if ref_lower.startswith(('http://', 'https://')) and (
+            not require_image_url or BasePlatformAdapter._is_supported_image_url(ref_lower)
+        ):
+            images.append((ref, alt_text))
+            extracted_tokens.add(ref)
+
+    @staticmethod
     def extract_images(content: str) -> Tuple[List[Tuple[str, str]], str]:
         """
         Extract image URLs from markdown and HTML image tags in a response.
         
         Finds patterns like:
         - ![alt text](https://example.com/image.png)
+        - ![alt text](data:image/png;base64,...)
         - <img src="https://example.com/image.png">
+        - <img src="data:image/png;base64,...">
         - <img src="https://example.com/image.png"></img>
         
         Args:
             content: The response text to scan.
         
         Returns:
-            Tuple of (list of (url, alt_text) pairs, cleaned content with image tags removed).
+            Tuple of (list of (url_or_local_path, alt_text) pairs, cleaned content with image tags removed).
         """
         images = []
         cleaned = content
-        
-        # Match markdown images: ![alt](url)
-        md_pattern = r'!\[([^\]]*)\]\((https?://[^\s\)]+)\)'
+        extracted_tokens = set()
+
+        # Match markdown images: ![alt](url-or-data-uri)
+        md_pattern = r'!\[([^\]]*)\]\((data:image/[^;\s]+;base64,[A-Za-z0-9+/=\s]+|[^\s\)]+)\)'
         for match in re.finditer(md_pattern, content):
-            alt_text = match.group(1)
-            url = match.group(2)
-            # Only extract URLs that look like actual images
-            if any(url.lower().endswith(ext) or ext in url.lower() for ext in
-                   ['.png', '.jpg', '.jpeg', '.gif', '.webp', 'fal.media', 'fal-cdn', 'replicate.delivery']):
-                images.append((url, alt_text))
+            BasePlatformAdapter._add_image_ref(
+                images,
+                extracted_tokens,
+                match.group(2),
+                match.group(1),
+                require_image_url=True,
+            )
         
         # Match HTML img tags: <img src="url"> or <img src="url"></img> or <img src="url"/>
-        html_pattern = r'<img\s+src=["\']?(https?://[^\s"\'<>]+)["\']?\s*/?>\s*(?:</img>)?'
-        for match in re.finditer(html_pattern, content):
-            url = match.group(1)
-            images.append((url, ""))
+        html_pattern = r'<img\b[^>]*\bsrc\s*=\s*(["\']?)(data:image/[^;\s]+;base64,[A-Za-z0-9+/=\s]+|[^\s"\'<>]+)\1[^>]*>\s*(?:</img>)?'
+        for match in re.finditer(html_pattern, content, re.IGNORECASE):
+            BasePlatformAdapter._add_image_ref(
+                images,
+                extracted_tokens,
+                match.group(2),
+                BasePlatformAdapter._extract_html_alt_text(match.group(0)),
+                require_image_url=False,
+            )
         
         # Remove only the matched image tags from content (not all markdown images)
-        if images:
-            extracted_urls = {url for url, _ in images}
+        if extracted_tokens:
             def _remove_if_extracted(match):
-                url = match.group(2) if match.lastindex >= 2 else match.group(1)
-                return '' if url in extracted_urls else match.group(0)
+                ref = match.group(2) if match.lastindex >= 2 else match.group(1)
+                return '' if ref in extracted_tokens else match.group(0)
             cleaned = re.sub(md_pattern, _remove_if_extracted, cleaned)
-            cleaned = re.sub(html_pattern, _remove_if_extracted, cleaned)
+            cleaned = re.sub(html_pattern, _remove_if_extracted, cleaned, flags=re.IGNORECASE)
             # Clean up leftover blank lines
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
@@ -2423,8 +2502,19 @@ class BasePlatformAdapter(ABC):
                             safe_url_for_log(image_url),
                             alt_text[:30] if alt_text else "",
                         )
+                        # Route cached local images (e.g. data URI images) through
+                        # the file-native path. send_image() is for remote URLs and
+                        # can degrade to leaking local cache paths as text on some
+                        # adapters.
+                        if os.path.isfile(image_url):
+                            img_result = await self.send_image_file(
+                                chat_id=event.source.chat_id,
+                                image_path=image_url,
+                                caption=alt_text if alt_text else None,
+                                metadata=_thread_metadata,
+                            )
                         # Route animated GIFs through send_animation for proper playback
-                        if self._is_animation_url(image_url):
+                        elif self._is_animation_url(image_url):
                             img_result = await self.send_animation(
                                 chat_id=event.source.chat_id,
                                 animation_url=image_url,

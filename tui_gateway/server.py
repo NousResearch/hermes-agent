@@ -2407,6 +2407,7 @@ def _(rid, params: dict) -> dict:
                     getattr(agent, "model", "") or _resolve_model(),
                     base_url=getattr(agent, "base_url", "") or "",
                     api_key=getattr(agent, "api_key", "") or "",
+                    provider=getattr(agent, "provider", "") or "",
                 )
                 ctx = preprocess_context_references(
                     prompt,

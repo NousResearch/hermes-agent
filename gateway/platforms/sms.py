@@ -65,8 +65,15 @@ class SmsAdapter(BasePlatformAdapter):
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.SMS)
-        self._account_sid: str = os.environ["TWILIO_ACCOUNT_SID"]
-        self._auth_token: str = os.environ["TWILIO_AUTH_TOKEN"]
+        _account_sid = os.getenv("TWILIO_ACCOUNT_SID", "")
+        _auth_token = os.getenv("TWILIO_AUTH_TOKEN", "")
+        if not _account_sid or not _auth_token:
+            raise EnvironmentError(
+                "TWILIO_ACCOUNT_SID and TWILIO_AUTH_TOKEN must be set for the SMS "
+                "platform. Add them to ~/.hermes/.env or export as environment variables."
+            )
+        self._account_sid: str = _account_sid
+        self._auth_token: str = _auth_token
         self._from_number: str = os.getenv("TWILIO_PHONE_NUMBER", "")
         self._webhook_port: int = int(
             os.getenv("SMS_WEBHOOK_PORT", str(DEFAULT_WEBHOOK_PORT))

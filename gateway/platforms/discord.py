@@ -83,6 +83,56 @@ def check_discord_requirements() -> bool:
     return DISCORD_AVAILABLE
 
 
+def _close_cleanup_workspace(workspace_dir) -> str:
+    """Delete a thread workspace directory used by ``/close``.
+
+    Falls back to a Docker-driven ``rm -rf`` when ``shutil.rmtree`` hits root-
+    owned files (common when threads spin up Dockerized tooling). Returns a
+    human-readable status string.
+    """
+    import shutil
+    from pathlib import Path
+
+    workspace_dir = Path(workspace_dir)
+    if not workspace_dir.exists() or not workspace_dir.is_dir():
+        return "📂 No workspace found for this thread."
+
+    try:
+        size_bytes = sum(
+            f.stat().st_size for f in workspace_dir.rglob("*") if f.is_file()
+        )
+    except Exception:
+        size_bytes = 0
+    size_mb = size_bytes / (1024 * 1024)
+
+    try:
+        shutil.rmtree(workspace_dir)
+        return f"🧹 Workspace cleaned: `{workspace_dir.name}/` ({size_mb:.1f} MB freed)"
+    except PermissionError:
+        docker_cmd = [
+            "docker", "run", "--rm",
+            "-v", f"{workspace_dir.parent}:/workspace",
+            "alpine",
+            "sh", "-lc",
+            f"rm -rf /workspace/{workspace_dir.name}",
+        ]
+        try:
+            result = subprocess.run(
+                docker_cmd, capture_output=True, text=True, timeout=120
+            )
+        except Exception as exc:
+            return f"⚠️ Workspace cleanup failed: {exc}"
+        if result.returncode == 0 and not workspace_dir.exists():
+            return (
+                f"🧹 Workspace cleaned: `{workspace_dir.name}/` "
+                f"({size_mb:.1f} MB freed) via Docker fallback for root-owned files"
+            )
+        stderr = (result.stderr or result.stdout or "unknown docker cleanup error").strip()
+        return f"⚠️ Workspace cleanup failed: {stderr}"
+    except Exception as exc:
+        return f"⚠️ Workspace cleanup failed: {exc}"
+
+
 def _build_allowed_mentions():
     """Build Discord ``AllowedMentions`` with safe defaults, overridable via env.
 
@@ -2173,6 +2223,100 @@ class DiscordAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.debug("Discord interaction cleanup failed: %s", e)
 
+    async def _handle_close_slash(self, interaction: "discord.Interaction") -> None:
+        """Handler for `/close` — swap forum tags, clean thread workspace, archive.
+
+        Mirrors the legacy `close` skill / `scripts/close.py` but runs natively
+        inside the gateway so users can close threads without engaging the
+        agent. Replies ephemerally with a status summary.
+        """
+        try:
+            _user = interaction.user
+            logger.info(
+                "[Discord] /close invoked by user=%s id=%s channel=%s guild=%s",
+                getattr(_user, "name", "?"),
+                getattr(_user, "id", "?"),
+                getattr(interaction.channel, "id", None) or getattr(interaction, "channel_id", None),
+                getattr(interaction, "guild_id", None),
+            )
+        except Exception:
+            pass
+
+        await interaction.response.defer(ephemeral=True)
+
+        channel = interaction.channel
+        if channel is None or not isinstance(channel, discord.Thread):
+            await interaction.edit_original_response(
+                content="⚠️ `/close` only works inside a thread."
+            )
+            return
+
+        thread = channel
+        results: list[str] = []
+
+        # ── Forum tag swap: "open" → "closed" ──
+        parent = thread.parent
+        is_forum = isinstance(parent, getattr(discord, "ForumChannel", tuple()))
+        # discord.py also exposes media channels as ForumChannel-like; fall back
+        # on the raw type code for safety on older library versions.
+        if not is_forum and parent is not None:
+            try:
+                is_forum = int(getattr(parent.type, "value", parent.type)) in (15, 16)
+            except Exception:
+                is_forum = False
+
+        if is_forum and parent is not None:
+            try:
+                tag_map = {
+                    (t.name or "").lower(): t for t in (parent.available_tags or [])
+                }
+                open_tag = tag_map.get("open")
+                closed_tag = tag_map.get("closed")
+                if closed_tag:
+                    current = list(thread.applied_tags or [])
+                    new_tags = [t for t in current if not (open_tag and t.id == open_tag.id)]
+                    if not any(t.id == closed_tag.id for t in new_tags):
+                        new_tags.append(closed_tag)
+                    new_tags = new_tags[:5]  # Discord limit
+                    try:
+                        await thread.edit(applied_tags=new_tags)
+                        results.append("🏷️ Forum tag updated: **open** → **closed**")
+                    except Exception as exc:
+                        results.append(f"⚠️ Tag update failed: {exc}")
+                else:
+                    results.append('⚠️ No "closed" tag found on forum channel — skipped tag update.')
+            except Exception as exc:
+                results.append(f"⚠️ Tag inspection failed: {exc}")
+
+        # ── Clean up workspace ──
+        try:
+            from hermes_constants import get_hermes_home
+
+            workspace_dir = get_hermes_home() / "workspace" / str(thread.id)
+            results.append(_close_cleanup_workspace(workspace_dir))
+        except Exception as exc:
+            results.append(f"⚠️ Workspace cleanup skipped: {exc}")
+
+        # ── Edit the deferred response with the results ──
+        # Done BEFORE archiving so the message itself doesn't reopen the thread.
+        summary = "\n".join(results) if results else "Nothing to do."
+        try:
+            await interaction.edit_original_response(content=summary)
+        except Exception as exc:
+            logger.debug("Discord /close response edit failed: %s", exc)
+
+        # ── Archive the thread ──
+        try:
+            await thread.edit(archived=True)
+        except Exception as exc:
+            logger.warning("Discord /close archive failed for thread %s: %s", thread.id, exc)
+            try:
+                await interaction.followup.send(
+                    f"⚠️ Archive failed: {exc}", ephemeral=True
+                )
+            except Exception:
+                pass
+
     def _register_slash_commands(self) -> None:
         """Register Discord slash commands on the command tree."""
         if not self._client:
@@ -2314,6 +2458,10 @@ class DiscordAdapter(BasePlatformAdapter):
         @discord.app_commands.describe(prompt="The prompt to run in the background")
         async def slash_background(interaction: discord.Interaction, prompt: str):
             await self._run_simple_slash(interaction, f"/background {prompt}", "Background task started~")
+
+        @tree.command(name="close", description="Close this thread — swap forum tags, clean workspace, archive")
+        async def slash_close(interaction: discord.Interaction):
+            await self._handle_close_slash(interaction)
 
         # ── Auto-register any gateway-available commands not yet on the tree ──
         # This ensures new commands added to COMMAND_REGISTRY in

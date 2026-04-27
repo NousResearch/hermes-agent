@@ -303,7 +303,7 @@ class TestTencentTokenhubContextLength:
     def test_hy3_preview_context_length(self):
         from agent.model_metadata import get_model_context_length
         ctx = get_model_context_length("hy3-preview")
-        assert ctx == 131072
+        assert ctx == 256000
 
 
 # =============================================================================

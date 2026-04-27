@@ -242,6 +242,72 @@ class TestSummaryFailureCooldown:
         assert mock_call.call_count == 1
 
 
+class TestSummaryFailureTrackingForGatewayWarning:
+    """When summary generation fails, the compressor must record dropped count
+    + fallback flag so gateway hygiene & /compress can surface a visible
+    warning instead of silently dropping context."""
+
+    def test_compress_records_fallback_and_dropped_count_on_summary_failure(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "msg 1"},
+            {"role": "assistant", "content": "msg 2"},
+            {"role": "user", "content": "msg 3"},
+            {"role": "assistant", "content": "msg 4"},
+            {"role": "user", "content": "msg 5"},
+            {"role": "assistant", "content": "msg 6"},
+            {"role": "user", "content": "msg 7"},
+        ]
+
+        # Simulate summary LLM call failing — covers the 404 / model-not-found
+        # case from issue (auxiliary compression model misconfigured).
+        with patch("agent.context_compressor.call_llm", side_effect=Exception("404 model not found")):
+            result = c.compress(msgs)
+
+        assert c._last_summary_fallback_used is True
+        assert c._last_summary_dropped_count > 0
+        assert c._last_summary_error is not None
+        # Result must still be well-formed (fallback summary present).
+        assert any(
+            isinstance(m.get("content"), str) and "Summary generation was unavailable" in m["content"]
+            for m in result
+        )
+
+    def test_compress_clears_fallback_flag_on_subsequent_success(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary text"
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+
+        msgs = [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "msg 1"},
+            {"role": "assistant", "content": "msg 2"},
+            {"role": "user", "content": "msg 3"},
+            {"role": "assistant", "content": "msg 4"},
+            {"role": "user", "content": "msg 5"},
+            {"role": "assistant", "content": "msg 6"},
+            {"role": "user", "content": "msg 7"},
+        ]
+
+        # First call fails, second succeeds — flag must reset on second compress.
+        with patch("agent.context_compressor.call_llm", side_effect=Exception("boom")):
+            c.compress(msgs)
+        assert c._last_summary_fallback_used is True
+
+        # Reset cooldown to allow retry on second compress
+        c._summary_failure_cooldown_until = 0.0
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            c.compress(msgs)
+        assert c._last_summary_fallback_used is False
+        assert c._last_summary_dropped_count == 0
+
+
 class TestSummaryPrefixNormalization:
     def test_legacy_prefix_is_replaced(self):
         summary = ContextCompressor._with_summary_prefix("[CONTEXT SUMMARY]: did work")

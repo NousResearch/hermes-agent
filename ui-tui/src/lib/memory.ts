@@ -1,5 +1,5 @@
 import { createWriteStream } from 'node:fs'
-import { mkdir, readdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { pipeline } from 'node:stream/promises'
@@ -52,6 +52,84 @@ export interface HeapDumpResult {
   error?: string
   heapPath?: string
   success: boolean
+}
+
+export interface HeapDumpPruneStats {
+  removedDiagnostics: number
+  removedSnapshots: number
+}
+
+const DEFAULT_HEAP_DIAGNOSTIC_RETENTION_DAYS = 60
+const DEFAULT_HEAP_SNAPSHOT_KEEP = 3
+
+const safeRm = async (path: string): Promise<boolean> => {
+  try {
+    await rm(path, { force: true })
+    return true
+  } catch {
+    return false
+  }
+}
+
+export async function pruneHeapDumpArtifacts(
+  dir: string,
+  opts: { diagnosticsRetentionDays?: number; maxSnapshots?: number } = {}
+): Promise<HeapDumpPruneStats> {
+  const diagnosticsRetentionDays = Math.max(0, opts.diagnosticsRetentionDays ?? DEFAULT_HEAP_DIAGNOSTIC_RETENTION_DAYS)
+  const maxSnapshots = Math.max(1, opts.maxSnapshots ?? DEFAULT_HEAP_SNAPSHOT_KEEP)
+  const out: HeapDumpPruneStats = { removedDiagnostics: 0, removedSnapshots: 0 }
+
+  let entries: Awaited<ReturnType<typeof readdir>>
+  try {
+    entries = await readdir(dir, { withFileTypes: true })
+  } catch {
+    return out
+  }
+
+  const diagnostics: Array<{ mtimeMs: number; path: string }> = []
+  const snapshots: Array<{ mtimeMs: number; path: string }> = []
+
+  for (const entry of entries) {
+    if (!entry.isFile()) {
+      continue
+    }
+
+    const path = join(dir, entry.name)
+    let mtimeMs: number
+    try {
+      mtimeMs = (await stat(path)).mtimeMs
+    } catch {
+      continue
+    }
+
+    if (entry.name.endsWith('.heapsnapshot')) {
+      snapshots.push({ mtimeMs, path })
+      continue
+    }
+
+    if (entry.name.endsWith('.diagnostics.json')) {
+      diagnostics.push({ mtimeMs, path })
+    }
+  }
+
+  snapshots.sort((a, b) => b.mtimeMs - a.mtimeMs || b.path.localeCompare(a.path))
+  for (const snapshot of snapshots.slice(maxSnapshots)) {
+    if (await safeRm(snapshot.path)) {
+      out.removedSnapshots += 1
+    }
+  }
+
+  const diagnosticCutoff = Date.now() - diagnosticsRetentionDays * 86400 * 1000
+  for (const diagnostic of diagnostics) {
+    if (diagnostic.mtimeMs >= diagnosticCutoff) {
+      continue
+    }
+    if (await safeRm(diagnostic.path)) {
+      out.removedDiagnostics += 1
+    }
+  }
+
+  return out
 }
 
 export async function captureMemoryDiagnostics(trigger: MemoryTrigger): Promise<MemoryDiagnostics> {
@@ -141,11 +219,12 @@ export async function captureMemoryDiagnostics(trigger: MemoryTrigger): Promise<
 }
 
 export async function performHeapDump(trigger: MemoryTrigger = 'manual'): Promise<HeapDumpResult> {
+  const dir = process.env.HERMES_HEAPDUMP_DIR?.trim() || join(homedir() || tmpdir(), '.hermes', 'heapdumps')
+
   try {
     // Diagnostics first — heap-snapshot serialization can crash on very large
     // heaps, and the JSON sidecar is the most actionable artifact if so.
     const diagnostics = await captureMemoryDiagnostics(trigger)
-    const dir = process.env.HERMES_HEAPDUMP_DIR?.trim() || join(homedir() || tmpdir(), '.hermes', 'heapdumps')
 
     await mkdir(dir, { recursive: true })
 
@@ -159,6 +238,8 @@ export async function performHeapDump(trigger: MemoryTrigger = 'manual'): Promis
     return { diagPath, heapPath, success: true }
   } catch (e) {
     return { error: e instanceof Error ? e.message : String(e), success: false }
+  } finally {
+    await pruneHeapDumpArtifacts(dir)
   }
 }
 

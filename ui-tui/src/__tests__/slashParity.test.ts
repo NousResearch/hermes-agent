@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -38,8 +38,17 @@ const MUTATING_COMMANDS = [
 
 const loadCommandRegistryNames = (): string[] => {
   const here = dirname(fileURLToPath(import.meta.url))
-  const source = readFileSync(resolve(here, '../../../hermes_cli/commands.py'), 'utf8')
-  const names = [...source.matchAll(/CommandDef\("([^"]+)"/g)].map(match => match[1]!)
+
+  const names = JSON.parse(
+    execFileSync(
+      process.env.PYTHON ?? 'python3',
+      [
+        '-c',
+        'import json; from hermes_cli.commands import COMMAND_REGISTRY; print(json.dumps([c.name for c in COMMAND_REGISTRY]))'
+      ],
+      { cwd: resolve(here, '../../..'), encoding: 'utf8' }
+    )
+  ) as string[]
 
   return [...new Set(names)]
 }

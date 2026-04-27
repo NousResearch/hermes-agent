@@ -254,7 +254,8 @@ class IterationBudget:
 
     @property
     def used(self) -> int:
-        return self._used
+        with self._lock:
+            return self._used
 
     @property
     def remaining(self) -> int:
@@ -10248,6 +10249,7 @@ class AIAgent:
             has_retried_429 = False
             restart_with_compressed_messages = False
             restart_with_length_continuation = False
+            _budget_refunded_this_iteration = False  # Guard: refund at most once per consume()
 
             finish_reason = "stop"
             response = None  # Guard against UnboundLocalError if all retries fail
@@ -11160,7 +11162,13 @@ class AIAgent:
                     )
                     # Refund iteration budget for transient network errors that
                     # never reached the server — no API resources were consumed.
-                    if classified.should_refund_budget:
+                    # Guard: only refund once per outer-loop iteration even if the
+                    # inner retry loop fires the except block multiple times (e.g.
+                    # max_retries=3 all failing with TimeoutError).  Without this
+                    # guard, 3 retries → 3 refunds for 1 consume(), granting the
+                    # agent (max_retries - 1) extra iterations for free.
+                    if classified.should_refund_budget and not _budget_refunded_this_iteration:
+                        _budget_refunded_this_iteration = True
                         self.iteration_budget.refund()
                         logger.debug(
                             "Refunded iteration budget after transient error: %s",

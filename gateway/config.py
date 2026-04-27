@@ -61,6 +61,7 @@ class Platform(Enum):
     DINGTALK = "dingtalk"
     API_SERVER = "api_server"
     WEBHOOK = "webhook"
+    MSTEAMS = "msteams"
     FEISHU = "feishu"
     WECOM = "wecom"
     WECOM_CALLBACK = "wecom_callback"
@@ -287,6 +288,13 @@ class GatewayConfig:
             # Weixin requires both a token and an account_id
             if platform == Platform.WEIXIN:
                 if config.extra.get("account_id") and (config.token or config.extra.get("token")):
+                    connected.append(platform)
+                continue
+            # Microsoft Teams uses Bot Framework app credentials in extra
+            if platform == Platform.MSTEAMS:
+                if (config.extra.get("app_id") or config.token) and (
+                    config.extra.get("app_password") or config.api_key
+                ):
                     connected.append(platform)
                 continue
             # Platforms that use token/api_key auth
@@ -592,6 +600,8 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["require_mention"] = platform_cfg["require_mention"]
                 if "free_response_channels" in platform_cfg:
                     bridged["free_response_channels"] = platform_cfg["free_response_channels"]
+                if "free_response_conversations" in platform_cfg:
+                    bridged["free_response_conversations"] = platform_cfg["free_response_conversations"]
                 if "mention_patterns" in platform_cfg:
                     bridged["mention_patterns"] = platform_cfg["mention_patterns"]
                 if "dm_policy" in platform_cfg:
@@ -872,6 +882,22 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
 
 def _apply_env_overrides(config: GatewayConfig) -> None:
     """Apply environment variable overrides to config."""
+
+    def _split_csv_env(value: str) -> List[str]:
+        return [part.strip() for part in str(value or "").split(",") if part.strip()]
+
+    def _parse_patterns_env(value: str) -> Any:
+        raw = str(value or "").strip()
+        if not raw:
+            return []
+        try:
+            parsed = json.loads(raw)
+            if isinstance(parsed, (list, str)):
+                return parsed
+        except Exception:
+            pass
+        lines = [part.strip() for part in raw.splitlines() if part.strip()]
+        return lines or _split_csv_env(raw)
     
     # Telegram
     telegram_token = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -1113,6 +1139,89 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 pass
         if webhook_secret:
             config.platforms[Platform.WEBHOOK].extra["secret"] = webhook_secret
+
+    # Microsoft Teams (Bot Framework webhook)
+    msteams_app_id = os.getenv("MSTEAMS_APP_ID")
+    msteams_app_password = os.getenv("MSTEAMS_APP_PASSWORD")
+    msteams_env_present = any(
+        os.getenv(key) is not None
+        for key in (
+            "MSTEAMS_APP_ID",
+            "MSTEAMS_APP_PASSWORD",
+            "MSTEAMS_TENANT_ID",
+            "MSTEAMS_BOT_DISPLAY_NAME",
+            "MSTEAMS_HOST",
+            "MSTEAMS_PORT",
+            "MSTEAMS_PATH",
+            "MSTEAMS_REQUIRE_MENTION",
+            "MSTEAMS_MENTION_PATTERNS",
+            "MSTEAMS_FREE_RESPONSE_CONVERSATIONS",
+            "MSTEAMS_FREE_RESPONSE_CHANNELS",
+            "MSTEAMS_MAX_BODY_BYTES",
+        )
+    )
+    if msteams_env_present or Platform.MSTEAMS in config.platforms:
+        if Platform.MSTEAMS not in config.platforms:
+            config.platforms[Platform.MSTEAMS] = PlatformConfig()
+        platform_config = config.platforms[Platform.MSTEAMS]
+        extra = platform_config.extra
+        if msteams_app_id:
+            platform_config.enabled = True
+            platform_config.token = msteams_app_id
+            extra["app_id"] = msteams_app_id
+        if msteams_app_password:
+            platform_config.api_key = msteams_app_password
+            extra["app_password"] = msteams_app_password
+        tenant_id = os.getenv("MSTEAMS_TENANT_ID")
+        if tenant_id:
+            extra["tenant_id"] = tenant_id
+        bot_display_name = os.getenv("MSTEAMS_BOT_DISPLAY_NAME")
+        if bot_display_name:
+            extra["bot_display_name"] = bot_display_name
+        host = os.getenv("MSTEAMS_HOST")
+        if host:
+            extra["host"] = host
+        port = os.getenv("MSTEAMS_PORT")
+        if port:
+            try:
+                extra["port"] = int(port)
+            except ValueError:
+                extra["port"] = 3978
+        else:
+            extra.setdefault("port", 3978)
+        path = os.getenv("MSTEAMS_PATH")
+        if path:
+            extra["path"] = path
+        else:
+            extra.setdefault("path", "/api/messages")
+        require_mention = os.getenv("MSTEAMS_REQUIRE_MENTION")
+        if require_mention is not None:
+            extra["require_mention"] = _coerce_bool(require_mention, True)
+        else:
+            extra.setdefault("require_mention", True)
+        mention_patterns = os.getenv("MSTEAMS_MENTION_PATTERNS")
+        if mention_patterns:
+            extra["mention_patterns"] = _parse_patterns_env(mention_patterns)
+        free_response = (
+            os.getenv("MSTEAMS_FREE_RESPONSE_CONVERSATIONS")
+            or os.getenv("MSTEAMS_FREE_RESPONSE_CHANNELS")
+        )
+        if free_response:
+            extra["free_response_conversations"] = _split_csv_env(free_response)
+        max_body_bytes = os.getenv("MSTEAMS_MAX_BODY_BYTES")
+        if max_body_bytes:
+            try:
+                extra["max_body_bytes"] = int(max_body_bytes)
+            except ValueError:
+                pass
+
+    msteams_home = os.getenv("MSTEAMS_HOME_CHANNEL")
+    if msteams_home and Platform.MSTEAMS in config.platforms:
+        config.platforms[Platform.MSTEAMS].home_channel = HomeChannel(
+            platform=Platform.MSTEAMS,
+            chat_id=msteams_home,
+            name=os.getenv("MSTEAMS_HOME_CHANNEL_NAME", "Home"),
+        )
 
     # DingTalk
     dingtalk_client_id = os.getenv("DINGTALK_CLIENT_ID")

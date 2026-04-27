@@ -330,6 +330,12 @@ PLATFORM_HINTS = {
         "attachments, audio as file attachments. You can also include image URLs "
         "in markdown format ![alt](url) and they will be uploaded as attachments."
     ),
+    "msteams": (
+        "You are in Microsoft Teams communicating through a text-only Bot Framework "
+        "adapter. Keep responses suitable for Teams chat. This adapter sends plain "
+        "text replies only in this version: do not promise file uploads, images, "
+        "Adaptive Cards, or Microsoft Graph actions."
+    ),
     "signal": (
         "You are on a text messaging communication platform, Signal. "
         "Please do not use markdown as it does not render. "

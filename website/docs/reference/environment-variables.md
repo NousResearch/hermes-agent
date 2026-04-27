@@ -263,6 +263,16 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `DINGTALK_CLIENT_ID` | DingTalk bot AppKey from developer portal ([open.dingtalk.com](https://open.dingtalk.com)) |
 | `DINGTALK_CLIENT_SECRET` | DingTalk bot AppSecret from developer portal |
 | `DINGTALK_ALLOWED_USERS` | Comma-separated DingTalk user IDs allowed to message the bot |
+| `MSTEAMS_APP_ID` | Microsoft Teams Bot Framework app/client ID |
+| `MSTEAMS_APP_PASSWORD` | Microsoft Teams Bot Framework app client secret |
+| `MSTEAMS_TENANT_ID` | Optional tenant ID for Bot Framework token acquisition. Defaults to `botframework.com` |
+| `MSTEAMS_ALLOWED_USERS` | Comma-separated Microsoft Teams AAD object IDs allowed to message the bot |
+| `MSTEAMS_HOST` | Local host/interface for the Teams webhook server. Default: `0.0.0.0` |
+| `MSTEAMS_PORT` | Local port for the Teams webhook server. Default: `3978` |
+| `MSTEAMS_PATH` | Webhook path for Bot Framework activities. Default: `/api/messages` |
+| `MSTEAMS_REQUIRE_MENTION` | Require bot mentions in Teams channels/group chats. Default: `true` |
+| `MSTEAMS_MENTION_PATTERNS` | JSON list or comma-separated regex wake words for Teams channels/group chats |
+| `MSTEAMS_FREE_RESPONSE_CONVERSATIONS` | Comma-separated Teams conversation/channel/team IDs that do not require mentions |
 | `FEISHU_APP_ID` | Feishu/Lark bot App ID from [open.feishu.cn](https://open.feishu.cn/) |
 | `FEISHU_APP_SECRET` | Feishu/Lark bot App Secret |
 | `FEISHU_DOMAIN` | `feishu` (China) or `lark` (international). Default: `feishu` |

@@ -383,6 +383,7 @@ Each platform has its own toolset:
 | Mattermost | `hermes-mattermost` | Full tools including terminal |
 | Matrix | `hermes-matrix` | Full tools including terminal |
 | DingTalk | `hermes-dingtalk` | Full tools including terminal |
+| Microsoft Teams | `hermes-msteams` | Text-only Bot Framework replies |
 | Feishu/Lark | `hermes-feishu` | Full tools including terminal |
 | WeCom | `hermes-wecom` | Full tools including terminal |
 | WeCom Callback | `hermes-wecom-callback` | Full tools including terminal |
@@ -406,6 +407,7 @@ Each platform has its own toolset:
 - [Mattermost Setup](mattermost.md)
 - [Matrix Setup](matrix.md)
 - [DingTalk Setup](dingtalk.md)
+- [Microsoft Teams Setup](msteams.md)
 - [Feishu/Lark Setup](feishu.md)
 - [WeCom Setup](wecom.md)
 - [WeCom Callback Setup](wecom-callback.md)

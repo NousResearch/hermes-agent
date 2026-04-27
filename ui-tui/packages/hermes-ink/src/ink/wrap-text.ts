@@ -107,3 +107,20 @@ export default function wrapText(text: string, maxWidth: number, wrapType: Style
 
   return memoizedWrap(text, maxWidth, wrapType)
 }
+
+export function wrapCacheSize(): number {
+  return wrapCache.size
+}
+
+export function evictWrapCache(keepRatio = 0): void {
+  if (keepRatio <= 0) {
+    wrapCache.clear()
+    return
+  }
+
+  const target = Math.floor(wrapCache.size * keepRatio)
+
+  while (wrapCache.size > target) {
+    wrapCache.delete(wrapCache.keys().next().value!)
+  }
+}

@@ -1,3 +1,5 @@
+import { evictInkCaches } from '@hermes/ink'
+
 import { type HeapDumpResult, performHeapDump } from './memory.js'
 
 export type MemoryLevel = 'critical' | 'high' | 'normal'
@@ -38,6 +40,12 @@ export function startMemoryMonitor({
     if (dumped.has(level)) {
       return
     }
+
+    // Defensive eviction: prune Ink content caches before dumping/exiting.
+    // 'high' = half-prune (still warm enough to recover quickly);
+    // 'critical' = full drop. Reduces post-dump RSS and gives the user a
+    // chance to keep running rather than auto-restart.
+    evictInkCaches(level === 'critical' ? 'all' : 'half')
 
     dumped.add(level)
     const dump = await performHeapDump(level === 'critical' ? 'auto-critical' : 'auto-high').catch(() => null)

@@ -124,6 +124,16 @@ declare module '@hermes/ink' {
   export const scrollFastPathStats: ScrollFastPathStats
   export function resetScrollFastPathStats(): void
 
+  export type EvictLevel = 'all' | 'half'
+  export type InkCacheSizes = {
+    readonly lineWidth: number
+    readonly slice: number
+    readonly width: number
+    readonly wrap: number
+  }
+  export function evictInkCaches(level?: EvictLevel): InkCacheSizes
+  export function inkCacheSizes(): InkCacheSizes
+
   export function render(node: React.ReactNode, options?: NodeJS.WriteStream | RenderOptions): Instance
 
   export function useApp(): { readonly exit: (error?: Error) => void }

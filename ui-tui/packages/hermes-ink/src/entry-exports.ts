@@ -1,6 +1,12 @@
 export { default as useStderr } from './hooks/use-stderr.js'
 export { default as useStdout } from './hooks/use-stdout.js'
 export { Ansi } from './ink/Ansi.js'
+export {
+  evictInkCaches,
+  type EvictLevel,
+  type InkCacheSizes,
+  inkCacheSizes
+} from './ink/cache-eviction.js'
 export { AlternateScreen } from './ink/components/AlternateScreen.js'
 export { default as Box } from './ink/components/Box.js'
 export { default as Link } from './ink/components/Link.js'

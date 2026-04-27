@@ -79,6 +79,7 @@ class TestCustomPrefixIsCustomGuard:
             current_provider="custom:custom",
         )
         mock_detect.assert_not_called()
+        assert result.target_provider == "custom:custom"
 
     def test_custom_colon_named_does_not_call_detect(self):
         """custom:neuralwatt (any named custom: prefix) must not invoke detect."""
@@ -97,6 +98,7 @@ class TestCustomPrefixIsCustomGuard:
             ],
         )
         mock_detect.assert_not_called()
+        assert result.target_provider == "custom:neuralwatt"
 
     def test_bare_custom_still_does_not_call_detect(self):
         """Bare 'custom' provider remains protected (pre-existing behavior)."""
@@ -106,6 +108,7 @@ class TestCustomPrefixIsCustomGuard:
             current_base_url="https://custom.example.com/v1",
         )
         mock_detect.assert_not_called()
+        assert result.target_provider == "custom"
 
     def test_non_custom_provider_does_call_detect(self):
         """Non-custom providers like openrouter still trigger detect (unchanged behavior)."""

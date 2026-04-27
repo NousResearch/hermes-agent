@@ -1226,6 +1226,28 @@ def _strip_markdown_syntax(text: str) -> str:
     return plain.strip("\n")
 
 
+_WINDOWS_PATH_WITH_DOT_SEGMENT_RE = re.compile(
+    r"(?i)(?:\b[a-z]:\\|\\\\)[^\s`]*\\\.[^\s`]*"
+)
+
+
+def _preserve_windows_dot_segments_for_markdown(text: str) -> str:
+    r"""Keep Windows path separators before hidden directories in Markdown.
+
+    CommonMark treats ``\.`` as an escaped literal dot, so Rich Markdown would
+    render ``D:\repo\.ai`` as ``D:\repo.ai``.  Doubling only that separator
+    inside Windows path-looking tokens preserves the path without changing
+    ordinary markdown escapes like ``1\. not a list``.
+    """
+    if "\\." not in text:
+        return text
+
+    def _protect(match: re.Match[str]) -> str:
+        return re.sub(r"(?<!\\)\\(?=\.)", r"\\\\", match.group(0))
+
+    return _WINDOWS_PATH_WITH_DOT_SEGMENT_RE.sub(_protect, text)
+
+
 def _render_final_assistant_content(text: str, mode: str = "render"):
     """Render final assistant content as markdown, stripped text, or raw text."""
     from rich.markdown import Markdown
@@ -1237,6 +1259,7 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
         return _rich_text_from_ansi(text or "")
 
     plain = _rich_text_from_ansi(text or "").plain
+    plain = _preserve_windows_dot_segments_for_markdown(plain)
     return Markdown(plain)
 
 

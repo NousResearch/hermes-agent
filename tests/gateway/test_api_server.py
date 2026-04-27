@@ -647,17 +647,17 @@ class TestChatCompletionsEndpoint:
 
     @pytest.mark.asyncio
     async def test_stream_includes_tool_progress(self, adapter):
-        """tool_progress_callback fires → progress appears as custom SSE event, not in delta.content."""
+        """tool_start_callback fires → progress appears as custom SSE event, not in delta.content."""
         import asyncio
 
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
             async def _mock_run_agent(**kwargs):
                 cb = kwargs.get("stream_delta_callback")
-                tp_cb = kwargs.get("tool_progress_callback")
+                start_cb = kwargs.get("tool_start_callback")
                 # Simulate tool progress before streaming content
-                if tp_cb:
-                    tp_cb("tool.started", "terminal", "ls -la", {"command": "ls -la"})
+                if start_cb:
+                    start_cb("call_terminal_1", "terminal", {"command": "ls -la"})
                 if cb:
                     await asyncio.sleep(0.05)
                     cb("Here are the files.")
@@ -682,8 +682,10 @@ class TestChatCompletionsEndpoint:
                 # delta.content — prevents model from learning to imitate
                 # markers instead of calling tools (#6972).
                 assert "event: hermes.tool.progress" in body
+                assert '"toolCallId": "call_terminal_1"' in body
+                assert '"status": "running"' in body
                 assert '"tool": "terminal"' in body
-                assert '"label": "ls -la"' in body
+                assert '"label": "terminal"' in body
                 # The progress marker must NOT appear inside any
                 # chat.completion.chunk delta.content field.
                 import json as _json
@@ -702,6 +704,47 @@ class TestChatCompletionsEndpoint:
                 assert "Here are the files." in body
 
     @pytest.mark.asyncio
+    async def test_stream_emits_tool_completed_progress_with_call_id(self, adapter):
+        """chat/completions SSE should mark an exact tool call completed before the final answer ends."""
+        import asyncio
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                start_cb = kwargs.get("tool_start_callback")
+                complete_cb = kwargs.get("tool_complete_callback")
+                cb = kwargs.get("stream_delta_callback")
+                if start_cb:
+                    start_cb("call_terminal_1", "terminal", {"command": "pwd"})
+                await asyncio.sleep(0.01)
+                if complete_cb:
+                    complete_cb("call_terminal_1", "terminal", {"command": "pwd"}, "/workspace\n")
+                if cb:
+                    cb("Done.")
+                return (
+                    {"final_response": "Done.", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "pwd"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                assert body.count("event: hermes.tool.progress") >= 2
+                assert '"toolCallId": "call_terminal_1"' in body
+                assert '"status": "running"' in body
+                assert '"status": "completed"' in body
+                assert '"output": "/workspace\\n"' in body
+                assert "Done." in body
+
+    @pytest.mark.asyncio
     async def test_stream_tool_progress_skips_internal_events(self, adapter):
         """Internal events (name starting with _) are not streamed."""
         import asyncio
@@ -710,10 +753,10 @@ class TestChatCompletionsEndpoint:
         async with TestClient(TestServer(app)) as cli:
             async def _mock_run_agent(**kwargs):
                 cb = kwargs.get("stream_delta_callback")
-                tp_cb = kwargs.get("tool_progress_callback")
-                if tp_cb:
-                    tp_cb("tool.started", "_thinking", "some internal state", {})
-                    tp_cb("tool.started", "web_search", "Python docs", {"query": "Python docs"})
+                start_cb = kwargs.get("tool_start_callback")
+                if start_cb:
+                    start_cb("call_internal_1", "_thinking", {"state": "some internal state"})
+                    start_cb("call_search_1", "web_search", {"query": "Python docs"})
                 if cb:
                     await asyncio.sleep(0.05)
                     cb("Found it.")
@@ -738,7 +781,7 @@ class TestChatCompletionsEndpoint:
                 # Real tool progress should appear as custom SSE event
                 assert "event: hermes.tool.progress" in body
                 assert '"tool": "web_search"' in body
-                assert '"label": "Python docs"' in body
+                assert '"label": "web_search"' in body
 
     @pytest.mark.asyncio
     async def test_no_user_message_returns_400(self, adapter):

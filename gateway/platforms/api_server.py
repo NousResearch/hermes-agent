@@ -932,8 +932,38 @@ class APIServerAdapter(BasePlatformAdapter):
                 if delta is not None:
                     _stream_q.put(delta)
 
+            def _queue_tool_progress(
+                *,
+                tool_call_id: Optional[str] = None,
+                name: str,
+                status: str,
+                args=None,
+                label: Optional[str] = None,
+                output=None,
+            ) -> None:
+                if not name or name.startswith("_"):
+                    return
+                from agent.display import get_tool_emoji
+                emoji = get_tool_emoji(name)
+                tool_args = args if args is not None else {}
+                payload = {
+                    "tool": name,
+                    "name": name,
+                    "emoji": emoji,
+                    "label": label or name,
+                    "status": status,
+                    "input": tool_args,
+                    "args": tool_args,
+                }
+                if tool_call_id:
+                    payload["toolCallId"] = str(tool_call_id)
+                if status in {"completed", "failed", "cancelled"}:
+                    payload["output"] = output
+                    payload["result"] = output
+                _stream_q.put(("__tool_progress__", payload))
+
             def _on_tool_progress(event_type, name, preview, args, **kwargs):
-                """Send tool progress as a separate SSE event.
+                """Compatibility hook for legacy tool progress producers.
 
                 Previously, progress markers like ``⏰ list`` were injected
                 directly into ``delta.content``.  OpenAI-compatible frontends
@@ -949,19 +979,40 @@ class APIServerAdapter(BasePlatformAdapter):
                 can render for UX but will *not* persist into conversation
                 history.  Clients that don't understand the custom event type
                 silently ignore it per the SSE specification.
+
+                The main chat/completions stream uses the structured
+                tool_start_callback/tool_complete_callback path below so each
+                update carries the exact tool call id.  This fallback is kept
+                for callers that only emit tool_progress_callback events.
                 """
                 if event_type != "tool.started":
                     return
                 if name.startswith("_"):
                     return
-                from agent.display import get_tool_emoji
-                emoji = get_tool_emoji(name)
-                label = preview or name
-                _stream_q.put(("__tool_progress__", {
-                    "tool": name,
-                    "emoji": emoji,
-                    "label": label,
-                }))
+                _queue_tool_progress(
+                    tool_call_id=kwargs.get("tool_call_id") or kwargs.get("toolCallId"),
+                    name=name,
+                    status="running",
+                    args=args,
+                    label=preview or name,
+                )
+
+            def _on_tool_start(tool_call_id, function_name, function_args):
+                _queue_tool_progress(
+                    tool_call_id=tool_call_id,
+                    name=function_name,
+                    status="running",
+                    args=function_args,
+                )
+
+            def _on_tool_complete(tool_call_id, function_name, function_args, function_result):
+                _queue_tool_progress(
+                    tool_call_id=tool_call_id,
+                    name=function_name,
+                    status="completed",
+                    args=function_args,
+                    output=function_result,
+                )
 
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.
@@ -973,6 +1024,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
                 tool_progress_callback=_on_tool_progress,
+                tool_start_callback=_on_tool_start,
+                tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
             ))
 

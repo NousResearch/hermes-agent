@@ -98,19 +98,6 @@ export const scrollFastPathStats: ScrollFastPathStats = {
   }
 }
 
-export function resetScrollFastPathStats(): void {
-  scrollFastPathStats.captured = 0
-  scrollFastPathStats.taken = 0
-  scrollFastPathStats.declined.noPrevScreen = 0
-  scrollFastPathStats.declined.heightDeltaMismatch = 0
-  scrollFastPathStats.declined.other = 0
-  scrollFastPathStats.lastDeclineReason = undefined
-  scrollFastPathStats.lastHeightDelta = undefined
-  scrollFastPathStats.lastHintDelta = undefined
-  scrollFastPathStats.lastScrollHeight = undefined
-  scrollFastPathStats.lastPrevHeight = undefined
-}
-
 export function getScrollHint(): ScrollHint | null {
   return scrollHint
 }

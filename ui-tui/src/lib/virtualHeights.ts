@@ -2,7 +2,7 @@ import type { Msg } from '../types.js'
 
 import { boundedHistoryRenderText } from './text.js'
 
-export const hashText = (text: string) => {
+const hashText = (text: string) => {
   let h = 5381
 
   for (let i = 0; i < text.length; i++) {

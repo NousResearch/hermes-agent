@@ -364,11 +364,6 @@ export interface SpawnTreeLoadResponse {
   subagents?: unknown[]
 }
 
-export interface SpawnTreeSaveResponse {
-  path?: string
-  session_id?: string
-}
-
 export type GatewayEvent =
   | { payload?: { skin?: GatewaySkin }; session_id?: string; type: 'gateway.ready' }
   | { payload?: GatewaySkin; session_id?: string; type: 'skin.changed' }

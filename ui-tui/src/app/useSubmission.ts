@@ -331,7 +331,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
   submitRef.current = submit
 
-  return { dispatchSubmission, send, sendQueued, shellExec, submit }
+  return { dispatchSubmission, send, sendQueued, submit }
 }
 
 export interface UseSubmissionOptions {

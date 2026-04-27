@@ -22,7 +22,7 @@ export interface InkCacheSizes {
   wrap: number
 }
 
-export function inkCacheSizes(): InkCacheSizes {
+function inkCacheSizes(): InkCacheSizes {
   return {
     lineWidth: lineWidthCacheSize(),
     slice: sliceCacheSize(),

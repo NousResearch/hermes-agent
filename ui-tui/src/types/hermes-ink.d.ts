@@ -121,7 +121,6 @@ declare module '@hermes/ink' {
     lastPrevHeight?: number
   }
   export const scrollFastPathStats: ScrollFastPathStats
-  export function resetScrollFastPathStats(): void
 
   export type EvictLevel = 'all' | 'half'
   export type InkCacheSizes = {
@@ -131,7 +130,6 @@ declare module '@hermes/ink' {
     readonly wrap: number
   }
   export function evictInkCaches(level?: EvictLevel): InkCacheSizes
-  export function inkCacheSizes(): InkCacheSizes
 
   export function render(node: React.ReactNode, options?: NodeJS.WriteStream | RenderOptions): Instance
 

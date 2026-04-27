@@ -30,7 +30,6 @@ import pty
 import select
 import signal
 import sqlite3
-import statistics
 import sys
 import time
 from pathlib import Path

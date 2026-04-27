@@ -1,7 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
 import {
-  appendTurnSegment,
   archiveDoneTodos,
   archiveTodosAtTurnEnd,
   getTurnState,
@@ -63,14 +62,5 @@ describe('turnStore live progress helpers', () => {
 
     toggleTodoCollapsed()
     expect(getTurnState().todoCollapsed).toBe(false)
-  })
-
-  it('merges adjacent live tool shelves before rendering', () => {
-    appendTurnSegment({ kind: 'trail', role: 'system', text: '', tools: ['one ✓'] })
-    appendTurnSegment({ kind: 'trail', role: 'system', text: '', tools: ['two ✓'] })
-
-    expect(getTurnState().streamSegments).toEqual([
-      { kind: 'trail', role: 'system', text: '', tools: ['one ✓', 'two ✓'] }
-    ])
   })
 })

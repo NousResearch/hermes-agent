@@ -394,10 +394,6 @@ function SubagentAccordion({
   const hasTools = item.tools.length > 0
   const noteRows = [...(summary ? [summary] : []), ...item.notes]
   const hasNotes = noteRows.length > 0
-  // `showChildren` only seeds the recursive `expanded` prop for nested
-  // subagents — it MUST NOT be OR-ed into the local section toggles, or
-  // expand-all permanently locks the inner chevrons open.
-  const showChildren = expanded || deep
   const noteColor = statusTone === 'error' ? t.color.error : statusTone === 'warn' ? t.color.warn : t.color.dim
 
   const sections: {

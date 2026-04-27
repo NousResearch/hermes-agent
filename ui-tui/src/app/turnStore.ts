@@ -1,7 +1,7 @@
 import { atom } from 'nanostores'
 import { useSyncExternalStore } from 'react'
 
-import { appendToolShelfMessage, isTodoDone } from '../lib/liveProgress.js'
+import { isTodoDone } from '../lib/liveProgress.js'
 import type { ActiveTool, ActivityItem, Msg, SubagentProgress, TodoItem } from '../types.js'
 
 const buildTurnState = (): TurnState => ({
@@ -63,9 +63,6 @@ export const archiveTodosAtTurnEnd = () => {
 
   return [msg]
 }
-
-export const appendTurnSegment = (msg: Msg) =>
-  patchTurnState(state => ({ ...state, streamSegments: appendToolShelfMessage(state.streamSegments, msg) }))
 
 export const resetTurnState = () => $turnState.set(buildTurnState())
 

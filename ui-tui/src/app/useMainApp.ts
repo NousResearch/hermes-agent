@@ -442,7 +442,7 @@ export function useMainApp(gw: GatewayClient) {
 
   clipboardPasteRef.current = paste
 
-  const { dispatchSubmission, send, sendQueued, shellExec, submit } = useSubmission({
+  const { dispatchSubmission, send, sendQueued, submit } = useSubmission({
     appendMessage,
     composerActions,
     composerRefs,

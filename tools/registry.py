@@ -319,11 +319,13 @@ class ToolRegistry:
     def _dispatch_with_timeout(self, entry: ToolEntry, args: dict, **kwargs) -> str:
         """Run a handler (sync or async) with a wall-clock timeout using a thread.
 
-        The thread is abandoned (not joined) on timeout so that ``dispatch()``
-        returns promptly.  The underlying OS thread will run to completion or
-        block indefinitely if the handler itself does not honour cancellation —
-        this is a known limitation of CPython threads.  Callers should ensure
-        that tools with timeouts use interruptible I/O where possible.
+        On timeout the executor is shut down without waiting so that
+        ``dispatch()`` returns promptly.  CPython threads cannot be forcibly
+        cancelled — ``cancel_futures=True`` only cancels *pending* futures, not
+        a future that is already running.  The underlying OS thread will
+        therefore run to completion (or block indefinitely if the handler uses
+        non-interruptible I/O).  Callers should ensure that tools with timeouts
+        use interruptible I/O where possible.
         """
         import concurrent.futures
 
@@ -338,17 +340,20 @@ class ToolRegistry:
 
         pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
         future = pool.submit(_target)
+        timed_out = False
         try:
             future.result(timeout=entry.timeout)
         except concurrent.futures.TimeoutError:
+            timed_out = True
             logger.warning("Tool %s timed out after %ss", entry.name, entry.timeout)
-            # Abandon the thread immediately; do not block waiting for it.
-            pool.shutdown(wait=False, cancel_futures=True)
+        finally:
+            # Do not wait for the thread on timeout — it may run indefinitely.
+            pool.shutdown(wait=not timed_out)
+
+        if timed_out:
             return json.dumps({
                 "error": f"Tool {entry.name} timed out after {entry.timeout}s",
             })
-        finally:
-            pool.shutdown(wait=False)
 
         result = result_holder[0]
         if result is None:

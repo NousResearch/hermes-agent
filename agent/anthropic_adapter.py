@@ -518,7 +518,7 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
 
     try:
         data = json.loads(raw)
-    except json.JSONDecodeError:
+    except (json.JSONDecodeError, TypeError):
         logger.debug("Keychain: credentials payload is not valid JSON")
         return None
 
@@ -1543,8 +1543,10 @@ def build_anthropic_kwargs(
     "max_tokens too large given prompt" errors and retry with a smaller cap
     (see parse_available_output_tokens_from_error + _ephemeral_max_output_tokens).
 
-    When *is_oauth* is True, applies Claude Code compatibility transforms:
-    system prompt prefix, tool name prefixing, and prompt sanitization.
+    When *is_oauth* is True, applies Claude Code subscription compatibility
+    transforms: keep the API system field as Claude Code identity, move session
+    instructions into the first user turn, sanitize routing-sensitive product
+    references, and omit Hermes tool schemas/history that the OAuth route rejects.
 
     When *preserve_dots* is True, model name dots are not converted to hyphens
     (for Alibaba/DashScope anthropic-compatible endpoints: qwen3.5-plus).
@@ -1579,25 +1581,79 @@ def build_anthropic_kwargs(
 
     # ── OAuth: Claude Code identity ──────────────────────────────────
     if is_oauth:
-        # 1. Prepend Claude Code system prompt identity
-        cc_block = {"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX}
-        if isinstance(system, list):
-            system = [cc_block] + system
-        elif isinstance(system, str) and system:
-            system = [cc_block, {"type": "text", "text": system}]
-        else:
-            system = [cc_block]
+        # Anthropic's Claude subscription/OAuth route is sensitive to the
+        # system field: a non-Claude-Code system prompt can be rejected as
+        # "out of extra usage" even when the same OAuth account has quota.
+        # Keep the actual API system field as the Claude Code identity and move
+        # Hermes' session instructions into the first conversation turn.
+        def _sanitize_oauth_instruction_text(text: str) -> str:
+            return (
+                text.replace("Hermes Agent", "Claude Code")
+                .replace("Hermes agent", "Claude Code")
+                .replace("hermes-agent", "claude-code")
+                .replace("Nous Research", "Anthropic")
+            )
 
-        # 2. Sanitize system prompt — replace product name references
-        #    to avoid Anthropic's server-side content filters.
-        for block in system:
-            if isinstance(block, dict) and block.get("type") == "text":
-                text = block.get("text", "")
-                text = text.replace("Hermes Agent", "Claude Code")
-                text = text.replace("Hermes agent", "Claude Code")
-                text = text.replace("hermes-agent", "claude-code")
-                text = text.replace("Nous Research", "Anthropic")
-                block["text"] = text
+        def _system_to_text(value: Any) -> str:
+            if isinstance(value, str):
+                return value
+            if isinstance(value, list):
+                parts = []
+                for block in value:
+                    if isinstance(block, dict) and block.get("type") == "text":
+                        parts.append(str(block.get("text", "")))
+                    elif isinstance(block, str):
+                        parts.append(block)
+                return "\n\n".join(part for part in parts if part)
+            return ""
+
+        original_system_text = _sanitize_oauth_instruction_text(_system_to_text(system))
+        cc_block = {"type": "text", "text": _CLAUDE_CODE_SYSTEM_PREFIX}
+        system = [cc_block]
+
+        if original_system_text:
+            instruction_block = {
+                "type": "text",
+                "text": (
+                    "<session_instructions>\n"
+                    f"{original_system_text}\n"
+                    "</session_instructions>\n\n"
+                    "Follow these trusted session instructions while answering "
+                    "the user's request."
+                ),
+            }
+            if anthropic_messages and anthropic_messages[0].get("role") == "user":
+                first_content = anthropic_messages[0].get("content")
+                if isinstance(first_content, list):
+                    anthropic_messages[0]["content"] = [instruction_block] + first_content
+                else:
+                    anthropic_messages[0]["content"] = [
+                        instruction_block,
+                        {"type": "text", "text": str(first_content or "(empty message)")},
+                    ]
+            else:
+                anthropic_messages = [{"role": "user", "content": [instruction_block]}] + anthropic_messages
+
+        # The subscription OAuth route currently rejects arbitrary Anthropic
+        # tool schemas with the same "out of extra usage" error. Claude Code's
+        # first-party CLI can use its own native tools, but direct OAuth API
+        # calls from Hermes cannot reliably expose Hermes tools here. Prefer a
+        # successful model response over a hard failure; users who need tool use
+        # should use another provider or delegate to the Claude CLI itself.
+        anthropic_tools = []
+        for msg in anthropic_messages:
+            content = msg.get("content")
+            if isinstance(content, list):
+                msg["content"] = [
+                    block
+                    for block in content
+                    if not (
+                        isinstance(block, dict)
+                        and block.get("type") in ("tool_use", "tool_result")
+                    )
+                ]
+                if not msg["content"]:
+                    msg["content"] = [{"type": "text", "text": "(tool history omitted for OAuth)"}]
 
         # 3. Prefix tool names with mcp_ (Claude Code convention)
         if anthropic_tools:

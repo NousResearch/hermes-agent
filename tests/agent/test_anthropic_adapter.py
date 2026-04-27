@@ -923,6 +923,111 @@ class TestBuildAnthropicKwargs:
         assert kwargs["max_tokens"] == 4096
         assert "tools" not in kwargs
 
+    def test_oauth_keeps_claude_code_system_and_moves_session_instructions_to_user_turn(self):
+        messages = [
+            {"role": "system", "content": "You are Hermes Agent by Nous Research."},
+            {"role": "user", "content": "Hi"},
+        ]
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-7",
+            messages=messages,
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+        )
+
+        assert kwargs["system"] == [
+            {"type": "text", "text": "You are Claude Code, Anthropic's official CLI for Claude."}
+        ]
+        assert kwargs["messages"][0]["role"] == "user"
+        injected = kwargs["messages"][0]["content"][0]["text"]
+        assert injected.startswith("<session_instructions>")
+        assert "You are Claude Code by Anthropic." in injected
+        assert kwargs["messages"][0]["content"][1] == {"type": "text", "text": "Hi"}
+
+    def test_oauth_prepends_session_instructions_without_consecutive_assistant_turns(self):
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-7",
+            messages=[
+                {"role": "system", "content": "Be helpful."},
+                {"role": "assistant", "content": "Already started"},
+                {"role": "user", "content": "Continue"},
+            ],
+            tools=None,
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+        )
+
+        roles = [message["role"] for message in kwargs["messages"]]
+        assert roles == ["user", "assistant", "user"]
+        assert kwargs["messages"][0]["content"][0]["text"].startswith("<session_instructions>")
+        assert kwargs["messages"][1]["content"][0]["text"] == "Already started"
+
+    def test_oauth_omits_tools_because_subscription_route_rejects_arbitrary_tool_schemas(self):
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "example_tool",
+                    "description": "Example tool",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-7",
+            messages=[
+                {"role": "system", "content": "Be helpful."},
+                {"role": "user", "content": "Hi"},
+            ],
+            tools=tools,
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+        )
+
+        assert "tools" not in kwargs
+
+    def test_oauth_omits_tool_history_when_tools_are_disabled_for_subscription_route(self):
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-4-7",
+            messages=[
+                {"role": "system", "content": "Be helpful."},
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "call_123",
+                            "type": "function",
+                            "function": {"name": "example_tool", "arguments": "{}"},
+                        }
+                    ],
+                },
+                {"role": "tool", "tool_call_id": "call_123", "content": "tool output"},
+                {"role": "user", "content": "Summarize"},
+            ],
+            tools=[
+                {
+                    "type": "function",
+                    "function": {
+                        "name": "example_tool",
+                        "description": "Example tool",
+                        "parameters": {"type": "object", "properties": {}},
+                    },
+                }
+            ],
+            max_tokens=4096,
+            reasoning_config=None,
+            is_oauth=True,
+        )
+
+        assert "tools" not in kwargs
+        serialized = repr(kwargs["messages"])
+        assert "tool_use" not in serialized
+        assert "tool_result" not in serialized
+
     def test_strips_anthropic_prefix(self):
         kwargs = build_anthropic_kwargs(
             model="anthropic/claude-sonnet-4-20250514",

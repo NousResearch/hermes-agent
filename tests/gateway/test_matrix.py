@@ -2258,3 +2258,90 @@ class TestMatrixDmAutoThread:
         _body, _is_dm, _chat_type, thread_id, _display, _source = ctx
         assert thread_id is None
 
+
+
+# ---------------------------------------------------------------------------
+# Proxy configuration
+# ---------------------------------------------------------------------------
+
+class TestMatrixProxyConfig:
+    """Verify that MatrixAdapter resolves and propagates proxy settings."""
+
+    def _make_adapter(self, monkeypatch, proxy_env=None):
+        monkeypatch.setenv("MATRIX_ACCESS_TOKEN", "syt_test")
+        monkeypatch.setenv("MATRIX_HOMESERVER", "https://matrix.example.org")
+        # Clear generic proxy vars so they don't leak from the host
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                    "https_proxy", "http_proxy", "all_proxy", "MATRIX_PROXY"):
+            monkeypatch.delenv(key, raising=False)
+        if proxy_env:
+            for k, v in proxy_env.items():
+                monkeypatch.setenv(k, v)
+        with patch.dict("sys.modules", _make_fake_mautrix()):
+            from gateway.platforms.matrix import MatrixAdapter
+            cfg = PlatformConfig(enabled=True, token="syt_test",
+                                 extra={"homeserver": "https://matrix.example.org",
+                                        "user_id": "@bot:example.org"})
+            return MatrixAdapter(cfg)
+
+    def test_no_proxy_by_default(self, monkeypatch):
+        adapter = self._make_adapter(monkeypatch)
+        assert adapter._proxy_url is None
+
+    def test_matrix_proxy_env_var(self, monkeypatch):
+        adapter = self._make_adapter(monkeypatch,
+                                     proxy_env={"MATRIX_PROXY": "socks5://proxy:1080"})
+        assert adapter._proxy_url == "socks5://proxy:1080"
+
+    def test_generic_proxy_fallback(self, monkeypatch):
+        adapter = self._make_adapter(monkeypatch,
+                                     proxy_env={"HTTPS_PROXY": "http://corp:8080"})
+        assert adapter._proxy_url == "http://corp:8080"
+
+    def test_matrix_proxy_takes_priority(self, monkeypatch):
+        adapter = self._make_adapter(monkeypatch,
+                                     proxy_env={"MATRIX_PROXY": "socks5://special:1080",
+                                                "HTTPS_PROXY": "http://generic:8080"})
+        assert adapter._proxy_url == "socks5://special:1080"
+
+
+class TestCreateMatrixSession:
+    """Verify _create_matrix_session applies proxy at the session level."""
+
+    @pytest.mark.asyncio
+    async def test_no_proxy_returns_trust_env_session(self):
+        with patch.dict("sys.modules", _make_fake_mautrix()):
+            from gateway.platforms.matrix import _create_matrix_session
+            session = _create_matrix_session(None)
+            try:
+                assert session.trust_env is True
+            finally:
+                await session.close()
+
+    @pytest.mark.asyncio
+    async def test_http_proxy_sets_default_proxy(self):
+        with patch.dict("sys.modules", _make_fake_mautrix()):
+            from gateway.platforms.matrix import _create_matrix_session
+            session = _create_matrix_session("http://proxy:8080")
+            try:
+                assert str(session._default_proxy) == "http://proxy:8080"
+            finally:
+                await session.close()
+
+    @pytest.mark.asyncio
+    async def test_socks_proxy_uses_connector(self):
+        fake_connector = MagicMock()
+        with patch.dict("sys.modules", _make_fake_mautrix()):
+            with patch.dict("sys.modules", {
+                "aiohttp_socks": MagicMock(
+                    ProxyConnector=MagicMock(
+                        from_url=MagicMock(return_value=fake_connector)
+                    )
+                ),
+            }):
+                from gateway.platforms.matrix import _create_matrix_session
+                session = _create_matrix_session("socks5://proxy:1080")
+                try:
+                    assert session.connector is fake_connector
+                finally:
+                    await session.close()

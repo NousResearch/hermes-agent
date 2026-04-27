@@ -694,6 +694,7 @@ class GatewayRunner:
         self._queued_events: Dict[str, List[MessageEvent]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
+        self._restart_caller_key: str = None  # session_key of the agent that triggered /restart
 
         # Cache AIAgent instances per session to preserve prompt caching.
         # Without this, a new AIAgent is created per message, rebuilding the
@@ -1635,11 +1636,12 @@ class GatewayRunner:
             pass
         return None
 
-    def _snapshot_running_agents(self) -> Dict[str, Any]:
+    def _snapshot_running_agents(self, exclude_key: str = None) -> Dict[str, Any]:
         return {
             session_key: agent
             for session_key, agent in self._running_agents.items()
             if agent is not _AGENT_PENDING_SENTINEL
+            and (exclude_key is None or session_key != exclude_key)
         }
 
     def _queue_or_replace_pending_event(self, session_key: str, event: MessageEvent) -> None:
@@ -1807,8 +1809,8 @@ class GatewayRunner:
 
         return True
 
-    async def _drain_active_agents(self, timeout: float) -> tuple[Dict[str, Any], bool]:
-        snapshot = self._snapshot_running_agents()
+    async def _drain_active_agents(self, timeout: float, exclude_key: str = None) -> tuple[Dict[str, Any], bool]:
+        snapshot = self._snapshot_running_agents(exclude_key)
         last_active_count = self._running_agent_count()
         last_status_at = 0.0
 
@@ -1837,9 +1839,11 @@ class GatewayRunner:
         _maybe_update_status(force=True)
         return snapshot, timed_out
 
-    def _interrupt_running_agents(self, reason: str) -> None:
+    def _interrupt_running_agents(self, reason: str, exclude_key: str = None) -> None:
         for session_key, agent in list(self._running_agents.items()):
             if agent is _AGENT_PENDING_SENTINEL:
+                continue
+            if exclude_key is not None and session_key == exclude_key:
                 continue
             try:
                 agent.interrupt(reason)
@@ -2093,6 +2097,7 @@ class GatewayRunner:
         self._restart_detached = detached
         self._restart_via_service = via_service
         self._restart_task_started = True
+        self._restart_caller_key = None  # reset on each new restart
 
         async def _run_restart() -> None:
             await asyncio.sleep(0.05)
@@ -2798,7 +2803,9 @@ class GatewayRunner:
             await self._notify_active_sessions_of_shutdown()
 
             timeout = self._restart_drain_timeout
-            active_agents, timed_out = await self._drain_active_agents(timeout)
+            active_agents, timed_out = await self._drain_active_agents(
+                timeout, exclude_key=self._restart_caller_key
+            )
             if timed_out:
                 logger.warning(
                     "Gateway drain timed out after %.1fs with %d active agent(s); interrupting remaining work.",
@@ -2840,7 +2847,8 @@ class GatewayRunner:
                             _sk, _e,
                         )
                 self._interrupt_running_agents(
-                    _INTERRUPT_REASON_GATEWAY_RESTART if self._restart_requested else _INTERRUPT_REASON_GATEWAY_SHUTDOWN
+                    _INTERRUPT_REASON_GATEWAY_RESTART if self._restart_requested else _INTERRUPT_REASON_GATEWAY_SHUTDOWN,
+                    exclude_key=self._restart_caller_key,
                 )
                 interrupt_deadline = asyncio.get_running_loop().time() + 5.0
                 while self._running_agents and asyncio.get_running_loop().time() < interrupt_deadline:
@@ -5658,6 +5666,10 @@ class GatewayRunner:
         # doesn't work under systemd because KillMode=mixed kills all
         # processes in the cgroup, including the detached helper.
         _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
+        # Record the caller's session_key so drain can exclude it — the restart
+        # triggerer's agent cannot exit until it receives the HTTP response, so
+        # excluding it prevents the drain-from-itself deadlock.
+        self._restart_caller_key = self._session_key_for_source(event.source)
         if _under_service:
             self.request_restart(detached=False, via_service=True)
         else:

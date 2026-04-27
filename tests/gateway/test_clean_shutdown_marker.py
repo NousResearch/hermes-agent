@@ -206,6 +206,7 @@ class TestCleanShutdownMarker:
         runner._background_tasks = set()
         runner._shutdown_event = MagicMock()
         runner._restart_drain_timeout = 5
+        runner._restart_caller_key = None
         runner._exit_code = None
         runner._exit_reason = None
         runner.adapters = {}

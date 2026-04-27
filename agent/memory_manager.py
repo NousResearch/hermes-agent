@@ -4,7 +4,10 @@ ONE external plugin memory provider.
 Single integration point in run_agent.py. Replaces scattered per-backend
 code with one manager that delegates to registered providers.
 
-The BuiltinMemoryProvider is always registered first and cannot be removed.
+The built-in memory is managed directly by MemoryStore (in tools/memory_tool.py)
+and does NOT go through the MemoryProvider plugin system.  The MemoryManager
+coordinates external providers (Holographic, Honcho, etc.) only — it is NOT
+responsible for built-in memory reads/writes.
 Only ONE external (non-builtin) provider is allowed at a time — attempting
 to register a second external provider is rejected with a warning.  This
 prevents tool schema bloat and conflicting memory backends.

@@ -316,6 +316,18 @@ class MemoryStore:
             self._rebuild_bank(row["category"])
             return True
 
+    def remove_fact_by_content(self, content: str) -> bool:
+        """Delete a fact by exact content match. Returns True if a row was deleted."""
+        if not content:
+            return False
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT fact_id FROM facts WHERE content = ?", (content,)
+            ).fetchone()
+            if row is None:
+                return False
+            return self.remove_fact(row["fact_id"])
+
     def list_facts(
         self,
         category: str | None = None,

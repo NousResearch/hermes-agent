@@ -242,12 +242,15 @@ class HolographicMemoryProvider(MemoryProvider):
 
     def on_memory_write(self, action: str, target: str, content: str) -> None:
         """Mirror built-in memory writes as facts."""
-        if action == "add" and self._store and content:
+        if not self._store or not content:
+            return
+        if action == "add":
             try:
                 category = "user_pref" if target == "user" else "general"
                 self._store.add_fact(content, category=category)
             except Exception as e:
                 logger.debug("Holographic memory_write mirror failed: %s", e)
+
 
     def shutdown(self) -> None:
         self._store = None

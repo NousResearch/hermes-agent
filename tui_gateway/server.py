@@ -1040,15 +1040,9 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
             pass
         session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
     if _tool_progress_enabled(sid):
-        # Don't echo args.todos on tool.start — for merge=true (or partial
-        # replacement) it's only the items being updated, not the full list,
-        # and would flicker the live count. tool.complete is the source of
-        # truth (always returns the full list from the tool result).
-        _emit(
-            "tool.start",
-            sid,
-            {"tool_id": tool_call_id, "name": name, "context": _tool_ctx(name, args)},
-        )
+        # tool.complete is the source of truth for todos (full list from the
+        # tool result). args.todos here may be a partial merge update.
+        _emit("tool.start", sid, {"tool_id": tool_call_id, "name": name, "context": _tool_ctx(name, args)})
 
 
 def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result: str):

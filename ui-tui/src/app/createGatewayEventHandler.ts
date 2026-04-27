@@ -11,7 +11,6 @@ import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext } from './interfaces.js'
 import { patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
-import { archiveTodosAtTurnEnd } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
 const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
@@ -537,12 +536,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const { finalMessages, finalText, wasInterrupted } = turnController.recordMessageComplete(ev.payload ?? {})
 
         if (!wasInterrupted) {
-          // Defensive: turnController.recordMessageComplete already prepends
-          // the archive at the head of finalMessages. This is a no-op in the
-          // normal path (state.todos is empty) but covers any edge where
-          // todos linger past the controller archive.
-          archiveTodosAtTurnEnd().forEach(appendMessage)
-
           const msgs: Msg[] = finalMessages.length ? finalMessages : [{ role: 'assistant', text: finalText }]
           msgs.forEach(appendMessage)
 

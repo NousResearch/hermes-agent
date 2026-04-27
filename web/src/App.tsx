@@ -37,6 +37,7 @@ import {
   Sparkles,
   Star,
   Terminal,
+  Users,
   Wrench,
   X,
   Zap,
@@ -62,6 +63,7 @@ import SessionsPage from "@/pages/SessionsPage";
 import LogsPage from "@/pages/LogsPage";
 import AnalyticsPage from "@/pages/AnalyticsPage";
 import CronPage from "@/pages/CronPage";
+import ProfilesPage from "@/pages/ProfilesPage";
 import SkillsPage from "@/pages/SkillsPage";
 import ChatPage from "@/pages/ChatPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
@@ -99,6 +101,7 @@ const BUILTIN_ROUTES_CORE: Record<string, ComponentType> = {
   "/logs": LogsPage,
   "/cron": CronPage,
   "/skills": SkillsPage,
+  "/profiles": ProfilesPage,
   "/config": ConfigPage,
   "/env": EnvPage,
   "/docs": DocsPage,
@@ -128,6 +131,7 @@ const BUILTIN_NAV_REST: NavItem[] = [
   { path: "/logs", labelKey: "logs", label: "Logs", icon: FileText },
   { path: "/cron", labelKey: "cron", label: "Cron", icon: Clock },
   { path: "/skills", labelKey: "skills", label: "Skills", icon: Package },
+  { path: "/profiles", labelKey: "profiles", label: "Profiles", icon: Users },
   { path: "/config", labelKey: "config", label: "Config", icon: Settings },
   { path: "/env", labelKey: "keys", label: "Keys", icon: KeyRound },
   {
@@ -153,6 +157,7 @@ const ICON_MAP: Record<string, ComponentType<{ className?: string }>> = {
   Globe,
   Database,
   Shield,
+  Users,
   Wrench,
   Zap,
   Heart,

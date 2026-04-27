@@ -1209,6 +1209,46 @@ def test_stream_delta_scrubber_resets_between_turns(monkeypatch):
     assert "".join(observed) == "clean new turn text"
 
 
+def test_stream_delta_preserves_mid_stream_leading_newlines(monkeypatch):
+    """Mid-stream leading newlines must survive — they are legitimate
+    markdown (lists, code fences, paragraph breaks).  Stripping them
+    based on chunk boundaries silently breaks formatting.
+
+    Only the very first delta of a stream gets leading-newlines stripped
+    (so stale provider preamble doesn't leak); after that, deltas are
+    emitted verbatim.
+    """
+    agent = _build_agent(monkeypatch)
+    observed = []
+    agent.stream_delta_callback = observed.append
+
+    # First delta delivers text — strips its own leading "\n" once.
+    agent._fire_stream_delta("\nHere is a list:")
+    # Second delta starts with "\n- item" — must NOT be stripped.
+    agent._fire_stream_delta("\n- first")
+    agent._fire_stream_delta("\n- second")
+
+    combined = "".join(observed)
+    assert combined == "Here is a list:\n- first\n- second"
+
+
+def test_stream_delta_preserves_code_fence_newlines(monkeypatch):
+    """Code blocks span multiple deltas.  A "\\n```python\\n" boundary
+    is the canonical case where stripping leading newlines corrupts output."""
+    agent = _build_agent(monkeypatch)
+    observed = []
+    agent.stream_delta_callback = observed.append
+
+    agent._fire_stream_delta("Here is the code:")
+    agent._fire_stream_delta("\n```python\n")
+    agent._fire_stream_delta("print('hi')\n")
+    agent._fire_stream_delta("```\n")
+
+    combined = "".join(observed)
+    assert "```python\n" in combined
+    assert combined.startswith("Here is the code:\n```python\n")
+
+
 def test_run_conversation_codex_continues_after_commentary_phase_message(monkeypatch):
     agent = _build_agent(monkeypatch)
     responses = [

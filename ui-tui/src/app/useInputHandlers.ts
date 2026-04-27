@@ -307,6 +307,13 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return scrollTranscript(key.pageUp ? -step : step)
     }
 
+    // Queue-edit cancel beats selection-clear: the queue header explicitly
+    // promises "Esc cancel", so honoring it takes priority over the implicit
+    // selection-dismissal convention. Without an active edit, fall through.
+    if (key.escape && cState.queueEditIdx !== null) {
+      return cActions.clearIn()
+    }
+
     if (key.escape && terminal.hasSelection) {
       return clearSelection()
     }
@@ -355,6 +362,11 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       if (isMac) {
         return
       }
+    }
+
+    if (isCtrl(key, ch, 'x') && cState.queueEditIdx !== null) {
+      cActions.removeQueue(cState.queueEditIdx)
+      return cActions.clearIn()
     }
 
     if (key.ctrl && ch.toLowerCase() === 'c') {

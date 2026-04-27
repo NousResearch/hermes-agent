@@ -1,0 +1,4 @@
+{
+  "cleanUrls": true,
+  "trailingSlash": false
+}

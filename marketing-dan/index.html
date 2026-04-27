@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Marketing Dan — Brand Reference</title>
+  <meta name="description" content="Persistent brand and marketing reference for Nervix, Crawbot, Semeclaw, and DansLab." />
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&family=Space+Grotesk:wght@500;700&family=IBM+Plex+Sans:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;700&family=Sora:wght@500;600;700&family=Manrope:wght@500;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root { --bg:#050505; --surface:rgba(255,255,255,.06); --border:rgba(255,255,255,.12); --text:#f4f4f5; --muted:#a1a1aa; --shadow:0 0 0 1px rgba(255,255,255,.08),0 12px 40px rgba(0,0,0,.32); --radius:20px; }
+    * { box-sizing:border-box; }
+    html { scroll-behavior:smooth; }
+    body { margin:0; background:radial-gradient(circle at top, rgba(122,162,255,.14), transparent 28%),radial-gradient(circle at 20% 20%, rgba(102,227,255,.12), transparent 22%),linear-gradient(180deg, #06070a, #040404 70%); color:var(--text); font-family:'Geist','Inter',system-ui,sans-serif; }
+    a { color:inherit; text-decoration:none; }
+    .wrap { max-width:1240px; margin:0 auto; padding:0 24px 80px; }
+    .nav { position:sticky; top:0; z-index:20; backdrop-filter:blur(18px); background:rgba(5,5,5,.72); border-bottom:1px solid rgba(255,255,255,.08); }
+    .nav-inner { max-width:1240px; margin:0 auto; padding:14px 24px; display:flex; gap:20px; align-items:center; justify-content:space-between; }
+    .nav-links { display:flex; gap:14px; flex-wrap:wrap; }
+    .nav-links a { color:#d4d4d8; font-size:14px; padding:10px 12px; border-radius:999px; }
+    .nav-links a:hover { background:rgba(255,255,255,.04); box-shadow:0 0 0 1px rgba(255,255,255,.08); }
+    .brand-chip { display:inline-flex; align-items:center; gap:10px; padding:10px 14px; border-radius:999px; box-shadow:var(--shadow); background:rgba(255,255,255,.04); font-size:14px; }
+    .dot { width:10px; height:10px; border-radius:999px; background:linear-gradient(135deg,#7aa2ff,#66e3ff); box-shadow:0 0 24px rgba(102,227,255,.8); }
+    .hero { padding:72px 0 44px; }
+    .eyebrow { color:#a1a1aa; font-size:14px; letter-spacing:.08em; text-transform:uppercase; }
+    h1 { margin:14px 0 18px; font-size:clamp(40px,8vw,86px); line-height:.92; letter-spacing:-.06em; max-width:980px; }
+    .lead { max-width:880px; color:#c4c4cc; font-size:20px; line-height:1.6; }
+    .hero-grid,.kpi-grid,.brand-grid,.principles-grid { display:grid; gap:18px; }
+    .hero-grid { grid-template-columns:1.2fr .8fr; margin-top:34px; }
+    .kpi-grid { grid-template-columns:repeat(4,1fr); margin-top:24px; }
+    .card { background:linear-gradient(180deg, rgba(255,255,255,.07), rgba(255,255,255,.03)); border:1px solid var(--border); border-radius:var(--radius); box-shadow:var(--shadow); }
+    .hero-panel { padding:26px; min-height:260px; }
+    .hero-panel h3 { margin:0 0 12px; font-size:22px; letter-spacing:-.04em; }
+    .hero-panel p,.hero-panel li { color:#c7c7d1; line-height:1.65; }
+    .hero-panel ul { margin:0; padding-left:18px; }
+    .kpi { padding:20px; }
+    .kpi strong { font-size:28px; display:block; margin-bottom:8px; letter-spacing:-.05em; }
+    .section { padding-top:42px; }
+    .section h2 { font-size:clamp(28px,5vw,50px); line-height:1; letter-spacing:-.05em; margin:0 0 12px; }
+    .section > p { color:#b4b4be; max-width:860px; font-size:18px; line-height:1.65; }
+    .brand-grid { grid-template-columns:1fr; margin-top:30px; }
+    .brand-card { overflow:hidden; }
+    .brand-top { display:grid; grid-template-columns:460px 1fr; }
+    .art { min-height:320px; border-right:1px solid var(--border); background:rgba(255,255,255,.02); }
+    .art img { width:100%; height:100%; display:block; object-fit:cover; }
+    .brand-content { padding:28px; }
+    .brand-header { display:flex; align-items:baseline; justify-content:space-between; gap:12px; flex-wrap:wrap; }
+    .brand-header h3 { margin:0; font-size:38px; letter-spacing:-.05em; }
+    .pill-row { display:flex; gap:10px; flex-wrap:wrap; margin:14px 0 18px; }
+    .pill { padding:8px 12px; border-radius:999px; border:1px solid var(--border); background:rgba(255,255,255,.04); color:#ddd; font-size:13px; }
+    .cols { display:grid; grid-template-columns:repeat(2,minmax(0,1fr)); gap:18px; margin-top:18px; }
+    .subcard { padding:18px; border-radius:16px; background:rgba(255,255,255,.03); border:1px solid rgba(255,255,255,.08); }
+    .subcard h4 { margin:0 0 10px; font-size:14px; color:#a1a1aa; text-transform:uppercase; letter-spacing:.08em; }
+    .subcard p,.subcard li { margin:0; color:#ededf1; line-height:1.65; }
+    .subcard ul { margin:0; padding-left:18px; }
+    .palette { display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:10px; }
+    .swatch { min-height:96px; border-radius:14px; border:1px solid rgba(255,255,255,.1); padding:12px; display:flex; flex-direction:column; justify-content:end; }
+    .swatch span { font-size:12px; color:rgba(255,255,255,.88); }
+    .mono { font-family:'JetBrains Mono',monospace; }
+    .principles-grid { grid-template-columns:repeat(3,1fr); margin-top:20px; }
+    .principle { padding:22px; }
+    .principle h3 { margin:0 0 10px; font-size:20px; letter-spacing:-.04em; }
+    .principle p { margin:0; color:#c7c7d1; line-height:1.7; }
+    footer { padding:42px 0 10px; color:#8b8b97; font-size:14px; }
+    .cta-box { padding:24px; margin-top:24px; }
+    .button { display:inline-flex; align-items:center; justify-content:center; gap:10px; padding:12px 16px; border-radius:999px; background:#fff; color:#111; font-weight:600; margin-right:10px; margin-top:14px; }
+    .button.secondary { background:rgba(255,255,255,.04); color:#fff; border:1px solid var(--border); }
+    @media (max-width:1080px){ .hero-grid,.brand-top{grid-template-columns:1fr;} .kpi-grid,.principles-grid,.cols{grid-template-columns:1fr 1fr;} .art{border-right:none;border-bottom:1px solid var(--border);} }
+    @media (max-width:760px){ .kpi-grid,.principles-grid,.cols,.palette{grid-template-columns:1fr;} .nav-inner{align-items:flex-start;flex-direction:column;} .wrap{padding:0 18px 70px;} .hero{padding-top:48px;} .brand-content{padding:22px;} .brand-header h3{font-size:30px;} .lead{font-size:18px;} }
+  </style>
+</head>
+<body>
+  <nav class="nav"><div class="nav-inner"><div class="brand-chip"><span class="dot"></span> Marketing Dan — brand reference</div><div class="nav-links"><a href="#nervix">Nervix</a><a href="#crawbot">Crawbot</a><a href="#semeclaw">Semeclaw</a><a href="#danslab">DansLab</a><a href="#principles">Usage rules</a></div></div></nav>
+  <div class="wrap">
+    <section class="hero">
+      <div class="eyebrow">Persistent reference for Claude Code and future marketing work</div>
+      <h1>One source of truth for logos, colors, typography, and messaging.</h1>
+      <p class="lead">This page is built as a durable brand operating system for four Dan’s Lab projects. Use it whenever you need landing pages, ads, hero sections, decks, or copy systems that stay visually and verbally consistent.</p>
+      <div class="hero-grid">
+        <div class="card hero-panel"><h3>How to use this page</h3><ul><li>Use the SVG logo boards as the current canonical direction.</li><li>Use the palette and font pairing before designing anything new.</li><li>Use the sample headline and subtitle to keep message framing consistent.</li><li>Use the “avoid” rules to stop generic or off-brand marketing output.</li><li>Use <span class="mono">brand-reference.json</span> as structured input for agents and automation.</li></ul></div>
+        <div class="card hero-panel"><h3>What’s inside</h3><p>Four handcrafted vector brand boards, tone systems, structured prompts for future image generation, and a clean Vercel-style reference layout using Geist as the main UI font.</p><a class="button" href="brand-reference.json">Open structured JSON</a><a class="button secondary" href="#nervix">Browse brand sections</a></div>
+      </div>
+      <div class="kpi-grid"><div class="card kpi"><strong>4</strong> distinct brands with separate voice and visual logic</div><div class="card kpi"><strong>1</strong> Vercel-ready static site with zero framework overhead</div><div class="card kpi"><strong>JSON</strong> machine-readable source for future Claude Code prompts</div><div class="card kpi"><strong>SVG</strong> editable vector artwork stored locally in assets</div></div>
+    </section>
+    <section class="section"><h2>Brand system</h2><p>Each section includes the current logo art direction, brand position, colors, recommended fonts, core marketing line, CTA, visual motif, image prompt, and off-brand patterns to avoid.</p><div class="brand-grid" id="brandGrid"></div></section>
+    <section class="section" id="principles"><h2>Global usage rules</h2><p>These rules keep future outputs coherent across product pages, decks, social graphics, investor material, and AI-generated visual work.</p><div class="principles-grid"><div class="card principle"><h3>Keep it premium</h3><p>All four brands should feel technical and high-trust. Use clean geometry, tight typography, and controlled accents instead of noisy effects or trend-heavy visuals.</p></div><div class="card principle"><h3>Message the capability</h3><p>Lead with what the product does for the user: deploy, discover, control, build. Avoid fuzzy AI hype. Every headline should imply a specific outcome.</p></div><div class="card principle"><h3>Design for reuse</h3><p>When generating marketing later, pull directly from the JSON file and the logo SVGs first. If you evolve a brand, update this site before creating more collateral.</p></div></div><div class="card cta-box"><h3 style="margin:0 0 10px;font-size:24px;letter-spacing:-.04em;">Recommended workflow for Claude Code</h3><p style="margin:0;color:#c7c7d1;line-height:1.7;">1. Read <span class="mono">brand-reference.json</span>. 2. Load the correct logo from <span class="mono">/assets/*.svg</span>. 3. Use the brand-specific palette and fonts. 4. Follow the copy rules and avoid list. 5. If new material changes the brand materially, update this reference page first.</p></div></section>
+    <footer>Built for Dan’s Lab brand operations. Static, editable, and ready to keep on Vercel as a long-term marketing reference.</footer>
+  </div>
+  <script>
+    const brands = {
+      nervix:{key:'nervix',art:'assets/nervix.svg',name:'Nervix',tagline:'AI agent marketplace infrastructure for live, interoperable intelligence.',positioning:'Nervix is the network layer where AI agents are discovered, trusted, and activated in real time.',tone:['bold','premium','technical','confident'],palette:[['Background','#0A0A0A'],['Primary','#FF4B2B'],['Secondary','#FF8A1E'],['Text','#FFF4EE'],['Muted','#D7B2A4'],['Surface','#161616']],fonts:'Display: Space Grotesk · Body: Inter · Mono: JetBrains Mono',motif:'An abstract X built from neural pathways and heat-signal arcs.',headline:'Launch into the agent economy.',subtitle:'A premium network for discovering, deploying, and monetizing capable AI agents.',cta:'Explore the marketplace',avoid:['cute mascots','busy gradients','generic robot icons'],prompt:'Dark cinematic AI marketplace interface with black surfaces, intense red and orange signal lines, premium, futuristic, minimal, no people.',copyRules:['Lead with network effects and trust.','Use words like live, marketplace, interoperable, discover, deploy.','Avoid vague hype like revolutionary unless backed by proof.']},
+      crawbot:{key:'crawbot',art:'assets/crawbot.svg',name:'Crawbot',tagline:'Autonomous discovery and crawling systems for the live web.',positioning:'Crawbot is a high-signal web intelligence engine built for continuous discovery, extraction, and monitoring.',tone:['sharp','operational','reliable','fast'],palette:[['Background','#121212'],['Primary','#FFB84D'],['Secondary','#FFD98A'],['Text','#FFF8EE'],['Muted','#C6B79D'],['Surface','#1B1B1B']],fonts:'Display: IBM Plex Sans · Body: Inter · Mono: IBM Plex Mono',motif:'A radar orb with route traces and crawler legs implied by line segments.',headline:'See the web before everyone else does.',subtitle:'Continuous crawling, structured extraction, and monitoring tuned for speed and signal.',cta:'Start crawling',avoid:['cartoon spiders','red error-like accents','playful rounded iconography'],prompt:'Premium dark crawler dashboard with amber radar glow, graph nodes, route traces, modern SaaS visualization.',copyRules:['Emphasize coverage, freshness, and extraction quality.','Use crisp action verbs: crawl, scan, detect, extract, monitor.','Keep the tone practical, not playful.']},
+      semeclaw:{key:'semeclaw',art:'assets/semeclaw.svg',name:'Semeclaw',tagline:'Semantic control systems with surgical precision.',positioning:'Semeclaw is an AI control layer for semantic capture, filtering, and decisive action.',tone:['edgy','controlled','intelligent','exact'],palette:[['Background','#08110C'],['Primary','#B6FF5C'],['Secondary','#3BE7C4'],['Text','#F4FFF7'],['Muted','#A3CDBF'],['Surface','#0D1712']],fonts:'Display: Sora · Body: Inter · Mono: JetBrains Mono',motif:'A claw silhouette merged with semantic brackets and a central node.',headline:'Grip the signal. Cut the noise.',subtitle:'Semantic filtering and action routing for teams that need clarity, not clutter.',cta:'Control the flow',avoid:['monster aesthetics','overly aggressive red palettes','stock cybersecurity clichés'],prompt:'Dark green-black semantic control interface with neon lime accents, bracket motifs, precise data routes, premium minimal style.',copyRules:['Write in short, decisive sentences.','Frame the product as precision, not aggression.','Use semantic, routing, signal, control, policy, action.']},
+      danslab:{key:'danslab',art:'assets/danslab.svg',name:'DansLab',tagline:'A lab for building applied AI systems that actually ship.',positioning:'DansLab is the experimental engine where autonomous systems are designed, tested, and turned into working products.',tone:['founder-led','smart','credible','experimental'],palette:[['Background','#0E1116'],['Primary','#7AA2FF'],['Secondary','#D7E2FF'],['Text','#F6F8FC'],['Muted','#B2BED6'],['Surface','#151A22']],fonts:'Display: Manrope · Body: Inter · Mono: JetBrains Mono',motif:'A monogram D/L constructed from modular blocks and orbital lab rings.',headline:'Where agent systems get built for the real world.',subtitle:'Research discipline, product instinct, and fast iteration for applied AI ventures.',cta:'See the lab',avoid:['messy hacker visuals','sterile corporate stock scenes','generic flask icons'],prompt:'Minimal premium AI lab brand scene, cobalt accent, modular blocks, orbital rings, editorial dark tech aesthetic.',copyRules:['Position as practical R&D with shipping energy.','Balance experimentation with execution.','Use language that sounds founder-close and technically competent.']}
+    };
+    const grid = document.getElementById('brandGrid');
+    Object.values(brands).forEach((brand) => {
+      const section = document.createElement('article');
+      section.className = 'card brand-card';
+      section.id = brand.key;
+      section.innerHTML = `<div class="brand-top"><div class="art"><img src="${brand.art}" alt="${brand.name} logo board" /></div><div class="brand-content"><div class="brand-header"><h3>${brand.name}</h3><div class="pill">CTA: ${brand.cta}</div></div><p style="margin:8px 0 0;color:#f4f4f5;font-size:18px;line-height:1.6;">${brand.tagline}</p><div class="pill-row">${brand.tone.map((t)=>`<span class="pill">${t}</span>`).join('')}</div><div class="cols"><div class="subcard"><h4>Positioning</h4><p>${brand.positioning}</p></div><div class="subcard"><h4>Visual motif</h4><p>${brand.motif}</p></div><div class="subcard"><h4>Messaging</h4><p><strong style="display:block;margin-bottom:8px;">${brand.headline}</strong>${brand.subtitle}</p></div><div class="subcard"><h4>Fonts</h4><p>${brand.fonts}</p></div><div class="subcard"><h4>AI image prompt</h4><p class="mono" style="font-size:13px;">${brand.prompt}</p></div><div class="subcard"><h4>Off-brand avoid list</h4><ul>${brand.avoid.map((item)=>`<li>${item}</li>`).join('')}</ul></div><div class="subcard" style="grid-column:span 2;"><h4>Color palette</h4><div class="palette">${brand.palette.map(([label,color])=>`<div class="swatch" style="background:${color};"><span>${label}</span><span class="mono">${color}</span></div>`).join('')}</div></div><div class="subcard" style="grid-column:span 2;"><h4>Copy rules for future Claude Code marketing</h4><ul>${brand.copyRules.map((rule)=>`<li>${rule}</li>`).join('')}</ul></div></div></div></div>`;
+      grid.appendChild(section);
+    });
+  </script>
+</body>
+</html>

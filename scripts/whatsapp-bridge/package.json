@@ -10,7 +10,10 @@
   "dependencies": {
     "@whiskeysockets/baileys": "WhiskeySockets/Baileys#01047debd81beb20da7b7779b08edcb06aa03770",
     "express": "^4.21.0",
-    "qrcode-terminal": "^0.12.0",
-    "pino": "^9.0.0"
+    "pino": "^9.0.0",
+    "qrcode-terminal": "^0.12.0"
+  },
+  "overrides": {
+    "protobufjs": "^7.5.5"
   }
 }

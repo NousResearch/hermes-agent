@@ -1,0 +1,58 @@
+{
+  "nervix": {
+    "name": "Nervix",
+    "tagline": "AI agent marketplace infrastructure for live, interoperable intelligence.",
+    "positioning": "Nervix is the network layer where AI agents are discovered, trusted, and activated in real time.",
+    "tone": ["precise", "visionary", "technical", "confident"],
+    "palette": {"bg": "#0A0A0A", "surface": "#161616", "primary": "#FF4B2B", "secondary": "#FF8A1E", "text": "#FFF4EE", "muted": "#D7B2A4"},
+    "fonts": {"display": "Space Grotesk", "body": "Inter", "mono": "JetBrains Mono"},
+    "motif": "An abstract X built from neural pathways and signal arcs.",
+    "headline": "Launch into the agent economy.",
+    "subtitle": "A premium network for discovering, deploying, and monetizing capable AI agents.",
+    "cta": "Explore the marketplace",
+    "avoid": ["cute mascots", "busy gradients", "generic robot icons"],
+    "image_prompt": "Dark cinematic AI marketplace interface with black surfaces, intense red and orange signal lines, premium, futuristic, minimal, no people."
+  },
+  "crawbot": {
+    "name": "Crawbot",
+    "tagline": "Autonomous discovery and crawling systems for the live web.",
+    "positioning": "Crawbot is a high-signal web intelligence engine built for continuous discovery, extraction, and monitoring.",
+    "tone": ["sharp", "operational", "reliable", "fast"],
+    "palette": {"bg": "#121212", "surface": "#1B1B1B", "primary": "#FFB84D", "secondary": "#FFD98A", "text": "#FFF8EE", "muted": "#C6B79D"},
+    "fonts": {"display": "IBM Plex Sans", "body": "Inter", "mono": "IBM Plex Mono"},
+    "motif": "A radar orb with route traces and crawler legs implied by line segments.",
+    "headline": "See the web before everyone else does.",
+    "subtitle": "Continuous crawling, structured extraction, and monitoring tuned for speed and signal.",
+    "cta": "Start crawling",
+    "avoid": ["cartoon spiders", "red error-like accents", "playful rounded iconography"],
+    "image_prompt": "Premium dark crawler dashboard with amber radar glow, graph nodes, route traces, modern SaaS visualization."
+  },
+  "semeclaw": {
+    "name": "Semeclaw",
+    "tagline": "Semantic control systems with surgical precision.",
+    "positioning": "Semeclaw is an AI control layer for semantic capture, filtering, and decisive action.",
+    "tone": ["edgy", "controlled", "intelligent", "exact"],
+    "palette": {"bg": "#08110C", "surface": "#0D1712", "primary": "#B6FF5C", "secondary": "#3BE7C4", "text": "#F4FFF7", "muted": "#A3CDBF"},
+    "fonts": {"display": "Sora", "body": "Inter", "mono": "JetBrains Mono"},
+    "motif": "A claw silhouette merged with semantic brackets and a central node.",
+    "headline": "Grip the signal. Cut the noise.",
+    "subtitle": "Semantic filtering and action routing for teams that need clarity, not clutter.",
+    "cta": "Control the flow",
+    "avoid": ["monster aesthetics", "overly aggressive red palettes", "stock cybersecurity clichés"],
+    "image_prompt": "Dark green-black semantic control interface with neon lime accents, bracket motifs, precise data routes, premium minimal style."
+  },
+  "danslab": {
+    "name": "DansLab",
+    "tagline": "A lab for building applied AI systems that actually ship.",
+    "positioning": "DansLab is the experimental engine where autonomous systems are designed, tested, and turned into working products.",
+    "tone": ["founder-led", "smart", "credible", "experimental"],
+    "palette": {"bg": "#0E1116", "surface": "#151A22", "primary": "#7AA2FF", "secondary": "#D7E2FF", "text": "#F6F8FC", "muted": "#B2BED6"},
+    "fonts": {"display": "Manrope", "body": "Inter", "mono": "JetBrains Mono"},
+    "motif": "A monogram D/L constructed from modular blocks and orbital lab rings.",
+    "headline": "Where agent systems get built for the real world.",
+    "subtitle": "Research discipline, product instinct, and fast iteration for applied AI ventures.",
+    "cta": "See the lab",
+    "avoid": ["messy hacker visuals", "sterile corporate stock scenes", "generic flask icons"],
+    "image_prompt": "Minimal premium AI lab brand scene, cobalt accent, modular blocks, orbital rings, editorial dark tech aesthetic."
+  }
+}

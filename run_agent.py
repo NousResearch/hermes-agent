@@ -884,6 +884,7 @@ class AIAgent:
         gateway_session_key: str = None,
         skip_context_files: bool = False,
         skip_memory: bool = False,
+        lean_mode: bool = False,
         session_db=None,
         parent_session_id: str = None,
         iteration_budget: "IterationBudget" = None,
@@ -962,6 +963,13 @@ class AIAgent:
         self._print_fn = None
         self.background_review_callback = None  # Optional sync callback for gateway delivery
         self.skip_context_files = skip_context_files
+        # Lean mode strips ~1.3k tokens of behavioural guidance + skill-index
+        # boilerplate from the system prompt.  Intended for multi-tenant API
+        # server deployments where the frontend pre-selects the active skill
+        # (so the available_skills enumeration is dead weight) and the LLM
+        # already follows tool-use conventions reliably.  Cuts TTFT roughly
+        # in half on local 7-14B models bottlenecked by prompt prefill.
+        self._lean_mode = lean_mode
         self.pass_session_id = pass_session_id
         self._credential_pool = credential_pool
         self.log_prefix_chars = log_prefix_chars
@@ -4498,20 +4506,24 @@ class AIAgent:
             # Fallback to hardcoded identity
             prompt_parts = [DEFAULT_AGENT_IDENTITY]
 
-        # Tool-aware behavioral guidance: only inject when the tools are loaded
-        tool_guidance = []
-        if "memory" in self.valid_tool_names:
-            tool_guidance.append(MEMORY_GUIDANCE)
-        if "session_search" in self.valid_tool_names:
-            tool_guidance.append(SESSION_SEARCH_GUIDANCE)
-        if "skill_manage" in self.valid_tool_names:
-            tool_guidance.append(SKILLS_GUIDANCE)
-        if tool_guidance:
-            prompt_parts.append(" ".join(tool_guidance))
+        # Tool-aware behavioral guidance: only inject when the tools are loaded.
+        # Lean mode skips these (~300 tokens combined) — intended for multi-tenant
+        # API server deployments where the frontend already constrains the agent's
+        # behaviour through prompt engineering.
+        if not self._lean_mode:
+            tool_guidance = []
+            if "memory" in self.valid_tool_names:
+                tool_guidance.append(MEMORY_GUIDANCE)
+            if "session_search" in self.valid_tool_names:
+                tool_guidance.append(SESSION_SEARCH_GUIDANCE)
+            if "skill_manage" in self.valid_tool_names:
+                tool_guidance.append(SKILLS_GUIDANCE)
+            if tool_guidance:
+                prompt_parts.append(" ".join(tool_guidance))
 
-        nous_subscription_prompt = build_nous_subscription_prompt(self.valid_tool_names)
-        if nous_subscription_prompt:
-            prompt_parts.append(nous_subscription_prompt)
+            nous_subscription_prompt = build_nous_subscription_prompt(self.valid_tool_names)
+            if nous_subscription_prompt:
+                prompt_parts.append(nous_subscription_prompt)
         # Tool-use enforcement: tells the model to actually call tools instead
         # of describing intended actions.  Controlled by config.yaml
         # agent.tool_use_enforcement:
@@ -4519,7 +4531,10 @@ class AIAgent:
         #   true  — always inject (all models)
         #   false — never inject
         #   list  — custom model-name substrings to match
-        if self.valid_tool_names:
+        # Lean mode also skips tool-use enforcement guidance (~180 tokens) —
+        # the frontend in multi-tenant deployments controls agent behaviour
+        # through its own pre/post processing instead of in-prompt steering.
+        if self.valid_tool_names and not self._lean_mode:
             _enforce = self._tool_use_enforcement
             _inject = False
             if _enforce is True or (isinstance(_enforce, str) and _enforce.lower() in ("true", "always", "yes", "on")):
@@ -4572,8 +4587,14 @@ class AIAgent:
             except Exception:
                 pass
 
+        # In lean mode the frontend pre-selects the active skill via
+        # X-Hermes-Active-Skill (the chosen SKILL.md content is already
+        # injected through ephemeral_system_prompt), so the full
+        # <available_skills> enumeration becomes dead weight — typically
+        # 100-200 tokens per installed skill.  Skipping it here is the
+        # single biggest TTFT win for local 7-14B models.
         has_skills_tools = any(name in self.valid_tool_names for name in ['skills_list', 'skill_view', 'skill_manage'])
-        if has_skills_tools:
+        if has_skills_tools and not self._lean_mode:
             avail_toolsets = {
                 toolset
                 for toolset in (

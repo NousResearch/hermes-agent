@@ -50,9 +50,36 @@ logger = logging.getLogger(__name__)
 # (HERMES_HOME env var changes) are always respected.  The old module-level
 # constant was cached at import time and could go stale if a profile switch
 # happened after the first import.
+# Per-request merchant scoping.  When set (by gateway/platforms/api_server.py
+# via set_merchant_memory_scope()), memory reads + writes go to
+# ~/.hermes/merchants/<mid>/memories/ instead of the global ~/.hermes/memories/.
+# This gives each tenant their own MEMORY.md / USER.md, surviving across
+# sessions with zero bleed-through.
+#
+# Same plain-module-global pattern as tools/apmzoom.py — ContextVars don't
+# survive hermes' ThreadPoolExecutor tool dispatch.
+_current_merchant_id: str = ""
+
+
+def set_merchant_memory_scope(merchant_id: str) -> None:
+    """Route subsequent memory I/O to a per-merchant directory.
+
+    Pass empty string to fall back to the global memories dir.
+    """
+    global _current_merchant_id
+    _current_merchant_id = merchant_id or ""
+
+
+def current_merchant_memory_scope() -> str:
+    return _current_merchant_id
+
+
 def get_memory_dir() -> Path:
-    """Return the profile-scoped memories directory."""
-    return get_hermes_home() / "memories"
+    """Return the profile-scoped (or merchant-scoped) memories directory."""
+    home = get_hermes_home()
+    if _current_merchant_id:
+        return home / "merchants" / _current_merchant_id / "memories"
+    return home / "memories"
 
 ENTRY_DELIMITER = "\n§\n"
 

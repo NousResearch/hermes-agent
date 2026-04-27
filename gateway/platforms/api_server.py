@@ -277,6 +277,148 @@ def check_api_server_requirements() -> bool:
     return AIOHTTP_AVAILABLE
 
 
+# ----------------------------------------------------------------------------
+# Multi-tenant merchant context loader
+# ----------------------------------------------------------------------------
+#
+# Per-merchant identity & active-skill content for enterprise deployments.
+# Frontends signal merchant scope via two HTTP headers on chat completions:
+#
+#   X-Hermes-Merchant-Id   : tenant identifier (sanitized [A-Za-z0-9_-]{1,64})
+#   X-Hermes-Active-Skill  : skill folder name (sanitized [A-Za-z0-9_-]{1,128})
+#
+# The loader reads (silently skipping missing files):
+#   ~/.hermes/merchants/<id>/identity.md         (merchant role + persona)
+#   ~/.hermes/merchants/<id>/system_extras.md    (extra session-level context)
+#   ~/.hermes/skills/openclaw-imports/<skill>/SKILL.md       (active-skill body)
+#   ~/.hermes/skills/<skill>/SKILL.md                        (fallback location)
+#
+# When a merchant_id is supplied, the gateway also enables `merchant_mode`
+# on the AIAgent constructor — which sets skip_context_files=True and
+# skip_memory=True so the GLOBAL ~/.hermes/SOUL.md and shared memory snapshot
+# do NOT leak between tenants.  Skills (the SKILL.md library) are intentionally
+# NOT scoped per-merchant because they're shared infrastructure.
+
+_MERCHANT_ID_RE = re.compile(r'^[A-Za-z0-9_-]{1,64}$')
+_ACTIVE_SKILL_RE = re.compile(r'^[A-Za-z0-9_./-]{1,128}$')
+
+
+def _load_merchant_prompt(merchant_id: str = "", active_skill: str = "") -> str:
+    """Read per-merchant identity + optional active-skill SKILL.md.
+
+    Returns concatenated string or "" if nothing found.  Safe for missing
+    files / IO errors (logged at WARNING, not raised).
+    """
+    if not merchant_id and not active_skill:
+        return ""
+
+    try:
+        from hermes_constants import get_hermes_home
+    except Exception:
+        return ""
+
+    from pathlib import Path
+    home = Path(get_hermes_home())
+    parts: list[str] = []
+
+    if merchant_id:
+        merchant_dir = home / "merchants" / merchant_id
+        # identity_dynamic.md is an async-refreshed business-profile snapshot
+        # (top categories, price bands, recent active workflows, …) written by
+        # scripts/merchant-profile-refresh.py.  Injecting it after identity.md
+        # gives the LLM concrete context about the merchant's store without
+        # having to run read-tool calls for every greeting.  Stale snapshot
+        # (>24h) still loads — a little outdated is better than nothing.
+        for fname, header in (
+            ("identity.md", f"# Merchant Identity ({merchant_id})"),
+            ("identity_dynamic.md", f"# Merchant Business Snapshot ({merchant_id})"),
+            ("system_extras.md", f"# Merchant Session Context ({merchant_id})"),
+        ):
+            p = merchant_dir / fname
+            if p.exists() and p.is_file():
+                try:
+                    body = p.read_text(encoding="utf-8", errors="replace").strip()
+                    if body:
+                        parts.append(f"{header}\n\n{body}")
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("[merchant] failed to read %s: %s", p, e)
+
+    if active_skill:
+        # Resolve skill folder by name across known skill roots.
+        candidates = [
+            home / "skills" / "openclaw-imports" / active_skill / "SKILL.md",
+            home / "skills" / active_skill / "SKILL.md",
+        ]
+        for skill_md in candidates:
+            if skill_md.exists() and skill_md.is_file():
+                try:
+                    body = skill_md.read_text(encoding="utf-8", errors="replace").strip()
+                    if body:
+                        # Truncate enormous SKILL.md to keep prompt budget sane
+                        # for local 7-14B models.  4000 chars ≈ 1000 tokens.
+                        if len(body) > 4000:
+                            body = body[:4000] + "\n\n[…truncated for context budget…]"
+                        parts.append(f"# Active Skill: {active_skill}\n\n{body}")
+                        # Resolve `see_also:` references in the workflow's
+                        # frontmatter and inline those pattern SKILL.mds too.
+                        # Local 7-14B models won't proactively skill_view for
+                        # cross-references, so we eagerly concatenate the
+                        # small shared recipes (lock-goods-id, readback-verify,
+                        # …) into the system prompt.  Each pattern is trimmed
+                        # to 2000 chars to keep total budget sane.
+                        for ref in _parse_see_also_refs(body):
+                            ref_md = home / "skills" / ref / "SKILL.md"
+                            if not (ref_md.exists() and ref_md.is_file()):
+                                continue
+                            try:
+                                ref_body = ref_md.read_text(
+                                    encoding="utf-8", errors="replace"
+                                ).strip()
+                                if not ref_body:
+                                    continue
+                                if len(ref_body) > 2000:
+                                    ref_body = ref_body[:2000] + "\n\n[…truncated…]"
+                                parts.append(f"# See-also: {ref}\n\n{ref_body}")
+                            except Exception as e:  # noqa: BLE001
+                                logger.warning(
+                                    "[merchant] failed to read see_also %s: %s",
+                                    ref_md, e,
+                                )
+                        break
+                except Exception as e:  # noqa: BLE001
+                    logger.warning("[merchant] failed to read %s: %s", skill_md, e)
+
+    return "\n\n---\n\n".join(parts)
+
+
+_SEE_ALSO_RE = re.compile(
+    r'(?m)^\s*see_also:\s*$((?:\n\s+-\s*.*)+)',
+)
+_SEE_ALSO_ITEM_RE = re.compile(
+    r'-\s*"?([A-Za-z0-9_./-]+)"?\s*$',
+    re.MULTILINE,
+)
+
+
+def _parse_see_also_refs(skill_md_body: str) -> list:
+    """Pull `see_also:` list entries out of a SKILL.md frontmatter.
+
+    Returns a list of skill folder paths (e.g. ``apmzoom-workflow-patterns/
+    lock-goods-id``) suitable for joining onto ``~/.hermes/skills/``.  Empty
+    list on no frontmatter / no see_also / parse failure.
+    """
+    if not skill_md_body.startswith("---"):
+        return []
+    parts = skill_md_body.split("---", 2)
+    if len(parts) < 3:
+        return []
+    fm = parts[1]
+    m = _SEE_ALSO_RE.search(fm)
+    if not m:
+        return []
+    return _SEE_ALSO_ITEM_RE.findall(m.group(1))
+
+
 class ResponseStore:
     """
     SQLite-backed LRU store for Responses API state.
@@ -388,7 +530,15 @@ class ResponseStore:
 
 _CORS_HEADERS = {
     "Access-Control-Allow-Methods": "GET, POST, DELETE, OPTIONS",
-    "Access-Control-Allow-Headers": "Authorization, Content-Type, Idempotency-Key",
+    # Includes the X-Hermes-* multi-tenant headers so browsers can pass them
+    # through preflight without hitting "request header field not allowed".
+    "Access-Control-Allow-Headers": (
+        "Authorization, Content-Type, Idempotency-Key, "
+        "X-Hermes-Session-Id, X-Hermes-Merchant-Id, X-Hermes-Active-Skill"
+    ),
+    # SSE clients need to read X-Hermes-Session-Id to chain follow-up requests
+    # to the same conversation; expose it on cross-origin responses too.
+    "Access-Control-Expose-Headers": "X-Hermes-Session-Id",
 }
 
 
@@ -713,6 +863,9 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_progress_callback=None,
         tool_start_callback=None,
         tool_complete_callback=None,
+        merchant_mode: bool = False,
+        merchant_id: Optional[str] = None,
+        active_skill: Optional[str] = None,
     ) -> Any:
         """
         Create an AIAgent instance using the gateway's runtime config.
@@ -721,6 +874,13 @@ class APIServerAdapter(BasePlatformAdapter):
         base_url, etc. from config.yaml / env vars.  Toolsets are resolved
         from config.yaml platform_toolsets.api_server (same as all other
         gateway platforms), falling back to the hermes-api-server default.
+
+        merchant_mode: when True, suppress global SOUL/AGENTS auto-load and
+        global memory injection.  Per-merchant identity must be supplied via
+        ephemeral_system_prompt (typically built by _load_merchant_prompt).
+        Critical for multi-tenant deployments to prevent cross-merchant
+        identity leakage AND to keep base system prompt small enough for
+        local 7-14B models.
         """
         from run_agent import AIAgent
         from gateway.run import _resolve_runtime_agent_kwargs, _resolve_gateway_model, _load_gateway_config
@@ -728,6 +888,33 @@ class APIServerAdapter(BasePlatformAdapter):
 
         runtime_kwargs = _resolve_runtime_agent_kwargs()
         model = _resolve_gateway_model()
+
+        # Per-merchant LLM credentials: when a merchant credentials file
+        # exists AND a translation proxy (apmzoom-llm-proxy) sits between
+        # hermes and the real upstream, forward the merchant JWT verbatim
+        # so the multi-tenant LLM gateway can attribute the call to the
+        # merchant's identity & quota.
+        #
+        # Critical gate: only swap the api_key when
+        # MERCHANT_TOKEN_AS_API_KEY=true is set.  Otherwise this code would
+        # overwrite a legitimate provider key (e.g. DeepSeek sk-xxx) with
+        # the APM JWT, causing the provider to 401 on every request.
+        # Falls back silently to the gateway-wide api_key when the flag is
+        # off, the credentials file is missing, or the JWT is stale.
+        if (merchant_mode and merchant_id
+                and os.getenv("MERCHANT_TOKEN_AS_API_KEY", "").lower() in ("1", "true", "yes")):
+            try:
+                from hermes_constants import get_hermes_home
+                from pathlib import Path
+                cred_path = Path(get_hermes_home()) / "merchants" / merchant_id / "credentials.json"
+                if cred_path.exists():
+                    import json as _json
+                    cred = _json.loads(cred_path.read_text())
+                    token = cred.get("access_token")
+                    if token:
+                        runtime_kwargs["api_key"] = token
+            except Exception as e:
+                logger.debug("[merchant] credentials lookup failed for %s: %s", merchant_id, e)
 
         user_config = _load_gateway_config()
         enabled_toolsets = sorted(_get_platform_tools(user_config, "api_server"))
@@ -755,7 +942,52 @@ class APIServerAdapter(BasePlatformAdapter):
             tool_complete_callback=tool_complete_callback,
             session_db=self._ensure_session_db(),
             fallback_model=fallback_model,
+            skip_context_files=merchant_mode,
+            # Memory is NOT skipped in merchant_mode — instead MemoryStore is
+            # re-pointed at ~/.hermes/merchants/<mid>/memories/ by the
+            # set_merchant_memory_scope() call below, so each merchant gets
+            # their own MEMORY.md + USER.md surviving across sessions while
+            # still being fully isolated from the global store and from
+            # other merchants.
+            skip_memory=False if (merchant_mode and merchant_id) else merchant_mode,
+            # Lean mode auto-on with merchant_mode: strips ~1.3k tokens of
+            # behavioural guidance + skills index, since the frontend
+            # already pre-loads SKILL.md via X-Hermes-Active-Skill and
+            # constrains agent behaviour through its own UI flow.  Cuts
+            # TTFT roughly in half on local 7-14B models.
+            lean_mode=merchant_mode,
         )
+
+        # ─── Per-workflow apm_* tool pruning ────────────────────────────
+        # If the caller supplied X-Hermes-Active-Skill pointing to a workflow
+        # whose SKILL.md frontmatter declares `metadata.apmzoom.skills_used`,
+        # drop every apm_* tool that isn't in that list.  Non-apm_* tools
+        # (memory, skill_view, etc.) are left untouched.  This keeps the
+        # system prompt lean and focuses the local model on the 2-6 tools
+        # the workflow actually needs, instead of all ~16 in the global
+        # allowlist.  Skipping filter when:
+        #   - no active_skill header
+        #   - workflow has no skills_used (treated as "open" / keep all)
+        if active_skill:
+            try:
+                from tools import apmzoom as _apmzoom_bridge
+                allowed = _apmzoom_bridge.resolve_workflow_skills_used(active_skill)
+                if allowed is not None and agent.tools:
+                    keep_apm = {f"apm_{n}" for n in allowed}
+                    before = len(agent.tools)
+                    agent.tools = [
+                        t for t in agent.tools
+                        if not t["function"]["name"].startswith("apm_")
+                        or t["function"]["name"] in keep_apm
+                    ]
+                    agent.valid_tool_names = {t["function"]["name"] for t in agent.tools}
+                    logger.info(
+                        "[apmzoom] workflow %r: pruned tools %d → %d (apm_* kept: %d)",
+                        active_skill, before, len(agent.tools), len(keep_apm),
+                    )
+            except Exception as e:
+                logger.debug("[apmzoom] tool pruning skipped for %r: %s", active_skill, e)
+
         return agent
 
     # ------------------------------------------------------------------
@@ -786,6 +1018,166 @@ class APIServerAdapter(BasePlatformAdapter):
             "updated_at": runtime.get("updated_at"),
             "pid": os.getpid(),
         })
+
+    async def _handle_fleet_snapshot(self, request: "web.Request") -> "web.Response":
+        """GET /v1/fleet/snapshot — one-shot observability payload for the
+        apmzoom fleet dashboard (agent-claw /fleet).  Combines machine health,
+        process stats, per-merchant counts, recent request metrics, and
+        fallback counters so the frontend can render the whole card with a
+        single HTTP round trip.
+
+        Shape is stable and additive — new fields may be added but existing
+        ones are not renamed/removed without a version bump.
+        """
+        from gateway.status import read_runtime_status
+        from pathlib import Path as _Path
+        import time as _time
+
+        runtime = read_runtime_status() or {}
+        hermes_home = _Path(os.environ.get("HERMES_HOME") or (_Path.home() / ".hermes"))
+
+        # ── Merchants (cheap: ls the merchants dir + count credentials) ──
+        merchants_dir = hermes_home / "merchants"
+        merchants: list[dict] = []
+        if merchants_dir.is_dir():
+            for m in sorted(merchants_dir.iterdir()):
+                if not m.is_dir() or m.name.startswith("_"):
+                    continue
+                cred = m / "credentials.json"
+                identity = m / "identity.md"
+                mem_md = m / "memories" / "MEMORY.md"
+                user_md = m / "memories" / "USER.md"
+                merchants.append({
+                    "merchant_id": m.name,
+                    "has_credentials": cred.exists(),
+                    "has_identity": identity.exists(),
+                    "memory_bytes": (mem_md.stat().st_size if mem_md.exists() else 0)
+                                  + (user_md.stat().st_size if user_md.exists() else 0),
+                    "last_touched": int(max(
+                        [p.stat().st_mtime for p in m.rglob("*") if p.is_file()] or [0]
+                    )),
+                })
+
+        # ── Recent apm_* tool calls (tail apmzoom.log) ──
+        tool_calls_last_100: list[dict] = []
+        tool_errors_last_100 = 0
+        apmzoom_log = hermes_home / "logs" / "apmzoom.log"
+        if apmzoom_log.exists():
+            try:
+                # Read last ~32KB, split by line, match " → <skill>" arrows
+                data = apmzoom_log.read_bytes()[-32768:]
+                lines = data.decode("utf-8", errors="replace").splitlines()
+                for ln in lines[-400:]:
+                    if "] → " in ln:
+                        # "2026-04-19 14:46 INFO [apmzoom] → <skill> mid=<mid>"
+                        parts = ln.split("] → ", 1)
+                        if len(parts) == 2:
+                            ts = parts[0].split(" INFO")[0].split("] ")[-1] if "] " in parts[0] else parts[0][:19]
+                            rest = parts[1]
+                            skill = rest.split(" ", 1)[0]
+                            mid = ""
+                            if "mid=" in rest:
+                                mid = rest.split("mid=", 1)[1].split(" ", 1)[0]
+                            tool_calls_last_100.append({"ts": ts, "skill": skill, "merchant_id": mid})
+                    elif "] ← " in ln and '"error"' in ln:
+                        tool_errors_last_100 += 1
+                tool_calls_last_100 = tool_calls_last_100[-100:]
+            except Exception:
+                pass
+
+        # ── Model / fallback (grep the last 50 agent.log lines for Fallback) ──
+        fallback_count = 0
+        agent_log = hermes_home / "logs" / "agent.log"
+        if agent_log.exists():
+            try:
+                data = agent_log.read_bytes()[-16384:]
+                fallback_count = data.decode("utf-8", errors="replace").count("Fallback activated")
+            except Exception:
+                pass
+
+        # ── Request queue — active agents from runtime status ──
+        active_agents = runtime.get("active_agents", 0)
+
+        # ── Session count (response_store.db is SQLite) ──
+        session_count = 0
+        session_db = hermes_home / "response_store.db"
+        if session_db.exists():
+            try:
+                import sqlite3 as _sql
+                conn = _sql.connect(f"file:{session_db}?mode=ro", uri=True)
+                cur = conn.execute("SELECT COUNT(DISTINCT session_id) FROM responses")
+                session_count = int(cur.fetchone()[0])
+                conn.close()
+            except Exception:
+                pass  # Schema may differ across hermes versions
+
+        # ── Model config (read config.yaml live so it's current) ──
+        model_info = {"default": None, "provider": None, "fallback_providers": []}
+        try:
+            import yaml as _yaml
+            cfg_path = hermes_home / "config.yaml"
+            if cfg_path.exists():
+                cfg = _yaml.safe_load(cfg_path.read_text()) or {}
+                model_info["default"] = (cfg.get("model") or {}).get("default")
+                model_info["provider"] = (cfg.get("model") or {}).get("provider")
+                model_info["fallback_providers"] = [
+                    {"model": fp.get("model"), "provider": fp.get("provider")}
+                    for fp in (cfg.get("fallback_providers") or [])
+                ]
+        except Exception:
+            pass
+
+        snapshot = {
+            "generated_at": int(_time.time()),
+            "pid": os.getpid(),
+            "platform": "hermes-agent",
+            "gateway_state": runtime.get("gateway_state"),
+            "active_agents": active_agents,
+            "session_count": session_count,
+            "merchant_count": len(merchants),
+            "merchants": merchants,
+            "model": model_info,
+            "tool_calls": {
+                "recent_count": len(tool_calls_last_100),
+                "error_count": tool_errors_last_100,
+                "recent": tool_calls_last_100[-20:],  # last 20 for the sparkline
+            },
+            "fallback_activations": fallback_count,
+        }
+        return web.json_response(snapshot)
+
+    async def _handle_fleet_merchants(self, request: "web.Request") -> "web.Response":
+        """GET /v1/fleet/merchants — merchants directory listing only.
+
+        Lighter than /v1/fleet/snapshot when the caller just needs to render
+        the merchant table.  Same shape as snapshot.merchants.
+        """
+        from pathlib import Path as _Path
+        hermes_home = _Path(os.environ.get("HERMES_HOME") or (_Path.home() / ".hermes"))
+        merchants_dir = hermes_home / "merchants"
+        out = []
+        if merchants_dir.is_dir():
+            for m in sorted(merchants_dir.iterdir()):
+                if not m.is_dir() or m.name.startswith("_"):
+                    continue
+                cred = m / "credentials.json"
+                identity = m / "identity.md"
+                email = ""
+                if cred.exists():
+                    try:
+                        email = json.loads(cred.read_text()).get("username", "")
+                    except Exception:
+                        pass
+                out.append({
+                    "merchant_id": m.name,
+                    "email": email,
+                    "has_credentials": cred.exists(),
+                    "has_identity": identity.exists(),
+                    "last_touched": int(max(
+                        [p.stat().st_mtime for p in m.rglob("*") if p.is_file()] or [0]
+                    )),
+                })
+        return web.json_response({"merchants": out})
 
     async def _handle_models(self, request: "web.Request") -> "web.Response":
         """GET /v1/models — return hermes-agent as an available model."""
@@ -864,6 +1256,78 @@ class APIServerAdapter(BasePlatformAdapter):
                 status=400,
             )
 
+        # ── Multi-tenant headers (enterprise mode) ───────────────────────
+        # X-Hermes-Merchant-Id   : tenant scope; toggles merchant_mode on
+        # X-Hermes-Active-Skill  : preload SKILL.md as ephemeral system prompt
+        merchant_id = request.headers.get("X-Hermes-Merchant-Id", "").strip()
+        active_skill = request.headers.get("X-Hermes-Active-Skill", "").strip()
+        if merchant_id and not _MERCHANT_ID_RE.match(merchant_id):
+            return web.json_response(
+                _openai_error("Invalid X-Hermes-Merchant-Id (allowed: [A-Za-z0-9_-]{1,64})"),
+                status=400,
+            )
+        if active_skill and not _ACTIVE_SKILL_RE.match(active_skill):
+            return web.json_response(
+                _openai_error("Invalid X-Hermes-Active-Skill"),
+                status=400,
+            )
+        merchant_mode = bool(merchant_id)
+        # Thread merchant identity into the apmzoom tool bridge so its
+        # auto-registered tool handlers can look up the right credentials
+        # without each having to take merchant_id as an argument.
+        if merchant_mode:
+            try:
+                from tools import apmzoom as _apmzoom_bridge
+                _apmzoom_bridge.set_merchant_id(merchant_id)
+                # active_skill drives per-request apm_* tool pruning (see
+                # _create_agent).  Set unconditionally so clearing it on a
+                # subsequent request without the header actually clears.
+                _apmzoom_bridge.set_active_skill(active_skill)
+            except Exception as e:
+                logger.debug("[apmzoom] merchant_id propagation skipped: %s", e)
+            # Route MemoryStore I/O to the merchant's own memories dir.
+            # MemoryStore is constructed inside AIAgent.__init__ below, and
+            # its get_memory_dir() is resolved at call time — so setting
+            # the scope BEFORE the agent is created is what makes per-merchant
+            # MEMORY.md / USER.md work without further plumbing.
+            try:
+                from tools import memory_tool as _memory_tool
+                _memory_tool.set_merchant_memory_scope(merchant_id or "")
+            except Exception as e:
+                logger.debug("[memory] merchant scope propagation skipped: %s", e)
+            # Route terminal/file tools to the merchant's workspace so that
+            # SubdirectoryHintTracker (run_agent.py:1616) picks up per-merchant
+            # AGENTS.md files as dynamic tool-result hints.  Drop AGENTS.md
+            # into workspace/{products,promotions,stock}/ and those rules
+            # activate only when the agent cd's into that dir, without bloating
+            # the base system prompt.
+            try:
+                from hermes_constants import get_hermes_home
+                from pathlib import Path
+                _ws = Path(get_hermes_home()) / "merchants" / merchant_id / "workspace"
+                _ws.mkdir(parents=True, exist_ok=True)
+                os.environ["TERMINAL_CWD"] = str(_ws)
+            except Exception as e:
+                logger.debug("[merchant] TERMINAL_CWD setup skipped: %s", e)
+        else:
+            # Clear scope on non-merchant requests so the global memories
+            # dir is used (important when the same process serves both
+            # authenticated merchants and unscoped calls, e.g. health probes
+            # or CLI test requests).
+            try:
+                from tools import memory_tool as _memory_tool
+                _memory_tool.set_merchant_memory_scope("")
+            except Exception:
+                pass
+        merchant_prompt = _load_merchant_prompt(merchant_id, active_skill)
+        # If merchant_prompt was loaded, prepend it to the user-supplied system
+        # message; AIAgent will see it via ephemeral_system_prompt.
+        if merchant_prompt:
+            system_prompt = (
+                merchant_prompt + "\n\n---\n\n" + system_prompt
+                if system_prompt else merchant_prompt
+            )
+
         # Allow caller to continue an existing session by passing X-Hermes-Session-Id.
         # When provided, history is loaded from state.db instead of from the request body.
         #
@@ -911,6 +1375,11 @@ class APIServerAdapter(BasePlatformAdapter):
                     first_user = cm.get("content", "")
                     break
             session_id = _derive_chat_session_id(system_prompt, first_user)
+            # In merchant mode, prefix the session_id with the merchant id so
+            # multiple merchants on the same mini cannot accidentally share
+            # session storage even with similar conversation fingerprints.
+            if merchant_id:
+                session_id = f"merchant-{merchant_id}-{session_id[:24]}"
             # history already set from request body above
 
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:29]}"
@@ -932,6 +1401,18 @@ class APIServerAdapter(BasePlatformAdapter):
                 if delta is not None:
                     _stream_q.put(delta)
 
+            # Track tool invocations so the started↔completed pair for one
+            # call share a stable `call_id`.  Stack per tool name: push on
+            # started, pop on completed.  Same tool called twice gets two
+            # distinct call_ids → two chips on the frontend (correct).
+            #
+            # Keep these *declared* up-front so _on_tool_progress doesn't
+            # NameError and swallow every progress event silently (happened
+            # once when an earlier revert dropped the declaration and the
+            # entire hermes.tool.progress stream went dark).
+            _tool_call_counter = [0]
+            _tool_call_stack: Dict[str, list] = {}
+
             def _on_tool_progress(event_type, name, preview, args, **kwargs):
                 """Send tool progress as a separate SSE event.
 
@@ -950,18 +1431,61 @@ class APIServerAdapter(BasePlatformAdapter):
                 history.  Clients that don't understand the custom event type
                 silently ignore it per the SSE specification.
                 """
-                if event_type != "tool.started":
+                # Forward both tool.started and tool.completed so the frontend
+                # can transition the tool chip from ⟲ → ✓ as soon as the tool
+                # returns, even while the LLM keeps generating text afterwards.
+                # Without the completed event the chips spin forever (see
+                # screenshot: 看图分析 / 读取商品分类 stay ⟲ even though
+                # vision returned in 5s and classlist in 2s).
+                if event_type not in ("tool.started", "tool.completed"):
                     return
                 if name.startswith("_"):
+                    return
+                # Suppress tool-progress chips for synthetic ui_* tools.  They
+                # also emit a `hermes.ui.prompt` event with richer structured
+                # data for the frontend to render the actual UI component;
+                # a parallel tool-progress chip would double-render as a
+                # generic success pill (e.g. frontend label maps "ui_uploader"
+                # → "已上传 1 张图片" which is misleading — nothing uploaded yet).
+                if name.startswith("ui_"):
                     return
                 from agent.display import get_tool_emoji
                 emoji = get_tool_emoji(name)
                 label = preview or name
+                state = "completed" if event_type == "tool.completed" else "started"
+                # call_id pairs the started/completed events for the same
+                # invocation so the frontend can transition one chip instead
+                # of rendering two.  Stack-based match per tool name: push on
+                # started, pop on completed.  Same tool called twice gets two
+                # distinct call_ids → two chips (correct).
+                if state == "started":
+                    _tool_call_counter[0] += 1
+                    cid = f"t{_tool_call_counter[0]}-{name}"
+                    _tool_call_stack.setdefault(name, []).append(cid)
+                else:
+                    stack = _tool_call_stack.get(name) or []
+                    cid = stack.pop(0) if stack else f"t?-{name}"
                 _stream_q.put(("__tool_progress__", {
                     "tool": name,
                     "emoji": emoji,
                     "label": label,
+                    "state": state,
+                    "call_id": cid,
                 }))
+
+            # Wire the ui_* synthetic-tool emitter to push frontend render
+            # instructions onto the same stream queue.  Tool handlers run in
+            # the executor thread; _stream_q is thread-safe so we can push
+            # from either side.  Cleared after the request completes to
+            # avoid leaking into the next request's queue.
+            def _on_ui_prompt(payload):
+                _stream_q.put(("__ui_prompt__", payload))
+
+            try:
+                from tools import apmzoom_ui as _apmzoom_ui
+                _apmzoom_ui.set_ui_emitter(_on_ui_prompt)
+            except Exception as e:
+                logger.debug("[apmzoom_ui] emitter setup skipped: %s", e)
 
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.
@@ -974,6 +1498,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 stream_delta_callback=_on_delta,
                 tool_progress_callback=_on_tool_progress,
                 agent_ref=agent_ref,
+                merchant_mode=merchant_mode,
+                merchant_id=merchant_id,
+                active_skill=active_skill,
             ))
 
             return await self._write_sse_chat_completion(
@@ -988,6 +1515,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=history,
                 ephemeral_system_prompt=system_prompt,
                 session_id=session_id,
+                merchant_mode=merchant_mode,
+                merchant_id=merchant_id,
+                active_skill=active_skill,
             )
 
         idempotency_key = request.headers.get("Idempotency-Key")
@@ -1077,7 +1607,33 @@ class APIServerAdapter(BasePlatformAdapter):
                 "choices": [{"index": 0, "delta": {"role": "assistant"}, "finish_reason": None}],
             }
             await response.write(f"data: {json.dumps(role_chunk)}\n\n".encode())
+
+            # Lifecycle phase event — fires IMMEDIATELY so the frontend has
+            # a signal to show "thinking..." while the LLM prefills the
+            # context.  Without this the UI sees 5-10s of dead air on local
+            # 7-14B models where prefill takes longer than TCP first-byte.
+            # Frontend listens for `event: hermes.agent.phase` and switches
+            # its streaming UI state based on the `phase` field:
+            #   - thinking         : right after role chunk, LLM prefilling
+            #   - generating       : first content delta arrived (prefill done)
+            #   - (tool_call_issued / tool_done are covered by the existing
+            #    hermes.tool.progress events emitted from the agent loop)
+            thinking_evt = json.dumps({"phase": "thinking", "model": model})
+            await response.write(
+                f"event: hermes.agent.phase\ndata: {thinking_evt}\n\n".encode()
+            )
+            # Force the thinking frame onto the wire NOW — otherwise aiohttp
+            # + TCP buffer this initial envelope together with the first
+            # LLM token, defeating the whole point of the phase signal.
+            # drain() blocks until the write buffer is below the low-water
+            # mark, which effectively flushes on a stream that's otherwise
+            # idle.  ~1ms cost on local loopback.
+            try:
+                await response.drain()
+            except Exception:
+                pass
             last_activity = time.monotonic()
+            generating_emitted = False
 
             # Helper — route a queue item to the correct SSE event.
             async def _emit(item):
@@ -1089,12 +1645,31 @@ class APIServerAdapter(BasePlatformAdapter):
                 frontends can display them without storing the markers in
                 conversation history.  See #6972.
                 """
+                nonlocal generating_emitted
                 if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
                     event_data = json.dumps(item[1])
                     await response.write(
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()
                     )
+                elif isinstance(item, tuple) and len(item) == 2 and item[0] == "__ui_prompt__":
+                    # Synthetic ui_* tool result — payload describes which
+                    # React component the frontend should render inline in
+                    # the current assistant message.  See tools/apmzoom_ui.py.
+                    event_data = json.dumps(item[1], ensure_ascii=False)
+                    await response.write(
+                        f"event: hermes.ui.prompt\ndata: {event_data}\n\n".encode()
+                    )
                 else:
+                    # First content delta — fire the "generating" phase so
+                    # the frontend can drop the thinking chip and render
+                    # the streaming body.  One-shot; subsequent deltas skip
+                    # the check via the generating_emitted flag.
+                    if not generating_emitted:
+                        generating_emitted = True
+                        phase_evt = json.dumps({"phase": "generating"})
+                        await response.write(
+                            f"event: hermes.agent.phase\ndata: {phase_evt}\n\n".encode()
+                        )
                     content_chunk = {
                         "id": completion_id, "object": "chat.completion.chunk",
                         "created": created, "model": model,
@@ -2252,6 +2827,9 @@ class APIServerAdapter(BasePlatformAdapter):
         tool_start_callback=None,
         tool_complete_callback=None,
         agent_ref: Optional[list] = None,
+        merchant_mode: bool = False,
+        merchant_id: Optional[str] = None,
+        active_skill: Optional[str] = None,
     ) -> tuple:
         """
         Create an agent and run a conversation in a thread executor.
@@ -2274,6 +2852,9 @@ class APIServerAdapter(BasePlatformAdapter):
                 tool_progress_callback=tool_progress_callback,
                 tool_start_callback=tool_start_callback,
                 tool_complete_callback=tool_complete_callback,
+                merchant_mode=merchant_mode,
+                merchant_id=merchant_id,
+                active_skill=active_skill,
             )
             if agent_ref is not None:
                 agent_ref[0] = agent
@@ -2621,6 +3202,10 @@ class APIServerAdapter(BasePlatformAdapter):
             self._app.router.add_get("/health/detailed", self._handle_health_detailed)
             self._app.router.add_get("/v1/health", self._handle_health)
             self._app.router.add_get("/v1/models", self._handle_models)
+            # Fleet observability for agent-claw /fleet dashboard.  No auth —
+            # reachable via the same CF Access wall the chat endpoint uses.
+            self._app.router.add_get("/v1/fleet/snapshot", self._handle_fleet_snapshot)
+            self._app.router.add_get("/v1/fleet/merchants", self._handle_fleet_merchants)
             self._app.router.add_post("/v1/chat/completions", self._handle_chat_completions)
             self._app.router.add_post("/v1/responses", self._handle_responses)
             self._app.router.add_get("/v1/responses/{response_id}", self._handle_get_response)

@@ -2905,9 +2905,17 @@ def _(rid, params: dict) -> dict:
         if nv == "fast":
             from hermes_cli.models import resolve_fast_mode_overrides
 
-            target_model = getattr(agent, "model", None) if agent is not None else _resolve_model()
+            target_model = (
+                getattr(agent, "model", None) if agent is not None else _resolve_model()
+            )
+            if not target_model:
+                return _err(
+                    rid,
+                    4002,
+                    "fast mode is not available without a selected model",
+                )
             overrides = resolve_fast_mode_overrides(target_model)
-            if not overrides:
+            if overrides is None:
                 return _err(
                     rid,
                     4002,

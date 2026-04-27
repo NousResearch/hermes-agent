@@ -1958,6 +1958,22 @@ async def delete_session_endpoint(session_id: str):
         db.close()
 
 
+class SessionRename(BaseModel):
+    title: str
+
+
+@app.patch("/api/sessions/{session_id}")
+async def rename_session_endpoint(session_id: str, body: SessionRename):
+    from hermes_state import SessionDB
+    db = SessionDB()
+    try:
+        if not db.rename_session(session_id, body.title):
+            raise HTTPException(status_code=404, detail="Session not found")
+        return {"ok": True, "session_id": session_id, "title": body.title}
+    finally:
+        db.close()
+
+
 # ---------------------------------------------------------------------------
 # Log viewer endpoint
 # ---------------------------------------------------------------------------

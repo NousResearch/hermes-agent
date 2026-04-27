@@ -8502,10 +8502,6 @@ class GatewayRunner:
                 result = json.loads(result_json)
                 if result.get("success"):
                     description = result.get("analysis", "")
-                    # Vision auxiliary LLM can echo the injected system-prompt
-                    # memory-context wrapper back into its output (#5719).
-                    # sanitize_context strips the fenced wrapper; plugin-specific
-                    # header cleanup belongs at the provider boundary, not here.
                     description = sanitize_context(description)
                     enriched_parts.append(
                         f"[The user sent an image~ Here's what I can see:\n{description}]\n"

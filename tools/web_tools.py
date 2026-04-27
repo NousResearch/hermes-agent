@@ -282,7 +282,7 @@ def _get_async_parallel_client():
 
 # ─── Tavily Client ───────────────────────────────────────────────────────────
 
-_TAVILY_BASE_URL = "https://api.tavily.com"
+_TAVILY_BASE_URL = os.getenv("TAVILY_BASE_URL", "https://api.tavily.com")
 
 
 def _tavily_request(endpoint: str, payload: dict) -> dict:

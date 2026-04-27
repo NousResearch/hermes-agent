@@ -24,7 +24,7 @@ For the full voice feature set — including CLI microphone mode, spoken replies
 | Home Assistant | — | — | — | — | — | — | — |
 | Mattermost | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
 | Matrix | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| DingTalk | — | — | — | — | — | ✅ | ✅ |
+| DingTalk | — | ✅ | ✅ | — | ✅ | — | ✅ |
 | Feishu/Lark | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | WeCom | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | WeCom Callback | — | — | — | — | — | — | — |
@@ -120,7 +120,6 @@ hermes gateway status --system         # Linux only: inspect the system service 
 |---------|-------------|
 | `/new` or `/reset` | Start a fresh conversation |
 | `/model [provider:model]` | Show or change the model (supports `provider:model` syntax) |
-| `/provider` | Show available providers with auth status |
 | `/personality [name]` | Set a personality |
 | `/retry` | Retry the last message |
 | `/undo` | Remove the last exchange |
@@ -219,6 +218,17 @@ Send any message while the agent is working to interrupt it. Key behaviors:
 - **Tool calls are cancelled** — only the currently-executing one runs, the rest are skipped
 - **Multiple messages are combined** — messages sent during interruption are joined into one prompt
 - **`/stop` command** — interrupts without queuing a follow-up message
+
+### Queue vs interrupt (busy-input mode)
+
+By default, messaging a busy agent interrupts it. To switch the whole install so follow-ups queue behind the current task instead, set:
+
+```yaml
+display:
+  busy_input_mode: queue   # default: interrupt
+```
+
+The first time you message a busy agent on any platform, Hermes appends a one-line reminder to the busy-ack explaining the knob (`"💡 First-time tip — …"`). The reminder fires once per install — a flag under `onboarding.seen.busy_input_prompt` latches it. Delete that key to see the tip again.
 
 ## Tool Progress Notifications
 

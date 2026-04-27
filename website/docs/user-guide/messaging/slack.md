@@ -283,7 +283,7 @@ slack:
 ```
 
 :::info
-Unlike Discord and Telegram, Slack does not have a `free_response_channels` equivalent. The Slack adapter requires `@mention` to start a conversation in channels. However, once the bot has an active session in a thread, subsequent thread replies do not require a mention. In DMs, the bot always responds without needing a mention.
+Slack supports both patterns: `@mention` required to start a conversation by default, but you can opt specific channels out via `SLACK_FREE_RESPONSE_CHANNELS` (comma-separated channel IDs) or `slack.free_response_channels` in `config.yaml`. Once the bot has an active session in a thread, subsequent thread replies do not require a mention. In DMs the bot always responds without needing a mention.
 :::
 
 ### Unauthorized User Handling

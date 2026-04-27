@@ -38,7 +38,10 @@ PROFILE_SCHEMA = {
     "description": (
         "Retrieve or update a peer card from Honcho — a curated list of key facts "
         "about that peer (name, role, preferences, communication style, patterns). "
-        "Pass `card` to update; omit `card` to read."
+        "Pass `card` to update; omit `card` to read.  If the card is empty, the "
+        "result includes a `hint` field explaining why (observation disabled, "
+        "fresh peer, dialectic layer still warming up, etc.) — this is NOT an "
+        "error.  Peer cards accumulate over time from observed conversation."
     ),
     "parameters": {
         "type": "object",
@@ -1057,6 +1060,63 @@ class HonchoMemoryProvider(MemoryProvider):
 
         return chunks
 
+    def _empty_profile_hint(self, peer: str) -> Dict[str, Any]:
+        """Build a diagnostic hint when honcho_profile returns an empty card.
+
+        A literal "No profile facts available yet." tells the model nothing
+        about WHY.  The model then often surfaces it to the user as a cryptic
+        error.  This hint enumerates the likely causes so the model can
+        explain the situation (or retry with a different peer).
+
+        Ordered by likelihood for a typical deployment:
+          1. Observation is disabled for this peer
+          2. Card hasn't accumulated yet (fresh peer, not enough dialectic
+             cycles — dialectic cadence runs every N turns)
+          3. Self-hosted Honcho backend doesn't support peer cards
+             (honcho-ai server < 3.x)
+        """
+        cfg = self._config
+        reasons: List[str] = []
+
+        if cfg is not None:
+            if peer == "user":
+                observe_me = bool(getattr(cfg, "user_observe_me", True))
+                observe_others = bool(getattr(cfg, "user_observe_others", True))
+            else:
+                observe_me = bool(getattr(cfg, "ai_observe_me", True))
+                observe_others = bool(getattr(cfg, "ai_observe_others", True))
+            if not (observe_me or observe_others):
+                reasons.append(
+                    f"observation is disabled for peer '{peer}' "
+                    f"(user_observe_me/ai_observe_me in config)"
+                )
+
+        cadence = getattr(self, "_dialectic_cadence", 1)
+        turn = getattr(self, "_turn_count", 0)
+        if turn < max(2, cadence):
+            reasons.append(
+                f"this session has only {turn} turn(s); peer cards accumulate "
+                f"as the dialectic layer reasons over conversation history "
+                f"(cadence every {cadence} turn(s))"
+            )
+
+        if not reasons:
+            reasons.append(
+                "peer card has no facts yet — Honcho's dialectic layer builds "
+                "this over time from observed turns; self-hosted Honcho < 3.x "
+                "does not support peer cards at all"
+            )
+
+        return {
+            "result": "No profile facts available yet.",
+            "hint": (
+                "This is not an error.  "
+                + "; ".join(reasons)
+                + ".  Try honcho_reasoning for a synthesized answer, or "
+                "honcho_search to query raw conversation excerpts."
+            ),
+        }
+
     def sync_turn(self, user_content: str, assistant_content: str, *, session_id: str = "") -> None:
         """Record the conversation turn in Honcho (non-blocking).
 
@@ -1169,7 +1229,7 @@ class HonchoMemoryProvider(MemoryProvider):
                     return json.dumps({"result": f"Peer card updated ({len(result)} facts).", "card": result})
                 card = self._manager.get_peer_card(self._session_key, peer=peer)
                 if not card:
-                    return json.dumps({"result": "No profile facts available yet."})
+                    return json.dumps(self._empty_profile_hint(peer))
                 return json.dumps({"result": card})
 
             elif tool_name == "honcho_search":

@@ -1178,13 +1178,83 @@ class MatrixAdapter(BasePlatformAdapter):
     # Event callbacks
     # ------------------------------------------------------------------
 
+    def _is_self_sender(self, sender: str) -> bool:
+        """Return True if the sender refers to the bot's own account.
+
+        Matrix user IDs are byte-compared after trimming whitespace and
+        lowercasing — some homeservers normalize the localpart case
+        differently at different API surfaces, and the reply-loop tail
+        of the "hall of mirrors" bug (#15763) has been observed with the
+        bot's own account bypassing a case-sensitive equality check.
+
+        When ``self._user_id`` is empty (whoami hasn't resolved yet, or
+        login failed), we cannot prove a sender is NOT us, so we return
+        True defensively — an unidentified bot dropping its own events
+        is always preferable to falling into an echo loop.
+        """
+        own = (self._user_id or "").strip().lower()
+        if not own:
+            return True
+        return sender.strip().lower() == own
+
+    @staticmethod
+    def _is_system_or_bridge_sender(sender: str) -> bool:
+        """Return True if the sender looks like a system / bridge / appservice
+        identity rather than a real user.
+
+        Appservice namespaces on Matrix conventionally prefix bot / puppet
+        user IDs with an underscore (e.g. ``@_telegram_12345:server``,
+        ``@_discord_999:server``, ``@_slack_...:server``).  Server-notices
+        bots and bridge-controller bots on many homeservers use the same
+        pattern.
+
+        We treat these as system identities for pairing purposes: they
+        should never be offered a pairing code, because an operator
+        approving the code would hand the bridge itself permanent
+        authorization — and every outbound message relayed by the bridge
+        would then loop back into the agent as an "authorized user
+        message", which is the root of issue #15763.
+
+        Matches:
+            ``@_something:server``   — appservice namespace convention
+            ``@:server``             — malformed / empty localpart
+            ``:server``              — malformed, no leading ``@``
+        """
+        s = (sender or "").strip()
+        if not s:
+            return True
+        # Localpart is everything between leading '@' and ':'
+        if s.startswith("@"):
+            s = s[1:]
+        if ":" in s:
+            localpart, _, _ = s.partition(":")
+        else:
+            localpart = s
+        if not localpart:
+            return True
+        return localpart.startswith("_")
+
     async def _on_room_message(self, event: Any) -> None:
         """Handle incoming room message events (text, media)."""
         room_id = str(getattr(event, "room_id", ""))
         sender = str(getattr(event, "sender", ""))
 
-        # Ignore own messages.
-        if sender == self._user_id:
+        # Ignore own messages (case-insensitive; also drops when our own
+        # user_id hasn't been resolved yet — see _is_self_sender docstring
+        # and issue #15763).
+        if self._is_self_sender(sender):
+            return
+
+        # Ignore appservice / bridge / system identities so they never
+        # trigger the pairing flow.  Once a bridge user is paired, every
+        # outbound message it relays would loop back as an authorized
+        # user message (the "hall of mirrors" in #15763).
+        if self._is_system_or_bridge_sender(sender):
+            logger.debug(
+                "Matrix: ignoring system/bridge sender %s in %s",
+                sender,
+                room_id,
+            )
             return
 
         # Deduplicate by event ID.
@@ -1654,7 +1724,7 @@ class MatrixAdapter(BasePlatformAdapter):
     async def _on_reaction(self, event: Any) -> None:
         """Handle incoming reaction events."""
         sender = str(getattr(event, "sender", ""))
-        if sender == self._user_id:
+        if self._is_self_sender(sender):
             return
         event_id = str(getattr(event, "event_id", ""))
         if self._is_duplicate_event(event_id):

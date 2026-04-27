@@ -9,6 +9,7 @@ import os
 import sys
 from datetime import datetime, timezone
 from types import SimpleNamespace
+from typing import Optional
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
@@ -111,7 +112,7 @@ def adapter(monkeypatch):
 def make_attachment(
     *,
     filename: str,
-    content_type: str,
+    content_type: Optional[str],
     size: int = 1024,
     url: str = "https://cdn.discordapp.com/attachments/fake/file",
 ) -> SimpleNamespace:

@@ -4620,6 +4620,17 @@ class GatewayRunner:
         if not history and source.platform and source.platform != Platform.LOCAL and source.platform != Platform.WEBHOOK:
             platform_name = source.platform.value
             env_key = f"{platform_name.upper()}_HOME_CHANNEL"
+            # Platform display-name overrides for mixed-case brands where
+            # naive .title() reads awkwardly ("Dingtalk" → "DingTalk").
+            _display_overrides = {
+                "dingtalk": "DingTalk",
+                "feishu": "Feishu",
+                "wecom": "WeCom",
+                "qqbot": "QQ",
+                "bluebubbles": "BlueBubbles",
+                "homeassistant": "Home Assistant",
+            }
+            display_name = _display_overrides.get(platform_name, platform_name.title())
             if not os.getenv(env_key):
                 adapter = self.adapters.get(source.platform)
                 if adapter:
@@ -4633,7 +4644,7 @@ class GatewayRunner:
                     )
                     await adapter.send(
                         source.chat_id,
-                        f"📬 No home channel is set for {platform_name.title()}. "
+                        f"📬 No home channel is set for {display_name}. "
                         f"A home channel is where Hermes delivers cron job results "
                         f"and cross-platform messages.\n\n"
                         f"Type {sethome_cmd} to make this chat your home channel, "
@@ -6124,7 +6135,21 @@ class GatewayRunner:
         platform_name = source.platform.value if source.platform else "unknown"
         chat_id = source.chat_id
         chat_name = source.chat_name or chat_id
-        
+
+        # DingTalk DM quirk: source.chat_id holds the DM conversation_id
+        # (cid... form), which the Robot OpenAPI /groupMessages/send
+        # endpoint rejects as `resource.not.found`.  Proactive DM sends
+        # require a real staffId routed through /oToMessages/batchSend.
+        # Persist as ``user:<staffId>`` so _dingtalk_classify_chat_id picks
+        # the oto bucket when cron/cross-platform deliveries fire.
+        if (
+            source.platform
+            and source.platform.value == "dingtalk"
+            and source.chat_type == "dm"
+            and source.user_id_alt
+        ):
+            chat_id = f"user:{source.user_id_alt}"
+
         env_key = f"{platform_name.upper()}_HOME_CHANNEL"
         
         # Save to config.yaml

@@ -301,10 +301,14 @@ async def test_none_user_id_does_not_generate_pairing_code(monkeypatch, tmp_path
 @pytest.mark.asyncio
 async def test_non_internal_event_without_user_triggers_pairing(monkeypatch, tmp_path):
     """Verify the normal (non-internal) path still triggers pairing for unknown users."""
+    import gateway.pairing as gateway_pairing
     import gateway.run as gateway_run
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
     (tmp_path / "config.yaml").write_text("", encoding="utf-8")
+    # PairingStore uses a process-global directory by default — parallel tests
+    # can exhaust pending codes or hit rate limits against the same files.
+    monkeypatch.setattr(gateway_pairing, "PAIRING_DIR", tmp_path / "pairing")
 
     # Clear env vars that could let all users through (loaded by
     # module-level dotenv in gateway/run.py from the real ~/.hermes/.env).

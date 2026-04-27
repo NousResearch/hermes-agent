@@ -336,8 +336,14 @@ class TestChannelDirectory(unittest.TestCase):
     def test_email_in_session_discovery(self):
         import gateway.channel_directory
         import inspect
+        from gateway.config import Platform
+
         source = inspect.getsource(gateway.channel_directory.build_channel_directory)
-        self.assertIn('"email"', source)
+        self.assertIn("_build_from_sessions", source)
+        self.assertIn("Platform", source)
+        self.assertIn('"local"', source)
+        self.assertIn("api_server", source)
+        assert Platform.EMAIL.value == "email"
 
 
 class TestGatewaySetup(unittest.TestCase):

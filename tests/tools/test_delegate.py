@@ -565,8 +565,14 @@ class TestBlockedTools(unittest.TestCase):
             self.assertIn(tool, DELEGATE_BLOCKED_TOOLS)
 
     def test_constants(self):
-        self.assertEqual(_get_max_concurrent_children(), 3)
-        self.assertEqual(MAX_DEPTH, 2)
+        with patch("tools.delegate_tool._load_config", return_value={}):
+            old = os.environ.pop("DELEGATION_MAX_CONCURRENT_CHILDREN", None)
+            try:
+                self.assertEqual(_get_max_concurrent_children(), 3)
+                self.assertEqual(MAX_DEPTH, 2)
+            finally:
+                if old is not None:
+                    os.environ["DELEGATION_MAX_CONCURRENT_CHILDREN"] = old
 
 
 class TestDelegationCredentialResolution(unittest.TestCase):

@@ -27,8 +27,9 @@ describe('constants', () => {
   })
 
   it('documents Ctrl/Cmd+L as non-destructive redraw', () => {
-    expect(HOTKEYS.some(([, d]) => d === 'redraw / repaint')).toBe(true)
-    expect(HOTKEYS.some(([, d]) => d.includes('new session'))).toBe(false)
+    const hotkey = HOTKEYS.find(([k]) => k.endsWith('+L'))
+    expect(hotkey).toBeDefined()
+    expect(hotkey?.[1]).toBe('redraw / repaint')
   })
 
   it('TOOL_VERBS maps known tools (verb-only, no emoji)', () => {

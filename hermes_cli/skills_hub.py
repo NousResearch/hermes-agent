@@ -11,9 +11,10 @@ handler are thin wrappers that parse args and delegate.
 """
 
 import json
+import re
 import shutil
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from rich.console import Console
 from rich.panel import Panel
@@ -139,6 +140,103 @@ def _derive_category_from_install_path(install_path: str) -> str:
     path = Path(install_path)
     parent = str(path.parent)
     return "" if parent == "." else parent
+
+
+# ---------------------------------------------------------------------------
+# Interactive name/category resolution for URL-installed skills
+# ---------------------------------------------------------------------------
+
+_VALID_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
+_VALID_CATEGORY_RE = re.compile(r"^[a-z][a-z0-9_/-]*$")
+
+
+def _is_valid_installed_skill_name(name: str) -> bool:
+    """Accept identifier-shaped names, reject empty / sentinel-y values."""
+    if not isinstance(name, str):
+        return False
+    candidate = name.strip().lower()
+    if not candidate or candidate in {"skill", "readme", "index", "unnamed-skill"}:
+        return False
+    return bool(_VALID_NAME_RE.match(candidate))
+
+
+def _existing_categories() -> List[str]:
+    """Return sorted subdirectory names under ``~/.hermes/skills/`` that look
+    like category buckets (contain at least one ``SKILL.md`` somewhere below).
+
+    Used to suggest reusable categories when interactively installing from a
+    URL. Hidden dirs (``.hub``, ``.trash``) are skipped.
+    """
+    from tools.skills_hub import SKILLS_DIR
+    out: List[str] = []
+    try:
+        for entry in SKILLS_DIR.iterdir():
+            if not entry.is_dir() or entry.name.startswith("."):
+                continue
+            # Only count as a category if it contains skills, not if it IS a skill.
+            # Heuristic: if ``<entry>/SKILL.md`` exists, it's a skill at the
+            # top level (no category); otherwise treat as a category bucket.
+            if (entry / "SKILL.md").exists():
+                continue
+            # Has at least one nested SKILL.md?
+            try:
+                if any(entry.rglob("SKILL.md")):
+                    out.append(entry.name)
+            except OSError:
+                continue
+    except (FileNotFoundError, OSError):
+        return []
+    return sorted(set(out))
+
+
+def _prompt_for_skill_name(c: Console, url: str, default: str = "") -> Optional[str]:
+    """Prompt interactively for a skill name. Returns None on cancel/EOF."""
+    c.print()
+    c.print(
+        f"[yellow]The SKILL.md at {url} doesn't declare a `name:` in its "
+        f"frontmatter,[/]\n[yellow]and the URL path doesn't produce a valid "
+        f"identifier either.[/]"
+    )
+    default_hint = f" [{default}]" if default else ""
+    c.print(
+        f"[bold]Enter a skill name{default_hint}:[/] "
+        f"[dim](lowercase letters, digits, hyphens, underscores; starts with a letter)[/]"
+    )
+    try:
+        answer = input("Name: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return None
+    if not answer and default:
+        answer = default
+    if not _is_valid_installed_skill_name(answer):
+        c.print(f"[bold red]Invalid name:[/] {answer!r}. Aborting install.\n")
+        return None
+    return answer
+
+
+def _prompt_for_category(c: Console, existing: List[str]) -> str:
+    """Prompt interactively for a category. Empty/None input means flat install."""
+    c.print()
+    if existing:
+        c.print(
+            "[bold]Pick a category[/] "
+            "[dim](reuse an existing bucket, type a new one, or press Enter to install flat)[/]"
+        )
+        c.print(f"[dim]Existing: {', '.join(existing)}[/]")
+    else:
+        c.print(
+            "[bold]Category[/] [dim](optional — press Enter to install flat at ~/.hermes/skills/<name>/)[/]"
+        )
+    try:
+        answer = input("Category: ").strip()
+    except (EOFError, KeyboardInterrupt):
+        return ""
+    if not answer:
+        return ""
+    if not _VALID_CATEGORY_RE.match(answer):
+        c.print(f"[dim]Invalid category {answer!r} — installing flat.[/]")
+        return ""
+    return answer
 
 
 def do_search(query: str, source: str = "all", limit: int = 10,
@@ -309,8 +407,17 @@ def do_browse(page: int = 1, page_size: int = 20, source: str = "all",
 
 def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
-               invalidate_cache: bool = True) -> None:
-    """Fetch, quarantine, scan, confirm, and install a skill."""
+               invalidate_cache: bool = True,
+               name_override: str = "") -> None:
+    """Fetch, quarantine, scan, confirm, and install a skill.
+
+    ``name_override`` lets non-interactive callers (slash commands, gateway,
+    scripts) supply a skill name when the upstream SKILL.md lacks a valid
+    ``name:`` frontmatter field. On interactive TTY surfaces, a missing name
+    triggers a prompt instead; ``skip_confirm=True`` means "non-interactive"
+    (so pair it with ``name_override`` when installing from a URL that has
+    no frontmatter).
+    """
     from tools.skills_hub import (
         GitHubAuth, create_source_router, ensure_hub_dirs,
         quarantine_bundle, install_from_quarantine, HubLockFile,
@@ -353,6 +460,58 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         else:
             c.print()
         return
+
+    # URL-sourced skills may arrive with an empty name when SKILL.md has no
+    # ``name:`` in frontmatter AND the URL path doesn't yield a valid
+    # identifier. Resolve by (1) --name override, (2) interactive prompt on
+    # a TTY, (3) refuse with an actionable error on non-interactive surfaces.
+    bundle_meta = getattr(bundle, "metadata", {}) or {}
+    if bundle.source == "url" and (not bundle.name or bundle_meta.get("awaiting_name")):
+        if name_override and _is_valid_installed_skill_name(name_override):
+            bundle.name = name_override.strip()
+            bundle_meta["awaiting_name"] = False
+        elif name_override:
+            c.print(
+                f"[bold red]Invalid --name:[/] {name_override!r}. "
+                "Must be a lowercase identifier (letters, digits, hyphens, "
+                "underscores; starts with a letter).\n"
+            )
+            return
+        elif skip_confirm:
+            # Non-interactive surface (slash command / TUI / gateway). Can't
+            # prompt — emit an actionable error.
+            url = bundle_meta.get("url") or identifier
+            c.print(
+                f"[bold red]Cannot install from URL:[/] {url}\n"
+                "[yellow]The SKILL.md has no `name:` in its frontmatter, "
+                "and the URL path doesn't produce a valid identifier.[/]\n\n"
+                "Retry with an explicit name:\n"
+                f"  [bold]/skills install {url} --name <your-name>[/]\n"
+                f"  [bold]hermes skills install {url} --name <your-name>[/]\n\n"
+                "[dim]Or ask the SKILL.md's author to add a `name:` field to "
+                "its YAML frontmatter.[/]\n"
+            )
+            return
+        else:
+            # Interactive TTY — prompt.
+            url = bundle_meta.get("url") or identifier
+            chosen = _prompt_for_skill_name(c, url)
+            if not chosen:
+                c.print("[dim]Installation cancelled.[/]\n")
+                return
+            bundle.name = chosen
+            bundle_meta["awaiting_name"] = False
+        # Keep SkillMeta in sync so downstream "already installed" checks,
+        # audit logs, and display all see the final name.
+        if meta is not None:
+            meta.name = bundle.name
+            meta.path = bundle.name
+
+    # URL-sourced skills: offer to pick a category interactively when the
+    # caller didn't specify one (TTY only — non-interactive installs fall
+    # through to flat install, matching all other sources).
+    if bundle.source == "url" and not category and not skip_confirm:
+        category = _prompt_for_category(c, _existing_categories())
 
     # Auto-detect category for official skills (e.g. "official/autonomous-ai-agents/blackbox")
     if bundle.source == "official" and not category:
@@ -1164,7 +1323,8 @@ def skills_command(args) -> None:
         do_search(args.query, source=args.source, limit=args.limit)
     elif action == "install":
         do_install(args.identifier, category=args.category, force=args.force,
-                   skip_confirm=getattr(args, "yes", False))
+                   skip_confirm=getattr(args, "yes", False),
+                   name_override=getattr(args, "name", "") or "")
     elif action == "inspect":
         do_inspect(args.identifier)
     elif action == "list":
@@ -1221,6 +1381,7 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         /skills search kubernetes
         /skills install openai/skills/skill-creator
         /skills install openai/skills/skill-creator --force
+        /skills install https://example.com/path/SKILL.md
         /skills inspect openai/skills/skill-creator
         /skills list
         /skills list --source hub
@@ -1297,10 +1458,11 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
 
     elif action == "install":
         if not args:
-            c.print("[bold red]Usage:[/] /skills install <identifier> [--category <cat>] [--force] [--now]\n")
+            c.print("[bold red]Usage:[/] /skills install <identifier-or-url> [--name <name>] [--category <cat>] [--force] [--now]\n")
             return
         identifier = args[0]
         category = ""
+        name_override = ""
         # Slash commands run inside prompt_toolkit where input() hangs.
         # Always skip confirmation — the user typing the command is implicit consent.
         skip_confirm = True
@@ -1311,9 +1473,11 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         for i, a in enumerate(args):
             if a == "--category" and i + 1 < len(args):
                 category = args[i + 1]
+            elif a == "--name" and i + 1 < len(args):
+                name_override = args[i + 1]
         do_install(identifier, category=category, force=force,
                    skip_confirm=skip_confirm, invalidate_cache=invalidate_cache,
-                   console=c)
+                   name_override=name_override, console=c)
 
     elif action == "inspect":
         if not args:

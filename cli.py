@@ -759,9 +759,17 @@ def _run_cleanup():
         pass
     try:
         if _active_agent_ref and hasattr(_active_agent_ref, 'shutdown_memory_provider'):
-            _active_agent_ref.shutdown_memory_provider(
-                getattr(_active_agent_ref, 'conversation_history', None) or []
-            )
+            # Forward the agent's own transcript so memory providers'
+            # ``on_session_end`` hooks see the real conversation instead of
+            # an empty list (#15165). ``_session_messages`` is set on
+            # ``AIAgent.__init__`` and refreshed every turn via
+            # ``_persist_session``. Fall back to no-arg on test stubs /
+            # partially-initialised agents where the attribute is missing.
+            _session_msgs = getattr(_active_agent_ref, '_session_messages', None)
+            if isinstance(_session_msgs, list):
+                _active_agent_ref.shutdown_memory_provider(_session_msgs)
+            else:
+                _active_agent_ref.shutdown_memory_provider()
     except Exception:
         pass
 

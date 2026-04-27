@@ -1,6 +1,6 @@
 ---
 name: node-inspect-debugger
-description: Use when debugging Node.js code (ui-tui, tui_gateway child processes, any Node script/test) with real breakpoints, stepping, scope inspection, and expression evaluation. Drives `node --inspect` via the Chrome DevTools Protocol from the terminal — no browser required.
+description: "Debug Node.js via --inspect + Chrome DevTools Protocol CLI."
 version: 1.0.0
 author: Hermes Agent
 license: MIT

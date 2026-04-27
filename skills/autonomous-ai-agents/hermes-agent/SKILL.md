@@ -1,6 +1,6 @@
 ---
 name: hermes-agent
-description: Complete guide to using and extending Hermes Agent — CLI usage, setup, configuration, spawning additional agents, gateway platforms, skills, voice, tools, profiles, and a concise contributor reference. Load this skill when helping users configure Hermes, troubleshoot issues, spawn agent instances, or make code contributions.
+description: "Configure, extend, or contribute to Hermes Agent."
 version: 2.0.0
 author: Hermes Agent + Teknium
 license: MIT

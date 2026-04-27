@@ -21,6 +21,7 @@ You need at least one way to connect to an LLM. Use `hermes model` to switch pro
 | **Anthropic** | `hermes model` (Claude Pro/Max via Claude Code auth, Anthropic API key, or manual setup-token) |
 | **OpenRouter** | `OPENROUTER_API_KEY` in `~/.hermes/.env` |
 | **AI Gateway** | `AI_GATEWAY_API_KEY` in `~/.hermes/.env` (provider: `ai-gateway`) |
+| **Cloudflare Workers AI** | `hermes model` → "Cloudflare Workers AI" (provider: `workers-ai`) |
 | **z.ai / GLM** | `GLM_API_KEY` in `~/.hermes/.env` (provider: `zai`) |
 | **Kimi / Moonshot** | `KIMI_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding`) |
 | **Kimi / Moonshot (China)** | `KIMI_CN_API_KEY` in `~/.hermes/.env` (provider: `kimi-coding-cn`; aliases: `kimi-cn`, `moonshot-cn`) |
@@ -354,6 +355,30 @@ Authentication uses the standard boto3 chain: explicit `AWS_ACCESS_KEY_ID`/`AWS_
 Bedrock uses the **Converse API** under the hood — requests are translated to Bedrock's model-agnostic shape, so the same config works for Claude, Nova, DeepSeek, and Llama models. Set `BEDROCK_BASE_URL` only if you're calling a non-default regional endpoint.
 
 See the [AWS Bedrock guide](/docs/guides/aws-bedrock) for a walkthrough of IAM setup, region selection, and cross-region inference.
+
+### Cloudflare Workers AI
+
+OSS models on Cloudflare's serverless GPU fleet. Pay-per-token, no infrastructure to manage. Pick **Cloudflare Workers AI** in `hermes model` and the wizard prompts for everything.
+
+```bash
+hermes model
+# → pick "Cloudflare Workers AI"
+# → enter CLOUDFLARE_API_TOKEN  (https://dash.cloudflare.com/profile/api-tokens, scope: Workers AI Read)
+# → enter CLOUDFLARE_ACCOUNT_ID (sidebar of the Cloudflare dashboard)
+# → optionally enter a Cloudflare AI Gateway slug for caching/analytics
+# → pick a model
+```
+
+Or directly in `config.yaml`:
+```yaml
+model:
+  provider: "workers-ai"
+  default: "@cf/moonshotai/kimi-k2.6"
+```
+
+Set `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` in `~/.hermes/.env`. Setting `CLOUDFLARE_GATEWAY_ID` is optional — when set, requests route through your Cloudflare AI Gateway slug instead of the direct API; everything else (auth, model names, headers) is forwarded unchanged.
+
+Hermes uses Workers AI's [prefix caching](https://developers.cloudflare.com/workers-ai/features/prompt-caching/) automatically by attaching `x-session-affinity` per request. The first turn in a session is cold; subsequent turns within the same session route to the same replica and show non-zero `cached_tokens` in `usage.prompt_tokens_details`. The session ID rotates on `/new` and on context compression, which correctly starts a fresh prefix on a new replica.
 
 ### Qwen Portal (OAuth)
 

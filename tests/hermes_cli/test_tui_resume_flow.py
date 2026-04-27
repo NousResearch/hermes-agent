@@ -84,7 +84,9 @@ def test_cmd_chat_tui_resume_resolves_title_before_launch(monkeypatch, main_mod)
         captured["resume"] = resume_session_id
         raise SystemExit(0)
 
-    monkeypatch.setattr(main_mod, "_resolve_session_by_name_or_id", lambda val: "20260409_000000_aa11bb")
+    monkeypatch.setattr(
+        main_mod, "_resolve_session_by_name_or_id", lambda val: "20260409_000000_aa11bb"
+    )
     monkeypatch.setattr(main_mod, "_launch_tui", fake_launch)
 
     with pytest.raises(SystemExit):
@@ -178,7 +180,9 @@ def test_print_tui_exit_summary_includes_resume_and_token_totals(monkeypatch, ca
         def close(self):
             return None
 
-    monkeypatch.setitem(sys.modules, "hermes_state", types.SimpleNamespace(SessionDB=lambda: _FakeDB()))
+    monkeypatch.setitem(
+        sys.modules, "hermes_state", types.SimpleNamespace(SessionDB=lambda: _FakeDB())
+    )
 
     main_mod._print_tui_exit_summary("20260409_000001_abc123")
     out = capsys.readouterr().out
@@ -189,7 +193,9 @@ def test_print_tui_exit_summary_includes_resume_and_token_totals(monkeypatch, ca
     assert "Tokens:         21 (in 10, out 6, cache 4, reasoning 1)" in out
 
 
-def test_print_tui_exit_summary_prefers_actual_active_session_file(monkeypatch, capsys, tmp_path):
+def test_print_tui_exit_summary_prefers_actual_active_session_file(
+    monkeypatch, capsys, tmp_path
+):
     import hermes_cli.main as main_mod
 
     seen = []
@@ -214,7 +220,9 @@ def test_print_tui_exit_summary_prefers_actual_active_session_file(monkeypatch, 
 
     active = tmp_path / "active.json"
     active.write_text('{"session_id":"actual_session"}', encoding="utf-8")
-    monkeypatch.setitem(sys.modules, "hermes_state", types.SimpleNamespace(SessionDB=lambda: _FakeDB()))
+    monkeypatch.setitem(
+        sys.modules, "hermes_state", types.SimpleNamespace(SessionDB=lambda: _FakeDB())
+    )
 
     main_mod._print_tui_exit_summary("startup_resume", str(active))
     out = capsys.readouterr().out

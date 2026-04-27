@@ -3469,6 +3469,30 @@ class GatewayRunner:
                 _update_prompts.pop(_quick_key, None)
                 label = response_text if len(response_text) <= 20 else response_text[:20] + "…"
                 return f"✓ Sent `{label}` to the update process."
+            # Recognized slash command during a pending update prompt:
+            # unblock the detached update subprocess by writing a blank
+            # response so ``_gateway_prompt`` returns the prompt's default
+            # (typically a safe "n" / skip) and exits cleanly instead of
+            # blocking on stdin until the 30-minute watcher timeout.
+            # The slash command then falls through to normal dispatch.
+            if _recognized_cmd:
+                response_path = _hermes_home / ".update_response"
+                try:
+                    tmp = response_path.with_suffix(".tmp")
+                    tmp.write_text("")
+                    tmp.replace(response_path)
+                    logger.info(
+                        "Recognized /%s during pending update prompt for %s; "
+                        "cancelled prompt with default and dispatching command",
+                        _recognized_cmd,
+                        _quick_key,
+                    )
+                except OSError as e:
+                    logger.warning(
+                        "Failed to write cancel response for pending update prompt: %s",
+                        e,
+                    )
+                _update_prompts.pop(_quick_key, None)
 
         # PRIORITY handling when an agent is already running for this session.
         # Default behavior is to interrupt immediately so user text/stop messages

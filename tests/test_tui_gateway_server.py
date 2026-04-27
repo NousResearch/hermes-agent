@@ -1005,6 +1005,21 @@ def test_config_busy_get_and_set(monkeypatch):
     assert ("display.busy_input_mode", "interrupt") in writes
 
 
+def test_config_set_yolo_process_scope_treats_false_like_env_as_disabled(monkeypatch):
+    monkeypatch.setenv("HERMES_YOLO_MODE", "false")
+
+    resp = server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {"key": "yolo"},
+        }
+    )
+
+    assert resp["result"]["value"] == "1"
+    assert os.environ.get("HERMES_YOLO_MODE") == "1"
+
+
 def test_config_get_statusbar_survives_non_dict_display(monkeypatch):
     monkeypatch.setattr(server, "_load_cfg", lambda: {"display": "broken"})
 

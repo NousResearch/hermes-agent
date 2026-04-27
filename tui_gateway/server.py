@@ -2885,10 +2885,14 @@ def _(rid, params: dict) -> dict:
         else:
             current_fast = _load_service_tier() == "priority"
 
+        if raw in {"status"}:
+            return _ok(
+                rid,
+                {"key": key, "value": "fast" if current_fast else "normal"},
+            )
+
         if raw in ("", "toggle"):
             nv = "normal" if current_fast else "fast"
-        elif raw in {"status"}:
-            nv = "fast" if current_fast else "normal"
         elif raw in {"fast", "on"}:
             nv = "fast"
         elif raw in {"normal", "off"}:
@@ -2898,8 +2902,23 @@ def _(rid, params: dict) -> dict:
 
         _write_config_key("agent.service_tier", nv)
         if session and session.get("agent") is not None:
-            session["agent"].service_tier = "priority" if nv == "fast" else None
-            _emit("session.info", params.get("session_id", ""), _session_info(session["agent"]))
+            agent = session["agent"]
+            agent.service_tier = "priority" if nv == "fast" else None
+            current_overrides = dict(getattr(agent, "request_overrides", {}) or {})
+            current_overrides.pop("service_tier", None)
+            current_overrides.pop("speed", None)
+            if nv == "fast":
+                from hermes_cli.models import resolve_fast_mode_overrides
+
+                current_overrides.update(
+                    resolve_fast_mode_overrides(getattr(agent, "model", None)) or {}
+                )
+            agent.request_overrides = current_overrides
+            _emit(
+                "session.info",
+                params.get("session_id", ""),
+                _session_info(agent),
+            )
         return _ok(rid, {"key": key, "value": nv})
 
     if key == "busy":
@@ -3188,13 +3207,12 @@ def _(rid, params: dict) -> dict:
         return _ok(
             rid,
             {
-                "value": "fast"
-                if (session := _sessions.get(params.get("session_id", "")))
-                and getattr(session.get("agent"), "service_tier", None) == "priority"
-                else (
+                "value": (
                     "fast"
-                    if _load_service_tier() == "priority"
-                    else "normal"
+                    if (session := _sessions.get(params.get("session_id", "")))
+                    and getattr(session.get("agent"), "service_tier", None)
+                    == "priority"
+                    else ("fast" if _load_service_tier() == "priority" else "normal")
                 ),
             },
         )

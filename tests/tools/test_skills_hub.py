@@ -734,6 +734,7 @@ class TestUrlSource:
         assert meta.identifier == "https://sharethis.chat/SKILL.md"
         assert meta.trust_level == "community"
         assert meta.tags == ["sharing", "chat"]
+        assert meta.extra["awaiting_name"] is False
 
     @patch("tools.skills_hub.httpx.get")
     def test_inspect_returns_none_when_url_not_md(self, mock_get):
@@ -751,6 +752,19 @@ class TestUrlSource:
     def test_inspect_returns_none_on_http_error(self, mock_get):
         mock_get.side_effect = httpx.HTTPError("boom")
         assert self._source().inspect("https://example.com/SKILL.md") is None
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_inspect_flags_awaiting_name_when_unresolvable(self, mock_get):
+        # No frontmatter name + a URL path that can't produce a valid slug
+        # (``SKILL`` isn't a valid skill name).
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            text="---\ndescription: unnamed.\n---\n",
+        )
+        meta = self._source().inspect("https://example.com/SKILL.md")
+        assert meta is not None
+        assert meta.name == ""
+        assert meta.extra["awaiting_name"] is True
 
     # ── fetch ───────────────────────────────────────────────────────────
     @patch("tools.skills_hub.httpx.get")
@@ -771,7 +785,8 @@ class TestUrlSource:
         assert bundle.identifier == "https://sharethis.chat/SKILL.md"
         assert bundle.trust_level == "community"
         assert bundle.files == {"SKILL.md": skill_md}
-        assert bundle.metadata == {"url": "https://sharethis.chat/SKILL.md"}
+        assert bundle.metadata["url"] == "https://sharethis.chat/SKILL.md"
+        assert bundle.metadata["awaiting_name"] is False
 
     @patch("tools.skills_hub.httpx.get")
     def test_fetch_falls_back_to_url_directory_name(self, mock_get):
@@ -783,6 +798,7 @@ class TestUrlSource:
         bundle = self._source().fetch("https://example.com/my-skill/SKILL.md")
         assert bundle is not None
         assert bundle.name == "my-skill"
+        assert bundle.metadata["awaiting_name"] is False
 
     @patch("tools.skills_hub.httpx.get")
     def test_fetch_falls_back_to_filename_when_no_parent_dir(self, mock_get):
@@ -793,15 +809,46 @@ class TestUrlSource:
         bundle = self._source().fetch("https://example.com/my-skill.md")
         assert bundle is not None
         assert bundle.name == "my-skill"
+        assert bundle.metadata["awaiting_name"] is False
 
     @patch("tools.skills_hub.httpx.get")
-    def test_fetch_rejects_unsafe_skill_name(self, mock_get):
-        # Path traversal via frontmatter name must be rejected.
+    def test_fetch_awaiting_name_when_unresolvable(self, mock_get):
+        # Bare ``SKILL.md`` at the domain root with no frontmatter name.
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            text="---\ndescription: Bare.\n---\n\n# Body\n",
+        )
+        bundle = self._source().fetch("https://example.com/SKILL.md")
+        assert bundle is not None
+        assert bundle.name == ""
+        assert bundle.metadata["awaiting_name"] is True
+        # File content still present — CLI will reuse it after picking a name.
+        assert bundle.files["SKILL.md"].startswith("---\n")
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_awaiting_name_rejects_sentinel_slug(self, mock_get):
+        # Frontmatter has no name AND the URL filename slug is ``README`` —
+        # our valid-name check rejects it, so we flag awaiting_name.
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            text="---\ndescription: no name.\n---\n",
+        )
+        bundle = self._source().fetch("https://example.com/README.md")
+        assert bundle is not None
+        assert bundle.name == ""
+        assert bundle.metadata["awaiting_name"] is True
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_ignores_unsafe_frontmatter_name_and_falls_through_to_slug(self, mock_get):
+        # Traversal / unsafe names are rejected by ``_is_valid_skill_name``;
+        # resolver falls through to URL slug (``my-skill`` here) and succeeds.
         mock_get.return_value = MagicMock(
             status_code=200,
             text="---\nname: ../evil\ndescription: Bad.\n---\n",
         )
-        assert self._source().fetch("https://example.com/SKILL.md") is None
+        bundle = self._source().fetch("https://example.com/my-skill/SKILL.md")
+        assert bundle is not None
+        assert bundle.name == "my-skill"
 
     @patch("tools.skills_hub.httpx.get")
     def test_fetch_returns_none_on_404(self, mock_get):
@@ -812,6 +859,24 @@ class TestUrlSource:
     def test_fetch_skips_non_matching_identifier(self, mock_get):
         assert self._source().fetch("owner/repo/skill") is None
         mock_get.assert_not_called()
+
+    # ── _is_valid_skill_name ────────────────────────────────────────────
+    def test_is_valid_skill_name_accepts_identifiers(self):
+        valid = ["my-skill", "my_skill", "sharethis-chat", "a", "skill-1", "s1"]
+        for name in valid:
+            assert UrlSource._is_valid_skill_name(name), f"should accept {name!r}"
+
+    def test_is_valid_skill_name_rejects_sentinel_and_garbage(self):
+        invalid = [
+            "",
+            "SKILL", "skill", "README", "readme", "INDEX", "index",
+            "unnamed-skill",
+            "../evil", "a/b", "has space", "has.dot",
+            "-leading-dash", "1-leading-digit",
+            None, 123, ["list"],
+        ]
+        for name in invalid:
+            assert not UrlSource._is_valid_skill_name(name), f"should reject {name!r}"
 
 
 class TestCheckForSkillUpdates:

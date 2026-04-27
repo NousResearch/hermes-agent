@@ -8688,6 +8688,11 @@ Examples:
         "--category", default="", help="Category folder to install into"
     )
     skills_install.add_argument(
+        "--name",
+        default="",
+        help="Override the skill name (useful when installing from a URL whose SKILL.md has no `name:` frontmatter)",
+    )
+    skills_install.add_argument(
         "--force", action="store_true", help="Install despite blocked scan verdict"
     )
     skills_install.add_argument(

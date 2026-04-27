@@ -1000,14 +1000,14 @@ class UrlSource(SkillSource):
                 if isinstance(raw_tags, list):
                     tags = [str(t) for t in raw_tags]
         return SkillMeta(
-            name=name,
+            name=name or "",
             description=description,
             source="url",
             identifier=url,
             trust_level="community",
-            path=name,
+            path=name or "",
             tags=tags,
-            extra={"url": url},
+            extra={"url": url, "awaiting_name": name is None},
         )
 
     def fetch(self, identifier: str) -> Optional[SkillBundle]:
@@ -1020,11 +1020,19 @@ class UrlSource(SkillSource):
 
         fm = GitHubSource._parse_frontmatter_quick(text)
         name = self._resolve_skill_name(fm, url)
-        try:
-            skill_name = _validate_skill_name(name)
-        except ValueError:
-            logger.warning("URL skill %s produced unsafe skill name: %r", url, name)
-            return None
+
+        # When auto-resolution fails, return a bundle with an empty name and
+        # ``awaiting_name=True`` in metadata. The install flow (``do_install``)
+        # either prompts the user on a TTY or refuses with an actionable error
+        # on non-interactive surfaces. Keep the expensive HTTP fetch's result
+        # so the caller doesn't have to re-download after picking a name.
+        skill_name = ""
+        if name is not None:
+            try:
+                skill_name = _validate_skill_name(name)
+            except ValueError:
+                logger.warning("URL skill %s produced unsafe skill name: %r", url, name)
+                return None
 
         return SkillBundle(
             name=skill_name,
@@ -1032,7 +1040,7 @@ class UrlSource(SkillSource):
             source="url",
             identifier=url,
             trust_level="community",
-            metadata={"url": url},
+            metadata={"url": url, "awaiting_name": not skill_name},
         )
 
     @staticmethod
@@ -1046,27 +1054,51 @@ class UrlSource(SkillSource):
             return None
         return None
 
-    @staticmethod
-    def _resolve_skill_name(fm: dict, url: str) -> str:
-        """Pick a skill name — frontmatter ``name:`` wins, URL slug fallback."""
-        name = fm.get("name") if isinstance(fm, dict) else None
-        if isinstance(name, str) and name.strip():
-            return name.strip()
-        # Fall back to the parent directory name (e.g. ``sharethis-chat`` from
-        # ``https://sharethis.chat/SKILL.md`` → ``sharethis-chat``; or the
-        # directory one level up if the URL ends in SKILL.md).
+    # Skill names must look like identifiers: lowercase letters/digits with
+    # optional hyphens/underscores. Blocks dangerous (``../evil``) AND useless
+    # (``SKILL``, ``README``, empty) candidates before they hit the disk.
+    _VALID_NAME_RE = re.compile(r"^[a-z][a-z0-9_-]*$")
+
+    @classmethod
+    def _is_valid_skill_name(cls, name: Optional[str]) -> bool:
+        if not isinstance(name, str):
+            return False
+        candidate = name.strip().lower()
+        if not candidate or candidate in {"skill", "readme", "index", "unnamed-skill"}:
+            return False
+        return bool(cls._VALID_NAME_RE.match(candidate))
+
+    @classmethod
+    def _resolve_skill_name(cls, fm: dict, url: str) -> Optional[str]:
+        """Pick a skill name from frontmatter or URL.
+
+        Returns ``None`` when neither source produces a valid identifier;
+        callers (CLI ``do_install``) then prompt the user or refuse. Preferring
+        a clean failure over a useless auto-name like ``SKILL`` or ``unnamed-skill``.
+        """
+        # 1. Frontmatter ``name:`` is authoritative when present and valid.
+        fm_name = fm.get("name") if isinstance(fm, dict) else None
+        if isinstance(fm_name, str) and cls._is_valid_skill_name(fm_name):
+            return fm_name.strip()
+
+        # 2. URL-slug heuristic: ``.../<name>/SKILL.md`` → ``<name>``;
+        #    ``.../<name>.md`` → ``<name>``. Validate each candidate.
         try:
             path = urlparse(url).path
         except ValueError:
-            return "unnamed-skill"
+            return None
         parts = [p for p in path.split("/") if p]
         if parts and parts[-1].lower() == "skill.md" and len(parts) >= 2:
-            return parts[-2]
+            candidate = parts[-2]
+            if cls._is_valid_skill_name(candidate):
+                return candidate
         if parts:
-            # Strip the .md extension from a single-file URL.
-            return re.sub(r"\.md$", "", parts[-1], flags=re.IGNORECASE) or "unnamed-skill"
-        host = urlparse(url).hostname or "unnamed-skill"
-        return host.replace(".", "-")
+            candidate = re.sub(r"\.md$", "", parts[-1], flags=re.IGNORECASE)
+            if cls._is_valid_skill_name(candidate):
+                return candidate
+
+        # Nothing usable — let the caller handle it.
+        return None
 
 
 # ---------------------------------------------------------------------------

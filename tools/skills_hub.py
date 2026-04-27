@@ -17,6 +17,7 @@ import hashlib
 import json
 import logging
 import os
+import tempfile
 import re
 import shutil
 import subprocess
@@ -2562,7 +2563,15 @@ class HubLockFile:
 
     def save(self, data: dict) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(data, indent=2, ensure_ascii=False) + "\n")
+        payload = json.dumps(data, indent=2, ensure_ascii=False) + "\n"
+        fd, tmp = tempfile.mkstemp(dir=str(self.path.parent))
+        try:
+            os.write(fd, payload.encode())
+            os.close(fd)
+            os.replace(tmp, str(self.path))
+        except BaseException:
+            os.unlink(tmp)
+            raise
 
     def record_install(
         self,
@@ -2629,7 +2638,15 @@ class TapsManager:
 
     def save(self, taps: List[dict]) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps({"taps": taps}, indent=2) + "\n")
+        payload = json.dumps({"taps": taps}, indent=2) + "\n"
+        fd, tmp = tempfile.mkstemp(dir=str(self.path.parent))
+        try:
+            os.write(fd, payload.encode())
+            os.close(fd)
+            os.replace(tmp, str(self.path))
+        except BaseException:
+            os.unlink(tmp)
+            raise
 
     def add(self, repo: str, path: str = "skills/") -> bool:
         """Add a tap. Returns False if already exists."""

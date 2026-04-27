@@ -113,7 +113,7 @@ def test_systemd_status_warns_when_linger_disabled(monkeypatch, tmp_path, capsys
     unit_path = tmp_path / "hermes-gateway.service"
     unit_path.write_text("[Unit]\n")
 
-    monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
+    monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False, hermes_home=None: unit_path)
     monkeypatch.setattr(gateway, "get_systemd_linger_status", lambda: (False, ""))
 
     def fake_run(cmd, capture_output=False, text=False, check=False, **kwargs):
@@ -121,6 +121,12 @@ def test_systemd_status_warns_when_linger_disabled(monkeypatch, tmp_path, capsys
             return SimpleNamespace(returncode=0, stdout="", stderr="")
         if cmd[:3] == ["systemctl", "--user", "is-active"]:
             return SimpleNamespace(returncode=0, stdout="active\n", stderr="")
+        if cmd[:3] == ["systemctl", "--user", "show"]:
+            return SimpleNamespace(
+                returncode=0,
+                stdout="ActiveState=active\nSubState=running\nResult=success\nExecMainStatus=0\n",
+                stderr="",
+            )
         raise AssertionError(f"Unexpected command: {cmd}")
 
     monkeypatch.setattr(gateway.subprocess, "run", fake_run)
@@ -136,7 +142,7 @@ def test_systemd_status_warns_when_linger_disabled(monkeypatch, tmp_path, capsys
 def test_systemd_install_checks_linger_status(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "systemd" / "user" / "hermes-gateway.service"
 
-    monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
+    monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False, hermes_home=None: unit_path)
 
     calls = []
     helper_calls = []
@@ -163,7 +169,7 @@ def test_systemd_install_checks_linger_status(monkeypatch, tmp_path, capsys):
 def test_systemd_install_system_scope_skips_linger_and_uses_systemctl(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "etc" / "systemd" / "system" / "hermes-gateway.service"
 
-    monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
+    monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False, hermes_home=None: unit_path)
     monkeypatch.setattr(
         gateway,
         "generate_systemd_unit",
@@ -206,7 +212,7 @@ def test_conflicting_systemd_units_warning(monkeypatch, tmp_path, capsys):
     monkeypatch.setattr(
         gateway,
         "get_systemd_unit_path",
-        lambda system=False: system_unit if system else user_unit,
+        lambda system=False, hermes_home=None: system_unit if system else user_unit,
     )
 
     gateway.print_systemd_scope_conflict_warning()
@@ -262,6 +268,42 @@ def test_find_gateway_pids_falls_back_to_pid_file_when_process_scan_fails(monkey
     monkeypatch.setattr(gateway.subprocess, "run", fake_run)
 
     assert gateway.find_gateway_pids() == [321]
+
+
+def test_gateway_status_falls_back_to_default_service_when_profile_unit_missing(monkeypatch, tmp_path):
+    # Simulate profile-scoped unit missing, but default unit installed.
+    default_home = str(tmp_path / ".hermes")
+    (tmp_path / ".config" / "systemd" / "user").mkdir(parents=True)
+    default_unit = tmp_path / ".config" / "systemd" / "user" / "hermes-gateway.service"
+    default_unit.write_text("[Unit]\n", encoding="utf-8")
+
+    monkeypatch.setattr(gateway, "supports_systemd_services", lambda: True)
+    monkeypatch.setattr(gateway, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway, "get_gateway_runtime_snapshot", lambda system=False: SimpleNamespace(gateway_pids=set()))
+    monkeypatch.setattr(gateway, "_print_gateway_process_mismatch", lambda snapshot: None)
+
+    import hermes_constants
+    monkeypatch.setattr(hermes_constants, "get_default_hermes_root", lambda: tmp_path / ".hermes")
+
+    def fake_unit_path(system: bool = False, hermes_home=None):
+        # Current profile: return a non-existent path.
+        if hermes_home is None:
+            return tmp_path / "profiles" / "router" / "missing.service"
+        # Default root: return the installed default unit.
+        return default_unit
+
+    monkeypatch.setattr(gateway, "get_systemd_unit_path", fake_unit_path)
+
+    calls = []
+    monkeypatch.setattr(
+        gateway,
+        "systemd_status",
+        lambda deep=False, system=False, full=False, hermes_home=None: calls.append(hermes_home),
+    )
+
+    gateway.gateway_command(SimpleNamespace(gateway_command="status", deep=False, full=False, system=False))
+
+    assert calls == [default_home]
 
 
 # ---------------------------------------------------------------------------
@@ -352,3 +394,24 @@ class TestWaitForGatewayExit:
 
         assert killed == 2
         assert calls == [(11, True), (22, True)]
+
+
+class TestStopProfileGateway:
+    def test_stop_profile_gateway_keeps_pid_file_when_process_still_running(self, monkeypatch):
+        calls = {"kill": 0, "remove": 0}
+
+        monkeypatch.setattr("gateway.status.get_running_pid", lambda: 12345)
+        monkeypatch.setattr(
+            gateway.os,
+            "kill",
+            lambda pid, sig: calls.__setitem__("kill", calls["kill"] + 1),
+        )
+        monkeypatch.setattr("time.sleep", lambda _: None)
+        monkeypatch.setattr(
+            "gateway.status.remove_pid_file",
+            lambda: calls.__setitem__("remove", calls["remove"] + 1),
+        )
+
+        assert gateway.stop_profile_gateway() is True
+        assert calls["kill"] == 21
+        assert calls["remove"] == 0

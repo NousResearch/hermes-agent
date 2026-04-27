@@ -101,7 +101,7 @@ class TestEnsureLingerEnabled:
 def test_systemd_install_calls_linger_helper(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "systemd" / "user" / "hermes-gateway.service"
 
-    monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False: unit_path)
+    monkeypatch.setattr(gateway, "get_systemd_unit_path", lambda system=False, hermes_home=None: unit_path)
 
     calls = []
 

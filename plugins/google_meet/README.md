@@ -1,79 +1,131 @@
 # google_meet plugin
 
-Let the hermes agent join a Google Meet call, transcribe it, and do the followup
-work afterwards.
+Let the hermes agent join a Google Meet call, transcribe it, optionally speak
+in it, and do the followup work afterwards.
 
-## Status
+## What ships
 
-**v1 — transcribe-only.** Joins a Meet URL in a headless Chromium via Playwright,
-enables live captions, scrapes them from the DOM, and writes a deduplicated
-transcript to `$HERMES_HOME/workspace/meetings/<meeting-id>.txt`. The agent then
-has the transcript in context and can take followup actions using the rest of
-its tools (send Slack updates, file issues, schedule followups, etc.).
+| Version | What | Status |
+|---|---|---|
+| v1 | Transcribe-only: Playwright joins Meet, scrapes captions to transcript file | ✓ ships by default |
+| v2 | Realtime duplex audio: bot speaks in-call via OpenAI Realtime + BlackHole/PulseAudio null-sink | ✓ opt in with `mode='realtime'` |
+| v3 | Remote node host: run the bot on a different machine than the gateway | ✓ opt in with `node='<name>'` |
 
-A future v2 will add realtime duplex audio (the agent speaks in the meeting) via
-OpenAI Realtime / Gemini Live bridged through BlackHole (macOS) or a PulseAudio
-null-sink (Linux). Not included in this PR — the tool surface has a `meet_say`
-stub that returns "not yet implemented" so the agent interface is stable.
-
-## Enable
-
-```bash
-# 1. install playwright + chromium
-pip install playwright
-python -m playwright install chromium
-
-# 2. enable the plugin
-hermes plugins enable google_meet
-
-# 3. (optional, recommended) save a Google session so the bot doesn't sit in
-#    the guest lobby waiting for host approval:
-hermes meet auth
-```
-
-## Use
-
-From the agent (tool calls):
+## Architecture
 
 ```
-meet_join(url="https://meet.google.com/abc-defg-hij")
-meet_status()                       # inCall, captioning, transcript length
-meet_transcript(last=20)            # last N caption lines
-meet_leave()                        # close browser, finalize transcript file
+┌─ gateway (Linux box, where hermes runs) ────────────────────────────┐
+│                                                                      │
+│   agent → meet_join(url, mode='realtime', node='my-mac')             │
+│         │                                                            │
+│         └─ NodeClient ─── ws ────┐                                   │
+│                                  │                                   │
+└──────────────────────────────────┼───────────────────────────────────┘
+                                   │ wss (token auth)
+                                   ▼
+┌─ node host (user's Mac, signed-in Chrome lives here) ───────────────┐
+│                                                                      │
+│   NodeServer (from `hermes meet node run`)                           │
+│     │                                                                │
+│     ├─ start_bot → process_manager.start() → spawns meet_bot         │
+│     │                                                                │
+│     └─ meet_bot (Playwright)                                         │
+│        ├─ Chromium → meet.google.com                                 │
+│        ├─ caption scraper → transcript.txt                           │
+│        └─ (realtime mode only) RealtimeSpeaker thread                │
+│             ↓                                                        │
+│           OpenAI Realtime WS → speaker.pcm                           │
+│             ↓                                                        │
+│           paplay → null-sink ← Chrome fake mic                       │
+│                                                                      │
+└──────────────────────────────────────────────────────────────────────┘
 ```
 
-From the CLI:
-
-```bash
-hermes meet setup                   # preflight: playwright, chromium, auth
-hermes meet join https://meet.google.com/abc-defg-hij [--headed]
-hermes meet transcript [--last 20]
-hermes meet stop
-```
-
-## Explicit-by-design
-
-- Only joins URLs passed in explicitly — no calendar scanning, no auto-dial.
-- No automatic consent announcement — the user or agent should tell meeting
-  participants that a bot is present.
-- Refuses to register on Windows (v1) — audio routing for v2 on Windows is
-  painful, and guest-join Chromium on Windows has its own failure modes we
-  haven't tested.
-- One active meeting per session. A second `meet_join` leaves the first.
+Without v3: the whole right column runs on the gateway machine.
+Without v2: the "realtime" path is skipped; transcribe runs alone.
 
 ## Files
 
-- `plugin.yaml` — manifest.
-- `__init__.py` — `register(ctx)` entry point.
-- `meet_bot.py` — Playwright bot (spawnable as `python -m plugins.google_meet.meet_bot`).
-- `process_manager.py` — subprocess lifecycle + status file I/O.
-- `cli.py` — `hermes meet ...` subcommands.
-- `tools.py` — agent-facing tool schemas + handlers.
-- `SKILL.md` — agent usage reference.
+| Path | Purpose |
+|---|---|
+| `plugin.yaml` | manifest |
+| `__init__.py` | `register(ctx)` — registers 5 tools + `on_session_end` hook + `hermes meet` CLI |
+| `meet_bot.py` | Playwright bot subprocess (standalone, `python -m plugins.google_meet.meet_bot`) |
+| `process_manager.py` | local bot lifecycle + `enqueue_say` |
+| `tools.py` | agent-facing tools + node-routing helper |
+| `cli.py` | `hermes meet setup / auth / join / status / transcript / say / stop / node ...` |
+| `audio_bridge.py` | v2: PulseAudio null-sink (Linux) + BlackHole probe (macOS) |
+| `realtime/openai_client.py` | v2: `RealtimeSession` + `RealtimeSpeaker` (file-queue → OpenAI Realtime WS → PCM) |
+| `node/protocol.py` | v3: message envelope + validation |
+| `node/registry.py` | v3: `$HERMES_HOME/workspace/meetings/nodes.json` |
+| `node/server.py` | v3: `NodeServer` (runs on host machine) |
+| `node/client.py` | v3: `NodeClient` (used by tool handlers + CLI on gateway) |
+| `node/cli.py` | v3: `hermes meet node {run,list,approve,remove,status,ping}` |
+| `SKILL.md` | agent usage guide |
 
-## Future work
+## Local quick start
 
-- v2: realtime duplex audio via OpenAI Realtime / Gemini Live + BlackHole /
-  PulseAudio null-sink. `meet_say(text)` becomes real.
-- v3: remote node host — Chrome on a user's Mac, gateway on a Linux box.
-  Needs a hermes-wide node-host primitive we don't have yet.
+```bash
+pip install playwright && python -m playwright install chromium
+hermes plugins enable google_meet
+hermes meet setup                                        # preflight
+hermes meet auth                                         # optional
+hermes meet join https://meet.google.com/abc-defg-hij    # transcribe
+```
+
+## Realtime mode
+
+Linux (preferred):
+```bash
+sudo apt install pulseaudio-utils                  # paplay + pactl
+echo 'OPENAI_API_KEY=sk-...' >> ~/.hermes/.env
+hermes meet join https://meet.google.com/abc-defg-hij --mode realtime
+# then from the agent or CLI:
+hermes meet say "Good morning everyone, I'm the note-taker bot."
+```
+
+macOS:
+```bash
+brew install blackhole-2ch
+# Open System Settings → Sound → Input → select BlackHole 2ch
+echo 'OPENAI_API_KEY=sk-...' >> ~/.hermes/.env
+hermes meet join https://meet.google.com/abc-defg-hij --mode realtime
+```
+
+On macOS, hermes will **not** switch your system audio input automatically — the
+user has to do it. This is deliberate: switching default input on a whim would
+be a surprising side effect.
+
+## Remote node host
+
+On the node machine (e.g. user's Mac with a signed-in Chrome):
+```bash
+pip install playwright websockets
+python -m playwright install chromium
+hermes plugins enable google_meet
+hermes meet node run --display-name my-mac --host 0.0.0.0 --port 18789
+# prints the bearer token on first run; copy it
+```
+
+On the gateway:
+```bash
+hermes meet node approve my-mac ws://<mac-ip>:18789 <token>
+hermes meet node ping my-mac
+# now any meet_* tool call accepts node='my-mac' (or 'auto')
+```
+
+## Safety
+
+- URL gate: only `https://meet.google.com/abc-defg-hij`, `/new`, `/lookup/<id>`.
+- No calendar scanning, no auto-dial, no auto-consent announcement.
+- Node server uses bearer-token auth; no key exchange, no TLS termination
+  built in — run it on a LAN or behind a reverse proxy you trust.
+- One active meeting per (gateway, node) pair. A second `meet_join` leaves the first.
+- `meet_say` refuses unless the active meeting was started with `mode='realtime'`.
+
+## Out of scope
+
+- **Calendar scanning** — deliberately not implemented. Join URLs must be explicit.
+- **Multi-tenant node sharing** — a node serves one gateway at a time.
+- **Windows** — audio bridging isn't tested; `register()` no-ops on Windows.
+- **System audio input switching on macOS** — user responsibility, not the bot's.

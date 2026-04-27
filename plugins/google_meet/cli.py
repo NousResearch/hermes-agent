@@ -48,13 +48,42 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
     join_p.add_argument("--guest-name", default="Hermes Agent")
     join_p.add_argument("--duration", default=None, help="e.g. 30m, 2h, 90s")
     join_p.add_argument("--headed", action="store_true", help="show browser")
+    join_p.add_argument(
+        "--mode", choices=("transcribe", "realtime"), default="transcribe",
+        help="transcribe (default, listen-only) or realtime (speak via OpenAI Realtime)"
+    )
+    join_p.add_argument(
+        "--node", default=None,
+        help="remote node name, or 'auto' to use the sole registered node"
+    )
 
     subs.add_parser("status", help="Print current Meet bot state")
 
     tr_p = subs.add_parser("transcript", help="Print the scraped transcript")
     tr_p.add_argument("--last", type=int, default=None)
 
+    say_p = subs.add_parser("say", help="Speak text in an active realtime meeting")
+    say_p.add_argument("text", help="what to say")
+    say_p.add_argument("--node", default=None)
+
     subs.add_parser("stop", help="Leave the current meeting")
+
+    # v3: remote node host management.
+    node_p = subs.add_parser(
+        "node",
+        help="Manage remote meet node hosts (run/list/approve/remove/status/ping)",
+    )
+    try:
+        from plugins.google_meet.node.cli import register_cli as _register_node_cli
+        _register_node_cli(node_p)
+    except Exception as e:  # pragma: no cover — defensive
+        # If the node module fails to import for any reason (optional dep
+        # missing at import time etc.), leave the subparser present but
+        # flag it. The argparse dispatch will surface a clear error.
+        def _node_unavailable(args):
+            print(f"hermes meet node: module unavailable ({e})")
+            return 1
+        node_p.set_defaults(func=_node_unavailable)
 
     subparser.set_defaults(func=meet_command)
 
@@ -66,7 +95,7 @@ def register_cli(subparser: argparse.ArgumentParser) -> None:
 def meet_command(args: argparse.Namespace) -> int:
     sub = getattr(args, "meet_command", None)
     if not sub:
-        print("usage: hermes meet {setup,auth,join,status,transcript,stop}")
+        print("usage: hermes meet {setup,auth,join,status,transcript,say,stop,node}")
         return 2
     if sub == "setup":
         return _cmd_setup()
@@ -78,13 +107,25 @@ def meet_command(args: argparse.Namespace) -> int:
             guest_name=args.guest_name,
             duration=args.duration,
             headed=args.headed,
+            mode=getattr(args, "mode", "transcribe"),
+            node=getattr(args, "node", None),
         )
     if sub == "status":
         return _cmd_status()
     if sub == "transcript":
         return _cmd_transcript(last=args.last)
+    if sub == "say":
+        return _cmd_say(text=args.text, node=getattr(args, "node", None))
     if sub == "stop":
         return _cmd_stop()
+    if sub == "node":
+        # Dispatch was set by the node cli's register_cli; fall through to
+        # whatever its subparsers wired.
+        fn = getattr(args, "func", None)
+        if fn is None or fn is meet_command:
+            print("usage: hermes meet node {run,list,approve,remove,status,ping}")
+            return 2
+        return fn(args)
     print(f"unknown subcommand: {sub}")
     return 2
 
@@ -194,10 +235,37 @@ def _cmd_join(
     guest_name: str,
     duration: Optional[str],
     headed: bool,
+    mode: str = "transcribe",
+    node: Optional[str] = None,
 ) -> int:
     if not _is_safe_meet_url(url):
         print(f"refusing: not a meet.google.com URL: {url}")
         return 2
+    if node:
+        # Remote: go through NodeClient.
+        try:
+            from plugins.google_meet.node.registry import NodeRegistry
+            from plugins.google_meet.node.client import NodeClient
+        except ImportError as e:
+            print(f"node module unavailable: {e}")
+            return 1
+        reg = NodeRegistry()
+        entry = reg.resolve(node if node != "auto" else None)
+        if entry is None:
+            print(f"no registered node matches {node!r}")
+            return 1
+        client = NodeClient(url=entry["url"], token=entry["token"])
+        try:
+            res = client.start_bot(
+                url=url, guest_name=guest_name, duration=duration,
+                headed=headed, mode=mode,
+            )
+        except Exception as e:
+            print(f"remote start_bot failed: {e}")
+            return 1
+        print(json.dumps({"node": entry.get("name"), **res}, indent=2))
+        return 0 if res.get("ok") else 1
+
     auth = _auth_state_path()
     res = pm.start(
         url=url,
@@ -205,7 +273,38 @@ def _cmd_join(
         guest_name=guest_name,
         duration=duration,
         auth_state=str(auth) if auth.is_file() else None,
+        mode=mode,
     )
+    print(json.dumps(res, indent=2))
+    return 0 if res.get("ok") else 1
+
+
+def _cmd_say(text: str, node: Optional[str] = None) -> int:
+    if not (text or "").strip():
+        print("refusing: empty text")
+        return 2
+    if node:
+        try:
+            from plugins.google_meet.node.registry import NodeRegistry
+            from plugins.google_meet.node.client import NodeClient
+        except ImportError as e:
+            print(f"node module unavailable: {e}")
+            return 1
+        reg = NodeRegistry()
+        entry = reg.resolve(node if node != "auto" else None)
+        if entry is None:
+            print(f"no registered node matches {node!r}")
+            return 1
+        client = NodeClient(url=entry["url"], token=entry["token"])
+        try:
+            res = client.say(text)
+        except Exception as e:
+            print(f"remote say failed: {e}")
+            return 1
+        print(json.dumps({"node": entry.get("name"), **res}, indent=2))
+        return 0 if res.get("ok") else 1
+
+    res = pm.enqueue_say(text)
     print(json.dumps(res, indent=2))
     return 0 if res.get("ok") else 1
 

@@ -33,6 +33,7 @@ import os
 import re
 import signal
 import sys
+import threading
 import time
 from pathlib import Path
 from typing import Optional
@@ -46,6 +47,11 @@ MEET_URL_RE = re.compile(
     r"|new"
     r")(?:[/?#].*)?$"
 )
+
+
+# Filenames the bot reads/writes in ``HERMES_MEET_OUT_DIR``.
+SAY_QUEUE_FILENAME = "say_queue.jsonl"
+SAY_PCM_FILENAME = "speaker.pcm"
 
 
 def _is_safe_meet_url(url: str) -> bool:
@@ -238,6 +244,113 @@ def _enable_captions_js() -> str:
     """
 
 
+def _start_realtime_speaker(
+    *,
+    rt: dict,
+    out_dir: Path,
+    bridge_info: dict,
+    api_key: str,
+    model: str,
+    voice: str,
+    instructions: str,
+    stop_flag: dict,
+    state: "_BotState",
+) -> None:
+    """Wire up the OpenAI Realtime session + speaker thread + PCM pump.
+
+    The speaker thread reads text lines from ``say_queue.jsonl``, sends each
+    to OpenAI Realtime, and writes PCM audio into ``speaker.pcm``. A
+    separate *pump* thread forwards that PCM into the OS audio sink so
+    Chrome's fake mic picks it up. On Linux we pipe to ``paplay`` against
+    the null-sink; on macOS the caller is expected to have the BlackHole
+    device selected as default input.
+    """
+    try:
+        from plugins.google_meet.realtime.openai_client import (
+            RealtimeSession,
+            RealtimeSpeaker,
+        )
+    except Exception as e:
+        state.set(error=f"realtime import failed: {e}")
+        return
+
+    pcm_path = out_dir / SAY_PCM_FILENAME
+    queue_path = out_dir / SAY_QUEUE_FILENAME
+    processed_path = out_dir / "say_processed.jsonl"
+    # Reset the sink file so we start clean each session.
+    pcm_path.write_bytes(b"")
+    # Make sure the queue exists so the speaker poller doesn't error on
+    # first iteration.
+    queue_path.touch()
+
+    try:
+        session = RealtimeSession(
+            api_key=api_key,
+            model=model,
+            voice=voice,
+            instructions=instructions,
+            audio_sink_path=pcm_path,
+            sample_rate=24000,
+        )
+        session.connect()
+    except Exception as e:
+        state.set(error=f"realtime connect failed: {e}")
+        return
+
+    rt["session"] = session
+
+    def _stop_fn():
+        return stop_flag.get("stop", False)
+
+    rt["speaker_stop"] = lambda: stop_flag.__setitem__("stop", stop_flag.get("stop", False))
+
+    speaker = RealtimeSpeaker(
+        session=session,
+        queue_path=queue_path,
+        processed_path=processed_path,
+    )
+
+    def _speaker_loop():
+        try:
+            speaker.run_until_stopped(_stop_fn)
+        except Exception as e:
+            state.set(error=f"realtime speaker crashed: {e}")
+
+    t_speaker = threading.Thread(target=_speaker_loop, name="meet-speaker", daemon=True)
+    t_speaker.start()
+    rt["speaker_thread"] = t_speaker
+
+    # PCM pump: on Linux we feed speaker.pcm into the null-sink via
+    # `paplay --raw --device=<sink> --rate=24000 --format=s16le --channels=1`.
+    # paplay will block reading from the file as more PCM is appended.
+    # We run it as a subprocess and track the pid for teardown.
+    platform_tag = (bridge_info or {}).get("platform")
+    if platform_tag == "linux":
+        import subprocess as _sp
+
+        sink = (bridge_info or {}).get("write_target") or "hermes_meet_sink"
+        try:
+            proc = _sp.Popen(
+                [
+                    "paplay",
+                    "--raw",
+                    "--rate=24000",
+                    "--format=s16le",
+                    "--channels=1",
+                    f"--device={sink}",
+                    str(pcm_path),
+                ],
+                stdin=_sp.DEVNULL,
+                stdout=_sp.DEVNULL,
+                stderr=_sp.DEVNULL,
+            )
+            rt["pcm_pump"] = proc
+        except FileNotFoundError:
+            state.set(error="paplay not found — install pulseaudio-utils for realtime on Linux")
+    # macOS: the caller must route BlackHole manually; we write to disk
+    # only. A future helper could spawn `afplay` or `sox play` in a loop.
+
+
 def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
     url = os.environ.get("HERMES_MEET_URL", "").strip()
     out_dir_env = os.environ.get("HERMES_MEET_OUT_DIR", "").strip()
@@ -245,6 +358,12 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
     auth_state = os.environ.get("HERMES_MEET_AUTH_STATE", "").strip()
     guest_name = os.environ.get("HERMES_MEET_GUEST_NAME", "Hermes Agent")
     duration_s = _parse_duration(os.environ.get("HERMES_MEET_DURATION", ""))
+    # v2: optional realtime mode. Enabled when HERMES_MEET_MODE=realtime.
+    mode = os.environ.get("HERMES_MEET_MODE", "transcribe").strip().lower()
+    realtime_model = os.environ.get("HERMES_MEET_REALTIME_MODEL", "gpt-realtime")
+    realtime_voice = os.environ.get("HERMES_MEET_REALTIME_VOICE", "alloy")
+    realtime_instructions = os.environ.get("HERMES_MEET_REALTIME_INSTRUCTIONS", "")
+    realtime_api_key = os.environ.get("HERMES_MEET_REALTIME_KEY") or os.environ.get("OPENAI_API_KEY", "")
 
     if not url or not _is_safe_meet_url(url):
         sys.stderr.write(
@@ -271,6 +390,33 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
     signal.signal(signal.SIGTERM, _on_signal)
     signal.signal(signal.SIGINT, _on_signal)
 
+    # v2 realtime: provision virtual audio device + start speaker thread.
+    # We track these in a dict so the finally block can tear them down
+    # regardless of how we exit. If anything in the realtime setup fails we
+    # fall back to transcribe mode with a status flag.
+    rt = {
+        "enabled": mode == "realtime",
+        "bridge": None,            # AudioBridge | None
+        "bridge_info": None,       # dict | None
+        "session": None,           # RealtimeSession | None
+        "speaker_thread": None,    # threading.Thread | None
+        "speaker_stop": None,      # callable | None
+    }
+    if rt["enabled"]:
+        if not realtime_api_key:
+            state.set(error="realtime mode requested but no API key in HERMES_MEET_REALTIME_KEY/OPENAI_API_KEY — falling back to transcribe")
+            rt["enabled"] = False
+        else:
+            try:
+                from plugins.google_meet.audio_bridge import AudioBridge
+                bridge = AudioBridge()
+                rt["bridge_info"] = bridge.setup()
+                rt["bridge"] = bridge
+                state.set(realtime=True, realtime_device=rt["bridge_info"].get("device_name"))
+            except Exception as e:
+                state.set(error=f"audio bridge setup failed: {e} — falling back to transcribe")
+                rt["enabled"] = False
+
     try:
         from playwright.sync_api import sync_playwright
     except ImportError as e:
@@ -279,19 +425,33 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
             "google_meet bot: playwright is not installed. Run "
             "`pip install playwright && python -m playwright install chromium`\n"
         )
+        if rt["bridge"]:
+            rt["bridge"].teardown()
         return 3
+
+    # Chrome env: if realtime is live on Linux, point PULSE_SOURCE at the
+    # virtual source so Chrome's fake mic reads the audio we generate.
+    chrome_env = os.environ.copy()
+    chrome_args = [
+        "--use-fake-ui-for-media-stream",
+        "--disable-blink-features=AutomationControlled",
+    ]
+    if not rt["enabled"]:
+        # v1-style fake device (silence) — we don't care about mic content
+        # when we're not speaking.
+        chrome_args.insert(1, "--use-fake-device-for-media-stream")
+    elif rt["bridge_info"] and rt["bridge_info"].get("platform") == "linux":
+        chrome_env["PULSE_SOURCE"] = rt["bridge_info"].get("device_name", "")
 
     try:
         with sync_playwright() as pw:
+            # Playwright's launch() doesn't take env; we set PULSE_SOURCE
+            # via the process env before launch so the child Chrome inherits it.
+            for k, v in chrome_env.items():
+                os.environ[k] = v
             browser = pw.chromium.launch(
                 headless=not headed,
-                args=[
-                    # Auto-accept mic + camera prompts, which otherwise block
-                    # join. We're not going to use them in v1.
-                    "--use-fake-ui-for-media-stream",
-                    "--use-fake-device-for-media-stream",
-                    "--disable-blink-features=AutomationControlled",
-                ],
+                args=chrome_args,
             )
             context_args = {
                 "viewport": {"width": 1280, "height": 800},
@@ -330,6 +490,23 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
 
             state.set(in_call=True, captioning=True, joined_at=time.time())
 
+            # v2 realtime: start the speaker thread reading from the
+            # plugin-side say queue. The thread reads JSONL lines written by
+            # meet_say, calls OpenAI Realtime, and streams the audio PCM to
+            # the virtual sink that Chrome's fake-mic is pointed at.
+            if rt["enabled"]:
+                _start_realtime_speaker(
+                    rt=rt,
+                    out_dir=out_dir,
+                    bridge_info=rt["bridge_info"],
+                    api_key=realtime_api_key,
+                    model=realtime_model,
+                    voice=realtime_voice,
+                    instructions=realtime_instructions,
+                    stop_flag=stop_flag,
+                    state=state,
+                )
+
             # Drain loop — pull queued captions every ~1s until SIGTERM or
             # duration expiry. Also poll the page for the "You've left the
             # meeting" state.
@@ -365,6 +542,27 @@ def run_bot() -> int:  # noqa: C901 — orchestration, explicit branches
 
             context.close()
             browser.close()
+            # v2: teardown realtime speaker + audio bridge.
+            if rt["speaker_stop"]:
+                try:
+                    rt["speaker_stop"]()
+                except Exception:
+                    pass
+            if rt["speaker_thread"] is not None:
+                try:
+                    rt["speaker_thread"].join(timeout=5.0)
+                except Exception:
+                    pass
+            if rt["session"]:
+                try:
+                    rt["session"].close()
+                except Exception:
+                    pass
+            if rt["bridge"]:
+                try:
+                    rt["bridge"].teardown()
+                except Exception:
+                    pass
             state.set(in_call=False, captioning=False, exited=True)
             return 0
 

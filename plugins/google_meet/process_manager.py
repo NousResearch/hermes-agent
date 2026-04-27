@@ -93,6 +93,11 @@ def start(
     guest_name: str = "Hermes Agent",
     duration: Optional[str] = None,
     session_id: Optional[str] = None,
+    mode: str = "transcribe",
+    realtime_model: Optional[str] = None,
+    realtime_voice: Optional[str] = None,
+    realtime_instructions: Optional[str] = None,
+    realtime_api_key: Optional[str] = None,
 ) -> Dict[str, Any]:
     """Spawn the meet_bot subprocess for *url*.
 
@@ -140,6 +145,18 @@ def start(
         env["HERMES_MEET_AUTH_STATE"] = auth_state
     if duration:
         env["HERMES_MEET_DURATION"] = duration
+    # v2: realtime mode + passthroughs. The bot defaults to transcribe
+    # mode if HERMES_MEET_MODE isn't set, matching v1 behavior.
+    if mode:
+        env["HERMES_MEET_MODE"] = mode
+    if realtime_model:
+        env["HERMES_MEET_REALTIME_MODEL"] = realtime_model
+    if realtime_voice:
+        env["HERMES_MEET_REALTIME_VOICE"] = realtime_voice
+    if realtime_instructions:
+        env["HERMES_MEET_REALTIME_INSTRUCTIONS"] = realtime_instructions
+    if realtime_api_key:
+        env["HERMES_MEET_REALTIME_KEY"] = realtime_api_key
 
     log_path = out / "bot.log"
     # Detach: stdin=devnull, stdout/stderr → log file, new session so parent
@@ -167,6 +184,7 @@ def start(
         "started_at": time.time(),
         "session_id": session_id,
         "log_path": str(log_path),
+        "mode": mode,
     }
     _write_active(record)
     return {"ok": True, **record}
@@ -225,6 +243,48 @@ def transcript(last: Optional[int] = None) -> Dict[str, Any]:
         "lines": lines,
         "total": len(all_lines),
         "path": str(tp),
+    }
+
+
+def enqueue_say(text: str) -> Dict[str, Any]:
+    """Append a ``say`` request to the active bot's JSONL queue.
+
+    Returns ``{"ok": False, "reason": ...}`` when no meeting is active or
+    the active bot is in transcribe-only mode. Otherwise writes a line to
+    ``<out_dir>/say_queue.jsonl`` that the bot's realtime speaker thread
+    will consume.
+    """
+    import uuid
+
+    text = (text or "").strip()
+    if not text:
+        return {"ok": False, "reason": "text is required"}
+
+    active = _read_active()
+    if not active:
+        return {"ok": False, "reason": "no active meeting"}
+    if active.get("mode") != "realtime":
+        return {
+            "ok": False,
+            "reason": (
+                "active meeting is in transcribe mode — pass mode='realtime' "
+                "to meet_join to enable agent speech"
+            ),
+        }
+
+    out_dir = Path(active.get("out_dir", ""))
+    if not out_dir.is_dir():
+        return {"ok": False, "reason": f"out_dir missing: {out_dir}"}
+
+    queue_path = out_dir / "say_queue.jsonl"
+    entry = {"id": uuid.uuid4().hex[:12], "text": text}
+    with queue_path.open("a", encoding="utf-8") as f:
+        f.write(json.dumps(entry) + "\n")
+    return {
+        "ok": True,
+        "meetingId": active.get("meeting_id"),
+        "enqueued_id": entry["id"],
+        "queue_path": str(queue_path),
     }
 
 

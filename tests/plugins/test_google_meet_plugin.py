@@ -272,13 +272,21 @@ def test_meet_join_handler_returns_error_when_playwright_missing():
     assert "prerequisites missing" in out["error"]
 
 
-def test_meet_say_is_a_stub():
+def test_meet_say_requires_text():
+    from plugins.google_meet.tools import handle_meet_say
+
+    out = json.loads(handle_meet_say({}))
+    assert out["success"] is False
+    assert "text is required" in out["error"]
+
+
+def test_meet_say_no_active_meeting():
     from plugins.google_meet.tools import handle_meet_say
 
     out = json.loads(handle_meet_say({"text": "hello everyone"}))
     assert out["success"] is False
-    assert "v1 stub" in out["error"]
-    assert out["requested_text"] == "hello everyone"
+    # Falls through to pm.enqueue_say which reports no active meeting.
+    assert "no active meeting" in out.get("reason", "")
 
 
 def test_meet_status_and_transcript_no_active():
@@ -355,3 +363,249 @@ def test_register_wires_tools_cli_and_hook_on_linux():
     }
     assert calls["cli"] == ["meet"]
     assert calls["hooks"] == ["on_session_end"]
+
+
+# ---------------------------------------------------------------------------
+# v2: process_manager.enqueue_say + realtime-mode passthrough
+# ---------------------------------------------------------------------------
+
+def test_enqueue_say_requires_text():
+    from plugins.google_meet import process_manager as pm
+    assert pm.enqueue_say("")["ok"] is False
+    assert pm.enqueue_say("   ")["ok"] is False
+
+
+def test_enqueue_say_no_active_meeting():
+    from plugins.google_meet import process_manager as pm
+    res = pm.enqueue_say("hi team")
+    assert res["ok"] is False
+    assert "no active meeting" in res["reason"]
+
+
+def test_enqueue_say_rejects_transcribe_mode(tmp_path):
+    from plugins.google_meet import process_manager as pm
+
+    out_dir = Path(os.environ["HERMES_HOME"]) / "workspace" / "meetings" / "abc-defg-hij"
+    out_dir.mkdir(parents=True)
+    pm._write_active({
+        "pid": 0, "meeting_id": "abc-defg-hij",
+        "out_dir": str(out_dir), "url": "https://meet.google.com/abc-defg-hij",
+        "started_at": 0, "mode": "transcribe",
+    })
+    res = pm.enqueue_say("hi team")
+    assert res["ok"] is False
+    assert "transcribe mode" in res["reason"]
+
+
+def test_enqueue_say_writes_jsonl_in_realtime_mode():
+    from plugins.google_meet import process_manager as pm
+
+    out_dir = Path(os.environ["HERMES_HOME"]) / "workspace" / "meetings" / "abc-defg-hij"
+    out_dir.mkdir(parents=True)
+    pm._write_active({
+        "pid": 0, "meeting_id": "abc-defg-hij",
+        "out_dir": str(out_dir), "url": "https://meet.google.com/abc-defg-hij",
+        "started_at": 0, "mode": "realtime",
+    })
+    res = pm.enqueue_say("hello everyone")
+    assert res["ok"] is True
+    assert "enqueued_id" in res
+
+    queue = out_dir / "say_queue.jsonl"
+    assert queue.is_file()
+    lines = [json.loads(ln) for ln in queue.read_text().splitlines() if ln.strip()]
+    assert len(lines) == 1
+    assert lines[0]["text"] == "hello everyone"
+
+
+def test_start_passes_mode_into_active_record():
+    from plugins.google_meet import process_manager as pm
+
+    class _FakeProc:
+        def __init__(self, pid): self.pid = pid
+
+    with patch.object(pm.subprocess, "Popen", return_value=_FakeProc(12345)), \
+         patch.object(pm, "_pid_alive", return_value=False):
+        res = pm.start(
+            "https://meet.google.com/abc-defg-hij",
+            mode="realtime",
+        )
+    assert res["ok"] is True
+    assert res["mode"] == "realtime"
+    assert pm._read_active()["mode"] == "realtime"
+
+
+def test_start_realtime_env_vars_threaded_through():
+    from plugins.google_meet import process_manager as pm
+
+    class _FakeProc:
+        def __init__(self, pid): self.pid = pid
+
+    captured_env = {}
+    def _fake_popen(argv, **kwargs):
+        captured_env.update(kwargs.get("env") or {})
+        return _FakeProc(11111)
+
+    with patch.object(pm.subprocess, "Popen", side_effect=_fake_popen), \
+         patch.object(pm, "_pid_alive", return_value=False):
+        pm.start(
+            "https://meet.google.com/abc-defg-hij",
+            mode="realtime",
+            realtime_model="gpt-realtime",
+            realtime_voice="alloy",
+            realtime_instructions="Be brief.",
+            realtime_api_key="sk-test",
+        )
+    assert captured_env["HERMES_MEET_MODE"] == "realtime"
+    assert captured_env["HERMES_MEET_REALTIME_MODEL"] == "gpt-realtime"
+    assert captured_env["HERMES_MEET_REALTIME_VOICE"] == "alloy"
+    assert captured_env["HERMES_MEET_REALTIME_INSTRUCTIONS"] == "Be brief."
+    assert captured_env["HERMES_MEET_REALTIME_KEY"] == "sk-test"
+
+
+def test_meet_join_accepts_realtime_mode():
+    from plugins.google_meet.tools import handle_meet_join
+
+    with patch("plugins.google_meet.tools.check_meet_requirements", return_value=True), \
+         patch("plugins.google_meet.tools.pm.start", return_value={"ok": True, "meeting_id": "x-y-z"}) as start_mock:
+        out = json.loads(handle_meet_join({
+            "url": "https://meet.google.com/abc-defg-hij",
+            "mode": "realtime",
+        }))
+    assert out["success"] is True
+    assert start_mock.call_args.kwargs["mode"] == "realtime"
+
+
+def test_meet_join_rejects_bad_mode():
+    from plugins.google_meet.tools import handle_meet_join
+
+    out = json.loads(handle_meet_join({
+        "url": "https://meet.google.com/abc-defg-hij",
+        "mode": "bogus",
+    }))
+    assert out["success"] is False
+    assert "mode must be" in out["error"]
+
+
+# ---------------------------------------------------------------------------
+# v3: NodeClient routing from tool handlers
+# ---------------------------------------------------------------------------
+
+def test_meet_join_unknown_node_returns_clear_error():
+    from plugins.google_meet.tools import handle_meet_join
+
+    out = json.loads(handle_meet_join({
+        "url": "https://meet.google.com/abc-defg-hij",
+        "node": "my-mac",
+    }))
+    assert out["success"] is False
+    assert "no registered meet node" in out["error"]
+
+
+def test_meet_join_routes_to_registered_node():
+    from plugins.google_meet.tools import handle_meet_join
+    from plugins.google_meet.node.registry import NodeRegistry
+
+    reg = NodeRegistry()
+    reg.add("my-mac", "ws://1.2.3.4:18789", "tok")
+
+    with patch("plugins.google_meet.node.client.NodeClient.start_bot",
+               return_value={"ok": True, "meeting_id": "a-b-c"}) as call_mock:
+        out = json.loads(handle_meet_join({
+            "url": "https://meet.google.com/abc-defg-hij",
+            "node": "my-mac",
+            "mode": "realtime",
+        }))
+    assert out["success"] is True
+    assert out["node"] == "my-mac"
+    assert call_mock.call_args.kwargs["mode"] == "realtime"
+
+
+def test_meet_say_routes_to_node():
+    from plugins.google_meet.tools import handle_meet_say
+    from plugins.google_meet.node.registry import NodeRegistry
+
+    reg = NodeRegistry()
+    reg.add("my-mac", "ws://1.2.3.4:18789", "tok")
+
+    with patch("plugins.google_meet.node.client.NodeClient.say",
+               return_value={"ok": True, "enqueued_id": "abc"}) as call_mock:
+        out = json.loads(handle_meet_say({"text": "hello", "node": "my-mac"}))
+    assert out["success"] is True
+    assert out["node"] == "my-mac"
+    call_mock.assert_called_once_with("hello")
+
+
+def test_meet_join_auto_node_selects_sole_registered():
+    from plugins.google_meet.tools import handle_meet_join
+    from plugins.google_meet.node.registry import NodeRegistry
+
+    reg = NodeRegistry()
+    reg.add("only-one", "ws://1.2.3.4:18789", "tok")
+
+    with patch("plugins.google_meet.node.client.NodeClient.start_bot",
+               return_value={"ok": True}) as call_mock:
+        out = json.loads(handle_meet_join({
+            "url": "https://meet.google.com/abc-defg-hij",
+            "node": "auto",
+        }))
+    assert out["success"] is True
+    assert out["node"] == "only-one"
+    assert call_mock.called
+
+
+def test_meet_join_auto_node_ambiguous_returns_error():
+    from plugins.google_meet.tools import handle_meet_join
+    from plugins.google_meet.node.registry import NodeRegistry
+
+    reg = NodeRegistry()
+    reg.add("a", "ws://1.2.3.4:18789", "tok")
+    reg.add("b", "ws://5.6.7.8:18789", "tok")
+
+    out = json.loads(handle_meet_join({
+        "url": "https://meet.google.com/abc-defg-hij",
+        "node": "auto",
+    }))
+    assert out["success"] is False
+    assert "no registered meet node" in out["error"]
+
+
+def test_cli_register_includes_node_subcommand():
+    """`hermes meet` argparse tree includes the node subtree."""
+    import argparse
+    from plugins.google_meet.cli import register_cli
+
+    parser = argparse.ArgumentParser(prog="hermes meet")
+    register_cli(parser)
+
+    # Parse a known-good node invocation to prove the subtree is wired.
+    ns = parser.parse_args(["node", "list"])
+    assert ns.meet_command == "node"
+    assert ns.node_cmd == "list"
+
+
+def test_cli_join_accepts_mode_and_node_flags():
+    import argparse
+    from plugins.google_meet.cli import register_cli
+
+    parser = argparse.ArgumentParser(prog="hermes meet")
+    register_cli(parser)
+
+    ns = parser.parse_args([
+        "join", "https://meet.google.com/abc-defg-hij",
+        "--mode", "realtime", "--node", "my-mac",
+    ])
+    assert ns.mode == "realtime"
+    assert ns.node == "my-mac"
+
+
+def test_cli_say_subcommand_exists():
+    import argparse
+    from plugins.google_meet.cli import register_cli
+
+    parser = argparse.ArgumentParser(prog="hermes meet")
+    register_cli(parser)
+
+    ns = parser.parse_args(["say", "hello team", "--node", "my-mac"])
+    assert ns.text == "hello team"
+    assert ns.node == "my-mac"

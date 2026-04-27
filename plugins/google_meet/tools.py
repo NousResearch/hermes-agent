@@ -1,17 +1,20 @@
 """Agent-facing tools for the google_meet plugin.
 
 Tools:
-  meet_join        — join a Google Meet URL (spawns Playwright bot)
+  meet_join        — join a Google Meet URL (spawns Playwright bot locally
+                     OR on a remote node host via node=<name>)
   meet_status      — report bot liveness + transcript progress
   meet_transcript  — read the current transcript (optional last-N)
   meet_leave       — signal the bot to leave cleanly
-  meet_say         — v1 stub. v2 will speak through realtime audio bridge.
+  meet_say         — (v2) speak text through the realtime audio bridge.
+                     Requires the active meeting to have been joined with
+                     mode='realtime'.
 """
 
 from __future__ import annotations
 
 import json
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from plugins.google_meet import process_manager as pm
 
@@ -21,11 +24,16 @@ from plugins.google_meet import process_manager as pm
 # ---------------------------------------------------------------------------
 
 def check_meet_requirements() -> bool:
-    """Return True when the plugin can actually run.
+    """Return True when the plugin can actually run LOCALLY.
 
     Gates on:
       * Python ``playwright`` package importable
       * the plugin being on a supported platform (Linux or macOS)
+
+    Note: remote-node operation (``node=<name>``) only needs the
+    ``websockets`` dep on the gateway side — Chromium lives on the node.
+    But the plugin-level gate keeps the v1 semantics; individual tool
+    handlers relax the requirement when a node is addressed.
     """
     import platform as _p
     if _p.system().lower() not in ("linux", "darwin"):
@@ -35,6 +43,32 @@ def check_meet_requirements() -> bool:
     except ImportError:
         return False
     return True
+
+
+# ---------------------------------------------------------------------------
+# Node client helper
+# ---------------------------------------------------------------------------
+
+def _resolve_node_client(node: Optional[str]):
+    """Return (NodeClient, node_name) for *node*, or (None, None) to run local.
+
+    Raises RuntimeError with a readable message if the node is named but
+    unresolvable, so the handler can surface a clear error to the agent.
+    """
+    if node is None or node == "":
+        return None, None
+    from plugins.google_meet.node.registry import NodeRegistry
+    from plugins.google_meet.node.client import NodeClient
+
+    reg = NodeRegistry()
+    entry = reg.resolve(node if node != "auto" else None)
+    if entry is None:
+        raise RuntimeError(
+            f"no registered meet node matches {node!r} — "
+            "run `hermes meet node approve <name> <url> <token>` first"
+        )
+    client = NodeClient(url=entry["url"], token=entry["token"])
+    return client, entry.get("name")
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +95,15 @@ MEET_JOIN_SCHEMA: Dict[str, Any] = {
                     "Full https://meet.google.com/... URL. Required."
                 ),
             },
+            "mode": {
+                "type": "string",
+                "enum": ["transcribe", "realtime"],
+                "description": (
+                    "transcribe (default): listen-only, scrape captions. "
+                    "realtime: also enable agent speech via meet_say "
+                    "(requires OpenAI Realtime key + platform audio bridge)."
+                ),
+            },
             "guest_name": {
                 "type": "string",
                 "description": (
@@ -82,6 +125,17 @@ MEET_JOIN_SCHEMA: Dict[str, Any] = {
                     "Default false."
                 ),
             },
+            "node": {
+                "type": "string",
+                "description": (
+                    "Name of a registered remote node to run the bot on "
+                    "(useful when the gateway runs on a headless Linux box "
+                    "but the user's Chrome with a signed-in Google profile "
+                    "lives on their Mac). Pass 'auto' to use the single "
+                    "registered node. Default: run locally. Nodes are "
+                    "approved via `hermes meet node approve`."
+                ),
+            },
         },
         "required": ["url"],
         "additionalProperties": False,
@@ -97,7 +151,9 @@ MEET_STATUS_SCHEMA: Dict[str, Any] = {
     ),
     "parameters": {
         "type": "object",
-        "properties": {},
+        "properties": {
+            "node": {"type": "string"},
+        },
         "additionalProperties": False,
     },
 }
@@ -121,6 +177,7 @@ MEET_TRANSCRIPT_SCHEMA: Dict[str, Any] = {
                 ),
                 "minimum": 1,
             },
+            "node": {"type": "string"},
         },
         "additionalProperties": False,
     },
@@ -135,7 +192,9 @@ MEET_LEAVE_SCHEMA: Dict[str, Any] = {
     ),
     "parameters": {
         "type": "object",
-        "properties": {},
+        "properties": {
+            "node": {"type": "string"},
+        },
         "additionalProperties": False,
     },
 }
@@ -143,16 +202,18 @@ MEET_LEAVE_SCHEMA: Dict[str, Any] = {
 MEET_SAY_SCHEMA: Dict[str, Any] = {
     "name": "meet_say",
     "description": (
-        "Speak text into the active Meet call. v1 STUB — not implemented "
-        "yet. v2 will bridge through OpenAI Realtime / Gemini Live + a "
-        "virtual audio device (BlackHole on macOS, PulseAudio null-sink on "
-        "Linux). Today this tool returns a not-implemented error so the "
-        "agent can plan around it."
+        "Speak text into the active Meet call. Requires the active meeting "
+        "to have been joined with mode='realtime'. The text is queued to "
+        "the bot's OpenAI Realtime session; the generated audio is streamed "
+        "into Chrome's fake microphone via a virtual audio device "
+        "(PulseAudio null-sink on Linux, BlackHole on macOS). Returns "
+        "immediately — the actual speech lags by a couple of seconds."
     ),
     "parameters": {
         "type": "object",
         "properties": {
             "text": {"type": "string", "description": "Text to speak."},
+            "node": {"type": "string"},
         },
         "required": ["text"],
         "additionalProperties": False,
@@ -168,29 +229,66 @@ def _json(obj: Any) -> str:
     return json.dumps(obj, ensure_ascii=False)
 
 
+def _err(msg: str, **extra) -> str:
+    return _json({"success": False, "error": msg, **extra})
+
+
 def handle_meet_join(args: Dict[str, Any], **_kw) -> str:
     url = (args.get("url") or "").strip()
     if not url:
-        return _json({"success": False, "error": "url is required"})
+        return _err("url is required")
+    mode = (args.get("mode") or "transcribe").strip().lower()
+    if mode not in ("transcribe", "realtime"):
+        return _err(f"mode must be 'transcribe' or 'realtime' (got {mode!r})")
+
+    node = args.get("node")
+    try:
+        client, node_name = _resolve_node_client(node)
+    except RuntimeError as e:
+        return _err(str(e))
+
+    if client is not None:
+        # Remote path — delegate to the node host.
+        try:
+            res = client.start_bot(
+                url=url,
+                guest_name=str(args.get("guest_name") or "Hermes Agent"),
+                duration=str(args.get("duration")) if args.get("duration") else None,
+                headed=bool(args.get("headed", False)),
+                mode=mode,
+            )
+            return _json({"success": bool(res.get("ok")), "node": node_name, **res})
+        except Exception as e:
+            return _err(f"remote node start_bot failed: {e}", node=node_name)
+
+    # Local path — same as v1, with v2 params.
     if not check_meet_requirements():
-        return _json({
-            "success": False,
-            "error": (
-                "google_meet plugin prerequisites missing — install with "
-                "`pip install playwright && python -m playwright install "
-                "chromium`. Plugin is supported on Linux and macOS only."
-            ),
-        })
+        return _err(
+            "google_meet plugin prerequisites missing — install with "
+            "`pip install playwright && python -m playwright install "
+            "chromium`. Plugin is supported on Linux and macOS only."
+        )
     res = pm.start(
         url=url,
         headed=bool(args.get("headed", False)),
         guest_name=str(args.get("guest_name") or "Hermes Agent"),
         duration=str(args.get("duration")) if args.get("duration") else None,
+        mode=mode,
     )
     return _json({"success": bool(res.get("ok")), **res})
 
 
-def handle_meet_status(_args: Dict[str, Any], **_kw) -> str:
+def handle_meet_status(args: Dict[str, Any], **_kw) -> str:
+    try:
+        client, node_name = _resolve_node_client(args.get("node"))
+    except RuntimeError as e:
+        return _err(str(e))
+    if client is not None:
+        try:
+            res = client.status()
+            return _json({"success": bool(res.get("ok")), "node": node_name, **res})
+        except Exception as e:
+            return _err(f"remote node status failed: {e}", node=node_name)
     res = pm.status()
     return _json({"success": bool(res.get("ok")), **res})
 
@@ -203,25 +301,48 @@ def handle_meet_transcript(args: Dict[str, Any], **_kw) -> str:
             last_i = None
     except (TypeError, ValueError):
         last_i = None
+    try:
+        client, node_name = _resolve_node_client(args.get("node"))
+    except RuntimeError as e:
+        return _err(str(e))
+    if client is not None:
+        try:
+            res = client.transcript(last=last_i)
+            return _json({"success": bool(res.get("ok")), "node": node_name, **res})
+        except Exception as e:
+            return _err(f"remote node transcript failed: {e}", node=node_name)
     res = pm.transcript(last=last_i)
     return _json({"success": bool(res.get("ok")), **res})
 
 
-def handle_meet_leave(_args: Dict[str, Any], **_kw) -> str:
+def handle_meet_leave(args: Dict[str, Any], **_kw) -> str:
+    try:
+        client, node_name = _resolve_node_client(args.get("node"))
+    except RuntimeError as e:
+        return _err(str(e))
+    if client is not None:
+        try:
+            res = client.stop()
+            return _json({"success": bool(res.get("ok")), "node": node_name, **res})
+        except Exception as e:
+            return _err(f"remote node stop failed: {e}", node=node_name)
     res = pm.stop(reason="agent called meet_leave")
     return _json({"success": bool(res.get("ok")), **res})
 
 
 def handle_meet_say(args: Dict[str, Any], **_kw) -> str:
     text = (args.get("text") or "").strip()
-    return _json({
-        "success": False,
-        "error": (
-            "meet_say is a v1 stub. Realtime duplex audio (agent speaks in "
-            "the meeting) is planned for v2 via OpenAI Realtime / Gemini "
-            "Live + BlackHole / PulseAudio null-sink. For now the agent "
-            "can only listen (meet_transcript) and follow up outside the "
-            "meeting."
-        ),
-        "requested_text": text,
-    })
+    if not text:
+        return _err("text is required")
+    try:
+        client, node_name = _resolve_node_client(args.get("node"))
+    except RuntimeError as e:
+        return _err(str(e))
+    if client is not None:
+        try:
+            res = client.say(text)
+            return _json({"success": bool(res.get("ok")), "node": node_name, **res})
+        except Exception as e:
+            return _err(f"remote node say failed: {e}", node=node_name)
+    res = pm.enqueue_say(text)
+    return _json({"success": bool(res.get("ok")), **res})

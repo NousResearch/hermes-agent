@@ -247,6 +247,32 @@ class TestDelegateLockBypass:
             "_active_children.append should only happen inside the lock"
         )
 
+    def test_no_unlocked_remove_path(self):
+        """_active_children.remove must not appear in an unlocked else branch
+        in _run_single_child (the unregister path mirrors the register path)."""
+        import inspect
+        from tools.delegate_tool import _run_single_child
+
+        source = inspect.getsource(_run_single_child)
+        lines = source.split('\n')
+        in_lock_block = False
+        found_unlocked_remove = False
+
+        for i, line in enumerate(lines):
+            stripped = line.strip()
+            if '_active_children_lock' in stripped:
+                in_lock_block = True
+            if in_lock_block and stripped.startswith('else:'):
+                for j in range(i + 1, min(i + 5, len(lines))):
+                    if '_active_children' in lines[j] and 'remove' in lines[j]:
+                        found_unlocked_remove = True
+                        break
+
+        assert not found_unlocked_remove, (
+            "Found unlocked remove in else branch of _run_single_child — "
+            "_active_children.remove should only happen inside the lock"
+        )
+
     # ------------------------------------------------------------------
     # 4. Concurrency: two threads cannot corrupt the list
     # ------------------------------------------------------------------

@@ -200,3 +200,37 @@ def test_resolve_task_provider_model_no_key_env_set_returns_none(monkeypatch):
 
     # Unset env var → None, not empty string or "no-key-required"
     assert resolved_key is None
+
+
+def test_explicit_base_url_query_params_preserved_for_anthropic_client():
+    """build_anthropic_client must receive the original URL including query params.
+
+    Before the fix, _clean_base (query params stripped) was passed instead of
+    custom_base, so Azure-style ?api-version= params were silently dropped
+    before build_anthropic_client could route them via default_query.
+    """
+    from agent.auxiliary_client import resolve_provider_client
+
+    received_urls: list[str] = []
+
+    def _capture_build_anthropic_client(api_key, base_url=None, **kw):
+        received_urls.append(base_url or "")
+        return MagicMock(name="anthropic_client")
+
+    with patch(
+        "agent.anthropic_adapter.build_anthropic_client",
+        side_effect=_capture_build_anthropic_client,
+    ):
+        resolve_provider_client(
+            "custom",
+            model="claude-3-haiku",
+            explicit_base_url="https://my-azure-endpoint.openai.azure.com/v1?api-version=2025-04-15",
+            explicit_api_key="sk-azure",
+            api_mode="anthropic_messages",
+        )
+
+    assert received_urls, "build_anthropic_client was never called"
+    assert "api-version=2025-04-15" in received_urls[0], (
+        f"Query params were stripped before passing to build_anthropic_client: {received_urls[0]!r}.  "
+        "Pass the original URL so the function can route api-version via default_query."
+    )

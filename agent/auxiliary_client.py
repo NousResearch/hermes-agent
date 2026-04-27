@@ -1870,7 +1870,9 @@ def resolve_provider_client(
             if api_mode == "anthropic_messages":
                 try:
                     from agent.anthropic_adapter import build_anthropic_client
-                    real_client = build_anthropic_client(custom_key, _clean_base)
+                    # Pass the original URL; build_anthropic_client handles
+                    # query params internally (e.g. Azure api-version).
+                    real_client = build_anthropic_client(custom_key, custom_base)
                 except ImportError:
                     logger.warning(
                         "resolve_provider_client: explicit_base_url declares "
@@ -1881,7 +1883,7 @@ def resolve_provider_client(
                     return (_to_async_client(client, final_model, is_vision=is_vision) if async_mode
                             else (client, final_model))
                 sync_anthropic = AnthropicAuxiliaryClient(
-                    real_client, final_model, custom_key, _clean_base, is_oauth=False,
+                    real_client, final_model, custom_key, custom_base, is_oauth=False,
                 )
                 if async_mode:
                     return AsyncAnthropicAuxiliaryClient(sync_anthropic), final_model

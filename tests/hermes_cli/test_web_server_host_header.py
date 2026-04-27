@@ -18,6 +18,20 @@ _repo = str(Path(__file__).resolve().parents[1])
 if _repo not in sys.path:
     sys.path.insert(0, _repo)
 
+# hermes_cli.web_server raises SystemExit at import time when fastapi/uvicorn
+# are absent.  Catch it here so the collection phase doesn't abort; the
+# pytestmark below then skips every test in this module.
+try:
+    import hermes_cli.web_server  # noqa: F401
+    _WEB_SERVER_AVAILABLE = True
+except (ImportError, SystemExit):
+    _WEB_SERVER_AVAILABLE = False
+
+pytestmark = pytest.mark.skipif(
+    not _WEB_SERVER_AVAILABLE,
+    reason="fastapi/uvicorn not installed",
+)
+
 
 class TestHostHeaderValidator:
     """Unit test the _is_accepted_host helper directly — cheaper and

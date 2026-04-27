@@ -22,6 +22,23 @@ def test_final_assistant_content_uses_markdown_renderable():
     assert "two" in output
 
 
+def test_final_assistant_content_preserves_windows_hidden_dir_paths():
+    renderable = _render_final_assistant_content(
+        r"D:\Projects\SourceCode\hermes-agent\.ai\skills" + "\\"
+    )
+
+    output = _render_to_text(renderable)
+    assert r"D:\Projects\SourceCode\hermes-agent\.ai\skills" + "\\" in output
+
+
+def test_final_assistant_content_keeps_non_path_markdown_escapes():
+    renderable = _render_final_assistant_content(r"1\. Not an ordered list")
+
+    output = _render_to_text(renderable)
+    assert "1. Not an ordered list" in output
+    assert r"1\." not in output
+
+
 def test_final_assistant_content_strips_ansi_before_markdown_rendering():
     renderable = _render_final_assistant_content("\x1b[31m# Title\x1b[0m")
 

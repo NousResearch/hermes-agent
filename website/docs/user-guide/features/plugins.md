@@ -99,6 +99,7 @@ Project-local plugins under `./.hermes/plugins/` are disabled by default. Enable
 | User | `~/.hermes/plugins/` | Personal plugins |
 | Project | `.hermes/plugins/` | Project-specific plugins (requires `HERMES_ENABLE_PROJECT_PLUGINS=true`) |
 | pip | `hermes_agent.plugins` entry_points | Distributed packages |
+| Nix | `services.hermes-agent.extraPlugins` / `extraPythonPackages` | NixOS declarative installs — see [Nix Setup](/docs/getting-started/nix-setup#plugins) |
 
 Later sources override earlier ones on name collision, so a user plugin with the same name as a bundled plugin replaces it.
 
@@ -154,6 +155,23 @@ Hermes has three kinds of plugins:
 | **Context engines** | Replace the built-in context compressor | Single-select (one active) | `plugins/context_engine/` |
 
 Memory providers and context engines are **provider plugins** — only one of each type can be active at a time. General plugins can be enabled in any combination.
+
+## NixOS declarative plugins
+
+On NixOS, plugins can be installed declaratively via the module options — no `hermes plugins install` needed. See the **[Nix Setup guide](/docs/getting-started/nix-setup#plugins)** for full details.
+
+```nix
+services.hermes-agent = {
+  # Directory plugin (source tree with plugin.yaml)
+  extraPlugins = [ (pkgs.fetchFromGitHub { ... }) ];
+  # Entry-point plugin (pip package)
+  extraPythonPackages = [ (pkgs.python312Packages.buildPythonPackage { ... }) ];
+  # Enable in config
+  settings.plugins.enabled = [ "my-plugin" ];
+};
+```
+
+Declarative plugins are symlinked with a `nix-managed-` prefix — they coexist with manually installed plugins and are cleaned up automatically when removed from the Nix config.
 
 ## Managing plugins
 

@@ -28,6 +28,8 @@
 
   let
     cfg = config.services.hermes-agent;
+    effectivePackage = if cfg.extraPythonPackages == [ ] then cfg.package
+      else cfg.package.override { inherit (cfg) extraPythonPackages; };
     hermes-agent = inputs.self.packages.${pkgs.stdenv.hostPlatform.system}.default;
 
     # Deep-merge config type (from 0xrsydn/nix-hermes-agent)
@@ -456,6 +458,52 @@
         description = "Extra packages available on PATH.";
       };
 
+      extraPlugins = mkOption {
+        type = types.listOf types.package;
+        default = [ ];
+        description = ''
+          Directory-based plugin packages to symlink into the hermes plugins
+          directory. Each package should contain a plugin.yaml and __init__.py
+          at its root. Hermes discovers these automatically on startup.
+        '';
+        example = literalExpression ''
+          [
+            (pkgs.fetchFromGitHub {
+              owner = "stephenschoettler";
+              repo = "hermes-lcm";
+              name = "hermes-lcm";
+              rev = "v0.7.0";
+              hash = "sha256-...";
+            })
+          ]
+        '';
+      };
+
+      extraPythonPackages = mkOption {
+        type = types.listOf types.package;
+        default = [ ];
+        description = ''
+          Python packages to add to PYTHONPATH for entry-point plugin discovery.
+          These are pip-packaged plugins that register via the
+          hermes_agent.plugins entry-point group. Each package must be built
+          with the same Python interpreter as hermes (python312).
+        '';
+        example = literalExpression ''
+          [
+            (pkgs.python312Packages.buildPythonPackage {
+              pname = "rtk-hermes";
+              version = "1.0.0";
+              src = pkgs.fetchFromGitHub {
+                owner = "ogallotti";
+                repo = "rtk-hermes";
+                rev = "main";
+                hash = "sha256-...";
+              };
+            })
+          ]
+        '';
+      };
+
       restart = mkOption {
         type = types.str;
         default = "always";
@@ -570,7 +618,7 @@
       # so interactive shells share state (sessions, skills, cron) with the
       # gateway service instead of creating a separate ~/.hermes/.
       (lib.mkIf cfg.addToSystemPackages {
-        environment.systemPackages = [ cfg.package ];
+        environment.systemPackages = [ effectivePackage ];
         environment.variables.HERMES_HOME = "${cfg.stateDir}/.hermes";
       })
 
@@ -580,6 +628,16 @@
           extraGroups = [ cfg.group ];
         });
       })
+
+      # ── Assertions ─────────────────────────────────────────────────────
+      {
+        assertions = let
+          names = map lib.getName cfg.extraPlugins;
+        in [{
+          assertion = (lib.length names) == (lib.length (lib.unique names));
+          message = "services.hermes-agent.extraPlugins: duplicate plugin names detected: ${toString names}. If using fetchFromGitHub, set name = \"plugin-name\" to disambiguate.";
+        }];
+      }
 
       # ── Warnings ──────────────────────────────────────────────────────
       (lib.mkIf (cfg.container.enable && !cfg.addToSystemPackages && cfg.container.hostUsers != []) {
@@ -602,6 +660,7 @@
           "d ${cfg.stateDir}/.hermes/sessions 2770 ${cfg.user} ${cfg.group} - -"
           "d ${cfg.stateDir}/.hermes/logs   2770 ${cfg.user} ${cfg.group} - -"
           "d ${cfg.stateDir}/.hermes/memories 2770 ${cfg.user} ${cfg.group} - -"
+          "d ${cfg.stateDir}/.hermes/plugins 2770 ${cfg.user} ${cfg.group} - -"
           "d ${cfg.stateDir}/home           0750 ${cfg.user} ${cfg.group} - -"
           "d ${cfg.workingDirectory}         2770 ${cfg.user} ${cfg.group} - -"
         ];
@@ -623,7 +682,7 @@
           find ${cfg.stateDir}/.hermes -maxdepth 1 \
             \( -name "*.db" -o -name "*.db-wal" -o -name "*.db-shm" -o -name "SOUL.md" \) \
             -exec chmod g+rw {} + 2>/dev/null || true
-          for _subdir in cron sessions logs memories; do
+          for _subdir in cron sessions logs memories plugins; do
             mkdir -p "${cfg.stateDir}/.hermes/$_subdir"
             chown ${cfg.user}:${cfg.group} "${cfg.stateDir}/.hermes/$_subdir"
             chmod 2770 "${cfg.stateDir}/.hermes/$_subdir"
@@ -732,6 +791,22 @@ HERMES_NIX_ENV_EOF
           ${lib.concatStringsSep "\n" (lib.mapAttrsToList (name: _value: ''
             install -o ${cfg.user} -g ${cfg.group} -m 0640 ${documentDerivation}/${name} ${cfg.workingDirectory}/${name}
           '') cfg.documents)}
+
+        # ── Declarative plugins ─────────────────────────────────────────
+        # Remove stale managed symlinks (plugins removed from config)
+        find ${cfg.stateDir}/.hermes/plugins -maxdepth 1 -type l -name 'nix-managed-*' -delete 2>/dev/null || true
+
+        ${lib.concatStringsSep "\n" (map (plugin:
+          let
+            name = lib.getName plugin;
+          in ''
+            if [ ! -f "${plugin}/plugin.yaml" ]; then
+              echo "ERROR: extraPlugins entry '${plugin}' has no plugin.yaml" >&2
+              exit 1
+            fi
+            ln -sfn ${plugin} ${cfg.stateDir}/.hermes/plugins/nix-managed-${name}
+            chown -h ${cfg.user}:${cfg.group} ${cfg.stateDir}/.hermes/plugins/nix-managed-${name}
+          '') cfg.extraPlugins)}
         '';
       }
 
@@ -762,7 +837,7 @@ HERMES_NIX_ENV_EOF
             # reads them at Python startup — no systemd EnvironmentFile needed.
 
             ExecStart = lib.concatStringsSep " " ([
-              "${cfg.package}/bin/hermes"
+              "${effectivePackage}/bin/hermes"
               "gateway"
             ] ++ cfg.extraArgs);
 
@@ -785,7 +860,7 @@ HERMES_NIX_ENV_EOF
           };
 
           path = [
-            cfg.package
+            effectivePackage
             pkgs.bash
             pkgs.coreutils
             pkgs.git
@@ -810,11 +885,11 @@ HERMES_NIX_ENV_EOF
 
           preStart = ''
             # Stable symlinks — container references these, not store paths directly
-            ln -sfn ${cfg.package} ${cfg.stateDir}/current-package
+            ln -sfn ${effectivePackage} ${cfg.stateDir}/current-package
             ln -sfn ${containerEntrypoint} ${cfg.stateDir}/current-entrypoint
 
             # GC roots so nix-collect-garbage doesn't remove store paths in use
-            ${pkgs.nix}/bin/nix-store --add-root ${cfg.stateDir}/.gc-root --indirect -r ${cfg.package} 2>/dev/null || true
+            ${pkgs.nix}/bin/nix-store --add-root ${cfg.stateDir}/.gc-root --indirect -r ${effectivePackage} 2>/dev/null || true
             ${pkgs.nix}/bin/nix-store --add-root ${cfg.stateDir}/.gc-root-entrypoint --indirect -r ${containerEntrypoint} 2>/dev/null || true
 
             # Check if container needs (re)creation

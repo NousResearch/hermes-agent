@@ -132,7 +132,6 @@ export const logFrameEvent = ENABLED
         taken: scrollFastPathStats.taken,
         declined: {
           heightDeltaMismatch: scrollFastPathStats.declined.heightDeltaMismatch,
-          noHint: scrollFastPathStats.declined.noHint,
           noPrevScreen: scrollFastPathStats.declined.noPrevScreen,
           other: scrollFastPathStats.declined.other
         },

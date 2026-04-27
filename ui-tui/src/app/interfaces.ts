@@ -125,6 +125,7 @@ export interface ComposerActions {
   handleTextPaste: (event: PasteEvent) => MaybePromise<ComposerPasteResult | null>
   openEditor: () => Promise<void>
   pushHistory: (text: string) => void
+  removeQueue: (index: number) => void
   replaceQueue: (index: number, text: string) => void
   setCompIdx: StateSetter<number>
   setHistoryIdx: StateSetter<null | number>

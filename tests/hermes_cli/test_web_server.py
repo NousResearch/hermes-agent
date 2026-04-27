@@ -651,6 +651,71 @@ class TestNewEndpoints:
         names = [p["name"] for p in self.client.get("/api/profiles").json()["profiles"]]
         assert "test-prof-2" not in names
 
+    def test_profile_setup_command_uses_named_profile_wrapper(self):
+        from hermes_constants import get_hermes_home
+
+        (get_hermes_home() / "profiles" / "coder").mkdir(parents=True)
+
+        resp = self.client.get("/api/profiles/coder/setup-command")
+
+        assert resp.status_code == 200
+        assert resp.json()["command"] == "coder setup"
+
+    def test_profile_setup_command_uses_hermes_for_default_profile(self):
+        from hermes_constants import get_hermes_home
+
+        get_hermes_home().mkdir(parents=True, exist_ok=True)
+
+        resp = self.client.get("/api/profiles/default/setup-command")
+
+        assert resp.status_code == 200
+        assert resp.json()["command"] == "hermes setup"
+
+    def test_profiles_create_creates_wrapper_alias_when_safe(self):
+        from pathlib import Path
+
+        resp = self.client.post(
+            "/api/profiles",
+            json={"name": "writer", "clone_from_default": False},
+        )
+
+        assert resp.status_code == 200
+        wrapper_path = Path.home() / ".local" / "bin" / "writer"
+        assert wrapper_path.exists()
+        assert wrapper_path.read_text() == '#!/bin/sh\nexec hermes -p writer "$@"\n'
+
+    def test_profile_open_terminal_uses_macos_terminal(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        import hermes_cli.web_server as web_server
+
+        (get_hermes_home() / "profiles" / "coder").mkdir(parents=True)
+        calls = []
+        monkeypatch.setattr(web_server.sys, "platform", "darwin")
+        monkeypatch.setattr(web_server.subprocess, "Popen", lambda args, **kwargs: calls.append(args))
+
+        resp = self.client.post("/api/profiles/coder/open-terminal")
+
+        assert resp.status_code == 200
+        assert calls
+        assert calls[0][0] == "osascript"
+        assert "coder setup" in " ".join(calls[0])
+
+    def test_profile_open_terminal_uses_windows_cmd(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        import hermes_cli.web_server as web_server
+
+        (get_hermes_home() / "profiles" / "coder").mkdir(parents=True)
+        calls = []
+        monkeypatch.setattr(web_server.sys, "platform", "win32")
+        monkeypatch.setattr(web_server.subprocess, "Popen", lambda args, **kwargs: calls.append(args))
+
+        resp = self.client.post("/api/profiles/coder/open-terminal")
+
+        assert resp.status_code == 200
+        assert calls
+        assert calls[0][:4] == ["cmd.exe", "/c", "start", ""]
+        assert calls[0][-1] == "coder setup"
+
     def test_profiles_create_rejects_invalid_name(self):
         resp = self.client.post("/api/profiles", json={"name": "Has Spaces"})
         assert resp.status_code == 400

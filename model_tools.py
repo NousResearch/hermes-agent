@@ -405,7 +405,10 @@ def handle_function_call(
 
         try:
             from hermes_cli.plugins import invoke_hook
-            invoke_hook("pre_tool_call", tool_name=function_name, args=function_args, task_id=task_id or "")
+            _hook_results = invoke_hook("pre_tool_call", tool_name=function_name, args=function_args, task_id=task_id or "")
+            for _r in _hook_results or []:
+                if isinstance(_r, dict) and _r.get("block"):
+                    return json.dumps({"error": "BLOCKED by pre_tool_call hook", "reason": _r.get("reason", "policy")})
         except Exception:
             pass
 

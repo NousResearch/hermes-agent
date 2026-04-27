@@ -35,6 +35,60 @@ hermes dashboard --host 0.0.0.0
 hermes dashboard --no-open
 ```
 
+## Private remote access with Tailscale
+
+The dashboard is designed to be **local-first**. For remote access from your own trusted devices, the recommended MVP path is to keep Hermes on your machine and put network access behind [Tailscale](https://tailscale.com/) instead of exposing the dashboard directly to the public internet.
+
+### Recommended pattern: forward over Tailscale
+
+The safest remote-access pattern is to keep the dashboard bound to loopback and connect through a Tailscale-protected SSH tunnel:
+
+```bash
+# On the machine running Hermes
+hermes dashboard --host 127.0.0.1 --port 9119 --no-open
+
+# From another trusted device on your tailnet
+ssh -L 9119:127.0.0.1:9119 <user>@<hermes-device-tailnet-name>
+```
+
+Then open `http://127.0.0.1:9119` on the trusted device. This keeps the dashboard's HTTP listener private to the Hermes machine while Tailscale protects the SSH path between devices.
+
+### Alternative: bind only to a Tailscale address
+
+If you need direct browser access without SSH forwarding, bind the dashboard to the machine's Tailscale IP rather than `0.0.0.0`:
+
+```bash
+# Find the machine's Tailscale IPv4 address
+tailscale ip -4
+
+# Bind the dashboard to that Tailscale address only
+hermes dashboard --host <tailscale-ipv4> --port 9119 --no-open
+```
+
+Open `http://<tailscale-ipv4>:9119` from a trusted device on the same tailnet. Do **not** use this pattern on untrusted tailnets, shared machines, or networks where other tailnet members should not be able to administer Hermes.
+
+### Verification checklist
+
+Before relying on Tailscale access, verify:
+
+- `tailscale status` shows the Hermes machine and the remote device are connected to the expected tailnet.
+- `tailscale ip -4` returns the Hermes machine's Tailscale address.
+- `hermes dashboard` without `--host` still binds to `127.0.0.1`.
+- The dashboard is reachable from the trusted Tailscale device using the approved access path.
+- The dashboard is **not** reachable from a non-tailnet device or public network.
+- API keys remain redacted in the UI and logs.
+- Protected API calls still require the dashboard session token.
+
+### Troubleshooting
+
+| Symptom | Check |
+|---|---|
+| Remote device cannot connect | Confirm both devices appear in `tailscale status`, then try the SSH-forwarding pattern first. |
+| MagicDNS name does not resolve | Use the Tailscale IPv4 from `tailscale ip -4`, or enable MagicDNS in the tailnet admin console. |
+| Browser shows a host/security error | Use the exact host printed by the dashboard or the loopback URL through SSH forwarding. Avoid arbitrary hostnames. |
+| Connection works locally but not remotely | Check macOS/Linux firewall settings and confirm the dashboard is bound to the intended loopback or Tailscale address. |
+| You need browser-only access from non-Tailscale devices | Consider Cloudflare Tunnel + Cloudflare Access as a later, separate deployment option; do not make the dashboard public without an identity layer. |
+
 ## Prerequisites
 
 The default `hermes-agent` install does not ship the HTTP stack or PTY helper — those are optional extras. The **web dashboard** needs FastAPI and Uvicorn (`web` extra). The **Chat** tab also needs `ptyprocess` to spawn the embedded TUI behind a pseudo-terminal (`pty` extra on POSIX). Install both with:
@@ -175,7 +229,7 @@ Browse, search, and toggle skills and toolsets. Skills are loaded from `~/.herme
 - **Toolsets** — a separate section shows built-in toolsets (file operations, web browsing, etc.) with their active/inactive status, setup requirements, and list of included tools
 
 :::warning Security
-The web dashboard reads and writes your `.env` file, which contains API keys and secrets. It binds to `127.0.0.1` by default — only accessible from your local machine. If you bind to `0.0.0.0`, anyone on your network can view and modify your credentials. The dashboard has no authentication of its own.
+The web dashboard reads and writes your `.env` file, which contains API keys and secrets. It binds to `127.0.0.1` by default — only accessible from your local machine. Keep that default unless you have a private access layer such as Tailscale in front of it. If you bind to `0.0.0.0`, anyone who can reach that network interface may be able to administer Hermes and modify credentials. Treat the dashboard session token as a secret, keep API keys redacted, and do not expose the dashboard directly to the public internet.
 :::
 
 ## `/reload` Slash Command

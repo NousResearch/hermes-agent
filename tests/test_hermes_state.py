@@ -222,6 +222,35 @@ class TestMessageStorage:
         assert conv[0] == {"role": "user", "content": "Hello"}
         assert conv[1] == {"role": "assistant", "content": "Hi!"}
 
+    def test_get_messages_as_conversation_includes_ancestor_chain(self, db):
+        db.create_session("root", "tui")
+        db.append_message("root", role="user", content="first prompt")
+        db.append_message("root", role="assistant", content="first answer")
+        db.create_session("child", "tui", parent_session_id="root")
+        db.append_message("child", role="user", content="second prompt")
+        db.append_message("child", role="assistant", content="second answer")
+
+        conv = db.get_messages_as_conversation("child", include_ancestors=True)
+
+        assert [m["content"] for m in conv] == [
+            "first prompt",
+            "first answer",
+            "second prompt",
+            "second answer",
+        ]
+
+    def test_get_messages_as_conversation_avoids_repeated_resume_prompts_from_ancestors(self, db):
+        db.create_session("root", "tui")
+        db.append_message("root", role="user", content="same prompt")
+        db.append_message("root", role="user", content="same prompt")
+        db.append_message("root", role="assistant", content="answer")
+        db.create_session("child", "tui", parent_session_id="root")
+        db.append_message("child", role="user", content="next prompt")
+
+        conv = db.get_messages_as_conversation("child", include_ancestors=True)
+
+        assert [m["content"] for m in conv if m["role"] == "user"] == ["same prompt", "next prompt"]
+
     def test_finish_reason_stored(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="assistant", content="Done", finish_reason="stop")
@@ -1256,12 +1285,12 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to the current schema.
+        # Open with SessionDB — should migrate to v9
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 12
+        assert cursor.fetchone()[0] == 9
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
@@ -1484,6 +1513,48 @@ class TestListSessionsRich:
         sessions = db.list_sessions_rich()
         assert "\n" not in sessions[0]["preview"]
         assert "Line one Line two" in sessions[0]["preview"]
+
+    def test_branch_session_visible_in_list(self, db):
+        """Branch sessions (parent ended with 'branched') must appear in list_sessions_rich."""
+        db.create_session("parent", "cli")
+        db.end_session("parent", "branched")
+        db.create_session("branch", "cli", parent_session_id="parent")
+        db.append_message("branch", "user", "Exploring the alternative approach")
+
+        sessions = db.list_sessions_rich()
+        ids = [s["id"] for s in sessions]
+        assert "branch" in ids, "Branch session should be visible in default list"
+
+    def test_subagent_session_still_hidden(self, db):
+        """Sub-agent children (parent NOT ended with 'branched') remain hidden."""
+        db.create_session("root", "cli")
+        db.create_session("delegate", "cli", parent_session_id="root")
+
+        sessions = db.list_sessions_rich()
+        ids = [s["id"] for s in sessions]
+        assert "delegate" not in ids, "Delegate sub-agent should not appear in default list"
+        assert "root" in ids
+
+    def test_compression_child_still_hidden(self, db):
+        """Compression continuation sessions remain hidden (parent ended with 'compression')."""
+        import time as _time
+        t0 = _time.time()
+        db.create_session("root", "cli")
+        db._conn.execute("UPDATE sessions SET started_at=? WHERE id=?", (t0, "root"))
+        db._conn.execute(
+            "UPDATE sessions SET ended_at=?, end_reason='compression' WHERE id=?",
+            (t0 + 1800, "root"),
+        )
+        db._conn.commit()
+        db.create_session("continuation", "cli", parent_session_id="root")
+        db._conn.execute(
+            "UPDATE sessions SET started_at=? WHERE id=?", (t0 + 1801, "continuation")
+        )
+        db._conn.commit()
+
+        sessions = db.list_sessions_rich(project_compression_tips=False)
+        ids = [s["id"] for s in sessions]
+        assert "continuation" not in ids, "Compression continuation should stay hidden"
 
 
 class TestCompressionChainProjection:
@@ -1821,282 +1892,6 @@ class TestConcurrentWriteSafety:
 
 
 # =========================================================================
-# Copilot remote lifecycle
-# =========================================================================
-
-class TestCopilotRemoteLifecycle:
-    def test_schema_version_is_12(self, db):
-        cursor = db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 12
-
-    def test_copilot_tables_exist(self, db):
-        cursor = db._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        )
-        tables = {row[0] for row in cursor.fetchall()}
-        assert "copilot_remote" in tables
-
-    def test_create_and_get_job(self, db):
-        job_id = db.create_copilot_remote(
-            job_id="cj_test_001",
-            repo_slug="test",
-            repo_path="/repos/test",
-            prompt="Fix the login bug",
-            signal_source="cli",
-        )
-        assert job_id == "cj_test_001"
-
-        job = db.get_copilot_remote("cj_test_001")
-        assert job is not None
-        assert job["repo_slug"] == "test"
-        assert job["state"] == "running"
-        assert job["prompt"] == "Fix the login bug"
-
-    def test_get_nonexistent_job(self, db):
-        assert db.get_copilot_remote("nonexistent") is None
-
-    def test_list_jobs(self, db):
-        db.create_copilot_remote(
-            job_id="cj_a", repo_slug="repo-a", repo_path="/a"
-        )
-        db.create_copilot_remote(
-            job_id="cj_b", repo_slug="repo-b", repo_path="/b"
-        )
-        jobs = db.list_copilot_remote()
-        assert len(jobs) == 2
-
-    def test_list_jobs_by_state(self, db):
-        db.create_copilot_remote(
-            job_id="cj_a", repo_slug="repo-a", repo_path="/a"
-        )
-        db.create_copilot_remote(
-            job_id="cj_b", repo_slug="repo-b", repo_path="/b"
-        )
-        db.finish_copilot_remote("cj_a", state="done", exit_code=0)
-        running = db.list_copilot_remote(state="running")
-        done = db.list_copilot_remote(state="done")
-        assert len(running) == 1
-        assert running[0]["id"] == "cj_b"
-        assert len(done) == 1
-        assert done[0]["id"] == "cj_a"
-
-    def test_finish_job_done(self, db):
-        db.create_copilot_remote(
-            job_id="cj_1", repo_slug="repo", repo_path="/r"
-        )
-        db.finish_copilot_remote(
-            "cj_1", state="done",
-            exit_code=0,
-        )
-        job = db.get_copilot_remote("cj_1")
-        assert job["state"] == "done"
-        assert job["exit_code"] == 0
-        assert job["finished_at"] is not None
-
-    def test_finish_job_failed(self, db):
-        db.create_copilot_remote(
-            job_id="cj_1", repo_slug="repo", repo_path="/r"
-        )
-        db.finish_copilot_remote(
-            "cj_1", state="failed",
-            exit_code=1,
-            error_text="subprocess died",
-        )
-        job = db.get_copilot_remote("cj_1")
-        assert job["state"] == "failed"
-        assert job["exit_code"] == 1
-        assert job["error_text"] == "subprocess died"
-        assert job["finished_at"] is not None
-
-    def test_list_limit(self, db):
-        for i in range(5):
-            db.create_copilot_remote(
-                job_id=f"cj_{i}", repo_slug="repo", repo_path="/r"
-            )
-        jobs = db.list_copilot_remote(limit=3)
-        assert len(jobs) == 3
-
-
-class TestCopilotRemoteMigrationFromV6:
-    def test_migration_from_v6(self, tmp_path):
-        """Simulate a v6 database and verify migration to the current schema adds copilot tables."""
-        import sqlite3
-
-        db_path = tmp_path / "migrate_v6_test.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.executescript("""
-            CREATE TABLE schema_version (version INTEGER NOT NULL);
-            INSERT INTO schema_version (version) VALUES (6);
-
-            CREATE TABLE sessions (
-                id TEXT PRIMARY KEY,
-                source TEXT NOT NULL,
-                user_id TEXT,
-                model TEXT,
-                model_config TEXT,
-                system_prompt TEXT,
-                parent_session_id TEXT,
-                started_at REAL NOT NULL,
-                ended_at REAL,
-                end_reason TEXT,
-                message_count INTEGER DEFAULT 0,
-                tool_call_count INTEGER DEFAULT 0,
-                input_tokens INTEGER DEFAULT 0,
-                output_tokens INTEGER DEFAULT 0,
-                cache_read_tokens INTEGER DEFAULT 0,
-                cache_write_tokens INTEGER DEFAULT 0,
-                reasoning_tokens INTEGER DEFAULT 0,
-                billing_provider TEXT,
-                billing_base_url TEXT,
-                billing_mode TEXT,
-                estimated_cost_usd REAL,
-                actual_cost_usd REAL,
-                cost_status TEXT,
-                cost_source TEXT,
-                pricing_version TEXT,
-                title TEXT
-            );
-
-            CREATE TABLE messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT NOT NULL,
-                role TEXT NOT NULL,
-                content TEXT,
-                tool_call_id TEXT,
-                tool_calls TEXT,
-                tool_name TEXT,
-                timestamp REAL NOT NULL,
-                token_count INTEGER,
-                finish_reason TEXT,
-                reasoning TEXT,
-                reasoning_details TEXT,
-                codex_reasoning_items TEXT
-            );
-        """)
-        conn.commit()
-        conn.close()
-
-        # Open with SessionDB — should migrate to the current schema.
-        migrated_db = SessionDB(db_path=db_path)
-
-        cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 12
-
-        # Verify copilot tables exist
-        cursor = migrated_db._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        )
-        tables = {row[0] for row in cursor.fetchall()}
-        assert "copilot_remote" in tables
-
-        # Verify we can create a job on the migrated DB
-        job_id = migrated_db.create_copilot_remote(
-            job_id="cj_migrated",
-            repo_slug="test-repo",
-            repo_path="/test",
-        )
-        assert migrated_db.get_copilot_remote(job_id) is not None
-        migrated_db.close()
-
-    def test_migration_from_legacy_v9_preserves_existing_records(self, tmp_path):
-        """Simulate a v9 database and verify legacy Copilot records are renamed."""
-        import sqlite3
-
-        legacy_table = "copilot_" + "jobs"
-        db_path = tmp_path / "migrate_v9_test.db"
-        conn = sqlite3.connect(str(db_path))
-        conn.executescript(f"""
-            CREATE TABLE schema_version (version INTEGER NOT NULL);
-            INSERT INTO schema_version (version) VALUES (9);
-
-            CREATE TABLE sessions (
-                id TEXT PRIMARY KEY,
-                source TEXT NOT NULL,
-                user_id TEXT,
-                model TEXT,
-                model_config TEXT,
-                system_prompt TEXT,
-                parent_session_id TEXT,
-                started_at REAL NOT NULL,
-                ended_at REAL,
-                end_reason TEXT,
-                message_count INTEGER DEFAULT 0,
-                tool_call_count INTEGER DEFAULT 0,
-                input_tokens INTEGER DEFAULT 0,
-                output_tokens INTEGER DEFAULT 0,
-                cache_read_tokens INTEGER DEFAULT 0,
-                cache_write_tokens INTEGER DEFAULT 0,
-                reasoning_tokens INTEGER DEFAULT 0,
-                billing_provider TEXT,
-                billing_base_url TEXT,
-                billing_mode TEXT,
-                estimated_cost_usd REAL,
-                actual_cost_usd REAL,
-                cost_status TEXT,
-                cost_source TEXT,
-                pricing_version TEXT,
-                title TEXT,
-                api_call_count INTEGER DEFAULT 0
-            );
-
-            CREATE TABLE messages (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                session_id TEXT NOT NULL,
-                role TEXT NOT NULL,
-                content TEXT,
-                tool_call_id TEXT,
-                tool_calls TEXT,
-                tool_name TEXT,
-                timestamp REAL NOT NULL,
-                token_count INTEGER,
-                finish_reason TEXT,
-                reasoning TEXT,
-                reasoning_content TEXT,
-                reasoning_details TEXT,
-                codex_reasoning_items TEXT
-            );
-
-            CREATE TABLE {legacy_table} (
-                id TEXT PRIMARY KEY,
-                hermes_session_id TEXT,
-                repo_slug TEXT NOT NULL,
-                repo_path TEXT NOT NULL,
-                prompt TEXT,
-                signal_source TEXT,
-                signal_ref TEXT,
-                state TEXT NOT NULL DEFAULT 'running',
-                exit_code INTEGER,
-                created_at REAL NOT NULL,
-                finished_at REAL,
-                error_text TEXT
-            );
-            INSERT INTO {legacy_table}
-                (id, repo_slug, repo_path, prompt, signal_source, signal_ref,
-                 state, exit_code, created_at, finished_at, error_text)
-            VALUES
-                ('legacy-1', 'repo', '/repo', 'Fix it', 'cli', 'task-1',
-                 'running', NULL, 123.0, NULL, NULL);
-        """)
-        conn.commit()
-        conn.close()
-
-        migrated_db = SessionDB(db_path=db_path)
-        cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 12
-
-        cursor = migrated_db._conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
-        )
-        tables = {row[0] for row in cursor.fetchall()}
-        assert legacy_table not in tables
-        assert "copilot_remote" in tables
-
-        record = migrated_db.get_copilot_remote("legacy-1")
-        assert record is not None
-        assert record["repo_slug"] == "repo"
-        assert record["signal_ref"] == "task-1"
-        migrated_db.close()
-
 # Auto-maintenance: state_meta + vacuum + maybe_auto_prune_and_vacuum
 # =========================================================================
 
@@ -2214,3 +2009,59 @@ class TestAutoMaintenance:
         assert marker is not None
         # Should parse as a float timestamp close to now.
         assert abs(float(marker) - time.time()) < 60
+
+    def test_auto_prune_deletes_transcript_files(self, db, tmp_path):
+        """Issue #3015: auto-prune must also delete on-disk transcript files."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        self._make_old_ended(db, "old1", days_old=100)
+        self._make_old_ended(db, "old2", days_old=100)
+        db.create_session(session_id="new", source="cli")  # active
+
+        # Transcript files mimicking real gateway/CLI layout
+        (sessions_dir / "old1.json").write_text("{}")
+        (sessions_dir / "old1.jsonl").write_text("{}\n")
+        (sessions_dir / "old2.jsonl").write_text("{}\n")
+        (sessions_dir / "request_dump_old1_001.json").write_text("{}")
+        (sessions_dir / "new.jsonl").write_text("{}\n")  # active, must survive
+
+        result = db.maybe_auto_prune_and_vacuum(
+            retention_days=90, sessions_dir=sessions_dir
+        )
+        assert result["pruned"] == 2
+
+        # Pruned transcript files are gone
+        assert not (sessions_dir / "old1.json").exists()
+        assert not (sessions_dir / "old1.jsonl").exists()
+        assert not (sessions_dir / "old2.jsonl").exists()
+        assert not (sessions_dir / "request_dump_old1_001.json").exists()
+        # Active session's transcript is untouched
+        assert (sessions_dir / "new.jsonl").exists()
+
+    def test_auto_prune_without_sessions_dir_preserves_files(self, db, tmp_path):
+        """Backward-compat: no sessions_dir = DB-only cleanup (legacy behavior)."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        self._make_old_ended(db, "old", days_old=100)
+        (sessions_dir / "old.jsonl").write_text("{}\n")
+
+        result = db.maybe_auto_prune_and_vacuum(retention_days=90)
+        assert result["pruned"] == 1
+        # File stays — caller didn't opt in
+        assert (sessions_dir / "old.jsonl").exists()
+
+    def test_prune_sessions_deletes_files_for_pruned_only(self, db, tmp_path):
+        """Active-session transcripts must never be deleted by prune."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        self._make_old_ended(db, "old", days_old=100)
+        db.create_session(session_id="active", source="cli")  # not ended
+        (sessions_dir / "old.jsonl").write_text("{}\n")
+        (sessions_dir / "active.jsonl").write_text("{}\n")
+
+        count = db.prune_sessions(older_than_days=90, sessions_dir=sessions_dir)
+        assert count == 1
+        assert not (sessions_dir / "old.jsonl").exists()
+        assert (sessions_dir / "active.jsonl").exists()
+

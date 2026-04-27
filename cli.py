@@ -15,6 +15,7 @@ Usage:
 
 import logging
 import os
+import re
 import shutil
 import sys
 import json
@@ -974,6 +975,7 @@ def _run_state_db_auto_maintenance(session_db) -> None:
         return
     try:
         from hermes_cli.config import load_config as _load_full_config
+        from hermes_constants import get_hermes_home as _get_hermes_home
         cfg = (_load_full_config().get("sessions") or {})
         if not cfg.get("auto_prune", False):
             return
@@ -981,9 +983,33 @@ def _run_state_db_auto_maintenance(session_db) -> None:
             retention_days=int(cfg.get("retention_days", 90)),
             min_interval_hours=int(cfg.get("min_interval_hours", 24)),
             vacuum=bool(cfg.get("vacuum_after_prune", True)),
+            sessions_dir=_get_hermes_home() / "sessions",
         )
     except Exception as exc:
         logger.debug("state.db auto-maintenance skipped: %s", exc)
+
+
+def _run_checkpoint_auto_maintenance() -> None:
+    """Call ``checkpoint_manager.maybe_auto_prune_checkpoints`` using current config.
+
+    Reads the ``checkpoints:`` section from config.yaml via
+    :func:`hermes_cli.config.load_config`. Honours ``auto_prune`` /
+    ``retention_days`` / ``delete_orphans`` / ``min_interval_hours``.
+    Never raises — maintenance must never block interactive startup.
+    """
+    try:
+        from hermes_cli.config import load_config as _load_full_config
+        cfg = (_load_full_config().get("checkpoints") or {})
+        if not cfg.get("auto_prune", False):
+            return
+        from tools.checkpoint_manager import maybe_auto_prune_checkpoints
+        maybe_auto_prune_checkpoints(
+            retention_days=int(cfg.get("retention_days", 7)),
+            min_interval_hours=int(cfg.get("min_interval_hours", 24)),
+            delete_orphans=bool(cfg.get("delete_orphans", True)),
+        )
+    except Exception as exc:
+        logger.debug("checkpoint auto-maintenance skipped: %s", exc)
 
 
 def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
@@ -1378,7 +1404,7 @@ def _resolve_attachment_path(raw_path: str) -> Path | None:
 
 
 def _format_process_notification(evt: dict) -> "str | None":
-    """Format a process notification event into a [SYSTEM: ...] message.
+    """Format a process notification event into a [IMPORTANT: ...] message.
 
     Handles both completion events (notify_on_complete) and watch pattern
     match events from the unified completion_queue.
@@ -1388,14 +1414,14 @@ def _format_process_notification(evt: dict) -> "str | None":
     _cmd = evt.get("command", "unknown")
 
     if evt_type == "watch_disabled":
-        return f"[SYSTEM: {evt.get('message', '')}]"
+        return f"[IMPORTANT: {evt.get('message', '')}]"
 
     if evt_type == "watch_match":
         _pat = evt.get("pattern", "?")
         _out = evt.get("output", "")
         _sup = evt.get("suppressed", 0)
         text = (
-            f"[SYSTEM: Background process {_sid} matched "
+            f"[IMPORTANT: Background process {_sid} matched "
             f"watch pattern \"{_pat}\".\n"
             f"Command: {_cmd}\n"
             f"Matched output:\n{_out}"
@@ -1409,7 +1435,7 @@ def _format_process_notification(evt: dict) -> "str | None":
     _exit = evt.get("exit_code", "?")
     _out = evt.get("output", "")
     return (
-        f"[SYSTEM: Background process {_sid} completed "
+        f"[IMPORTANT: Background process {_sid} completed "
         f"(exit code {_exit}).\n"
         f"Command: {_cmd}\n"
         f"Output:\n{_out}]"
@@ -1520,6 +1546,32 @@ def _format_image_attachment_badges(attached_images: list[Path], image_counter: 
 def _should_auto_attach_clipboard_image_on_paste(pasted_text: str) -> bool:
     """Auto-attach clipboard images only for image-only paste gestures."""
     return not pasted_text.strip()
+
+
+def _strip_leaked_bracketed_paste_wrappers(text: str) -> str:
+    """Strip leaked bracketed-paste wrapper markers from user-visible text.
+
+    Defensive normalization for cases where terminal/prompt_toolkit parsing
+    fails and bracketed-paste markers end up in the buffer as literal text.
+
+    We strip canonical wrappers unconditionally and also handle degraded
+    visible forms like ``[200~`` / ``[201~`` and ``00~`` / ``01~`` when they
+    look like wrapper boundaries, not arbitrary user content.
+    """
+    if not text:
+        return text
+
+    text = (
+        text.replace("\x1b[200~", "")
+        .replace("\x1b[201~", "")
+        .replace("^[[200~", "")
+        .replace("^[[201~", "")
+    )
+    text = re.sub(r"(^|[\s\n>:\]\)])\[200~", r"\1", text)
+    text = re.sub(r"\[201~(?=$|[\s\n<\[\(\):;.,!?])", "", text)
+    text = re.sub(r"(^|[\s\n>:\]\)])00~", r"\1", text)
+    text = re.sub(r"01~(?=$|[\s\n<\[\(\):;.,!?])", "", text)
+    return text
 
 
 def _collect_query_images(query: str | None, image_arg: str | None = None) -> tuple[str, list[Path]]:
@@ -1848,9 +1900,16 @@ class HermesCLI:
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
-        # busy_input_mode: "interrupt" (Enter interrupts current run) or "queue" (Enter queues for next turn)
-        _bim = CLI_CONFIG["display"].get("busy_input_mode", "interrupt")
-        self.busy_input_mode = "queue" if str(_bim).strip().lower() == "queue" else "interrupt"
+        # busy_input_mode: "interrupt" (Enter interrupts current run),
+        # "queue" (Enter queues for next turn), or "steer" (Enter injects
+        # mid-run via /steer, arriving after the next tool call).
+        _bim = str(CLI_CONFIG["display"].get("busy_input_mode", "interrupt")).strip().lower()
+        if _bim == "queue":
+            self.busy_input_mode = "queue"
+        elif _bim == "steer":
+            self.busy_input_mode = "steer"
+        else:
+            self.busy_input_mode = "interrupt"
 
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
         
@@ -2044,6 +2103,11 @@ class HermesCLI:
         # it's shared across all Hermes processes for this HERMES_HOME.
         # Never blocks startup on failure.
         _run_state_db_auto_maintenance(self._session_db)
+
+        # Opportunistic shadow-repo cleanup — deletes orphan/stale
+        # checkpoint repos under ~/.hermes/checkpoints/.  Opt-in via
+        # checkpoints.auto_prune, idempotent via .last_prune marker.
+        _run_checkpoint_auto_maintenance()
 
         # Deferred title: stored in memory until the session is created in the DB
         self._pending_title: Optional[str] = None
@@ -4915,6 +4979,12 @@ class HermesCLI:
         if self.agent:
             self.agent.session_id = new_session_id
             self.agent.session_start = now
+            # Redirect the JSON session log to the new branch session file so
+            # messages written after branching land in the correct file.
+            if hasattr(self.agent, "session_log_file") and hasattr(self.agent, "logs_dir"):
+                self.agent.session_log_file = (
+                    self.agent.logs_dir / f"session_{new_session_id}.json"
+                )
             self.agent.reset_session_state()
             if hasattr(self.agent, "_last_flushed_db_idx"):
                 self.agent._last_flushed_db_idx = len(self.conversation_history)
@@ -4936,22 +5006,37 @@ class HermesCLI:
         _cprint(f"  Branch session:   {new_session_id}")
 
     def save_conversation(self):
-        """Save the current conversation to a file."""
+        """Save the current conversation to a JSON snapshot under ~/.hermes/sessions/saved/.
+
+        The snapshot is a convenience export for sharing or off-line inspection;
+        every message is already persisted incrementally to the SQLite session
+        DB, so the live session remains resumable via ``hermes --resume <id>``
+        regardless of whether the user ever runs ``/save``.
+        """
         if not self.conversation_history:
             print("(;_;) No conversation to save.")
             return
-        
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"hermes_conversation_{timestamp}.json"
-        
+        saved_dir = get_hermes_home() / "sessions" / "saved"
         try:
-            with open(filename, "w", encoding="utf-8") as f:
+            saved_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            print(f"(x_x) Failed to create save directory {saved_dir}: {e}")
+            return
+        path = saved_dir / f"hermes_conversation_{timestamp}.json"
+
+        try:
+            with open(path, "w", encoding="utf-8") as f:
                 json.dump({
                     "model": self.model,
+                    "session_id": self.session_id,
                     "session_start": self.session_start.isoformat(),
                     "messages": self.conversation_history,
                 }, f, indent=2, ensure_ascii=False)
-            print(f"(^_^)v Conversation saved to: {filename}")
+            print(f"(^_^)v Conversation snapshot saved to: {path}")
+            if self.session_id:
+                print(f"       Resume the live session with: hermes --resume {self.session_id}")
         except Exception as e:
             print(f"(x_x) Failed to save: {e}")
     
@@ -6310,6 +6395,12 @@ class HermesCLI:
         turn_route = self._resolve_turn_agent_config(prompt)
 
         def run_background():
+            set_sudo_password_callback(self._sudo_password_callback)
+            set_approval_callback(self._approval_callback)
+            try:
+                set_secret_capture_callback(self._secret_capture_callback)
+            except Exception:
+                pass
             try:
                 bg_agent = AIAgent(
                     model=turn_route["model"],
@@ -6407,6 +6498,12 @@ class HermesCLI:
                 print()
                 _cprint(f"  ❌ Background task #{task_num} failed: {e}")
             finally:
+                try:
+                    set_sudo_password_callback(None)
+                    set_approval_callback(None)
+                    set_secret_capture_callback(None)
+                except Exception:
+                    pass
                 self._background_tasks.pop(task_id, None)
                 # Clear spinner only if no foreground agent owns it
                 if not self._agent_running:
@@ -6801,24 +6898,36 @@ class HermesCLI:
             /busy               Show current busy input mode
             /busy status        Show current busy input mode
             /busy queue         Queue input for the next turn instead of interrupting
+            /busy steer         Inject Enter mid-run via /steer (after next tool call)
             /busy interrupt     Interrupt the current run on Enter (default)
         """
         parts = cmd.strip().split(maxsplit=1)
         if len(parts) < 2 or parts[1].strip().lower() == "status":
             _cprint(f"  {_ACCENT}Busy input mode: {self.busy_input_mode}{_RST}")
-            _cprint(f"  {_DIM}Enter while busy: {'queues for next turn' if self.busy_input_mode == 'queue' else 'interrupts current run'}{_RST}")
-            _cprint(f"  {_DIM}Usage: /busy [queue|interrupt|status]{_RST}")
+            if self.busy_input_mode == "queue":
+                _behavior = "queues for next turn"
+            elif self.busy_input_mode == "steer":
+                _behavior = "steers into current run (after next tool call)"
+            else:
+                _behavior = "interrupts current run"
+            _cprint(f"  {_DIM}Enter while busy: {_behavior}{_RST}")
+            _cprint(f"  {_DIM}Usage: /busy [queue|steer|interrupt|status]{_RST}")
             return
 
         arg = parts[1].strip().lower()
-        if arg not in {"queue", "interrupt"}:
+        if arg not in {"queue", "interrupt", "steer"}:
             _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
-            _cprint(f"  {_DIM}Usage: /busy [queue|interrupt|status]{_RST}")
+            _cprint(f"  {_DIM}Usage: /busy [queue|steer|interrupt|status]{_RST}")
             return
 
         self.busy_input_mode = arg
         if save_config_value("display.busy_input_mode", arg):
-            behavior = "Enter will queue follow-up input while Hermes is busy." if arg == "queue" else "Enter will interrupt the current run while Hermes is busy."
+            if arg == "queue":
+                behavior = "Enter will queue follow-up input while Hermes is busy."
+            elif arg == "steer":
+                behavior = "Enter will steer your message into the current run (after the next tool call)."
+            else:
+                behavior = "Enter will interrupt the current run while Hermes is busy."
             _cprint(f"  {_ACCENT}✓ Busy input mode set to '{arg}' (saved to config){_RST}")
             _cprint(f"  {_DIM}{behavior}{_RST}")
         else:
@@ -7220,7 +7329,7 @@ class HermesCLI:
             change_detail = ". ".join(change_parts) + ". " if change_parts else ""
             self.conversation_history.append({
                 "role": "user",
-                "content": f"[SYSTEM: MCP servers have been reloaded. {change_detail}{tool_summary}. The tool list for this conversation has been updated accordingly.]",
+                "content": f"[IMPORTANT: MCP servers have been reloaded. {change_detail}{tool_summary}. The tool list for this conversation has been updated accordingly.]",
             })
 
             # Persist session immediately so the session log reflects the
@@ -8566,12 +8675,20 @@ class HermesCLI:
             if response and result and not result.get("failed") and not result.get("partial"):
                 try:
                     from agent.title_generator import maybe_auto_title
+                    # Route title-generation failures through the agent's
+                    # user-visible warning channel so a depleted auxiliary
+                    # provider doesn't silently leave sessions untitled
+                    # (issue #15775).
+                    _title_failure_cb = getattr(
+                        self.agent, "_emit_auxiliary_failure", None
+                    ) if self.agent else None
                     maybe_auto_title(
                         self._session_db,
                         self.session_id,
                         message,
                         response,
                         self.conversation_history,
+                        failure_callback=_title_failure_cb,
                     )
                 except Exception:
                     pass
@@ -8994,6 +9111,30 @@ class HermesCLI:
             _welcome_text = "Welcome to Hermes Agent! Type your message or /help for commands."
             _welcome_color = "#FFF8DC"
         self._console_print(f"[{_welcome_color}]{_welcome_text}[/]")
+        # First-time OpenClaw-residue banner — fires once if ~/.openclaw/ exists
+        # after an OpenClaw→Hermes migration (especially migrations done by
+        # OpenClaw's own tool, which doesn't archive the source directory).
+        try:
+            from agent.onboarding import (
+                OPENCLAW_RESIDUE_FLAG,
+                detect_openclaw_residue,
+                is_seen,
+                mark_seen,
+                openclaw_residue_hint_cli,
+            )
+            if not is_seen(self.config, OPENCLAW_RESIDUE_FLAG) and detect_openclaw_residue():
+                try:
+                    _resid_color = _welcome_skin.get_color("banner_dim", "#B8860B")
+                except Exception:
+                    _resid_color = "#B8860B"
+                self._console_print(f"[{_resid_color}]{openclaw_residue_hint_cli()}[/]")
+                try:
+                    from hermes_cli.config import get_config_path as _get_cfg_path_resid
+                    mark_seen(_get_cfg_path_resid(), OPENCLAW_RESIDUE_FLAG)
+                except Exception:
+                    pass  # best-effort — banner will fire again next session
+        except Exception:
+            pass  # banner is non-critical — never break startup
         # Show a random tip to help users discover features
         try:
             from hermes_cli.tips import get_random_tip
@@ -9195,12 +9336,34 @@ class HermesCLI:
                 # Bundle text + images as a tuple when images are present
                 payload = (text, images) if images else text
                 if self._agent_running and not (text and _looks_like_slash_command(text)):
-                    if self.busy_input_mode == "queue":
+                    _effective_mode = self.busy_input_mode
+                    if _effective_mode == "steer":
+                        # Route Enter through /steer — inject mid-run after the
+                        # next tool call.  Images can't ride along (steer only
+                        # appends text), so fall back to queue when images are
+                        # attached.  If the agent lacks steer() or rejects the
+                        # payload, also fall back to queue so nothing is lost.
+                        if images or not text:
+                            _effective_mode = "queue"
+                        else:
+                            accepted = False
+                            try:
+                                if self.agent is not None and hasattr(self.agent, "steer"):
+                                    accepted = bool(self.agent.steer(text))
+                            except Exception as exc:
+                                _cprint(f"  {_DIM}Steer failed ({exc}) — queued for next turn.{_RST}")
+                                accepted = False
+                            if accepted:
+                                preview = text[:80] + ("..." if len(text) > 80 else "")
+                                _cprint(f"  {_ACCENT}⏩ Steered: '{preview}'{_RST}")
+                            else:
+                                _effective_mode = "queue"
+                    if _effective_mode == "queue":
                         # Queue for the next turn instead of interrupting
                         self._pending_input.put(payload)
                         preview = text if text else f"[{len(images)} image{'s' if len(images) != 1 else ''} attached]"
                         _cprint(f"  Queued for the next turn: {preview[:80]}{'...' if len(preview) > 80 else ''}")
-                    else:
+                    elif _effective_mode == "interrupt":
                         self._interrupt_queue.put(payload)
                         # Debug: log to file when message enters interrupt queue
                         try:
@@ -9634,6 +9797,7 @@ class HermesCLI:
             # Normalise line endings — Windows \r\n and old Mac \r both become \n
             # so the 5-line collapse threshold and display are consistent.
             pasted_text = pasted_text.replace('\r\n', '\n').replace('\r', '\n')
+            pasted_text = _strip_leaked_bracketed_paste_wrappers(pasted_text)
             if _should_auto_attach_clipboard_image_on_paste(pasted_text) and self._try_attach_clipboard_image():
                 event.app.invalidate()
             if pasted_text:
@@ -9775,7 +9939,15 @@ class HermesCLI:
                still batch newlines.  Alt+Enter only adds 1 newline per
                event so it never triggers this.
             """
-            text = buf.text
+            text = _strip_leaked_bracketed_paste_wrappers(buf.text)
+            if text != buf.text:
+                cursor = min(buf.cursor_position, len(text))
+                _paste_just_collapsed[0] = True
+                buf.text = text
+                buf.cursor_position = cursor
+                _prev_text_len[0] = len(text)
+                _prev_newline_count[0] = text.count('\n')
+                return
             chars_added = len(text) - _prev_text_len[0]
             _prev_text_len[0] = len(text)
             if _paste_just_collapsed[0] or self._skip_paste_collapse:
@@ -9844,7 +10016,7 @@ class HermesCLI:
                 status = cli_ref._command_status or "Processing command..."
                 return f"{frame} {status}"
             if cli_ref._agent_running:
-                return "type a message + Enter to interrupt, Ctrl+C to cancel"
+                return "msg=interrupt · /queue · /bg · /steer · Ctrl+C cancel"
             if cli_ref._voice_mode:
                 return "type or Ctrl+B to record"
             return ""
@@ -10523,6 +10695,9 @@ class HermesCLI:
                     submit_images = []
                     if isinstance(user_input, tuple):
                         user_input, submit_images = user_input
+
+                    if isinstance(user_input, str):
+                        user_input = _strip_leaked_bracketed_paste_wrappers(user_input)
                     
                     # Check for commands — but detect dragged/pasted file paths first.
                     # See _detect_file_drop() for details.

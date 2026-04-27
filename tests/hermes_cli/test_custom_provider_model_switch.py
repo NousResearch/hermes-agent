@@ -322,3 +322,129 @@ class TestCustomProviderModelSwitch:
         assert config["model"]["api_key"] == "${NEURALWATT_API_KEY}"
         assert config["custom_providers"][0]["api_key"] == "${NEURALWATT_API_KEY}"
         assert "sk-live-neuralwatt-secret" not in saved
+
+    def test_key_env_providers_dict_entry_does_not_add_api_key(
+        self, config_home, monkeypatch
+    ):
+        """Regression for #15803: a ``providers:`` (keyed-schema) entry that
+        relies on ``key_env`` must not gain an ``api_key`` field after the
+        model picker runs.
+
+        Before the fix, ``_model_flow_named_custom`` synthesized
+        ``api_key: ${KEY_ENV}`` from the resolved secret and wrote it to the
+        ``providers.<key>`` entry, cluttering configs that intentionally keep
+        credentials out of ``config.yaml``. The entry already carries
+        ``key_env``; the runtime resolves it directly, so no inline
+        ``api_key`` belongs on disk.
+        """
+        import yaml
+        from hermes_cli.main import _model_flow_named_custom
+
+        config_path = config_home / "config.yaml"
+        config_path.write_text(
+            "providers:\n"
+            "  crs-henkee:\n"
+            "    name: CRS Henkee\n"
+            "    base_url: http://127.0.0.1:3000/api/v1\n"
+            "    key_env: HERMES_CRS_HENKEE_KEY\n"
+            "    transport: anthropic_messages\n"
+            "    model: claude-opus-4-7\n"
+            "    default_model: claude-opus-4-7\n"
+            "custom_providers: []\n"
+        )
+        monkeypatch.setenv("HERMES_CRS_HENKEE_KEY", "cr_live_secret_xyz")
+
+        # provider_info as built by _named_custom_provider_map for a
+        # ``providers:`` entry that has key_env but no inline api_key.
+        provider_info = {
+            "name": "CRS Henkee",
+            "base_url": "http://127.0.0.1:3000/api/v1",
+            "api_key": "",
+            "key_env": "HERMES_CRS_HENKEE_KEY",
+            "model": "claude-opus-4-7",
+            "api_mode": "anthropic_messages",
+            "provider_key": "crs-henkee",
+            "api_key_ref": "",
+        }
+
+        with patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=["claude-opus-4-7"],
+        ) as mock_fetch, \
+             patch.dict("sys.modules", {"simple_term_menu": None}), \
+             patch("builtins.input", return_value="1"), \
+             patch("builtins.print"):
+            _model_flow_named_custom({}, provider_info)
+
+        # The /models probe must resolve the secret from the env var.
+        mock_fetch.assert_called_once()
+        probe_args, _ = mock_fetch.call_args
+        assert probe_args[0] == "cr_live_secret_xyz"
+
+        # The providers entry must NOT gain an api_key field — neither the
+        # plaintext secret nor a synthesized ${KEY_ENV} template.
+        saved_text = config_path.read_text()
+        saved = yaml.safe_load(saved_text) or {}
+        entry = saved["providers"]["crs-henkee"]
+        assert "api_key" not in entry, (
+            f"providers.crs-henkee gained an api_key field: {entry.get('api_key')!r}"
+        )
+        assert entry["key_env"] == "HERMES_CRS_HENKEE_KEY"
+        assert entry["default_model"] == "claude-opus-4-7"
+
+        # And the plaintext secret must never appear anywhere on disk.
+        assert "cr_live_secret_xyz" not in saved_text
+        # The synthesized template is also redundant here — key_env owns it.
+        assert "${HERMES_CRS_HENKEE_KEY}" not in saved_text
+
+    def test_key_env_providers_dict_preserves_existing_api_key(
+        self, config_home, monkeypatch
+    ):
+        """A ``providers:`` entry that already has an inline ``api_key``
+        template must keep it untouched. Only entries that never declared
+        an ``api_key`` should skip the write."""
+        import yaml
+        from hermes_cli.main import _model_flow_named_custom
+
+        config_path = config_home / "config.yaml"
+        config_path.write_text(
+            "providers:\n"
+            "  crs-henkee:\n"
+            "    name: CRS Henkee\n"
+            "    base_url: http://127.0.0.1:3000/api/v1\n"
+            "    api_key: ${HERMES_CRS_HENKEE_KEY}\n"
+            "    key_env: HERMES_CRS_HENKEE_KEY\n"
+            "    transport: anthropic_messages\n"
+            "    model: claude-opus-4-7\n"
+            "    default_model: claude-opus-4-7\n"
+            "custom_providers: []\n"
+        )
+        monkeypatch.setenv("HERMES_CRS_HENKEE_KEY", "cr_live_secret_xyz")
+
+        provider_info = {
+            "name": "CRS Henkee",
+            "base_url": "http://127.0.0.1:3000/api/v1",
+            "api_key": "cr_live_secret_xyz",  # expanded by load_config
+            "key_env": "HERMES_CRS_HENKEE_KEY",
+            "model": "claude-opus-4-7",
+            "api_mode": "anthropic_messages",
+            "provider_key": "crs-henkee",
+            "api_key_ref": "${HERMES_CRS_HENKEE_KEY}",  # raw template preserved
+        }
+
+        with patch(
+            "hermes_cli.models.fetch_api_models",
+            return_value=["claude-opus-4-7"],
+        ), \
+             patch.dict("sys.modules", {"simple_term_menu": None}), \
+             patch("builtins.input", return_value="1"), \
+             patch("builtins.print"):
+            _model_flow_named_custom({}, provider_info)
+
+        saved_text = config_path.read_text()
+        saved = yaml.safe_load(saved_text) or {}
+        entry = saved["providers"]["crs-henkee"]
+        # Existing api_key template must survive (the resolved secret must not
+        # clobber it via _preserve_env_ref_templates).
+        assert entry["api_key"] == "${HERMES_CRS_HENKEE_KEY}"
+        assert "cr_live_secret_xyz" not in saved_text

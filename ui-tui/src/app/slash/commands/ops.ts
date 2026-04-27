@@ -220,7 +220,7 @@ export const opsCommands: SlashCommand[] = [
       const [sub, ...rest] = text.split(/\s+/)
       const query = rest.join(' ').trim()
       const { rpc } = ctx.gateway
-      const { page, panel, sys } = ctx.transcript
+      const { panel, sys } = ctx.transcript
 
       if (sub === 'list') {
         rpc<SkillsListResponse>('skills.manage', { action: 'list' })

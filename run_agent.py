@@ -163,6 +163,7 @@ from agent.display import (
     get_tool_emoji as _get_tool_emoji,
 )
 from agent.tool_guardrails import (
+    ToolCallGuardrailConfig,
     ToolCallGuardrailController,
     ToolGuardrailDecision,
     append_toolguard_guidance,
@@ -1666,6 +1667,14 @@ class AIAgent:
             _agent_cfg = _load_agent_config()
         except Exception:
             _agent_cfg = {}
+        try:
+            self._tool_guardrails = ToolCallGuardrailController(
+                ToolCallGuardrailConfig.from_mapping(
+                    _agent_cfg.get("tool_loop_guardrails", {})
+                )
+            )
+        except Exception as _tlg_err:
+            logger.warning("Tool loop guardrail config ignored: %s", _tlg_err)
         # Cache only the derived auxiliary compression context override that is
         # needed later by the startup feasibility check.  Avoid exposing a
         # broad pseudo-public config object on the agent instance.

@@ -311,6 +311,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return clearSelection()
     }
 
+    if (key.escape && cState.queueEditIdx !== null) {
+      return cActions.clearIn()
+    }
+
     if (key.upArrow && !cState.inputBuf.length) {
       const inputSel = getInputSelection()
       const cursor = inputSel && inputSel.start === inputSel.end ? inputSel.start : null
@@ -355,6 +359,11 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       if (isMac) {
         return
       }
+    }
+
+    if (isCtrl(key, ch, 'x') && cState.queueEditIdx !== null) {
+      cActions.removeQueue(cState.queueEditIdx)
+      return cActions.clearIn()
     }
 
     if (key.ctrl && ch.toLowerCase() === 'c') {

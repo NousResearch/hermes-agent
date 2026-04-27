@@ -196,7 +196,7 @@ class TestBuildMemoryContextBlockWarnsOnViolation:
         with caplog.at_level(logging.WARNING, logger="agent.memory_manager"):
             out = build_memory_context_block(prewrapped)
 
-        assert any("contract violation" in rec.message for rec in caplog.records)
+        assert any("pre-wrapped" in rec.message for rec in caplog.records)
         assert out.count("<memory-context>") == 1
         assert out.count("</memory-context>") == 1
 
@@ -207,5 +207,5 @@ class TestBuildMemoryContextBlockWarnsOnViolation:
         with caplog.at_level(logging.WARNING, logger="agent.memory_manager"):
             out = build_memory_context_block("plain fact about user")
 
-        assert not any("contract violation" in rec.message for rec in caplog.records)
+        assert not any("pre-wrapped" in rec.message for rec in caplog.records)
         assert "plain fact about user" in out

@@ -175,24 +175,12 @@ class StreamingContextScrubber:
 
 
 def build_memory_context_block(raw_context: str) -> str:
-    """Wrap prefetched memory in a fenced block with system note.
-
-    The fence prevents the model from treating recalled context as user
-    discourse.  Injected at API-call time only — never persisted.
-
-    A provider returning text that already contains the wrapper is a
-    contract violation (would produce nested fences).  We strip defensively
-    and warn so the buggy provider surfaces in logs instead of silently
-    double-fencing.
-    """
+    """Wrap prefetched memory in a fenced block with system note."""
     if not raw_context or not raw_context.strip():
         return ""
     clean = sanitize_context(raw_context)
     if clean != raw_context:
-        logger.warning(
-            "memory provider returned text containing <memory-context> wrapper; "
-            "stripped before re-fencing (provider contract violation)"
-        )
+        logger.warning("memory provider returned pre-wrapped context; stripped")
     return (
         "<memory-context>\n"
         "[System note: The following is recalled memory context, "

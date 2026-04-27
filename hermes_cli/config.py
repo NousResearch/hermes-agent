@@ -1082,7 +1082,6 @@ ENV_VARS_BY_VERSION: Dict[int, List[str]] = {
         "SLACK_BOT_TOKEN", "SLACK_APP_TOKEN", "SLACK_ALLOWED_USERS"],
     10: ["TAVILY_API_KEY"],
     11: ["TERMINAL_MODAL_MODE"],
-    17: ["GMI_API_KEY", "GMI_BASE_URL"],
 }
 
 # Required environment variables with metadata for migration prompts.

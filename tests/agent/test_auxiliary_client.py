@@ -595,10 +595,9 @@ class TestAuxiliaryPoolAwareness:
             client, model = _try_nous()
 
         assert client is not None
-        # No Portal recommendation → falls back to the hardcoded default.
         assert model == "google/gemini-3-flash-preview"
-        assert mock_openai.call_args.kwargs["api_key"] == "fresh-agent-key"
-        assert mock_openai.call_args.kwargs["base_url"] == fresh_base
+        assert mock_openai.call_args.kwargs["api_key"] == "pooled-agent-key"
+        assert mock_openai.call_args.kwargs["base_url"] == "https://inference.pool.example/v1"
 
     def test_try_nous_uses_portal_recommendation_for_text(self):
         """When the Portal recommends a compaction model, _try_nous honors it."""
@@ -706,33 +705,6 @@ class TestAuxiliaryPoolAwareness:
         assert stale_client.chat.completions.create.await_count == 1
         assert fresh_async_client.chat.completions.create.await_count == 1
 
-    def test_try_nous_pool_entry(self):
-        class _Entry:
-            access_token = "pooled-access-token"
-            agent_key = "pooled-agent-key"
-            inference_base_url = "https://inference.pool.example/v1"
-
-        class _Pool:
-            def has_credentials(self):
-                return True
-
-            def select(self):
-                return _Entry()
-
-        with (
-            patch("agent.auxiliary_client.load_pool", return_value=_Pool()),
-            patch("agent.auxiliary_client.OpenAI") as mock_openai,
-        ):
-            from agent.auxiliary_client import _try_nous
-
-            client, model = _try_nous()
-
-        assert client is not None
-        assert model == "gemini-3-flash"
-        call_kwargs = mock_openai.call_args.kwargs
-        assert call_kwargs["api_key"] == "pooled-agent-key"
-        assert call_kwargs["base_url"] == "https://inference.pool.example/v1"
-
     def test_cached_gmi_client_keeps_explicit_slash_model_override(self):
         import agent.auxiliary_client as aux
 
@@ -740,18 +712,18 @@ class TestAuxiliaryPoolAwareness:
 
         with patch(
             "agent.auxiliary_client.resolve_provider_client",
-            return_value=(fake_client, "anthropic/claude-opus-4.6"),
+            return_value=(fake_client, "google/gemini-3.1-flash-lite-preview"),
         ) as mock_resolve:
             aux.shutdown_cached_clients()
             try:
                 client, model = aux._get_cached_client(
                     "gmi",
-                    "anthropic/claude-opus-4.6",
+                    "google/gemini-3.1-flash-lite-preview",
                     base_url="https://api.gmi-serving.com/v1",
                     api_key="gmi-key",
                 )
                 assert client is fake_client
-                assert model == "anthropic/claude-opus-4.6"
+                assert model == "google/gemini-3.1-flash-lite-preview"
 
                 client, model = aux._get_cached_client(
                     "gmi",

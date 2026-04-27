@@ -1289,9 +1289,9 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             self._last_summary_fallback_used = True
             summary = (
                 f"{SUMMARY_PREFIX}\n"
-                f"Summary generation was unavailable. {n_dropped} conversation turns were "
+                f"Summary generation was unavailable. {n_dropped} message(s) were "
                 f"removed to free context space but could not be summarized. The removed "
-                f"turns contained earlier work in this session. Continue based on the "
+                f"messages contained earlier work in this session. Continue based on the "
                 f"recent messages below and the current state of any files or resources."
             )
 

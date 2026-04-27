@@ -45,6 +45,23 @@ export default function sliceAnsi(str: string, start: number, end?: number): str
   return computeSlice(str, start, end)
 }
 
+export function sliceCacheSize(): number {
+  return sliceCache.size
+}
+
+export function evictSliceCache(keepRatio = 0): void {
+  if (keepRatio <= 0) {
+    sliceCache.clear()
+    return
+  }
+
+  const target = Math.floor(sliceCache.size * keepRatio)
+
+  while (sliceCache.size > target) {
+    sliceCache.delete(sliceCache.keys().next().value!)
+  }
+}
+
 function computeSlice(str: string, start: number, end?: number): string {
   const tokens = tokenize(str)
   let activeCodes: AnsiCode[] = []

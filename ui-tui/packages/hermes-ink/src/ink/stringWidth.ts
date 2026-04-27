@@ -325,3 +325,20 @@ export const stringWidth: (str: string) => number = str => {
 
   return w
 }
+
+export function widthCacheSize(): number {
+  return widthCache.size
+}
+
+export function evictWidthCache(keepRatio = 0): void {
+  if (keepRatio <= 0) {
+    widthCache.clear()
+    return
+  }
+
+  const target = Math.floor(widthCache.size * keepRatio)
+
+  while (widthCache.size > target) {
+    widthCache.delete(widthCache.keys().next().value!)
+  }
+}

@@ -381,7 +381,7 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     if (isAction(key, ch, 'l')) {
       clearSelection()
 
-      return patchUiState(state => ({ ...state }))
+      return patchUiState({})
     }
 
     if (isVoiceToggleKey(key, ch)) {

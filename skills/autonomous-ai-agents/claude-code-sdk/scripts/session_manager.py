@@ -24,7 +24,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import contextlib
-import fcntl
 import json
 import os
 import sys
@@ -32,6 +31,18 @@ import uuid
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
+
+try:
+    import fcntl  # POSIX
+    _HAS_FCNTL = True
+except ImportError:
+    _HAS_FCNTL = False
+
+try:
+    import msvcrt  # Windows
+    _HAS_MSVCRT = True
+except ImportError:
+    _HAS_MSVCRT = False
 
 STATE_DIR = Path(
     os.environ.get("HERMES_CLAUDE_SDK_STATE_DIR")
@@ -72,21 +83,48 @@ def _ensure_state_dir() -> None:
 def _store_lock():
     """Serialise load-modify-save of sessions.json across concurrent CLI processes.
 
-    Uses an advisory POSIX file lock on a dedicated lock file so that parallel
-    queries on different handles cannot lose each other's last_activity or
-    total_cost_usd updates. The lock is held only around the bookkeeping
-    write, never during the SDK call itself.
+    Uses an advisory file lock so that parallel queries on different handles
+    cannot lose each other's last_activity or total_cost_usd updates. The
+    lock is held only around the bookkeeping write, never during the SDK
+    call itself.
+
+    POSIX: ``fcntl.flock``. Windows: ``msvcrt.locking`` on byte 0 of the
+    lock file. If neither is available (unsupported platform), the lock
+    degrades to a no-op and a warning is written to stderr so concurrent
+    misuse is at least visible.
     """
     _ensure_state_dir()
-    fh = LOCK_FILE.open("w")
+    if not LOCK_FILE.exists():
+        LOCK_FILE.write_bytes(b"\0")
+    fh = LOCK_FILE.open("r+b")
     try:
-        fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
-        yield
+        if _HAS_FCNTL:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        elif _HAS_MSVCRT:
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+            try:
+                yield
+            finally:
+                fh.seek(0)
+                with contextlib.suppress(OSError):
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+        else:
+            sys.stderr.write(
+                json.dumps(
+                    {
+                        "warning": "no file locking primitive available on this platform; concurrent writes may race"
+                    }
+                )
+                + "\n"
+            )
+            yield
     finally:
-        try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
-        finally:
-            fh.close()
+        fh.close()
 
 
 def _load_store() -> SessionStore:

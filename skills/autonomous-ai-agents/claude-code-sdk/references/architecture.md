@@ -50,7 +50,13 @@ Both files live under `~/.hermes/skills/claude-code-sdk/` (override with `HERMES
 }
 ```
 
-Writes are atomic via temp-file plus rename, the same pattern used in the upstream `perplexity-claude-agent` registry. Concurrent CLI invocations that touch the store (parallel `open`/`query`/`close`) coordinate through a POSIX advisory file lock (`fcntl.flock`) on `.sessions.lock`. The lock is held only around the bookkeeping load-modify-save, never during the SDK call itself, so parallel queries on different handles still run concurrently inside the SDK and only serialise the (microsecond-scale) JSON writes.
+Writes are atomic via temp-file plus rename, the same pattern used in the upstream `perplexity-claude-agent` registry. Concurrent CLI invocations that touch the store (parallel `open`/`query`/`close`) coordinate through an advisory file lock on `.sessions.lock`. The lock is held only around the bookkeeping load-modify-save, never during the SDK call itself, so parallel queries on different handles still run concurrently inside the SDK and only serialise the (microsecond-scale) JSON writes.
+
+Cross-platform locking primitive selection:
+
+- POSIX (Linux, macOS): `fcntl.flock` with `LOCK_EX` / `LOCK_UN`.
+- Windows: `msvcrt.locking` with `LK_LOCK` / `LK_UNLCK` on byte 0 of the lock file. The lock file is initialised with a single sentinel byte on first use so the byte to lock exists.
+- Other (no `fcntl` and no `msvcrt`): the lock degrades to a no-op and a one-line JSON warning is written to stderr; concurrent writers may race. This branch is unreachable on supported platforms but ensures the skill imports cleanly anywhere Python 3.10+ runs.
 
 ### `cost.log`
 

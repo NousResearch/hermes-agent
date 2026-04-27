@@ -389,6 +389,20 @@ DEFAULT_CONFIG = {
         # (60+ tool iterations with tiny output) before users assume the
         # bot is dead and /restart.
         "gateway_notify_interval": 180,
+        # How user-attached images are presented to the main model on each turn.
+        #   "auto"   — attach natively when the active model reports
+        #              supports_vision=True AND the user hasn't explicitly
+        #              configured auxiliary.vision.provider.  Otherwise fall
+        #              back to text (vision_analyze pre-analysis).
+        #   "native" — always attach natively; non-vision models will either
+        #              error at the provider or get a last-chance text fallback
+        #              (see run_agent._prepare_messages_for_api).
+        #   "text"   — always pre-analyze with vision_analyze and prepend the
+        #              description as text; the main model never sees pixels.
+        # Affects gateway platforms, the TUI, and CLI /attach.  vision_analyze
+        # remains available as a tool regardless of this setting — the routing
+        # only controls how inbound user images are presented.
+        "image_input_mode": "auto",
     },
     
     "terminal": {

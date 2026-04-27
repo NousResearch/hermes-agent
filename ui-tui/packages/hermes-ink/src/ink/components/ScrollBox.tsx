@@ -124,20 +124,6 @@ function ScrollBox({ children, ref, stickyScroll, ...style }: PropsWithChildren<
     })
   }
 
-  const scrollByNow = (dy: number) => {
-    const el = domRef.current
-
-    if (!el) {
-      return
-    }
-
-    el.stickyScroll = false
-    manualScrollAtRef.current = Date.now()
-    el.scrollAnchor = undefined
-    el.pendingScrollDelta = (el.pendingScrollDelta ?? 0) + Math.floor(dy)
-    scrollMutated(el)
-  }
-
   useImperativeHandle(
     ref,
     (): ScrollBoxHandle => ({
@@ -173,7 +159,19 @@ function ScrollBox({ children, ref, stickyScroll, ...style }: PropsWithChildren<
         }
         scrollMutated(box)
       },
-      scrollBy: scrollByNow,
+      scrollBy(dy: number) {
+        const el = domRef.current
+
+        if (!el) {
+          return
+        }
+
+        el.stickyScroll = false
+        manualScrollAtRef.current = Date.now()
+        el.scrollAnchor = undefined
+        el.pendingScrollDelta = (el.pendingScrollDelta ?? 0) + Math.floor(dy)
+        scrollMutated(el)
+      },
       scrollToBottom() {
         const el = domRef.current
 

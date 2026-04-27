@@ -205,11 +205,6 @@ export default class App extends PureComponent<Props, State> {
       </TerminalSizeContext.Provider>
     )
   }
-  override componentDidMount() {
-    // Keep the native terminal cursor visible. Ink parks it at the declared
-    // input caret after each frame, so the terminal emulator provides the
-    // normal blinking block/bar without React-driven blink re-renders.
-  }
   override componentWillUnmount() {
     if (this.props.stdout.isTTY) {
       this.props.stdout.write(SHOW_CURSOR)
@@ -574,9 +569,7 @@ export function handleMouseEvent(app: App, m: ParsedMouse): void {
   const row = m.row - 1
   const baseButton = m.button & 0x03
 
-  // Allow disabling app click/selection handling while keeping wheel scroll
-  // and DOM mouse dispatch alive. Put this after coordinate/button decoding
-  // and exempt non-left buttons so scrollbar/right-click handlers still work.
+  // Disable app click handling without blocking wheel/right-click dispatch.
   if (isMouseClicksDisabled() && baseButton === 0) {
     return
   }

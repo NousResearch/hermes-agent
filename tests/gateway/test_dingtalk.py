@@ -581,13 +581,34 @@ class TestShouldProcessMessage:
 # ---------------------------------------------------------------------------
 
 
+@pytest.fixture
+def _stub_chatbot_message(monkeypatch):
+    """Stub ChatbotMessage when the dingtalk-stream SDK isn't installed.
+
+    Production ``_IncomingHandler.process`` calls ``ChatbotMessage.from_dict()``;
+    when the optional dependency is absent the symbol is bound to ``None`` and
+    the call raises ``AttributeError``.  Tests in this class don't care about
+    the SDK's field-mapping logic — they exercise the adapter's own fallback
+    that pulls ``sessionWebhook`` straight off the raw data dict — so a stub
+    that returns an empty namespace is enough to drive every assertion.
+    """
+    class _StubChatbotMessage:
+        @classmethod
+        def from_dict(cls, data):
+            return SimpleNamespace()
+
+    monkeypatch.setattr(
+        "gateway.platforms.dingtalk.ChatbotMessage", _StubChatbotMessage
+    )
+
+
 class TestIncomingHandlerProcess:
     """Verify that _IncomingHandler.process correctly converts callback data
     and dispatches message processing as a background task (fire-and-forget)
     so the SDK ACK is returned immediately."""
 
     @pytest.mark.asyncio
-    async def test_process_extracts_session_webhook(self):
+    async def test_process_extracts_session_webhook(self, _stub_chatbot_message):
         """session_webhook must be populated from callback data."""
         from gateway.platforms.dingtalk import _IncomingHandler, DingTalkAdapter
 
@@ -618,7 +639,9 @@ class TestIncomingHandlerProcess:
         assert chatbot_msg.session_webhook == "https://oapi.dingtalk.com/robot/sendBySession?session=abc"
 
     @pytest.mark.asyncio
-    async def test_process_fallback_session_webhook_when_from_dict_misses_it(self):
+    async def test_process_fallback_session_webhook_when_from_dict_misses_it(
+        self, _stub_chatbot_message
+    ):
         """If ChatbotMessage.from_dict does not map sessionWebhook (e.g. SDK
         version mismatch), the handler should fall back to extracting it
         directly from the raw data dict."""
@@ -647,7 +670,7 @@ class TestIncomingHandlerProcess:
         assert chatbot_msg.session_webhook == "https://oapi.dingtalk.com/robot/sendBySession?session=def"
 
     @pytest.mark.asyncio
-    async def test_process_returns_ack_immediately(self):
+    async def test_process_returns_ack_immediately(self, _stub_chatbot_message):
         """process() must not block on _on_message — it should return
         the ACK tuple before the message is fully processed."""
         from gateway.platforms.dingtalk import _IncomingHandler, DingTalkAdapter
@@ -748,10 +771,38 @@ class TestMessageContextIsolation:
 # ---------------------------------------------------------------------------
 
 
+class _StubSdkModule:
+    """Module-shaped stub that synthesises a SimpleNamespace factory for any
+    attribute access.  ``Stub.AnyClassName(foo=1, bar=2)`` returns
+    ``SimpleNamespace(foo=1, bar=2)`` — enough to satisfy production code
+    that builds SDK request/header objects purely to forward them to a
+    mocked ``_card_sdk`` method without inspecting the result.
+    """
+
+    def __getattr__(self, name):
+        return lambda **kwargs: SimpleNamespace(**kwargs)
+
+
+@pytest.fixture
+def _stub_card_sdk_models(monkeypatch):
+    """Stub the alibabacloud SDK module-level imports when the optional
+    dependencies are absent.  Production card paths reference
+    ``tea_util_models``, ``dingtalk_card_models``, and ``dingtalk_robot_models``
+    purely to construct request/header objects forwarded to the card-SDK
+    methods (which the tests mock as ``AsyncMock``).  Returning placeholder
+    namespaces lets the production code path execute end-to-end without the
+    real SDK installed.
+    """
+    stub = _StubSdkModule()
+    monkeypatch.setattr("gateway.platforms.dingtalk.tea_util_models", stub)
+    monkeypatch.setattr("gateway.platforms.dingtalk.dingtalk_card_models", stub)
+    monkeypatch.setattr("gateway.platforms.dingtalk.dingtalk_robot_models", stub)
+
+
 class TestCardLifecycle:
 
     @pytest.fixture
-    def adapter_with_card(self):
+    def adapter_with_card(self, _stub_card_sdk_models):
         from gateway.platforms.dingtalk import DingTalkAdapter
         a = DingTalkAdapter(PlatformConfig(
             enabled=True,
@@ -942,7 +993,10 @@ class TestDingTalkAdapterAICards:
         return msg
 
     @pytest.mark.asyncio
-    async def test_send_uses_ai_card_if_configured(self, config, mock_stream_client, mock_http_client, mock_message):
+    async def test_send_uses_ai_card_if_configured(
+        self, config, mock_stream_client, mock_http_client, mock_message,
+        _stub_card_sdk_models,
+    ):
         from gateway.platforms.dingtalk import DingTalkAdapter
 
         adapter = DingTalkAdapter(config)

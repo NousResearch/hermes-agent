@@ -44,6 +44,14 @@ class StreamConsumerConfig:
     buffer_threshold: int = 40
     cursor: str = " ▉"
     buffer_only: bool = False
+    # When >0, the final edit for a streamed response is delivered as a
+    # fresh message if the original preview has been visible for at least
+    # this many seconds.  This makes the platform's visible timestamp
+    # reflect completion time instead of first-token time for long-running
+    # responses (e.g. reasoning models that stream slowly).  Ported from
+    # openclaw/openclaw#72038.  Default 0 = always edit in place (legacy
+    # behavior).  The gateway enables this selectively per-platform.
+    fresh_final_after_seconds: float = 0.0
 
 
 class GatewayStreamConsumer:
@@ -91,6 +99,12 @@ class GatewayStreamConsumer:
         self._queue: queue.Queue = queue.Queue()
         self._accumulated = ""
         self._message_id: Optional[str] = None
+        # Wall-clock timestamp (time.monotonic) when ``_message_id`` was
+        # first assigned from a successful first-send.  Used by the
+        # fresh-final logic to detect long-lived previews whose edit
+        # timestamps would be stale by completion time.  Ported from
+        # openclaw/openclaw#72038.
+        self._message_created_ts: Optional[float] = None
         self._already_sent = False
         self._edit_supported = True  # Disabled when progressive edits are no longer usable
         self._last_edit_time = 0.0
@@ -136,6 +150,7 @@ class GatewayStreamConsumer:
         if preserve_no_edit and self._message_id == "__no_edit__":
             return
         self._message_id = None
+        self._message_created_ts = None
         self._accumulated = ""
         self._last_sent_text = ""
         self._fallback_final_send = False
@@ -734,6 +749,81 @@ class GatewayStreamConsumer:
             logger.error("Commentary send error: %s", e)
             return False
 
+    def _should_send_fresh_final(self) -> bool:
+        """Return True when a long-lived preview should be replaced with a
+        fresh final message instead of an edit.
+
+        Conditions:
+        - Fresh-final is enabled (``fresh_final_after_seconds > 0``).
+        - We have a real preview message id (not the ``__no_edit__`` sentinel
+          and not ``None``).
+        - The preview has been visible for at least the configured threshold.
+
+        Ported from openclaw/openclaw#72038.
+        """
+        threshold = getattr(self.cfg, "fresh_final_after_seconds", 0.0) or 0.0
+        if threshold <= 0:
+            return False
+        if not self._message_id or self._message_id == "__no_edit__":
+            return False
+        if self._message_created_ts is None:
+            return False
+        age = time.monotonic() - self._message_created_ts
+        return age >= threshold
+
+    async def _try_fresh_final(self, text: str) -> bool:
+        """Send ``text`` as a brand-new message (best-effort delete the old
+        preview) so the platform's visible timestamp reflects completion
+        time.  Returns True on successful delivery, False on any failure so
+        the caller falls back to the normal edit path.
+
+        Ported from openclaw/openclaw#72038.
+        """
+        old_message_id = self._message_id
+        try:
+            result = await self.adapter.send(
+                chat_id=self.chat_id,
+                content=text,
+                metadata=self.metadata,
+            )
+        except Exception as e:
+            logger.debug("Fresh-final send failed, falling back to edit: %s", e)
+            return False
+        if not getattr(result, "success", False):
+            return False
+        # Successful fresh send — try to delete the stale preview so the
+        # user doesn't see the old edit-stuck message underneath.  Cleanup
+        # is best-effort; platforms that don't implement ``delete_message``
+        # just leave the preview behind (still an acceptable outcome —
+        # the visible final timestamp is the important part).
+        if old_message_id and old_message_id != "__no_edit__":
+            delete_fn = getattr(self.adapter, "delete_message", None)
+            if delete_fn is not None:
+                try:
+                    await delete_fn(self.chat_id, old_message_id)
+                except Exception as e:
+                    logger.debug(
+                        "Fresh-final preview cleanup failed (%s): %s",
+                        old_message_id, e,
+                    )
+        # Adopt the new message id as the current message so subsequent
+        # callers (e.g. overflow split loops, finalize retries) see a
+        # consistent state.
+        new_message_id = getattr(result, "message_id", None)
+        if new_message_id:
+            self._message_id = new_message_id
+            self._message_created_ts = time.monotonic()
+        else:
+            # Send succeeded but platform didn't return an id — treat the
+            # delivery as final-only and fall back to "__no_edit__" so we
+            # don't try to edit something we can't address.
+            self._message_id = "__no_edit__"
+            self._message_created_ts = None
+        self._already_sent = True
+        self._last_sent_text = text
+        self._final_response_sent = True
+        return True
+
     async def _send_or_edit(self, text: str, *, finalize: bool = False) -> bool:
         """Send or edit the streaming message.
 
@@ -784,6 +874,22 @@ class GatewayStreamConsumer:
                     # progress state.  Everyone else short-circuits.
                     if text == self._last_sent_text and not (
                         finalize and self._adapter_requires_finalize
+                    ):
+                        return True
+                    # Fresh-final for long-lived previews: when finalizing
+                    # the last edit in a streaming sequence, if the
+                    # original preview has been visible for at least
+                    # ``fresh_final_after_seconds``, send the completed
+                    # reply as a fresh message so the platform's visible
+                    # timestamp reflects completion time instead of the
+                    # preview creation time.  Best-effort cleanup of the
+                    # old preview follows.  Ported from
+                    # openclaw/openclaw#72038.  Gated by config so the
+                    # legacy edit-in-place path stays the default.
+                    if (
+                        finalize
+                        and self._should_send_fresh_final()
+                        and await self._try_fresh_final(text)
                     ):
                         return True
                     # Edit existing message
@@ -852,6 +958,10 @@ class GatewayStreamConsumer:
                 if result.success:
                     if result.message_id:
                         self._message_id = result.message_id
+                        # Track when the preview first became visible to
+                        # the user so fresh-final logic can detect stale
+                        # preview timestamps on long-running responses.
+                        self._message_created_ts = time.monotonic()
                     else:
                         self._edit_supported = False
                     self._already_sent = True

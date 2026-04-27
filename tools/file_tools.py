@@ -264,10 +264,34 @@ def _cap_read_tracker_data(task_data: dict) -> None:
 
 
 def _is_internal_file_status_text(content: str) -> bool:
-    """Return True when content is an internal file-tool status, not file bytes."""
+    """Return True when content looks like an internal file-tool status, not real file bytes.
+
+    The read_file dedup status message must never be persisted as file
+    content.  The obvious shape is the model echoing the message verbatim,
+    but in practice it also wraps it with small framing text (a leading
+    "Note:", a trailing newline + short comment, etc.) before calling
+    write_file.  We treat any short-ish write whose body is dominated by
+    the status message as the same class of corruption.
+
+    Heuristic:
+      * Strict equality (after strip) — the verbatim shape.
+      * OR the stripped content contains the full status message AND is
+        short enough that the status dominates it (<=2x the message length).
+        Short, status-dominated writes can't plausibly be real files —
+        legitimate docs/notes that happen to quote this internal message
+        are always dramatically longer.
+    """
     if not isinstance(content, str):
         return False
-    return content.strip() == _READ_DEDUP_STATUS_MESSAGE
+    stripped = content.strip()
+    if not stripped:
+        return False
+    if stripped == _READ_DEDUP_STATUS_MESSAGE:
+        return True
+    if _READ_DEDUP_STATUS_MESSAGE in stripped and \
+            len(stripped) <= 2 * len(_READ_DEDUP_STATUS_MESSAGE):
+        return True
+    return False
 
 
 def _get_file_ops(task_id: str = "default") -> ShellFileOperations:

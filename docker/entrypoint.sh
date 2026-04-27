@@ -75,6 +75,21 @@ if [ -d "$INSTALL_DIR/skills" ]; then
     python3 "$INSTALL_DIR/tools/skills_sync.py"
 fi
 
+# Start dashboard in background if HERMES_DASHBOARD=1
+if [ "${HERMES_DASHBOARD:-0}" = "1" ]; then
+    DASHBOARD_HOST="${DASHBOARD_HOST:-0.0.0.0}"
+    DASHBOARD_PORT="${DASHBOARD_PORT:-9119}"
+    (
+        while true; do
+            hermes dashboard --host "$DASHBOARD_HOST" --port "$DASHBOARD_PORT" --no-open --insecure \
+                >> "$HERMES_HOME/logs/dashboard.log" 2>&1
+            echo "$(date): Dashboard exited, restarting in 3s..." >> "$HERMES_HOME/logs/dashboard.log"
+            sleep 3
+        done
+    ) &
+    echo "Dashboard started on $DASHBOARD_HOST:$DASHBOARD_PORT (PID $!)"
+fi
+
 # Final exec: two supported invocation patterns.
 #
 #   docker run <image>                 -> exec `hermes` with no args (legacy default)

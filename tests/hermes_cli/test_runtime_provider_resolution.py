@@ -2285,3 +2285,113 @@ def test_minimax_oauth_runtime_uses_inference_base_url(monkeypatch):
     resolved = rp.resolve_runtime_provider(requested="minimax-oauth")
 
     assert MINIMAX_OAUTH_CN_INFERENCE.rstrip("/") in resolved["base_url"]
+
+# ---------------------------------------------------------------------------
+# Gemini provider (Google AI Studio native /v1beta) — issue #16484
+# ---------------------------------------------------------------------------
+def test_resolve_runtime_provider_gemini_default_v1beta(monkeypatch):
+    """When no base_url is configured, gemini provider routes to the canonical
+    /v1beta endpoint so GeminiNativeClient picks up the native generateContent
+    path instead of /chat/completions being appended."""
+
+    class _Entry:
+        access_token = "gemini-key"
+        source = "env:GEMINI_API_KEY"
+        base_url = ""
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.delenv("GEMINI_BASE_URL", raising=False)
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "gemini")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "gemini", "default": "gemini-2.5-pro"})
+
+    resolved = rp.resolve_runtime_provider(requested="gemini")
+
+    assert resolved["provider"] == "gemini"
+    assert resolved["base_url"] == "https://generativelanguage.googleapis.com/v1beta"
+    assert resolved["api_key"] == "gemini-key"
+
+
+def test_resolve_runtime_provider_gemini_recovers_stale_base_url(monkeypatch):
+    """Bug #16484: a stale non-Google base_url in the pool entry (e.g.
+    leftover from a previous /model switch) must not be used verbatim,
+    or /chat/completions gets appended to it for a Gemini request."""
+
+    class _Entry:
+        access_token = "gemini-key"
+        source = "stale-pool"
+        base_url = "https://api.openai.com/v1"  # stale!
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.delenv("GEMINI_BASE_URL", raising=False)
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "gemini")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "gemini", "default": "gemini-2.5-pro"})
+
+    resolved = rp.resolve_runtime_provider(requested="gemini")
+
+    # Stale URL was rejected; canonical /v1beta substituted.
+    assert resolved["base_url"] == "https://generativelanguage.googleapis.com/v1beta"
+
+
+def test_resolve_runtime_provider_gemini_respects_openai_compat_suffix(monkeypatch):
+    """When user explicitly configures the OpenAI-compatibility endpoint
+    (/v1beta/openai), keep it — that path DOES accept /chat/completions."""
+
+    class _Entry:
+        access_token = "gemini-key"
+        source = "config"
+        base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.delenv("GEMINI_BASE_URL", raising=False)
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "gemini")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "gemini", "default": "gemini-2.5-pro"})
+
+    resolved = rp.resolve_runtime_provider(requested="gemini")
+
+    assert resolved["base_url"] == "https://generativelanguage.googleapis.com/v1beta/openai"
+
+
+def test_resolve_runtime_provider_gemini_env_var_overrides(monkeypatch):
+    """GEMINI_BASE_URL env var wins over pool entry and config."""
+
+    class _Entry:
+        access_token = "gemini-key"
+        source = "config"
+        base_url = "https://generativelanguage.googleapis.com/v1beta"
+
+    class _Pool:
+        def has_credentials(self):
+            return True
+
+        def select(self):
+            return _Entry()
+
+    monkeypatch.setenv("GEMINI_BASE_URL", "https://my-proxy.example.com/v1beta")
+    monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "gemini")
+    monkeypatch.setattr(rp, "load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(rp, "_get_model_config", lambda: {"provider": "gemini", "default": "gemini-2.5-pro"})
+
+    resolved = rp.resolve_runtime_provider(requested="gemini")
+
+    assert resolved["base_url"] == "https://my-proxy.example.com/v1beta"

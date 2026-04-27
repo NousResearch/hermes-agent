@@ -205,6 +205,40 @@ def _resolve_runtime_from_pool_entry(
     elif provider == "google-gemini-cli":
         api_mode = "chat_completions"
         base_url = base_url or "cloudcode-pa://google"
+    elif provider == "gemini":
+        # Google AI Studio (native Gemini API).  Default base URL is the
+        # native /v1beta endpoint which uses ``:generateContent`` paths and
+        # ``x-goog-api-key`` headers — handled at runtime by
+        # ``GeminiNativeClient`` (see ``agent/gemini_native_adapter.py``).
+        # The ``/openai`` suffix opts into Google's OpenAI-compatibility
+        # endpoint, in which case the default OpenAI SDK transport is used.
+        # Bug #16484: a stale base_url from a previous provider must not
+        # leak into this resolution and cause ``/chat/completions`` to be
+        # appended to ``/v1beta`` (which Google's native API rejects).
+        api_mode = "chat_completions"
+        cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
+        pconfig = PROVIDER_REGISTRY.get("gemini")
+        default_base = (
+            pconfig.inference_base_url.rstrip("/")
+            if pconfig
+            else "https://generativelanguage.googleapis.com/v1beta"
+        )
+        cfg_base_url = ""
+        if cfg_provider == "gemini":
+            cfg_base_url = str(model_cfg.get("base_url") or "").strip().rstrip("/")
+        # Honour env var override, then config, then pool entry, then default.
+        env_base_url = os.getenv("GEMINI_BASE_URL", "").strip().rstrip("/")
+        if env_base_url:
+            base_url = env_base_url
+        elif cfg_base_url:
+            base_url = cfg_base_url
+        else:
+            # If the pool entry has a stale non-Google base_url (e.g. from a
+            # previous /model switch on a different provider), fall back to
+            # the canonical Gemini default rather than appending
+            # ``/chat/completions`` to it at request time.
+            host_ok = "generativelanguage.googleapis.com" in base_url.lower()
+            base_url = base_url if (base_url and host_ok) else default_base
     elif provider == "anthropic":
         api_mode = "anthropic_messages"
         cfg_provider = str(model_cfg.get("provider") or "").strip().lower()

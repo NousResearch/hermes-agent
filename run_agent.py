@@ -39,7 +39,7 @@ import threading
 from types import SimpleNamespace
 import urllib.request
 import uuid
-from typing import List, Dict, Any, Optional
+from typing import TYPE_CHECKING, List, Dict, Any, Optional
 from urllib.parse import urlparse, parse_qs, urlunparse
 from openai import OpenAI
 import fire
@@ -119,6 +119,10 @@ from agent.trajectory import (
 )
 from utils import atomic_json_write, base_url_host_matches, base_url_hostname, env_var_enabled, normalize_proxy_url
 
+
+
+if TYPE_CHECKING:
+    from agent.rate_limit_tracker import RateLimitState
 
 
 class _SafeWriter:
@@ -2671,7 +2675,6 @@ class AIAgent:
         eff_api_mode = api_mode if api_mode is not None else (self.api_mode or "")
         eff_model = (model if model is not None else self.model) or ""
 
-        base_lower = eff_base_url.lower()
         model_lower = eff_model.lower()
         provider_lower = eff_provider.lower()
         is_claude = "claude" in model_lower
@@ -3550,7 +3553,8 @@ class AIAgent:
                     
                     # Add tool calls wrapped in XML tags
                     for tool_call in msg["tool_calls"]:
-                        if not tool_call or not isinstance(tool_call, dict): continue
+                        if not tool_call or not isinstance(tool_call, dict):
+                            continue
                         # Parse arguments - should always succeed since we validate during conversation
                         # but keep try-except as safety net
                         try:
@@ -10171,7 +10175,7 @@ class AIAgent:
                         elif _resp_error_code == 504:
                             _failure_hint = f"upstream gateway timeout (504, {api_duration:.0f}s)"
                         elif _resp_error_code == 429:
-                            _failure_hint = f"rate limited by upstream provider (429)"
+                            _failure_hint = "rate limited by upstream provider (429)"
                         elif _resp_error_code in (500, 502):
                             _failure_hint = f"upstream server error ({_resp_error_code}, {api_duration:.0f}s)"
                         elif _resp_error_code in (503, 529):
@@ -12407,7 +12411,8 @@ class AIAgent:
                             if isinstance(m, dict) and m.get("role") == "tool"
                         }
                         for tc in msg["tool_calls"]:
-                            if not tc or not isinstance(tc, dict): continue
+                            if not tc or not isinstance(tc, dict):
+                                continue
                             if tc["id"] not in answered_ids:
                                 err_msg = {
                                     "role": "tool",

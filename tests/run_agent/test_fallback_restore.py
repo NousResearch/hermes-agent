@@ -158,3 +158,81 @@ class TestFallbackRestore:
             agent._restore_primary_runtime()
 
         assert agent._fallback_restore_fail_count == 0
+
+    def test_notification_fires_exactly_once_at_threshold(self):
+        """Warning notification should fire exactly once when fail count reaches 3, not on every subsequent failure."""
+        from run_agent import AIAgent
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                quiet_mode=False,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            agent.client = MagicMock()
+
+        agent._fallback_activated = True
+        agent._fallback_index = 1
+        agent._primary_runtime = {"model": None}  # Broken
+
+        emit_calls = []
+        with patch.object(agent, "_emit_status", side_effect=lambda msg: emit_calls.append(msg)):
+            # Failures 1 and 2 — no notification yet
+            agent._restore_primary_runtime()
+            agent._fallback_activated = True
+            agent._restore_primary_runtime()
+            assert len(emit_calls) == 0, "No notification expected before threshold"
+
+            # Failure 3 — notification fires exactly once
+            agent._fallback_activated = True
+            agent._restore_primary_runtime()
+            assert len(emit_calls) == 1, "Notification should fire exactly once at threshold"
+
+            # Failures 4 and 5 — no additional notifications
+            agent._fallback_activated = True
+            agent._restore_primary_runtime()
+            agent._fallback_activated = True
+            agent._restore_primary_runtime()
+            assert len(emit_calls) == 1, "Notification must not repeat after threshold"
+
+    def test_switch_model_resets_restore_fail_count(self):
+        """switch_model should reset _fallback_restore_fail_count along with other fallback state."""
+        from run_agent import AIAgent
+
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+        ):
+            agent = AIAgent(
+                api_key="test-key-1234567890",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            agent.client = MagicMock()
+
+        # Simulate accumulated restore failures
+        agent._fallback_restore_fail_count = 5
+        agent._fallback_activated = True
+        agent._fallback_index = 2
+
+        with (
+            patch.object(agent, "_create_openai_client", return_value=MagicMock()),
+            patch.object(agent.context_compressor, "update_model"),
+        ):
+            agent.switch_model(
+                new_model="new-model",
+                new_provider="new-provider",
+                api_key="test-key-1234567890",
+                base_url="https://api.test.com",
+            )
+
+        assert agent._fallback_restore_fail_count == 0
+        assert agent._fallback_activated is False
+        assert agent._fallback_index == 0

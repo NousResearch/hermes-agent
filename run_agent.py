@@ -2251,6 +2251,7 @@ class AIAgent:
         # ── Reset fallback state ──
         self._fallback_activated = False
         self._fallback_index = 0
+        self._fallback_restore_fail_count = 0
 
         # When the user deliberately swaps primary providers (e.g. openrouter
         # → anthropic), drop any fallback entries that target the OLD primary
@@ -7260,14 +7261,14 @@ class AIAgent:
             )
         except Exception as e:
             logging.warning("Failed to restore primary runtime: %s", e)
-            # Track consecutive restore failures
+            # Track consecutive restore failures and notify exactly once at the
+            # threshold so the user is informed without repeated spam.
             self._fallback_restore_fail_count += 1
-            if self._fallback_restore_fail_count >= 3 and not self.quiet_mode:
-                self._vprint(
-                    f"{self.log_prefix}⚠️  Primary provider unavailable after "
+            if self._fallback_restore_fail_count == 3:
+                self._emit_status(
+                    f"⚠️  Primary provider unavailable after "
                     f"{self._fallback_restore_fail_count} attempts — using fallback. "
-                    f"Check your API key and network connection.",
-                    force=True,
+                    f"Check your API key and network connection."
                 )
             return False
 

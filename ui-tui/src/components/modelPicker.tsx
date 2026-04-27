@@ -52,6 +52,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
           )
         )
         setModelIdx(0)
+        setStage('provider')
         setErr('')
         setLoading(false)
       })
@@ -110,7 +111,9 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
       const model = models[modelIdx]
 
       if (provider && model) {
-        onSelect(`${model} --provider ${provider.slug}${persistGlobal ? ' --global' : ''}`)
+        onSelect(
+          `${model} --provider ${provider.slug}${persistGlobal ? ' --global' : ' --tui-session'}`
+        )
       } else {
         setStage('provider')
       }
@@ -136,7 +139,9 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
           setProviderIdx(next)
         }
       } else if (provider && models[offset + n - 1]) {
-        onSelect(`${models[offset + n - 1]} --provider ${provider.slug}${persistGlobal ? ' --global' : ''}`)
+        onSelect(
+          `${models[offset + n - 1]} --provider ${provider.slug}${persistGlobal ? ' --global' : ' --tui-session'}`
+        )
       }
     }
   })
@@ -173,11 +178,15 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
     return (
       <Box flexDirection="column" width={width}>
         <Text bold color={t.color.amber} wrap="truncate-end">
-          Select Provider
+          Select provider (step 1/2)
         </Text>
 
         <Text color={t.color.dim} wrap="truncate-end">
-          Current model: {currentModel || '(unknown)'}
+          Full model IDs on the next step · Enter to continue
+        </Text>
+
+        <Text color={t.color.dim} wrap="truncate-end">
+          Current: {currentModel || '(unknown)'}
         </Text>
         <Text color={t.color.label} wrap="truncate-end">
           {provider?.warning ? `warning: ${provider.warning}` : ' '}
@@ -225,11 +234,11 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
   return (
     <Box flexDirection="column" width={width}>
       <Text bold color={t.color.amber} wrap="truncate-end">
-        Select Model
+        Select model (step 2/2)
       </Text>
 
       <Text color={t.color.dim} wrap="truncate-end">
-        {names[providerIdx] || '(unknown provider)'}
+        {names[providerIdx] || '(unknown provider)'} · Esc back
       </Text>
       <Text color={t.color.label} wrap="truncate-end">
         {provider?.warning ? `warning: ${provider.warning}` : ' '}
@@ -254,6 +263,8 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
           )
         }
 
+        const prefix = modelIdx === idx ? '▸ ' : row === currentModel ? '* ' : '  '
+
         return (
           <Text
             bold={modelIdx === idx}
@@ -262,7 +273,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
             key={`${provider?.slug ?? 'prov'}:${idx}:${row}`}
             wrap="truncate-end"
           >
-            {modelIdx === idx ? '▸ ' : '  '}
+            {prefix}
             {i + 1}. {row}
           </Text>
         )

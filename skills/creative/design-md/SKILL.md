@@ -7,7 +7,7 @@ license: MIT
 metadata:
   hermes:
     tags: [design, design-system, tokens, ui, accessibility, wcag, tailwind, dtcg, google]
-    related_skills: [popular-web-designs, excalidraw, architecture-diagram]
+    related_skills: [popular-web-designs, claude-design, excalidraw, architecture-diagram]
 ---
 
 # DESIGN.md Skill
@@ -31,7 +31,9 @@ diffs versions for regressions, and exports to Tailwind or W3C DTCG JSON.
 - User wants contrast / WCAG accessibility validation on their color palette
 
 For purely visual inspiration or layout examples, use `popular-web-designs`
-instead. This skill is for the *formal spec file* itself.
+instead. For *process and taste* when designing a one-off HTML artifact
+from scratch (prototype, deck, landing page, component lab), use
+`claude-design`. This skill is for the *formal spec file* itself.
 
 ## File anatomy
 

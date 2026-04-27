@@ -724,6 +724,38 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["model"])
         self.assertIsNone(creds["provider"])
 
+    def test_direct_endpoint_anthropic_proxy_suffix_gets_anthropic_mode(self):
+        """delegation.base_url ending in /anthropic -> api_mode=anthropic_messages (#7833)."""
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "base_url": "http://localhost:6655/anthropic",
+            "api_key": "proxy-key",
+        }
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["api_mode"], "anthropic_messages")
+        self.assertEqual(creds["provider"], "custom")
+
+    def test_direct_endpoint_anthropic_proxy_trailing_slash(self):
+        """Trailing slash on /anthropic/ suffix still resolves correctly."""
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "base_url": "http://localhost:6655/anthropic/",
+            "api_key": "proxy-key",
+        }
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["api_mode"], "anthropic_messages")
+
+    def test_direct_endpoint_canonical_anthropic_com_gets_anthropic_provider(self):
+        """api.anthropic.com -> provider=anthropic, api_mode=anthropic_messages."""
+        parent = _make_mock_parent(depth=0)
+        cfg = {
+            "base_url": "https://api.anthropic.com",
+            "api_key": "sk-ant-xxx",
+        }
+        creds = _resolve_delegation_credentials(cfg, parent)
+        self.assertEqual(creds["provider"], "anthropic")
+        self.assertEqual(creds["api_mode"], "anthropic_messages")
+
 
 class TestDelegationProviderIntegration(unittest.TestCase):
     """Integration tests: delegation config → _run_single_child → AIAgent construction."""

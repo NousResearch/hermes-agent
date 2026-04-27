@@ -2215,6 +2215,10 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
         elif "api.kimi.com/coding" in base_lower:
             provider = "custom"
             api_mode = "anthropic_messages"
+        elif base_lower.rstrip("/").endswith("/anthropic"):
+            # Third-party Anthropic-compatible proxies (HAI, LiteLLM, MiniMax,
+            # DashScope) use a URL convention ending in /anthropic.
+            api_mode = "anthropic_messages"
 
         return {
             "model": configured_model,

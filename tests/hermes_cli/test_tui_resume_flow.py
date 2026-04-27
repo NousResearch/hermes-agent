@@ -124,6 +124,7 @@ def test_cmd_chat_tui_passes_model_and_provider(monkeypatch, main_mod):
 
 def test_launch_tui_exports_model_and_provider(monkeypatch, main_mod):
     captured = {}
+    active_path_during_call = None
 
     monkeypatch.setattr(
         main_mod,
@@ -132,7 +133,10 @@ def test_launch_tui_exports_model_and_provider(monkeypatch, main_mod):
     )
 
     def fake_call(argv, cwd=None, env=None):
+        nonlocal active_path_during_call
         captured.update({"argv": argv, "cwd": cwd, "env": env})
+        active_path_during_call = Path(env["HERMES_TUI_ACTIVE_SESSION_FILE"])
+        assert active_path_during_call.exists()
         return 1
 
     monkeypatch.setattr(main_mod.subprocess, "call", fake_call)
@@ -148,6 +152,7 @@ def test_launch_tui_exports_model_and_provider(monkeypatch, main_mod):
     active_path = Path(env["HERMES_TUI_ACTIVE_SESSION_FILE"])
     assert active_path.name.startswith("hermes-tui-active-session-")
     assert active_path.suffix == ".json"
+    assert active_path_during_call == active_path
     assert not active_path.exists()
     assert env["NODE_ENV"] == "production"
 

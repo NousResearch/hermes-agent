@@ -9560,13 +9560,31 @@ class GatewayRunner:
         except Exception:
             pass
 
-        # Tool progress mode — resolved per-platform with env var fallback
-        _resolved_tp = resolve_display_setting(user_config, platform_key, "tool_progress")
-        progress_mode = (
-            _resolved_tp
-            or os.getenv("HERMES_TOOL_PROGRESS_MODE")
-            or "all"
+        # Tool progress mode — explicit config wins, then env override, then
+        # built-in per-platform defaults.
+        _platform_display = display_config.get("platforms") or {}
+        _platform_progress_cfg = None
+        if isinstance(_platform_display, dict):
+            _platform_cfg = _platform_display.get(platform_key)
+            if isinstance(_platform_cfg, dict):
+                _platform_progress_cfg = _platform_cfg.get("tool_progress")
+        _legacy_progress_cfg = None
+        _legacy_progress = display_config.get("tool_progress_overrides")
+        if isinstance(_legacy_progress, dict):
+            _legacy_progress_cfg = _legacy_progress.get(platform_key)
+        _global_progress_cfg = display_config.get("tool_progress")
+        _has_explicit_progress_cfg = any(
+            value is not None
+            for value in (_platform_progress_cfg, _legacy_progress_cfg, _global_progress_cfg)
         )
+        if _has_explicit_progress_cfg:
+            progress_mode = resolve_display_setting(user_config, platform_key, "tool_progress")
+        else:
+            progress_mode = (
+                os.getenv("HERMES_TOOL_PROGRESS_MODE")
+                or resolve_display_setting(user_config, platform_key, "tool_progress")
+                or "all"
+            )
         # Disable tool progress for webhooks - they don't support message editing,
         # so each progress line would be sent as a separate message.
         from gateway.config import Platform

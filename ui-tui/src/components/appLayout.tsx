@@ -1,6 +1,6 @@
 import { AlternateScreen, Box, NoSelect, ScrollBox, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
-import { Fragment, memo, useMemo } from 'react'
+import { Fragment, memo, useMemo, useRef } from 'react'
 
 import { useGateway } from '../app/gatewayContext.js'
 import type { AppLayoutProps } from '../app/interfaces.js'
@@ -20,7 +20,7 @@ import { FpsOverlay } from './fpsOverlay.js'
 import { MessageLine } from './messageLine.js'
 import { QueuedMessages } from './queuedMessages.js'
 import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
-import { TextInput } from './textInput.js'
+import { TextInput, type TextInputMouseApi } from './textInput.js'
 
 const TranscriptPane = memo(function TranscriptPane({
   actions,
@@ -47,7 +47,18 @@ const TranscriptPane = memo(function TranscriptPane({
 
   return (
     <>
-      <ScrollBox flexDirection="column" flexGrow={1} flexShrink={1} ref={transcript.scrollRef} stickyScroll>
+      <ScrollBox
+        flexDirection="column"
+        flexGrow={1}
+        flexShrink={1}
+        onClick={(e: { cellIsBlank?: boolean }) => {
+          if (e.cellIsBlank) {
+            actions.clearSelection()
+          }
+        }}
+        ref={transcript.scrollRef}
+        stickyScroll
+      >
         <Box flexDirection="column" paddingX={1}>
           {transcript.virtualHistory.topSpacer > 0 ? <Box height={transcript.virtualHistory.topSpacer} /> : null}
 
@@ -113,12 +124,57 @@ const ComposerPane = memo(function ComposerPane({
   const ui = useStore($uiState)
   const isBlocked = useStore($isBlocked)
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
-  const pw = sh ? 2 : 3
+  const pw = 2
   const inputColumns = stableComposerColumns(composer.cols, pw)
   const inputHeight = inputVisualHeight(composer.input, inputColumns)
+  const inputMouseRef = useRef<null | TextInputMouseApi>(null)
+
+  const captureInputDrag = (e: GutterMouseEvent) => {
+    if (e.button !== 0) {
+      return
+    }
+
+    e.stopImmediatePropagation?.()
+    inputMouseRef.current?.startAtBeginning()
+  }
+
+  // Drag origin matches the input box's top-left, so localRow / localCol
+  // map directly into TextInput coords (after backing out the prompt cell).
+  const dragFromPromptRow = (e: GutterMouseEvent) => {
+    if (e.button !== 0) {
+      return
+    }
+
+    e.stopImmediatePropagation?.()
+    inputMouseRef.current?.dragAt(e.localRow ?? 0, (e.localCol ?? 0) - pw)
+  }
+
+  // Spacer rows live on a different vertical origin; only the column is
+  // parent-aligned with the input. Force row=0 so vertical drags can't
+  // jump the cursor to the wrong wrapped line.
+  const dragFromSpacer = (e: GutterMouseEvent) => {
+    if (e.button !== 0) {
+      return
+    }
+
+    e.stopImmediatePropagation?.()
+    inputMouseRef.current?.dragAt(0, (e.localCol ?? 0) - pw)
+  }
+
+  const endInputDrag = () => inputMouseRef.current?.end()
 
   return (
-    <NoSelect flexDirection="column" flexShrink={0} fromLeftEdge paddingX={1}>
+    <NoSelect
+      flexDirection="column"
+      flexShrink={0}
+      fromLeftEdge
+      onClick={(e: { cellIsBlank?: boolean }) => {
+        if (e.cellIsBlank) {
+          actions.clearSelection()
+        }
+      }}
+      paddingX={1}
+    >
       <QueuedMessages
         cols={composer.cols}
         queued={composer.queuedDisplay}
@@ -139,7 +195,7 @@ const ComposerPane = memo(function ComposerPane({
           {status.stickyPrompt}
         </Text>
       ) : (
-        <Text> </Text>
+        <Box height={1} onMouseDown={captureInputDrag} onMouseDrag={dragFromSpacer} onMouseUp={endInputDrag} />
       )}
 
       <StatusRulePane at="top" composer={composer} status={status} />
@@ -158,7 +214,7 @@ const ComposerPane = memo(function ComposerPane({
           <>
             {composer.inputBuf.map((line, i) => (
               <Box key={i}>
-                <Box width={3}>
+                <Box width={2}>
                   <Text color={ui.theme.color.dim}>{i === 0 ? `${ui.theme.brand.prompt} ` : '  '}</Text>
                 </Box>
 
@@ -166,7 +222,7 @@ const ComposerPane = memo(function ComposerPane({
               </Box>
             ))}
 
-            <Box position="relative">
+            <Box onMouseDown={captureInputDrag} onMouseDrag={dragFromPromptRow} onMouseUp={endInputDrag} position="relative">
               <Box width={pw}>
                 {sh ? (
                   <Text color={ui.theme.color.shellDollar}>$ </Text>
@@ -181,6 +237,7 @@ const ComposerPane = memo(function ComposerPane({
                 {/* Reserve the transcript scrollbar gutter too so typing never rewraps when the scrollbar column repaints. */}
                 <TextInput
                   columns={inputColumns}
+                  mouseApiRef={inputMouseRef}
                   onChange={composer.updateInput}
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
@@ -311,3 +368,10 @@ export const AppLayout = memo(function AppLayout({
     </Shell>
   )
 })
+
+type GutterMouseEvent = {
+  button: number
+  localCol?: number
+  localRow?: number
+  stopImmediatePropagation?: () => void
+}

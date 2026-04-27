@@ -684,13 +684,13 @@ export function TextInput({
         return
       }
 
-      // Ctrl+B is the documented voice-recording toggle (see platform.ts →
-      // isVoiceToggleKey). Pass it through so the app-level handler in
-      // useInputHandlers receives it instead of being swallowed here as
-      // either backward-word nav (line below) or a literal 'b' insertion.
+      // Ctrl chords claimed by useInputHandlers — pass through instead of
+      // letting them fall into readline-style nav or a literal char insert.
+      // Ctrl+B = voice toggle, Ctrl+X = delete queued message while editing.
       if (
         (k.ctrl && inp === 'c') ||
         (k.ctrl && inp === 'b') ||
+        (k.ctrl && inp === 'x') ||
         k.tab ||
         (k.shift && k.tab) ||
         k.pageUp ||

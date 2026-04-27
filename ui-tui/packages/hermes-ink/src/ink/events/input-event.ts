@@ -2,6 +2,9 @@ import { nonAlphanumericKeys, type ParsedKey } from '../parse-keypress.js'
 
 import { Event } from './event.js'
 
+const inputForSpecialSequence = (name: string): string =>
+  name === 'space' ? ' ' : name === 'return' || name === 'escape' ? '' : name
+
 export type Key = {
   upArrow: boolean
   downArrow: boolean
@@ -116,11 +119,7 @@ function parseKey(keypress: ParsedKey): [Key, string] {
       // so the raw "[57358u" doesn't leak into the prompt. See #38781.
       input = ''
     } else {
-      // 'space' → ' '; 'escape' → '' (key.escape carries it;
-      // processedAsSpecialSequence bypasses the nonAlphanumericKeys
-      // clear below, so we must handle it explicitly here);
-      // otherwise use key name.
-      input = keypress.name === 'space' ? ' ' : keypress.name === 'escape' ? '' : keypress.name
+      input = inputForSpecialSequence(keypress.name)
     }
 
     processedAsSpecialSequence = true
@@ -138,7 +137,7 @@ function parseKey(keypress: ParsedKey): [Key, string] {
       // guards against future terminal behavior.
       input = ''
     } else {
-      input = keypress.name === 'space' ? ' ' : keypress.name === 'escape' ? '' : keypress.name
+      input = inputForSpecialSequence(keypress.name)
     }
 
     processedAsSpecialSequence = true

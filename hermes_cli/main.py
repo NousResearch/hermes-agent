@@ -1043,6 +1043,7 @@ def _launch_tui(
     )
     env.setdefault("HERMES_PYTHON", sys.executable)
     env.setdefault("HERMES_CWD", os.getcwd())
+    env.setdefault("NODE_ENV", "development" if tui_dev else "production")
     if model:
         env["HERMES_MODEL"] = model
         env["HERMES_INFERENCE_MODEL"] = model
@@ -3331,7 +3332,26 @@ def _model_flow_named_custom(config, provider_info):
             provider_entry = providers_cfg.get(provider_key)
             if isinstance(provider_entry, dict):
                 provider_entry["default_model"] = model_name
-                if config_api_key and not str(provider_entry.get("api_key", "") or "").strip():
+                # Only persist an inline api_key when the user originally had
+                # one (either a literal secret or a ``${VAR}`` template). When
+                # the entry relies on ``key_env``, do not synthesize a
+                # ``${key_env}`` api_key — the runtime already resolves the
+                # key from ``key_env`` directly, and writing the resolved
+                # secret (or even a synthesized template) would silently
+                # downgrade credential hygiene on entries that intentionally
+                # keep plaintext out of ``config.yaml``. See issue #15803.
+                original_api_key_ref = str(
+                    provider_info.get("api_key_ref", "") or ""
+                ).strip()
+                original_api_key = str(
+                    provider_info.get("api_key", "") or ""
+                ).strip()
+                had_inline_api_key = bool(original_api_key_ref or original_api_key)
+                if (
+                    had_inline_api_key
+                    and config_api_key
+                    and not str(provider_entry.get("api_key", "") or "").strip()
+                ):
                     provider_entry["api_key"] = config_api_key
                 if key_env and not str(provider_entry.get("key_env", "") or "").strip():
                     provider_entry["key_env"] = key_env
@@ -4412,8 +4432,14 @@ def _model_flow_api_key_provider(config, provider_id, current_model=""):
         from hermes_cli.models import fetch_ollama_cloud_models
 
         api_key_for_probe = existing_key or (get_env_value(key_env) if key_env else "")
+        # During setup, force a live refresh so the picker reflects newly
+        # released models (e.g. deepseek v4 flash, kimi k2.6) the moment
+        # the user enters their key — not an hour later when the disk
+        # cache TTL expires.
         model_list = fetch_ollama_cloud_models(
-            api_key=api_key_for_probe, base_url=effective_base
+            api_key=api_key_for_probe,
+            base_url=effective_base,
+            force_refresh=True,
         )
         if model_list:
             print(f"  Found {len(model_list)} model(s) from Ollama Cloud")
@@ -4984,6 +5010,83 @@ def _gateway_prompt(prompt_text: str, default: str = "", timeout: float = 300.0)
     return default
 
 
+def _web_ui_build_needed(web_dir: Path) -> bool:
+    """Return True if the web UI dist is missing or stale.
+
+    Mirrors the staleness logic used by ``_tui_build_needed()`` for the TUI.
+    The Vite build outputs to ``hermes_cli/web_dist/`` (per vite.config.ts
+    outDir: "../hermes_cli/web_dist"), NOT to ``web/dist/``.  Uses the Vite
+    manifest as the sentinel because it is written last and therefore has the
+    newest mtime of any build output.
+    """
+    dist_dir = web_dir.parent / "hermes_cli" / "web_dist"
+    sentinel = dist_dir / ".vite" / "manifest.json"
+    if not sentinel.exists():
+        sentinel = dist_dir / "index.html"
+    if not sentinel.exists():
+        return True
+    dist_mtime = sentinel.stat().st_mtime
+    skip = frozenset({"node_modules", "dist"})
+    for dirpath, dirnames, filenames in os.walk(web_dir, topdown=True):
+        dirnames[:] = [d for d in dirnames if d not in skip]
+        for fn in filenames:
+            if fn.endswith((".ts", ".tsx", ".js", ".jsx", ".css", ".html", ".vue")):
+                if os.path.getmtime(os.path.join(dirpath, fn)) > dist_mtime:
+                    return True
+    for meta in (
+        "package.json",
+        "package-lock.json",
+        "yarn.lock",
+        "pnpm-lock.yaml",
+        "vite.config.ts",
+        "vite.config.js",
+    ):
+        mp = web_dir / meta
+        if mp.exists() and mp.stat().st_mtime > dist_mtime:
+            return True
+    return False
+
+
+def _run_npm_install_deterministic(
+    npm: str,
+    cwd: Path,
+    *,
+    extra_args: tuple[str, ...] = (),
+    capture_output: bool = True,
+) -> subprocess.CompletedProcess:
+    """Run a deterministic npm install that does not mutate ``package-lock.json``.
+
+    Prefers ``npm ci`` (strict, lockfile-preserving) when a lockfile is present;
+    falls back to ``npm install`` only if ``npm ci`` fails (e.g. lockfile out of
+    sync on a WIP checkout).  Without this, ``npm install`` on npm ≥ 10 silently
+    rewrites committed lockfiles (stripping ``"peer": true`` etc.), which leaves
+    the working tree dirty and causes the next ``hermes update`` to stash the
+    lockfile — repeatedly.
+    """
+    lockfile = cwd / "package-lock.json"
+    if lockfile.exists():
+        ci_cmd = [npm, "ci", *extra_args]
+        ci_result = subprocess.run(
+            ci_cmd,
+            cwd=cwd,
+            capture_output=capture_output,
+            text=True,
+            check=False,
+        )
+        if ci_result.returncode == 0:
+            return ci_result
+        # Fall through to `npm install` — lockfile may be out of sync on a
+        # WIP fork/branch, or `npm ci` may not be available on very old npm.
+    install_cmd = [npm, "install", *extra_args]
+    return subprocess.run(
+        install_cmd,
+        cwd=cwd,
+        capture_output=capture_output,
+        text=True,
+        check=False,
+    )
+
+
 def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     """Build the web UI frontend if npm is available.
 
@@ -4997,6 +5100,9 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     if not (web_dir / "package.json").exists():
         return True
 
+    if not _web_ui_build_needed(web_dir):
+        return True
+
     npm = shutil.which("npm")
     if not npm:
         if fatal:
@@ -5004,7 +5110,7 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
             print("Install Node.js, then run:  cd web && npm install && npm run build")
         return not fatal
     print("→ Building web UI...")
-    r1 = subprocess.run([npm, "install", "--silent"], cwd=web_dir, capture_output=True)
+    r1 = _run_npm_install_deterministic(npm, web_dir, extra_args=("--silent",))
     if r1.returncode != 0:
         print(
             f"  {'✗' if fatal else '⚠'} Web UI npm install failed"
@@ -5715,12 +5821,10 @@ def _update_node_dependencies() -> None:
         if not (path / "package.json").exists():
             continue
 
-        result = subprocess.run(
-            [npm, "install", "--silent", "--no-fund", "--no-audit", "--progress=false"],
-            cwd=path,
-            capture_output=True,
-            text=True,
-            check=False,
+        result = _run_npm_install_deterministic(
+            npm,
+            path,
+            extra_args=("--silent", "--no-fund", "--no-audit", "--progress=false"),
         )
         if result.returncode == 0:
             print(f"  ✓ {label}")
@@ -6228,6 +6332,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
             return
 
         print(f"→ Found {commit_count} new commit(s)")
+
+        # Snapshot critical state (state.db, config, pairing JSONs, etc.)
+        # before pulling so a user can recover if something goes wrong.
+        # Issue #15733 reported missing pairing data after an update; even
+        # though `git pull` can't touch $HERMES_HOME, this is cheap
+        # belt-and-suspenders insurance and gives the user something to
+        # restore from via `/snapshot list` / `/snapshot restore <id>`.
+        try:
+            from hermes_cli.backup import create_quick_snapshot
+
+            snap_id = create_quick_snapshot(label="pre-update")
+            if snap_id:
+                print(f"  ✓ Pre-update snapshot: {snap_id}")
+        except Exception as exc:
+            # Never let a snapshot failure block an update.
+            logger.debug("Pre-update snapshot failed: %s", exc)
 
         print("→ Pulling updates...")
         update_succeeded = False
@@ -8597,10 +8717,16 @@ Examples:
 
     skills_install = skills_subparsers.add_parser("install", help="Install a skill")
     skills_install.add_argument(
-        "identifier", help="Skill identifier (e.g. openai/skills/skill-creator)"
+        "identifier",
+        help="Skill identifier (e.g. openai/skills/skill-creator) or a direct HTTP(S) URL to a SKILL.md file",
     )
     skills_install.add_argument(
         "--category", default="", help="Category folder to install into"
+    )
+    skills_install.add_argument(
+        "--name",
+        default="",
+        help="Override the skill name (useful when installing from a URL whose SKILL.md has no `name:` frontmatter)",
     )
     skills_install.add_argument(
         "--force", action="store_true", help="Install despite blocked scan verdict"
@@ -9133,7 +9259,7 @@ Examples:
         "--source", help="Filter by source (cli, telegram, discord, etc.)"
     )
     sessions_browse.add_argument(
-        "--limit", type=int, default=50, help="Max sessions to load (default: 50)"
+        "--limit", type=int, default=500, help="Max sessions to load (default: 500)"
     )
 
     def _confirm_prompt(prompt: str) -> bool:
@@ -9230,7 +9356,8 @@ Examples:
                 ):
                     print("Cancelled.")
                     return
-            if db.delete_session(resolved_session_id):
+            sessions_dir = get_hermes_home() / "sessions"
+            if db.delete_session(resolved_session_id, sessions_dir=sessions_dir):
                 print(f"Deleted session '{resolved_session_id}'.")
             else:
                 print(f"Session '{args.session_id}' not found.")
@@ -9244,7 +9371,9 @@ Examples:
                 ):
                     print("Cancelled.")
                     return
-            count = db.prune_sessions(older_than_days=days, source=args.source)
+            sessions_dir = get_hermes_home() / "sessions"
+            count = db.prune_sessions(older_than_days=days, source=args.source,
+                                      sessions_dir=sessions_dir)
             print(f"Pruned {count} session(s).")
 
         elif action == "rename":
@@ -9262,7 +9391,7 @@ Examples:
                 print(f"Error: {e}")
 
         elif action == "browse":
-            limit = getattr(args, "limit", 50) or 50
+            limit = getattr(args, "limit", 500) or 500
             source = getattr(args, "source", None)
             _browse_exclude = None if source else ["tool"]
             sessions = db.list_sessions_rich(

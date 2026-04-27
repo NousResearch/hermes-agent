@@ -80,6 +80,14 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       web_search: "🔮"        # Override web_search tool emoji
       # Any tool not listed here uses its registry default
 
+    # Markdown rendering: tune final assistant Markdown for the terminal skin
+    markdown:
+      code_block_style: rich              # rich | compact
+      code_theme: default                 # Rich syntax theme for compact blocks
+      code_line_numbers: false            # Show line-number gutter for compact blocks
+      code_background: ""                 # Optional hex background for inline/compact code
+      blockquote_foreground: ""           # Optional quote text/rule color
+
 USAGE
 =====
 
@@ -135,6 +143,7 @@ class SkinConfig:
     branding: Dict[str, str] = field(default_factory=dict)
     tool_prefix: str = "┊"
     tool_emojis: Dict[str, str] = field(default_factory=dict)  # per-tool emoji overrides
+    markdown: Dict[str, Any] = field(default_factory=dict)
     banner_logo: str = ""    # Rich-markup ASCII art logo (replaces HERMES_AGENT_LOGO)
     banner_hero: str = ""    # Rich-markup hero art (replaces HERMES_CADUCEUS)
 
@@ -154,6 +163,10 @@ class SkinConfig:
     def get_branding(self, key: str, fallback: str = "") -> str:
         """Get a branding value with fallback."""
         return self.branding.get(key, fallback)
+
+    def get_markdown(self, key: str, fallback: Any = None) -> Any:
+        """Get a Markdown-rendering option with fallback."""
+        return self.markdown.get(key, fallback)
 
 
 # =============================================================================
@@ -192,6 +205,13 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "response_label": " ⚕ Hermes ",
             "prompt_symbol": "❯ ",
             "help_header": "(^_^)? Available Commands",
+        },
+        "markdown": {
+            "code_block_style": "rich",
+            "code_theme": "default",
+            "code_line_numbers": False,
+            "code_background": "",
+            "blockquote_foreground": "",
         },
         "tool_prefix": "┊",
     },
@@ -342,6 +362,13 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "response_label": " ⚕ Hermes ",
             "prompt_symbol": "❯ ",
             "help_header": "(^_^)? Available Commands",
+        },
+        "markdown": {
+            "code_block_style": "compact",
+            "code_theme": "monokai",
+            "code_line_numbers": True,
+            "code_background": "#1E293B",
+            "blockquote_foreground": "#A7B6D8",
         },
         "tool_prefix": "┊",
     },
@@ -675,6 +702,8 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
     spinner.update(data.get("spinner", {}))
     branding = dict(default.get("branding", {}))
     branding.update(data.get("branding", {}))
+    markdown = dict(default.get("markdown", {}))
+    markdown.update(data.get("markdown", {}))
 
     return SkinConfig(
         name=data.get("name", "unknown"),
@@ -684,6 +713,7 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
         branding=branding,
         tool_prefix=data.get("tool_prefix", default.get("tool_prefix", "┊")),
         tool_emojis=data.get("tool_emojis", {}),
+        markdown=markdown,
         banner_logo=data.get("banner_logo", ""),
         banner_hero=data.get("banner_hero", ""),
     )

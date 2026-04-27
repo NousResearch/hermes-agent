@@ -19,7 +19,6 @@ import re
 import shutil
 import sys
 import json
-import re
 import concurrent.futures
 import base64
 import atexit
@@ -1249,6 +1248,14 @@ def _rich_text_from_ansi(text: str) -> _RichText:
     return _RichText.from_ansi(text or "")
 
 
+_OSC_SEQUENCE_RE = re.compile(r"\x1b\][^\x1b\x07]*(?:\x1b\\|\x07)")
+
+
+def _strip_unsupported_terminal_sequences(text: str) -> str:
+    """Remove ANSI/OSC sequences prompt_toolkit's ANSI parser renders as text."""
+    return _OSC_SEQUENCE_RE.sub("", text or "")
+
+
 def _strip_markdown_syntax(text: str) -> str:
     """Best-effort markdown marker removal for plain-text display."""
     plain = _rich_text_from_ansi(text or "").plain
@@ -1270,6 +1277,276 @@ def _strip_markdown_syntax(text: str) -> str:
     return plain.strip("\n")
 
 
+_INDENTED_LIST_MARKER_RE = re.compile(r"^(?:[-+*]\s+|\d+[.)]\s+|\[[ xX]\]\s+)")
+
+
+def _is_indented_code_line(line: str) -> bool:
+    if line.startswith("\t"):
+        stripped = line[1:].lstrip()
+    elif line.startswith("    "):
+        stripped = line[4:].lstrip()
+    else:
+        return False
+    return bool(stripped) and not _INDENTED_LIST_MARKER_RE.match(stripped)
+
+
+def _dedent_code_line(line: str) -> str:
+    if line.startswith("\t"):
+        return line[1:]
+    if line.startswith("    "):
+        return line[4:]
+    return line
+
+
+def _skin_markdown_code_block_style() -> str:
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        value = get_active_skin().get_markdown("code_block_style", "rich")
+    except Exception:
+        value = "rich"
+    return str(value or "rich").strip().lower()
+
+
+def _skin_markdown_code_background() -> str:
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        return str(get_active_skin().get_markdown("code_background", "") or "").strip()
+    except Exception:
+        return ""
+
+
+def _skin_markdown_code_theme() -> str:
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        return str(get_active_skin().get_markdown("code_theme", "monokai") or "monokai").strip()
+    except Exception:
+        return "monokai"
+
+
+def _skin_markdown_code_line_numbers() -> bool:
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        return bool(get_active_skin().get_markdown("code_line_numbers", False))
+    except Exception:
+        return False
+
+
+def _compact_code_renderable(language: str, lines: list[str]):
+    from rich.panel import Panel
+    from rich.syntax import Syntax
+
+    code = "\n".join(lines or [""])
+    lexer = (language or "text").strip() or "text"
+    if lexer in {"code", "raw"}:
+        lexer = "text"
+    max_line_width = max((len(line) for line in code.splitlines()), default=1)
+    code_width = min(max(max_line_width + 2, 24), max(shutil.get_terminal_size((80, 24)).columns - 16, 24))
+    try:
+        syntax = Syntax(
+            code,
+            lexer,
+            theme=_skin_markdown_code_theme(),
+            background_color=_skin_markdown_code_background() or None,
+            line_numbers=_skin_markdown_code_line_numbers(),
+            padding=(0, 1),
+            code_width=code_width,
+            word_wrap=True,
+        )
+    except Exception:
+        syntax = Syntax(
+            code,
+            "text",
+            theme=_skin_markdown_code_theme(),
+            background_color=_skin_markdown_code_background() or None,
+            line_numbers=_skin_markdown_code_line_numbers(),
+            padding=(0, 1),
+            code_width=code_width,
+            word_wrap=True,
+        )
+    return Panel(
+        syntax,
+        title=language or "code",
+        title_align="left",
+        border_style=f"{_accent_hex()} dim",
+        box=rich_box.ROUNDED,
+        expand=False,
+    )
+
+
+_TABLE_SEPARATOR_CELL_RE = re.compile(r"^:?-{3,}:?$")
+
+
+def _split_markdown_table_row(line: str) -> list[str]:
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    return [cell.strip() for cell in stripped.split("|")]
+
+
+def _is_markdown_table_separator(line: str) -> bool:
+    cells = _split_markdown_table_row(line)
+    return bool(cells) and all(_TABLE_SEPARATOR_CELL_RE.match(cell.replace(" ", "")) for cell in cells)
+
+
+def _is_markdown_table_start(lines: list[str], index: int) -> bool:
+    if index + 1 >= len(lines):
+        return False
+    if "|" not in lines[index] or "|" not in lines[index + 1]:
+        return False
+    headers = _split_markdown_table_row(lines[index])
+    separators = _split_markdown_table_row(lines[index + 1])
+    return bool(headers) and len(headers) == len(separators) and _is_markdown_table_separator(lines[index + 1])
+
+
+def _markdown_table_renderable(table_lines: list[str]):
+    from rich.table import Table
+
+    headers = _split_markdown_table_row(table_lines[0])
+    separators = _split_markdown_table_row(table_lines[1])
+    rows = [_split_markdown_table_row(line) for line in table_lines[2:] if "|" in line]
+    table = Table(
+        *headers,
+        box=rich_box.MARKDOWN,
+        border_style=f"{_accent_hex()} dim",
+        header_style=f"bold {_accent_hex()}",
+        expand=False,
+        show_edge=True,
+        pad_edge=False,
+    )
+    for idx, separator in enumerate(separators):
+        clean = separator.replace(" ", "")
+        if clean.startswith(":") and clean.endswith(":"):
+            table.columns[idx].justify = "center"
+        elif clean.endswith(":"):
+            table.columns[idx].justify = "right"
+        else:
+            table.columns[idx].justify = "left"
+    for row in rows:
+        padded = row + [""] * (len(headers) - len(row))
+        table.add_row(*padded[: len(headers)])
+    return table
+
+
+def _append_markdown_or_tables(renderables: list, text: str) -> None:
+    from rich.markdown import Markdown
+
+    lines = text.split("\n")
+    pending: list[str] = []
+    i = 0
+
+    def flush_pending() -> None:
+        nonlocal pending
+        if pending and "\n".join(pending).strip():
+            renderables.append(Markdown("\n".join(pending), code_theme="default", inline_code_theme="default"))
+        pending = []
+
+    while i < len(lines):
+        if _is_markdown_table_start(lines, i):
+            flush_pending()
+            table_lines = [lines[i], lines[i + 1]]
+            i += 2
+            while i < len(lines) and "|" in lines[i] and lines[i].strip():
+                table_lines.append(lines[i])
+                i += 1
+            renderables.append(_markdown_table_renderable(table_lines))
+            continue
+        pending.append(lines[i])
+        i += 1
+    flush_pending()
+
+
+def _append_markdown_or_indented_code(renderables: list, text: str) -> None:
+    lines = text.split("\n")
+    pending: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not _is_indented_code_line(line):
+            pending.append(line)
+            i += 1
+            continue
+
+        if pending and "\n".join(pending).strip():
+            _append_markdown_or_tables(renderables, "\n".join(pending))
+        pending = []
+
+        block: list[str] = []
+        while i < len(lines) and (_is_indented_code_line(lines[i]) or not lines[i].strip()):
+            if lines[i].strip():
+                block.append(_dedent_code_line(lines[i]))
+            i += 1
+        renderables.append(_compact_code_renderable("code", block))
+
+    if pending and "\n".join(pending).strip():
+        _append_markdown_or_tables(renderables, "\n".join(pending))
+
+
+_FENCE_OPEN_RE = re.compile(r"^(?P<indent>[ \t]{0,3})(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
+_BLOCKQUOTE_PREFIX_RE = re.compile(r"^(?:[ \t]{0,3}>[ \t]?)+(.*)$")
+
+
+def _strip_blockquote_prefix(line: str) -> str:
+    match = _BLOCKQUOTE_PREFIX_RE.match(line)
+    return match.group(1) if match else line
+
+
+def _compact_fence_match(line: str):
+    match = _FENCE_OPEN_RE.match(line)
+    if match:
+        return match, False
+    quoted = _strip_blockquote_prefix(line)
+    if quoted != line:
+        match = _FENCE_OPEN_RE.match(quoted)
+        if match:
+            return match, True
+    return None, False
+
+
+def _render_compact_markdown_content(text: str):
+    from rich.console import Group
+    from rich.markdown import Markdown
+
+    renderables: list = []
+    pending: list[str] = []
+    lines = text.split("\n")
+    i = 0
+
+    def flush_pending() -> None:
+        nonlocal pending
+        if pending and "\n".join(pending).strip():
+            _append_markdown_or_indented_code(renderables, "\n".join(pending))
+        pending = []
+
+    while i < len(lines):
+        line = lines[i]
+        match, quoted_fence = _compact_fence_match(line)
+        if match:
+            flush_pending()
+            fence = match.group("fence")
+            indent = match.group("indent") or ""
+            info = (match.group("info") or "").strip()
+            language = info.split()[0] if info else "code"
+            i += 1
+            block: list[str] = []
+            close_re = re.compile(rf"^{re.escape(indent)}{re.escape(fence)}[ \t]*$")
+            while i < len(lines):
+                code_line = _strip_blockquote_prefix(lines[i]) if quoted_fence else lines[i]
+                if close_re.match(code_line):
+                    i += 1
+                    break
+                block.append(code_line)
+                i += 1
+            renderables.append(_compact_code_renderable(language, block or [""]))
+            continue
+        pending.append(line)
+        i += 1
+
+    flush_pending()
+    return Group(*renderables) if renderables else Markdown(text, code_theme="default", inline_code_theme="default")
+
+
 def _render_final_assistant_content(text: str, mode: str = "render"):
     """Render final assistant content as markdown, stripped text, or raw text."""
     from rich.markdown import Markdown
@@ -1281,7 +1558,76 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
         return _rich_text_from_ansi(text or "")
 
     plain = _rich_text_from_ansi(text or "").plain
-    return Markdown(plain)
+    if _skin_markdown_code_block_style() == "compact":
+        return _render_compact_markdown_content(plain)
+    return Markdown(plain, code_theme="default", inline_code_theme="default")
+
+
+# ---------------------------------------------------------------------------
+# Streaming Markdown→ANSI renderer (line-at-a-time, for _emit_stream_text)
+# ---------------------------------------------------------------------------
+
+# Cached Rich Console for line-by-line markdown→ANSI conversion.
+_md_console: "Console | None" = None
+
+# Pre-filter: lines without any of these chars cannot contain markdown syntax,
+# so we skip the Rich render entirely.  ~microsecond check saves ~100x per line.
+_MD_TRIGGER_RE = re.compile(r"[#*_`~>\[\]!|]")
+
+
+def _get_md_console() -> "Console":
+    """Lazy-init a Rich Console tuned for line-at-a-time markdown→ANSI."""
+    global _md_console
+    if _md_console is None:
+        _md_console = Console(
+            force_terminal=True,
+            color_system="truecolor",
+            width=200,
+            no_color=False,
+        )
+    return _md_console
+
+
+def _render_line_to_ansi(line: str) -> str:
+    r"""Render a single line of markdown to ANSI text via Rich.
+
+    Fast-path: if the line contains no markdown-trigger characters
+    (``#*_\`~>[]!|``) the line is returned unchanged — zero Rich overhead.
+
+    Returns the original line unchanged when:
+    - The line is blank.
+    - No markdown trigger chars detected (fast path).
+    - Rich produces an empty result (fallback to raw).
+    - Any exception occurs (graceful degradation).
+
+    Limitations (inherent to line-at-a-time streaming):
+    - Tables render as individual rows (column widths aren't computed).
+    - Fenced code blocks don't get syntax highlighting until fully buffered.
+    - Nested list indentation may not render correctly mid-stream.
+    For full-fidelity rendering, the non-streaming Panel path handles all of these.
+    """
+    stripped = line.strip()
+    if not stripped:
+        return line
+    if stripped.startswith(("```", "~~~")):
+        return ""
+
+    # Fast path: plain prose lines skip the Rich round-trip entirely
+    if not _MD_TRIGGER_RE.search(line):
+        return line
+
+    try:
+        from rich.markdown import Markdown
+
+        console = _get_md_console()
+        with console.capture() as capture:
+            console.print(Markdown(line))
+        rendered = _strip_unsupported_terminal_sequences(capture.get().rstrip("\n"))
+        if rendered and rendered.strip():
+            return rendered
+        return line
+    except Exception:
+        return line
 
 
 def _cprint(text: str):
@@ -1651,12 +1997,33 @@ class ChatConsole:
 
     def __init__(self):
         from io import StringIO
+        from rich.theme import Theme
         self._buffer = StringIO()
+        theme = None
+        try:
+            from hermes_cli.skin_engine import get_active_skin
+            skin = get_active_skin()
+            code_background = str(skin.get_markdown("code_background", "") or "").strip()
+            code_foreground = skin.get_color("banner_text", "#c9d1d9")
+            blockquote_foreground = str(
+                skin.get_markdown("blockquote_foreground", "")
+                or skin.get_color("banner_text", "#c9d1d9")
+            ).strip()
+            theme_styles = {
+                "markdown.block_quote": f"{blockquote_foreground} italic",
+            }
+            if code_background:
+                theme_styles["markdown.code"] = f"{code_foreground} on {code_background}"
+            theme = Theme(theme_styles)
+        except Exception:
+            theme = None
         self._inner = Console(
             file=self._buffer,
             force_terminal=True,
             color_system="truecolor",
+            no_color=False,
             highlight=False,
+            theme=theme,
         )
 
     def print(self, *args, **kwargs):
@@ -1665,9 +2032,9 @@ class ChatConsole:
         # Read terminal width at render time so panels adapt to current size
         self._inner.width = shutil.get_terminal_size((80, 24)).columns
         self._inner.print(*args, **kwargs)
-        output = self._buffer.getvalue()
-        for line in output.rstrip("\n").split("\n"):
-            _cprint(line)
+        output = _strip_unsupported_terminal_sequences(self._buffer.getvalue())
+        if output:
+            _cprint(output.rstrip("\n"))
 
     @contextmanager
     def status(self, *_args, **_kwargs):
@@ -3066,6 +3433,19 @@ class HermesCLI:
         # Close the live reasoning box before opening the response box
         self._close_reasoning_box()
 
+        # Rich Markdown needs the full document for fences, tables, and nested
+        # lists. Buffer streamed deltas and render once in _flush_stream().
+        if self.final_response_markdown == "render":
+            if not self._stream_box_opened:
+                text = text.lstrip("\n")
+                if not text:
+                    return
+                # Marks response content as streamed so the final non-streaming
+                # Panel path does not print a duplicate after _flush_stream().
+                self._stream_box_opened = True
+            self._stream_buf += text
+            return
+
         # Open the response box header on the very first visible text
         if not self._stream_box_opened:
             # Strip leading whitespace/newlines before first visible content
@@ -3102,6 +3482,8 @@ class HermesCLI:
             line, self._stream_buf = self._stream_buf.split("\n", 1)
             if self.final_response_markdown == "strip":
                 line = _strip_markdown_syntax(line)
+            elif self.final_response_markdown == "render":
+                line = _render_line_to_ansi(line)
             _cprint(f"{_STREAM_PAD}{_tc}{line}{_RST}" if _tc else f"{_STREAM_PAD}{line}")
 
     def _flush_stream(self) -> None:
@@ -3117,9 +3499,35 @@ class HermesCLI:
         # Close reasoning box if still open (in case no content tokens arrived)
         self._close_reasoning_box()
 
+        if self.final_response_markdown == "render":
+            if self._stream_buf:
+                try:
+                    from hermes_cli.skin_engine import get_active_skin
+                    _skin = get_active_skin()
+                    label = _skin.get_branding("response_label", "⚕ Hermes")
+                    _resp_color = _skin.get_color("response_border", "#CD7F32")
+                except Exception:
+                    label = "⚕ Hermes"
+                    _resp_color = "#CD7F32"
+                ChatConsole().print(Panel(
+                    _render_final_assistant_content(self._stream_buf, mode="render"),
+                    title=f"[{_resp_color} bold]{label}[/]",
+                    title_align="left",
+                    border_style=_resp_color,
+                    box=rich_box.HORIZONTALS,
+                    padding=(1, 4),
+                ))
+                self._stream_buf = ""
+            return
+
         if self._stream_buf:
             _tc = getattr(self, "_stream_text_ansi", "")
-            line = _strip_markdown_syntax(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
+            if self.final_response_markdown == "strip":
+                line = _strip_markdown_syntax(self._stream_buf)
+            elif self.final_response_markdown == "render":
+                line = _render_line_to_ansi(self._stream_buf)
+            else:
+                line = self._stream_buf
             _cprint(f"{_STREAM_PAD}{_tc}{line}{_RST}" if _tc else f"{_STREAM_PAD}{line}")
             self._stream_buf = ""
 
@@ -6541,11 +6949,9 @@ class HermesCLI:
                         _skin = get_active_skin()
                         label = _skin.get_branding("response_label", "⚕ Hermes")
                         _resp_color = _skin.get_color("response_border", "#CD7F32")
-                        _resp_text = _skin.get_color("banner_text", "#FFF8DC")
                     except Exception:
                         label = "⚕ Hermes"
                         _resp_color = "#CD7F32"
-                        _resp_text = "#FFF8DC"
 
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
@@ -6553,7 +6959,6 @@ class HermesCLI:
                         title=f"[{_resp_color} bold]{label} (background #{task_num})[/]",
                         title_align="left",
                         border_style=_resp_color,
-                        style=_resp_text,
                         box=rich_box.HORIZONTALS,
                         padding=(1, 4),
                     ))
@@ -6718,7 +7123,7 @@ class HermesCLI:
                             f' --user-data-dir="{_data_dir}"'
                             f" --no-first-run --no-default-browser-check"
                         )
-                    print(f"     Launch Chrome manually:")
+                    print("     Launch Chrome manually:")
                     print(f"     {chrome_cmd}")
             else:
                 print(f"   ⚠ Port {_port} is not reachable at {cdp_url}")
@@ -8870,11 +9275,9 @@ class HermesCLI:
                     _skin = get_active_skin()
                     label = _skin.get_branding("response_label", "⚕ Hermes")
                     _resp_color = _skin.get_color("response_border", "#CD7F32")
-                    _resp_text = _skin.get_color("banner_text", "#FFF8DC")
                 except Exception:
                     label = "⚕ Hermes"
                     _resp_color = "#CD7F32"
-                    _resp_text = "#FFF8DC"
 
                 is_error_response = result and (result.get("failed") or result.get("partial"))
                 already_streamed = self._stream_started and self._stream_box_opened and not is_error_response
@@ -8893,7 +9296,6 @@ class HermesCLI:
                         title=f"[{_resp_color} bold]{label}[/]",
                         title_align="left",
                         border_style=_resp_color,
-                        style=_resp_text,
                         box=rich_box.HORIZONTALS,
                         padding=(1, 4),
                     ))

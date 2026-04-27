@@ -2,8 +2,13 @@ from io import StringIO
 
 from rich.console import Console
 from rich.markdown import Markdown
+from rich.panel import Panel
 
-from cli import _render_final_assistant_content
+import cli
+from cli import (
+    ChatConsole,
+    _render_final_assistant_content,
+)
 
 
 def _render_to_text(renderable) -> str:
@@ -13,6 +18,9 @@ def _render_to_text(renderable) -> str:
 
 
 def test_final_assistant_content_uses_markdown_renderable():
+    from hermes_cli.skin_engine import set_active_skin
+
+    set_active_skin("default")
     renderable = _render_final_assistant_content("# Title\n\n- one\n- two")
 
     assert isinstance(renderable, Markdown)
@@ -20,6 +28,289 @@ def test_final_assistant_content_uses_markdown_renderable():
     assert "Title" in output
     assert "one" in output
     assert "two" in output
+
+
+def test_final_assistant_content_uses_low_background_code_theme():
+    from hermes_cli.skin_engine import set_active_skin
+
+    set_active_skin("default")
+    renderable = _render_final_assistant_content("```python\ndef smoke():\n    return True\n```")
+
+    assert isinstance(renderable, Markdown)
+    assert renderable.code_theme == "default"
+    assert renderable.inline_code_theme == "default"
+
+
+def test_slate_skin_uses_compact_code_blocks_in_render_mode():
+    from hermes_cli.skin_engine import set_active_skin
+
+    set_active_skin("slate")
+    output = _render_to_text(
+        _render_final_assistant_content("```python\ndef smoke():\n    return True\n```")
+    )
+
+    assert "python" in output
+    assert "def smoke" in output
+    assert "1 def smoke" in output
+    assert "2     return True" in output
+    assert "╭" in output
+
+
+def test_slate_diff_code_blocks_show_line_numbers():
+    from hermes_cli.skin_engine import set_active_skin
+
+    set_active_skin("slate")
+    output = _render_to_text(
+        _render_final_assistant_content(
+            "```diff\n"
+            "--- a/README.md\n"
+            "+++ b/README.md\n"
+            "@@ -1,2 +1,2 @@\n"
+            "-old line\n"
+            "+new line\n"
+            "```"
+        )
+    )
+
+    assert "diff" in output
+    assert "1 --- a/README.md" in output
+    assert "4 -old line" in output
+    assert "5 +new line" in output
+
+
+def test_default_skin_leaves_markdown_code_blocks_to_rich():
+    from hermes_cli.skin_engine import set_active_skin
+
+    set_active_skin("default")
+    output = _render_to_text(
+        _render_final_assistant_content("```python\ndef smoke():\n    return True\n```")
+    )
+
+    assert "python:" not in output
+
+
+def test_slate_renders_indented_code_as_bounded_block():
+    from hermes_cli.skin_engine import set_active_skin
+
+    set_active_skin("slate")
+    output = _render_to_text(
+        _render_final_assistant_content(
+            "Config:\n\n    display:\n      final_response_markdown: render\n      streaming: true\n\nDone"
+        )
+    )
+
+    assert "code" in output
+    assert "display:" in output
+    assert "final_response_markdown: render" in output
+    assert "╭" in output
+
+
+def test_slate_preserves_nested_lists_while_rendering_indented_code():
+    from hermes_cli.skin_engine import set_active_skin
+
+    set_active_skin("slate")
+    output = _render_to_text(
+        _render_final_assistant_content(
+            "- parent\n"
+            "    - nested item\n"
+            "    - second nested\n"
+            "\n"
+            "    const value = true\n"
+        )
+    )
+
+    assert "nested item" in output
+    assert "second nested" in output
+    assert "const value = true" in output
+    assert "╭" in output
+
+
+def test_chat_console_print_preserves_multiline_rich_ansi_stream(monkeypatch):
+    calls: list[str] = []
+    monkeypatch.setattr(cli, "_cprint", calls.append)
+
+    ChatConsole().print("first\nsecond")
+
+    assert len(calls) == 1
+    assert "first" in calls[0]
+    assert "\n" in calls[0]
+    assert "second" in calls[0]
+
+
+def test_slate_chat_console_applies_code_background(monkeypatch):
+    from hermes_cli.skin_engine import set_active_skin
+
+    calls: list[str] = []
+    set_active_skin("slate")
+    monkeypatch.setattr(cli, "_cprint", calls.append)
+
+    ChatConsole().print(_render_final_assistant_content("```python\nprint('ok')\n```"))
+
+    assert calls
+    assert "48;2;30;41;59" in calls[0]
+
+
+def test_slate_compact_renderer_handles_unclosed_fence(monkeypatch):
+    from hermes_cli.skin_engine import set_active_skin
+
+    calls: list[str] = []
+    set_active_skin("slate")
+    monkeypatch.setattr(cli, "_cprint", calls.append)
+
+    ChatConsole().print(
+        _render_final_assistant_content(
+            "Before\n\n```raw\n**What to check**\n- render mode\n| A | B |\n"
+        )
+    )
+
+    assert calls
+    assert "raw" in calls[0]
+    assert "**What to check**" in calls[0]
+    assert "48;2;30;41;59" in calls[0]
+
+
+def test_slate_renders_blockquote_fenced_code_with_code_background(monkeypatch):
+    from hermes_cli.skin_engine import set_active_skin
+
+    calls: list[str] = []
+    set_active_skin("slate")
+    monkeypatch.setattr(cli, "_cprint", calls.append)
+
+    ChatConsole().print(
+        _render_final_assistant_content(
+            "> Before the code.\n>\n> ```python\n> def main():\n>     print('hello')\n> ```\n>\n> After."
+        )
+    )
+
+    assert calls
+    assert "Before the code" in calls[0]
+    assert "def" in calls[0]
+    assert "print" in calls[0]
+    assert "After" in calls[0]
+    assert "48;2;30;41;59" in calls[0]
+
+
+def test_slate_blockquotes_use_bright_markdown_color(monkeypatch):
+    from hermes_cli.skin_engine import set_active_skin
+
+    calls: list[str] = []
+    set_active_skin("slate")
+    monkeypatch.setattr(cli, "_cprint", calls.append)
+
+    ChatConsole().print(_render_final_assistant_content("> This is a blockquote.\n> Nested enough."))
+
+    assert calls
+    assert "This is a blockquote" in calls[0]
+    assert "38;2;167;182;216" in calls[0]
+
+
+def test_slate_preserves_properly_escaped_markdown_literals(monkeypatch):
+    from hermes_cli.skin_engine import set_active_skin
+
+    calls: list[str] = []
+    set_active_skin("slate")
+    monkeypatch.setattr(cli, "_cprint", calls.append)
+
+    ChatConsole().print(
+        _render_final_assistant_content(
+            "Literal asterisk: \\*not italic\\*\n"
+            "Literal bold: \\*\\*not bold\\*\\*\n"
+            "Literal backtick: \\`not code\\`\n"
+            "Literal hash: \\# not heading\n"
+            "Literal bracket: \\[not a link\\](https://example.com)\n"
+            "Literal pipe: \\| not table"
+        )
+    )
+
+    assert calls
+    assert "*not italic*" in calls[0]
+    assert "**not bold**" in calls[0]
+    assert "`not" in calls[0]
+    assert "code`" in calls[0]
+    assert "# not heading" in calls[0]
+    assert "[not a" in calls[0]
+    assert "link](https://example.com)" in calls[0]
+    assert "| not table" in calls[0]
+
+
+def test_chat_console_strips_rich_terminal_hyperlink_sequences(monkeypatch):
+    from hermes_cli.skin_engine import set_active_skin
+
+    calls: list[str] = []
+    set_active_skin("slate")
+    monkeypatch.setattr(cli, "_cprint", calls.append)
+
+    ChatConsole().print(
+        _render_final_assistant_content(
+            "- [External link to GitHub](https://github.com)\n- <noizo@example.com>"
+        )
+    )
+
+    assert calls
+    assert "External link to GitHub" in calls[0]
+    assert "noizo@example.com" in calls[0]
+    assert "\x1b]8;" not in calls[0]
+    assert "id=" not in calls[0]
+
+
+def test_slate_renders_markdown_tables_with_visible_columns():
+    from hermes_cli.skin_engine import set_active_skin
+
+    set_active_skin("slate")
+    output = _render_to_text(
+        _render_final_assistant_content(
+            "| Left | Center | Right |\n"
+            "|:---|:---:|---:|\n"
+            "| one | two | three |\n"
+            "| alpha | beta | gamma |"
+        )
+    )
+
+    assert "|Left" in output
+    assert "| Center |" in output
+    assert "|one" in output
+    assert "three|" in output
+
+
+def test_stream_render_mode_buffers_until_flush(monkeypatch):
+    from cli import HermesCLI
+
+    rendered: list[Panel] = []
+    raw_lines: list[str] = []
+
+    class FakeChatConsole:
+        def print(self, renderable, *args, **kwargs):
+            rendered.append(renderable)
+
+    hermes_cli = HermesCLI.__new__(HermesCLI)
+    hermes_cli.show_reasoning = False
+    hermes_cli.final_response_markdown = "render"
+    hermes_cli._stream_buf = ""
+    hermes_cli._stream_started = False
+    hermes_cli._stream_box_opened = False
+    hermes_cli._stream_text_ansi = ""
+    hermes_cli._stream_prefilt = ""
+    hermes_cli._in_reasoning_block = False
+    hermes_cli._stream_last_was_newline = True
+    hermes_cli._reasoning_box_opened = False
+    hermes_cli._reasoning_buf = ""
+    hermes_cli._reasoning_preview_buf = ""
+    hermes_cli._deferred_content = ""
+
+    monkeypatch.setattr(cli, "_cprint", raw_lines.append)
+    monkeypatch.setattr(cli, "ChatConsole", FakeChatConsole)
+
+    hermes_cli._emit_stream_text("# Heading\n\n```python\nprint('ok')\n```")
+
+    assert raw_lines == []
+    assert rendered == []
+    assert hermes_cli._stream_box_opened is True
+
+    hermes_cli._flush_stream()
+
+    assert raw_lines == []
+    assert len(rendered) == 1
+    assert hermes_cli._stream_buf == ""
 
 
 def test_final_assistant_content_strips_ansi_before_markdown_rendering():

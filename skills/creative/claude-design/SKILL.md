@@ -1,6 +1,6 @@
 ---
 name: claude-design
-description: Design-ready operating skill for CLI/API agents creating thoughtful HTML artifacts outside Claude Design's hosted web UI. Use for landing pages, prototypes, UI explorations, decks, component mockups, motion studies, and design-system exercises where the output should be local, self-contained, and high-craft.
+description: Design one-off HTML artifacts (landing, deck, prototype).
 version: 1.0.0
 author: BadTechBandit
 license: MIT
@@ -15,6 +15,8 @@ metadata:
 Use this skill when the user asks for design work that would normally fit Claude Design, but the agent is running in a CLI/API environment instead of the hosted Claude Design web UI.
 
 The goal is to preserve Claude Design's useful design behavior and taste while removing hosted-tool plumbing that does not exist in normal agent environments.
+
+**Before starting, check for other web-design skills like `popular-web-designs` (ready-to-paste design systems for Stripe, Linear, Vercel, Notion, etc.) and `design-md` (Google's DESIGN.md token spec format).** If the user wants a known brand's look, load `popular-web-designs` alongside this one and let it supply the visual vocabulary. If the deliverable is a token spec file rather than a rendered artifact, use `design-md` instead. Full decision table below.
 
 ## When To Use This Skill vs `popular-web-designs` vs `design-md`
 

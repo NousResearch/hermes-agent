@@ -89,6 +89,9 @@ MAX_CONSECUTIVE_FAILURES = 3
 RETRY_DELAY_SECONDS = 2
 BACKOFF_DELAY_SECONDS = 30
 SESSION_EXPIRED_ERRCODE = -14
+# iLink error codes that retrying cannot resolve (e.g. message payload too large
+# or malformed request).  Returning -2 for these skips the backoff loop.
+NON_RETRYABLE_ERRCODES = frozenset({-2})
 MESSAGE_DEDUP_TTL_SECONDS = 300
 
 MEDIA_IMAGE = 1
@@ -97,6 +100,10 @@ MEDIA_FILE = 3
 MEDIA_VOICE = 4
 
 _LIVE_ADAPTERS: Dict[str, Any] = {}
+
+
+class _ILinkPermanentError(RuntimeError):
+    """Raised for iLink error codes where retrying the same payload cannot help."""
 
 
 def _make_ssl_connector() -> Optional["aiohttp.TCPConnector"]:
@@ -1496,6 +1503,10 @@ class WeixinAdapter(BasePlatformAdapter):
         *without* ``context_token`` — iLink accepts tokenless sends as a
         degraded fallback, which keeps cron-initiated push messages working
         even when no user message has refreshed the session recently.
+
+        Errors in ``NON_RETRYABLE_ERRCODES`` (e.g. ret=-2, invalid payload)
+        are raised immediately without retrying — the same payload cannot
+        succeed on subsequent attempts.
         """
         last_error: Optional[Exception] = None
         retried_without_token = False
@@ -1532,13 +1543,14 @@ class WeixinAdapter(BasePlatformAdapter):
                             )
                             continue
                         errmsg = resp.get("errmsg") or resp.get("msg") or "unknown error"
-                        raise RuntimeError(
-                            f"iLink sendmessage error: ret={ret} errcode={errcode} errmsg={errmsg}"
-                        )
+                        error_msg = f"iLink sendmessage error: ret={ret} errcode={errcode} errmsg={errmsg}"
+                        if ret in NON_RETRYABLE_ERRCODES or errcode in NON_RETRYABLE_ERRCODES:
+                            raise _ILinkPermanentError(error_msg)
+                        raise RuntimeError(error_msg)
                 return
             except Exception as exc:
                 last_error = exc
-                if attempt >= self._send_chunk_retries:
+                if attempt >= self._send_chunk_retries or isinstance(exc, _ILinkPermanentError):
                     break
                 wait = self._send_chunk_retry_delay_seconds * (attempt + 1)
                 logger.warning(

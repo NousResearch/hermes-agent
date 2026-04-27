@@ -359,6 +359,88 @@ class TestWeixinChunkDelivery:
         assert first_try["client_id"] == retry["client_id"]
 
 
+class TestWeixinNonRetryableErrors:
+    """Permanent iLink error codes must not be retried."""
+
+    def _connected_adapter(self) -> WeixinAdapter:
+        adapter = _make_adapter()
+        adapter._session = object()
+        adapter._send_session = adapter._session
+        adapter._token = "test-token"
+        adapter._base_url = "https://weixin.example.com"
+        adapter._send_chunk_retries = 3
+        adapter._token_store.get = lambda account_id, chat_id: None
+        return adapter
+
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_ret_minus_2_fails_without_retry(self, send_message_mock):
+        send_message_mock.return_value = {"ret": -2, "errmsg": "message too long"}
+        adapter = self._connected_adapter()
+
+        import pytest
+        with pytest.raises(RuntimeError, match="ret=-2"):
+            asyncio.run(
+                adapter._send_text_chunk(
+                    chat_id="wxid_abc",
+                    chunk="x" * 5000,
+                    context_token=None,
+                    client_id="cid-1",
+                )
+            )
+        assert send_message_mock.await_count == 1
+
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_errcode_minus_2_fails_without_retry(self, send_message_mock):
+        send_message_mock.return_value = {"ret": 0, "errcode": -2, "errmsg": "invalid message"}
+        adapter = self._connected_adapter()
+
+        import pytest
+        with pytest.raises(RuntimeError, match="errcode=-2"):
+            asyncio.run(
+                adapter._send_text_chunk(
+                    chat_id="wxid_abc",
+                    chunk="content",
+                    context_token=None,
+                    client_id="cid-2",
+                )
+            )
+        assert send_message_mock.await_count == 1
+
+    @patch("gateway.platforms.weixin.asyncio.sleep", new_callable=AsyncMock)
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_transient_error_still_retries(self, send_message_mock, sleep_mock):
+        calls = {"n": 0}
+
+        async def fail_then_succeed(*args, **kwargs):
+            calls["n"] += 1
+            if calls["n"] == 1:
+                raise RuntimeError("transient network error")
+            return None
+
+        send_message_mock.side_effect = fail_then_succeed
+        adapter = self._connected_adapter()
+
+        asyncio.run(
+            adapter._send_text_chunk(
+                chat_id="wxid_abc",
+                chunk="short message",
+                context_token=None,
+                client_id="cid-3",
+            )
+        )
+        assert send_message_mock.await_count == 2
+
+    @patch("gateway.platforms.weixin._send_message", new_callable=AsyncMock)
+    def test_send_returns_failure_on_permanent_error(self, send_message_mock):
+        send_message_mock.return_value = {"ret": -2, "errmsg": "message too long"}
+        adapter = self._connected_adapter()
+
+        result = asyncio.run(adapter.send("wxid_abc", "hello"))
+        assert result.success is False
+        assert "ret=-2" in result.error
+        assert send_message_mock.await_count == 1
+
+
 class TestWeixinOutboundMedia:
     def test_send_image_file_accepts_keyword_image_path(self):
         adapter = _make_adapter()

@@ -402,6 +402,7 @@ def _session_browse_picker(sessions: list) -> Optional[str]:
 
         def _curses_browse(stdscr):
             curses.curs_set(0)
+            stdscr.keypad(True)
             if curses.has_colors():
                 curses.start_color()
                 curses.use_default_colors()

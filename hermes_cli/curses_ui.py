@@ -66,6 +66,7 @@ def curses_checklist(
 
         def _draw(stdscr):
             curses.curs_set(0)
+            stdscr.keypad(True)
             if curses.has_colors():
                 curses.start_color()
                 curses.use_default_colors()
@@ -195,6 +196,7 @@ def curses_radiolist(
 
         def _draw(stdscr):
             curses.curs_set(0)
+            stdscr.keypad(True)
             if curses.has_colors():
                 curses.start_color()
                 curses.use_default_colors()
@@ -332,6 +334,7 @@ def curses_single_select(
 
         def _draw(stdscr):
             curses.curs_set(0)
+            stdscr.keypad(True)
             if curses.has_colors():
                 curses.start_color()
                 curses.use_default_colors()

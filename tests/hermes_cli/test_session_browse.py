@@ -270,6 +270,26 @@ class TestCursesBrowse:
                 with patch("curses.has_colors", return_value=False):
                     return _session_browse_picker(sessions)
 
+    def test_curses_enables_keypad_mode(self):
+        import curses
+        sessions = _make_sessions(3)
+
+        mock_stdscr = MagicMock()
+        mock_stdscr.getmaxyx.return_value = (30, 120)
+        mock_stdscr.getch.side_effect = [10]
+
+        with patch("curses.wrapper") as mock_wrapper:
+            def run_inner(func):
+                func(mock_stdscr)
+
+            mock_wrapper.side_effect = run_inner
+            with patch("curses.curs_set"):
+                with patch("curses.has_colors", return_value=False):
+                    result = _session_browse_picker(sessions)
+
+        assert result == sessions[0]["id"]
+        mock_stdscr.keypad.assert_called_once_with(True)
+
     def test_enter_selects_first_session(self):
         sessions = _make_sessions(3)
         result = self._run_with_keys(sessions, [10])  # Enter key

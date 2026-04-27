@@ -192,6 +192,22 @@ describe('createSlashHandler', () => {
     expect(ctx.transcript.sys).toHaveBeenNthCalledWith(3, 'MCP tool: /tools enable github:create_issue')
   })
 
+  it.each([
+    ['/browser status', 'browser.manage', { action: 'status' }],
+    ['/reload-mcp', 'reload.mcp', { session_id: null }],
+    ['/rollback', 'rollback.list', { session_id: null }],
+    ['/stop', 'process.stop', {}],
+    ['/fast status', 'config.get', { key: 'fast', session_id: null }],
+    ['/busy status', 'config.get', { key: 'busy' }]
+  ])('routes %s through native RPC (no slash worker)', (command, method, params) => {
+    const rpc = vi.fn(() => Promise.resolve({}))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)(command)).toBe(true)
+    expect(rpc).toHaveBeenCalledWith(method, params)
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
   it('drops stale slash.exec output after a newer slash', async () => {
     let resolveLate: (v: { output?: string }) => void
     let slashExecCalls = 0
@@ -222,7 +238,7 @@ describe('createSlashHandler', () => {
 
     const h = createSlashHandler(ctx)
     expect(h('/slow')).toBe(true)
-    expect(h('/fast')).toBe(true)
+    expect(h('/later')).toBe(true)
     resolveLate!({ output: 'too late' })
     await vi.waitFor(() => {
       expect(ctx.transcript.sys).toHaveBeenCalled()

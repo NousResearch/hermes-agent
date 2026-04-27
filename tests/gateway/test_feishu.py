@@ -702,60 +702,6 @@ class TestAdapterBehavior(unittest.TestCase):
         message_with_mention = SimpleNamespace(mentions=[SimpleNamespace(key="@_user_1")])
         self.assertFalse(adapter._should_accept_group_message(message_with_mention, sender_id, ""))
 
-    @patch.dict(
-        os.environ,
-        {
-            "FEISHU_GROUP_POLICY": "open",
-            "FEISHU_REQUIRE_MENTION": "false",
-            "FEISHU_MENTION_POLICY": "optional",
-        },
-        clear=True,
-    )
-    def test_group_message_optional_mention_accepts_plain_text(self):
-        from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
-
-        adapter = FeishuAdapter(PlatformConfig())
-        message = SimpleNamespace(message_type="text", content='{"text":"hello"}', mentions=[])
-        sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
-
-        self.assertTrue(adapter._should_accept_group_message(message, sender_id, ""))
-
-    @patch.dict(
-        os.environ,
-        {
-            "FEISHU_GROUP_POLICY": "open",
-            "FEISHU_REQUIRE_MENTION": "false",
-            "FEISHU_MENTION_POLICY": "bot_or_none",
-            "FEISHU_BOT_OPEN_ID": "ou_hermes",
-            "FEISHU_BOT_USER_ID": "u_hermes",
-        },
-        clear=True,
-    )
-    def test_group_message_bot_or_none_policy_accepts_plain_bot_and_all_only(self):
-        from gateway.config import PlatformConfig
-        from gateway.platforms.feishu import FeishuAdapter
-
-        adapter = FeishuAdapter(PlatformConfig())
-        sender_id = SimpleNamespace(open_id="ou_any", user_id=None)
-        plain = SimpleNamespace(message_type="text", content='{"text":"hello"}', mentions=[])
-        bot_mention = SimpleNamespace(
-            message_type="text",
-            content='{"text":"@_user_1 hello"}',
-            mentions=[SimpleNamespace(name="Hermes", id=SimpleNamespace(open_id="ou_hermes", user_id="u_hermes"))],
-        )
-        other_mention = SimpleNamespace(
-            message_type="text",
-            content='{"text":"@_user_1 hello"}',
-            mentions=[SimpleNamespace(name="Other User", id=SimpleNamespace(open_id="ou_other", user_id="u_other"))],
-        )
-        at_all = SimpleNamespace(message_type="text", content='{"text":"@_all hello"}', mentions=[])
-
-        self.assertTrue(adapter._should_accept_group_message(plain, sender_id, ""))
-        self.assertTrue(adapter._should_accept_group_message(bot_mention, sender_id, ""))
-        self.assertFalse(adapter._should_accept_group_message(other_mention, sender_id, ""))
-        self.assertTrue(adapter._should_accept_group_message(at_all, sender_id, ""))
-
     @patch.dict(os.environ, {"FEISHU_GROUP_POLICY": "open"}, clear=True)
     def test_group_message_with_other_user_mention_is_rejected_when_bot_identity_unknown(self):
         from gateway.config import PlatformConfig
@@ -1595,6 +1541,57 @@ class TestAdapterBehavior(unittest.TestCase):
         self.assertEqual(event.source.user_name, "张三")
         self.assertEqual(event.source.user_id_alt, "on_union")
         self.assertEqual(event.source.chat_name, "Feishu DM")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_process_inbound_message_prefers_stable_reply_root_for_thread_id(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        adapter._dispatch_inbound_event = AsyncMock()
+        adapter._resolve_sender_name_from_api = AsyncMock(return_value="张三")
+        adapter.get_chat_info = AsyncMock(return_value={"chat_id": "oc_chat", "name": "Feishu Group", "type": "group"})
+
+        message = SimpleNamespace(
+            chat_id="oc_chat",
+            # Feishu UI replies may expose the clicked bot message as thread_id,
+            # while upper/root fields point at the stable conversation root.
+            thread_id="om_bot_reply",
+            upper_message_id="om_original_task",
+            parent_id="om_bot_reply",
+            message_type="text",
+            content='{"text":"这张生成图发出来"}',
+            message_id="om_followup",
+        )
+        sender_id = SimpleNamespace(open_id="ou_user", user_id="u_user", union_id="on_union")
+        data = SimpleNamespace(event=SimpleNamespace(message=message, sender=SimpleNamespace(sender_id=sender_id)))
+
+        asyncio.run(
+            adapter._process_inbound_message(
+                data=data,
+                message=message,
+                sender_id=sender_id,
+                chat_type="group",
+                message_id="om_followup",
+            )
+        )
+
+        event = adapter._dispatch_inbound_event.await_args.args[0]
+        self.assertEqual(event.source.thread_id, "om_original_task")
+
+    @patch.dict(os.environ, {}, clear=True)
+    def test_reference_media_delivery_gate_is_opt_in_and_blocks_hot_layer_previews(self):
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        preview = "/Users/market/Documents/GitHub/huazhuo-os/runtime-pack/workspaces/hzstoremangerbot/runtime-data/assets-hot/previews/large/fp-t3-dish-spicy-ribs-001.jpg"
+        fresh = "/Users/market/tmp/current-session/out/fresh-preview.png"
+
+        self.assertTrue(adapter._should_deliver_local_media_file(preview))
+        adapter.config.extra["block_reference_media_delivery"] = True
+        self.assertFalse(adapter._should_deliver_local_media_file(preview))
+        self.assertTrue(adapter._should_deliver_local_media_file(fresh))
 
     @patch.dict(os.environ, {}, clear=True)
     def test_text_batch_merges_rapid_messages_into_single_event(self):

@@ -148,7 +148,102 @@ def _detect_macos_system_proxy() -> str | None:
     return None
 
 
-def resolve_proxy_url(platform_env_var: str | None = None) -> str | None:
+def _split_host_port(value: str) -> tuple[str, int | None]:
+    raw = str(value or "").strip()
+    if not raw:
+        return "", None
+    if "://" in raw:
+        parsed = urlsplit(raw)
+        return (parsed.hostname or "").lower().rstrip("."), parsed.port
+    if raw.startswith("[") and "]" in raw:
+        host, _, rest = raw[1:].partition("]")
+        port = None
+        if rest.startswith(":") and rest[1:].isdigit():
+            port = int(rest[1:])
+        return host.lower().rstrip("."), port
+    if raw.count(":") == 1:
+        host, _, maybe_port = raw.rpartition(":")
+        if maybe_port.isdigit():
+            return host.lower().rstrip("."), int(maybe_port)
+    return raw.lower().strip("[]").rstrip("."), None
+
+
+def _no_proxy_entries() -> list[str]:
+    entries: list[str] = []
+    for key in ("NO_PROXY", "no_proxy"):
+        raw = os.environ.get(key, "")
+        entries.extend(part.strip() for part in raw.split(",") if part.strip())
+    return entries
+
+
+def _no_proxy_entry_matches(entry: str, host: str, port: int | None = None) -> bool:
+    token = str(entry or "").strip().lower()
+    if not token:
+        return False
+    if token == "*":
+        return True
+
+    token_host, token_port = _split_host_port(token)
+    if token_port is not None and port is not None and token_port != port:
+        return False
+    if token_port is not None and port is None:
+        return False
+    if not token_host:
+        return False
+
+    try:
+        network = ipaddress.ip_network(token_host, strict=False)
+        try:
+            return ipaddress.ip_address(host) in network
+        except ValueError:
+            return False
+    except ValueError:
+        pass
+
+    try:
+        token_ip = ipaddress.ip_address(token_host)
+        try:
+            return ipaddress.ip_address(host) == token_ip
+        except ValueError:
+            return False
+    except ValueError:
+        pass
+
+    if token_host.startswith("*."):
+        suffix = token_host[1:]
+        return host.endswith(suffix)
+    if token_host.startswith("."):
+        return host == token_host[1:] or host.endswith(token_host)
+    return host == token_host or host.endswith(f".{token_host}")
+
+
+def should_bypass_proxy(target_hosts: str | list[str] | tuple[str, ...] | set[str] | None) -> bool:
+    """Return True when NO_PROXY/no_proxy matches at least one target host.
+
+    Supports exact hosts, domain suffixes, wildcard suffixes, IP literals,
+    CIDR ranges, optional host:port entries, and ``*``.
+    """
+    entries = _no_proxy_entries()
+    if not entries or not target_hosts:
+        return False
+    if isinstance(target_hosts, str):
+        candidates = [target_hosts]
+    else:
+        candidates = list(target_hosts)
+    for candidate in candidates:
+        host, port = _split_host_port(str(candidate))
+        if not host:
+            continue
+        if any(_no_proxy_entry_matches(entry, host, port) for entry in entries):
+            return True
+    return False
+
+
+def resolve_proxy_url(
+    platform_env_var: str | None = None,
+    *,
+    target_hosts: str | list[str] | tuple[str, ...] | set[str] | None = None,
+) -> str | None:
     """Return a proxy URL from env vars, or macOS system proxy.
 
     Check order:
@@ -156,18 +251,26 @@ def resolve_proxy_url(platform_env_var: str | None = None) -> str | None:
       1. HTTPS_PROXY / HTTP_PROXY / ALL_PROXY (and lowercase variants)
       2. macOS system proxy via ``scutil --proxy`` (auto-detect)
 
-    Returns *None* if no proxy is found.
+    Returns *None* if no proxy is found, or if NO_PROXY/no_proxy matches one
+    of ``target_hosts``.
     """
     if platform_env_var:
         value = (os.environ.get(platform_env_var) or "").strip()
         if value:
+            if should_bypass_proxy(target_hosts):
+                return None
             return normalize_proxy_url(value)
     for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
                 "https_proxy", "http_proxy", "all_proxy"):
         value = (os.environ.get(key) or "").strip()
         if value:
+            if should_bypass_proxy(target_hosts):
+                return None
             return normalize_proxy_url(value)
-    return normalize_proxy_url(_detect_macos_system_proxy())
+    detected = normalize_proxy_url(_detect_macos_system_proxy())
+    if detected and should_bypass_proxy(target_hosts):
+        return None
+    return detected
 
 
 def proxy_kwargs_for_bot(proxy_url: str | None) -> dict:
@@ -1287,56 +1390,6 @@ class BasePlatformAdapter(ABC):
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
 
-    async def send_file(
-        self,
-        chat_id: str,
-        file_path: str,
-        caption: Optional[str] = None,
-        file_name: Optional[str] = None,
-        reply_to: Optional[str] = None,
-        **kwargs,
-    ) -> SendResult:
-        """Send a local file using the best native method for its extension.
-
-        This is used by generic gateway code paths such as /btw.  Adapters may
-        override it, but the default router prevents platforms like Feishu from
-        silently losing media when they implement send_image_file/send_document
-        but not a catch-all send_file method.
-        """
-        ext = os.path.splitext(str(file_path or ""))[1].lower()
-        if ext in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".ico", ".tif", ".tiff", ".heic"}:
-            return await self.send_image_file(
-                chat_id=chat_id,
-                image_path=file_path,
-                caption=caption,
-                reply_to=reply_to,
-                **kwargs,
-            )
-        if ext in {".mp4", ".mov", ".m4v", ".webm", ".avi", ".mkv"}:
-            return await self.send_video(
-                chat_id=chat_id,
-                video_path=file_path,
-                caption=caption,
-                reply_to=reply_to,
-                **kwargs,
-            )
-        if ext in {".mp3", ".ogg", ".oga", ".wav", ".m4a", ".aac", ".flac"}:
-            return await self.send_voice(
-                chat_id=chat_id,
-                audio_path=file_path,
-                caption=caption,
-                reply_to=reply_to,
-                **kwargs,
-            )
-        return await self.send_document(
-            chat_id=chat_id,
-            file_path=file_path,
-            caption=caption,
-            file_name=file_name,
-            reply_to=reply_to,
-            **kwargs,
-        )
-
     async def send_document(
         self,
         chat_id: str,
@@ -1404,16 +1457,25 @@ class BasePlatformAdapter(ABC):
         media_pattern = re.compile(
             r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
         )
+        had_media_directive = False
         for match in media_pattern.finditer(content):
+            had_media_directive = True
             path = match.group("path").strip()
             if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
                 path = path[1:-1].strip()
             path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
-            if path:
-                media.append((os.path.expanduser(path), has_voice_tag))
+            if not path:
+                continue
+            expanded = os.path.expanduser(path)
+            if os.path.isfile(expanded):
+                media.append((expanded, has_voice_tag))
+            else:
+                logger.debug("Ignoring non-existent MEDIA path in response: %s", path)
 
         # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
-        if media:
+        # even when the referenced file is invalid, so placeholder examples don't
+        # trigger repeated native-media send attempts downstream.
+        if had_media_directive:
             cleaned = media_pattern.sub('', cleaned)
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
@@ -2078,6 +2140,51 @@ class BasePlatformAdapter(ABC):
             min_ms, max_ms = 800, 2500
         return random.uniform(min_ms / 1000.0, max_ms / 1000.0)
 
+    def _block_reference_media_delivery_enabled(self) -> bool:
+        raw = self.config.extra.get("block_reference_media_delivery")
+        if raw is None:
+            raw = os.getenv("HERMES_BLOCK_REFERENCE_MEDIA_DELIVERY", "false")
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+    def _is_blocked_reference_media_path(self, file_path: str) -> bool:
+        """Hard-stop cached/reference/gallery images from being promoted as live output.
+
+        This is intentionally opt-in per profile/env so existing personal media
+        delivery keeps working. Marketing profiles enable it to prevent a model
+        from answering "发预览图" by attaching a hot-layer/wiki/sample image that
+        is only meant as reference material.
+        """
+        if not self._block_reference_media_delivery_enabled() or not file_path:
+            return False
+        try:
+            normalized = str(Path(file_path).expanduser().resolve(strict=False)).replace("\\", "/").lower()
+        except Exception:
+            normalized = str(file_path).replace("\\", "/").lower()
+        deny_markers = (
+            "/runtime-data/assets-hot/previews/",
+            "/assets-hot/previews/",
+            "/reference/",
+            "/references/",
+            "/wiki/",
+            "/sample/",
+            "/samples/",
+            "/history-gallery/",
+            "/gallery/",
+            "logo-guideline",
+            "brand-logo-guideline",
+        )
+        return any(marker in normalized for marker in deny_markers)
+
+    def _should_deliver_local_media_file(self, file_path: str) -> bool:
+        if self._is_blocked_reference_media_path(file_path):
+            logger.error(
+                "[%s] Blocked reference/cache media delivery for live response: %s",
+                self.name,
+                file_path,
+            )
+            return False
+        return True
+
     async def _process_message_background(self, event: MessageEvent, session_key: str) -> None:
         """Background task that actually processes the message."""
         # Track delivery outcomes for the processing-complete hook
@@ -2249,6 +2356,8 @@ class BasePlatformAdapter(ABC):
                 _IMAGE_EXTS = {'.jpg', '.jpeg', '.png', '.webp', '.gif'}
 
                 for media_path, is_voice in media_files:
+                    if not self._should_deliver_local_media_file(media_path):
+                        continue
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:
@@ -2285,6 +2394,8 @@ class BasePlatformAdapter(ABC):
 
                 # Send auto-detected local files as native attachments
                 for file_path in local_files:
+                    if not self._should_deliver_local_media_file(file_path):
+                        continue
                     if human_delay > 0:
                         await asyncio.sleep(human_delay)
                     try:

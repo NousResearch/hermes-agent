@@ -32,6 +32,7 @@ import hmac
 import json
 import logging
 import re
+import secrets
 import subprocess
 import time
 from typing import Any, Dict, List, Optional
@@ -201,6 +202,12 @@ class WebhookAdapter(BasePlatformAdapter):
 
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
+
+        # Nextcloud Talk bot reply — uses the stored HMAC context from the
+        # incoming webhook to post a response via POST /bot/{token}/message.
+        # See _deliver_nextcloud_talk() for details.
+        if deliver_type == "nextcloud-talk":
+            return await self._deliver_nextcloud_talk(content, delivery)
 
         # Cross-platform delivery — any platform with a gateway adapter
         if self.gateway_runner and deliver_type in (
@@ -501,13 +508,28 @@ class WebhookAdapter(BasePlatformAdapter):
         # Store delivery info for send().  Read by every send() invocation
         # for this chat_id (interim status messages and the final response),
         # so we do NOT pop on send.  TTL-based cleanup keeps the dict bounded.
-        deliver_config = {
+        deliver_config: Dict[str, Any] = {
             "deliver": route_config.get("deliver", "log"),
             "deliver_extra": self._render_delivery_extra(
                 route_config.get("deliver_extra", {}), payload
             ),
             "payload": payload,
         }
+
+        # Nextcloud Talk: preserve the X-Nextcloud-Talk-Random header and raw
+        # body so the send() path can compute a valid HMAC for the bot reply.
+        nc_random = request.headers.get("X-Nextcloud-Talk-Random", "")
+        if nc_random:
+            deliver_config["nc_random"] = nc_random
+            deliver_config["nc_body"] = raw_body
+        # Include Nextcloud Talk context if present (set during signature validation)
+        nc_delivery = getattr(request, '_nc_talk_delivery', None)
+        if nc_delivery:
+            deliver_config['_nc_talk'] = nc_delivery
+            # Extract conversation token from payload target
+            target_id = payload.get('target', {}).get('id', '')
+            if target_id:
+                deliver_config['_nc_talk']['conversation_token'] = target_id
         self._delivery_info[session_chat_id] = deliver_config
         self._delivery_info_created[session_chat_id] = now
         self._prune_delivery_info(now)
@@ -580,6 +602,36 @@ class WebhookAdapter(BasePlatformAdapter):
                 secret.encode(), body, hashlib.sha256
             ).hexdigest()
             return hmac.compare_digest(generic_sig, expected)
+
+        # Nextcloud Talk: X-Nextcloud-Talk-Signature = <hex HMAC-SHA256>
+        # HMAC is computed over X-Nextcloud-Talk-Random (64-char hex) + body bytes
+        # See: https://github.com/nextcloud/spreed/blob/master/lib/Service/BotService.php
+        nc_sig = request.headers.get("X-Nextcloud-Talk-Signature", "")
+        nc_random = request.headers.get("X-Nextcloud-Talk-Random", "")
+        if nc_sig:
+            if not nc_random:
+                logger.warning(
+                    "[webhook] Nextcloud Talk signature present but missing X-Nextcloud-Talk-Random header"
+                )
+                return False
+            # Nextcloud's hash_hmac('sha256', $random . $jsonBody, $secret)
+            # where random is 64 hex chars (32 bytes)
+            msg = nc_random.encode() + body
+            expected = hmac.new(
+                secret.encode(), msg, hashlib.sha256
+            ).hexdigest()
+            # Store Nextcloud Talk context for reply delivery.
+            # The --feature response API requires the SAME random string
+            # that Nextcloud used to sign the incoming webhook. We store it
+            # (along with the raw body and secret) so _deliver_nextcloud_talk()
+            # can reconstruct a valid HMAC for POST /bot/{token}/message.
+            # Stored on the adapter so _handle_webhook can reach it later.
+            if not hasattr(request, '_nc_talk_delivery'):
+                request._nc_talk_delivery = {}
+            request._nc_talk_delivery['nc_random'] = nc_random
+            request._nc_talk_delivery['nc_body'] = body
+            request._nc_talk_delivery['nc_secret'] = secret
+            return hmac.compare_digest(nc_sig, expected)
 
         # No recognised signature header but secret is configured → reject
         logger.debug(
@@ -669,6 +721,10 @@ class WebhookAdapter(BasePlatformAdapter):
         if deliver_type == "github_comment":
             return await self._deliver_github_comment(content, delivery)
 
+        # Nextcloud Talk bot reply — direct deliver variant
+        if deliver_type == "nextcloud-talk":
+            return await self._deliver_nextcloud_talk(content, delivery)
+
         # Fall through to the cross-platform dispatcher, which validates the
         # target name and routes via the gateway runner.
         return await self._deliver_cross_platform(
@@ -727,6 +783,149 @@ class WebhookAdapter(BasePlatformAdapter):
             )
         except Exception as e:
             logger.error("[webhook] github_comment delivery error: %s", e)
+            return SendResult(success=False, error=str(e))
+
+    async def _deliver_nextcloud_talk(
+        self, content: str, delivery: dict
+    ) -> SendResult:
+        """Deliver agent response as a Nextcloud Talk bot reply.
+
+        Nextcloud Talk bots with ``--feature response`` can reply to messages
+        via ``POST /ocs/v2.php/apps/spreed/api/v1/bot/{token}/message``.
+
+        Uses a **fresh random** and HMAC for each outgoing reply, following
+        OpenClaw's implementation pattern:
+        - Generate a new 32-byte random hex string
+        - HMAC = SHA256(new_random + message_text, secret)
+        - Send as X-Nextcloud-Talk-Bot-Random / X-Nextcloud-Talk-Bot-Signature
+
+        The bot secret comes from the webhook subscription config (stored
+        in _nc_talk during signature validation).
+
+        The agent's response text is sent as the ``message`` field in the
+        JSON body.  replyTo is optionally set from delivery config.
+
+        See: https://github.com/nextcloud/spreed/blob/main/lib/Service/BotService.php
+        """
+        nc_talk = delivery.get("_nc_talk")
+        if not nc_talk:
+            logger.error(
+                "[webhook] nextcloud-talk delivery missing _nc_talk context. "
+                "Ensure the webhook route has a valid Nextcloud Talk HMAC secret."
+            )
+            return SendResult(
+                success=False,
+                error="Missing Nextcloud Talk HMAC context (_nc_talk)",
+            )
+
+        nc_secret = nc_talk.get("nc_secret", "")
+        conversation_token = nc_talk.get("conversation_token", "")
+
+        if not nc_secret or not conversation_token:
+            logger.error(
+                "[webhook] nextcloud-talk delivery incomplete: "
+                "secret=%s token=%s",
+                bool(nc_secret),
+                bool(conversation_token),
+            )
+            return SendResult(
+                success=False,
+                error="Incomplete Nextcloud Talk context",
+            )
+
+        # Generate a FRESH random for each reply (matching OpenClaw's approach).
+        # Nextcloud's BotService validates the random against a server-side
+        # session — using a new random per reply is the correct pattern.
+        new_random = secrets.token_hex(32)
+
+        # Build the reply body — the HMAC is computed over the raw message
+        # string (NOT the JSON body), matching Nextcloud's BotService.php.
+        # See OpenClaw: generateNextcloudTalkSignature({ body: message, secret })
+        reply_body = json.dumps({"message": content, "replyTo": 0, "silent": False})
+
+        # Compute HMAC: SHA256(new_random + message_text) using the bot secret.
+        # Nextcloud's BotService expects HMAC over random + raw message string.
+        hmac_input = (new_random + content).encode()
+        signature = hmac.new(
+            nc_secret.encode() if isinstance(nc_secret, str) else nc_secret,
+            hmac_input,
+            hashlib.sha256,
+        ).hexdigest()
+
+        # Build URL — no ?format=json needed, we accept JSON response via headers
+        url = (
+            f"https://hub.meyouwedo.nl"
+            f"/ocs/v2.php/apps/spreed/api/v1/bot/{conversation_token}/message"
+        )
+
+        # Use subprocess (not aiohttp) since the adapter doesn't carry an
+        # aiohttp session.  The webhook platform itself runs on aiohttp but
+        # making requests from within the same event loop is fine.
+        import subprocess as _sp
+
+        try:
+            result = _sp.run(
+                [
+                    "curl", "-s", "-X", "POST", url,
+                    # NOTE: Bot API uses Bot-Random / Bot-Signature headers
+                    # (NOT the same X-Nextcloud-Talk-Random as the webhook)
+                    "-H", f"X-Nextcloud-Talk-Bot-Random: {new_random}",
+                    "-H", f"X-Nextcloud-Talk-Bot-Signature: {signature}",
+                    "-H", "OCS-APIRequest: true",
+                    "-H", "Content-Type: application/json",
+                    "-H", "Accept: application/json",
+                    "-d", reply_body,
+                ],
+                capture_output=True,
+                text=True,
+                timeout=30,
+            )
+
+            # Parse response — accept both JSON and XML
+            resp_data = {}
+            if result.stdout:
+                try:
+                    resp_data = json.loads(result.stdout)
+                except json.JSONDecodeError:
+                    # XML response — extract status code from <statuscode> tags
+                    import re as _re
+                    match = _re.search(r"<statuscode>(\d+)</statuscode>", result.stdout)
+                    if match:
+                        resp_data = {"ocs": {"meta": {"statuscode": int(match.group(1)), "message": _re.search(r"<message>(.*?)</message>", result.stdout).group(1) if _re.search(r"<message>(.*?)</message>", result.stdout) else "XML response"}}}
+                    else:
+                        logger.warning(
+                            "[webhook] nextcloud-talk reply: unparseable response: %s",
+                            result.stdout[:300],
+                        )
+
+            ocs_meta = resp_data.get("ocs", {}).get("meta", {})
+            statuscode = ocs_meta.get("statuscode")
+
+            if statuscode in (200, 201):
+                logger.info(
+                    "[webhook] nextcloud-talk reply sent to conversation %s",
+                    conversation_token,
+                )
+                return SendResult(success=True)
+            else:
+                error_msg = ocs_meta.get("message", result.stderr[:200] or "unknown")
+                http_status = result.returncode if 'curl' in str(getattr(result, 'args', [''])[0]) else statuscode
+                logger.error(
+                    "[webhook] nextcloud-talk reply failed: %s (code=%s, token=%s)",
+                    error_msg,
+                    statuscode or result.returncode,
+                    conversation_token,
+                )
+                return SendResult(success=False, error=error_msg)
+
+        except _sp.TimeoutExpired:
+            logger.error("[webhook] nextcloud-talk reply timed out")
+            return SendResult(success=False, error="Timeout")
+        except json.JSONDecodeError:
+            logger.error("[webhook] nextcloud-talk reply: could not parse response: %s", result.stdout[:300] if result.stdout else "empty")
+            return SendResult(success=False, error="Unparseable response")
+        except Exception as e:
+            logger.error("[webhook] nextcloud-talk reply error: %s", e)
             return SendResult(success=False, error=str(e))
 
     async def _deliver_cross_platform(

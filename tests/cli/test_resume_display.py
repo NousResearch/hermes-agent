@@ -344,6 +344,127 @@ class TestDisplayResumedHistory:
         assert "Just thinking" not in output
         assert "Hi there!" in output
 
+    def test_think_tags_stripped(self):
+        """<think>...</think> blocks should be stripped from display (#11316)."""
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "Solve this"},
+            {
+                "role": "assistant",
+                "content": "<think>\nI need to reason carefully here.\n</think>\n\nThe answer is 7.",
+            },
+        ]
+        output = self._capture_display(cli)
+
+        assert "<think>" not in output
+        assert "</think>" not in output
+        assert "I need to reason carefully here" not in output
+        assert "The answer is 7" in output
+
+    def test_thinking_tags_stripped(self):
+        """<thinking>...</thinking> blocks should be stripped from display."""
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "What is 2+2?"},
+            {
+                "role": "assistant",
+                "content": "<thinking>\nLet me compute: 2 + 2 = 4\n</thinking>\n\nThe answer is 4.",
+            },
+        ]
+        output = self._capture_display(cli)
+
+        assert "<thinking>" not in output
+        assert "Let me compute" not in output
+        assert "The answer is 4" in output
+
+    def test_reasoning_tags_stripped(self):
+        """<reasoning>...</reasoning> blocks should be stripped from display."""
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "Explain gravity"},
+            {
+                "role": "assistant",
+                "content": (
+                    "<reasoning>\nGravity is a fundamental force...\n</reasoning>\n\n"
+                    "Gravity pulls objects together."
+                ),
+            },
+        ]
+        output = self._capture_display(cli)
+
+        assert "<reasoning>" not in output
+        assert "fundamental force" not in output
+        assert "Gravity pulls objects together" in output
+
+    def test_thought_tags_stripped(self):
+        """<thought>...</thought> blocks (Gemma 4) should be stripped."""
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "Say hello"},
+            {
+                "role": "assistant",
+                "content": "<thought>\nInternal thought here.\n</thought>\n\nHello!",
+            },
+        ]
+        output = self._capture_display(cli)
+
+        assert "<thought>" not in output
+        assert "Internal thought here" not in output
+        assert "Hello!" in output
+
+    def test_unclosed_think_tag_stripped(self):
+        """Unclosed <think> (truncated generation) should not leak reasoning."""
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "Truncated response"},
+            {
+                "role": "assistant",
+                "content": "Some text before.\n<think>\nUnfinished reasoning...",
+            },
+        ]
+        output = self._capture_display(cli)
+
+        assert "<think>" not in output
+        assert "Unfinished reasoning" not in output
+        assert "Some text before" in output
+
+    def test_multiple_reasoning_blocks_all_stripped(self):
+        """Multiple interleaved reasoning blocks are all stripped."""
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "Complex question"},
+            {
+                "role": "assistant",
+                "content": (
+                    "<think>\nFirst thought.\n</think>\n"
+                    "Partial text.\n"
+                    "<reasoning>\nSecond thought.\n</reasoning>\n"
+                    "Final answer."
+                ),
+            },
+        ]
+        output = self._capture_display(cli)
+
+        assert "First thought" not in output
+        assert "Second thought" not in output
+        assert "Partial text" in output
+        assert "Final answer" in output
+
+    def test_orphan_closing_think_tag_stripped(self):
+        """A stray </think> with no matching open should not render to user."""
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "Broken output"},
+            {
+                "role": "assistant",
+                "content": "some leftover reasoning</think>Visible answer.",
+            },
+        ]
+        output = self._capture_display(cli)
+
+        assert "</think>" not in output
+        assert "Visible answer" in output
+
     def test_assistant_with_text_and_tool_calls(self):
         """When an assistant message has both text content AND tool_calls."""
         cli = _make_cli()

@@ -5991,6 +5991,10 @@ class GatewayRunner:
                             "api_key": result.api_key,
                             "base_url": result.base_url,
                             "api_mode": result.api_mode,
+                            # The new provider's credential pool — without
+                            # this, future-turn rotation on 429 stays bound
+                            # to the original provider's pool.  See #16678.
+                            "credential_pool": result.credential_pool,
                         }
 
                         # Evict cached agent so the next turn creates a fresh
@@ -6119,6 +6123,9 @@ class GatewayRunner:
             "api_key": result.api_key,
             "base_url": result.base_url,
             "api_mode": result.api_mode,
+            # Carry the new provider's credential pool so future-turn 429
+            # rotation runs against the right pool (see #16678).
+            "credential_pool": result.credential_pool,
         }
 
         # Evict cached agent so the next turn creates a fresh agent from the
@@ -8915,6 +8922,12 @@ class GatewayRunner:
         config.yaml defaults so the switched model is actually used for
         subsequent messages.  Fields with ``None`` values are skipped so
         partial overrides don't clobber valid config defaults.
+
+        ``credential_pool`` is the exception: a ``None`` override is a
+        legitimate "no pool for the new provider" signal, and leaving the
+        startup pool in place would let 429 rotation run against the
+        wrong provider's credentials (#16678).  When the override carries
+        the key at all, it always wins — even when its value is ``None``.
         """
         override = self._session_model_overrides.get(session_key)
         if not override:
@@ -8924,6 +8937,8 @@ class GatewayRunner:
             val = override.get(key)
             if val is not None:
                 runtime_kwargs[key] = val
+        if "credential_pool" in override:
+            runtime_kwargs["credential_pool"] = override["credential_pool"]
         return model, runtime_kwargs
 
     def _is_intentional_model_switch(self, session_key: str, agent_model: str) -> bool:

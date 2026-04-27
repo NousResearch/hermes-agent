@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import List, NamedTuple, Optional
+from typing import Any, List, NamedTuple, Optional
 
 from hermes_cli.providers import (
     custom_provider_slug,
@@ -241,6 +241,13 @@ class ModelSwitchResult:
     capabilities: Optional[ModelCapabilities] = None
     model_info: Optional[ModelInfo] = None
     is_global: bool = False
+    # CredentialPool for the resolved target provider, when one was loaded.
+    # Callers that maintain runtime kwargs (e.g. the gateway session-override
+    # store) must propagate this so per-provider rotation continues to work
+    # after a /model switch — without it, a 429 on the new provider rotates
+    # within the original provider's pool (or skips rotation entirely and
+    # falls through to the configured fallback model).  See #16678.
+    credential_pool: Optional[Any] = None
 
 
 @dataclass
@@ -811,6 +818,11 @@ def switch_model(
     api_key = current_api_key
     base_url = current_base_url
     api_mode = ""
+    # Track the credential pool resolved for the *target* provider so the
+    # caller can wire it into runtime_kwargs / session overrides.  Stays
+    # None if resolution fails or the provider has no pool — the caller
+    # treats that as "no rotation available", which is correct.
+    credential_pool: Optional[Any] = None
 
     if provider_changed or explicit_provider:
         try:
@@ -821,6 +833,7 @@ def switch_model(
             api_key = runtime.get("api_key", "")
             base_url = runtime.get("base_url", "")
             api_mode = runtime.get("api_mode", "")
+            credential_pool = runtime.get("credential_pool")
         except Exception as e:
             return ModelSwitchResult(
                 success=False,
@@ -846,6 +859,7 @@ def switch_model(
                 api_key = runtime.get("api_key", "")
                 base_url = runtime.get("base_url", "")
                 api_mode = runtime.get("api_mode", "")
+                credential_pool = runtime.get("credential_pool")
         except Exception:
             pass
 
@@ -966,6 +980,7 @@ def switch_model(
         capabilities=capabilities,
         model_info=model_info,
         is_global=is_global,
+        credential_pool=credential_pool,
     )
 
 

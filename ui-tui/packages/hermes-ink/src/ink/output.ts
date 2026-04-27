@@ -467,9 +467,21 @@ export default class Output {
 
             if (clipHorizontally) {
               lines = lines.map(line => {
-                const from = x < clip.x1! ? clip.x1! - x : 0
+                const startsBefore = x < clip.x1!
                 const width = stringWidth(line)
-                const to = x + width > clip.x2! ? clip.x2! - x : width
+                const endsAfter = x + width > clip.x2!
+
+                // Fast path: line fits entirely within the clip box — skip
+                // the tokenize/slice. This is the common case for transcript
+                // text where containers are wider than the rendered content.
+                // CPU profile (Apr 2026) showed sliceAnsi at 18% total time;
+                // most calls were no-op slices like (line, 0, width).
+                if (!startsBefore && !endsAfter) {
+                  return line
+                }
+
+                const from = startsBefore ? clip.x1! - x : 0
+                const to = endsAfter ? clip.x2! - x : width
                 let sliced = sliceAnsi(line, from, to)
 
                 // Wide chars (CJK, emoji) occupy 2 cells. When `to` lands

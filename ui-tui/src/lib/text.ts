@@ -1,4 +1,10 @@
-import { LIVE_RENDER_MAX_CHARS, LIVE_RENDER_MAX_LINES, THINKING_COT_MAX } from '../config/limits.js'
+import {
+  HISTORY_RENDER_MAX_CHARS,
+  HISTORY_RENDER_MAX_LINES,
+  LIVE_RENDER_MAX_CHARS,
+  LIVE_RENDER_MAX_LINES,
+  THINKING_COT_MAX
+} from '../config/limits.js'
 import { VERBS } from '../content/verbs.js'
 import type { ThinkingMode } from '../types.js'
 
@@ -98,6 +104,17 @@ export const thinkingPreview = (reasoning: string, mode: ThinkingMode, max: numb
 export const boundedLiveRenderText = (
   text: string,
   { maxChars = LIVE_RENDER_MAX_CHARS, maxLines = LIVE_RENDER_MAX_LINES } = {}
+) => boundedRenderText(text, 'showing live tail', { maxChars, maxLines })
+
+export const boundedHistoryRenderText = (
+  text: string,
+  { maxChars = HISTORY_RENDER_MAX_CHARS, maxLines = HISTORY_RENDER_MAX_LINES } = {}
+) => boundedRenderText(text, 'showing tail', { maxChars, maxLines })
+
+const boundedRenderText = (
+  text: string,
+  labelPrefix: string,
+  { maxChars, maxLines }: { maxChars: number; maxLines: number }
 ) => {
   if (text.length <= maxChars && text.split('\n', maxLines + 1).length <= maxLines) {
     return text
@@ -132,8 +149,8 @@ export const boundedLiveRenderText = (
 
   const label =
     omittedLines > 0
-      ? `[showing live tail; omitted ${fmtK(omittedLines)} lines / ${fmtK(omittedChars)} chars]\n`
-      : `[showing live tail; omitted ${fmtK(omittedChars)} chars]\n`
+      ? `[${labelPrefix}; omitted ${fmtK(omittedLines)} lines / ${fmtK(omittedChars)} chars]\n`
+      : `[${labelPrefix}; omitted ${fmtK(omittedChars)} chars]\n`
 
   return `${label}${tail}`
 }

@@ -1,5 +1,5 @@
 import { Box, Link, Text } from '@hermes/ink'
-import { memo, type ReactNode, useMemo } from 'react'
+import { memo, useMemo, type ReactNode } from 'react'
 
 import { ensureEmojiPresentation } from '../lib/emoji.js'
 import { highlightLine, isHighlightable } from '../lib/syntax.js'
@@ -213,8 +213,57 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
   return <Text>{parts.length ? parts : <Text>{text}</Text>}</Text>
 }
 
+// Cross-instance parsed-children cache. `Md` is mounted fresh whenever a
+// virtualized row enters the mount window — useMemo's per-instance cache
+// doesn't survive remounts, so PageUp into cold/resumed history reparses
+// every row (markdown scan + per-line syntax highlight).
+//
+// Outer WeakMap keyed by theme so palette swaps drop stale baked-in colors
+// without code intervention. Inner Map is LRU-bounded; key folds `compact`
+// in so the two layout modes don't poison each other.
+const MD_CACHE_LIMIT = 512
+const mdCache = new WeakMap<Theme, Map<string, ReactNode[]>>()
+
+const cacheBucket = (t: Theme) => {
+  let b = mdCache.get(t)
+
+  if (!b) {
+    b = new Map()
+    mdCache.set(t, b)
+  }
+
+  return b
+}
+
+const cacheGet = (b: Map<string, ReactNode[]>, key: string) => {
+  const v = b.get(key)
+
+  if (v) {
+    b.delete(key)
+    b.set(key, v)
+  }
+
+  return v
+}
+
+const cacheSet = (b: Map<string, ReactNode[]>, key: string, v: ReactNode[]) => {
+  b.set(key, v)
+
+  if (b.size > MD_CACHE_LIMIT) {
+    b.delete(b.keys().next().value!)
+  }
+}
+
 function MdImpl({ compact, t, text }: MdProps) {
   const nodes = useMemo(() => {
+    const bucket = cacheBucket(t)
+    const cacheKey = `${compact ? '1' : '0'}|${text}`
+    const cached = cacheGet(bucket, cacheKey)
+
+    if (cached) {
+      return cached
+    }
+
     const lines = ensureEmojiPresentation(text).split('\n')
     const nodes: ReactNode[] = []
 
@@ -614,6 +663,8 @@ function MdImpl({ compact, t, text }: MdProps) {
       nodes.push(<MdInline key={key} t={t} text={line} />)
       i++
     }
+
+    cacheSet(bucket, cacheKey, nodes)
 
     return nodes
   }, [compact, t, text])

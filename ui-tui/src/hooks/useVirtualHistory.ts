@@ -1,19 +1,29 @@
 import type { ScrollBoxHandle } from '@hermes/ink'
 import {
-  type RefObject,
   useCallback,
   useDeferredValue,
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
-  useSyncExternalStore
+  useSyncExternalStore,
+  type RefObject
 } from 'react'
 
 const ESTIMATE = 4
-const OVERSCAN = 40
-const MAX_MOUNTED = 260
-const COLD_START = 40
+// Overscan was 40 (= viewport) which is way more than needed when heights
+// are well-estimated.  Cutting in half saves ~20 mounted items per scroll
+// edge → smaller fiber tree → less buffer-compose work per frame.  HN/CC
+// dev (https://news.ycombinator.com/item?id=46699072) confirmed GC pressure
+// from large JSX trees was their main perf issue post-rewrite.
+const OVERSCAN = 20
+// Hard cap on mounted items.  Was 260; profiling showed ~23k live Yoga
+// nodes during sustained PageUp catch-up (renderer p99=106ms).  The
+// viewport+2*overscan = 80 rows of needed coverage = ~25 items at avg 3
+// rows/item, so 120 leaves >4× headroom and never blanks the viewport
+// even when items are tiny.
+const MAX_MOUNTED = 120
+const COLD_START = 30
 // Floor on unmeasured row height used when computing coverage — guarantees
 // the mounted span physically reaches the viewport bottom regardless of how
 // small items actually are (at the cost of over-mounting when items are
@@ -34,8 +44,10 @@ const FREEZE_RENDERS = 2
 // a single PageUp into unmeasured territory mounts ~190 rows with
 // PESSIMISTIC=1 coverage — each row running marked lexer + syntax
 // highlighting for ~3ms = ~600ms sync block. Sliding toward the target
-// over several commits keeps per-commit mount cost bounded.
-const SLIDE_STEP = 25
+// over several commits keeps per-commit mount cost bounded.  Tightened
+// from 25 → 12: each new item adds ~100 fibers / Yoga nodes, and a
+// 25-item commit was the dominant contributor to the 100ms+ p99 frames.
+const SLIDE_STEP = 12
 
 const NOOP = () => {}
 
@@ -70,15 +82,19 @@ export function useVirtualHistory(
   columns: number,
   {
     estimate = ESTIMATE,
+    initialHeights,
     liveTailActive = false,
+    onHeightsChange,
     overscan = OVERSCAN,
     maxMounted = MAX_MOUNTED,
     coldStartCount = COLD_START
-  } = {}
+  }: VirtualHistoryOptions = {}
 ) {
   const nodes = useRef(new Map<string, unknown>())
-  const heights = useRef(new Map<string, number>())
+  const heights = useRef(new Map(initialHeights))
+  const initialHeightsRef = useRef(initialHeights)
   const refs = useRef(new Map<string, (el: unknown) => void>())
+  const onHeightsChangeRef = useRef(onHeightsChange)
   // Bump whenever heightCache mutates so offsets rebuild on next read.
   // Ref (not state) — checked during render phase, zero extra commits.
   const offsetVersion = useRef(0)
@@ -105,6 +121,14 @@ export function useVirtualHistory(
   const skipMeasurement = useRef(false)
   const prevRange = useRef<null | readonly [number, number]>(null)
   const freezeRenders = useRef(0)
+
+  onHeightsChangeRef.current = onHeightsChange
+
+  if (initialHeightsRef.current !== initialHeights) {
+    initialHeightsRef.current = initialHeights
+    heights.current = new Map(initialHeights)
+    offsetVersion.current++
+  }
 
   if (prevColumns.current !== columns && prevColumns.current > 0 && columns > 0) {
     const ratio = prevColumns.current / columns
@@ -377,6 +401,7 @@ export function useVirtualHistory(
         if (h > 0 && heights.current.get(key) !== h) {
           heights.current.set(key, h)
           offsetVersion.current++
+          onHeightsChangeRef.current?.(heights.current)
         }
 
         nodes.current.delete(key)
@@ -454,6 +479,7 @@ export function useVirtualHistory(
 
     if (dirty) {
       offsetVersion.current++
+      onHeightsChangeRef.current?.(heights.current)
     }
   })
 
@@ -469,4 +495,14 @@ export function useVirtualHistory(
 
 interface MeasuredNode {
   yogaNode?: { getComputedHeight?: () => number } | null
+}
+
+interface VirtualHistoryOptions {
+  coldStartCount?: number
+  estimate?: number
+  initialHeights?: ReadonlyMap<string, number>
+  liveTailActive?: boolean
+  maxMounted?: number
+  onHeightsChange?: (heights: ReadonlyMap<string, number>) => void
+  overscan?: number
 }

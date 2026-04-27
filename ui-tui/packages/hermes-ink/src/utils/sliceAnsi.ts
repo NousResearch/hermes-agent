@@ -10,7 +10,42 @@ function filterStartCodes(codes: AnsiCode[]): AnsiCode[] {
   return codes.filter(c => !isEndCode(c))
 }
 
+// LRU cache: same (string, start, end) → same output. Output.get() re-emits
+// identical writes every frame for stable transcript content; this avoids
+// re-tokenizing them. CPU profile (Apr 2026) showed sliceAnsi at 18% total
+// time during scroll. Bounded at 4096 entries — entries are short clipped
+// lines so memory cost is small.
+const sliceCache = new Map<string, string>()
+const SLICE_CACHE_LIMIT = 4096
+
 export default function sliceAnsi(str: string, start: number, end?: number): string {
+  if (!str) return ''
+
+  // Hot-path: only cache when end is defined (the Output.get() use-case).
+  if (end !== undefined) {
+    const key = `${start}|${end}|${str}`
+    const cached = sliceCache.get(key)
+
+    if (cached !== undefined) {
+      sliceCache.delete(key)
+      sliceCache.set(key, cached)
+      return cached
+    }
+
+    const result = computeSlice(str, start, end)
+
+    if (sliceCache.size >= SLICE_CACHE_LIMIT) {
+      sliceCache.delete(sliceCache.keys().next().value!)
+    }
+
+    sliceCache.set(key, result)
+    return result
+  }
+
+  return computeSlice(str, start, end)
+}
+
+function computeSlice(str: string, start: number, end?: number): string {
   const tokens = tokenize(str)
   let activeCodes: AnsiCode[] = []
   let position = 0

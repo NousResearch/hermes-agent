@@ -1,9 +1,9 @@
-import { type ScrollBoxHandle, useApp, useHasSelection, useSelection, useStdout, useTerminalTitle } from '@hermes/ink'
+import { useApp, useHasSelection, useSelection, useStdout, useTerminalTitle, type ScrollBoxHandle } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
 import { STARTUP_RESUME_ID } from '../config/env.js'
-import { MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
+import { FULL_RENDER_TAIL_ITEMS, MAX_HISTORY, WHEEL_SCROLL_STEP } from '../config/limits.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { attachedImageNotice, imageTokenMeta } from '../domain/messages.js'
 import { fmtCwdBranch, shortCwd } from '../domain/paths.js'
@@ -21,6 +21,7 @@ import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
 import { buildToolTrailLine, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
 import { getViewportSnapshot } from '../lib/viewportStore.js'
+import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
@@ -41,6 +42,7 @@ import { useSubmission } from './useSubmission.js'
 const GOOD_VIBES_RE = /\b(good bot|thanks|thank you|thx|ty|ily|love you)\b/i
 const BRACKET_PASTE_ON = '\x1b[?2004h'
 const BRACKET_PASTE_OFF = '\x1b[?2004l'
+const MAX_HEIGHT_CACHE_BUCKETS = 12
 
 const capHistory = (items: Msg[]): Msg[] => {
   if (items.length <= MAX_HISTORY) {
@@ -132,7 +134,7 @@ export function useMainApp(gw: GatewayClient) {
   const historyItemsRef = useRef(historyItems)
   const lastUserMsgRef = useRef(lastUserMsg)
   const msgIdsRef = useRef(new WeakMap<Msg, string>())
-  const nextMsgIdRef = useRef(0)
+  const heightCachesRef = useRef(new Map<string, Map<string, number>>())
 
   colsRef.current = cols
   historyItemsRef.current = historyItems
@@ -179,7 +181,7 @@ export function useMainApp(gw: GatewayClient) {
       return hit
     }
 
-    const next = `m${++nextMsgIdRef.current}`
+    const next = messageHeightKey(msg)
 
     msgIdsRef.current.set(msg, next)
 
@@ -187,11 +189,67 @@ export function useMainApp(gw: GatewayClient) {
   }, [])
 
   const virtualRows = useMemo<TranscriptRow[]>(
-    () => historyItems.map((msg, index) => ({ index, key: messageId(msg), msg })),
+    () => historyItems.map((msg, index) => ({ index, key: `${index}:${messageId(msg)}`, msg })),
     [historyItems, messageId]
   )
 
-  const virtualHistory = useVirtualHistory(scrollRef, virtualRows, cols, { liveTailActive: turnLiveTailActive })
+  const detailsLayoutKey = useMemo(() => {
+    const thinking = sectionMode('thinking', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride)
+    const tools = sectionMode('tools', ui.detailsMode, ui.sections, ui.detailsModeCommandOverride)
+
+    return `${thinking}:${tools}`
+  }, [ui.detailsMode, ui.detailsModeCommandOverride, ui.sections])
+  const detailsVisible = detailsLayoutKey !== 'hidden:hidden'
+  const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`
+  const heightCache = useMemo(() => {
+    let cache = heightCachesRef.current.get(heightCacheKey)
+
+    if (!cache) {
+      cache = new Map()
+      heightCachesRef.current.set(heightCacheKey, cache)
+
+      if (heightCachesRef.current.size > MAX_HEIGHT_CACHE_BUCKETS) {
+        heightCachesRef.current.delete(heightCachesRef.current.keys().next().value!)
+      }
+    }
+
+    return cache
+  }, [heightCacheKey])
+  const initialHeights = useMemo(() => {
+    const out = new Map<string, number>()
+
+    for (const row of virtualRows) {
+      out.set(
+        row.key,
+        heightCache.get(row.key) ??
+          estimatedMsgHeight(row.msg, cols, {
+            compact: ui.compact,
+            details: detailsVisible,
+            limitHistory: row.index < virtualRows.length - FULL_RENDER_TAIL_ITEMS
+          })
+      )
+    }
+
+    return out
+  }, [cols, detailsVisible, heightCache, ui.compact, virtualRows])
+  const syncHeightCache = useCallback(
+    (heights: ReadonlyMap<string, number>) => {
+      for (const row of virtualRows) {
+        const h = heights.get(row.key)
+
+        if (h) {
+          heightCache.set(row.key, h)
+        }
+      }
+    },
+    [heightCache, virtualRows]
+  )
+
+  const virtualHistory = useVirtualHistory(scrollRef, virtualRows, cols, {
+    initialHeights,
+    liveTailActive: turnLiveTailActive,
+    onHeightsChange: syncHeightCache
+  })
 
   const scrollWithSelection = useCallback(
     (delta: number) => scrollWithSelectionBy(delta, { scrollRef, selection }),

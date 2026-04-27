@@ -5,7 +5,14 @@ import { LONG_MSG } from '../config/limits.js'
 import { sectionMode } from '../domain/details.js'
 import { userDisplay } from '../domain/messages.js'
 import { ROLE } from '../domain/roles.js'
-import { boundedLiveRenderText, compactPreview, hasAnsi, isPasteBackedText, stripAnsi } from '../lib/text.js'
+import {
+  boundedHistoryRenderText,
+  boundedLiveRenderText,
+  compactPreview,
+  hasAnsi,
+  isPasteBackedText,
+  stripAnsi
+} from '../lib/text.js'
 import type { Theme } from '../theme.js'
 import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
 
@@ -20,6 +27,7 @@ export const MessageLine = memo(function MessageLine({
   detailsMode = 'collapsed',
   detailsModeCommandOverride = false,
   isStreaming = false,
+  limitHistoryRender = false,
   msg,
   sections,
   t,
@@ -107,7 +115,7 @@ export const MessageLine = memo(function MessageLine({
         // streamingMarkdown.tsx for the cost model.
         <StreamingMd compact={compact} t={t} text={boundedLiveRenderText(msg.text)} />
       ) : (
-        <Md compact={compact} t={t} text={msg.text} />
+        <Md compact={compact} t={t} text={limitHistoryRender ? boundedHistoryRenderText(msg.text) : msg.text} />
       )
     }
 
@@ -173,6 +181,7 @@ interface MessageLineProps {
   detailsMode?: DetailsMode
   detailsModeCommandOverride?: boolean
   isStreaming?: boolean
+  limitHistoryRender?: boolean
   msg: Msg
   sections?: SectionVisibility
   t: Theme

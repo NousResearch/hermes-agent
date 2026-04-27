@@ -1,6 +1,16 @@
 export const LARGE_PASTE = { chars: 8000, lines: 80 }
 export const LIVE_RENDER_MAX_CHARS = 16_000
 export const LIVE_RENDER_MAX_LINES = 240
+// History-render bounds for messages outside the FULL_RENDER_TAIL window.
+// Each rendered line becomes ≥1 Yoga/Text node + inline spans, so this is
+// the dominant lever on cold-mount cost during PageUp catch-up. 16 lines
+// × 25 mounted items ≈ 400 nodes total — small enough that the per-frame
+// buffer-compose stays well inside the 16ms budget.  User pages back to
+// recognize where they were, not to read; stopping near a message
+// re-renders it in full once it falls inside the tail window.
+export const HISTORY_RENDER_MAX_CHARS = 800
+export const HISTORY_RENDER_MAX_LINES = 16
+export const FULL_RENDER_TAIL_ITEMS = 8
 export const LONG_MSG = 300
 export const MAX_HISTORY = 800
 export const THINKING_COT_MAX = 160

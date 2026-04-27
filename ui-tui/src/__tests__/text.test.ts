@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest'
 
 import {
+  boundedHistoryRenderText,
   boundedLiveRenderText,
   buildToolTrailLine,
   edgePreview,
@@ -113,6 +114,15 @@ describe('boundedLiveRenderText', () => {
     expect(out).toContain('c\nd')
     expect(out).toContain('omitted 2 lines')
     expect(out).not.toContain('a\nb')
+  })
+})
+
+describe('boundedHistoryRenderText', () => {
+  it('uses a non-live omission label for completed history', () => {
+    const out = boundedHistoryRenderText('abcdefghij', { maxChars: 4, maxLines: 10 })
+
+    expect(out).toContain('[showing tail; omitted')
+    expect(out).not.toContain('live tail')
   })
 })
 

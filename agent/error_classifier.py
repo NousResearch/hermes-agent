@@ -520,7 +520,12 @@ def classify_api_error(
 
     is_disconnect = any(p in error_msg for p in _SERVER_DISCONNECT_PATTERNS)
     if is_disconnect and not status_code:
-        is_large = approx_tokens > context_length * 0.6 or approx_tokens > 120000 or num_messages > 200
+        # Absolute token/message-count thresholds are only a proxy for smaller
+        # context windows.  Large-context sessions can have hundreds of
+        # messages while still being far below their actual token budget.
+        is_large = approx_tokens > context_length * 0.6 or (
+            context_length <= 256000 and (approx_tokens > 120000 or num_messages > 200)
+        )
         if is_large:
             return _result(
                 FailoverReason.context_overflow,
@@ -766,7 +771,12 @@ def _classify_400(
         if not err_body_msg:
             err_body_msg = str(body.get("message") or "").strip().lower()
     is_generic = len(err_body_msg) < 30 or err_body_msg in ("error", "")
-    is_large = approx_tokens > context_length * 0.4 or approx_tokens > 80000 or num_messages > 80
+    # Absolute token/message-count thresholds are only a proxy for smaller
+    # context windows.  Large-context sessions can have many messages while
+    # still being far below their actual token budget.
+    is_large = approx_tokens > context_length * 0.4 or (
+        context_length <= 256000 and (approx_tokens > 80000 or num_messages > 80)
+    )
 
     if is_generic and is_large:
         return result_fn(

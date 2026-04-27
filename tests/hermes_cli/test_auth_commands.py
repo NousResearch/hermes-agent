@@ -5,8 +5,10 @@ from __future__ import annotations
 import base64
 import json
 from datetime import datetime, timezone
+from unittest.mock import patch
 
 import pytest
+import yaml
 
 
 def _write_auth_store(tmp_path, payload: dict) -> None:
@@ -587,6 +589,39 @@ def test_logout_clears_stale_active_codex_without_provider_credentials(tmp_path,
     assert auth_payload.get("active_provider") is None
     config_text = (hermes_home / "config.yaml").read_text()
     assert "provider: auto" in config_text
+
+
+def test_reset_config_provider_uses_atomic_yaml_write(tmp_path, monkeypatch):
+    """Logout config reset should delegate the YAML write atomically."""
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    config_path = hermes_home / "config.yaml"
+    original = {
+        "model": {
+            "default": "gpt-5.3-codex",
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+        }
+    }
+    config_path.write_text(yaml.safe_dump(original, sort_keys=False), encoding="utf-8")
+    original_text = config_path.read_text(encoding="utf-8")
+
+    from hermes_cli.auth import _reset_config_provider
+
+    def _boom(path, data, **kwargs):
+        assert path == config_path
+        assert data["model"]["provider"] == "auto"
+        assert data["model"]["base_url"] == "https://openrouter.ai/api/v1"
+        assert kwargs["sort_keys"] is False
+        raise OSError("simulated atomic write failure")
+
+    with patch("hermes_cli.auth.atomic_yaml_write", side_effect=_boom) as mock_write:
+        with pytest.raises(OSError, match="simulated atomic write failure"):
+            _reset_config_provider()
+
+    assert mock_write.call_count == 1
+    assert config_path.read_text(encoding="utf-8") == original_text
 
 
 def test_auth_list_does_not_call_mutating_select(monkeypatch, capsys):

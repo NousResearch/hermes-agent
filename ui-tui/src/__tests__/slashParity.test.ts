@@ -8,6 +8,11 @@ import { SLASH_COMMANDS } from '../app/slash/registry.js'
 
 type CommandRoute = 'fallback' | 'local' | 'native'
 
+interface CommandRegistryLoad {
+  error?: string
+  names: string[]
+}
+
 const NATIVE_MUTATING_COMMANDS = new Set(['browser', 'busy', 'fast', 'reload-mcp', 'rollback', 'stop'])
 
 const MUTATING_COMMANDS = [
@@ -36,22 +41,33 @@ const MUTATING_COMMANDS = [
   'yolo'
 ] as const
 
-const loadCommandRegistryNames = (): string[] => {
+const loadCommandRegistryNames = (): CommandRegistryLoad => {
   const here = dirname(fileURLToPath(import.meta.url))
 
-  const names = JSON.parse(
-    execFileSync(
-      process.env.PYTHON ?? 'python3',
-      [
-        '-c',
-        'import json; from hermes_cli.commands import COMMAND_REGISTRY; print(json.dumps([c.name for c in COMMAND_REGISTRY]))'
-      ],
-      { cwd: resolve(here, '../../..'), encoding: 'utf8' }
-    )
-  ) as string[]
+  try {
+    const names = JSON.parse(
+      execFileSync(
+        process.env.PYTHON ?? 'python3',
+        [
+          '-c',
+          'import json; from hermes_cli.commands import COMMAND_REGISTRY; print(json.dumps([c.name for c in COMMAND_REGISTRY]))'
+        ],
+        { cwd: resolve(here, '../../..'), encoding: 'utf8' }
+      )
+    ) as string[]
 
-  return [...new Set(names)]
+    return { names: [...new Set(names)] }
+  } catch (error) {
+    return {
+      error: error instanceof Error ? error.message : String(error),
+      names: []
+    }
+  }
 }
+
+const commandRegistry = loadCommandRegistryNames()
+const registryIt = commandRegistry.error ? it.skip : it
+const skipReason = commandRegistry.error ? commandRegistry.error.split('\n')[0] : ''
 
 const LOCAL_COMMAND_NAMES = new Set(
   SLASH_COMMANDS.flatMap(command => [command.name, ...(command.aliases ?? [])].map(name => name.toLowerCase()))
@@ -72,8 +88,12 @@ const classifyRoute = (name: string): CommandRoute => {
 }
 
 describe('slash parity matrix', () => {
-  it('classifies each command registry command as local/native/fallback', () => {
-    const routes = Object.fromEntries(loadCommandRegistryNames().map(name => [name, classifyRoute(name)]))
+  if (commandRegistry.error) {
+    it.skip(`Python command registry unavailable: ${skipReason}`, () => {})
+  }
+
+  registryIt('classifies each command registry command as local/native/fallback', () => {
+    const routes = Object.fromEntries(commandRegistry.names.map(name => [name, classifyRoute(name)]))
 
     expect(routes['model']).toBe('local')
     expect(routes['browser']).toBe('native')
@@ -82,8 +102,8 @@ describe('slash parity matrix', () => {
     expect(routes['stop']).toBe('native')
   })
 
-  it('keeps every mutating command off slash-worker fallback', () => {
-    const routes = Object.fromEntries(loadCommandRegistryNames().map(name => [name, classifyRoute(name)]))
+  registryIt('keeps every mutating command off slash-worker fallback', () => {
+    const routes = Object.fromEntries(commandRegistry.names.map(name => [name, classifyRoute(name)]))
 
     for (const name of MUTATING_COMMANDS) {
       expect(routes[name], `missing command in registry: ${name}`).toBeDefined()

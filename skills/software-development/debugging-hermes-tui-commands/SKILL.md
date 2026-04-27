@@ -1,6 +1,6 @@
 ---
 name: debugging-hermes-tui-commands
-description: Use when debugging or adding Hermes TUI slash commands across the Python backend (hermes_cli/commands.py), the tui_gateway bridge, and the TypeScript/Ink frontend. Covers autocomplete gaps, gateway dispatch issues, and live UI-state wiring.
+description: "Debug Hermes TUI slash commands: Python, gateway, Ink UI."
 version: 1.0.0
 author: Hermes Agent
 license: MIT

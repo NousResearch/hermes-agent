@@ -6145,15 +6145,20 @@ def _ensure_fhs_path_guard() -> None:
 def _run_pre_update_backup(args) -> None:
     """Create a full zip backup of HERMES_HOME before running the update.
 
-    Gated on ``updates.pre_update_backup`` in config (default true).  The
-    ``--no-backup`` flag on ``hermes update`` overrides it for one run.
-    Never raises — a backup failure should not block the update itself.
+    Gated on ``updates.pre_update_backup`` in config (default false).  Off
+    by default because the zip can add minutes to every update on large
+    HERMES_HOME directories.  The ``--backup`` flag on ``hermes update``
+    opts in for a single run; ``--no-backup`` forces it off when config
+    has it enabled.  Never raises — a backup failure should not block the
+    update itself.
     """
-    # CLI flag wins over config
+    # CLI flags win over config.  --no-backup beats --backup if both are set.
     if getattr(args, "no_backup", False):
         print("◆ Pre-update backup: skipped (--no-backup)")
         print()
         return
+
+    force_backup = bool(getattr(args, "backup", False))
 
     try:
         from hermes_cli.config import load_config
@@ -6163,12 +6168,13 @@ def _run_pre_update_backup(args) -> None:
         cfg = {}
 
     updates_cfg = cfg.get("updates", {}) if isinstance(cfg, dict) else {}
-    enabled = updates_cfg.get("pre_update_backup", True)
+    enabled = updates_cfg.get("pre_update_backup", False)
     keep = updates_cfg.get("backup_keep", 5)
 
-    if not enabled:
-        print("◆ Pre-update backup: disabled (updates.pre_update_backup=false in config.yaml)")
-        print()
+    if not enabled and not force_backup:
+        # Silent by default — the backup is off, most users don't need to
+        # hear about it on every update.  They can opt in via --backup
+        # or by flipping the config knob.
         return
 
     try:
@@ -6221,8 +6227,8 @@ def _run_pre_update_backup(args) -> None:
 
     print(f"  Saved:    {display_path} ({size_str}, {elapsed:.1f}s)")
     print(f"  Restore:  hermes import {out_path}")
-    print(f"  Disable:  set updates.pre_update_backup: false in config.yaml")
-    print(f"            (or pass --no-backup on a single update)")
+    print(f"  Disable:  omit --backup (backups are off by default)")
+    print(f"            set updates.pre_update_backup: false in config.yaml")
     print()
 
 
@@ -9670,6 +9676,12 @@ Examples:
         action="store_true",
         default=False,
         help="Skip the pre-update backup for this run (overrides updates.pre_update_backup)",
+    )
+    update_parser.add_argument(
+        "--backup",
+        action="store_true",
+        default=False,
+        help="Force a pre-update backup for this run (off by default; overrides updates.pre_update_backup)",
     )
     update_parser.set_defaults(func=cmd_update)
 

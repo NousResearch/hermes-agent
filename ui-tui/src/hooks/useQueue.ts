@@ -1,6 +1,8 @@
 import { useCallback, useRef, useState } from 'react'
 
-export function removeAt<T>(arr: T[], i: number): T[] {
+// Mutates `arr` in place; returned reference is the same input array, kept
+// so callers can chain. Use `Array.prototype.toSpliced` if you need a copy.
+export function removeAtInPlace<T>(arr: T[], i: number): T[] {
   if (i < 0 || i >= arr.length) {
     return arr
   }
@@ -50,7 +52,7 @@ export function useQueue() {
     (i: number) => {
       const before = queueRef.current.length
 
-      removeAt(queueRef.current, i)
+      removeAtInPlace(queueRef.current, i)
 
       if (queueRef.current.length !== before) {
         syncQueue()

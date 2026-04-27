@@ -557,6 +557,12 @@ AUTHOR_MAP = {
     "mor.aleksandr@yahoo.com": "MorAlekss",
     "ash@users.noreply.github.com": "ash",
     "andrewho.sf@gmail.com": "andrewhosf",
+    # April 2026 Honcho bug-fix consolidation (#15381)
+    "HiddenPuppy@users.noreply.github.com": "HiddenPuppy",
+    "code@sasha.id": "sasha-id",
+    "dontcallmejames@users.noreply.github.com": "dontcallmejames",
+    "hekaru.agent@gmail.com": "hekaru-agent",
+    "jas9000@gmail.com": "twozle",
 }
 
 

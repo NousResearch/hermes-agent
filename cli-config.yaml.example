@@ -290,6 +290,25 @@ browser:
   inactivity_timeout: 120
 
 # =============================================================================
+# Tool Loop Guardrails
+# =============================================================================
+# Soft warnings are enabled by default. They append guidance to repeated failed
+# or non-progressing tool results but still let the tool execute. Hard stops are
+# opt-in circuit breakers for autonomous/cron sessions where stopping a loop is
+# preferable to spending the full iteration budget.
+tool_loop_guardrails:
+  warnings_enabled: true
+  hard_stop_enabled: false
+  warn_after:
+    exact_failure: 2
+    same_tool_failure: 3
+    idempotent_no_progress: 2
+  hard_stop_after:
+    exact_failure: 5
+    same_tool_failure: 8
+    idempotent_no_progress: 5
+
+# =============================================================================
 # Context Compression (Auto-shrinks long conversations)
 # =============================================================================
 # When conversation approaches model's context limit, middle turns are

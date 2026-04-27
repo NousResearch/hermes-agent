@@ -1055,10 +1055,11 @@ DEFAULT_CONFIG = {
     "updates": {
         # Run a full ``hermes backup``-style zip of HERMES_HOME before every
         # ``hermes update``.  Backups land in ``<HERMES_HOME>/backups/`` and
-        # can be restored with ``hermes import <path>``.  Set to false to
-        # skip the backup entirely; use the ``--no-backup`` flag on a single
-        # update invocation to override just that run.
-        "pre_update_backup": True,
+        # can be restored with ``hermes import <path>``.  Off by default —
+        # on large HERMES_HOME directories the zip can add minutes to every
+        # update.  Set to true to re-enable, or pass ``--backup`` to opt in
+        # for a single update run.
+        "pre_update_backup": False,
         # How many pre-update backup zips to retain.  Older ones are pruned
         # automatically after each successful backup.
         "backup_keep": 5,

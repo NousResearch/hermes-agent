@@ -1344,9 +1344,10 @@ class TestRunPreUpdateBackup:
                 del __import__("sys").modules[mod]
         return root
 
-    def test_default_enabled_creates_backup(self, hermes_home, capsys):
+    def test_backup_flag_creates_backup(self, hermes_home, capsys):
+        """--backup forces the pre-update backup for one run even when config is off."""
         from hermes_cli.main import _run_pre_update_backup
-        _run_pre_update_backup(Namespace(no_backup=False))
+        _run_pre_update_backup(Namespace(no_backup=False, backup=True))
         out = capsys.readouterr().out
         assert "Creating pre-update backup" in out
         assert "Saved:" in out
@@ -1357,9 +1358,20 @@ class TestRunPreUpdateBackup:
         backups = list((hermes_home / "backups").glob("pre-update-*.zip"))
         assert len(backups) == 1
 
+    def test_default_disabled_is_silent(self, hermes_home, capsys):
+        """With the default-off config and no --backup flag, the hook is silent
+        and creates no backup.  This is the common case for every update."""
+        from hermes_cli.main import _run_pre_update_backup
+        _run_pre_update_backup(Namespace(no_backup=False, backup=False))
+        out = capsys.readouterr().out
+        assert out == ""
+        assert not (hermes_home / "backups").exists() or not list(
+            (hermes_home / "backups").glob("pre-update-*.zip")
+        )
+
     def test_no_backup_flag_skips(self, hermes_home, capsys):
         from hermes_cli.main import _run_pre_update_backup
-        _run_pre_update_backup(Namespace(no_backup=True))
+        _run_pre_update_backup(Namespace(no_backup=True, backup=False))
         out = capsys.readouterr().out
         assert "skipped (--no-backup)" in out
         assert "Creating pre-update backup" not in out
@@ -1368,7 +1380,30 @@ class TestRunPreUpdateBackup:
             (hermes_home / "backups").glob("pre-update-*.zip")
         )
 
-    def test_config_disabled_skips(self, hermes_home, capsys):
+    def test_config_enabled_creates_backup(self, hermes_home, capsys):
+        """Users who explicitly set updates.pre_update_backup: true still get
+        a backup on every update — this is the opt-in legacy behavior."""
+        import yaml
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump({
+            "_config_version": 22,
+            "updates": {"pre_update_backup": True},
+        }))
+        import sys as _sys
+        for mod in list(_sys.modules.keys()):
+            if mod.startswith("hermes_cli.config"):
+                del _sys.modules[mod]
+
+        from hermes_cli.main import _run_pre_update_backup
+        _run_pre_update_backup(Namespace(no_backup=False, backup=False))
+        out = capsys.readouterr().out
+        assert "Creating pre-update backup" in out
+        assert "Saved:" in out
+        backups = list((hermes_home / "backups").glob("pre-update-*.zip"))
+        assert len(backups) == 1
+
+    def test_config_disabled_is_silent(self, hermes_home, capsys):
+        """Explicit pre_update_backup: false behaves the same as the default —
+        silent no-op, no message spam."""
         import yaml
         (hermes_home / "config.yaml").write_text(yaml.safe_dump({
             "_config_version": 22,
@@ -1381,10 +1416,9 @@ class TestRunPreUpdateBackup:
                 del _sys.modules[mod]
 
         from hermes_cli.main import _run_pre_update_backup
-        _run_pre_update_backup(Namespace(no_backup=False))
+        _run_pre_update_backup(Namespace(no_backup=False, backup=False))
         out = capsys.readouterr().out
-        assert "disabled" in out
-        assert "updates.pre_update_backup=false" in out
+        assert out == ""
         assert not list((hermes_home / "backups").glob("pre-update-*.zip")) \
             if (hermes_home / "backups").exists() else True
 
@@ -1401,6 +1435,6 @@ class TestRunPreUpdateBackup:
                 del _sys.modules[mod]
 
         from hermes_cli.main import _run_pre_update_backup
-        _run_pre_update_backup(Namespace(no_backup=True))
+        _run_pre_update_backup(Namespace(no_backup=True, backup=False))
         out = capsys.readouterr().out
         assert "skipped (--no-backup)" in out

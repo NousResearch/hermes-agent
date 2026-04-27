@@ -112,7 +112,6 @@ declare module '@hermes/ink' {
     declined: {
       noPrevScreen: number
       heightDeltaMismatch: number
-      noHint: number
       other: number
     }
     lastDeclineReason?: string

@@ -311,13 +311,16 @@ export const stringWidth: (str: string) => number = str => {
   const cached = widthCache.get(str)
 
   if (cached !== undefined) {
+    // True LRU: refresh recency by re-inserting (Map iteration is insertion order).
+    widthCache.delete(str)
+    widthCache.set(str, cached)
+
     return cached
   }
 
   const w = rawStringWidth(str)
 
   if (widthCache.size >= WIDTH_CACHE_LIMIT) {
-    // Drop oldest entry — Map iteration order is insertion order.
     widthCache.delete(widthCache.keys().next().value!)
   }
 

@@ -1,9 +1,9 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
-import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
+import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 
 describe('createSlashHandler', () => {
   beforeEach(() => {
@@ -55,9 +55,7 @@ describe('createSlashHandler', () => {
     })
 
     expect(
-      createSlashHandler(ctx)(
-        `/model anthropic/claude-sonnet-4.6 --provider openrouter ${TUI_SESSION_MODEL_FLAG}`
-      )
+      createSlashHandler(ctx)(`/model anthropic/claude-sonnet-4.6 --provider openrouter ${TUI_SESSION_MODEL_FLAG}`)
     ).toBe(true)
     expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
       key: 'model',

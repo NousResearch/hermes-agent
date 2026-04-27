@@ -383,11 +383,15 @@ class ResponseStore:
             self._conn.commit()
 
     def close(self) -> None:
-        """Close the database connection."""
-        try:
-            self._conn.close()
-        except Exception:
-            pass
+        """Close the database connection.
+
+        Acquires the lock so no in-flight query races with the close.
+        """
+        with self._lock:
+            try:
+                self._conn.close()
+            except Exception:
+                pass
 
     def __len__(self) -> int:
         with self._lock:

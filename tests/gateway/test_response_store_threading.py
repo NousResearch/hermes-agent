@@ -94,3 +94,33 @@ class TestResponseStoreThreading:
         assert store.get("id_0") is not None, "id_0 was evicted despite being accessed recently"
         assert store.get("id_1") is None, "id_1 was not evicted as expected (LRU)"
         store.close()
+
+    def test_close_while_readers_active_does_not_raise(self):
+        """close() acquires the lock so it cannot race with an in-flight query."""
+        from gateway.platforms.api_server import ResponseStore
+        import time as _time
+
+        store = ResponseStore(max_size=20, db_path=":memory:")
+        for i in range(20):
+            store.put(f"id_{i}", {"output": f"result_{i}"})
+
+        errors = []
+        stop_flag = threading.Event()
+
+        def reader():
+            try:
+                while not stop_flag.is_set():
+                    store.get("id_0")
+                    store.get("id_1")
+            except Exception as e:
+                errors.append(e)
+
+        t = threading.Thread(target=reader)
+        t.start()
+        _time.sleep(0.02)  # Let the reader get going
+        stop_flag.set()
+        t.join()
+        # close() must not raise even if called concurrently with reads
+        store.close()
+
+        assert not errors, f"Errors during concurrent read/close: {errors}"

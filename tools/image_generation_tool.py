@@ -744,7 +744,11 @@ def check_image_generation_requirements() -> bool:
     Providers are considered in this order:
 
     1. The in-tree FAL backend (FAL_KEY or managed gateway).
-    2. Any plugin-registered provider whose ``is_available()`` returns True.
+    2. An ``image_gen.provider`` explicitly set in ``config.yaml``. We
+       trust this as a soft-accept gate even if the named plugin hasn't
+       registered yet — see #16027 below.
+    3. Any plugin-registered provider whose ``is_available()`` returns
+       True.
 
     Plugins win only when the in-tree FAL path is NOT ready, which matches
     the historical behavior: shipping hermes with a FAL key configured
@@ -760,6 +764,26 @@ def check_image_generation_requirements() -> bool:
             _load_fal_client()
             return True
     except ImportError:
+        pass
+
+    # Soft-accept gate: if the user has explicitly chosen an image_gen
+    # provider in config.yaml, trust the configuration and surface the
+    # tool. The actual provider lookup happens at call time inside
+    # `_dispatch_to_plugin_provider`, which retries discovery with
+    # `force=True` and returns a clear "provider_not_registered" error
+    # if the named plugin still isn't available.
+    #
+    # Without this gate, plugin discovery races at gateway/session
+    # startup can leave the registry empty when this check_fn fires,
+    # causing the tool to be permanently excluded from the session even
+    # though the plugin loads moments later and `_handle_image_generate`
+    # works correctly when called directly. Mirrors the soft-accept
+    # pattern used for browser-cdp (#15952). (#16027)
+    try:
+        configured = _read_configured_image_provider()
+        if configured and configured != "fal":
+            return True
+    except Exception:
         pass
 
     # Probe plugin providers. Discovery is idempotent and cheap.

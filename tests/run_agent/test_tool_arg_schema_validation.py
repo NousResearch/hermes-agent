@@ -87,6 +87,53 @@ class TestValidateToolArgsTypeCheck:
         errors = validate_tool_args({"verbose": 42}, schema)
         assert any("verbose" in e and "boolean" in e for e in errors)
 
+    def test_bool_rejected_for_integer_field(self):
+        """Python bool is a subclass of int; JSON Schema treats them as distinct.
+        True/False must not pass an 'integer' type check."""
+        schema = {
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "count": {"type": "integer"},
+                },
+            }
+        }
+        errors = validate_tool_args({"count": True}, schema)
+        assert any("count" in e for e in errors), (
+            "bool True should fail integer type check but got no errors"
+        )
+
+    def test_none_valid_for_nullable_union(self):
+        """JSON Schema allows 'null' as a type; None must pass ['string', 'null']."""
+        schema = {
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "tag": {"type": ["string", "null"]},
+                },
+            }
+        }
+        errors = validate_tool_args({"tag": None}, schema)
+        assert errors == [], f"None should be valid for ['string', 'null'] but got: {errors}"
+
+    def test_type_error_suppresses_enum_error(self):
+        """When a value has the wrong type, the enum check should be skipped
+        to avoid emitting two confusing errors for a single argument."""
+        schema = {
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "mode": {"type": "string", "enum": ["read", "write"]},
+                },
+            }
+        }
+        # Pass an integer — wrong type AND not in enum
+        errors = validate_tool_args({"mode": 42}, schema)
+        assert len(errors) == 1, (
+            f"Expected exactly one error (type mismatch), got {len(errors)}: {errors}"
+        )
+        assert "type" in errors[0].lower() or "wrong" in errors[0].lower()
+
     def test_correct_type_passes(self):
         schema = {
             "parameters": {

@@ -510,6 +510,9 @@ def validate_tool_args(args: Dict[str, Any], schema: dict) -> List[str]:
             errors.append(f"Missing required argument: {field}")
 
     # 2. Per-property checks (only for arguments that are present)
+    #
+    # JSON Schema type → Python type mapping.  "null" maps to NoneType so that
+    # nullable union types such as ["string", "null"] validate correctly.
     type_map = {
         "string": str,
         "integer": int,
@@ -517,6 +520,7 @@ def validate_tool_args(args: Dict[str, Any], schema: dict) -> List[str]:
         "boolean": bool,
         "array": list,
         "object": dict,
+        "null": type(None),
     }
 
     for key, value in args.items():
@@ -525,34 +529,40 @@ def validate_tool_args(args: Dict[str, Any], schema: dict) -> List[str]:
             continue
 
         # Type check
+        type_error = False
         expected_type = prop_schema.get("type")
         if expected_type:
             # Normalise union types to a list
             types_to_check = expected_type if isinstance(expected_type, list) else [expected_type]
             matched = False
             for t in types_to_check:
+                # In JSON Schema, booleans and integers are distinct even though
+                # Python's bool is a subclass of int.  Apply the bool guard
+                # BEFORE the isinstance check so that True/False never match
+                # "integer" and non-bool ints never match "boolean".
+                if t == "integer" and isinstance(value, bool):
+                    continue
+                if t == "boolean" and not isinstance(value, bool) and isinstance(value, int):
+                    continue
                 python_type = type_map.get(t)
                 if python_type and isinstance(value, python_type):
                     matched = True
                     break
-                # In JSON, booleans are also int instances in Python — skip
-                # the int check for booleans and vice versa.
-                if t == "integer" and isinstance(value, bool):
-                    continue
-                if t == "boolean" and isinstance(value, int):
-                    continue
             if not matched and types_to_check:
+                type_error = True
                 errors.append(
                     f"Argument '{key}' has wrong type: expected "
                     f"{'/'.join(types_to_check)}, got {type(value).__name__}"
                 )
 
-        # Enum constraint
-        enum_values = prop_schema.get("enum")
-        if enum_values is not None and value not in enum_values:
-            errors.append(
-                f"Argument '{key}' value '{value}' not in enum: {enum_values}"
-            )
+        # Enum constraint — skip when a type error was already recorded for
+        # this argument to avoid confusing double-error output.
+        if not type_error:
+            enum_values = prop_schema.get("enum")
+            if enum_values is not None and value not in enum_values:
+                errors.append(
+                    f"Argument '{key}' value '{value}' not in enum: {enum_values}"
+                )
 
         # Numeric constraints
         if isinstance(value, (int, float)) and not isinstance(value, bool):

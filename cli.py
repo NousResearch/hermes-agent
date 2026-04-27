@@ -2110,6 +2110,7 @@ class HermesCLI:
         # Background task tracking: {task_id: threading.Thread}
         self._background_tasks: Dict[str, threading.Thread] = {}
         self._background_task_counter = 0
+        self._queued_turn_preview: str = ""
 
     def _invalidate(self, min_interval: float = 0.25) -> None:
         """Throttled UI repaint — prevents terminal blinking on slow/SSH connections."""
@@ -6144,7 +6145,8 @@ class HermesCLI:
             else:
                 self._pending_input.put(payload)
                 if self._agent_running:
-                    _cprint(f"  Queued for the next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
+                    self._queued_turn_preview = payload[:80] + ('...' if len(payload) > 80 else '')
+                    self._invalidate(min_interval=0)
                 else:
                     _cprint(f"  Queued: {payload[:80]}{'...' if len(payload) > 80 else ''}")
         elif canonical == "steer":
@@ -8914,7 +8916,15 @@ class HermesCLI:
         overlay menu) into the layout without overriding ``run()``.  Widgets
         are inserted between the spacer and the status bar.
         """
-        return []
+        widgets = []
+        if self._queued_turn_preview:
+            widgets.append(
+                Window(
+                    content=FormattedTextControl(lambda: [("class:hint", f"  queued → {self._queued_turn_preview}")]),
+                    height=1,
+                )
+            )
+        return widgets
 
     def _register_extra_tui_keybindings(self, kb, *, input_area) -> None:
         """Register extra keybindings on the TUI ``KeyBindings`` object.
@@ -9214,7 +9224,8 @@ class HermesCLI:
                         # Queue for the next turn instead of interrupting
                         self._pending_input.put(payload)
                         preview = text if text else f"[{len(images)} image{'s' if len(images) != 1 else ''} attached]"
-                        _cprint(f"  Queued for the next turn: {preview[:80]}{'...' if len(preview) > 80 else ''}")
+                        self._queued_turn_preview = preview[:80] + ('...' if len(preview) > 80 else '')
+                        self._invalidate(min_interval=0)
                     else:
                         self._interrupt_queue.put(payload)
                         # Debug: log to file when message enters interrupt queue
@@ -10533,6 +10544,10 @@ class HermesCLI:
                     
                     if not user_input:
                         continue
+
+                    self._queued_turn_preview = ""
+                    if self._app:
+                        self._invalidate(min_interval=0)
 
                     # Unpack image payload: (text, [Path, ...]) or plain str
                     submit_images = []

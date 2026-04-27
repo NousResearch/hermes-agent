@@ -1,6 +1,7 @@
 """Tests for gateway/platforms/base.py — MessageEvent, media extraction, message truncation."""
 
 import asyncio
+import base64
 import os
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
@@ -425,6 +426,165 @@ async def test_process_message_routes_data_uri_image_to_send_image_file():
     assert Path(image_path).is_file()
     assert image_call["caption"] == "generated"
     assert session_key not in adapter._active_sessions
+
+
+@pytest.mark.asyncio
+async def test_send_with_retry_blocks_explicit_data_uri_blob_as_text(monkeypatch):
+    monkeypatch.setattr(BasePlatformAdapter, "MAX_OUTBOUND_ENCODED_BLOB_CHARS", 64, raising=False)
+    adapter = _RecordingAdapter()
+    blob = "A" * 65
+
+    result = await adapter._send_with_retry(
+        "42", f"Do not send this: data:application/octet-stream;base64,{blob}"
+    )
+
+    assert result.success is True
+    assert len(adapter.sent_texts) == 1
+    sent = adapter.sent_texts[0]["content"]
+    assert "blocked" in sent.lower()
+    assert blob not in sent
+    assert "data:application" not in sent
+
+
+@pytest.mark.asyncio
+async def test_send_with_retry_blocks_bare_base64_blob_as_text(monkeypatch):
+    monkeypatch.setattr(BasePlatformAdapter, "MAX_OUTBOUND_ENCODED_BLOB_CHARS", 64, raising=False)
+    adapter = _RecordingAdapter()
+    blob = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAFgwJ/lHGwVw=="
+
+    result = await adapter._send_with_retry("42", f"Raw image bytes: {blob}")
+
+    assert result.success is True
+    sent = adapter.sent_texts[0]["content"]
+    assert "blocked" in sent.lower()
+    assert blob not in sent
+
+
+@pytest.mark.asyncio
+async def test_send_with_retry_blocks_wrapped_bare_base64_blob_as_text(monkeypatch):
+    monkeypatch.setattr(BasePlatformAdapter, "MAX_OUTBOUND_ENCODED_BLOB_CHARS", 64, raising=False)
+    adapter = _RecordingAdapter()
+    raw = b"x" * 96
+    wrapped = "\n".join(base64.b64encode(raw).decode()[i:i + 32] for i in range(0, 128, 32))
+
+    result = await adapter._send_with_retry("42", f"Raw wrapped image bytes:\n{wrapped}")
+
+    assert result.success is True
+    sent = adapter.sent_texts[0]["content"]
+    assert "blocked" in sent.lower()
+    assert wrapped not in sent
+
+
+@pytest.mark.asyncio
+async def test_send_with_retry_blocks_large_blob_url_as_text(monkeypatch):
+    monkeypatch.setattr(BasePlatformAdapter, "MAX_OUTBOUND_ENCODED_BLOB_CHARS", 64, raising=False)
+    adapter = _RecordingAdapter()
+    blob_url = "blob:" + ("x" * 65)
+
+    result = await adapter._send_with_retry("42", f"Leaked blob URL: {blob_url}")
+
+    assert result.success is True
+    sent = adapter.sent_texts[0]["content"]
+    assert "blocked" in sent.lower()
+    assert blob_url not in sent
+
+
+@pytest.mark.asyncio
+async def test_send_with_retry_allows_long_normal_text(monkeypatch):
+    monkeypatch.setattr(BasePlatformAdapter, "MAX_OUTBOUND_ENCODED_BLOB_CHARS", 64, raising=False)
+    adapter = _RecordingAdapter()
+    text = "普通文本，不是编码数据。" * 20
+
+    result = await adapter._send_with_retry("42", text)
+
+    assert result.success is True
+    assert adapter.sent_texts == [{"chat_id": "42", "content": text, "reply_to": None, "metadata": None}]
+
+
+@pytest.mark.asyncio
+async def test_send_with_retry_allows_long_english_text(monkeypatch):
+    monkeypatch.setattr(BasePlatformAdapter, "MAX_OUTBOUND_ENCODED_BLOB_CHARS", 64, raising=False)
+    adapter = _RecordingAdapter()
+    text = "Test " * 600
+
+    result = await adapter._send_with_retry("42", text)
+
+    assert result.success is True
+    assert adapter.sent_texts == [{"chat_id": "42", "content": text, "reply_to": None, "metadata": None}]
+
+
+@pytest.mark.asyncio
+async def test_send_with_retry_blocks_non_quad_wrapped_bare_base64_blob(monkeypatch):
+    monkeypatch.setattr(BasePlatformAdapter, "MAX_OUTBOUND_ENCODED_BLOB_CHARS", 64, raising=False)
+    adapter = _RecordingAdapter()
+    encoded = base64.b64encode(b"x" * 3000).decode()
+    wrapped = "\n".join(encoded[i:i + 70] for i in range(0, len(encoded), 70))
+
+    result = await adapter._send_with_retry("42", f"Raw wrapped image bytes:\n{wrapped}")
+
+    assert result.success is True
+    sent = adapter.sent_texts[0]["content"]
+    assert "blocked" in sent.lower()
+    assert wrapped not in sent
+
+
+@pytest.mark.asyncio
+async def test_send_with_retry_blocks_common_width_wrapped_bare_base64_blob(monkeypatch):
+    monkeypatch.setattr(BasePlatformAdapter, "MAX_OUTBOUND_ENCODED_BLOB_CHARS", 64, raising=False)
+    encoded = base64.b64encode(b"x" * 3000).decode()
+
+    for width in (65, 77, 80):
+        adapter = _RecordingAdapter()
+        wrapped = "\n".join(encoded[i:i + width] for i in range(0, len(encoded), width))
+
+        result = await adapter._send_with_retry("42", f"Raw wrapped image bytes:\n{wrapped}")
+
+        assert result.success is True
+        sent = adapter.sent_texts[0]["content"]
+        assert "blocked" in sent.lower(), f"width={width}"
+        assert wrapped not in sent
+
+
+@pytest.mark.asyncio
+async def test_send_with_retry_allows_small_data_uri_followed_by_long_text(monkeypatch):
+    monkeypatch.setattr(BasePlatformAdapter, "MAX_OUTBOUND_ENCODED_BLOB_CHARS", 64, raising=False)
+    adapter = _RecordingAdapter()
+    text = "data:text/plain;base64,SGVsbG8= " + ("Test " * 600)
+
+    result = await adapter._send_with_retry("42", text)
+
+    assert result.success is True
+    assert adapter.sent_texts == [{"chat_id": "42", "content": text, "reply_to": None, "metadata": None}]
+
+
+@pytest.mark.asyncio
+async def test_send_with_retry_blocks_space_wrapped_bare_base64_blob(monkeypatch):
+    monkeypatch.setattr(BasePlatformAdapter, "MAX_OUTBOUND_ENCODED_BLOB_CHARS", 64, raising=False)
+    adapter = _RecordingAdapter()
+    encoded = base64.b64encode(b"x" * 3000).decode()
+    wrapped = " ".join(encoded[i:i + 32] for i in range(0, len(encoded), 32))
+
+    result = await adapter._send_with_retry("42", f"Raw wrapped image bytes: {wrapped}")
+
+    assert result.success is True
+    sent = adapter.sent_texts[0]["content"]
+    assert "blocked" in sent.lower()
+    assert wrapped not in sent
+
+
+@pytest.mark.asyncio
+async def test_send_with_retry_blocks_tab_wrapped_bare_base64_blob(monkeypatch):
+    monkeypatch.setattr(BasePlatformAdapter, "MAX_OUTBOUND_ENCODED_BLOB_CHARS", 64, raising=False)
+    adapter = _RecordingAdapter()
+    encoded = base64.b64encode(b"x" * 3000).decode()
+    wrapped = "\t".join(encoded[i:i + 32] for i in range(0, len(encoded), 32))
+
+    result = await adapter._send_with_retry("42", f"Raw wrapped image bytes: {wrapped}")
+
+    assert result.success is True
+    sent = adapter.sent_texts[0]["content"]
+    assert "blocked" in sent.lower()
+    assert wrapped not in sent
 
 
 # ---------------------------------------------------------------------------

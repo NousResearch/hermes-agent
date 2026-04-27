@@ -1091,6 +1091,11 @@ class BasePlatformAdapter(ABC):
     - Handling media
     """
     MAX_DATA_URI_IMAGE_BASE64_CHARS = 20_000_000
+    MAX_OUTBOUND_ENCODED_BLOB_CHARS = 2_000
+    OUTBOUND_BLOB_BLOCKED_MESSAGE = (
+        "⚠️ Outbound message blocked: the response contained an oversized encoded data blob "
+        "and was not sent as text. Please regenerate the content as a file or native media attachment."
+    )
     
     def __init__(self, config: PlatformConfig, platform: Platform):
         self.config = config
@@ -1915,6 +1920,50 @@ class BasePlatformAdapter(ABC):
         lowered = error.lower()
         return "timed out" in lowered or "readtimeout" in lowered or "writetimeout" in lowered
 
+    @classmethod
+    def _contains_unsafe_outbound_blob(cls, content: str) -> bool:
+        """Return True when text contains an encoded blob unsafe for platform send()."""
+        if not content:
+            return False
+
+        threshold = cls.MAX_OUTBOUND_ENCODED_BLOB_CHARS
+        data_uri_pattern = r'data:[^\s,;]+(?:;[^\s,;]+)*;base64,(?P<data>[A-Za-z0-9+/=]+)'
+        for match in re.finditer(data_uri_pattern, content, re.IGNORECASE):
+            encoded = re.sub(r'\s+', '', match.group('data'))
+            if len(encoded) > threshold:
+                return True
+
+        blob_pattern = r'blob:[^\s<>()\[\]{}"\']+'
+        for match in re.finditer(blob_pattern, content, re.IGNORECASE):
+            if len(match.group(0)) > threshold:
+                return True
+
+        base64_pattern = r'(?<![A-Za-z0-9+/=])(?:[A-Za-z0-9+/]{4}){16,}(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?(?![A-Za-z0-9+/=])'
+        for match in re.finditer(base64_pattern, content):
+            token = match.group(0)
+            if len(token) > threshold:
+                try:
+                    base64.b64decode(token, validate=True)
+                    return True
+                except (binascii.Error, ValueError):
+                    continue
+
+        wrapped_base64_pattern = r'(?<![A-Za-z0-9+/=])(?:[A-Za-z0-9+/]{16,120}\s+){2,}[A-Za-z0-9+/]{16,120}={0,2}(?![A-Za-z0-9+/=])'
+        for match in re.finditer(wrapped_base64_pattern, content):
+            token = ''.join(re.split(r'\s+', match.group(0).strip()))
+            chunks = re.split(r'\s+', match.group(0).strip())
+            if len(chunks) < 3 or any(len(chunk) < 16 for chunk in chunks):
+                continue
+            padding_needed = (-len(token)) % 4
+            padded_token = token + ("=" * padding_needed)
+            if len(token) > threshold:
+                try:
+                    base64.b64decode(padded_token, validate=True)
+                    return True
+                except (binascii.Error, ValueError):
+                    continue
+        return False
+
     async def _send_with_retry(
         self,
         chat_id: str,
@@ -1932,6 +1981,19 @@ class BasePlatformAdapter(ABC):
         network errors, sends the user a brief delivery-failure notice so they
         know to retry rather than waiting indefinitely.
         """
+
+        if self._contains_unsafe_outbound_blob(content):
+            logger.error(
+                "[%s] Blocking outbound text with oversized encoded blob (%d chars)",
+                self.name,
+                len(content),
+            )
+            return await self.send(
+                chat_id=chat_id,
+                content=self.OUTBOUND_BLOB_BLOCKED_MESSAGE,
+                reply_to=reply_to,
+                metadata=metadata,
+            )
 
         result = await self.send(
             chat_id=chat_id,

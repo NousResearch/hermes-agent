@@ -127,7 +127,7 @@ export default function ProfilesPage() {
   };
 
   const handleCopyTerminalCommand = async (name: string) => {
-    const cmd = `hermes -p ${name}`;
+    const cmd = name === "default" ? "hermes setup" : `${name} setup`;
     try {
       await navigator.clipboard.writeText(cmd);
       showToast(`${t.profiles.commandCopied}: ${cmd}`, "success");

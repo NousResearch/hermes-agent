@@ -1043,6 +1043,7 @@ def _launch_tui(
     )
     env.setdefault("HERMES_PYTHON", sys.executable)
     env.setdefault("HERMES_CWD", os.getcwd())
+    env.setdefault("NODE_ENV", "development" if tui_dev else "production")
     if model:
         env["HERMES_MODEL"] = model
         env["HERMES_INFERENCE_MODEL"] = model
@@ -3331,7 +3332,26 @@ def _model_flow_named_custom(config, provider_info):
             provider_entry = providers_cfg.get(provider_key)
             if isinstance(provider_entry, dict):
                 provider_entry["default_model"] = model_name
-                if config_api_key and not str(provider_entry.get("api_key", "") or "").strip():
+                # Only persist an inline api_key when the user originally had
+                # one (either a literal secret or a ``${VAR}`` template). When
+                # the entry relies on ``key_env``, do not synthesize a
+                # ``${key_env}`` api_key — the runtime already resolves the
+                # key from ``key_env`` directly, and writing the resolved
+                # secret (or even a synthesized template) would silently
+                # downgrade credential hygiene on entries that intentionally
+                # keep plaintext out of ``config.yaml``. See issue #15803.
+                original_api_key_ref = str(
+                    provider_info.get("api_key_ref", "") or ""
+                ).strip()
+                original_api_key = str(
+                    provider_info.get("api_key", "") or ""
+                ).strip()
+                had_inline_api_key = bool(original_api_key_ref or original_api_key)
+                if (
+                    had_inline_api_key
+                    and config_api_key
+                    and not str(provider_entry.get("api_key", "") or "").strip()
+                ):
                     provider_entry["api_key"] = config_api_key
                 if key_env and not str(provider_entry.get("key_env", "") or "").strip():
                     provider_entry["key_env"] = key_env
@@ -6313,6 +6333,22 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
         print(f"→ Found {commit_count} new commit(s)")
 
+        # Snapshot critical state (state.db, config, pairing JSONs, etc.)
+        # before pulling so a user can recover if something goes wrong.
+        # Issue #15733 reported missing pairing data after an update; even
+        # though `git pull` can't touch $HERMES_HOME, this is cheap
+        # belt-and-suspenders insurance and gives the user something to
+        # restore from via `/snapshot list` / `/snapshot restore <id>`.
+        try:
+            from hermes_cli.backup import create_quick_snapshot
+
+            snap_id = create_quick_snapshot(label="pre-update")
+            if snap_id:
+                print(f"  ✓ Pre-update snapshot: {snap_id}")
+        except Exception as exc:
+            # Never let a snapshot failure block an update.
+            logger.debug("Pre-update snapshot failed: %s", exc)
+
         print("→ Pulling updates...")
         update_succeeded = False
         try:
@@ -8681,10 +8717,16 @@ Examples:
 
     skills_install = skills_subparsers.add_parser("install", help="Install a skill")
     skills_install.add_argument(
-        "identifier", help="Skill identifier (e.g. openai/skills/skill-creator)"
+        "identifier",
+        help="Skill identifier (e.g. openai/skills/skill-creator) or a direct HTTP(S) URL to a SKILL.md file",
     )
     skills_install.add_argument(
         "--category", default="", help="Category folder to install into"
+    )
+    skills_install.add_argument(
+        "--name",
+        default="",
+        help="Override the skill name (useful when installing from a URL whose SKILL.md has no `name:` frontmatter)",
     )
     skills_install.add_argument(
         "--force", action="store_true", help="Install despite blocked scan verdict"

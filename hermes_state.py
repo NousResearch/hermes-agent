@@ -1132,20 +1132,27 @@ class SessionDB:
                 current = child_id
         return session_id
 
-    def get_messages_as_conversation(self, session_id: str) -> List[Dict[str, Any]]:
+    def get_messages_as_conversation(
+        self, session_id: str, include_ancestors: bool = False
+    ) -> List[Dict[str, Any]]:
         """
         Load messages in the OpenAI conversation format (role + content dicts).
         Used by the gateway to restore conversation history.
         """
+        session_ids = [session_id]
+        if include_ancestors:
+            session_ids = self._session_lineage_root_to_tip(session_id)
+
         with self._lock:
-            cursor = self._conn.execute(
+            placeholders = ",".join("?" for _ in session_ids)
+            rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
                 "reasoning, reasoning_content, reasoning_details, codex_reasoning_items, "
                 "codex_message_items "
-                "FROM messages WHERE session_id = ? ORDER BY timestamp, id",
-                (session_id,),
-            )
-            rows = cursor.fetchall()
+                f"FROM messages WHERE session_id IN ({placeholders}) ORDER BY timestamp, id",
+                tuple(session_ids),
+            ).fetchall()
+
         messages = []
         for row in rows:
             msg = {"role": row["role"], "content": row["content"]}
@@ -1185,8 +1192,46 @@ class SessionDB:
                     except (json.JSONDecodeError, TypeError):
                         logger.warning("Failed to deserialize codex_message_items, falling back to None")
                         msg["codex_message_items"] = None
+            if include_ancestors and self._is_duplicate_replayed_user_message(messages, msg):
+                continue
             messages.append(msg)
         return messages
+
+    def _session_lineage_root_to_tip(self, session_id: str) -> List[str]:
+        if not session_id:
+            return [session_id]
+
+        chain = []
+        current = session_id
+        seen = set()
+        with self._lock:
+            for _ in range(100):
+                if not current or current in seen:
+                    break
+                seen.add(current)
+                chain.append(current)
+                row = self._conn.execute(
+                    "SELECT parent_session_id FROM sessions WHERE id = ?",
+                    (current,),
+                ).fetchone()
+                if row is None:
+                    break
+                current = row["parent_session_id"] if hasattr(row, "keys") else row[0]
+        return list(reversed(chain)) or [session_id]
+
+    @staticmethod
+    def _is_duplicate_replayed_user_message(messages: List[Dict[str, Any]], msg: Dict[str, Any]) -> bool:
+        if msg.get("role") != "user":
+            return False
+        content = msg.get("content")
+        if not isinstance(content, str) or not content:
+            return False
+        for prev in reversed(messages):
+            if prev.get("role") == "user" and prev.get("content") == content:
+                return True
+            if prev.get("role") == "assistant" and (prev.get("content") or prev.get("tool_calls")):
+                return False
+        return False
 
     # =========================================================================
     # Search

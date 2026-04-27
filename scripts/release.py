@@ -58,7 +58,9 @@ AUTHOR_MAP = {
     "itonov@proton.me": "Ito-69",
     "glesstech@gmail.com": "georgeglessner",
     "maxim.smetanin@gmail.com": "maxims-oss",
+    "CREWorx@users.noreply.github.com": "BadTechBandit",
     "yoimexex@gmail.com": "Yoimex",
+    "6548898+romanornr@users.noreply.github.com": "romanornr",
     # contributors (from noreply pattern)
     "david.vv@icloud.com": "davidvv",
     "wangqiang@wangqiangdeMac-mini.local": "xiaoqiang243",
@@ -136,6 +138,7 @@ AUTHOR_MAP = {
     "1930707+haru398801@users.noreply.github.com": "haru398801",
     "rapabelias@gmail.com": "badgerbees",
     "xnb888@proton.me": "xnbi",
+    "xiahu889889@proton.me": "xiahu88988",
     "nocoo@users.noreply.github.com": "nocoo",
     "30841158+n-WN@users.noreply.github.com": "n-WN",
     "tsuijinglei@gmail.com": "hiddenpuppy",

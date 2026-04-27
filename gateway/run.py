@@ -10589,12 +10589,20 @@ class GatewayRunner:
                 try:
                     from agent.title_generator import maybe_auto_title
                     all_msgs = result_holder[0].get("messages", []) if result_holder[0] else []
+                    # Route title-generation failures through the agent's
+                    # user-visible warning channel so a depleted auxiliary
+                    # provider doesn't silently leave sessions untitled
+                    # (issue #15775).
+                    _title_failure_cb = getattr(
+                        agent, "_emit_auxiliary_failure", None
+                    )
                     maybe_auto_title(
                         self._session_db,
                         effective_session_id,
                         message,
                         final_response,
                         all_msgs,
+                        failure_callback=_title_failure_cb,
                     )
                 except Exception:
                     pass
@@ -11240,13 +11248,16 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
     cron delivery path so live adapters can be used for E2EE rooms.
 
     Also refreshes the channel directory every 5 minutes and prunes the
-    image/audio/document cache once per hour.
+    image/audio/document cache + expired ``hermes debug share`` pastes
+    once per hour.
     """
     from cron.scheduler import tick as cron_tick
     from gateway.platforms.base import cleanup_image_cache, cleanup_document_cache
+    from hermes_cli.debug import _sweep_expired_pastes
 
     IMAGE_CACHE_EVERY = 60   # ticks — once per hour at default 60s interval
     CHANNEL_DIR_EVERY = 5    # ticks — every 5 minutes
+    PASTE_SWEEP_EVERY = 60   # ticks — once per hour
 
     logger.info("Cron ticker started (interval=%ds)", interval)
     tick_count = 0
@@ -11286,6 +11297,17 @@ def _start_cron_ticker(stop_event: threading.Event, adapters=None, loop=None, in
                     logger.info("Document cache cleanup: removed %d stale file(s)", removed)
             except Exception as e:
                 logger.debug("Document cache cleanup error: %s", e)
+
+        if tick_count % PASTE_SWEEP_EVERY == 0:
+            try:
+                deleted, remaining = _sweep_expired_pastes()
+                if deleted:
+                    logger.info(
+                        "Paste sweep: deleted %d expired paste(s), %d pending",
+                        deleted, remaining,
+                    )
+            except Exception as e:
+                logger.debug("Paste sweep error: %s", e)
 
         stop_event.wait(timeout=interval)
     logger.info("Cron ticker stopped")

@@ -596,6 +596,37 @@ class TestNewEndpoints:
         names = [p["name"] for p in resp.json()["profiles"]]
         assert "default" in names
 
+    def test_profiles_list_falls_back_when_profile_listing_fails(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        import hermes_cli.profiles as profiles_mod
+
+        hermes_home = get_hermes_home()
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        (hermes_home / "config.yaml").write_text(
+            "model:\n  provider: openrouter\n  name: anthropic/claude-sonnet-4.6\n",
+            encoding="utf-8",
+        )
+        named = hermes_home / "profiles" / "multi-agent"
+        named.mkdir(parents=True)
+        (named / ".env").write_text("EXAMPLE=1\n", encoding="utf-8")
+        (named / "skills" / "demo").mkdir(parents=True)
+        (named / "skills" / "demo" / "SKILL.md").write_text("---\nname: demo\n---\n", encoding="utf-8")
+
+        monkeypatch.setattr(
+            profiles_mod,
+            "list_profiles",
+            lambda: (_ for _ in ()).throw(RuntimeError("boom")),
+        )
+
+        resp = self.client.get("/api/profiles")
+
+        assert resp.status_code == 200
+        profiles = {p["name"]: p for p in resp.json()["profiles"]}
+        assert profiles["default"]["is_default"] is True
+        assert profiles["default"]["provider"] == "openrouter"
+        assert profiles["multi-agent"]["has_env"] is True
+        assert profiles["multi-agent"]["skill_count"] == 1
+
     def test_profiles_create_rename_delete_round_trip(self, monkeypatch):
         # Stub gateway service teardown so the test doesn't shell out to
         # launchctl/systemctl on the host.

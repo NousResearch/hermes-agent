@@ -357,6 +357,16 @@
             (Linux) or launchd ThrottleInterval (macOS, minimum 10s).
           '';
         };
+
+        managedMode = lib.mkOption {
+          type = lib.types.enum [ "home-manager" "nixos" ];
+          default = "home-manager";
+          description = ''
+            How home-manager is invoked:
+            - "home-manager": standalone home-manager (update via home-manager switch)
+            - "nixos": home-manager used as a NixOS module (update via sudo nixos-rebuild switch)
+          '';
+        };
       };
 
       config = lib.mkIf cfg.enable (
@@ -408,7 +418,10 @@
           # ── Packages & environment ─────────────────────────────────────────
           {
             home.packages = [ cfg.package ] ++ cfg.extraPackages;
-            home.sessionVariables.HERMES_HOME = "${cfg.stateDir}/.hermes";
+            home.sessionVariables = {
+              HERMES_HOME = "${cfg.stateDir}/.hermes";
+              HERMES_MANAGED = if cfg.managedMode == "nixos" then "home-manager-nixos" else "home-manager";
+            };
           }
 
           # ── Activation: directories, config, auth, env, documents ─────────
@@ -436,8 +449,10 @@
                   ''
               }
 
-              # Managed mode marker
-              touch ${cfg.stateDir}/.hermes/.managed
+              # Managed mode marker (content identifies the manager)
+              echo "${
+                if cfg.managedMode == "nixos" then "home-manager-nixos" else "home-manager"
+              }" > ${cfg.stateDir}/.hermes/.managed
 
               # Seed auth file if provided
               ${lib.optionalString (cfg.authFile != null) (
@@ -514,7 +529,9 @@
                     Environment = [
                       "HOME=${config.home.homeDirectory}"
                       "HERMES_HOME=${cfg.stateDir}/.hermes"
-                      "HERMES_MANAGED=true"
+                      "HERMES_MANAGED=${
+                        if cfg.managedMode == "nixos" then "home-manager-nixos" else "home-manager"
+                      }"
                       "MESSAGING_CWD=${cfg.workingDirectory}"
                       ("PATH=" + servicePath + "\${PATH:+:$PATH}")
                     ];
@@ -595,7 +612,7 @@
                   EnvironmentVariables = {
                     HOME = config.home.homeDirectory;
                     HERMES_HOME = "${cfg.stateDir}/.hermes";
-                    HERMES_MANAGED = "true";
+                    HERMES_MANAGED = if cfg.managedMode == "nixos" then "home-manager-nixos" else "home-manager";
                     MESSAGING_CWD = cfg.workingDirectory;
                     PATH = lib.makeBinPath (
                       [

@@ -59,3 +59,95 @@ def test_optional_skill_source_honors_env_override(monkeypatch, tmp_path):
     source = OptionalSkillSource()
 
     assert source._optional_dir == optional_dir
+
+
+# ── Home Manager detection tests ──────────────────────────────────────────────
+
+
+def test_get_managed_system_home_manager_env(monkeypatch):
+    monkeypatch.setenv("HERMES_MANAGED", "home-manager")
+
+    assert get_managed_system() == "Home Manager"
+    assert recommended_update_command() == "home-manager switch"
+
+
+def test_get_managed_system_home_manager_nixos_env(monkeypatch):
+    monkeypatch.setenv("HERMES_MANAGED", "home-manager-nixos")
+
+    assert get_managed_system() == "Home Manager (NixOS)"
+    assert recommended_update_command() == "sudo nixos-rebuild switch"
+
+
+def test_get_managed_system_home_manager_marker(monkeypatch, tmp_path):
+    monkeypatch.delenv("HERMES_MANAGED", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".managed").write_text("home-manager")
+
+    assert get_managed_system() == "Home Manager"
+
+
+def test_get_managed_system_home_manager_nixos_marker(monkeypatch, tmp_path):
+    monkeypatch.delenv("HERMES_MANAGED", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".managed").write_text("home-manager-nixos")
+
+    assert get_managed_system() == "Home Manager (NixOS)"
+
+
+def test_get_managed_system_empty_marker_still_nixos(monkeypatch, tmp_path):
+    monkeypatch.delenv("HERMES_MANAGED", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".managed").write_text("")
+
+    assert get_managed_system() == "NixOS"
+
+
+def test_get_managed_system_nixos_marker(monkeypatch, tmp_path):
+    monkeypatch.delenv("HERMES_MANAGED", raising=False)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / ".managed").write_text("nixos")
+
+    assert get_managed_system() == "NixOS"
+
+
+def test_format_managed_message_home_manager(monkeypatch):
+    monkeypatch.setenv("HERMES_MANAGED", "home-manager")
+
+    message = format_managed_message("update Hermes Agent")
+
+    assert "managed by Home Manager" in message
+    assert "home-manager switch" in message
+    assert "programs.hermes-agent.settings" in message
+
+
+def test_format_managed_message_home_manager_nixos(monkeypatch):
+    monkeypatch.setenv("HERMES_MANAGED", "home-manager-nixos")
+
+    message = format_managed_message("update Hermes Agent")
+
+    assert "managed by Home Manager" in message
+    assert "via NixOS module" in message
+    assert "sudo nixos-rebuild switch" in message
+    assert "programs.hermes-agent.settings" in message
+
+
+def test_format_managed_message_nixos_unchanged(monkeypatch):
+    monkeypatch.setenv("HERMES_MANAGED", "true")
+
+    message = format_managed_message("update Hermes Agent")
+
+    assert "managed by NixOS" in message
+    assert "sudo nixos-rebuild switch" in message
+    assert "services.hermes-agent.settings" in message
+
+
+def test_cmd_update_blocks_managed_home_manager(monkeypatch, capsys):
+    monkeypatch.setenv("HERMES_MANAGED", "home-manager")
+
+    with patch("hermes_cli.main.subprocess.run") as mock_run:
+        cmd_update(SimpleNamespace())
+
+    assert not mock_run.called
+    captured = capsys.readouterr()
+    assert "managed by Home Manager" in captured.err
+    assert "home-manager switch" in captured.err

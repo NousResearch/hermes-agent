@@ -5041,6 +5041,63 @@ class AIAgent:
         return client
 
     @staticmethod
+    def _iter_pool_sockets(client: Any):
+        """Yield raw socket objects from an httpx client's connection pool.
+
+        Walks: client._client._transport._pool._{connections,pool} -> each
+        ``HTTPConnection`` wrapper -> its inner ``HTTP11/2Connection`` (at
+        ``_connection``) -> ``_network_stream`` -> raw socket. Handles both
+        the sync httpcore backend (``stream._sock``) and the anyio async
+        backend (``stream._stream.extra(SocketAttribute.raw_socket)``).
+
+        Pre-fix versions of this code only checked ``conn._network_stream``,
+        which doesn't exist on httpcore >=1.0 wrapper objects, so the walk
+        silently yielded nothing and CLOSE-WAIT cleanup was a no-op.
+        """
+        try:
+            http_client = getattr(client, "_client", None)
+            if http_client is None:
+                return
+            transport = getattr(http_client, "_transport", None)
+            if transport is None:
+                return
+            pool = getattr(transport, "_pool", None)
+            if pool is None:
+                return
+            connections = (
+                getattr(pool, "_connections", None)
+                or getattr(pool, "_pool", None)
+                or []
+            )
+            for conn in list(connections):
+                # httpcore HTTPConnection wraps the real HTTP11/2Connection
+                # at ._connection; descend if present.
+                inner = getattr(conn, "_connection", None) or conn
+                stream = getattr(inner, "_network_stream", None) or getattr(
+                    inner, "_stream", None
+                )
+                if stream is None:
+                    continue
+                sock = getattr(stream, "_sock", None)
+                if sock is None:
+                    # AnyIO async backend: stream._stream is an anyio
+                    # SocketStream; get the raw fd via .extra().
+                    inner_stream = getattr(stream, "_stream", None)
+                    if inner_stream is not None:
+                        try:
+                            from anyio.abc import SocketAttribute  # type: ignore
+                            sock = inner_stream.extra(
+                                SocketAttribute.raw_socket, None
+                            )
+                        except Exception:
+                            sock = getattr(inner_stream, "_sock", None)
+                if sock is None:
+                    continue
+                yield sock
+        except Exception as exc:
+            logger.debug("Pool socket walk error: %s", exc)
+
+    @staticmethod
     def _force_close_tcp_sockets(client: Any) -> int:
         """Force-close underlying TCP sockets to prevent CLOSE-WAIT accumulation.
 
@@ -5055,48 +5112,16 @@ class AIAgent:
         import socket as _socket
 
         closed = 0
-        try:
-            http_client = getattr(client, "_client", None)
-            if http_client is None:
-                return 0
-            transport = getattr(http_client, "_transport", None)
-            if transport is None:
-                return 0
-            pool = getattr(transport, "_pool", None)
-            if pool is None:
-                return 0
-            # httpx uses httpcore connection pools; connections live in
-            # _connections (list) or _pool (list) depending on version.
-            connections = (
-                getattr(pool, "_connections", None)
-                or getattr(pool, "_pool", None)
-                or []
-            )
-            for conn in list(connections):
-                stream = (
-                    getattr(conn, "_network_stream", None)
-                    or getattr(conn, "_stream", None)
-                )
-                if stream is None:
-                    continue
-                sock = getattr(stream, "_sock", None)
-                if sock is None:
-                    sock = getattr(stream, "stream", None)
-                    if sock is not None:
-                        sock = getattr(sock, "_sock", None)
-                if sock is None:
-                    continue
-                try:
-                    sock.shutdown(_socket.SHUT_RDWR)
-                except OSError:
-                    pass
-                try:
-                    sock.close()
-                except OSError:
-                    pass
-                closed += 1
-        except Exception as exc:
-            logger.debug("Force-close TCP sockets sweep error: %s", exc)
+        for sock in AIAgent._iter_pool_sockets(client):
+            try:
+                sock.shutdown(_socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                sock.close()
+            except OSError:
+                pass
+            closed += 1
         return closed
 
     def _close_openai_client(self, client: Any, *, reason: str, shared: bool) -> None:
@@ -5169,38 +5194,9 @@ class AIAgent:
         if client is None:
             return False
         try:
-            http_client = getattr(client, "_client", None)
-            if http_client is None:
-                return False
-            transport = getattr(http_client, "_transport", None)
-            if transport is None:
-                return False
-            pool = getattr(transport, "_pool", None)
-            if pool is None:
-                return False
-            connections = (
-                getattr(pool, "_connections", None)
-                or getattr(pool, "_pool", None)
-                or []
-            )
+            import socket as _socket
             dead_count = 0
-            for conn in list(connections):
-                # Check for connections that are idle but have closed sockets
-                stream = (
-                    getattr(conn, "_network_stream", None)
-                    or getattr(conn, "_stream", None)
-                )
-                if stream is None:
-                    continue
-                sock = getattr(stream, "_sock", None)
-                if sock is None:
-                    sock = getattr(stream, "stream", None)
-                    if sock is not None:
-                        sock = getattr(sock, "_sock", None)
-                if sock is None:
-                    continue
-                # Probe socket health with a non-blocking recv peek
-                import socket as _socket
+            for sock in AIAgent._iter_pool_sockets(client):
                 try:
                     sock.setblocking(False)
                     data = sock.recv(1, _socket.MSG_PEEK | _socket.MSG_DONTWAIT)

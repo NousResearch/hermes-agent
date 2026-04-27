@@ -1431,6 +1431,24 @@ class BasePlatformAdapter(ABC):
         Default is a no-op for platforms with one-shot typing indicators.
         """
         pass
+
+    async def update_topic_title(
+        self,
+        chat_id: str,
+        thread_id: Optional[str],
+        title: str,
+    ) -> None:
+        """Update a forum / topic / thread title on the platform.
+
+        Default no-op.  Platforms that expose per-thread titles (Telegram
+        forum topics, Discord threads, …) should override this and push the
+        new ``title`` to the platform so the topic list stays in sync with
+        the auto-generated session title.
+
+        Implementations SHOULD swallow and log their own errors — title
+        sync is a best-effort UX nicety, never load-bearing.
+        """
+        return None
     
     async def send_image(
         self,

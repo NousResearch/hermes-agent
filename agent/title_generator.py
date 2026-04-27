@@ -18,6 +18,11 @@ logger = logging.getLogger(__name__)
 # become visible instead of piling up as NULL session titles.
 FailureCallback = Callable[[str, BaseException], None]
 
+# Callback signature: (title) -> None. Fired after a generated title is
+# successfully persisted to the session DB so platform adapters (e.g.
+# Telegram forum topics) can sync the title to their UI.  Issue #16255.
+TitleSetCallback = Callable[[str], None]
+
 _TITLE_PROMPT = (
     "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
     "following exchange. The title should capture the main topic or intent. "
@@ -90,6 +95,7 @@ def auto_title_session(
     assistant_response: str,
     failure_callback: Optional[FailureCallback] = None,
     main_runtime: dict = None,
+    on_title_set: Optional[TitleSetCallback] = None,
 ) -> None:
     """Generate and set a session title if one doesn't already exist.
 
@@ -98,6 +104,11 @@ def auto_title_session(
     - session_db is None
     - session already has a title (user-set or previously auto-generated)
     - title generation fails
+
+    When *on_title_set* is provided and a title is successfully persisted,
+    it is invoked with the new title.  Used by platform adapters to push
+    the title to e.g. a Telegram forum topic name.  Exceptions raised by
+    the callback are swallowed — title sync is best-effort UX.
     """
     if not session_db or not session_id:
         return
@@ -121,6 +132,13 @@ def auto_title_session(
         logger.debug("Auto-generated session title: %s", title)
     except Exception as e:
         logger.debug("Failed to set auto-generated title: %s", e)
+        return
+
+    if on_title_set is not None:
+        try:
+            on_title_set(title)
+        except Exception:
+            logger.debug("on_title_set callback raised", exc_info=True)
 
 
 def maybe_auto_title(
@@ -131,6 +149,7 @@ def maybe_auto_title(
     conversation_history: list,
     failure_callback: Optional[FailureCallback] = None,
     main_runtime: dict = None,
+    on_title_set: Optional[TitleSetCallback] = None,
 ) -> None:
     """Fire-and-forget title generation after the first exchange.
 
@@ -152,7 +171,11 @@ def maybe_auto_title(
     thread = threading.Thread(
         target=auto_title_session,
         args=(session_db, session_id, user_message, assistant_response),
-        kwargs={"failure_callback": failure_callback, "main_runtime": main_runtime},
+        kwargs={
+            "failure_callback": failure_callback,
+            "main_runtime": main_runtime,
+            "on_title_set": on_title_set,
+        },
         daemon=True,
         name="auto-title",
     )

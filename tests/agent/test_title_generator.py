@@ -182,7 +182,8 @@ class TestMaybeAutoTitle:
             import time
             time.sleep(0.3)
             mock_auto.assert_called_once_with(
-                db, "sess-1", "hello", "hi there", failure_callback=None, main_runtime=None
+                db, "sess-1", "hello", "hi there",
+                failure_callback=None, main_runtime=None, on_title_set=None,
             )
 
     def test_forwards_failure_callback_to_worker(self):
@@ -202,7 +203,8 @@ class TestMaybeAutoTitle:
             import time
             time.sleep(0.3)
             mock_auto.assert_called_once_with(
-                db, "sess-1", "hello", "hi there", failure_callback=_cb, main_runtime=None
+                db, "sess-1", "hello", "hi there",
+                failure_callback=_cb, main_runtime=None, on_title_set=None,
             )
 
     def test_skips_if_no_response(self):
@@ -211,3 +213,77 @@ class TestMaybeAutoTitle:
 
     def test_skips_if_no_session_db(self):
         maybe_auto_title(None, "sess-1", "hello", "response", [])  # no db
+
+
+class TestOnTitleSetCallback:
+    """``on_title_set`` callback fires after the title is persisted (#16255)."""
+
+    def test_callback_invoked_with_new_title(self):
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        captured = []
+
+        with patch("agent.title_generator.generate_title", return_value="Fresh Title"):
+            auto_title_session(
+                db, "sess-1", "hi", "hello",
+                on_title_set=lambda t: captured.append(t),
+            )
+
+        assert captured == ["Fresh Title"]
+        db.set_session_title.assert_called_once_with("sess-1", "Fresh Title")
+
+    def test_callback_skipped_when_title_already_exists(self):
+        db = MagicMock()
+        db.get_session_title.return_value = "Pre-existing"
+        captured = []
+
+        with patch("agent.title_generator.generate_title", return_value="ignored"):
+            auto_title_session(
+                db, "sess-1", "hi", "hello",
+                on_title_set=lambda t: captured.append(t),
+            )
+
+        assert captured == []
+
+    def test_callback_skipped_when_generation_returns_none(self):
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        captured = []
+
+        with patch("agent.title_generator.generate_title", return_value=None):
+            auto_title_session(
+                db, "sess-1", "hi", "hello",
+                on_title_set=lambda t: captured.append(t),
+            )
+
+        assert captured == []
+        db.set_session_title.assert_not_called()
+
+    def test_callback_skipped_when_persist_fails(self):
+        """If set_session_title raises, the platform sync must not fire either."""
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        db.set_session_title.side_effect = RuntimeError("disk full")
+        captured = []
+
+        with patch("agent.title_generator.generate_title", return_value="x"):
+            auto_title_session(
+                db, "sess-1", "hi", "hello",
+                on_title_set=lambda t: captured.append(t),
+            )
+
+        assert captured == []
+
+    def test_callback_exceptions_are_swallowed(self):
+        """Title sync is best-effort; a raising callback must not crash the worker."""
+        db = MagicMock()
+        db.get_session_title.return_value = None
+
+        def _bad(_title):
+            raise RuntimeError("editForumTopic 400")
+
+        with patch("agent.title_generator.generate_title", return_value="x"):
+            # Should not propagate.
+            auto_title_session(db, "sess-1", "hi", "hello", on_title_set=_bad)
+
+        db.set_session_title.assert_called_once()

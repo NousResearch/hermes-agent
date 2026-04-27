@@ -7706,6 +7706,65 @@ class GatewayRunner:
             logger.warning("Manual compress failed: %s", e)
             return f"Compression failed: {e}"
 
+    async def _sync_topic_title_to_platform(
+        self,
+        source: SessionSource,
+        title: str,
+    ) -> None:
+        """Push *title* to the source platform's per-topic UI when supported.
+
+        For Telegram forum topics this calls ``editForumTopic`` so the topic
+        list shows the same title that appears in ``/history``.  Other
+        platforms inherit the no-op base implementation.  Errors are logged
+        and swallowed — best-effort UX, never load-bearing.  Issue #16255.
+        """
+        if not source or not source.platform or not source.thread_id:
+            return
+        adapter = self.adapters.get(source.platform)
+        if adapter is None:
+            return
+        try:
+            await adapter.update_topic_title(
+                chat_id=str(source.chat_id),
+                thread_id=str(source.thread_id),
+                title=title,
+            )
+        except Exception as exc:
+            logger.debug(
+                "update_topic_title failed for %s/%s: %s",
+                source.platform.value if source.platform else "?",
+                source.chat_id, exc,
+            )
+
+    def _make_topic_title_sync_callback(
+        self,
+        source: SessionSource,
+        loop: "asyncio.AbstractEventLoop",
+    ):
+        """Return an ``on_title_set`` callback that pushes a freshly-generated
+        title to the source platform's topic UI from a background thread.
+
+        ``maybe_auto_title`` runs in a daemon thread, so we hop back to the
+        gateway event loop via ``run_coroutine_threadsafe``.  Returns
+        ``None`` when the source has no thread_id (nothing to update) so
+        ``maybe_auto_title`` can skip the indirection.
+        """
+        if not source or not source.platform or not source.thread_id:
+            return None
+        if loop is None:
+            return None
+
+        def _sync(title: str) -> None:
+            try:
+                asyncio.run_coroutine_threadsafe(
+                    self._sync_topic_title_to_platform(source, title),
+                    loop,
+                )
+            except Exception:
+                logger.debug("topic title sync schedule failed", exc_info=True)
+
+        return _sync
+
     async def _handle_title_command(self, event: MessageEvent) -> str:
         """Handle /title command — set or show the current session's title."""
         source = event.source
@@ -7741,6 +7800,9 @@ class GatewayRunner:
             # Set the title
             try:
                 if self._session_db.set_session_title(session_id, sanitized):
+                    # Push the new title to the platform's topic UI
+                    # (Telegram forum topic name, etc.). Issue #16255.
+                    await self._sync_topic_title_to_platform(source, sanitized)
                     return f"✏️ Session title set: **{sanitized}**"
                 else:
                     return "Session not found in database."
@@ -11083,6 +11145,12 @@ class GatewayRunner:
                     _title_failure_cb = getattr(
                         agent, "_emit_auxiliary_failure", None
                     )
+                    # Push the new title to the platform's topic UI
+                    # (Telegram forum topic name, etc.) so the topic list
+                    # stays in sync with what /history shows. Issue #16255.
+                    _title_set_cb = self._make_topic_title_sync_callback(
+                        source, _loop_for_step,
+                    )
                     maybe_auto_title(
                         self._session_db,
                         effective_session_id,
@@ -11097,6 +11165,7 @@ class GatewayRunner:
                             "api_key": getattr(agent, "api_key", None),
                             "api_mode": getattr(agent, "api_mode", None),
                         } if agent else None,
+                        on_title_set=_title_set_cb,
                     )
                 except Exception:
                     pass

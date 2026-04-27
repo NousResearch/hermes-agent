@@ -570,6 +570,7 @@ AUTHOR_MAP = {
     "shamork@outlook.com": "shamork",
     # April 2026 Discord Copilot /model salvage (#15030)
     "cshong2017@outlook.com": "Nicecsh",
+    "sky.cool.ezreal@gmail.com": "cola-runner",
     # no-github-match — keep as display names
     "clio-agent@sisyphuslabs.ai": "Sisyphus",
     "marco@rutimka.de": "Marco Rutsch",

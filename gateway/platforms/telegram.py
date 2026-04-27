@@ -591,6 +591,77 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return None
 
+    # Telegram limits forum topic names to 128 characters (Bot API 6.4+).
+    _FORUM_TOPIC_NAME_MAX = 128
+
+    async def update_topic_title(
+        self,
+        chat_id: str,
+        thread_id: Optional[str],
+        title: str,
+    ) -> None:
+        """Push *title* to the Telegram forum topic at ``chat_id``/``thread_id``.
+
+        No-ops when the bot isn't connected, when ``thread_id`` is missing
+        or refers to the implicit "General" topic, or when ``title`` is
+        empty.  Errors are logged at DEBUG and never propagate — title
+        sync is best-effort UX, not load-bearing.
+
+        Issue #16255.
+        """
+        if not self._bot or not thread_id:
+            return
+        if str(thread_id) == self._GENERAL_TOPIC_THREAD_ID:
+            # The General topic name is owned by the chat itself, not the
+            # bot — editForumTopic only applies to bot-created topics.
+            return
+        clean = (title or "").strip()
+        if not clean:
+            return
+        if len(clean) > self._FORUM_TOPIC_NAME_MAX:
+            clean = clean[: self._FORUM_TOPIC_NAME_MAX]
+
+        try:
+            tid = int(thread_id)
+        except (TypeError, ValueError):
+            logger.debug(
+                "[%s] update_topic_title: non-numeric thread_id %r", self.name, thread_id,
+            )
+            return
+
+        try:
+            cid = int(chat_id)
+        except (TypeError, ValueError):
+            cid = chat_id  # Telegram accepts @channel-style ids too
+
+        try:
+            await self._bot.edit_forum_topic(
+                chat_id=cid,
+                message_thread_id=tid,
+                name=clean,
+            )
+        except Exception as e:
+            logger.debug(
+                "[%s] Failed to edit forum topic %s/%s: %s",
+                self.name, cid, tid, e,
+            )
+            return
+
+        # Keep the cache aligned so /resume-style lookups by name find the
+        # renamed topic.  Walk the dict because we don't always know the
+        # old name here (auto-titles update an existing topic).
+        old_name = None
+        for cached_name, cached_tid in list(self._dm_topics.items()):
+            if cached_tid == tid:
+                old_name = cached_name
+                break
+        if old_name is not None and old_name != clean:
+            self._dm_topics.pop(old_name, None)
+            self._dm_topics[clean] = tid
+        elif old_name is None:
+            # Not previously cached (e.g. created by another process); add it.
+            self._dm_topics[clean] = tid
+
     def _persist_dm_topic_thread_id(self, chat_id: int, topic_name: str, thread_id: int) -> None:
         """Save a newly created thread_id back into config.yaml so it persists across restarts."""
         try:

@@ -180,7 +180,7 @@ class TestRunAsyncWorkerThread:
 
 
 class TestRunAsyncWithRunningLoop:
-    """When a loop is already running, _run_async falls back to a thread."""
+    """When a loop is already running, _run_async uses the bridge loop."""
 
     @pytest.mark.asyncio
     async def test_run_async_from_async_context(self):
@@ -191,29 +191,19 @@ class TestRunAsyncWithRunningLoop:
         async def _simple():
             return 42
 
-        result = await asyncio.get_event_loop().run_in_executor(
-            None, _run_async, _simple()
-        )
+        result = _run_async(_simple())
         assert result == 42
 
     @pytest.mark.asyncio
-    async def test_timeout_uses_nonblocking_executor_shutdown(self, monkeypatch):
-        """A timeout in the running-loop branch must not block the caller.
-
-        If shutdown ever waits for a stuck worker, a tool coroutine that
-        ignores (or can't observe) cancellation would hang the whole agent.
-        Guard: the caller must raise TimeoutError and pool.shutdown must be
-        called with wait=False. The worker's own event loop handles cleanup
-        (cancellation is scheduled via call_soon_threadsafe before the
-        caller returns).
-        """
+    async def test_timeout_cancels_bridge_future(self, monkeypatch):
+        """A timeout in the running-loop branch should cancel the bridge task."""
         import concurrent.futures
+        import model_tools
         from model_tools import _run_async
 
         events = {
+            "cancelled": False,
             "result_timeout": None,
-            "shutdown_calls": [],
-            "submitted_fn": None,
         }
 
         class TimeoutFuture:
@@ -222,81 +212,36 @@ class TestRunAsyncWithRunningLoop:
                 raise concurrent.futures.TimeoutError()
 
             def cancel(self):
+                events["cancelled"] = True
                 return True
-
-        class FakeExecutor:
-            def __init__(self, *args, **kwargs):
-                pass
-
-            def __enter__(self):
-                return self
-
-            def __exit__(self, exc_type, exc, tb):
-                self.shutdown(wait=True)
-                return False
-
-            def submit(self, fn, *args, **kwargs):
-                # Record which function got submitted -- should be the
-                # in-function worker wrapper, not bare asyncio.run, so we
-                # know _run_async is using a loop it owns and can cancel.
-                events["submitted_fn"] = getattr(fn, "__name__", repr(fn))
-                return TimeoutFuture()
-
-            def shutdown(self, wait=True, cancel_futures=False):
-                events["shutdown_calls"].append((wait, cancel_futures))
 
         async def _never_finishes():
             await asyncio.sleep(999)
 
-        monkeypatch.setattr(
-            concurrent.futures,
-            "ThreadPoolExecutor",
-            FakeExecutor,
-        )
+        dummy_loop = object()
+
+        def fake_run_coroutine_threadsafe(coro, loop):
+            assert loop is dummy_loop
+            coro.close()
+            return TimeoutFuture()
+
+        monkeypatch.setattr(model_tools, "_get_async_bridge_loop", lambda: dummy_loop)
+        monkeypatch.setattr(asyncio, "run_coroutine_threadsafe", fake_run_coroutine_threadsafe)
 
         with pytest.raises(concurrent.futures.TimeoutError):
             _run_async(_never_finishes())
 
         assert events["result_timeout"] == 300
-        # The worker wrapper creates its own event loop so _run_async can
-        # cancel the task on timeout — this must NOT be bare asyncio.run.
-        assert events["submitted_fn"] != "run", (
-            "_run_async submitted asyncio.run directly — it must submit a "
-            "worker wrapper that owns the event loop so timeouts can cancel "
-            "the task"
-        )
-        # Critical: shutdown must NOT wait. If wait=True, a stuck coroutine
-        # would freeze the caller (converts a thread leak into a hang).
-        assert events["shutdown_calls"], "shutdown was never called"
-        for wait, _cancel in events["shutdown_calls"]:
-            assert wait is False, (
-                f"shutdown called with wait={wait} — a stuck tool coroutine "
-                f"would hang the caller indefinitely"
-            )
+        assert events["cancelled"] is True
 
     @pytest.mark.asyncio
-    async def test_timeout_cancels_coroutine_in_worker_loop(self, monkeypatch):
-        """On timeout, the worker's event loop must receive a cancel request
-        so the coroutine stops and the thread exits — not leaked.
+    async def test_timeout_cancels_coroutine_in_bridge_loop(self, monkeypatch):
+        """On timeout, the bridge loop task must receive cancellation."""
+        from model_tools import _run_async, shutdown_async_bridge_loop
 
-        Before the fix, future.cancel() on a running ThreadPoolExecutor
-        future is a no-op, so the worker thread kept running the coroutine
-        to completion (leaking one thread per tool-timeout).
-        """
-        from model_tools import _run_async
-
-        # Shrink the 300s internal timeout by patching future.result.
-        # We do this surgically: let everything else run for real so the
-        # worker loop actually exists and can observe cancellation.
         import concurrent.futures as _cf
+        import time as _time
 
-        real_pool_cls = _cf.ThreadPoolExecutor
-
-        class FastTimeoutPool(real_pool_cls):
-            def __init__(self, *a, **kw):
-                super().__init__(*a, **kw)
-
-        # Patch future.result to time out after 1s instead of 300s.
         real_result = _cf.Future.result
 
         def fast_result(self, timeout=None):
@@ -313,27 +258,101 @@ class TestRunAsyncWithRunningLoop:
                 cancel_observed.set()
                 raise
 
-        import time as _time
         t0 = _time.time()
-        with pytest.raises(_cf.TimeoutError):
-            _run_async(_slow_cancellable())
-        elapsed = _time.time() - t0
+        try:
+            with pytest.raises(_cf.TimeoutError):
+                _run_async(_slow_cancellable())
+            elapsed = _time.time() - t0
 
-        # Caller must return fast (no hang waiting for the coro).
-        assert elapsed < 3.0, (
-            f"_run_async blocked caller for {elapsed:.1f}s — should return "
-            f"on timeout regardless of whether the coroutine has finished"
+            assert elapsed < 3.0, (
+                f"_run_async blocked caller for {elapsed:.1f}s — should return "
+                f"on timeout regardless of whether the coroutine has finished"
+            )
+
+            deadline = _time.time() + 5
+            while not cancel_observed.is_set() and _time.time() < deadline:
+                _time.sleep(0.05)
+            assert cancel_observed.is_set(), (
+                "Coroutine never received CancelledError — the bridge task "
+                "must be cancelled when future.result(timeout=...) expires"
+            )
+        finally:
+            shutdown_async_bridge_loop()
+
+    @pytest.mark.asyncio
+    async def test_async_context_reuses_persistent_bridge_loop(self):
+        """Direct calls from an already-running loop should reuse one bridge loop."""
+        from model_tools import _run_async
+
+        loop1 = _run_async(_get_current_loop())
+        loop2 = _run_async(_get_current_loop())
+
+        assert loop1 is loop2, (
+            "_run_async() created a new bridge loop for the second async-context "
+            "call — cached async clients will accumulate across gateway turns"
+        )
+        assert not loop1.is_closed(), (
+            "The async-context bridge loop was closed after returning — cached "
+            "async clients become orphaned and leak descriptors in gateway mode"
         )
 
-        # Worker thread must cancel the task (not leak).
-        deadline = _time.time() + 5
-        while not cancel_observed.is_set() and _time.time() < deadline:
-            _time.sleep(0.05)
-        assert cancel_observed.is_set(), (
-            "Coroutine never received CancelledError — worker thread leaked "
-            "(ThreadPoolExecutor.cancel() is a no-op on a running future; "
-            "_run_async must cancel the task inside its worker loop)"
-        )
+    def test_bridge_loop_startup_failure_closes_and_resets(self, monkeypatch):
+        """A failed bridge-thread startup should not publish a dead loop."""
+        import model_tools
+
+        class NeverReadyEvent:
+            def set(self):
+                pass
+
+            def wait(self, timeout=None):
+                return False
+
+        class NeverStartedThread:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def start(self):
+                pass
+
+            def is_alive(self):
+                return False
+
+        created_loops = []
+        original_new_event_loop = asyncio.new_event_loop
+
+        def fake_new_event_loop():
+            loop = original_new_event_loop()
+            created_loops.append(loop)
+            return loop
+
+        model_tools.shutdown_async_bridge_loop()
+        monkeypatch.setattr(model_tools, "_async_bridge_loop", None)
+        monkeypatch.setattr(model_tools, "_async_bridge_thread", None)
+        monkeypatch.setattr(threading, "Event", NeverReadyEvent)
+        monkeypatch.setattr(threading, "Thread", NeverStartedThread)
+        monkeypatch.setattr(asyncio, "new_event_loop", fake_new_event_loop)
+
+        with pytest.raises(RuntimeError, match="async bridge loop"):
+            model_tools._get_async_bridge_loop()
+
+        assert model_tools._async_bridge_loop is None
+        assert model_tools._async_bridge_thread is None
+        assert created_loops and created_loops[0].is_closed()
+
+    def test_shutdown_async_bridge_loop_stops_thread_and_closes_loop(self):
+        """The process cleanup path should stop and close the bridge loop."""
+        import model_tools
+
+        loop = model_tools._get_async_bridge_loop()
+        thread = model_tools._async_bridge_thread
+        assert thread is not None and thread.is_alive()
+
+        model_tools.shutdown_async_bridge_loop()
+
+        assert model_tools._async_bridge_loop is None
+        assert model_tools._async_bridge_thread is None
+        assert loop.is_closed()
+        assert not thread.is_alive()
 
 
 # ---------------------------------------------------------------------------

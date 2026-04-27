@@ -40,12 +40,15 @@ _WARNED_DISABLED_BUNDLES: set = set()
 
 
 # =============================================================================
-# Async Bridging  (single source of truth -- used by registry.dispatch too)
+# Async Bridging  (used by registry.dispatch for is_async=True tools)
 # =============================================================================
 
 _tool_loop = None          # persistent loop for the main (CLI) thread
 _tool_loop_lock = threading.Lock()
 _worker_thread_local = threading.local()  # per-worker-thread persistent loops
+_async_bridge_loop = None
+_async_bridge_thread = None
+_async_bridge_lock = threading.Lock()
 
 
 def _get_tool_loop():
@@ -85,13 +88,123 @@ def _get_worker_loop():
     return loop
 
 
+def _run_bridge_loop(loop: asyncio.AbstractEventLoop, ready: threading.Event) -> None:
+    """Run the async-context bridge loop forever on its dedicated thread."""
+    asyncio.set_event_loop(loop)
+    ready.set()
+    loop.run_forever()
+
+
+async def _shutdown_bridge_loop_tasks() -> None:
+    """Cancel pending bridge-loop tasks before the loop is stopped."""
+    current = asyncio.current_task()
+    pending = [
+        task
+        for task in asyncio.all_tasks()
+        if task is not current and not task.done()
+    ]
+    for task in pending:
+        task.cancel()
+    if pending:
+        await asyncio.gather(*pending, return_exceptions=True)
+    await asyncio.get_running_loop().shutdown_asyncgens()
+
+
+def shutdown_async_bridge_loop(timeout: float = 5.0) -> None:
+    """Stop and close the dedicated async-context bridge loop, if it exists."""
+    global _async_bridge_loop, _async_bridge_thread
+
+    with _async_bridge_lock:
+        loop = _async_bridge_loop
+        thread = _async_bridge_thread
+        _async_bridge_loop = None
+        _async_bridge_thread = None
+
+    if loop is None or loop.is_closed():
+        return
+
+    if thread is not None and thread is threading.current_thread():
+        logger.debug("Skipping synchronous async bridge shutdown from bridge thread")
+        loop.call_soon(loop.stop)
+        return
+
+    if thread is not None and thread.is_alive():
+        try:
+            future = asyncio.run_coroutine_threadsafe(_shutdown_bridge_loop_tasks(), loop)
+            future.result(timeout=timeout)
+        except Exception as exc:
+            logger.debug("Async bridge task cleanup failed: %s", exc)
+        try:
+            loop.call_soon_threadsafe(loop.stop)
+        except RuntimeError as exc:
+            logger.debug("Async bridge stop failed: %s", exc)
+        thread.join(timeout=timeout)
+
+    if thread is not None and thread.is_alive():
+        logger.warning("Async bridge loop thread did not stop within %.1fs", timeout)
+        return
+
+    try:
+        loop.close()
+    except RuntimeError as exc:
+        logger.debug("Async bridge loop close failed: %s", exc)
+
+
+def _get_async_bridge_loop():
+    """Return a persistent loop for callers already inside a running loop.
+
+    Gateway mode hits ``_run_async()`` from inside an active asyncio loop.
+    Spawning ``asyncio.run()`` in a throwaway worker thread per call creates a
+    fresh loop every time, which strands cached AsyncOpenAI/httpx clients on
+    dead loops and leaks descriptors over a long-lived gateway process.
+
+    Instead, reuse one dedicated background loop and submit coroutines to it via
+    ``asyncio.run_coroutine_threadsafe()``. This keeps async clients bound to a
+    stable loop and prevents per-call loop churn.
+    """
+    global _async_bridge_loop, _async_bridge_thread
+
+    with _async_bridge_lock:
+        loop = _async_bridge_loop
+        thread = _async_bridge_thread
+        if loop is not None and not loop.is_closed() and thread is not None and thread.is_alive():
+            return loop
+        if loop is not None and not loop.is_closed():
+            loop.close()
+
+        loop = asyncio.new_event_loop()
+        ready = threading.Event()
+        thread = threading.Thread(
+            target=_run_bridge_loop,
+            args=(loop, ready),
+            daemon=True,
+            name="model-tools-async-bridge",
+        )
+        thread.start()
+        ready_started = ready.wait(timeout=5)
+        if not ready_started or not thread.is_alive():
+            if thread.is_alive():
+                try:
+                    loop.call_soon_threadsafe(loop.stop)
+                except RuntimeError:
+                    pass
+                thread.join(timeout=1)
+            if not thread.is_alive() and not loop.is_closed():
+                loop.close()
+            _async_bridge_loop = None
+            _async_bridge_thread = None
+            raise RuntimeError("Failed to start model_tools async bridge loop")
+        _async_bridge_loop = loop
+        _async_bridge_thread = thread
+        return loop
+
+
 def _run_async(coro):
     """Run an async coroutine from a sync context.
 
     If the current thread already has a running event loop (e.g., inside
-    the gateway's async stack or Atropos's event loop), we spin up a
-    disposable thread so asyncio.run() can create its own loop without
-    conflicting.
+    the gateway's async stack or Atropos's event loop), we submit the work
+    to a dedicated long-lived background loop.
 
     For the common CLI path (no running loop), we use a persistent event
     loop so that cached async clients (httpx / AsyncOpenAI) remain bound
@@ -102,8 +215,12 @@ def _run_async(coro):
     thread's shared loop AND the "Event loop is closed" errors caused by
     asyncio.run()'s create-and-destroy lifecycle.
 
-    This is the single source of truth for sync->async bridging in tool
-    handlers. Each handler is self-protecting via this function.
+    This bridge is used by registry.dispatch for handlers registered with
+    is_async=True. Some sync tool modules keep local bridges when they expose
+    synchronous handlers around async internals. The RL paths (agent_loop.py,
+    tool_context.py) also provide outer thread-pool wrapping as
+    defense-in-depth, but each registry-dispatched async handler is
+    self-protecting via this function.
     """
     try:
         loop = asyncio.get_running_loop()
@@ -111,62 +228,13 @@ def _run_async(coro):
         loop = None
 
     if loop and loop.is_running():
-        # Inside an async context (gateway, RL env) — run in a fresh thread
-        # with its own event loop we own a reference to, so on timeout we
-        # can cancel the task inside that loop (ThreadPoolExecutor.cancel()
-        # only works on not-yet-started futures — it's a no-op on a running
-        # worker, which previously leaked the thread on every 300 s timeout).
-        import concurrent.futures
-
-        worker_loop: Optional[asyncio.AbstractEventLoop] = None
-        loop_ready = threading.Event()
-
-        def _run_in_worker():
-            nonlocal worker_loop
-            worker_loop = asyncio.new_event_loop()
-            loop_ready.set()
-            try:
-                asyncio.set_event_loop(worker_loop)
-                return worker_loop.run_until_complete(coro)
-            finally:
-                try:
-                    # Cancel anything still pending (e.g. task cancelled
-                    # externally via call_soon_threadsafe on timeout).
-                    pending = asyncio.all_tasks(worker_loop)
-                    for t in pending:
-                        t.cancel()
-                    if pending:
-                        worker_loop.run_until_complete(
-                            asyncio.gather(*pending, return_exceptions=True)
-                        )
-                except Exception:
-                    pass
-                worker_loop.close()
-
-        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        # Carry the active profile + approval/sudo callbacks into the worker so
-        # async tools resolve get_hermes_home() under the active profile.
-        from tools.thread_context import propagate_context_to_thread
-
-        future = pool.submit(propagate_context_to_thread(_run_in_worker))
+        bridge_loop = _get_async_bridge_loop()
+        future = asyncio.run_coroutine_threadsafe(coro, bridge_loop)
         try:
             return future.result(timeout=300)
-        except concurrent.futures.TimeoutError:
-            # Cancel the coroutine inside its own loop so the worker thread
-            # can wind down instead of running forever.
-            if loop_ready.wait(timeout=1.0) and worker_loop is not None:
-                try:
-                    for t in asyncio.all_tasks(worker_loop):
-                        worker_loop.call_soon_threadsafe(t.cancel)
-                except RuntimeError:
-                    # Loop already closed — nothing to cancel.
-                    pass
+        except TimeoutError:
+            future.cancel()
             raise
-        finally:
-            # wait=False: don't block the caller on a stuck coroutine. We've
-            # already requested cancellation above; the worker will exit
-            # once the coroutine observes it (usually at the next await).
-            pool.shutdown(wait=False)
 
     # If we're on a worker thread (e.g., parallel tool execution in
     # delegate_task), use a per-thread persistent loop.  This avoids

@@ -1,4 +1,4 @@
-import { useInput } from '@hermes/ink'
+import { forceRedraw, useInput } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { useEffect, useRef } from 'react'
 
@@ -18,7 +18,7 @@ import type { InputHandlerContext, InputHandlerResult } from './interfaces.js'
 import { $isBlocked, $overlayState, patchOverlayState } from './overlayStore.js'
 import { turnController } from './turnController.js'
 import { patchTurnState } from './turnStore.js'
-import { getUiState, patchUiState } from './uiStore.js'
+import { getUiState } from './uiStore.js'
 
 const isCtrl = (key: { ctrl: boolean }, ch: string, target: string) => key.ctrl && ch.toLowerCase() === target
 
@@ -307,6 +307,13 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       return scrollTranscript(key.pageUp ? -step : step)
     }
 
+    // Queue-edit cancel beats selection-clear: the queue header explicitly
+    // promises "Esc cancel", so honoring it takes priority over the implicit
+    // selection-dismissal convention. Without an active edit, fall through.
+    if (key.escape && cState.queueEditIdx !== null) {
+      return cActions.clearIn()
+    }
+
     if (key.escape && terminal.hasSelection) {
       return clearSelection()
     }
@@ -357,6 +364,11 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
       }
     }
 
+    if (isCtrl(key, ch, 'x') && cState.queueEditIdx !== null) {
+      cActions.removeQueue(cState.queueEditIdx)
+      return cActions.clearIn()
+    }
+
     if (key.ctrl && ch.toLowerCase() === 'c') {
       if (live.busy && live.sid) {
         return turnController.interruptTurn({
@@ -379,13 +391,9 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (isAction(key, ch, 'l')) {
-      if (actions.guardBusySessionSwitch()) {
-        return
-      }
-
-      patchUiState({ status: 'forging session…' })
-
-      return actions.newSession()
+      clearSelection()
+      forceRedraw(terminal.stdout ?? process.stdout)
+      return
     }
 
     if (isVoiceToggleKey(key, ch)) {

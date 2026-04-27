@@ -42,6 +42,14 @@ export function useCompletion(input: string, blocked: boolean, gw: GatewayClient
       return
     }
 
+    // `/model` / `/provider` use the two-step ModelPicker (real curated IDs).
+    // Slash completion here only showed short aliases + vendor/family meta.
+    if (isSlash && /^\/(?:model|provider)(?:\s|$)/.test(input)) {
+      clear()
+
+      return
+    }
+
     const pathReplace = input.length - (pathWord?.length ?? 0)
 
     const t = setTimeout(() => {

@@ -1256,6 +1256,22 @@ OPTIONAL_ENV_VARS = {
         "category": "provider",
         "advanced": True,
     },
+    "GMI_API_KEY": {
+        "description": "GMI Cloud API key",
+        "prompt": "GMI Cloud API key",
+        "url": "https://www.gmicloud.ai/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "GMI_BASE_URL": {
+        "description": "GMI Cloud base URL override",
+        "prompt": "GMI Cloud base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
     "MINIMAX_API_KEY": {
         "description": "MiniMax API key (international)",
         "prompt": "MiniMax API key",

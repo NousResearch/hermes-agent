@@ -86,7 +86,7 @@ from tools.browser_tool import cleanup_browser
 
 
 # Agent internals extracted to agent/ package for modularity
-from agent.memory_manager import build_memory_context_block, sanitize_context
+from agent.memory_manager import StreamingContextScrubber, build_memory_context_block, sanitize_context
 from agent.retry_utils import jittered_backoff
 from agent.error_classifier import classify_api_error, FailoverReason
 from agent.prompt_builder import (
@@ -1218,6 +1218,10 @@ class AIAgent:
         # Deferred paragraph break flag — set after tool iterations so a
         # single "\n\n" is prepended to the next real text delta.
         self._stream_needs_break = False
+        # Stateful scrubber for <memory-context> spans split across stream
+        # deltas (#5719).  sanitize_context() alone can't survive chunk
+        # boundaries because the block regex needs both tags in one string.
+        self._stream_context_scrubber = StreamingContextScrubber()
         # Visible assistant text already delivered through live token callbacks
         # during the current model response. Used to avoid re-sending the same
         # commentary when the provider later returns it as a completed interim
@@ -2423,7 +2427,10 @@ class AIAgent:
         if not self.compression_enabled:
             return
         try:
-            from agent.auxiliary_client import get_text_auxiliary_client
+            from agent.auxiliary_client import (
+                _resolve_task_provider_model,
+                get_text_auxiliary_client,
+            )
             from agent.model_metadata import (
                 MINIMUM_CONTEXT_LENGTH,
                 get_model_context_length,
@@ -2433,6 +2440,14 @@ class AIAgent:
                 "compression",
                 main_runtime=self._current_main_runtime(),
             )
+            # Best-effort aux provider label for the warning message. The
+            # configured provider may be "auto", in which case we fall back
+            # to the client's base_url hostname so the user can still tell
+            # where the compression model is actually being called.
+            try:
+                _aux_cfg_provider, _, _, _, _ = _resolve_task_provider_model("compression")
+            except Exception:
+                _aux_cfg_provider = ""
             if client is None or not aux_model:
                 msg = (
                     "⚠ No auxiliary LLM provider configured — context "
@@ -2499,10 +2514,37 @@ class AIAgent:
                         new_threshold / main_ctx
                     )
                 safe_pct = int((aux_context / main_ctx) * 100) if main_ctx else 50
+                # Build human-readable "model (provider)" labels for both
+                # the main model and the compression model so users can
+                # tell at a glance which provider each side is actually
+                # using. When the configured provider is empty or "auto",
+                # fall back to the client's base_url hostname.
+                _main_model = getattr(self, "model", "") or "?"
+                _main_provider = getattr(self, "provider", "") or ""
+                _aux_provider_label = (
+                    _aux_cfg_provider
+                    if _aux_cfg_provider and _aux_cfg_provider != "auto"
+                    else ""
+                )
+                if not _aux_provider_label:
+                    try:
+                        from urllib.parse import urlparse
+                        _aux_provider_label = (
+                            urlparse(aux_base_url).hostname or aux_base_url
+                        )
+                    except Exception:
+                        _aux_provider_label = aux_base_url or "auto"
+                _main_label = (
+                    f"{_main_model} ({_main_provider})"
+                    if _main_provider
+                    else _main_model
+                )
+                _aux_label = f"{aux_model} ({_aux_provider_label})"
                 msg = (
-                    f"⚠ Compression model ({aux_model}) context is "
-                    f"{aux_context:,} tokens, but the main model's "
-                    f"compression threshold was {old_threshold:,} tokens. "
+                    f"⚠ Compression model {_aux_label} context is "
+                    f"{aux_context:,} tokens, but the main model "
+                    f"{_main_label}'s compression threshold was "
+                    f"{old_threshold:,} tokens. "
                     f"Auto-lowered this session's threshold to "
                     f"{new_threshold:,} tokens so compression can run.\n"
                     f"  To make this permanent, edit config.yaml — either:\n"
@@ -5258,7 +5300,39 @@ class AIAgent:
             logger.debug("Dead connection check error: %s", exc)
         return False
 
-    def _create_request_openai_client(self, *, reason: str) -> Any:
+    @staticmethod
+    def _api_kwargs_have_image_parts(api_kwargs: dict) -> bool:
+        """Return True when the outbound request still contains native image parts."""
+        if not isinstance(api_kwargs, dict):
+            return False
+        candidates = []
+        messages = api_kwargs.get("messages")
+        if isinstance(messages, list):
+            candidates.extend(messages)
+        # Responses API payloads use `input`; after conversion, image parts can
+        # still be present there instead of in `messages`.
+        response_input = api_kwargs.get("input")
+        if isinstance(response_input, list):
+            candidates.extend(response_input)
+
+        def _contains_image(value: Any) -> bool:
+            if isinstance(value, dict):
+                ptype = value.get("type")
+                if ptype in {"image_url", "input_image"}:
+                    return True
+                return any(_contains_image(v) for v in value.values())
+            if isinstance(value, list):
+                return any(_contains_image(v) for v in value)
+            return False
+
+        return any(_contains_image(item) for item in candidates)
+
+    def _copilot_headers_for_request(self, *, is_vision: bool) -> dict:
+        from hermes_cli.copilot_auth import copilot_request_headers
+
+        return copilot_request_headers(is_agent_turn=True, is_vision=is_vision)
+
+    def _create_request_openai_client(self, *, reason: str, api_kwargs: Optional[dict] = None) -> Any:
         from unittest.mock import Mock
 
         primary_client = self._ensure_primary_openai_client(reason=reason)
@@ -5266,6 +5340,11 @@ class AIAgent:
             return primary_client
         with self._openai_client_lock():
             request_kwargs = dict(self._client_kwargs)
+        if (
+            base_url_host_matches(str(request_kwargs.get("base_url", "")), "api.githubcopilot.com")
+            and self._api_kwargs_have_image_parts(api_kwargs or {})
+        ):
+            request_kwargs["default_headers"] = self._copilot_headers_for_request(is_vision=True)
         return self._create_openai_client(request_kwargs, reason=reason, shared=False)
 
     def _close_request_openai_client(self, client: Any, *, reason: str) -> None:
@@ -5808,7 +5887,10 @@ class AIAgent:
         def _call():
             try:
                 if self.api_mode == "codex_responses":
-                    request_client_holder["client"] = self._create_request_openai_client(reason="codex_stream_request")
+                    request_client_holder["client"] = self._create_request_openai_client(
+                        reason="codex_stream_request",
+                        api_kwargs=api_kwargs,
+                    )
                     result["response"] = self._run_codex_stream(
                         api_kwargs,
                         client=request_client_holder["client"],
@@ -5840,7 +5922,10 @@ class AIAgent:
                         raise
                     result["response"] = normalize_converse_response(raw_response)
                 else:
-                    request_client_holder["client"] = self._create_request_openai_client(reason="chat_completion_request")
+                    request_client_holder["client"] = self._create_request_openai_client(
+                        reason="chat_completion_request",
+                        api_kwargs=api_kwargs,
+                    )
                     result["response"] = request_client_holder["client"].chat.completions.create(**api_kwargs)
             except Exception as e:
                 result["error"] = e
@@ -5938,6 +6023,20 @@ class AIAgent:
 
     def _reset_stream_delivery_tracking(self) -> None:
         """Reset tracking for text delivered during the current model response."""
+        # Flush any benign partial-tag tail held by the context scrubber so it
+        # reaches the UI before we clear state for the next model call.  If
+        # the scrubber is mid-span, flush() drops the orphaned content.
+        scrubber = getattr(self, "_stream_context_scrubber", None)
+        if scrubber is not None:
+            tail = scrubber.flush()
+            if tail:
+                callbacks = [cb for cb in (self.stream_delta_callback, self._stream_callback) if cb is not None]
+                for cb in callbacks:
+                    try:
+                        cb(tail)
+                    except Exception:
+                        pass
+                self._record_streamed_assistant_text(tail)
         self._current_streamed_assistant_text = ""
 
     def _record_streamed_assistant_text(self, text: str) -> None:
@@ -5988,6 +6087,28 @@ class AIAgent:
         if getattr(self, "_stream_needs_break", False) and text and text.strip():
             self._stream_needs_break = False
             text = "\n\n" + text
+            prepended_break = True
+        else:
+            prepended_break = False
+        if isinstance(text, str):
+            # Strip <think> blocks first (per-delta is safe for closed pairs; the
+            # unterminated-tag path is handled downstream by stream_consumer).
+            # Then feed through the stateful context scrubber so memory-context
+            # spans split across chunks cannot leak to the UI (#5719).
+            text = self._strip_think_blocks(text or "")
+            scrubber = getattr(self, "_stream_context_scrubber", None)
+            if scrubber is not None:
+                text = scrubber.feed(text)
+            else:
+                # Defensive: legacy callers without the scrubber attribute.
+                text = sanitize_context(text)
+            # Only strip leading newlines on the first delta — mid-stream "\n" is legitimate markdown.
+            if not prepended_break and not getattr(
+                self, "_current_streamed_assistant_text", ""
+            ):
+                text = text.lstrip("\n")
+        if not text:
+            return
         callbacks = [cb for cb in (self.stream_delta_callback, self._stream_callback) if cb is not None]
         delivered = False
         for cb in callbacks:
@@ -6183,7 +6304,8 @@ class AIAgent:
                 ),
             }
             request_client_holder["client"] = self._create_request_openai_client(
-                reason="chat_completion_stream_request"
+                reason="chat_completion_stream_request",
+                api_kwargs=stream_kwargs,
             )
             # Reset stale-stream timer so the detector measures from this
             # attempt's start, not a previous attempt's last chunk.
@@ -9510,16 +9632,6 @@ class AIAgent:
         if isinstance(persist_user_message, str):
             persist_user_message = _sanitize_surrogates(persist_user_message)
 
-        # Strip leaked <memory-context> blocks from user input.  When Honcho's
-        # saveMessages persists a turn that included injected context, the block
-        # can reappear in the next turn's user message via message history.
-        # Stripping here prevents stale memory tags from leaking into the
-        # conversation and being visible to the user or the model as user text.
-        if isinstance(user_message, str):
-            user_message = sanitize_context(user_message)
-        if isinstance(persist_user_message, str):
-            persist_user_message = sanitize_context(persist_user_message)
-
         # Store stream callback for _interruptible_api_call to pick up
         self._stream_callback = stream_callback
         self._persist_user_message_idx = None
@@ -9597,6 +9709,13 @@ class AIAgent:
         
         # Track user turns for memory flush and periodic nudge logic
         self._user_turn_count += 1
+
+        # Reset the streaming context scrubber at the top of each turn so a
+        # hung span from a prior interrupted stream can't taint this turn's
+        # output.
+        scrubber = getattr(self, "_stream_context_scrubber", None)
+        if scrubber is not None:
+            scrubber.reset()
 
         # Preserve the original user message (no nudge injection).
         original_user_message = persist_user_message if persist_user_message is not None else user_message
@@ -12629,7 +12748,6 @@ class AIAgent:
                         truncated_response_prefix = ""
                         length_continue_retries = 0
                     
-                    # Strip <think> blocks from user-facing response (keep raw in messages for trajectory)
                     final_response = self._strip_think_blocks(final_response).strip()
                     
                     final_msg = self._build_assistant_message(assistant_message, finish_reason)

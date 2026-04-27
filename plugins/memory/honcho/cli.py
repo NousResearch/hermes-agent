@@ -273,9 +273,38 @@ def _write_config(cfg: dict, path: Path | None = None) -> None:
 
 
 def _resolve_api_key(cfg: dict) -> str:
-    """Resolve API key with host -> root -> env fallback."""
+    """Resolve API key with host -> root -> env fallback.
+
+    For self-hosted instances configured with ``baseUrl`` instead of an API
+    key, returns ``"local"`` so that credential guards throughout the CLI
+    don't reject a valid configuration.  The ``baseUrl`` is scheme-validated
+    (http/https only) so that a typo like ``baseUrl: true`` can't silently
+    pass the guard.  Schemeless strings that look like host:port (legacy
+    config shapes, e.g. ``localhost:8000``) still pass — the Honcho SDK
+    will reject them itself with a clearer error than ours.
+    """
     host_key = ((cfg.get("hosts") or {}).get(_host_key()) or {}).get("apiKey")
-    return host_key or cfg.get("apiKey", "") or os.environ.get("HONCHO_API_KEY", "")
+    key = host_key or cfg.get("apiKey", "") or os.environ.get("HONCHO_API_KEY", "")
+    if not key:
+        base_url = cfg.get("baseUrl") or cfg.get("base_url") or os.environ.get("HONCHO_BASE_URL", "")
+        base_url = (base_url or "").strip()
+        if base_url:
+            from urllib.parse import urlparse
+            try:
+                parsed = urlparse(base_url)
+            except (TypeError, ValueError):
+                parsed = None
+            if parsed and parsed.scheme in ("http", "https") and parsed.netloc:
+                return "local"
+            # Schemeless but looks like a host (contains '.' or ':' and isn't
+            # a boolean literal): let it through so legacy configs don't
+            # regress into "no API key configured" when they previously worked.
+            lowered = base_url.lower()
+            if lowered not in ("true", "false", "none", "null") and any(
+                c in base_url for c in ".:"
+            ) and not base_url.isdigit():
+                return "local"
+    return key
 
 
 def _prompt(label: str, default: str | None = None, secret: bool = False) -> str:

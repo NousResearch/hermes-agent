@@ -119,6 +119,12 @@ export interface SessionListResponse {
   sessions?: SessionListItem[]
 }
 
+export interface SessionTitleResponse {
+  pending?: boolean
+  session_key?: string
+  title?: string
+}
+
 export interface SessionSaveResponse {
   file?: string
 }
@@ -282,7 +288,42 @@ export interface ModelOptionsResponse {
 // ── MCP ──────────────────────────────────────────────────────────────
 
 export interface ReloadMcpResponse {
-  ok?: boolean
+  status?: string
+}
+
+export interface ProcessStopResponse {
+  killed?: number
+}
+
+export interface BrowserManageResponse {
+  connected?: boolean
+  url?: string
+}
+
+export interface RollbackCheckpoint {
+  hash: string
+  message?: string
+  timestamp?: string
+}
+
+export interface RollbackListResponse {
+  checkpoints?: RollbackCheckpoint[]
+  enabled?: boolean
+}
+
+export interface RollbackDiffResponse {
+  diff?: string
+  rendered?: string
+  stat?: string
+}
+
+export interface RollbackRestoreResponse {
+  error?: string
+  history_removed?: number
+  message?: string
+  reason?: string
+  restored_to?: string
+  success?: boolean
 }
 
 // ── Subagent events ──────────────────────────────────────────────────

@@ -56,20 +56,20 @@ class FakeDMChannel:
 
 
 class FakeTextChannel:
-    def __init__(self, channel_id: int = 1, name: str = "general", guild_name: str = "Hermes Server"):
+    def __init__(self, channel_id: int = 1, name: str = "general", guild_name: str = "Hermes Server", guild_id: int = 1):
         self.id = channel_id
         self.name = name
-        self.guild = SimpleNamespace(name=guild_name)
+        self.guild = SimpleNamespace(name=guild_name, id=guild_id)
         self.topic = None
 
 
 class FakeThread:
-    def __init__(self, channel_id: int = 1, name: str = "thread", parent=None, guild_name: str = "Hermes Server"):
+    def __init__(self, channel_id: int = 1, name: str = "thread", parent=None, guild_name: str = "Hermes Server", guild_id: int = 1):
         self.id = channel_id
         self.name = name
         self.parent = parent
         self.parent_id = getattr(parent, "id", None)
-        self.guild = getattr(parent, "guild", None) or SimpleNamespace(name=guild_name)
+        self.guild = getattr(parent, "guild", None) or SimpleNamespace(name=guild_name, id=guild_id)
         self.topic = None
 
 
@@ -97,6 +97,7 @@ def make_message(*, channel, content: str, mentions=None):
         created_at=datetime.now(timezone.utc),
         channel=channel,
         author=author,
+        guild=getattr(channel, "guild", None),
     )
 
 

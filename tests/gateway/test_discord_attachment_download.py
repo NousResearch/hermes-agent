@@ -351,6 +351,7 @@ class TestHandleMessageUsesAuthenticatedRead:
                 created_at=datetime.now(timezone.utc),
                 channel=chan,
                 author=SimpleNamespace(id=42, display_name="U", name="U"),
+                guild=None,
             )
             await adapter._handle_message(msg)
 

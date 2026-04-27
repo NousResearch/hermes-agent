@@ -340,10 +340,10 @@ export function TextInput({
     active: focus && termFocus && !selected
   })
 
-  // Hide the hardware cursor when a selection is active (prevents auto-wrap
-  // into the next row when inverted text exactly fills the column width)
-  // or when the terminal loses focus (suppresses the hollow-rect ghost
-  // most terminals draw at the parked cursor position).
+  // Hide the hardware cursor while a selection is active (prevents
+  // auto-wrap onto the next row when inverted text fills the column
+  // exactly) or when the terminal loses focus (suppresses the hollow-rect
+  // ghost most terminals draw at the parked position).
   const hideHardwareCursor = focus && !!stdout?.isTTY && (!!selected || !termFocus)
 
   useEffect(() => {
@@ -717,6 +717,14 @@ export function TextInput({
   const offsetAt = (e: { localCol?: number; localRow?: number }) =>
     offsetFromPosition(display, e.localRow ?? 0, e.localCol ?? 0, columns)
 
+  const isMultiClickAt = (offset: number) => {
+    const now = Date.now()
+    const last = lastClickRef.current
+    lastClickRef.current = { at: now, offset }
+
+    return now - last.at < MULTI_CLICK_MS && offset === last.offset
+  }
+
   if (mouseApiRef) {
     mouseApiRef.current = {
       dragAt: (row, col) => dragMouseSelection(offsetFromPosition(display, row, col, columns)),
@@ -1014,13 +1022,8 @@ export function TextInput({
 
         e.stopImmediatePropagation?.()
         const offset = offsetAt(e)
-        const now = Date.now()
-        const last = lastClickRef.current
-        const isMultiClick = now - last.at < MULTI_CLICK_MS && offset === last.offset
 
-        lastClickRef.current = { at: now, offset }
-
-        if (isMultiClick && vRef.current.length > 0) {
+        if (isMultiClickAt(offset)) {
           mouseAnchorRef.current = null
           selectAll()
 

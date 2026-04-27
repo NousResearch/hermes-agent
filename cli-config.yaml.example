@@ -606,6 +606,7 @@ platform_toolsets:
   signal: [hermes-signal]
   homeassistant: [hermes-homeassistant]
   qqbot: [hermes-qqbot]
+  yuanbao: [hermes-yuanbao]
 
 # =============================================================================
 # Gateway Platform Settings

@@ -77,7 +77,7 @@ _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "telegram", "discord", "slack", "whatsapp", "signal",
     "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
     "wecom", "wecom_callback", "weixin", "sms", "email", "webhook", "bluebubbles",
-    "qqbot",
+    "qqbot", "yuanbao",
 })
 
 # Platforms that support a configured cron/notification home target, mapped to
@@ -337,6 +337,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         "sms": Platform.SMS,
         "bluebubbles": Platform.BLUEBUBBLES,
         "qqbot": Platform.QQBOT,
+        "yuanbao": Platform.YUANBAO,
     }
 
     # Optionally wrap the content with a header/footer so the user knows this

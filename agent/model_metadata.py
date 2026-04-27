@@ -625,8 +625,6 @@ def fetch_endpoint_model_metadata(
                         if isinstance(ctx, int) and ctx > 0:
                             context_length = ctx
                             break
-                    if context_length is None:
-                        context_length = _extract_context_length(model)
                     if context_length is not None:
                         entry["context_length"] = context_length
 
@@ -1016,10 +1014,7 @@ def _query_local_context_length(model: str, base_url: str, api_key: str = "") ->
                                 ctx = cfg.get("context_length")
                                 if ctx and isinstance(ctx, (int, float)):
                                     return int(ctx)
-                            # Fall back to max_context_length (theoretical model max)
-                            ctx = m.get("max_context_length") or m.get("context_length")
-                            if ctx and isinstance(ctx, (int, float)):
-                                return int(ctx)
+                            break
 
             # LM Studio / vLLM / llama.cpp: try /v1/models/{model}
             resp = client.get(f"{server_url}/v1/models/{model}")

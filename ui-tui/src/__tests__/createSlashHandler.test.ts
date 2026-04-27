@@ -193,7 +193,6 @@ describe('createSlashHandler', () => {
   it.each([
     ['/browser status', 'browser.manage', { action: 'status' }],
     ['/reload-mcp', 'reload.mcp', { session_id: null }],
-    ['/rollback', 'rollback.list', { session_id: null }],
     ['/stop', 'process.stop', {}],
     ['/fast status', 'config.get', { key: 'fast', session_id: null }],
     ['/busy status', 'config.get', { key: 'busy' }]
@@ -203,6 +202,16 @@ describe('createSlashHandler', () => {
 
     expect(createSlashHandler(ctx)(command)).toBe(true)
     expect(rpc).toHaveBeenCalledWith(method, params)
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('routes /rollback through native RPC when a session is active', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const rpc = vi.fn(() => Promise.resolve({}))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    expect(createSlashHandler(ctx)('/rollback')).toBe(true)
+    expect(rpc).toHaveBeenCalledWith('rollback.list', { session_id: 'sid-abc' })
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
@@ -410,6 +419,16 @@ describe('createSlashHandler', () => {
 
     expect(rpc).not.toHaveBeenCalled()
     expect(ctx.transcript.sys).toHaveBeenCalledWith('no active session — nothing to save')
+  })
+
+  it('/rollback without an active session tells the user instead of hitting the RPC', () => {
+    const rpc = vi.fn(() => Promise.resolve({}))
+    const ctx = buildCtx({ gateway: { ...buildGateway(), rpc } })
+
+    createSlashHandler(ctx)('/rollback')
+
+    expect(rpc).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('no active session — nothing to rollback')
   })
 
   it('/title <name> uses session.title RPC and bypasses slash.exec', async () => {

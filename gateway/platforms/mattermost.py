@@ -179,14 +179,18 @@ class MattermostAdapter(BasePlatformAdapter):
             content_type=content_type,
         )
         headers = {"Authorization": f"Bearer {self._token}"}
-        async with self._session.post(url, headers=headers, data=form, timeout=aiohttp.ClientTimeout(total=60)) as resp:
-            if resp.status >= 400:
-                body = await resp.text()
-                logger.error("MM file upload → %s: %s", resp.status, body[:200])
-                return None
-            data = await resp.json()
-            infos = data.get("file_infos", [])
-            return infos[0]["id"] if infos else None
+        try:
+            async with self._session.post(url, headers=headers, data=form, timeout=aiohttp.ClientTimeout(total=60)) as resp:
+                if resp.status >= 400:
+                    body = await resp.text()
+                    logger.error("MM file upload → %s: %s", resp.status, body[:200])
+                    return None
+                data = await resp.json()
+                infos = data.get("file_infos", [])
+                return infos[0]["id"] if infos else None
+        except aiohttp.ClientError as exc:
+            logger.error("MM file upload network error: %s", exc)
+            return None
 
     # ------------------------------------------------------------------
     # Required overrides

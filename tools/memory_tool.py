@@ -464,20 +464,25 @@ def memory_tool(
             from hermes_cli.config import load_config as _load_cfg
             _cfg = _load_cfg()
             _mem_cfg = _cfg.get("memory", {})
-            if target == "user" and not _mem_cfg.get("user_profile_enabled", True):
+            if target == "user" and not _mem_cfg.get("user_profile_enabled", False):
                 return tool_error(
                     "Writes to 'user' target are disabled (user_profile_enabled=false). "
                     "User data is managed by an external memory provider.",
                     success=False,
                 )
-            if target == "memory" and not _mem_cfg.get("memory_enabled", True):
+            if target == "memory" and not _mem_cfg.get("memory_enabled", False):
                 return tool_error(
                     "Writes to 'memory' target are disabled (memory_enabled=false). "
                     "Memory is managed by an external provider.",
                     success=False,
                 )
-        except Exception:
-            pass  # Config unavailable — allow the write
+        except Exception as e:
+            logger.warning("memory config load failed; failing closed: %s", type(e).__name__)
+            return tool_error(
+                f"Writes to '{target}' unavailable: configuration could not be loaded. "
+                "Refusing the call to avoid writing to a shared global memory file.",
+                success=False,
+            )
 
     if action == "add":
         if not content:

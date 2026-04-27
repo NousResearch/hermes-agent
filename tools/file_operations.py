@@ -96,6 +96,22 @@ def _get_safe_write_root() -> Optional[str]:
         return None
 
 
+def _is_read_denied(path: str) -> bool:
+    """Return True if path targets a sensitive credential/key file.
+
+    Mirrors the write deny list for reads.  Without this, an agent can
+    ``read_file("~/.ssh/id_ed25519")`` and exfiltrate the key via any
+    outbound channel (web search query, tool parameter, message send).
+    """
+    resolved = os.path.realpath(os.path.expanduser(str(path)))
+    if resolved in WRITE_DENIED_PATHS:
+        return True
+    for prefix in WRITE_DENIED_PREFIXES:
+        if resolved.startswith(prefix):
+            return True
+    return False
+
+
 def _is_write_denied(path: str) -> bool:
     """Return True if path is on the write deny list."""
     resolved = os.path.realpath(os.path.expanduser(str(path)))
@@ -461,7 +477,11 @@ class ShellFileOperations(FileOperations):
         """
         # Expand ~ and other shell paths
         path = self._expand_path(path)
-        
+
+        # Block reads of sensitive credential/key files
+        if _is_read_denied(path):
+            return ReadResult(error=f"Read denied: '{path}' is a protected credential/key file.")
+
         # Clamp limit
         limit = min(limit, MAX_LINES)
         

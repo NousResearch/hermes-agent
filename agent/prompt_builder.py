@@ -554,8 +554,14 @@ def build_skills_system_prompt(
     # ── Layer 1: in-process LRU cache ─────────────────────────────────
     # Include the resolved platform so per-platform disabled-skill lists
     # produce distinct cache entries (gateway serves multiple platforms).
+    try:
+        from tools.session_context import get_platform as _ctx_get_platform
+        _ctx_platform = _ctx_get_platform()
+    except Exception:
+        _ctx_platform = None
     _platform_hint = (
         os.environ.get("HERMES_PLATFORM")
+        or _ctx_platform
         or os.environ.get("HERMES_SESSION_PLATFORM")
         or ""
     )

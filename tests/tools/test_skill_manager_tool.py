@@ -398,28 +398,112 @@ class TestRemoveFile:
 
 
 class TestSkillManageDispatcher:
+    """Dispatcher tests run with skill_manage explicitly enabled, since the
+    global config now defaults to disabled (multi-user safety)."""
+
+    def _enabled_config(self):
+        return {"skills": {"skill_manage_enabled": True}}
+
     def test_unknown_action(self, tmp_path):
-        with _skill_dir(tmp_path):
+        with _skill_dir(tmp_path), \
+             patch("hermes_cli.config.load_config", return_value=self._enabled_config()):
             raw = skill_manage(action="explode", name="test")
         result = json.loads(raw)
         assert result["success"] is False
         assert "Unknown action" in result["error"]
 
     def test_create_without_content(self, tmp_path):
-        with _skill_dir(tmp_path):
+        with _skill_dir(tmp_path), \
+             patch("hermes_cli.config.load_config", return_value=self._enabled_config()):
             raw = skill_manage(action="create", name="test")
         result = json.loads(raw)
         assert result["success"] is False
         assert "content" in result["error"].lower()
 
     def test_patch_without_old_string(self, tmp_path):
-        with _skill_dir(tmp_path):
+        with _skill_dir(tmp_path), \
+             patch("hermes_cli.config.load_config", return_value=self._enabled_config()):
             raw = skill_manage(action="patch", name="test")
         result = json.loads(raw)
         assert result["success"] is False
 
     def test_full_create_via_dispatcher(self, tmp_path):
-        with _skill_dir(tmp_path):
+        with _skill_dir(tmp_path), \
+             patch("hermes_cli.config.load_config", return_value=self._enabled_config()):
             raw = skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT)
         result = json.loads(raw)
         assert result["success"] is True
+
+
+class TestSkillManageDisabledGuard:
+    """Multi-user deployments disable skill_manage via skills.skill_manage_enabled=false.
+    The guard blocks all actions before any filesystem work."""
+
+    def _disabled_config(self):
+        return {"skills": {"skill_manage_enabled": False}}
+
+    def _enabled_config(self):
+        return {"skills": {"skill_manage_enabled": True}}
+
+    def test_disabled_blocks_create(self, tmp_path):
+        with _skill_dir(tmp_path), \
+             patch("hermes_cli.config.load_config", return_value=self._disabled_config()):
+            raw = skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT)
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "disabled" in result["error"].lower()
+        assert "save_user_skill" in result["error"]
+        # File must not have been created
+        assert not (tmp_path / "test-skill").exists()
+
+    def test_disabled_blocks_edit(self, tmp_path):
+        with _skill_dir(tmp_path), \
+             patch("hermes_cli.config.load_config", return_value=self._disabled_config()):
+            raw = skill_manage(action="edit", name="test-skill", content=VALID_SKILL_CONTENT_2)
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "disabled" in result["error"].lower()
+
+    def test_disabled_blocks_patch(self, tmp_path):
+        with _skill_dir(tmp_path), \
+             patch("hermes_cli.config.load_config", return_value=self._disabled_config()):
+            raw = skill_manage(action="patch", name="test-skill", old_string="x", new_string="y")
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "disabled" in result["error"].lower()
+
+    def test_disabled_blocks_delete(self, tmp_path):
+        with _skill_dir(tmp_path), \
+             patch("hermes_cli.config.load_config", return_value=self._disabled_config()):
+            raw = skill_manage(action="delete", name="test-skill")
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "disabled" in result["error"].lower()
+
+    def test_enabled_allows_create(self, tmp_path):
+        with _skill_dir(tmp_path), \
+             patch("hermes_cli.config.load_config", return_value=self._enabled_config()):
+            raw = skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT)
+        result = json.loads(raw)
+        assert result["success"] is True
+
+    def test_missing_flag_defaults_to_disabled(self, tmp_path):
+        """Multi-user safety: if skills.skill_manage_enabled is absent, fail closed.
+        Inverted from prior "default-enabled" behavior — see security audit M-4."""
+        with _skill_dir(tmp_path), \
+             patch("hermes_cli.config.load_config", return_value={}):
+            raw = skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT)
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "disabled" in result["error"].lower()
+
+    def test_config_load_failure_fails_closed(self, tmp_path):
+        """If config loading raises, fail closed — refuse the call rather than
+        write to the shared global skills directory. Inverted from prior
+        fall-open behavior — see security audit M-4."""
+        with _skill_dir(tmp_path), \
+             patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")):
+            raw = skill_manage(action="create", name="test-skill", content=VALID_SKILL_CONTENT)
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "unavailable" in result["error"].lower()

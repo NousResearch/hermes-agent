@@ -258,3 +258,52 @@ class TestMemoryToolDispatcher:
     def test_remove_requires_old_text(self, store):
         result = json.loads(memory_tool(action="remove", store=store))
         assert result["success"] is False
+
+
+# =========================================================================
+# Config-failure fail-closed (security audit M-4)
+# =========================================================================
+#
+# memory_tool gates writes on memory.memory_enabled / memory.user_profile_enabled.
+# In multi-user deployments these targets are global (MEMORY.md, USER.md are
+# per-profile, not per-user), so writes must be blocked when config disables
+# them. Prior behavior was to fail open (allow the write) on config-load
+# error — that defeats the gate the moment YAML parsing hiccups. Inverted
+# defaults + fail-closed on exception are the M-4 fix.
+
+class TestMemoryConfigGate:
+    def test_missing_flag_defaults_to_disabled(self, store):
+        """If memory.memory_enabled is absent, fail closed (default False)."""
+        from unittest.mock import patch
+        with patch("hermes_cli.config.load_config", return_value={}):
+            raw = memory_tool(action="add", target="memory", content="x", store=store)
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "disabled" in result["error"].lower()
+
+    def test_missing_user_flag_defaults_to_disabled(self, store):
+        """If memory.user_profile_enabled is absent, fail closed (default False)."""
+        from unittest.mock import patch
+        with patch("hermes_cli.config.load_config", return_value={}):
+            raw = memory_tool(action="add", target="user", content="x", store=store)
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "disabled" in result["error"].lower()
+
+    def test_config_load_failure_fails_closed_memory(self, store):
+        """If config loading raises, refuse the write rather than fall through."""
+        from unittest.mock import patch
+        with patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")):
+            raw = memory_tool(action="add", target="memory", content="x", store=store)
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "unavailable" in result["error"].lower()
+
+    def test_config_load_failure_fails_closed_user(self, store):
+        """Same as above but for the user target."""
+        from unittest.mock import patch
+        with patch("hermes_cli.config.load_config", side_effect=RuntimeError("boom")):
+            raw = memory_tool(action="add", target="user", content="x", store=store)
+        result = json.loads(raw)
+        assert result["success"] is False
+        assert "unavailable" in result["error"].lower()

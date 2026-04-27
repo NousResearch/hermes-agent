@@ -60,3 +60,46 @@ def test_run_conversation_persists_tokens_for_cron_sessions():
     assert result["final_response"] == "done"
     session_db.update_token_counts.assert_called_once()
     assert session_db.update_token_counts.call_args.args[0] == "cron-session"
+
+
+def test_create_session_persists_user_id_when_provided():
+    session_db = MagicMock()
+    with (
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        AIAgent(
+            api_key="test-key",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            session_db=session_db,
+            session_id="slack-session",
+            platform="slack",
+            user_id="U0TESTUSER1",
+        )
+
+    session_db.create_session.assert_called_once()
+    assert session_db.create_session.call_args.kwargs["user_id"] == "U0TESTUSER1"
+
+
+def test_create_session_user_id_none_when_not_provided():
+    session_db = MagicMock()
+    with (
+        patch("run_agent.get_tool_definitions", return_value=[]),
+        patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("run_agent.OpenAI"),
+    ):
+        AIAgent(
+            api_key="test-key",
+            quiet_mode=True,
+            skip_context_files=True,
+            skip_memory=True,
+            session_db=session_db,
+            session_id="cli-session",
+            platform="cli",
+        )
+
+    session_db.create_session.assert_called_once()
+    assert session_db.create_session.call_args.kwargs["user_id"] is None

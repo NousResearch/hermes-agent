@@ -47,3 +47,11 @@ def get_chat_id() -> Optional[str]:
 
 def get_platform() -> Optional[str]:
     return session_platform.get()
+
+
+def get_chat_name() -> Optional[str]:
+    return session_chat_name.get()
+
+
+def get_thread_id() -> Optional[str]:
+    return session_thread_id.get()

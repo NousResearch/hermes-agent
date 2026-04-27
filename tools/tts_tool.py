@@ -480,7 +480,11 @@ def text_to_speech_tool(
     # Telegram voice bubbles require Opus (.ogg); OpenAI and ElevenLabs can
     # produce Opus natively (no ffmpeg needed).  Edge TTS always outputs MP3
     # and needs ffmpeg for conversion.
-    platform = os.getenv("HERMES_SESSION_PLATFORM", "").lower()
+    try:
+        from tools.session_context import get_platform as _ctx_get_platform
+        platform = (_ctx_get_platform() or os.getenv("HERMES_SESSION_PLATFORM", "")).lower()
+    except Exception:
+        platform = os.getenv("HERMES_SESSION_PLATFORM", "").lower()
     want_opus = (platform == "telegram")
 
     # Determine output path

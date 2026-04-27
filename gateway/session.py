@@ -285,8 +285,15 @@ def build_session_context_prompt(
         _profile_path = _artemis_dir / uid / "profile.json"
         try:
             if _profile_path.exists():
-                _profile_data = _profile_path.read_text(encoding="utf-8").strip()
-                lines.append(f"**User Profile (onboarded):** {_profile_data}")
+                # Don't inject raw profile.json into the system prompt — free-form
+                # fields like `context` may carry user-supplied content (resume
+                # paste, chat input) that becomes a persistent prompt-injection
+                # vector. Tell the agent the profile exists; it can call
+                # get_user_profile, which routes content through the user-message
+                # channel where the model is more skeptical.
+                lines.append(
+                    "**User Profile:** onboarded (call `get_user_profile` for details)"
+                )
             else:
                 lines.append("**User Profile:** Not onboarded yet")
         except Exception:

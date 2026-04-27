@@ -22,12 +22,20 @@ from tools.skill_manager_tool import (
 
 @pytest.fixture(autouse=True)
 def isolate_skills(tmp_path, monkeypatch):
-    """Redirect SKILLS_DIR to a temp directory."""
+    """Redirect SKILLS_DIR to a temp directory and enable skill_manage.
+
+    skill_manage now defaults to disabled (security audit M-4 — multi-user
+    safety). Tests that exercise skill_manage must explicitly enable it.
+    """
     skills_dir = tmp_path / "skills"
     skills_dir.mkdir()
     monkeypatch.setattr("tools.skill_manager_tool.SKILLS_DIR", skills_dir)
     monkeypatch.setattr("tools.skills_tool.SKILLS_DIR", skills_dir)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda *a, **kw: {"skills": {"skill_manage_enabled": True}},
+    )
     return skills_dir
 
 

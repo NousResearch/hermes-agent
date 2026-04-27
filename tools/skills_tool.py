@@ -347,6 +347,12 @@ def _capture_required_environment_variables(
 def _is_gateway_surface() -> bool:
     if os.getenv("HERMES_GATEWAY_SESSION"):
         return True
+    try:
+        from tools.session_context import get_platform as _ctx_get_platform
+        if _ctx_get_platform():
+            return True
+    except Exception:
+        pass
     return bool(os.getenv("HERMES_SESSION_PLATFORM"))
 
 

@@ -1256,10 +1256,20 @@ def terminal_tool(
                     # In gateway mode, auto-register a fast watcher so the
                     # gateway can detect completion and trigger a new agent
                     # turn.  CLI mode uses the completion_queue directly.
-                    _gw_platform = os.getenv("HERMES_SESSION_PLATFORM", "")
+                    try:
+                        from tools.session_context import (
+                            get_platform as _ctx_get_platform,
+                            get_chat_id as _ctx_get_chat_id,
+                            get_thread_id as _ctx_get_thread_id,
+                        )
+                        _gw_platform = _ctx_get_platform() or os.getenv("HERMES_SESSION_PLATFORM", "")
+                    except Exception:
+                        _ctx_get_chat_id = lambda: None
+                        _ctx_get_thread_id = lambda: None
+                        _gw_platform = os.getenv("HERMES_SESSION_PLATFORM", "")
                     if _gw_platform and not check_interval:
-                        _gw_chat_id = os.getenv("HERMES_SESSION_CHAT_ID", "")
-                        _gw_thread_id = os.getenv("HERMES_SESSION_THREAD_ID", "")
+                        _gw_chat_id = _ctx_get_chat_id() or os.getenv("HERMES_SESSION_CHAT_ID", "")
+                        _gw_thread_id = _ctx_get_thread_id() or os.getenv("HERMES_SESSION_THREAD_ID", "")
                         proc_session.watcher_platform = _gw_platform
                         proc_session.watcher_chat_id = _gw_chat_id
                         proc_session.watcher_thread_id = _gw_thread_id
@@ -1281,9 +1291,19 @@ def terminal_tool(
                         result_data["check_interval_note"] = (
                             f"Requested {check_interval}s raised to minimum 30s"
                         )
-                    watcher_platform = os.getenv("HERMES_SESSION_PLATFORM", "")
-                    watcher_chat_id = os.getenv("HERMES_SESSION_CHAT_ID", "")
-                    watcher_thread_id = os.getenv("HERMES_SESSION_THREAD_ID", "")
+                    try:
+                        from tools.session_context import (
+                            get_platform as _ctx_get_platform,
+                            get_chat_id as _ctx_get_chat_id,
+                            get_thread_id as _ctx_get_thread_id,
+                        )
+                        watcher_platform = _ctx_get_platform() or os.getenv("HERMES_SESSION_PLATFORM", "")
+                        watcher_chat_id = _ctx_get_chat_id() or os.getenv("HERMES_SESSION_CHAT_ID", "")
+                        watcher_thread_id = _ctx_get_thread_id() or os.getenv("HERMES_SESSION_THREAD_ID", "")
+                    except Exception:
+                        watcher_platform = os.getenv("HERMES_SESSION_PLATFORM", "")
+                        watcher_chat_id = os.getenv("HERMES_SESSION_CHAT_ID", "")
+                        watcher_thread_id = os.getenv("HERMES_SESSION_THREAD_ID", "")
 
                     # Store on session for checkpoint persistence
                     proc_session.watcher_platform = watcher_platform

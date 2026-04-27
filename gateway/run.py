@@ -4435,7 +4435,15 @@ class GatewayRunner:
             _, cleaned = adapter.extract_images(response)
             local_files, _ = adapter.extract_local_files(cleaned)
 
-            _thread_meta = {"thread_id": event.source.thread_id} if event.source.thread_id else None
+            # Fall back to message_id so media attachments thread under the
+            # user's original message even when the platform left
+            # source.thread_id blank (e.g. Slack DM top-level messages,
+            # where thread_id is intentionally None but the text reply path
+            # still threads via reply_to).  Without this fallback the file
+            # upload lands as a separate top-level message, split away from
+            # the text that references it.
+            _thread_parent = event.source.thread_id or event.message_id
+            _thread_meta = {"thread_id": _thread_parent} if _thread_parent else None
 
             _AUDIO_EXTS = {'.ogg', '.opus', '.mp3', '.wav', '.m4a'}
             _VIDEO_EXTS = {'.mp4', '.mov', '.avi', '.mkv', '.webm', '.3gp'}
@@ -5958,22 +5966,20 @@ class GatewayRunner:
         return True
 
     def _set_session_env(self, context: SessionContext) -> None:
-        """Set environment variables and task-local ContextVars for the current session.
+        """Set task-local ContextVars for the current session.
 
-        ContextVars isolate concurrent asyncio tasks; env vars remain set for
-        tools/callers that still read from ``os.environ``.
+        ContextVars are asyncio-task-local — concurrent gateway handlers can't
+        clobber each other's session scope. We deliberately do NOT write
+        ``os.environ`` here: env is process-global and races across handlers,
+        which previously caused cron jobs to be tagged with the wrong chat_id
+        when two users messaged within the same async window. Subprocess
+        callers (cron scheduler) inject env explicitly at spawn time.
         """
         from tools.session_context import set_session as _ctx_set_session
 
         platform_value = context.source.platform.value
-        os.environ["HERMES_SESSION_PLATFORM"] = platform_value
-        os.environ["HERMES_SESSION_CHAT_ID"] = context.source.chat_id
         chat_name = context.source.chat_name
-        if chat_name:
-            os.environ["HERMES_SESSION_CHAT_NAME"] = chat_name
         thread_id = str(context.source.thread_id) if context.source.thread_id else None
-        if thread_id:
-            os.environ["HERMES_SESSION_THREAD_ID"] = thread_id
         _ctx_set_session(
             platform=platform_value,
             chat_id=context.source.chat_id,
@@ -5982,12 +5988,8 @@ class GatewayRunner:
         )
 
     def _clear_session_env(self) -> None:
-        """Clear environment variables and task-local ContextVars."""
+        """Clear task-local ContextVars."""
         from tools.session_context import clear_session as _ctx_clear_session
-
-        for var in ["HERMES_SESSION_PLATFORM", "HERMES_SESSION_CHAT_ID", "HERMES_SESSION_CHAT_NAME", "HERMES_SESSION_THREAD_ID"]:
-            if var in os.environ:
-                del os.environ[var]
         _ctx_clear_session()
     
     async def _enrich_message_with_vision(

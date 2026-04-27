@@ -64,14 +64,26 @@ def _scan_cron_prompt(prompt: str) -> str:
 
 
 def _origin_from_env() -> Optional[Dict[str, str]]:
-    origin_platform = os.getenv("HERMES_SESSION_PLATFORM")
-    origin_chat_id = os.getenv("HERMES_SESSION_CHAT_ID")
+    """Read session origin for cron job tagging.
+
+    ContextVar first (asyncio task-local, isolated across concurrent gateway
+    handlers), env fallback for subprocess/CLI contexts where ContextVars
+    don't propagate.
+    """
+    from tools.session_context import (
+        get_chat_id as _ctx_get_chat_id,
+        get_chat_name as _ctx_get_chat_name,
+        get_platform as _ctx_get_platform,
+        get_thread_id as _ctx_get_thread_id,
+    )
+    origin_platform = _ctx_get_platform() or os.getenv("HERMES_SESSION_PLATFORM")
+    origin_chat_id = _ctx_get_chat_id() or os.getenv("HERMES_SESSION_CHAT_ID")
     if origin_platform and origin_chat_id:
         return {
             "platform": origin_platform,
             "chat_id": origin_chat_id,
-            "chat_name": os.getenv("HERMES_SESSION_CHAT_NAME"),
-            "thread_id": os.getenv("HERMES_SESSION_THREAD_ID"),
+            "chat_name": _ctx_get_chat_name() or os.getenv("HERMES_SESSION_CHAT_NAME"),
+            "thread_id": _ctx_get_thread_id() or os.getenv("HERMES_SESSION_THREAD_ID"),
         }
     return None
 

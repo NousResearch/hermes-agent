@@ -145,9 +145,15 @@ def get_disabled_skill_names(platform: str | None = None) -> Set[str]:
     if not isinstance(skills_cfg, dict):
         return set()
 
+    try:
+        from tools.session_context import get_platform as _ctx_get_platform
+        _ctx_platform = _ctx_get_platform()
+    except Exception:
+        _ctx_platform = None
     resolved_platform = (
         platform
         or os.getenv("HERMES_PLATFORM")
+        or _ctx_platform
         or os.getenv("HERMES_SESSION_PLATFORM")
     )
     if resolved_platform:

@@ -582,6 +582,30 @@ def skill_manage(
 
     Returns JSON string with results.
     """
+    # Block all actions when skill_manage is disabled in config.
+    # ~/.hermes/skills/ is a global directory shared by all users; multi-user
+    # deployments must disable skill_manage and route per-user customizations
+    # through an external mechanism (profile, per-user skills dir, or overlay).
+    # Note: load_config() re-reads YAML on each call. Acceptable at R&D scale.
+    try:
+        from hermes_cli.config import load_config as _load_cfg
+        _cfg = _load_cfg()
+        _skills_cfg = _cfg.get("skills", {})
+        if not _skills_cfg.get("skill_manage_enabled", False):
+            return tool_error(
+                "skill_manage is disabled (skills.skill_manage_enabled=false). "
+                "Global skills in ~/.hermes/skills/ are shared across all users; "
+                "use a per-user mechanism (e.g. save_user_skill) instead.",
+                success=False,
+            )
+    except Exception as e:
+        logger.warning("skill_manage config load failed; failing closed: %s", type(e).__name__)
+        return tool_error(
+            "skill_manage unavailable: configuration could not be loaded. "
+            "Refusing the call to avoid writing to a shared global skills directory.",
+            success=False,
+        )
+
     if action == "create":
         if not content:
             return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)

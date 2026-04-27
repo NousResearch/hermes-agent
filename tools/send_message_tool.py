@@ -207,7 +207,11 @@ def _handle_send(args):
         if isinstance(result, dict) and result.get("success") and mirror_text:
             try:
                 from gateway.mirror import mirror_to_session
-                source_label = os.getenv("HERMES_SESSION_PLATFORM", "cli")
+                try:
+                    from tools.session_context import get_platform as _ctx_get_platform
+                    source_label = _ctx_get_platform() or os.getenv("HERMES_SESSION_PLATFORM", "cli")
+                except Exception:
+                    source_label = os.getenv("HERMES_SESSION_PLATFORM", "cli")
                 if mirror_to_session(platform_name, chat_id, mirror_text, source_label=source_label, thread_id=thread_id):
                     result["mirrored"] = True
             except Exception:
@@ -929,7 +933,11 @@ async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=No
 
 def _check_send_message():
     """Gate send_message on gateway running (always available on messaging platforms)."""
-    platform = os.getenv("HERMES_SESSION_PLATFORM", "")
+    try:
+        from tools.session_context import get_platform as _ctx_get_platform
+        platform = _ctx_get_platform() or os.getenv("HERMES_SESSION_PLATFORM", "")
+    except Exception:
+        platform = os.getenv("HERMES_SESSION_PLATFORM", "")
     if platform and platform != "local":
         return True
     try:

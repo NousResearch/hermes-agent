@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest.mock import MagicMock
 
 from tools.file_operations import (
+    _is_read_denied,
     _is_write_denied,
     WRITE_DENIED_PATHS,
     WRITE_DENIED_PREFIXES,
@@ -57,6 +58,58 @@ class TestIsWriteDenied:
     def test_tilde_expansion(self):
         assert _is_write_denied("~/.ssh/authorized_keys") is True
 
+
+# =========================================================================
+# Read deny list — mirrors write deny for credential exfiltration prevention
+# =========================================================================
+
+class TestIsReadDenied:
+    def test_ssh_private_key_denied(self):
+        path = os.path.join(str(Path.home()), ".ssh", "id_ed25519")
+        assert _is_read_denied(path) is True
+
+    def test_ssh_rsa_key_denied(self):
+        path = os.path.join(str(Path.home()), ".ssh", "id_rsa")
+        assert _is_read_denied(path) is True
+
+    def test_aws_credentials_denied(self):
+        path = os.path.join(str(Path.home()), ".aws", "credentials")
+        assert _is_read_denied(path) is True
+
+    def test_kube_config_denied(self):
+        path = os.path.join(str(Path.home()), ".kube", "config")
+        assert _is_read_denied(path) is True
+
+    def test_gnupg_denied(self):
+        path = os.path.join(str(Path.home()), ".gnupg", "private-keys-v1.d", "key.gpg")
+        assert _is_read_denied(path) is True
+
+    def test_docker_config_denied(self):
+        path = os.path.join(str(Path.home()), ".docker", "config.json")
+        assert _is_read_denied(path) is True
+
+    def test_etc_passwd_denied(self):
+        assert _is_read_denied("/etc/passwd") is True
+
+    def test_netrc_denied(self):
+        path = os.path.join(str(Path.home()), ".netrc")
+        assert _is_read_denied(path) is True
+
+    def test_etc_shadow_denied(self):
+        assert _is_read_denied("/etc/shadow") is True
+
+    def test_normal_file_allowed(self, tmp_path):
+        path = str(tmp_path / "readme.md")
+        assert _is_read_denied(path) is False
+
+    def test_project_file_allowed(self):
+        assert _is_read_denied("/tmp/project/main.py") is False
+
+    def test_tilde_expansion(self):
+        assert _is_read_denied("~/.ssh/id_ed25519") is True
+
+    def test_home_directory_itself_allowed(self):
+        assert _is_read_denied(str(Path.home())) is False
 
 
 # =========================================================================

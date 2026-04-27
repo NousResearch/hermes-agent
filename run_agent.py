@@ -941,7 +941,7 @@ class AIAgent:
                         "reasoning_config": reasoning_config,
                         "max_tokens": max_tokens,
                     },
-                    user_id=None,
+                    user_id=self._user_id,
                     parent_session_id=self._parent_session_id,
                 )
             except Exception as e:

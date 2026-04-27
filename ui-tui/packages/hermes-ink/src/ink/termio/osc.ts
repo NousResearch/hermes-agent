@@ -203,13 +203,7 @@ export async function setClipboard(text: string): Promise<ClipboardResult> {
 
   // Inner OSC uses BEL directly (not osc()) — ST's ESC would need doubling
   // too, and BEL works everywhere for OSC 52.
-  const sequence = tmuxBufferLoaded
-    ? emitSequence
-      ? tmuxPassthrough(`${ESC}]52;c;${b64}${BEL}`)
-      : ''
-    : emitSequence
-      ? raw
-      : ''
+  const sequence = emitSequence ? (tmuxBufferLoaded ? tmuxPassthrough(`${ESC}]52;c;${b64}${BEL}`) : raw) : ''
 
   // Success if any path was taken. Native and tmux are fire-and-forget,
   // so we can't truly confirm the clipboard was written — but if native

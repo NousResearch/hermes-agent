@@ -627,7 +627,9 @@ def test_session_create_drops_pending_title_on_valueerror(monkeypatch):
     monkeypatch.setattr(_approval, "register_gateway_notify", lambda key, cb: None)
     monkeypatch.setattr(_approval, "load_permanent_allowlist", lambda: None)
 
-    resp = server.handle_request({"id": "1", "method": "session.create", "params": {"cols": 80}})
+    resp = server.handle_request(
+        {"id": "1", "method": "session.create", "params": {"cols": 80}}
+    )
     sid = resp["result"]["session_id"]
     session = server._sessions[sid]
     session["pending_title"] = "duplicate title"
@@ -670,12 +672,22 @@ def test_config_set_yolo_toggles_session_scope():
 def test_config_set_fast_updates_live_agent_and_config(monkeypatch):
     writes = []
     emits = []
-    agent = types.SimpleNamespace(service_tier=None)
+    agent = types.SimpleNamespace(
+        model="openai/gpt-5.4",
+        request_overrides={"foo": "bar", "speed": "slow"},
+        service_tier=None,
+    )
     server._sessions["sid"] = _session(agent=agent)
 
-    monkeypatch.setattr(server, "_write_config_key", lambda path, value: writes.append((path, value)))
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda path, value: writes.append((path, value))
+    )
     monkeypatch.setattr(server, "_session_info", lambda _agent: {"model": "x"})
     monkeypatch.setattr(server, "_emit", lambda *args: emits.append(args))
+    monkeypatch.setattr(
+        "hermes_cli.models.resolve_fast_mode_overrides",
+        lambda _model_id: {"service_tier": "priority"},
+    )
 
     try:
         resp = server.handle_request(
@@ -687,8 +699,50 @@ def test_config_set_fast_updates_live_agent_and_config(monkeypatch):
         )
         assert resp["result"]["value"] == "fast"
         assert agent.service_tier == "priority"
+        assert agent.request_overrides == {
+            "foo": "bar",
+            "service_tier": "priority",
+        }
         assert ("agent.service_tier", "fast") in writes
         assert ("session.info", "sid", {"model": "x"}) in emits
+
+        resp_normal = server.handle_request(
+            {
+                "id": "2",
+                "method": "config.set",
+                "params": {"session_id": "sid", "key": "fast", "value": "normal"},
+            }
+        )
+        assert resp_normal["result"]["value"] == "normal"
+        assert agent.service_tier is None
+        assert agent.request_overrides == {"foo": "bar"}
+        assert ("agent.service_tier", "normal") in writes
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_config_set_fast_status_is_non_mutating(monkeypatch):
+    writes = []
+    emits = []
+    agent = types.SimpleNamespace(service_tier="priority")
+    server._sessions["sid"] = _session(agent=agent)
+
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda path, value: writes.append((path, value))
+    )
+    monkeypatch.setattr(server, "_emit", lambda *args: emits.append(args))
+
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "config.set",
+                "params": {"session_id": "sid", "key": "fast", "value": "status"},
+            }
+        )
+        assert resp["result"]["value"] == "fast"
+        assert writes == []
+        assert emits == []
     finally:
         server._sessions.pop("sid", None)
 
@@ -701,7 +755,9 @@ def test_config_busy_get_and_set(monkeypatch):
         "_load_cfg",
         lambda: {"display": {"busy_input_mode": "steer"}},
     )
-    monkeypatch.setattr(server, "_write_config_key", lambda path, value: writes.append((path, value)))
+    monkeypatch.setattr(
+        server, "_write_config_key", lambda path, value: writes.append((path, value))
+    )
 
     get_resp = server.handle_request(
         {"id": "1", "method": "config.get", "params": {"key": "busy"}}

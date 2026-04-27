@@ -438,7 +438,22 @@ def _submit_fal_request(model: str, arguments: Dict[str, Any]):
     request_headers = {"x-idempotency-key": str(uuid.uuid4())}
     managed_gateway = _resolve_managed_fal_gateway()
     if managed_gateway is None:
-        return fal_client.submit(model, arguments=arguments, headers=request_headers)
+        try:
+            return fal_client.submit(model, arguments=arguments, headers=request_headers)
+        except Exception as exc:
+            # Check for auth-related errors (401/403) which typically mean
+            # the API key is invalid, expired, or corrupted.
+            status = _extract_http_status(exc)
+            if status in (401, 403):
+                raise ValueError(
+                    f"FAL API authentication failed (HTTP {status}). "
+                    f"Your FAL_KEY may be invalid, expired, or corrupted. "
+                    f"To fix:\n"
+                    f"  • Run `hermes setup` to reconfigure your FAL key, or\n"
+                    f"  • Get a new key at https://fal.ai/dashboard/keys and\n"
+                    f"    set it via `export FAL_KEY=<your-key>` or in ~/.hermes/.env"
+                ) from exc
+            raise
 
     managed_client = _get_managed_fal_client(managed_gateway)
     try:
@@ -750,13 +765,26 @@ def image_generate_tool(
 
     except Exception as e:
         generation_time = (datetime.datetime.now() - start_time).total_seconds()
-        error_msg = f"Error generating image: {str(e)}"
-        logger.error("%s", error_msg, exc_info=True)
+        error_msg = str(e) or repr(e) or f"Unknown {type(e).__name__}"
+        logger.error("Error generating image: %s", error_msg, exc_info=True)
+
+        # Provide actionable hint for common FAL HTTP errors
+        hint = ""
+        status = _extract_http_status(e)
+        if status in (401, 403):
+            hint = (
+                " — FAL_KEY appears invalid or expired. "
+                "Run `hermes setup` or visit https://fal.ai/dashboard/keys"
+            )
+        elif status == 429:
+            hint = " — FAL API rate limit exceeded. Wait a moment and retry."
+        elif status is not None and status >= 500:
+            hint = " — FAL server error. Try again later or pick a different model."
 
         response_data = {
             "success": False,
             "image": None,
-            "error": str(e),
+            "error": error_msg + hint,
             "error_type": type(e).__name__,
         }
 

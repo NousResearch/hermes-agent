@@ -139,4 +139,11 @@ def fal_key_is_configured() -> bool:
             value = get_env_value("FAL_KEY")
         except Exception:
             value = None
-    return bool(value and value.strip())
+    if not value or not value.strip():
+        return False
+    # Reject keys that contain non-printable / control characters (e.g.
+    # accidental ESC bytes from a botched .env edit).  Valid FAL keys are
+    # hex strings or UUIDs — printable ASCII only.
+    if any(ord(ch) < 0x20 or ord(ch) == 0x7F for ch in value):
+        return False
+    return True

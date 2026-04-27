@@ -1852,8 +1852,10 @@ class GatewayRunner:
                 logger.debug("Interrupted running agent for session %s during shutdown", session_key)
             except Exception as e:
                 logger.debug("Failed interrupting agent during shutdown: %s", e)
-            # Record the interrupt reason for the next message in this session.
-            if hasattr(self, "_session_interrupt_reasons"):
+            # Record the interrupt reason for the next message in this session,
+            # but only for control-level interrupts (shutdown, restart, stop,
+            # timeout) — not for transient internal signals.
+            if hasattr(self, "_session_interrupt_reasons") and _is_control_interrupt_message(reason):
                 self._session_interrupt_reasons[session_key] = reason
 
     async def _notify_active_sessions_of_shutdown(self) -> None:

@@ -247,6 +247,7 @@ def register(ctx):
 | [`on_session_finalize`](#on_session_finalize) | CLI/gateway tears down an active session (flush, save, stats) | ignored |
 | [`on_session_reset`](#on_session_reset) | Gateway swaps in a fresh session key (e.g. `/new`, `/reset`) | ignored |
 | [`subagent_stop`](#subagent_stop) | A `delegate_task` child has exited | ignored |
+| [`subagent_batch_complete`](#subagent_batch_complete) | Every `delegate_task` call — fires once after all per-child `subagent_stop` firings, with an aggregate view of the batch | ignored |
 | [`pre_gateway_dispatch`](#pre_gateway_dispatch) | Gateway received a user message, before auth + dispatch | `{"action": "skip" \| "rewrite" \| "allow", ...}` to influence flow |
 
 ---
@@ -682,7 +683,7 @@ def my_callback(parent_session_id: str, child_role: str | None,
 | `parent_session_id` | `str` | Session ID of the delegating parent agent |
 | `child_role` | `str \| None` | Orchestrator role tag set on the child (`None` if the feature isn't enabled) |
 | `child_summary` | `str \| None` | The final response the child returned to the parent |
-| `child_status` | `str` | `"completed"`, `"failed"`, `"interrupted"`, or `"error"` |
+| `child_status` | `str` | `"completed"`, `"failed"`, `"interrupted"`, `"error"`, or `"timeout"` |
 | `duration_ms` | `int` | Wall-clock time spent running the child, in milliseconds |
 
 **Fires:** In `tools/delegate_tool.py`, after `ThreadPoolExecutor.as_completed()` drains all child futures. Firing is marshalled to the parent thread so hook authors don't have to reason about concurrent callback execution.
@@ -710,6 +711,70 @@ def register(ctx):
 :::info
 With heavy delegation (e.g. orchestrator roles × 5 leaves × nested depth), `subagent_stop` fires many times per turn. Keep your callback fast; push expensive work to a background queue.
 :::
+
+---
+
+### `subagent_batch_complete`
+
+Fires **once per `delegate_task` invocation**, after every per-child `subagent_stop` has fired. The payload aggregates the whole batch so you can "notify me when the swarm is done" without de-duping N per-child notifications. Single-task delegations still fire the event once — don't gate your logic on `child_count > 1` unless you explicitly want to skip the single-task case.
+
+**Callback signature:**
+
+```python
+def my_callback(
+    parent_session_id: str,
+    child_count: int,
+    completed_count: int,
+    failed_count: int,
+    errored_count: int,
+    interrupted_count: int,
+    timeout_count: int,
+    total_duration_ms: int,
+    children: list[dict],
+    **kwargs,
+):
+```
+
+| Parameter | Type | Description |
+|-----------|------|-------------|
+| `parent_session_id` | `str` | Session ID of the delegating parent agent |
+| `child_count` | `int` | Number of children scheduled (equals the length of `children`) |
+| `completed_count` | `int` | Children that returned usable output (`status == "completed"`) |
+| `failed_count` | `int` | Children that hit max iterations with no summary (`status == "failed"`) |
+| `errored_count` | `int` | Children whose worker thread raised an uncaught exception (`status == "error"`) |
+| `interrupted_count` | `int` | Children interrupted mid-run (`status == "interrupted"`) |
+| `timeout_count` | `int` | Children terminated by the per-child hard timeout (`status == "timeout"`) |
+| `total_duration_ms` | `int` | Wall-clock time from first child spawn to last child exit, including hook dispatch |
+| `children` | `list[dict]` | Per-child `{"task_index", "role", "status", "duration_ms", "summary"}` records |
+
+**Invariant:** `completed_count + failed_count + errored_count + interrupted_count + timeout_count == child_count`. No "unknown" bucket.
+
+**Fires:** In `tools/delegate_tool.py`, on the parent thread, immediately after the per-child `subagent_stop` loop completes.
+
+**Return value:** Ignored.
+
+**Use cases:** Single-post Slack notifications for batch completion, swarm-level observability dashboards, accumulator-style billing or SLA tracking.
+
+**Example — Slack notification when a batch finishes:**
+
+```python
+import logging
+logger = logging.getLogger(__name__)
+
+def notify_batch(parent_session_id, child_count, completed_count,
+                 failed_count, errored_count, interrupted_count,
+                 timeout_count, total_duration_ms, **kwargs):
+    logger.info(
+        "BATCH parent=%s n=%d ok=%d fail=%d err=%d interrupt=%d timeout=%d "
+        "duration_ms=%d",
+        parent_session_id, child_count, completed_count,
+        failed_count, errored_count, interrupted_count,
+        timeout_count, total_duration_ms,
+    )
+
+def register(ctx):
+    ctx.register_hook("subagent_batch_complete", notify_batch)
+```
 
 ---
 
@@ -810,8 +875,11 @@ hooks:
     - matcher: "<regex>"         # Optional; used for pre/post_tool_call only
       command: "<shell command>" # Required; runs via shlex.split, shell=False
       timeout: <seconds>         # Optional; default 60, capped at 300
+      async: false               # Optional; see "Async hooks" below
 
-hooks_auto_accept: false         # See "Consent model" below
+hooks_auto_accept: false                          # See "Consent model" below
+hooks_async_pool_size: 10                         # Range [1, 100]
+hooks_async_shutdown_grace_seconds: 5             # Range [0, 60]
 ```
 
 Event names must be one of the [plugin hook events](#plugin-hooks); typos produce a "Did you mean X?" warning and are skipped. Unknown keys inside a single entry are ignored; missing `command` is a skip-with-warning. `timeout > 300` is clamped with a warning.
@@ -932,6 +1000,107 @@ log=~/.hermes/logs/orchestration.log
 jq -c '{ts: now, parent: .session_id, extra: .extra}' < /dev/stdin >> "$log"
 printf '{}\n'
 ```
+
+#### 5. Summarise a whole subagent batch in one Slack post
+
+`subagent_batch_complete` fires exactly once per `delegate_task` call — whether the delegation fanned out to one worker or twenty — after every per-child `subagent_stop` has fired. Use it when you want "notify me when the whole swarm is done" without de-duping N per-child notifications.
+
+```yaml
+hooks:
+  subagent_batch_complete:
+    - command: "~/.hermes/agent-hooks/slack-swarm-summary.sh"
+```
+
+```bash
+#!/usr/bin/env bash
+# ~/.hermes/agent-hooks/slack-swarm-summary.sh
+payload=$(cat)
+total=$(echo       "$payload" | jq -r '.extra.child_count')
+ok=$(echo          "$payload" | jq -r '.extra.completed_count')
+failed=$(echo      "$payload" | jq -r '.extra.failed_count + .extra.errored_count')
+interrupted=$(echo "$payload" | jq -r '.extra.interrupted_count')
+timed_out=$(echo   "$payload" | jq -r '.extra.timeout_count')
+duration=$(echo    "$payload" | jq -r '(.extra.total_duration_ms / 1000)')
+msg="Batch finished in ${duration}s: ${ok}/${total} ok, ${failed} failed, ${interrupted} interrupted, ${timed_out} timed out"
+curl -sS -X POST -H 'Content-Type: application/json' \
+     -d "{\"text\": \"$msg\"}" "$SLACK_WEBHOOK_URL"
+echo '{}'
+```
+
+Contrast with `log-orchestration.sh` above: that fires **per child** via `subagent_stop`. `subagent_batch_complete` is the single-firing aggregate variant — each child's `status`, `duration_ms`, `role`, and (truncated) `summary` rides under `extra.children[]`, and the five counters (`completed_count`, `failed_count`, `errored_count`, `interrupted_count`, `timeout_count`) partition the full status keyspace so their sum always equals `extra.child_count`.
+
+Don't gate your logic on `child_count > 1` unless you explicitly want to skip single-task delegations — single-task calls still fire the event once.
+
+**Payload shape (stdin).** `parent_session_id` is surfaced as the top-level `session_id`; everything else lives under `extra`:
+
+```json
+{
+  "hook_event_name": "subagent_batch_complete",
+  "tool_name": null,
+  "tool_input": null,
+  "session_id": "parent-session-id",
+  "cwd": "/home/user/project",
+  "extra": {
+    "child_count": 3,
+    "completed_count": 2,
+    "failed_count": 0,
+    "errored_count": 0,
+    "interrupted_count": 1,
+    "timeout_count": 0,
+    "total_duration_ms": 5000,
+    "children": [
+      {"task_index": 0, "role": null, "status": "completed",
+       "duration_ms": 1200, "summary": "..."},
+      {"task_index": 1, "role": null, "status": "completed",
+       "duration_ms": 1800, "summary": "..."},
+      {"task_index": 2, "role": null, "status": "interrupted",
+       "duration_ms": 500, "summary": null}
+    ]
+  }
+}
+```
+
+### Async hooks
+
+Add `async: true` to a hook entry and Hermes runs the subprocess in a background thread pool; the agent loop doesn't wait. Useful when a hook posts to a webhook, hits an antivirus daemon, or writes to a remote audit log — work where the 100–500 ms round-trip shouldn't block every tool call.
+
+```yaml
+hooks:
+  post_tool_call:
+    - command: "~/.hermes/agent-hooks/audit-slack.sh"
+      async: true
+      timeout: 120    # background subprocess is killed if it exceeds this
+```
+
+Async hooks are fire-and-forget observers. The subprocess runs, its stdout is logged at `DEBUG`, and the return value is discarded — there's no Claude-Code-style "async output re-injection" yet.
+
+**Three-tier compatibility.** Events are partitioned by what async semantics mean for them:
+
+| Tier | Events | Behaviour |
+|------|--------|-----------|
+| ✅ Accepted | `post_tool_call`, `post_llm_call`, `pre_api_request`, `post_api_request`, `on_session_*`, `subagent_stop`, `subagent_batch_complete` | Registers silently; hook runs on a worker thread. |
+| ⚠️ Warned | `pre_tool_call` | Registers with a warning. Any `{"action": "block"}` directive returned by the hook is **logged and discarded** because the tool has already executed by the time the subprocess completes. Use only for observational work (audit logs per tool invocation). |
+| ❌ Rejected at config-parse | `pre_llm_call`, `transform_tool_result`, `transform_terminal_output` | `async: true` logs an `ERROR` and the entry is **not registered**. These events only propagate through their return value; async would make the hook 100% useless. |
+
+Startup messages for the rejected tier are printed by `register_from_config`; check the CLI/gateway log if a hook you configured doesn't appear in `hermes hooks list`.
+
+**Config keys.**
+
+- `hooks_async_pool_size` (default `10`, clamped to `[1, 100]`) — maximum number of concurrent background subprocesses. A bounded semaphore gates submissions: when every slot is busy, additional firings are dropped with a `WARN` log rather than queued unboundedly. Bump this up if you see "pool saturated" warnings and your hardware can handle the fan-out.
+- `hooks_async_shutdown_grace_seconds` (default `5`, clamped to `[0, 60]`) — time to wait for async subprocesses to exit after `SIGTERM` during shutdown. Survivors are `SIGKILL`'d. Raise if your hooks need longer to flush output, lower if you want Ctrl-C to come back faster.
+
+**Backpressure is visible.** Under sustained load exceeding `hooks_async_pool_size`, firings are silently dropped (with a `WARN`). This is by design — unbounded queuing would accumulate thousands of pending firings under a chatty `post_tool_call` hook and then lose most of them at shutdown. For guaranteed delivery, either raise the pool size, use a sync hook, or write to a durable queue from inside the hook script itself.
+
+**Consent is on the command, not sync-vs-async.** If you already approved `~/.hermes/agent-hooks/audit.sh` as a sync hook, flipping `async: true` in config doesn't re-prompt — same binary, same security surface. The allowlist keys on `(event, command)`, not on the sync/async flag.
+
+**SIGINT and shutdown behaviour.**
+
+- **CLI mode:** Ctrl-C terminates tracked subprocesses immediately via an installed SIGINT handler, then chains to the original handler so `KeyboardInterrupt` propagation still works. Expect sub-100 ms Ctrl-C latency even with hooks mid-flight.
+- **Gateway mode:** SIGINT flows through the gateway's asyncio-native shutdown handler, which calls `shutdown_async_hooks(...)` as one teardown step. Worst-case latency is `hooks_async_shutdown_grace_seconds` (default 5s). Acceptable because gateway processes are rarely Ctrl-C'd interactively.
+
+In either mode, async subprocesses that don't exit within the grace window are `SIGKILL`'d and may leave partial work. **Write idempotent async hooks** for external state changes (webhook posts, log appends). If the Python process is `SIGKILL`'d directly (no grace window runs), subprocesses become orphans owned by init — not recoverable at the process level.
+
+**Claude-Code compatibility note.** Hermes declares async at **config time**, not at runtime. If a sync hook's stdout contains `{"async": true}` (the Claude-Code runtime marker), the bridge logs a warning and treats it as a no-op — lets users copy-paste Claude Code hook scripts without confusion but doesn't silently change semantics.
 
 ### Consent model
 

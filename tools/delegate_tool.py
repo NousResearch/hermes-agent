@@ -2112,15 +2112,18 @@ def delegate_task(
         from hermes_cli.plugins import invoke_hook as _invoke_hook
     except Exception:
         _invoke_hook = None
+
+    # Read (not pop) _child_role so the batch aggregate below can still
+    # see it.  The field is stripped from every entry after the batch
+    # firing so it doesn't leak into the serialised tool result.
     for entry in results:
-        child_role = entry.pop("_child_role", None)
         if _invoke_hook is None:
             continue
         try:
             _invoke_hook(
                 "subagent_stop",
                 parent_session_id=_parent_session_id,
-                child_role=child_role,
+                child_role=entry.get("_child_role"),
                 child_summary=entry.get("summary"),
                 child_status=entry.get("status"),
                 duration_ms=int((entry.get("duration_seconds") or 0) * 1000),
@@ -2129,6 +2132,50 @@ def delegate_task(
             logger.debug("subagent_stop hook invocation failed", exc_info=True)
 
     total_duration = round(time.monotonic() - overall_start, 2)
+
+    # Aggregate hook firing: one per delegate_task call, always.  Status
+    # keyspace mirrors _run_single_child and the batch fabrication branches:
+    # completed / failed / interrupted / error / timeout.  The five counters
+    # partition the full set so their sum equals child_count exactly.
+    if _invoke_hook is not None:
+        try:
+            _invoke_hook(
+                "subagent_batch_complete",
+                parent_session_id=_parent_session_id,
+                child_count=len(results),
+                completed_count=sum(
+                    1 for e in results if e.get("status") == "completed"
+                ),
+                failed_count=sum(
+                    1 for e in results if e.get("status") == "failed"
+                ),
+                errored_count=sum(
+                    1 for e in results if e.get("status") == "error"
+                ),
+                interrupted_count=sum(
+                    1 for e in results if e.get("status") == "interrupted"
+                ),
+                timeout_count=sum(
+                    1 for e in results if e.get("status") == "timeout"
+                ),
+                total_duration_ms=int(total_duration * 1000),
+                children=[{
+                    "task_index": e.get("task_index"),
+                    "role": e.get("_child_role"),
+                    "status": e.get("status"),
+                    "duration_ms": int((e.get("duration_seconds") or 0) * 1000),
+                    "summary": e.get("summary"),
+                } for e in results],
+            )
+        except Exception:
+            logger.debug(
+                "subagent_batch_complete hook invocation failed", exc_info=True,
+            )
+
+    # Strip the internal helper from every entry before the tool
+    # result is serialised back to the model.
+    for entry in results:
+        entry.pop("_child_role", None)
 
     return json.dumps(
         {

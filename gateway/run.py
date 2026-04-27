@@ -11541,6 +11541,15 @@ async def start_gateway(config: Optional[GatewayConfig] = None, replace: bool = 
                 logger.info("Shutdown diagnostic — no other hermes processes found")
         except Exception:
             pass
+        # Terminate any still-running async shell hook subprocesses
+        # before the runner stops.  Bounded by
+        # hooks_async_shutdown_grace_seconds — default 5s — so a slow
+        # webhook can't stall gateway teardown indefinitely.
+        try:
+            from agent.shell_hooks import shutdown_async_hooks
+            shutdown_async_hooks()
+        except Exception as exc:
+            logger.debug("shutdown_async_hooks failed: %s", exc)
         asyncio.create_task(runner.stop())
 
     def restart_signal_handler():

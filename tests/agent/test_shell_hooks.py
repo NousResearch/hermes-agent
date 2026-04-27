@@ -413,6 +413,86 @@ class TestCallbackSubprocess:
         assert cb(session_id="s") is None
 
 
+# ── Popen refactor regression gate ───────────────────────────────────────
+
+
+class TestPopenRefactorPreservesSyncSemantics:
+    """Regression gate on the _spawn refactor from subprocess.run to
+    subprocess.Popen.communicate + _live_procs tracking.  Sync hooks
+    must see semantically identical behaviour — same result-dict shape,
+    same timeout handling, same error dispatch."""
+
+    def test_clean_exit_shape(self, tmp_path):
+        script = _write_script(
+            tmp_path, "ok.sh",
+            "#!/usr/bin/env bash\nprintf 'payload=ok\\n' >&2\nprintf '{}\\n'\n",
+        )
+        spec = shell_hooks.ShellHookSpec(
+            event="post_tool_call", command=str(script), timeout=5,
+        )
+        r = shell_hooks._spawn(spec, '{"x": 1}')
+        assert set(r.keys()) == {
+            "returncode", "stdout", "stderr", "timed_out",
+            "elapsed_seconds", "error",
+        }
+        assert r["returncode"] == 0
+        assert r["stdout"].strip() == "{}"
+        assert r["stderr"].strip() == "payload=ok"
+        assert r["timed_out"] is False
+        assert r["error"] is None
+
+    def test_timeout_terminates_and_marks(self, tmp_path):
+        script = _write_script(
+            tmp_path, "slow.sh",
+            "#!/usr/bin/env bash\nsleep 60\n",
+        )
+        spec = shell_hooks.ShellHookSpec(
+            event="post_tool_call", command=str(script), timeout=1,
+        )
+        r = shell_hooks._spawn(spec, "")
+        assert r["timed_out"] is True
+        assert r["error"] is None
+        # Subprocess was terminated externally: elapsed is 1s timeout +
+        # up to ~4s terminate/kill grace, not the 60s sleep.
+        assert r["elapsed_seconds"] < 15
+
+    def test_missing_command_reports_error(self, tmp_path):
+        spec = shell_hooks.ShellHookSpec(
+            event="on_session_start",
+            command=str(tmp_path / "does-not-exist"),
+            timeout=5,
+        )
+        r = shell_hooks._spawn(spec, "")
+        assert r["error"] == "command not found"
+        assert r["returncode"] is None
+        assert r["timed_out"] is False
+
+    def test_live_proc_set_drained_after_run(self, tmp_path):
+        """_spawn must deregister the child from _live_procs on every
+        exit path (clean, timeout, error) — otherwise the set leaks and
+        shutdown_async_hooks would try to terminate already-exited pids."""
+        script = _write_script(
+            tmp_path, "q.sh",
+            "#!/usr/bin/env bash\nprintf '{}\\n'\n",
+        )
+        spec = shell_hooks.ShellHookSpec(
+            event="post_tool_call", command=str(script), timeout=5,
+        )
+        shell_hooks._spawn(spec, "")
+        assert len(shell_hooks._live_procs) == 0
+
+    def test_live_proc_set_drained_after_timeout(self, tmp_path):
+        script = _write_script(
+            tmp_path, "slow.sh",
+            "#!/usr/bin/env bash\nsleep 60\n",
+        )
+        spec = shell_hooks.ShellHookSpec(
+            event="post_tool_call", command=str(script), timeout=1,
+        )
+        shell_hooks._spawn(spec, "")
+        assert len(shell_hooks._live_procs) == 0
+
+
 # ── config parsing ────────────────────────────────────────────────────────
 
 

@@ -14,6 +14,7 @@ GUARDED_FILES = [
     "tools/process_registry.py",
     "tools/code_execution_tool.py",
     "gateway/platforms/whatsapp.py",
+    "agent/shell_hooks.py",
 ]
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent.parent

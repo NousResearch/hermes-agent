@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import json
 import os
+import sys
+import time
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -81,9 +83,10 @@ def _cmd_list(_args) -> None:
             is_approved = (spec.event, spec.command) in approved
             status = "✓ allowed" if is_approved else "✗ not allowlisted"
             matcher_part = f" matcher={spec.matcher!r}" if spec.matcher else ""
+            async_part = " [async]" if spec.is_async else ""
             print(
                 f"    - {spec.command}{matcher_part} "
-                f"(timeout={spec.timeout}s, {status})"
+                f"(timeout={spec.timeout}s, {status}){async_part}"
             )
 
             if is_approved:
@@ -183,6 +186,24 @@ _DEFAULT_PAYLOADS = {
         "child_status": "completed",
         "duration_ms": 1234,
     },
+    "subagent_batch_complete": {
+        "parent_session_id": "parent-sess",
+        "child_count": 3,
+        "completed_count": 2,
+        "failed_count": 0,
+        "errored_count": 0,
+        "interrupted_count": 1,
+        "timeout_count": 0,
+        "total_duration_ms": 5000,
+        "children": [
+            {"task_index": 0, "role": None, "status": "completed",
+             "duration_ms": 1200, "summary": "Task 0 summary"},
+            {"task_index": 1, "role": None, "status": "completed",
+             "duration_ms": 1800, "summary": "Task 1 summary"},
+            {"task_index": 2, "role": None, "status": "interrupted",
+             "duration_ms": 500, "summary": None},
+        ],
+    },
 }
 
 
@@ -231,12 +252,59 @@ def _cmd_test(args) -> None:
             print(f"(with matcher filter --for-tool={args.for_tool})")
         return
 
+    no_wait = bool(getattr(args, "no_wait", False))
+    scheduled_any_async = False
+
     print(f"Firing {len(specs)} hook(s) for event '{event}':\n")
     for spec in specs:
-        print(f"  → {spec.command}")
-        result = shell_hooks.run_once(spec, payload)
-        _print_run_result(result)
+        tag = " [async, --no-wait]" if spec.is_async and no_wait else (
+            " [async, blocking until complete]" if spec.is_async else ""
+        )
+        print(f"  → {spec.command}{tag}")
+
+        if spec.is_async and no_wait:
+            # Fire through the real async path so backpressure,
+            # tracking, and shutdown semantics are all exercised.
+            cb = shell_hooks._make_async_callback(spec)
+            t0 = time.monotonic()
+            cb(**payload)
+            elapsed = round(time.monotonic() - t0, 4)
+            print(f"      scheduled in {elapsed}s (fire-and-forget)")
+            print("      fire-and-forget: stdout not collected. "
+                  "Use `hermes hooks test <event>` without --no-wait "
+                  "to block on completion and see output.")
+            scheduled_any_async = True
+        else:
+            # Sync specs OR async specs without --no-wait: run
+            # synchronously via run_once so users see stdout/parsed.
+            result = shell_hooks.run_once(spec, payload)
+            _print_run_result(result)
         print()
+
+    # Without this, --no-wait would still block for the full hook
+    # runtime: the ThreadPoolExecutor's atexit handler calls
+    # pool.shutdown(wait=True) which joins the worker, which in turn
+    # waits for the subprocess to finish.  The whole point of
+    # --no-wait is to exercise fire-and-forget behaviour — honour
+    # that by skipping atexit via ``os._exit``.  The hook subprocess
+    # was spawned with ``start_new_session=True`` so it keeps running
+    # under init after the CLI exits; its logs (stdout/stderr) are
+    # discarded because ``--no-wait`` is a scheduling-latency probe,
+    # not a functional test.
+    if scheduled_any_async:
+        # Race: if the worker thread hasn't picked up the task yet,
+        # ``os._exit`` runs before ``Popen`` and the hook never
+        # spawns.  Wait briefly for the subprocess to register
+        # itself in ``_live_procs``.
+        deadline = time.monotonic() + 2.0
+        while time.monotonic() < deadline:
+            with shell_hooks._async_tracking_lock:
+                if shell_hooks._live_procs:
+                    break
+            time.sleep(0.01)
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os._exit(0)
 
 
 def _print_run_result(result: Dict[str, Any]) -> None:
@@ -317,6 +385,15 @@ def _cmd_doctor(_args) -> None:
 
 def _doctor_one(spec, shell_hooks) -> int:
     problems = 0
+
+    # 0. Surface async caveats — async pre_tool_call cannot block.
+    if spec.is_async and spec.event == "pre_tool_call":
+        print(
+            "      ⚠ async pre_tool_call hooks are fire-and-forget — any "
+            "{\"action\": \"block\"} return will be ignored because the "
+            "tool has already executed by the time the async hook "
+            "completes"
+        )
 
     # 1. Script exists and is executable
     if shell_hooks.script_is_executable(spec.command):

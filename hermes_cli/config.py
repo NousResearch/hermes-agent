@@ -934,6 +934,17 @@ DEFAULT_CONFIG = {
     # Gateway / cron / non-interactive runs need this (or one of the other
     # channels) to pick up newly-added hooks.
     "hooks_auto_accept": False,
+
+    # Bounded pool size for async shell hooks (``async: true`` in a
+    # ``hooks:`` entry).  A bounded semaphore gates submissions so a
+    # misbehaving burst can't saturate the host — firings that miss the
+    # semaphore are dropped with a WARN log.  Range: [1, 100].
+    "hooks_async_pool_size": 10,
+
+    # Seconds to wait for async hook subprocesses to exit after SIGTERM
+    # during process shutdown.  Survivors of the grace window are
+    # SIGKILL'd.  Range: [0, 60].
+    "hooks_async_shutdown_grace_seconds": 5,
     # Custom personalities — add your own entries here
     # Supports string format: {"name": "system prompt"}
     # Or dict format: {"name": {"description": "...", "system_prompt": "...", "tone": "...", "style": "..."}}

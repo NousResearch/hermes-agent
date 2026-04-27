@@ -8572,6 +8572,14 @@ For more help on a command:
             "synthetic payload before execution"
         ),
     )
+    _hk_test.add_argument(
+        "--no-wait", dest="no_wait", action="store_true", default=False,
+        help=(
+            "For async hooks, return as soon as the callback is scheduled "
+            "instead of waiting for the subprocess to complete. Useful "
+            "for testing the fire-and-forget path itself."
+        ),
+    )
 
     _hk_revoke = hooks_subparsers.add_parser(
         "revoke", aliases=["remove", "rm"],
@@ -10054,8 +10062,20 @@ Examples:
             )
         try:
             from hermes_cli.config import load_config
-            from agent.shell_hooks import register_from_config
+            from agent.shell_hooks import (
+                register_from_config,
+                _maybe_install_signal_handlers,
+            )
             register_from_config(load_config(), accept_hooks=_accept_hooks)
+            # Install the async-hook SIGINT + SIGTERM handlers after
+            # hook registration so Ctrl-C terminates running hook
+            # subprocesses instead of hanging on a slow webhook, and
+            # SIGTERM (kill, timeout, systemd, CI) still fires the
+            # atexit-registered shutdown sweep instead of orphaning
+            # subprocesses.  CLI-only — the gateway owns its own
+            # asyncio-native signal disposition and integrates
+            # shutdown_async_hooks into its own teardown sequence.
+            _maybe_install_signal_handlers()
         except Exception:
             logger.debug(
                 "shell-hook registration failed at CLI startup",

@@ -10975,8 +10975,23 @@ class HermesCLI:
                         time.sleep(_grace)
             except Exception:
                 pass  # never block signal handling
+            # Drain async shell-hook subprocesses inline (SIGTERM →
+            # grace → SIGKILL).  Hermes installs this handler *after*
+            # agent/shell_hooks' _maybe_install_signal_handlers, so our
+            # _async_pool_sigterm_handler has already been overwritten
+            # — without this call, a TERM-ignoring hook would delay
+            # interpreter exit by spec.timeout (60s default) because
+            # Python waits for non-daemon ThreadPoolExecutor workers
+            # and workers block in proc.communicate until the
+            # subprocess dies.  Idempotent — a no-op if the async pool
+            # was never materialised.
+            try:
+                from agent.shell_hooks import shutdown_async_hooks
+                shutdown_async_hooks()
+            except Exception:
+                pass
             raise KeyboardInterrupt()
-        
+
         try:
             import signal as _signal
             _signal.signal(_signal.SIGTERM, _signal_handler)
@@ -11307,6 +11322,16 @@ def main(
                     time.sleep(_grace)
         except Exception:
             pass  # never block signal handling
+        # See comment on ``_signal_handler`` above — same reasoning
+        # (this handler replaces ``_async_pool_sigterm_handler`` in
+        # single-query mode, so we must drain async-hook subprocesses
+        # here or the interpreter hangs on ``spec.timeout`` when a
+        # hook ignores SIGTERM).
+        try:
+            from agent.shell_hooks import shutdown_async_hooks
+            shutdown_async_hooks()
+        except Exception:
+            pass
         raise KeyboardInterrupt()
     try:
         import signal as _signal

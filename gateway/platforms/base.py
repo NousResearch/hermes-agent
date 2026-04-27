@@ -2185,10 +2185,16 @@ def resolve_channel_prompt(
     channel_id: str,
     parent_id: str | None = None,
 ) -> str | None:
-    """Resolve ``channel_prompts`` from ``config.extra``, most-specific first:
-    ``{parent_id}:{channel_id}`` (scopes a prompt to one parent — Telegram
-    forum thread_ids collide across supergroups, #13256), then ``channel_id``,
-    then ``parent_id``. Blank/whitespace-only values are skipped.
+    """Resolve ``channel_prompts`` from ``config.extra``, in this order:
+
+    1. ``{parent_id}:{channel_id}`` (composite — disambiguates parents
+       sharing a child id; e.g. Telegram forum thread_ids collide
+       across supergroups, #13256)
+    2. ``channel_id`` (existing thread/channel-level fallback)
+    3. ``parent_id`` (existing group-level fallback)
+
+    Blank/whitespace-only values are skipped at every level. Returns
+    ``None`` if no key matches.
     """
     prompts = config_extra.get("channel_prompts") or {}
     if not isinstance(prompts, dict):

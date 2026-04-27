@@ -10,8 +10,7 @@ import random
 
 TIPS = [
     # --- Slash Commands ---
-    "/btw <question> asks a quick side question without tools or history — great for clarifications.",
-    "/background <prompt> runs a task in a separate session while your current one stays free.",
+    "/background <prompt> (alias /bg or /btw) runs a task in a separate session while your current one stays free.",
     "/branch forks the current session so you can explore a different direction without losing progress.",
     "/compress manually compresses conversation context when things get long.",
     "/rollback lists filesystem checkpoints — restore files the agent modified to any prior state.",
@@ -107,7 +106,7 @@ TIPS = [
     "Set display.streaming: true to see tokens appear in real time as the model generates.",
     "Set display.show_reasoning: true to watch the model's chain-of-thought reasoning.",
     "Set display.compact: true to reduce whitespace in output for denser information.",
-    "Set display.busy_input_mode: queue to queue messages instead of interrupting the agent.",
+    "Set display.busy_input_mode: queue to queue messages instead of interrupting the agent, or steer to inject them mid-run via /steer.",
     "Set display.resume_display: minimal to skip the full conversation recap on session resume.",
     "Set compression.threshold: 0.50 to control when auto-compression fires (default: 50% of context).",
     "Set agent.max_turns: 200 to let the agent take more tool-calling steps per turn.",

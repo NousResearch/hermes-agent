@@ -77,7 +77,7 @@ _KNOWN_DELIVERY_PLATFORMS = frozenset({
     "telegram", "discord", "slack", "whatsapp", "signal",
     "matrix", "mattermost", "homeassistant", "dingtalk", "feishu",
     "wecom", "wecom_callback", "weixin", "sms", "email", "webhook", "bluebubbles",
-    "qqbot",
+    "qqbot", "yuanbao",
 })
 
 # Platforms that support a configured cron/notification home target, mapped to
@@ -337,6 +337,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         "sms": Platform.SMS,
         "bluebubbles": Platform.BLUEBUBBLES,
         "qqbot": Platform.QQBOT,
+        "yuanbao": Platform.YUANBAO,
     }
 
     # Optionally wrap the content with a header/footer so the user knows this
@@ -715,7 +716,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
     # Always prepend cron execution guidance so the agent knows how
     # delivery works and can suppress delivery when appropriate.
     cron_hint = (
-        "[SYSTEM: You are running as a scheduled cron job. "
+        "[IMPORTANT: You are running as a scheduled cron job. "
         "DELIVERY: Your final response will be automatically delivered "
         "to the user — do NOT use send_message or try to deliver "
         "the output yourself. Just produce your report/output as your "
@@ -751,7 +752,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
             parts.append("")
         parts.extend(
             [
-                f'[SYSTEM: The user has invoked the "{skill_name}" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
+                f'[IMPORTANT: The user has invoked the "{skill_name}" skill, indicating they want you to follow its instructions. The full skill content is loaded below.]',
                 "",
                 content,
             ]
@@ -759,7 +760,7 @@ def _build_job_prompt(job: dict, prerun_script: Optional[tuple] = None) -> str:
 
     if skipped:
         notice = (
-            f"[SYSTEM: The following skill(s) were listed for this job but could not be found "
+            f"[IMPORTANT: The following skill(s) were listed for this job but could not be found "
             f"and were skipped: {', '.join(skipped)}. "
             f"Start your response with a brief notice so the user is aware, e.g.: "
             f"'⚠️ Skill(s) not found and skipped: {', '.join(skipped)}']"
@@ -820,6 +821,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
 
     logger.info("Running job '%s' (ID: %s)", job_name, job_id)
     logger.info("Prompt: %s", prompt[:100])
+
+    agent = None
 
     # Mark this as a cron session so the approval system can apply cron_mode.
     # This env var is process-wide and persists for the lifetime of the
@@ -1169,6 +1172,24 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
                 _session_db.close()
             except (Exception, KeyboardInterrupt) as e:
                 logger.debug("Job '%s': failed to close SQLite session store: %s", job_id, e)
+        # Release subprocesses, terminal sandboxes, browser daemons, and the
+        # main OpenAI/httpx client held by this ephemeral cron agent. Without
+        # this, a gateway that ticks cron every N minutes leaks fds per job
+        # until it hits EMFILE (#10200 / "too many open files").
+        try:
+            if agent is not None:
+                agent.close()
+        except (Exception, KeyboardInterrupt) as e:
+            logger.debug("Job '%s': failed to close agent resources: %s", job_id, e)
+        # Each cron run spins up a short-lived worker thread whose event loop
+        # dies as soon as the ``ThreadPoolExecutor`` shuts down. Any async
+        # httpx clients cached under that loop are now unusable — reap them
+        # so their transports don't accumulate in the process-global cache.
+        try:
+            from agent.auxiliary_client import cleanup_stale_async_clients
+            cleanup_stale_async_clients()
+        except Exception as e:
+            logger.debug("Job '%s': failed to reap stale auxiliary clients: %s", job_id, e)
 
 
 def tick(verbose: bool = True, adapters=None, loop=None) -> int:
@@ -1307,6 +1328,17 @@ def tick(verbose: bool = True, adapters=None, loop=None) -> int:
                     _ctx = contextvars.copy_context()
                     _futures.append(_tick_pool.submit(_ctx.run, _process_job, job))
                 _results.extend(f.result() for f in _futures)
+
+        # Best-effort sweep of MCP stdio subprocesses that survived their
+        # session teardown during this tick.  Runs AFTER every job has
+        # finished so active sessions (including live user chats) are
+        # never touched — only PIDs explicitly detected as orphans in
+        # tools.mcp_tool._run_stdio's finally block are reaped.
+        try:
+            from tools.mcp_tool import _kill_orphaned_mcp_children
+            _kill_orphaned_mcp_children()
+        except Exception as _e:
+            logger.debug("Post-tick MCP orphan cleanup failed: %s", _e)
 
         return sum(_results)
     finally:

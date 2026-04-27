@@ -273,6 +273,8 @@ hermes skills install openai/skills/k8s           # Install with security scan
 hermes skills install official/security/1password
 hermes skills install skills-sh/vercel-labs/json-render/json-render-react --force
 hermes skills install well-known:https://mintlify.com/docs/.well-known/skills/mintlify
+hermes skills install https://sharethis.chat/SKILL.md              # Direct URL (single-file SKILL.md)
+hermes skills install https://example.com/SKILL.md --name my-skill # Override name when frontmatter has none
 hermes skills list --source hub                   # List hub-installed skills
 hermes skills check                               # Check installed hub skills for upstream updates
 hermes skills update                              # Reinstall hub skills with upstream changes when needed
@@ -292,6 +294,7 @@ hermes skills tap add myorg/skills-repo           # Add a custom GitHub source
 | `official` | `official/security/1password` | Optional skills shipped with Hermes. |
 | `skills-sh` | `skills-sh/vercel-labs/agent-skills/vercel-react-best-practices` | Searchable via `hermes skills search <query> --source skills-sh`. Hermes resolves alias-style skills when the skills.sh slug differs from the repo folder. |
 | `well-known` | `well-known:https://mintlify.com/docs/.well-known/skills/mintlify` | Skills served directly from `/.well-known/skills/index.json` on a website. Search using the site or docs URL. |
+| `url` | `https://sharethis.chat/SKILL.md` | Direct HTTP(S) URL to a single-file `SKILL.md`. Name resolution: frontmatter → URL slug → interactive prompt → `--name` flag. |
 | `github` | `openai/skills/k8s` | Direct GitHub repo/path installs and custom taps. |
 | `clawhub`, `lobehub`, `claude-marketplace` | Source-specific identifiers | Community or marketplace integrations. |
 
@@ -383,6 +386,35 @@ Hermes can search and convert agent entries from LobeHub's public catalog into i
 - Public agents index: [chat-agents.lobehub.com](https://chat-agents.lobehub.com/)
 - Backing repo: [lobehub/lobe-chat-agents](https://github.com/lobehub/lobe-chat-agents)
 - Hermes source id: `lobehub`
+
+#### 8. Direct URL (`url`)
+
+Install a single-file `SKILL.md` directly from any HTTP(S) URL — useful when an author hosts a skill on their own site (no hub listing, no GitHub path to type). Hermes fetches the URL, parses the YAML frontmatter, security-scans it, and installs.
+
+- Hermes source id: `url`
+- Identifier: the URL itself (no prefix needed)
+- Scope: **single-file `SKILL.md`** only. Multi-file skills with `references/` or `scripts/` need a manifest and should be published via one of the other sources above.
+
+```bash
+hermes skills install https://sharethis.chat/SKILL.md
+hermes skills install https://example.com/my-skill/SKILL.md --category productivity
+```
+
+Name resolution, in order:
+1. `name:` field in the SKILL.md YAML frontmatter (recommended — every well-formed skill has one).
+2. Parent directory name from the URL path (e.g. `.../my-skill/SKILL.md` → `my-skill`, or `.../my-skill.md` → `my-skill`), when it's a valid identifier (`^[a-z][a-z0-9_-]*$`).
+3. Interactive prompt on a terminal with a TTY.
+4. On non-interactive surfaces (the `/skills install` slash command inside the TUI, gateway platforms, scripts), a clean error pointing at the `--name` override.
+
+```bash
+# Frontmatter has no name and the URL slug is unhelpful — supply one:
+hermes skills install https://example.com/SKILL.md --name sharethis-chat
+
+# Or inside a chat session:
+/skills install https://example.com/SKILL.md --name sharethis-chat
+```
+
+Trust level is always `community` — the same security scan runs as for every other source. The URL is stored as the install identifier, so `hermes skills update` re-fetches from the same URL automatically when you want to refresh.
 
 ### Security scanning and `--force`
 

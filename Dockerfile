@@ -30,18 +30,22 @@ WORKDIR /opt/hermes
 # unless the lockfiles themselves change.
 COPY package.json package-lock.json ./
 COPY web/package.json web/package-lock.json web/
+COPY ui-tui/package.json ui-tui/package-lock.json ui-tui/
+COPY ui-tui/packages/hermes-ink/package.json ui-tui/packages/hermes-ink/package-lock.json ui-tui/packages/hermes-ink/
 
 RUN npm install --prefer-offline --no-audit && \
     npx playwright install --with-deps chromium --only-shell && \
     (cd web && npm install --prefer-offline --no-audit) && \
+    (cd ui-tui && npm install --prefer-offline --no-audit) && \
     npm cache clean --force
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.
 COPY --chown=hermes:hermes . .
 
-# Build web dashboard (Vite outputs to hermes_cli/web_dist/)
-RUN cd web && npm run build
+# Build browser dashboard and terminal UI assets.
+RUN cd web && npm run build && \
+    cd ../ui-tui && npm run build
 
 # ---------- Permissions ----------
 # Make install dir world-readable so any HERMES_UID can read it at runtime.

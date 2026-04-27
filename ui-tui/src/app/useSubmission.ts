@@ -1,5 +1,6 @@
-import { type MutableRefObject, useCallback, useRef } from 'react'
+import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
+import { TYPING_IDLE_MS } from '../config/timing.js'
 import { attachedImageNotice } from '../domain/messages.js'
 import { looksLikeSlashCommand } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
@@ -14,6 +15,9 @@ import { turnController } from './turnController.js'
 import { getUiState, patchUiState } from './uiStore.js'
 
 const DOUBLE_ENTER_MS = 450
+const SESSION_BUSY_RE = /session busy|waiting for model response/i
+
+const isSessionBusyError = (e: unknown) => e instanceof Error && SESSION_BUSY_RE.test(e.message)
 
 const expandSnips = (snips: PasteSnippet[]) => {
   const byLabel = new Map<string, string[]>()
@@ -44,12 +48,42 @@ export function useSubmission(opts: UseSubmissionOptions) {
   } = opts
 
   const lastEmptyAt = useRef(0)
+  const typingIdleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    if (typingIdleTimer.current) {
+      clearTimeout(typingIdleTimer.current)
+      typingIdleTimer.current = null
+    }
+
+    if (!composerState.input && !composerState.inputBuf.length) {
+      turnController.relaxStreaming()
+
+      return
+    }
+
+    if (getUiState().busy) {
+      turnController.boostStreamingForTyping()
+    }
+
+    typingIdleTimer.current = setTimeout(() => {
+      typingIdleTimer.current = null
+      turnController.relaxStreaming()
+    }, TYPING_IDLE_MS)
+
+    return () => {
+      if (typingIdleTimer.current) {
+        clearTimeout(typingIdleTimer.current)
+        typingIdleTimer.current = null
+      }
+    }
+  }, [composerState.input, composerState.inputBuf])
 
   const send = useCallback(
-    (text: string) => {
+    (text: string, showUserMessage = true) => {
       const expand = expandSnips(composerState.pasteSnips)
 
-      const startSubmit = (displayText: string, submitText: string) => {
+      const startSubmit = (displayText: string, submitText: string, showUserMessage = true) => {
         const sid = getUiState().sid
 
         if (!sid) {
@@ -59,12 +93,23 @@ export function useSubmission(opts: UseSubmissionOptions) {
         turnController.clearStatusTimer()
         maybeGoodVibes(submitText)
         setLastUserMsg(text)
-        appendMessage({ role: 'user', text: displayText })
+
+        if (showUserMessage) {
+          appendMessage({ role: 'user', text: displayText })
+        }
+
         patchUiState({ busy: true, status: 'running…' })
         turnController.bufRef = ''
         turnController.interrupted = false
 
         gw.request<PromptSubmitResponse>('prompt.submit', { session_id: sid, text: submitText }).catch((e: Error) => {
+          if (isSessionBusyError(e)) {
+            composerActions.enqueue(submitText)
+            patchUiState({ busy: true, status: 'queued for next turn' })
+
+            return sys(`queued: "${submitText.slice(0, 50)}${submitText.length > 50 ? '…' : ''}"`)
+          }
+
           sys(`error: ${e.message}`)
           patchUiState({ busy: false, status: 'ready' })
         })
@@ -79,7 +124,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
       gw.request<InputDetectDropResponse>('input.detect_drop', { session_id: sid, text })
         .then(r => {
           if (!r?.matched) {
-            return startSubmit(text, expand(text))
+            return startSubmit(text, expand(text), showUserMessage)
           }
 
           if (r.is_image) {
@@ -88,11 +133,11 @@ export function useSubmission(opts: UseSubmissionOptions) {
             turnController.pushActivity(`detected file: ${r.name}`)
           }
 
-          startSubmit(r.text || text, expand(r.text || text))
+          startSubmit(r.text || text, expand(r.text || text), showUserMessage)
         })
-        .catch(() => startSubmit(text, expand(text)))
+        .catch(() => startSubmit(text, expand(text), showUserMessage))
     },
-    [appendMessage, composerState.pasteSnips, gw, maybeGoodVibes, setLastUserMsg, sys]
+    [appendMessage, composerActions, composerState.pasteSnips, gw, maybeGoodVibes, setLastUserMsg, sys]
   )
 
   const shellExec = useCallback(
@@ -260,6 +305,8 @@ export function useSubmission(opts: UseSubmissionOptions) {
         if (doubleTap && live.sid && composerRefs.queueRef.current.length) {
           const next = composerActions.dequeue()
 
+          composerActions.syncQueue()
+
           if (next) {
             composerActions.setQueueEdit(null)
             dispatchSubmission(next)
@@ -284,7 +331,7 @@ export function useSubmission(opts: UseSubmissionOptions) {
 
   submitRef.current = submit
 
-  return { dispatchSubmission, send, sendQueued, shellExec, submit }
+  return { dispatchSubmission, send, sendQueued, submit }
 }
 
 export interface UseSubmissionOptions {

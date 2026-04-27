@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
+import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 
@@ -23,6 +24,58 @@ describe('createSlashHandler', () => {
     expect(createSlashHandler(ctx)('/provider')).toBe(true)
     expect(getOverlayState().modelPicker).toBe(true)
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('persists typed /model switches by default', async () => {
+    patchUiState({ sid: 'sid-abc' })
+
+    const ctx = buildCtx({
+      gateway: {
+        ...buildGateway(),
+        rpc: vi.fn(() => Promise.resolve({ value: 'x-model' }))
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/model x-model')).toBe(true)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      key: 'model',
+      session_id: 'sid-abc',
+      value: 'x-model --global'
+    })
+  })
+
+  it('honors TUI picker session scope without adding --global', async () => {
+    patchUiState({ sid: 'sid-abc' })
+
+    const ctx = buildCtx({
+      gateway: {
+        ...buildGateway(),
+        rpc: vi.fn(() => Promise.resolve({ value: 'anthropic/claude-sonnet-4.6' }))
+      }
+    })
+
+    expect(
+      createSlashHandler(ctx)(
+        `/model anthropic/claude-sonnet-4.6 --provider openrouter ${TUI_SESSION_MODEL_FLAG}`
+      )
+    ).toBe(true)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      key: 'model',
+      session_id: 'sid-abc',
+      value: 'anthropic/claude-sonnet-4.6 --provider openrouter'
+    })
+  })
+
+  it('does not duplicate --global for explicit persistent model switches', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    createSlashHandler(ctx)('/model x-model --global')
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      key: 'model',
+      session_id: 'sid-abc',
+      value: 'x-model --global'
+    })
   })
 
   it('opens the skills hub locally for bare /skills', () => {
@@ -89,6 +142,7 @@ describe('createSlashHandler', () => {
     expect(getUiState().detailsMode).toBe('collapsed')
     expect(createSlashHandler(ctx)('/details toggle')).toBe(true)
     expect(getUiState().detailsMode).toBe('expanded')
+    expect(getUiState().detailsModeCommandOverride).toBe(true)
     expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
       key: 'details_mode',
       value: 'expanded'
@@ -311,9 +365,7 @@ describe('createSlashHandler', () => {
     expect(rpc).toHaveBeenCalledWith('session.save', { session_id: 'sid-abc' })
 
     await vi.waitFor(() => {
-      expect(ctx.transcript.sys).toHaveBeenCalledWith(
-        'conversation saved to: /tmp/hermes_conversation_test.json'
-      )
+      expect(ctx.transcript.sys).toHaveBeenCalledWith('conversation saved to: /tmp/hermes_conversation_test.json')
     })
   })
 
@@ -363,7 +415,7 @@ const buildComposer = () => ({
   hasSelection: false,
   paste: vi.fn(),
   queueRef: { current: [] as string[] },
-  selection: { copySelection: vi.fn(() => '') },
+  selection: { copySelection: vi.fn(async () => '') },
   setInput: vi.fn()
 })
 

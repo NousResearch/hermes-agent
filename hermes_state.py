@@ -832,7 +832,18 @@ class SessionDB:
         params = []
 
         if not include_children:
-            where_clauses.append("s.parent_session_id IS NULL")
+            # Show root sessions and branch sessions (whose parent ended with
+            # end_reason='branched' before the child was created), while still
+            # hiding sub-agent runs and compression continuations (which also
+            # carry a parent_session_id but were spawned while the parent was
+            # still live — i.e., started_at < parent.ended_at).
+            where_clauses.append(
+                "(s.parent_session_id IS NULL"
+                " OR EXISTS (SELECT 1 FROM sessions p"
+                "            WHERE p.id = s.parent_session_id"
+                "            AND p.end_reason = 'branched'"
+                "            AND s.started_at >= p.ended_at))"
+            )
 
         if source:
             where_clauses.append("s.source = ?")
@@ -1121,20 +1132,27 @@ class SessionDB:
                 current = child_id
         return session_id
 
-    def get_messages_as_conversation(self, session_id: str) -> List[Dict[str, Any]]:
+    def get_messages_as_conversation(
+        self, session_id: str, include_ancestors: bool = False
+    ) -> List[Dict[str, Any]]:
         """
         Load messages in the OpenAI conversation format (role + content dicts).
         Used by the gateway to restore conversation history.
         """
+        session_ids = [session_id]
+        if include_ancestors:
+            session_ids = self._session_lineage_root_to_tip(session_id)
+
         with self._lock:
-            cursor = self._conn.execute(
+            placeholders = ",".join("?" for _ in session_ids)
+            rows = self._conn.execute(
                 "SELECT role, content, tool_call_id, tool_calls, tool_name, "
                 "reasoning, reasoning_content, reasoning_details, codex_reasoning_items, "
                 "codex_message_items "
-                "FROM messages WHERE session_id = ? ORDER BY timestamp, id",
-                (session_id,),
-            )
-            rows = cursor.fetchall()
+                f"FROM messages WHERE session_id IN ({placeholders}) ORDER BY timestamp, id",
+                tuple(session_ids),
+            ).fetchall()
+
         messages = []
         for row in rows:
             msg = {"role": row["role"], "content": row["content"]}
@@ -1174,8 +1192,46 @@ class SessionDB:
                     except (json.JSONDecodeError, TypeError):
                         logger.warning("Failed to deserialize codex_message_items, falling back to None")
                         msg["codex_message_items"] = None
+            if include_ancestors and self._is_duplicate_replayed_user_message(messages, msg):
+                continue
             messages.append(msg)
         return messages
+
+    def _session_lineage_root_to_tip(self, session_id: str) -> List[str]:
+        if not session_id:
+            return [session_id]
+
+        chain = []
+        current = session_id
+        seen = set()
+        with self._lock:
+            for _ in range(100):
+                if not current or current in seen:
+                    break
+                seen.add(current)
+                chain.append(current)
+                row = self._conn.execute(
+                    "SELECT parent_session_id FROM sessions WHERE id = ?",
+                    (current,),
+                ).fetchone()
+                if row is None:
+                    break
+                current = row["parent_session_id"] if hasattr(row, "keys") else row[0]
+        return list(reversed(chain)) or [session_id]
+
+    @staticmethod
+    def _is_duplicate_replayed_user_message(messages: List[Dict[str, Any]], msg: Dict[str, Any]) -> bool:
+        if msg.get("role") != "user":
+            return False
+        content = msg.get("content")
+        if not isinstance(content, str) or not content:
+            return False
+        for prev in reversed(messages):
+            if prev.get("role") == "user" and prev.get("content") == content:
+                return True
+            if prev.get("role") == "assistant" and (prev.get("content") or prev.get("tool_calls")):
+                return False
+        return False
 
     # =========================================================================
     # Search
@@ -1425,16 +1481,32 @@ class SessionDB:
         limit: int = 20,
         offset: int = 0,
     ) -> List[Dict[str, Any]]:
-        """List sessions, optionally filtered by source."""
+        """List sessions, optionally filtered by source.
+
+        Returns rows enriched with a computed ``last_active`` column (latest
+        message timestamp for the session, falling back to ``started_at``),
+        ordered by most-recently-used first.
+        """
+        select_with_last_active = (
+            "SELECT s.*, COALESCE(m.last_active, s.started_at) AS last_active "
+            "FROM sessions s "
+            "LEFT JOIN ("
+            "SELECT session_id, MAX(timestamp) AS last_active "
+            "FROM messages GROUP BY session_id"
+            ") m ON m.session_id = s.id "
+        )
         with self._lock:
             if source:
                 cursor = self._conn.execute(
-                    "SELECT * FROM sessions WHERE source = ? ORDER BY started_at DESC LIMIT ? OFFSET ?",
+                    f"{select_with_last_active}"
+                    "WHERE s.source = ? "
+                    "ORDER BY last_active DESC, s.started_at DESC, s.id DESC LIMIT ? OFFSET ?",
                     (source, limit, offset),
                 )
             else:
                 cursor = self._conn.execute(
-                    "SELECT * FROM sessions ORDER BY started_at DESC LIMIT ? OFFSET ?",
+                    f"{select_with_last_active}"
+                    "ORDER BY last_active DESC, s.started_at DESC, s.id DESC LIMIT ? OFFSET ?",
                     (limit, offset),
                 )
             return [dict(row) for row in cursor.fetchall()]
@@ -1501,12 +1573,45 @@ class SessionDB:
             )
         self._execute_write(_do)
 
-    def delete_session(self, session_id: str) -> bool:
+    @staticmethod
+    def _remove_session_files(sessions_dir: Optional[Path], session_id: str) -> None:
+        """Remove on-disk transcript files for a session.
+
+        Cleans up ``{session_id}.json``, ``{session_id}.jsonl``, and any
+        ``request_dump_{session_id}_*.json`` files left by the gateway.
+        Silently skips files that don't exist and swallows OSError so a
+        filesystem hiccup never blocks a DB operation.
+        """
+        if sessions_dir is None:
+            return
+        for suffix in (".json", ".jsonl"):
+            p = sessions_dir / f"{session_id}{suffix}"
+            try:
+                p.unlink(missing_ok=True)
+            except OSError:
+                pass
+        # request_dump files use session_id as a prefix component
+        try:
+            for p in sessions_dir.glob(f"request_dump_{session_id}_*.json"):
+                try:
+                    p.unlink(missing_ok=True)
+                except OSError:
+                    pass
+        except OSError:
+            pass
+
+    def delete_session(
+        self,
+        session_id: str,
+        sessions_dir: Optional[Path] = None,
+    ) -> bool:
         """Delete a session and all its messages.
 
         Child sessions are orphaned (parent_session_id set to NULL) rather
         than cascade-deleted, so they remain accessible independently.
-        Returns True if the session was found and deleted.
+        When *sessions_dir* is provided, also removes on-disk transcript
+        files (``.json`` / ``.jsonl`` / ``request_dump_*``) for the deleted
+        session. Returns True if the session was found and deleted.
         """
         def _do(conn):
             cursor = conn.execute(
@@ -1523,16 +1628,29 @@ class SessionDB:
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             return True
-        return self._execute_write(_do)
 
-    def prune_sessions(self, older_than_days: int = 90, source: str = None) -> int:
+        deleted = self._execute_write(_do)
+        if deleted:
+            self._remove_session_files(sessions_dir, session_id)
+        return deleted
+
+    def prune_sessions(
+        self,
+        older_than_days: int = 90,
+        source: str = None,
+        sessions_dir: Optional[Path] = None,
+    ) -> int:
         """Delete sessions older than N days. Returns count of deleted sessions.
 
         Only prunes ended sessions (not active ones).  Child sessions outside
         the prune window are orphaned (parent_session_id set to NULL) rather
-        than cascade-deleted.
+        than cascade-deleted.  When *sessions_dir* is provided, also removes
+        on-disk transcript files (``.json`` / ``.jsonl`` /
+        ``request_dump_*``) for every pruned session, outside the DB
+        transaction.
         """
         cutoff = time.time() - (older_than_days * 86400)
+        removed_ids: list[str] = []
 
         def _do(conn):
             if source:
@@ -1562,9 +1680,14 @@ class SessionDB:
             for sid in session_ids:
                 conn.execute("DELETE FROM messages WHERE session_id = ?", (sid,))
                 conn.execute("DELETE FROM sessions WHERE id = ?", (sid,))
+                removed_ids.append(sid)
             return len(session_ids)
 
-        return self._execute_write(_do)
+        count = self._execute_write(_do)
+        # Clean up on-disk files outside the DB transaction
+        for sid in removed_ids:
+            self._remove_session_files(sessions_dir, sid)
+        return count
 
     # ── Meta key/value (for scheduler bookkeeping) ──
 
@@ -1618,12 +1741,17 @@ class SessionDB:
         retention_days: int = 90,
         min_interval_hours: int = 24,
         vacuum: bool = True,
+        sessions_dir: Optional[Path] = None,
     ) -> Dict[str, Any]:
         """Idempotent auto-maintenance: prune old sessions + optional VACUUM.
 
         Records the last run timestamp in state_meta so subsequent calls
         within ``min_interval_hours`` no-op. Designed to be called once at
         startup from long-lived entrypoints (CLI, gateway, cron scheduler).
+
+        When *sessions_dir* is provided, on-disk transcript files
+        (``.json`` / ``.jsonl`` / ``request_dump_*``) for pruned sessions
+        are removed as part of the same sweep (issue #3015).
 
         Never raises. On any failure, logs a warning and returns a dict
         with ``"error"`` set.
@@ -1648,7 +1776,10 @@ class SessionDB:
                 except (TypeError, ValueError):
                     pass  # corrupt meta; treat as no prior run
 
-            pruned = self.prune_sessions(older_than_days=retention_days)
+            pruned = self.prune_sessions(
+                older_than_days=retention_days,
+                sessions_dir=sessions_dir,
+            )
             result["pruned"] = pruned
 
             # Only VACUUM if we actually freed rows — VACUUM on a tight DB

@@ -606,6 +606,7 @@ platform_toolsets:
   signal: [hermes-signal]
   homeassistant: [hermes-homeassistant]
   qqbot: [hermes-qqbot]
+  yuanbao: [hermes-yuanbao]
 
 # =============================================================================
 # Gateway Platform Settings
@@ -824,7 +825,9 @@ delegation:
 # Display
 # =============================================================================
 display:
-  # Use compact banner mode
+  # Use compact banner mode (hides the ASCII-art banner, shows a single line).
+  #   true:  Compact single-line banner
+  #   false: Full ASCII banner with tool/skill summary (default)
   compact: false
 
   # Tool progress display level (CLI and gateway)
@@ -838,12 +841,19 @@ display:
   # Gateway-only natural mid-turn assistant updates.
   # When true, completed assistant status messages are sent as separate chat
   # messages. This is independent of tool_progress and gateway streaming.
+  #   true:  Send mid-turn assistant updates as separate messages (default)
+  #   false: Only send the final response
   interim_assistant_messages: true
 
-  # What Enter does when Hermes is already busy in the CLI.
+  # What Enter does when Hermes is already busy (CLI and gateway platforms).
   #   interrupt: Interrupt the current run and redirect Hermes (default)
   #   queue:     Queue your message for the next turn
-  # Ctrl+C always interrupts regardless of this setting.
+  #   steer:     Inject your message mid-run via /steer, arriving at the agent
+  #              after the next tool call — no interrupt, no role violation.
+  #              Falls back to 'queue' if the agent isn't running yet or if
+  #              images are attached (steer only carries text).
+  # Ctrl+C (or /stop in gateway) always interrupts regardless of this setting.
+  # Toggle at runtime with /busy <interrupt|queue|steer>.
   busy_input_mode: interrupt
 
   # Background process notifications (gateway/messaging only).
@@ -859,17 +869,22 @@ display:
   # Play terminal bell when agent finishes a response.
   # Useful for long-running tasks — your terminal will ding when the agent is done.
   # Works over SSH. Most terminals can be configured to flash the taskbar or play a sound.
+  #   true:  Ring the terminal bell on each response
+  #   false: Silent (default)
   bell_on_complete: false
 
   # Show model reasoning/thinking before each response.
   # When enabled, a dim box shows the model's thought process above the response.
   # Toggle at runtime with /reasoning show or /reasoning hide.
+  #   true:  Show the reasoning box
+  #   false: Hide reasoning (default)
   show_reasoning: false
 
   # Stream tokens to the terminal as they arrive instead of waiting for the
   # full response. The response box opens on first token and text appears
   # line-by-line. Tool calls are still captured silently.
-  # Stream tokens to the terminal in real-time. Disable to wait for full responses.
+  #   true:  Stream tokens as they arrive (default)
+  #   false: Wait for the full response before rendering
   streaming: true
 
   # ───────────────────────────────────────────────────────────────────────────
@@ -879,10 +894,15 @@ display:
   # response box label, and branding text. Change at runtime with /skin <name>.
   #
   # Built-in skins:
-  #   default  — Classic Hermes gold/kawaii
-  #   ares     — Crimson/bronze war-god theme with spinner wings
-  #   mono     — Clean grayscale monochrome
-  #   slate    — Cool blue developer-focused
+  #   default        — Classic Hermes gold/kawaii
+  #   ares           — Crimson/bronze war-god theme with spinner wings
+  #   mono           — Clean grayscale monochrome
+  #   slate          — Cool blue developer-focused
+  #   daylight       — Bright light-mode theme
+  #   warm-lightmode — Warm paper-tone light-mode theme
+  #   poseidon       — Sea-green/teal Olympian theme
+  #   sisyphus       — Earthy stone-and-moss theme
+  #   charizard      — Fiery orange dragon theme
   #
   # Custom skins: drop a YAML file in ~/.hermes/skins/<name>.yaml
   # Schema (all fields optional, missing values inherit from default):

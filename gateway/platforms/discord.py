@@ -2315,11 +2315,6 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_background(interaction: discord.Interaction, prompt: str):
             await self._run_simple_slash(interaction, f"/background {prompt}", "Background task started~")
 
-        @tree.command(name="btw", description="Ephemeral side question using session context")
-        @discord.app_commands.describe(question="Your side question (no tools, not persisted)")
-        async def slash_btw(interaction: discord.Interaction, question: str):
-            await self._run_simple_slash(interaction, f"/btw {question}")
-
         # ── Auto-register any gateway-available commands not yet on the tree ──
         # This ensures new commands added to COMMAND_REGISTRY in
         # hermes_cli/commands.py automatically appear as Discord slash
@@ -2684,21 +2679,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 skills: ["skill-a", "skill-b"]
         Also checks parent_id so forum threads inherit the forum's bindings.
         """
-        bindings = self.config.extra.get("channel_skill_bindings", [])
-        if not bindings:
-            return None
-        ids_to_check = {channel_id}
-        if parent_id:
-            ids_to_check.add(parent_id)
-        for entry in bindings:
-            entry_id = str(entry.get("id", ""))
-            if entry_id in ids_to_check:
-                skills = entry.get("skills") or entry.get("skill")
-                if isinstance(skills, str):
-                    return [skills]
-                if isinstance(skills, list) and skills:
-                    return list(dict.fromkeys(skills))  # dedup, preserve order
-        return None
+        from gateway.platforms.base import resolve_channel_skills
+        return resolve_channel_skills(self.config.extra, channel_id, parent_id)
 
     def _resolve_channel_prompt(self, channel_id: str, parent_id: str | None = None) -> str | None:
         """Resolve a Discord per-channel prompt, preferring the exact channel over its parent."""

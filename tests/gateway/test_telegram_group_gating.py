@@ -59,6 +59,17 @@ def _mention_entity(text, mention="@hermes_bot"):
     return SimpleNamespace(type="mention", offset=offset, length=len(mention))
 
 
+def _bot_command_entity(text, command):
+    """Entity Telegram emits for a ``/cmd`` or ``/cmd@botname`` token.
+
+    Telegram parses slash commands server-side. For ``/cmd@botname`` the
+    client does NOT emit a separate ``mention`` entity — the whole span
+    is a single ``bot_command`` entity.
+    """
+    offset = text.index(command)
+    return SimpleNamespace(type="bot_command", offset=offset, length=len(command))
+
+
 def test_group_messages_can_be_opened_via_config():
     adapter = _make_adapter(require_mention=False)
 
@@ -73,12 +84,34 @@ def test_group_messages_can_require_direct_trigger_via_config():
     assert adapter._should_process_message(_group_message("replying", reply_to_bot=True)) is True
     # Commands must also respect require_mention when it is enabled
     assert adapter._should_process_message(_group_message("/status"), is_command=True) is False
-    # But commands with @mention still pass (Telegram emits a MENTION entity
-    # for /cmd@botname — the bot menu and python-telegram-bot's CommandHandler
-    # rely on this same mechanism)
+    # Telegram's group command menu sends ``/cmd@botname`` as a single
+    # ``bot_command`` entity spanning the whole token (no separate mention
+    # entity). We must accept it so the menu works when require_mention is on.
     assert adapter._should_process_message(
-        _group_message("/status@hermes_bot", entities=[_mention_entity("/status@hermes_bot")])
+        _group_message(
+            "/status@hermes_bot",
+            entities=[_bot_command_entity("/status@hermes_bot", "/status@hermes_bot")],
+        ),
+        is_command=True,
     ) is True
+    # A bot_command entity addressed at a different bot must not satisfy
+    # the mention gate — Telegram groups can host multiple bots that
+    # register the same command name.
+    assert adapter._should_process_message(
+        _group_message(
+            "/status@other_bot",
+            entities=[_bot_command_entity("/status@other_bot", "/status@other_bot")],
+        ),
+        is_command=True,
+    ) is False
+    # Bare ``/status`` (no @botname) must still be dropped in groups with
+    # require_mention=True — Telegram delivers it only when the bot's
+    # privacy mode is off, and even then we should not respond unless the
+    # user explicitly addressed the bot.
+    assert adapter._should_process_message(
+        _group_message("/status", entities=[_bot_command_entity("/status", "/status")]),
+        is_command=True,
+    ) is False
     # And commands still pass unconditionally when require_mention is disabled
     adapter_no_mention = _make_adapter(require_mention=False)
     assert adapter_no_mention._should_process_message(_group_message("/status"), is_command=True) is True

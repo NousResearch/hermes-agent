@@ -184,7 +184,7 @@ export const coreCommands: SlashCommand[] = [
             }
 
             const mode = parseDetailsMode(r?.value) ?? ui.detailsMode
-            patchUiState({ detailsMode: mode })
+            patchUiState({ detailsMode: mode, detailsModeCommandOverride: false })
 
             const overrides = SECTION_NAMES.filter(s => ui.sections[s])
               .map(s => `${s}=${ui.sections[s]}`)
@@ -224,7 +224,7 @@ export const coreCommands: SlashCommand[] = [
         return transcript.sys(DETAILS_USAGE)
       }
 
-      patchUiState({ detailsMode: next })
+      patchUiState({ detailsMode: next, detailsModeCommandOverride: true })
       gateway.rpc<ConfigSetResponse>('config.set', { key: 'details_mode', value: next }).catch(() => {})
       transcript.sys(`details: ${next}`)
     }
@@ -251,11 +251,19 @@ export const coreCommands: SlashCommand[] = [
   {
     help: 'copy selection or assistant message',
     name: 'copy',
-    run: (arg, ctx) => {
+    run: async (arg, ctx) => {
       const { sys } = ctx.transcript
 
-      if (!arg && ctx.composer.hasSelection && ctx.composer.selection.copySelection()) {
-        return sys('copied selection')
+      if (!arg && ctx.composer.hasSelection) {
+        const text = await ctx.composer.selection.copySelection()
+
+        if (text) {
+          return sys(`copied ${text.length} characters`)
+        } else {
+          return sys(
+            'clipboard copy failed — try HERMES_TUI_FORCE_OSC52=1 to force the escape sequence; HERMES_TUI_DEBUG_CLIPBOARD=1 for details'
+          )
+        }
       }
 
       if (arg && Number.isNaN(parseInt(arg, 10))) {

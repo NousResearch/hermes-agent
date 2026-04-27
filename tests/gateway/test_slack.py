@@ -11,7 +11,7 @@ We mock the slack modules at import time to avoid collection errors.
 import asyncio
 import os
 import sys
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch, call
 
 import pytest
 
@@ -21,6 +21,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
+    is_host_excluded_by_no_proxy,
 )
 
 
@@ -147,7 +148,20 @@ class TestAppMentionHandler:
         assert "app_mention" in registered_events
         assert "assistant_thread_started" in registered_events
         assert "assistant_thread_context_changed" in registered_events
-        assert "/hermes" in registered_commands
+        # Slack slash commands are registered via a single regex matcher
+        # covering every COMMAND_REGISTRY entry (e.g. /hermes, /btw, /stop,
+        # /model, ...) so users get native-slash parity with Discord and
+        # Telegram. Verify the regex matches the key expected slashes.
+        assert len(registered_commands) == 1, (
+            f"expected 1 combined slash matcher, got {registered_commands!r}"
+        )
+        slash_matcher = registered_commands[0]
+        import re as _re
+        assert isinstance(slash_matcher, _re.Pattern)
+        for expected in ("/hermes", "/btw", "/stop", "/model", "/help"):
+            assert slash_matcher.match(expected), (
+                f"Slack slash regex does not match {expected}"
+            )
 
 
 class TestSlackConnectCleanup:
@@ -173,6 +187,198 @@ class TestSlackConnectCleanup:
         assert result is False
         mock_release.assert_called_once_with("slack-app-token", "xapp-fake")
         assert adapter._platform_lock_identity is None
+
+
+# ---------------------------------------------------------------------------
+# TestSlackProxyBehavior
+# ---------------------------------------------------------------------------
+
+class TestSlackProxyBehavior:
+    def test_no_proxy_helper_matches_slack_hosts(self):
+        assert is_host_excluded_by_no_proxy("slack.com", "localhost,.slack.com")
+        assert is_host_excluded_by_no_proxy("files.slack.com", "localhost slack.com")
+        assert is_host_excluded_by_no_proxy("wss-primary.slack.com", "*")
+        assert not is_host_excluded_by_no_proxy("slack.com", "localhost,.internal.corp")
+
+    def test_resolve_slack_proxy_url_ignores_unsupported_proxy_schemes(self):
+        with patch.object(_slack_mod, "resolve_proxy_url", return_value="socks5://proxy.example.com:1080"):
+            assert _slack_mod._resolve_slack_proxy_url() is None
+
+    def test_resolve_slack_proxy_url_checks_all_slack_hosts(self):
+        with patch.object(_slack_mod, "resolve_proxy_url", return_value="http://proxy.example.com:3128"), \
+             patch.object(_slack_mod, "is_host_excluded_by_no_proxy", side_effect=lambda host: host == "wss-primary.slack.com") as excluded:
+            assert _slack_mod._resolve_slack_proxy_url() is None
+            excluded.assert_has_calls([
+                call("slack.com"),
+                call("files.slack.com"),
+                call("wss-primary.slack.com"),
+            ])
+
+    @pytest.mark.asyncio
+    async def test_connect_uses_proxy_when_not_bypassed(self):
+        created_apps = []
+        created_clients = []
+
+        class FakeWebClient:
+            def __init__(self, token):
+                self.token = token
+                self.proxy = "constructor-default"
+                suffix = token.split("-")[-1]
+                self.auth_test = AsyncMock(return_value={
+                    "team_id": f"T_{suffix}",
+                    "user_id": f"U_{suffix}",
+                    "user": f"bot-{suffix}",
+                    "team": f"Team {suffix}",
+                })
+                created_clients.append(self)
+
+        class FakeApp:
+            def __init__(self, token):
+                self.token = token
+                self.client = FakeWebClient(token)
+                self.registered_events = []
+                self.registered_commands = []
+                self.registered_actions = []
+                created_apps.append(self)
+
+            def event(self, event_type):
+                self.registered_events.append(event_type)
+
+                def decorator(fn):
+                    return fn
+
+                return decorator
+
+            def command(self, command_name):
+                self.registered_commands.append(command_name)
+
+                def decorator(fn):
+                    return fn
+
+                return decorator
+
+            def action(self, action_id):
+                self.registered_actions.append(action_id)
+
+                def decorator(fn):
+                    return fn
+
+                return decorator
+
+        class FakeSocketModeHandler:
+            def __init__(self, app, app_token, proxy=None):
+                self.app = app
+                self.app_token = app_token
+                self.proxy = proxy
+                self.client = MagicMock(proxy="constructor-default")
+
+            def start_async(self):
+                return None
+
+            async def close_async(self):
+                return None
+
+        config = PlatformConfig(enabled=True, token="xoxb-primary,xoxb-secondary")
+        adapter = SlackAdapter(config)
+
+        with patch.object(_slack_mod, "AsyncApp", side_effect=FakeApp), \
+             patch.object(_slack_mod, "AsyncWebClient", side_effect=FakeWebClient), \
+             patch.object(_slack_mod, "AsyncSocketModeHandler", FakeSocketModeHandler), \
+             patch.object(_slack_mod, "_resolve_slack_proxy_url", return_value="http://proxy.example.com:3128"), \
+             patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}, clear=False), \
+             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
+             patch("asyncio.create_task", return_value=MagicMock(name="socket-mode-task")):
+            result = await adapter.connect()
+
+        assert result is True
+        assert created_apps[0].client.proxy == "http://proxy.example.com:3128"
+        assert all(client.proxy == "http://proxy.example.com:3128" for client in created_clients)
+        assert adapter._handler is not None
+        assert adapter._handler.proxy == "http://proxy.example.com:3128"
+        assert adapter._handler.client.proxy == "http://proxy.example.com:3128"
+
+    @pytest.mark.asyncio
+    async def test_connect_clears_proxy_when_no_proxy_matches_slack(self):
+        created_apps = []
+        created_clients = []
+
+        class FakeWebClient:
+            def __init__(self, token):
+                self.token = token
+                self.proxy = "constructor-default"
+                suffix = token.split("-")[-1]
+                self.auth_test = AsyncMock(return_value={
+                    "team_id": f"T_{suffix}",
+                    "user_id": f"U_{suffix}",
+                    "user": f"bot-{suffix}",
+                    "team": f"Team {suffix}",
+                })
+                created_clients.append(self)
+
+        class FakeApp:
+            def __init__(self, token):
+                self.token = token
+                self.client = FakeWebClient(token)
+                self.registered_events = []
+                self.registered_commands = []
+                self.registered_actions = []
+                created_apps.append(self)
+
+            def event(self, event_type):
+                self.registered_events.append(event_type)
+
+                def decorator(fn):
+                    return fn
+
+                return decorator
+
+            def command(self, command_name):
+                self.registered_commands.append(command_name)
+
+                def decorator(fn):
+                    return fn
+
+                return decorator
+
+            def action(self, action_id):
+                self.registered_actions.append(action_id)
+
+                def decorator(fn):
+                    return fn
+
+                return decorator
+
+        class FakeSocketModeHandler:
+            def __init__(self, app, app_token, proxy=None):
+                self.app = app
+                self.app_token = app_token
+                self.proxy = proxy
+                self.client = MagicMock(proxy="constructor-default")
+
+            def start_async(self):
+                return None
+
+            async def close_async(self):
+                return None
+
+        config = PlatformConfig(enabled=True, token="xoxb-primary")
+        adapter = SlackAdapter(config)
+
+        with patch.object(_slack_mod, "AsyncApp", side_effect=FakeApp), \
+             patch.object(_slack_mod, "AsyncWebClient", side_effect=FakeWebClient), \
+             patch.object(_slack_mod, "AsyncSocketModeHandler", FakeSocketModeHandler), \
+             patch.object(_slack_mod, "_resolve_slack_proxy_url", return_value=None), \
+             patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}, clear=False), \
+             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
+             patch("asyncio.create_task", return_value=MagicMock(name="socket-mode-task")):
+            result = await adapter.connect()
+
+        assert result is True
+        assert created_apps[0].client.proxy is None
+        assert all(client.proxy is None for client in created_clients)
+        assert adapter._handler is not None
+        assert adapter._handler.proxy is None
+        assert adapter._handler.client.proxy is None
 
 
 # ---------------------------------------------------------------------------
@@ -274,6 +480,40 @@ class TestSendDocument:
         call_kwargs = adapter._app.client.files_upload_v2.call_args[1]
         assert call_kwargs["thread_ts"] == "1234567890.123456"
 
+    @pytest.mark.asyncio
+    async def test_send_document_thread_upload_marks_bot_participation(self, adapter, tmp_path):
+        test_file = tmp_path / "notes.txt"
+        test_file.write_bytes(b"some notes")
+
+        adapter._app.client.files_upload_v2 = AsyncMock(return_value={"ok": True})
+
+        await adapter.send_document(
+            chat_id="C123",
+            file_path=str(test_file),
+            metadata={"thread_id": "1234567890.123456"},
+        )
+
+        assert "1234567890.123456" in adapter._bot_message_ts
+
+    @pytest.mark.asyncio
+    async def test_send_document_retries_transient_upload_error(self, adapter, tmp_path):
+        test_file = tmp_path / "notes.txt"
+        test_file.write_bytes(b"some notes")
+
+        adapter._app.client.files_upload_v2 = AsyncMock(
+            side_effect=[RuntimeError("Connection reset by peer"), {"ok": True}]
+        )
+
+        with patch("asyncio.sleep", new_callable=AsyncMock) as sleep_mock:
+            result = await adapter.send_document(
+                chat_id="C123",
+                file_path=str(test_file),
+            )
+
+        assert result.success
+        assert adapter._app.client.files_upload_v2.await_count == 2
+        sleep_mock.assert_awaited_once()
+
 
 # ---------------------------------------------------------------------------
 # TestSendVideo
@@ -342,15 +582,17 @@ class TestSendVideo:
 # ---------------------------------------------------------------------------
 
 class TestIncomingDocumentHandling:
-    def _make_event(self, files=None, text="hello", channel_type="im"):
+    def _make_event(self, files=None, text="hello", channel_type="im", blocks=None, attachments=None):
         """Build a mock Slack message event with file attachments."""
         return {
             "text": text,
             "user": "U_USER",
-            "channel": "C123",
+            "channel": "D123",
             "channel_type": channel_type,
             "ts": "1234567890.000001",
             "files": files or [],
+            "blocks": blocks or [],
+            "attachments": attachments or [],
         }
 
     @pytest.mark.asyncio
@@ -414,6 +656,36 @@ class TestIncomingDocumentHandling:
 
         msg_event = adapter.handle_message.call_args[0][0]
         assert "# Title" in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_json_snippet_injects_content(self, adapter):
+        """A .json snippet should be treated as a text document and injected."""
+        content = b'{"hello": "world", "count": 2}'
+
+        with patch.object(adapter, "_download_slack_file_bytes", new_callable=AsyncMock) as dl:
+            dl.return_value = content
+            event = self._make_event(
+                text="can you parse this",
+                files=[{
+                    "mimetype": "text/plain",
+                    "name": "zapfile.json",
+                    "filetype": "json",
+                    "pretty_type": "JSON",
+                    "mode": "snippet",
+                    "editable": True,
+                    "url_private_download": "https://files.slack.com/zapfile.json",
+                    "size": len(content),
+                }],
+            )
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.DOCUMENT
+        assert len(msg_event.media_urls) == 1
+        assert msg_event.media_types == ["application/json"]
+        assert '[Content of zapfile.json]' in msg_event.text
+        assert '"hello": "world"' in msg_event.text
+        assert 'can you parse this' in msg_event.text
 
     @pytest.mark.asyncio
     async def test_large_txt_not_injected(self, adapter):
@@ -497,6 +769,207 @@ class TestIncomingDocumentHandling:
 
         msg_event = adapter.handle_message.call_args[0][0]
         assert msg_event.message_type == MessageType.PHOTO
+
+    @pytest.mark.asyncio
+    async def test_download_failure_is_surfaced_in_message_text(self, adapter):
+        """Attachment download failures (401/403/HTML-body/etc.) should be
+        translated into a user-facing `[Slack attachment notice]` block so
+        the agent can tell the user what to fix (e.g. missing files:read
+        scope). No proactive files.info probe is made — the diagnostic
+        runs only when the download actually fails.
+        """
+        import httpx
+        req = httpx.Request("GET", "https://files.slack.com/photo.jpg")
+        resp = httpx.Response(403, request=req)
+
+        with patch.object(adapter, "_download_slack_file", new_callable=AsyncMock) as dl:
+            dl.side_effect = httpx.HTTPStatusError("403", request=req, response=resp)
+            event = self._make_event(text="what's in this?", files=[{
+                "id": "F123",
+                "mimetype": "image/jpeg",
+                "name": "photo.jpg",
+                "url_private_download": "https://files.slack.com/photo.jpg",
+                "size": 1024,
+            }])
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.TEXT
+        assert "[Slack attachment notice]" in msg_event.text
+        assert "403" in msg_event.text
+        assert "what's in this?" in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_rich_text_blocks_do_not_duplicate_plain_text(self, adapter):
+        """Plain rich_text composer blocks match the plain text field exactly,
+        so the dedupe guard keeps the message clean."""
+        event = self._make_event(
+            text="hello world",
+            blocks=[
+                {
+                    "type": "rich_text",
+                    "elements": [
+                        {
+                            "type": "rich_text_section",
+                            "elements": [
+                                {"type": "text", "text": "hello world"},
+                            ],
+                        }
+                    ],
+                }
+            ],
+        )
+
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "hello world"
+
+    @pytest.mark.asyncio
+    async def test_rich_text_quotes_and_lists_are_extracted(self, adapter):
+        """Nested quote and list content should be surfaced from rich_text blocks."""
+        event = self._make_event(
+            text="Can you summarize this?",
+            blocks=[
+                {
+                    "type": "rich_text",
+                    "elements": [
+                        {
+                            "type": "rich_text_quote",
+                            "elements": [
+                                {
+                                    "type": "rich_text_section",
+                                    "elements": [{"type": "text", "text": "Quoted line"}],
+                                }
+                            ],
+                        },
+                        {
+                            "type": "rich_text_list",
+                            "style": "bullet",
+                            "elements": [
+                                {
+                                    "type": "rich_text_section",
+                                    "elements": [{"type": "text", "text": "First bullet"}],
+                                },
+                                {
+                                    "type": "rich_text_section",
+                                    "elements": [{"type": "text", "text": "Second bullet"}],
+                                },
+                            ],
+                        },
+                    ],
+                }
+            ],
+        )
+
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert "Can you summarize this?" in msg_event.text
+        assert "> Quoted line" in msg_event.text
+        assert "• First bullet" in msg_event.text
+        assert "• Second bullet" in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_attachments_unfurl_text_is_appended_even_when_url_is_in_message(self, adapter):
+        """Shared URLs should still expose unfurl preview text to the agent."""
+        event = self._make_event(
+            text="Look at this doc https://example.com/spec",
+            attachments=[
+                {
+                    "title": "Spec",
+                    "from_url": "https://example.com/spec",
+                    "text": "The latest product spec preview",
+                    "footer": "Notion",
+                }
+            ],
+        )
+
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert "Look at this doc https://example.com/spec" in msg_event.text
+        assert "📎 [Spec](https://example.com/spec)" in msg_event.text
+        assert "The latest product spec preview" in msg_event.text
+        assert "_Notion_" in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_message_unfurl_attachments_are_skipped(self, adapter):
+        """Message unfurls should be skipped to avoid echoing Slack message copies."""
+        event = self._make_event(
+            text="https://example.com/thread",
+            attachments=[
+                {
+                    "is_msg_unfurl": True,
+                    "title": "Thread copy",
+                    "text": "This should not be appended",
+                }
+            ],
+        )
+
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.text == "https://example.com/thread"
+
+    @pytest.mark.asyncio
+    async def test_channel_routing_ignores_bot_mentions_inside_block_text(self, adapter):
+        """Block-extracted text with a bot mention must not satisfy mention
+        gating in channels — routing decisions use the original user text so
+        quoted/forwarded content can't trick the bot into responding."""
+        event = self._make_event(
+            text="please review",
+            channel_type="channel",
+            blocks=[
+                {
+                    "type": "rich_text",
+                    "elements": [
+                        {
+                            "type": "rich_text_quote",
+                            "elements": [
+                                {
+                                    "type": "rich_text_section",
+                                    "elements": [{"type": "text", "text": "Contains <@U_BOT> in quoted text"}],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        )
+
+        await adapter._handle_slack_message(event)
+
+        adapter.handle_message.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_quoted_slash_command_text_does_not_change_message_type(self, adapter):
+        """Quoted slash-like content should not convert a normal message into a command."""
+        event = self._make_event(
+            text="",
+            blocks=[
+                {
+                    "type": "rich_text",
+                    "elements": [
+                        {
+                            "type": "rich_text_quote",
+                            "elements": [
+                                {
+                                    "type": "rich_text_section",
+                                    "elements": [{"type": "text", "text": "/deploy now"}],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        )
+
+        await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.TEXT
+        assert "> /deploy now" in msg_event.text
 
 
 # ---------------------------------------------------------------------------
@@ -1544,6 +2017,83 @@ class TestSlashCommands:
         msg = adapter.handle_message.call_args[0][0]
         assert msg.text == "/reasoning"
 
+    # ------------------------------------------------------------------
+    # Native slash commands — /btw, /stop, /model, ... dispatched directly
+    # instead of as /hermes subcommands. This is the Discord/Telegram parity
+    # fix: the slash name itself becomes the command.
+    # ------------------------------------------------------------------
+
+    @pytest.mark.asyncio
+    async def test_native_btw_slash(self, adapter):
+        """/btw with args must dispatch to /background, not /hermes btw."""
+        command = {
+            "command": "/btw",
+            "text": "fix the failing test",
+            "user_id": "U1",
+            "channel_id": "C1",
+        }
+        await adapter._handle_slash_command(command)
+        msg = adapter.handle_message.call_args[0][0]
+        # The gateway command dispatcher resolves /btw -> background via
+        # resolve_command() — our handler's job is just to deliver
+        # "/btw <args>" to the gateway runner, which is what this asserts.
+        assert msg.text == "/btw fix the failing test"
+
+    @pytest.mark.asyncio
+    async def test_native_stop_slash_no_args(self, adapter):
+        command = {
+            "command": "/stop",
+            "text": "",
+            "user_id": "U1",
+            "channel_id": "C1",
+        }
+        await adapter._handle_slash_command(command)
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.text == "/stop"
+
+    @pytest.mark.asyncio
+    async def test_native_model_slash_with_args(self, adapter):
+        command = {
+            "command": "/model",
+            "text": "anthropic/claude-sonnet-4",
+            "user_id": "U1",
+            "channel_id": "C1",
+        }
+        await adapter._handle_slash_command(command)
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.text == "/model anthropic/claude-sonnet-4"
+
+    @pytest.mark.asyncio
+    async def test_legacy_hermes_prefix_still_works(self, adapter):
+        """Backward compat: /hermes btw foo must still route to /btw foo.
+
+        Old workspace manifests only declared /hermes as the single slash.
+        After users refresh their manifest they get /btw natively, but the
+        legacy form must keep working during the transition.
+        """
+        command = {
+            "command": "/hermes",
+            "text": "btw run the tests",
+            "user_id": "U1",
+            "channel_id": "C1",
+        }
+        await adapter._handle_slash_command(command)
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.text == "/btw run the tests"
+
+    @pytest.mark.asyncio
+    async def test_legacy_hermes_freeform_question(self, adapter):
+        """/hermes <free-form text> must stay as the raw text (non-command)."""
+        command = {
+            "command": "/hermes",
+            "text": "what's the weather today?",
+            "user_id": "U1",
+            "channel_id": "C1",
+        }
+        await adapter._handle_slash_command(command)
+        msg = adapter.handle_message.call_args[0][0]
+        assert msg.text == "what's the weather today?"
+
 
 # ---------------------------------------------------------------------------
 # TestMessageSplitting
@@ -1797,6 +2347,48 @@ class TestSendImageSSRFGuards:
         assert "see this" in call_kwargs["text"]
         assert "https://public.example/image.png" in call_kwargs["text"]
 
+    @pytest.mark.asyncio
+    async def test_send_image_fallback_preserves_thread_metadata(self, adapter):
+        redirect_response = MagicMock()
+        redirect_response.is_redirect = True
+        redirect_response.next_request = MagicMock(
+            url="http://169.254.169.254/latest/meta-data"
+        )
+
+        client_kwargs = {}
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        async def fake_get(_url):
+            for hook in client_kwargs["event_hooks"]["response"]:
+                await hook(redirect_response)
+
+        mock_client.get = AsyncMock(side_effect=fake_get)
+        adapter._app.client.files_upload_v2 = AsyncMock(return_value={"ok": True})
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "reply_ts"})
+
+        def fake_async_client(*args, **kwargs):
+            client_kwargs.update(kwargs)
+            return mock_client
+
+        def fake_is_safe_url(url):
+            return url == "https://public.example/image.png"
+
+        with (
+            patch("tools.url_safety.is_safe_url", side_effect=fake_is_safe_url),
+            patch("httpx.AsyncClient", side_effect=fake_async_client),
+        ):
+            await adapter.send_image(
+                chat_id="C123",
+                image_url="https://public.example/image.png",
+                caption="see this",
+                metadata={"thread_id": "parent_ts_789"},
+            )
+
+        call_kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert call_kwargs.get("thread_ts") == "parent_ts_789"
+
 
 # ---------------------------------------------------------------------------
 # TestProgressMessageThread
@@ -1921,3 +2513,76 @@ class TestProgressMessageThread:
             "so each @mention starts its own thread"
         )
         assert msg_event.message_id == "2000000000.000001"
+
+
+class TestSlackReplyToText:
+    """Ensure MessageEvent.reply_to_text is populated on thread replies so
+    gateway.run can inject a ``[Replying to: "..."]`` prefix (parity with
+    Telegram/Discord/Feishu/WeCom)."""
+
+    @pytest.mark.asyncio
+    async def test_slack_reply_to_text_set_on_thread_reply(self, adapter):
+        """When a thread reply arrives and the parent was posted by a bot
+        (e.g. cron summary), reply_to_text must carry the parent's text."""
+        adapter._channel_team = {}  # primary workspace only
+        adapter._team_bot_user_ids = {}
+
+        # Mock conversations_replies to return a bot-posted parent
+        adapter._app.client.conversations_replies = AsyncMock(return_value={
+            "messages": [
+                {
+                    "ts": "1000.0",
+                    "bot_id": "B_CRON",
+                    "text": "メール要約: 新着メール3件あります",
+                },
+                {"ts": "1000.5", "user": "U_USER", "text": "詳細を教えて"},
+            ]
+        })
+
+        # Use a DM so mention-gating doesn't short-circuit the handler.
+        event = {
+            "text": "詳細を教えて",
+            "user": "U_USER",
+            "channel": "D123",
+            "channel_type": "im",
+            "ts": "1000.5",
+            "thread_ts": "1000.0",  # thread reply
+        }
+
+        with patch.object(
+            adapter, "_resolve_user_name", new=AsyncMock(return_value="Alice")
+        ):
+            await adapter._handle_slack_message(event)
+
+        assert adapter.handle_message.call_args is not None, (
+            "handle_message must be invoked for thread-reply DM"
+        )
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.reply_to_message_id == "1000.0"
+        # The critical assertion: parent text is exposed as reply_to_text so the
+        # gateway can inject it when not already in the session history.
+        assert msg_event.reply_to_text is not None
+        assert "メール要約" in msg_event.reply_to_text
+
+    @pytest.mark.asyncio
+    async def test_slack_reply_to_text_none_for_top_level_message(self, adapter):
+        """Top-level messages (no thread_ts) must not set reply_to_text."""
+        event = {
+            "text": "hello",
+            "user": "U_USER",
+            "channel": "D123",
+            "channel_type": "im",
+            "ts": "1000.0",
+            # no thread_ts — top-level DM
+        }
+
+        with patch.object(
+            adapter, "_resolve_user_name", new=AsyncMock(return_value="Alice")
+        ):
+            await adapter._handle_slack_message(event)
+
+        assert adapter.handle_message.call_args is not None
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.reply_to_text is None
+        # Top-level message: reply_to_message_id must be falsy (None or empty).
+        assert not msg_event.reply_to_message_id

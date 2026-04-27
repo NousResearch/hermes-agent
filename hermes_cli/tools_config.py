@@ -11,6 +11,7 @@ the `platform_toolsets` key.
 
 import json as _json
 import logging
+import os
 import sys
 from pathlib import Path
 from typing import Dict, List, Optional, Set
@@ -25,7 +26,7 @@ from hermes_cli.nous_subscription import (
     get_nous_subscription_features,
 )
 from tools.tool_backend_helpers import fal_key_is_configured, managed_nous_tools_enabled
-from utils import base_url_hostname
+from utils import base_url_hostname, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -70,6 +71,7 @@ CONFIGURABLE_TOOLSETS = [
     ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
+    ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
 ]
 
 # Toolsets that are OFF by default for new installs.
@@ -676,6 +678,15 @@ def _get_platform_tools(
         # their own platform (e.g. `discord` + `discord` should stay OFF).
         if platform in default_off and platform not in _TOOLSET_PLATFORM_RESTRICTIONS:
             default_off.remove(platform)
+        # Home Assistant is already runtime-gated by its check_fn (requires
+        # HASS_TOKEN to register any tools). When a user has configured
+        # HASS_TOKEN, they've explicitly opted in — don't also strip it via
+        # _DEFAULT_OFF_TOOLSETS, which would silently drop HA from platforms
+        # (e.g. cron) that run through _get_platform_tools without an
+        # explicit saved toolset list. Without this, Norbert's HA cron jobs
+        # regressed after #14798 made cron honor per-platform tool config.
+        if "homeassistant" in default_off and os.getenv("HASS_TOKEN"):
+            default_off.remove("homeassistant")
         enabled_toolsets -= default_off
 
     # Recover non-configurable platform toolsets (e.g. discord, feishu_doc,
@@ -1177,7 +1188,7 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
                 configured_provider = image_cfg.get("provider")
                 if configured_provider not in (None, "", "fal"):
                     return False
-                if image_cfg.get("use_gateway") is False:
+                if image_cfg.get("use_gateway") is not None and not is_truthy_value(image_cfg.get("use_gateway"), default=False):
                     return False
             return feature.managed_by_nous
         if provider.get("tts_provider"):
@@ -1209,7 +1220,7 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
         return (
             provider["imagegen_backend"] == "fal"
             and configured_provider in (None, "", "fal")
-            and not image_cfg.get("use_gateway")
+            and not is_truthy_value(image_cfg.get("use_gateway"), default=False)
         )
     return False
 

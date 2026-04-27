@@ -33,8 +33,6 @@ COPILOT_REASONING_EFFORTS_O_SERIES = ["low", "medium", "high"]
 # (model_id, display description shown in menus)
 OPENROUTER_MODELS: list[tuple[str, str]] = [
     ("moonshotai/kimi-k2.6",            "recommended"),
-    ("deepseek/deepseek-v4-pro",        ""),
-    ("deepseek/deepseek-v4-flash",      ""),
     ("anthropic/claude-opus-4.7",       ""),
     ("anthropic/claude-opus-4.6",       ""),
     ("anthropic/claude-sonnet-4.6",     ""),
@@ -111,8 +109,6 @@ def _codex_curated_models() -> list[str]:
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "nous": [
         "moonshotai/kimi-k2.6",
-        "deepseek/deepseek-v4-pro",
-        "deepseek/deepseek-v4-flash",
         "xiaomi/mimo-v2.5-pro",
         "xiaomi/mimo-v2.5",
         "anthropic/claude-opus-4.7",
@@ -876,7 +872,16 @@ def fetch_openrouter_models(
     if _openrouter_catalog_cache is not None and not force_refresh:
         return list(_openrouter_catalog_cache)
 
-    fallback = list(OPENROUTER_MODELS)
+    # Prefer the remotely-hosted catalog manifest; fall back to the in-repo
+    # snapshot when the manifest is unreachable. Both are curated lists that
+    # drive the picker; the OpenRouter live /v1/models filter (tool support,
+    # free pricing) is applied on top either way.
+    try:
+        from hermes_cli.model_catalog import get_curated_openrouter_models
+        remote = get_curated_openrouter_models()
+    except Exception:
+        remote = None
+    fallback = list(remote) if remote else list(OPENROUTER_MODELS)
     preferred_ids = [mid for mid, _ in fallback]
 
     try:
@@ -927,6 +932,24 @@ def fetch_openrouter_models(
 def model_ids(*, force_refresh: bool = False) -> list[str]:
     """Return just the OpenRouter model-id strings."""
     return [mid for mid, _ in fetch_openrouter_models(force_refresh=force_refresh)]
+
+
+def get_curated_nous_model_ids() -> list[str]:
+    """Return the curated Nous Portal model-id list.
+
+    Prefers the remotely-hosted catalog manifest (published under
+    ``website/static/api/model-catalog.json``); falls back to the in-repo
+    snapshot in ``_PROVIDER_MODELS["nous"]`` when the manifest is
+    unreachable. Always returns a list (never None).
+    """
+    try:
+        from hermes_cli.model_catalog import get_curated_nous_models
+        remote = get_curated_nous_models()
+    except Exception:
+        remote = None
+    if remote:
+        return list(remote)
+    return list(_PROVIDER_MODELS.get("nous", []))
 
 
 def _ai_gateway_model_is_free(pricing: Any) -> bool:
@@ -2201,6 +2224,52 @@ def copilot_model_api_mode(
                 return "anthropic_messages"
 
     return "chat_completions"
+
+
+# Azure Foundry model families that require the Responses API.  Azure
+# rejects /chat/completions against these deployments with
+# ``400 "The requested operation is unsupported."`` — the same payload Bob
+# Dobolina hit in April 2026 on ``gpt-5.3-codex`` while ``gpt-4o-pure`` on
+# the same endpoint worked fine.  Keep the patterns broad enough to cover
+# vendor-renamed deployments (e.g. ``gpt-5.3-codex``, ``gpt-5-codex``,
+# ``gpt-5.4``, ``o1-preview``) but tight enough to leave GPT-4 / 3.5 / Llama /
+# Mistral / Grok deployments on chat completions.
+_AZURE_FOUNDRY_RESPONSES_PREFIXES = (
+    "codex",       # codex-*, codex-mini
+    "gpt-5",       # gpt-5, gpt-5.x, gpt-5-codex, gpt-5.x-codex
+    "o1",          # o1, o1-preview, o1-mini
+    "o3",          # o3, o3-mini
+    "o4",          # o4, o4-mini
+)
+
+
+def azure_foundry_model_api_mode(model_name: Optional[str]) -> Optional[str]:
+    """Infer Azure Foundry api_mode from a deployment/model name.
+
+    Returns ``"codex_responses"`` when the model name matches a family that
+    only accepts the Responses API on Azure Foundry (GPT-5.x, codex, o1/o3/o4
+    reasoning models).  Returns ``None`` otherwise — the caller should fall
+    back to the configured/default api_mode (typically ``chat_completions``)
+    so GPT-4o, GPT-4 Turbo, Llama, Mistral, etc. keep working.
+
+    Intentionally does NOT return ``anthropic_messages``; Anthropic-style
+    Azure endpoints are disambiguated by URL (``/anthropic`` suffix) in
+    ``runtime_provider._detect_api_mode_for_url`` and by the user setting
+    ``model.api_mode: anthropic_messages`` explicitly.
+    """
+    raw = str(model_name or "").strip().lower()
+    if not raw:
+        return None
+    # Strip any vendor/ prefix a user may have copied from OpenRouter / Copilot.
+    if "/" in raw:
+        raw = raw.rsplit("/", 1)[-1]
+    # gpt-5-mini speaks chat completions on Copilot but Azure Foundry deploys
+    # the full gpt-5 family uniformly on Responses API — don't carve an
+    # exception here.
+    for prefix in _AZURE_FOUNDRY_RESPONSES_PREFIXES:
+        if raw.startswith(prefix):
+            return "codex_responses"
+    return None
 
 
 def normalize_opencode_model_id(provider_id: Optional[str], model_id: Optional[str]) -> str:

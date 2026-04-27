@@ -252,7 +252,6 @@ Primary event types the client handles today:
 | `sudo.request`           | `{ request_id }`                                |
 | `secret.request`         | `{ prompt, env_var, request_id }`               |
 | `background.complete`    | `{ task_id, text }`                             |
-| `btw.complete`           | `{ text }`                                      |
 | `error`                  | `{ message }`                                   |
 | `gateway.stderr`         | synthesized from child stderr                   |
 | `gateway.protocol_error` | synthesized from malformed stdout               |

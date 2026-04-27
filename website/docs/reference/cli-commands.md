@@ -41,6 +41,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes gateway` | Run or manage the messaging gateway service. |
 | `hermes setup` | Interactive setup wizard for all or part of the configuration. |
 | `hermes whatsapp` | Configure and pair the WhatsApp bridge. |
+| `hermes slack` | Slack helpers (currently: generate the app manifest with every command as a native slash). |
 | `hermes auth` | Manage credentials — add, list, remove, reset, set strategy. Handles OAuth flows for Codex/Nous/Anthropic. |
 | `hermes login` / `logout` | **Deprecated** — use `hermes auth` instead. |
 | `hermes status` | Show agent, auth, and platform status. |
@@ -220,6 +221,33 @@ hermes whatsapp
 ```
 
 Runs the WhatsApp pairing/setup flow, including mode selection and QR-code pairing.
+
+## `hermes slack`
+
+```bash
+hermes slack manifest              # print manifest to stdout
+hermes slack manifest --write      # write to ~/.hermes/slack-manifest.json
+hermes slack manifest --slashes-only  # just the features.slash_commands array
+```
+
+Generates a Slack app manifest that registers every gateway command in
+`COMMAND_REGISTRY` (`/btw`, `/stop`, `/model`, …) as a first-class
+Slack slash command — matching Discord and Telegram parity. Paste the
+output into your Slack app config at
+[https://api.slack.com/apps](https://api.slack.com/apps) → your app →
+**Features → App Manifest → Edit**, then **Save**. Slack prompts for
+reinstall if scopes or slash commands changed.
+
+| Flag | Default | Purpose |
+|------|---------|---------|
+| `--write [PATH]` | stdout | Write to a file instead of stdout. Bare `--write` writes `$HERMES_HOME/slack-manifest.json`. |
+| `--name NAME` | `Hermes` | Bot display name in Slack. |
+| `--description DESC` | default blurb | Bot description shown in the Slack app directory. |
+| `--slashes-only` | off | Emit only `features.slash_commands` for merging into a manually-maintained manifest. |
+
+Run `hermes slack manifest --write` again after `hermes update` to pick
+up any new commands.
+
 
 ## `hermes login` / `hermes logout` *(Deprecated)*
 
@@ -589,6 +617,8 @@ hermes skills inspect official/security/1password
 hermes skills inspect skills-sh/vercel-labs/json-render/json-render-react
 hermes skills install official/migration/openclaw-migration
 hermes skills install skills-sh/anthropics/skills/pdf --force
+hermes skills install https://sharethis.chat/SKILL.md                     # Direct URL (single-file SKILL.md)
+hermes skills install https://example.com/SKILL.md --name my-skill        # Override name when frontmatter has none
 hermes skills check
 hermes skills update
 hermes skills config
@@ -599,6 +629,7 @@ Notes:
 - `--force` does not override a `dangerous` scan verdict.
 - `--source skills-sh` searches the public `skills.sh` directory.
 - `--source well-known` lets you point Hermes at a site exposing `/.well-known/skills/index.json`.
+- Passing an `http(s)://…/*.md` URL installs a single-file SKILL.md directly. When frontmatter has no `name:` and the URL slug isn't a valid identifier, an interactive terminal prompts for a name; non-interactive surfaces (`/skills install` inside the TUI, gateway platforms) require `--name <x>` instead.
 
 ## `hermes honcho`
 

@@ -2327,16 +2327,14 @@ def _resolve_chat_argv(
     from hermes_cli.main import PROJECT_ROOT, _make_tui_argv
 
     argv, cwd = _make_tui_argv(PROJECT_ROOT / "ui-tui", tui_dev=False)
-    env: Optional[dict] = None
+    env = os.environ.copy()
+    env.setdefault("NODE_ENV", "production")
 
-    if resume or sidecar_url:
-        env = os.environ.copy()
+    if resume:
+        env["HERMES_TUI_RESUME"] = resume
 
-        if resume:
-            env["HERMES_TUI_RESUME"] = resume
-
-        if sidecar_url:
-            env["HERMES_TUI_SIDECAR_URL"] = sidecar_url
+    if sidecar_url:
+        env["HERMES_TUI_SIDECAR_URL"] = sidecar_url
 
     return list(argv), str(cwd) if cwd else None, env
 

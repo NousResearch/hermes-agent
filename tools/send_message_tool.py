@@ -305,62 +305,7 @@ def _handle_send(args):
         return json.dumps(_error(f"Send failed: {e}"))
 
 
-def _resolve_whatsapp_phone_to_jid(phone: str) -> str:
-    """Resolve an E.164 phone number to a WhatsApp JID.
 
-    Resolution order:
-    1. Bridge session ``lid-mapping-{phone}.json`` → ``{lid}@lid``
-    2. Fallback to legacy ``{phone}@s.whatsapp.net``
-
-    The bridge session directory already maintains phone→LID mapping files
-    created during the Baileys handshake.  This is the same data that
-    ``allowlist.js`` and ``_expand_whatsapp_auth_aliases`` use for incoming
-    message authorization.
-    """
-    from pathlib import Path
-
-    # Strip leading '+' to get the bare phone number
-    bare_phone = phone.lstrip("+").strip()
-    if not bare_phone:
-        return phone
-
-    # 1. Try LID resolution from bridge session mapping files
-    try:
-        from hermes_constants import get_hermes_home
-        session_dir = get_hermes_home() / "whatsapp" / "session"
-        mapping_path = session_dir / f"lid-mapping-{bare_phone}.json"
-        if mapping_path.exists():
-            lid = json.loads(mapping_path.read_text(encoding="utf-8"))
-            if lid:
-                # Strip any existing JID suffix from the stored value
-                lid_bare = str(lid).strip().split("@")[0].split(":")[0]
-                if lid_bare:
-                    logger.debug("Resolved WhatsApp phone %s → LID %s", bare_phone, lid_bare)
-                    return f"{lid_bare}@lid"
-    except Exception as e:
-        logger.debug("WhatsApp LID mapping lookup failed for %s: %s", bare_phone, e)
-
-    # 2. Fallback to legacy @s.whatsapp.net JID format
-    logger.debug("No LID mapping found for WhatsApp phone %s, using legacy JID", bare_phone)
-    return f"{bare_phone}@s.whatsapp.net"
-
-
-def _ensure_whatsapp_jid(chat_id: str) -> str:
-    """Ensure a WhatsApp chat_id has a valid JID suffix.
-
-    If the value already ends with ``@lid``, ``@s.whatsapp.net``, or
-    ``@g.us`` it is returned as-is.  Otherwise, LID resolution is
-    attempted via bridge mapping files, falling back to the legacy
-    ``@s.whatsapp.net`` suffix.
-    """
-    if not chat_id:
-        return chat_id
-    stripped = chat_id.strip()
-    # Already a valid JID
-    if "@" in stripped:
-        return stripped
-    # Bare number — resolve via phone→LID pipeline
-    return _resolve_whatsapp_phone_to_jid(stripped)
 
 
 def _parse_target_ref(platform_name: str, target_ref: str):
@@ -384,18 +329,12 @@ def _parse_target_ref(platform_name: str, target_ref: str):
     if platform_name in _PHONE_PLATFORMS:
         match = _E164_TARGET_RE.fullmatch(target_ref)
         if match:
-            if platform_name == "whatsapp":
-                # WhatsApp has migrated to LID (Linked Identity Device)
-                # format. Resolve the phone number to the correct JID
-                # via the bridge session's lid-mapping files.
-                resolved_jid = _resolve_whatsapp_phone_to_jid(target_ref.strip())
-                return resolved_jid, None, True
             # Preserve the leading '+' — signal-cli and sms adapters
             # expect E.164 format for direct recipients.
             return target_ref.strip(), None, True
-    # WhatsApp JIDs already contain '@' (e.g. 123@lid, 123@s.whatsapp.net, 123@g.us).
+    # WhatsApp JIDs end with @lid, @s.whatsapp.net, or @g.us.
     # Pass them through as-is — the bridge validates format on its end.
-    if platform_name == "whatsapp" and "@" in target_ref.strip():
+    if platform_name == "whatsapp" and target_ref.strip().endswith(("@lid", "@s.whatsapp.net", "@g.us")):
         return target_ref.strip(), None, True
     if target_ref.lstrip("-").isdigit():
         return target_ref, None, True
@@ -1040,8 +979,10 @@ async def _send_whatsapp(extra, chat_id, message):
     except ImportError:
         return {"error": "aiohttp not installed. Run: pip install aiohttp"}
     try:
-        # Ensure chat_id is a valid WhatsApp JID.
-        resolved_chat_id = _ensure_whatsapp_jid(chat_id)
+        from gateway.whatsapp_identity import resolve_whatsapp_outbound_target
+        # Ensure chat_id is a valid WhatsApp JID by resolving through central identity helper.
+        resolved_chat_id = resolve_whatsapp_outbound_target(chat_id)
+
         bridge_port = extra.get("bridge_port", 3000)
         async with aiohttp.ClientSession() as session:
             async with session.post(

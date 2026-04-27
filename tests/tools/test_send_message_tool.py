@@ -3,6 +3,7 @@
 import asyncio
 import json
 import os
+import pytest
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -786,11 +787,33 @@ class TestParseTargetRefE164:
         assert is_explicit is True
 
     def test_whatsapp_e164_is_explicit(self):
-        """WhatsApp E.164 resolves to @s.whatsapp.net JID when no mapping exists."""
-        with patch("tools.send_message_tool._resolve_whatsapp_phone_to_jid",
-                    return_value="15551234567@s.whatsapp.net"):
-            chat_id, _, is_explicit = _parse_target_ref("whatsapp", "+15551234567")
-        assert chat_id == "15551234567@s.whatsapp.net"
+        """WhatsApp E.164 target passes through unmodified for later resolution."""
+        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "+15551234567")
+        assert chat_id == "+15551234567"
+        assert is_explicit is True
+
+    def test_whatsapp_lid_jid_is_explicit(self):
+        """A @lid JID is recognized as an explicit WhatsApp target."""
+        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "77214955630717@lid")
+        assert chat_id == "77214955630717@lid"
+        assert is_explicit is True
+
+    def test_whatsapp_legacy_jid_is_explicit(self):
+        """A @s.whatsapp.net JID is recognized as an explicit WhatsApp target."""
+        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "351912345678@s.whatsapp.net")
+        assert chat_id == "351912345678@s.whatsapp.net"
+        assert is_explicit is True
+
+    def test_whatsapp_group_jid_is_explicit(self):
+        """A @g.us group JID is recognized as an explicit WhatsApp target."""
+        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "120363123456789@g.us")
+        assert chat_id == "120363123456789@g.us"
+        assert is_explicit is True
+
+    def test_whatsapp_device_lid_is_explicit(self):
+        """A device-qualified LID (with :device suffix) passes through."""
+        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "77214955630717:15@lid")
+        assert chat_id == "77214955630717:15@lid"
         assert is_explicit is True
 
     def test_signal_bare_digits_still_work(self):
@@ -813,11 +836,14 @@ class TestParseTargetRefE164:
         assert _parse_target_ref("matrix", "+15551234567")[2] is False
 
 
-class TestWhatsAppPhoneToLidResolution:
-    """Tests for WhatsApp phone→LID resolution in _parse_target_ref and helpers."""
+class TestWhatsAppSendPayload:
+    """Tests that _send_whatsapp uses the resolved JID/LID for the bridge payload."""
 
-    def test_phone_resolves_to_lid_via_mapping_file(self, tmp_path, monkeypatch):
-        """Phone number is resolved to LID@lid when a mapping file exists."""
+    @pytest.mark.asyncio
+    async def test_send_whatsapp_resolves_phone_to_lid_in_payload(self, monkeypatch, tmp_path):
+        from tools.send_message_tool import _send_whatsapp
+
+        # Set up a fake LID mapping file
         session_dir = tmp_path / "whatsapp" / "session"
         session_dir.mkdir(parents=True)
         (session_dir / "lid-mapping-351912345678.json").write_text(
@@ -825,93 +851,45 @@ class TestWhatsAppPhoneToLidResolution:
         )
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
 
-        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "+351912345678")
-        assert chat_id == "77214955630717@lid"
-        assert is_explicit is True
+        # We'll mock aiohttp.ClientSession.post to capture the JSON payload
+        captured_payload = {}
+        captured_url = ""
 
-    def test_phone_falls_back_to_legacy_jid(self, tmp_path, monkeypatch):
-        """Phone number falls back to @s.whatsapp.net when no mapping exists."""
-        # Ensure session dir exists but has no mapping for this phone
-        session_dir = tmp_path / "whatsapp" / "session"
-        session_dir.mkdir(parents=True)
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        class MockResponse:
+            status = 200
+            async def json(self):
+                return {"messageId": "msg_123"}
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, exc_type, exc, tb):
+                pass
 
-        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "+15551234567")
-        assert chat_id == "15551234567@s.whatsapp.net"
-        assert is_explicit is True
+        class MockSession:
+            async def __aenter__(self):
+                return self
+            async def __aexit__(self, exc_type, exc, tb):
+                pass
+            def post(self, url, json=None, **kwargs):
+                nonlocal captured_payload, captured_url
+                captured_url = url
+                captured_payload = json
+                return MockResponse()
 
-    def test_lid_jid_is_explicit_target(self):
-        """A @lid JID is recognized as an explicit WhatsApp target."""
-        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "77214955630717@lid")
-        assert chat_id == "77214955630717@lid"
-        assert is_explicit is True
+        monkeypatch.setattr("aiohttp.ClientSession", lambda **kw: MockSession())
 
-    def test_legacy_jid_is_explicit_target(self):
-        """A @s.whatsapp.net JID is recognized as an explicit WhatsApp target."""
-        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "351912345678@s.whatsapp.net")
-        assert chat_id == "351912345678@s.whatsapp.net"
-        assert is_explicit is True
+        # Call _send_whatsapp with a bare phone number target
+        extra_config = {"bridge_port": 3000}
+        result = await _send_whatsapp(extra_config, "+351912345678", "Hello LID")
 
-    def test_group_jid_is_explicit_target(self):
-        """A @g.us group JID is recognized as an explicit WhatsApp target."""
-        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "120363123456789@g.us")
-        assert chat_id == "120363123456789@g.us"
-        assert is_explicit is True
+        # Verify the success result
+        assert result.get("success") is True
+        assert result.get("chat_id") == "77214955630717@lid"
+        
+        # Ensure the HTTP payload actually used the resolved LID, not the bare phone
+        assert captured_url == "http://localhost:3000/send"
+        assert captured_payload["chatId"] == "77214955630717@lid"
+        assert captured_payload["message"] == "Hello LID"
 
-    def test_device_lid_is_explicit_target(self):
-        """A device-qualified LID (with :device suffix) passes through."""
-        chat_id, _, is_explicit = _parse_target_ref("whatsapp", "77214955630717:15@lid")
-        assert chat_id == "77214955630717:15@lid"
-        assert is_explicit is True
-
-    def test_signal_e164_still_preserves_plus(self):
-        """Signal E.164 behavior is unchanged (no JID resolution)."""
-        chat_id, _, is_explicit = _parse_target_ref("signal", "+41791234567")
-        assert chat_id == "+41791234567"
-        assert is_explicit is True
-
-    def test_sms_e164_still_preserves_plus(self):
-        """SMS E.164 behavior is unchanged (no JID resolution)."""
-        chat_id, _, is_explicit = _parse_target_ref("sms", "+15551234567")
-        assert chat_id == "+15551234567"
-        assert is_explicit is True
-
-
-class TestEnsureWhatsAppJid:
-    """Tests for _ensure_whatsapp_jid helper."""
-
-    def test_lid_jid_passes_through(self):
-        from tools.send_message_tool import _ensure_whatsapp_jid
-        assert _ensure_whatsapp_jid("77214955630717@lid") == "77214955630717@lid"
-
-    def test_legacy_jid_passes_through(self):
-        from tools.send_message_tool import _ensure_whatsapp_jid
-        assert _ensure_whatsapp_jid("351912345678@s.whatsapp.net") == "351912345678@s.whatsapp.net"
-
-    def test_group_jid_passes_through(self):
-        from tools.send_message_tool import _ensure_whatsapp_jid
-        assert _ensure_whatsapp_jid("120363123456789@g.us") == "120363123456789@g.us"
-
-    def test_bare_number_gets_resolved(self, tmp_path, monkeypatch):
-        from tools.send_message_tool import _ensure_whatsapp_jid
-        session_dir = tmp_path / "whatsapp" / "session"
-        session_dir.mkdir(parents=True)
-        (session_dir / "lid-mapping-351912345678.json").write_text(
-            '"77214955630717"', encoding="utf-8"
-        )
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        assert _ensure_whatsapp_jid("351912345678") == "77214955630717@lid"
-
-    def test_bare_number_fallback(self, tmp_path, monkeypatch):
-        from tools.send_message_tool import _ensure_whatsapp_jid
-        session_dir = tmp_path / "whatsapp" / "session"
-        session_dir.mkdir(parents=True)
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        assert _ensure_whatsapp_jid("15551234567") == "15551234567@s.whatsapp.net"
-
-    def test_empty_passes_through(self):
-        from tools.send_message_tool import _ensure_whatsapp_jid
-        assert _ensure_whatsapp_jid("") == ""
 
 
 class TestSendDiscordThreadId:
@@ -1654,3 +1632,55 @@ class TestForumProbeCache:
         assert result2["success"] is True
         # Only one session opened (thread creation) — no probe session this time
         # (verified by not raising from our side_effect exhaustion)
+from gateway.whatsapp_identity import resolve_whatsapp_outbound_target
+
+
+class TestResolveWhatsappOutboundTarget:
+    """Tests for resolve_whatsapp_outbound_target helper in whatsapp_identity."""
+
+    def test_lid_jid_passes_through(self):
+        assert resolve_whatsapp_outbound_target("77214955630717@lid") == "77214955630717@lid"
+
+    def test_legacy_jid_passes_through(self):
+        assert resolve_whatsapp_outbound_target("351912345678@s.whatsapp.net") == "351912345678@s.whatsapp.net"
+
+    def test_group_jid_passes_through(self):
+        assert resolve_whatsapp_outbound_target("120363123456789@g.us") == "120363123456789@g.us"
+
+    def test_strict_suffix_validation_falls_back_to_phone(self, tmp_path, monkeypatch):
+        """If it has an @ but isn't a known suffix, it extracts the prefix and falls back to phone resolution."""
+        # Isolate HERMES_HOME so we don't accidentally match a real mapping
+        session_dir = tmp_path / "whatsapp" / "session"
+        session_dir.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        # e.g., someone passed 15551234567@unknown.net
+        # the helper extracts 15551234567 and falls back to legacy JID since no map exists.
+        assert resolve_whatsapp_outbound_target("15551234567@unknown.net") == "15551234567@s.whatsapp.net"
+
+    def test_bare_number_gets_resolved(self, tmp_path, monkeypatch):
+        session_dir = tmp_path / "whatsapp" / "session"
+        session_dir.mkdir(parents=True)
+        (session_dir / "lid-mapping-351912345678.json").write_text(
+            '"77214955630717"', encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        assert resolve_whatsapp_outbound_target("351912345678") == "77214955630717@lid"
+
+    def test_bare_number_gets_resolved_strips_plus(self, tmp_path, monkeypatch):
+        session_dir = tmp_path / "whatsapp" / "session"
+        session_dir.mkdir(parents=True)
+        (session_dir / "lid-mapping-351912345678.json").write_text(
+            '"77214955630717"', encoding="utf-8"
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        assert resolve_whatsapp_outbound_target("+351912345678") == "77214955630717@lid"
+
+    def test_bare_number_fallback(self, tmp_path, monkeypatch):
+        session_dir = tmp_path / "whatsapp" / "session"
+        session_dir.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        assert resolve_whatsapp_outbound_target("15551234567") == "15551234567@s.whatsapp.net"
+
+    def test_empty_passes_through(self):
+        assert resolve_whatsapp_outbound_target("") == ""

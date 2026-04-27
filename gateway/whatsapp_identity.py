@@ -133,3 +133,54 @@ def canonical_whatsapp_identifier(identifier: str) -> str:
     # when no lid-mapping files are present.
     aliases = expand_whatsapp_aliases(normalized)
     return min(aliases, key=lambda candidate: (len(candidate), candidate))
+
+
+def resolve_whatsapp_outbound_target(chat_id: str) -> str:
+    """Ensure a WhatsApp chat_id has a valid bridge-safe JID suffix.
+
+    If the value explicitly ends with ``@lid``, ``@s.whatsapp.net``, or
+    ``@g.us`` it is returned as-is.
+
+    If the value contains an unknown suffix (e.g. ``foo@bar.net``), the suffix
+    is stripped and the prefix (``foo``) is treated as a bare phone number.
+
+    For bare phone numbers, LID resolution is attempted via bridge mapping
+    files, falling back to the legacy ``@s.whatsapp.net`` suffix if no
+    mapping is found.
+    """
+    if not chat_id:
+        return chat_id
+
+    stripped = chat_id.strip()
+
+    # If it contains an '@', it must be a valid known suffix to pass through
+    if "@" in stripped:
+        if stripped.endswith(("@lid", "@s.whatsapp.net", "@g.us")):
+            return stripped
+        # It has an '@' but isn't a known WhatsApp JID format.
+        # Strip the unknown suffix and attempt to resolve the prefix as a bare phone number.
+        bare = stripped.split("@")[0]
+    else:
+        bare = stripped
+
+    bare_phone = bare.lstrip("+")
+    if not bare_phone:
+        return stripped
+
+    # 1. Try LID resolution from bridge session mapping files
+    try:
+        session_dir = get_hermes_home() / "whatsapp" / "session"
+        mapping_path = session_dir / f"lid-mapping-{bare_phone}.json"
+        if mapping_path.exists():
+            lid = json.loads(mapping_path.read_text(encoding="utf-8"))
+            if lid:
+                lid_bare = str(lid).strip().split("@")[0].split(":")[0]
+                if lid_bare:
+                    # To avoid circular imports or messy logging setups, just return
+                    return f"{lid_bare}@lid"
+    except Exception:
+        pass
+
+    # 2. Fallback to legacy @s.whatsapp.net JID format
+    return f"{bare_phone}@s.whatsapp.net"
+

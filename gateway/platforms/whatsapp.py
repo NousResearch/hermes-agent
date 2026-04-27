@@ -684,6 +684,10 @@ class WhatsAppAdapter(BasePlatformAdapter):
 
         try:
             import aiohttp
+            from gateway.whatsapp_identity import resolve_whatsapp_outbound_target
+
+            # Resolve bare phones to LIDs so the bridge accepts the live adapter's payload
+            resolved_chat_id = resolve_whatsapp_outbound_target(chat_id)
 
             # Format and chunk the message
             formatted = self.format_message(content)
@@ -692,7 +696,7 @@ class WhatsAppAdapter(BasePlatformAdapter):
             last_message_id = None
             for chunk in chunks:
                 payload: Dict[str, Any] = {
-                    "chatId": chat_id,
+                    "chatId": resolved_chat_id,
                     "message": chunk,
                 }
                 if reply_to and last_message_id is None:

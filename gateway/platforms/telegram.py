@@ -967,6 +967,35 @@ class TelegramAdapter(BasePlatformAdapter):
         else:  # "first" (default)
             return chunk_index == 0
 
+    @staticmethod
+    def _build_reply_markup(metadata):
+        """Build an InlineKeyboardMarkup from `metadata.buttons` if present.
+
+        Schema (in metadata):
+            buttons: [{text, callback_data | url}, ...]            # flat -> 1 row
+            buttons: [[{text, callback_data | url}, ...], ...]     # grid -> N rows
+
+        Returns None if no buttons key (skill didn't request keyboard).
+        """
+        if not isinstance(metadata, dict):
+            return None
+        spec = metadata.get("buttons")
+        if not spec:
+            return None
+        rows = spec if isinstance(spec[0], list) else [spec]
+        from telegram import InlineKeyboardMarkup, InlineKeyboardButton
+        grid = []
+        for row in rows:
+            grid.append([
+                InlineKeyboardButton(
+                    text=b["text"],
+                    callback_data=b.get("callback_data"),
+                    url=b.get("url"),
+                )
+                for b in row if "text" in b
+            ])
+        return InlineKeyboardMarkup(grid) if grid else None
+
     async def send(
         self,
         chat_id: str,
@@ -985,6 +1014,7 @@ class TelegramAdapter(BasePlatformAdapter):
         try:
             # Format and split message if needed
             formatted = self.format_message(content)
+            reply_markup = self._build_reply_markup(metadata)
             chunks = self.truncate_message(
                 formatted, self.MAX_MESSAGE_LENGTH, len_fn=utf16_len,
             )
@@ -1019,6 +1049,9 @@ class TelegramAdapter(BasePlatformAdapter):
                 should_thread = self._should_thread_reply(reply_to, i)
                 reply_to_id = int(reply_to) if should_thread else None
                 effective_thread_id = self._message_thread_id_for_send(thread_id)
+                # Buttons attach to the LAST chunk only (avoids orphaned
+                # buttons on chunks 1..N-1 of multi-chunk messages).
+                effective_reply_markup = reply_markup if i == len(chunks) - 1 else None
 
                 msg = None
                 for _send_attempt in range(3):
@@ -1029,6 +1062,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                 chat_id=int(chat_id),
                                 text=chunk,
                                 parse_mode=ParseMode.MARKDOWN_V2,
+                                reply_markup=effective_reply_markup,
                                 reply_to_message_id=reply_to_id,
                                 message_thread_id=effective_thread_id,
                                 **self._link_preview_kwargs(),
@@ -1042,6 +1076,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     chat_id=int(chat_id),
                                     text=plain_chunk,
                                     parse_mode=None,
+                                    reply_markup=effective_reply_markup,
                                     reply_to_message_id=reply_to_id,
                                     message_thread_id=effective_thread_id,
                                     **self._link_preview_kwargs(),

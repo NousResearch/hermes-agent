@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { ChevronDown, Pencil, Plus, Terminal, Trash2, Users } from "lucide-react";
-import { H2 } from "@nous-research/ui";
+import { H2 } from "@/components/NouiTypography";
 import { api } from "@/lib/api";
 import type { ProfileInfo } from "@/lib/api";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";

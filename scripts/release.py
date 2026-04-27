@@ -136,6 +136,7 @@ AUTHOR_MAP = {
     "1930707+haru398801@users.noreply.github.com": "haru398801",
     "rapabelias@gmail.com": "badgerbees",
     "xnb888@proton.me": "xnbi",
+    "xiahu889889@proton.me": "xiahu88988",
     "nocoo@users.noreply.github.com": "nocoo",
     "30841158+n-WN@users.noreply.github.com": "n-WN",
     "tsuijinglei@gmail.com": "hiddenpuppy",

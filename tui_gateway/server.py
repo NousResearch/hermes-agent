@@ -1571,10 +1571,27 @@ def _(rid, params: dict) -> dict:
                 pending_title = (session.get("pending_title") or "").strip()
                 if pending_title:
                     try:
-                        if db.set_session_title(key, pending_title):
+                        title_applied = db.set_session_title(key, pending_title)
+                        if title_applied:
                             session["pending_title"] = None
+                        else:
+                            existing_row = db.get_session(key)
+                            existing_title = ((existing_row or {}).get("title") or "").strip()
+                            if existing_title == pending_title:
+                                session["pending_title"] = None
+                            else:
+                                logger.info(
+                                    "Pending title still queued for session %s (wanted=%r, current=%r)",
+                                    sid,
+                                    pending_title,
+                                    existing_title,
+                                )
                     except Exception:
-                        pass
+                        logger.warning(
+                            "Failed to apply pending title for session %s",
+                            sid,
+                            exc_info=True,
+                        )
             session["agent"] = agent
 
             try:
@@ -1767,11 +1784,7 @@ def _(rid, params: dict) -> dict:
             return _ok(rid, {"pending": False, "title": title})
         # rowcount == 0 can mean "same value" as well as "missing row".
         # Queue only when the session row truly does not exist yet.
-        existing_row = None
-        try:
-            existing_row = db.get_session(key)
-        except Exception:
-            existing_row = None
+        existing_row = db.get_session(key)
         if existing_row:
             session["pending_title"] = None
             return _ok(

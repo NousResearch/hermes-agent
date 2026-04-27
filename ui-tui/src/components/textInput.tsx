@@ -1,6 +1,6 @@
 import type { InputEvent, Key } from '@hermes/ink'
 import * as Ink from '@hermes/ink'
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { type MutableRefObject, useEffect, useMemo, useRef, useState } from 'react'
 
 import { setInputSelection } from '../app/inputSelectionStore.js'
 import { readClipboardText, writeClipboardText } from '../lib/clipboard.js'
@@ -25,6 +25,7 @@ const DIM_OFF = `${ESC}[22m`
 const FWD_DEL_RE = new RegExp(`${ESC}\\[3(?:[~$^]|;)`)
 const PRINTABLE = /^[ -~\u00a0-\uffff]+$/
 const BRACKET_PASTE = new RegExp(`${ESC}?\\[20[01]~`, 'g')
+const MULTI_CLICK_MS = 500
 
 const invert = (s: string) => INV + s + INV_OFF
 const dim = (s: string) => DIM + s + DIM_OFF
@@ -287,6 +288,7 @@ export function TextInput({
   onPaste,
   onSubmit,
   mask,
+  mouseApiRef,
   placeholder = '',
   focus = true
 }: TextInputProps) {
@@ -309,6 +311,8 @@ export function TextInput({
   const pendingParentValue = useRef<string | null>(null)
   const localRenderTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const lineWidthRef = useRef(stringWidth(value.includes('\n') ? value.slice(value.lastIndexOf('\n') + 1) : value))
+  const mouseAnchorRef = useRef<null | number>(null)
+  const lastClickRef = useRef<{ at: number; offset: number }>({ at: 0, offset: -1 })
   const undo = useRef<{ cursor: number; value: string }[]>([])
   const redo = useRef<{ cursor: number; value: string }[]>([])
 
@@ -335,6 +339,24 @@ export function TextInput({
     column: layout.column,
     active: focus && termFocus && !selected
   })
+
+  // Hide the hardware cursor while a selection is active (prevents
+  // auto-wrap onto the next row when inverted text fills the column
+  // exactly) or when the terminal loses focus (suppresses the hollow-rect
+  // ghost most terminals draw at the parked position).
+  const hideHardwareCursor = focus && !!stdout?.isTTY && (!!selected || !termFocus)
+
+  useEffect(() => {
+    if (!hideHardwareCursor || !stdout) {
+      return
+    }
+
+    stdout.write('\x1b[?25l')
+
+    return () => {
+      stdout.write('\x1b[?25h')
+    }
+  }, [hideHardwareCursor, stdout])
 
   const nativeCursor = focus && termFocus && !selected && !!stdout?.isTTY
 
@@ -374,12 +396,21 @@ export function TextInput({
       return
     }
 
+    const dropSel = () => {
+      if (!selRef.current) {
+        return
+      }
+
+      selRef.current = null
+      setSel(null)
+    }
+
     setInputSelection({
-      clear: () => {
-        if (selRef.current) {
-          selRef.current = null
-          setSel(null)
-        }
+      clear: dropSel,
+      collapseToEnd: () => {
+        dropSel()
+        setCur(vRef.current.length)
+        curRef.current = vRef.current.length
       },
       end: selected?.end ?? curRef.current,
       start: selected?.start ?? curRef.current,
@@ -605,6 +636,22 @@ export function TextInput({
     curRef.current = end
   }
 
+  const moveCursor = (next: number, extend = false) => {
+    const c = snapPos(vRef.current, next)
+
+    if (extend) {
+      const anchor = selRef.current?.start ?? curRef.current
+      const nextSel = { end: c, start: anchor }
+      selRef.current = nextSel
+      setSel(nextSel)
+    } else {
+      clearSel()
+    }
+
+    setCur(c)
+    curRef.current = c
+  }
+
   const selRange = () => {
     const range = selRef.current
 
@@ -631,6 +678,59 @@ export function TextInput({
     const nextCursor = range ? range.start + cleaned.length : curRef.current + cleaned.length
 
     commit(nextValue, nextCursor)
+  }
+
+  const startMouseSelection = (next: number) => {
+    const c = snapPos(vRef.current, next)
+
+    mouseAnchorRef.current = c
+    selRef.current = { end: c, start: c }
+    setSel(null)
+    setCur(c)
+    curRef.current = c
+  }
+
+  const dragMouseSelection = (next: number) => {
+    if (mouseAnchorRef.current === null) {
+      return
+    }
+
+    const c = snapPos(vRef.current, next)
+    const range = { end: c, start: mouseAnchorRef.current }
+    selRef.current = range
+    setSel(range.start === range.end ? null : range)
+    setCur(c)
+    curRef.current = c
+  }
+
+  const endMouseSelection = () => {
+    mouseAnchorRef.current = null
+
+    const range = selRef.current
+
+    if (range && range.start === range.end) {
+      selRef.current = null
+      setSel(null)
+    }
+  }
+
+  const offsetAt = (e: { localCol?: number; localRow?: number }) =>
+    offsetFromPosition(display, e.localRow ?? 0, e.localCol ?? 0, columns)
+
+  const isMultiClickAt = (offset: number) => {
+    const now = Date.now()
+    const last = lastClickRef.current
+    lastClickRef.current = { at: now, offset }
+
+    return now - last.at < MULTI_CLICK_MS && offset === last.offset
+  }
+
+  if (mouseApiRef) {
+    mouseApiRef.current = {
+      dragAt: (row, col) => dragMouseSelection(offsetFromPosition(display, row, col, columns)),
+      end: endMouseSelection,
+      startAtBeginning: () => startMouseSelection(0)
+    }
   }
 
   useInput(
@@ -674,9 +774,7 @@ export function TextInput({
         const next = lineNav(vRef.current, curRef.current, k.upArrow ? -1 : 1)
 
         if (next !== null) {
-          clearSel()
-          setCur(next)
-          curRef.current = next
+          moveCursor(next, k.shift)
 
           return
         }
@@ -737,27 +835,37 @@ export function TextInput({
       }
 
       if (actionHome) {
-        clearSel()
         c = 0
+        moveCursor(c, k.shift)
+
+        return
       } else if (actionEnd) {
-        clearSel()
         c = v.length
+        moveCursor(c, k.shift)
+
+        return
       } else if (k.leftArrow) {
-        if (range && !wordMod) {
+        if (range && !wordMod && !k.shift) {
           clearSel()
           c = range.start
         } else {
-          clearSel()
           c = wordMod ? wordLeft(v, c) : prevPos(v, c)
         }
+
+        moveCursor(c, k.shift)
+
+        return
       } else if (k.rightArrow) {
-        if (range && !wordMod) {
+        if (range && !wordMod && !k.shift) {
           clearSel()
           c = range.end
         } else {
-          clearSel()
           c = wordMod ? wordRight(v, c) : nextPos(v, c)
         }
+
+        moveCursor(c, k.shift)
+
+        return
       } else if (wordMod && inp === 'b') {
         clearSel()
         c = wordLeft(v, c)
@@ -883,30 +991,72 @@ export function TextInput({
 
   return (
     <Box
-      onClick={(e: { localRow?: number; localCol?: number }) => {
+      onClick={(e: MouseEventLite) => {
         if (!focus) {
           return
         }
 
+        e.stopImmediatePropagation?.()
         clearSel()
-        const next = offsetFromPosition(display, e.localRow ?? 0, e.localCol ?? 0, columns)
+        const next = offsetAt(e)
         setCur(next)
         curRef.current = next
       }}
-      onMouseDown={(e: { button: number }) => {
-        // Right-click to paste: route through the same hotkey path as
-        // Alt+V so the composer's clipboard RPC (text or image) handles it.
-        if (!focus || e.button !== 2) {
+      onMouseDown={(e: MouseEventLite) => {
+        if (!focus) {
           return
         }
 
-        emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
+        // Right-click → route through the same path as Alt+V so the composer
+        // clipboard RPC (text or image) handles it.
+        if (e.button === 2) {
+          e.stopImmediatePropagation?.()
+          emitPaste({ cursor: curRef.current, hotkey: true, text: '', value: vRef.current })
+
+          return
+        }
+
+        if (e.button !== 0) {
+          return
+        }
+
+        e.stopImmediatePropagation?.()
+        const offset = offsetAt(e)
+
+        if (isMultiClickAt(offset)) {
+          mouseAnchorRef.current = null
+          selectAll()
+
+          return
+        }
+
+        startMouseSelection(offset)
+      }}
+      onMouseDrag={(e: MouseEventLite) => {
+        if (!focus || e.button !== 0 || mouseAnchorRef.current === null) {
+          return
+        }
+
+        e.stopImmediatePropagation?.()
+        dragMouseSelection(offsetAt(e))
+      }}
+      onMouseUp={(e: MouseEventLite) => {
+        e.stopImmediatePropagation?.()
+        endMouseSelection()
       }}
       ref={boxRef}
+      width={columns}
     >
       <Text wrap="wrap-char">{rendered}</Text>
     </Box>
   )
+}
+
+type MouseEventLite = {
+  button?: number
+  localCol?: number
+  localRow?: number
+  stopImmediatePropagation?: () => void
 }
 
 export interface PasteEvent {
@@ -921,6 +1071,7 @@ interface TextInputProps {
   columns?: number
   focus?: boolean
   mask?: string
+  mouseApiRef?: MutableRefObject<null | TextInputMouseApi>
   onChange: (v: string) => void
   onPaste?: (
     e: PasteEvent
@@ -928,4 +1079,10 @@ interface TextInputProps {
   onSubmit?: (v: string) => void
   placeholder?: string
   value: string
+}
+
+export interface TextInputMouseApi {
+  dragAt: (row: number, col: number) => void
+  end: () => void
+  startAtBeginning: () => void
 }

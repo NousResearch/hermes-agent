@@ -8296,7 +8296,7 @@ class AIAgent:
             result = _memory_tool(
                 action=function_args.get("action"),
                 target=target,
-                content=function_args.get("content"),
+                content=function_args.get("content") or function_args.get("new_text"),
                 old_text=function_args.get("old_text"),
                 store=self._memory_store,
             )
@@ -8811,7 +8811,7 @@ class AIAgent:
                 function_result = _memory_tool(
                     action=function_args.get("action"),
                     target=target,
-                    content=function_args.get("content"),
+                    content=function_args.get("content") or function_args.get("new_text"),
                     old_text=function_args.get("old_text"),
                     store=self._memory_store,
                 )

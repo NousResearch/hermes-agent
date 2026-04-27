@@ -875,9 +875,8 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             _VAR_MAP["HERMES_CRON_AUTO_DELIVER_PLATFORM"].set(delivery_target["platform"])
             _VAR_MAP["HERMES_CRON_AUTO_DELIVER_CHAT_ID"].set(str(delivery_target["chat_id"]))
             if delivery_target.get("thread_id") is not None:
-                _VAR_MAP["HERMES_CRON_AUTO_DELIVER_THREAD_ID"].set(str(delivery_target["thread_id"]))
-
-        model = job.get("model") or os.getenv("HERMES_MODEL") or ""
+                _VAR_MAP["HERMES_CRON_AUTO_DELIVER_THREAD_ID"].set(str(delivery_target["thread_id"]))    model_raw = job.get("model") or os.getenv("HERMES_MODEL") or ""
+    model = os.path.expandvars(model_raw)
 
         # Load config.yaml for model, reasoning, prefill, toolsets, provider routing
         _cfg = {}
@@ -941,9 +940,9 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         try:
             runtime_kwargs = {
                 "requested": job.get("provider") or os.getenv("HERMES_INFERENCE_PROVIDER"),
-            }
-            if job.get("base_url"):
-                runtime_kwargs["explicit_base_url"] = job.get("base_url")
+            }    if job.get("base_url"):
+        base_url_raw = job.get("base_url")
+        runtime_kwargs["explicit_base_url"] = os.path.expandvars(base_url_raw)
             runtime = resolve_runtime_provider(**runtime_kwargs)
         except AuthError as auth_exc:
             # Primary provider auth failed — try fallback chain before giving up.

@@ -922,6 +922,8 @@ class MessageEvent:
     # Reply context
     reply_to_message_id: Optional[str] = None
     reply_to_text: Optional[str] = None  # Text of the replied-to message (for context injection)
+    reply_to_from_name: Optional[str] = None  # Sender name of the replied-to message
+    reply_to_date: Any = None  # Date of replied-to message (datetime or unix timestamp int)
     # Media attached to the *quoted* (replied-to) message — downloaded so the
     # agent can see images/videos/files that the user is implicitly referring
     # to via the reply pointer. Parallel to media_urls/media_types but for the

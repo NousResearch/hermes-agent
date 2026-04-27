@@ -4365,7 +4365,31 @@ class GatewayRunner:
             # multiple times, and without an explicit pointer the agent has to
             # guess (or answer for both subjects). Token overhead is minimal.
             reply_snippet = event.reply_to_text[:500]
-            message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
+            from_name = getattr(event, "reply_to_from_name", None)
+            date_val = getattr(event, "reply_to_date", None)
+            time_str: Optional[str] = None
+            if date_val is not None:
+                try:
+                    import datetime as _dt
+                    if isinstance(date_val, (int, float)):
+                        dt_obj = _dt.datetime.fromtimestamp(int(date_val))
+                    elif isinstance(date_val, _dt.datetime):
+                        dt_obj = date_val
+                    else:
+                        dt_obj = None
+                    if dt_obj is not None:
+                        time_str = dt_obj.strftime("%H:%M")
+                except Exception:
+                    time_str = None
+            if from_name and time_str:
+                prefix = f'[Replying to message from {from_name} at {time_str}: "{reply_snippet}"]'
+            elif from_name:
+                prefix = f'[Replying to {from_name}: "{reply_snippet}"]'
+            elif time_str:
+                prefix = f'[Replying to message at {time_str}: "{reply_snippet}"]'
+            else:
+                prefix = f'[Replying to: "{reply_snippet}"]'
+            message_text = f'{prefix}\n\n{message_text}'
 
         # If the quoted (replied-to) message had attached media, enrich the
         # prompt the same way we would for current-message media: vision-

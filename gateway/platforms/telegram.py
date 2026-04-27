@@ -3266,9 +3266,19 @@ class TelegramAdapter(BasePlatformAdapter):
         # Extract reply context if this message is a reply
         reply_to_id = None
         reply_to_text = None
+        reply_to_from_name = None
+        reply_to_date = None
         if message.reply_to_message:
             reply_to_id = str(message.reply_to_message.message_id)
             reply_to_text = message.reply_to_message.text or message.reply_to_message.caption or None
+            _ru = getattr(message.reply_to_message, "from_user", None)
+            if _ru is not None:
+                reply_to_from_name = (
+                    getattr(_ru, "full_name", None)
+                    or getattr(_ru, "first_name", None)
+                    or getattr(_ru, "username", None)
+                )
+            reply_to_date = getattr(message.reply_to_message, "date", None)
 
         # Per-channel/topic ephemeral prompt
         from gateway.platforms.base import resolve_channel_prompt
@@ -3288,6 +3298,8 @@ class TelegramAdapter(BasePlatformAdapter):
             platform_update_id=update_id,
             reply_to_message_id=reply_to_id,
             reply_to_text=reply_to_text,
+            reply_to_from_name=reply_to_from_name,
+            reply_to_date=reply_to_date,
             auto_skill=topic_skill,
             channel_prompt=_channel_prompt,
             timestamp=message.date,

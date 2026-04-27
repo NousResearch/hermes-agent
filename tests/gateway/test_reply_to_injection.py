@@ -157,3 +157,64 @@ async def test_reply_snippet_truncated_to_500_chars():
     assert result is not None
     assert result.startswith('[Replying to: "' + "x" * 500 + '"]')
     assert "x" * 501 not in result
+
+
+@pytest.mark.asyncio
+async def test_reply_prefix_with_name_and_date():
+    from datetime import datetime
+    runner = _make_runner()
+    source = _source()
+    dt = datetime(2026, 4, 27, 21, 5, 0)
+    event = MessageEvent(
+        text="thanks!",
+        source=source,
+        reply_to_message_id="42",
+        reply_to_text="Here's the report.",
+        reply_to_from_name="Bob Smith",
+        reply_to_date=dt,
+    )
+
+    result = await runner._prepare_inbound_message_text(
+        event=event, source=source, history=[]
+    )
+    assert result is not None
+    assert result.startswith(
+        '[Replying to message from Bob Smith at 21:05: "Here\'s the report."]'
+    )
+
+
+@pytest.mark.asyncio
+async def test_reply_prefix_with_only_name():
+    runner = _make_runner()
+    source = _source()
+    event = MessageEvent(
+        text="ok",
+        source=source,
+        reply_to_message_id="42",
+        reply_to_text="hello",
+        reply_to_from_name="Carol",
+    )
+    result = await runner._prepare_inbound_message_text(
+        event=event, source=source, history=[]
+    )
+    assert result.startswith('[Replying to Carol: "hello"]')
+
+
+@pytest.mark.asyncio
+async def test_reply_prefix_with_only_unix_timestamp_date():
+    from datetime import datetime
+    runner = _make_runner()
+    source = _source()
+    ts = int(datetime(2026, 4, 27, 9, 30, 0).timestamp())
+    event = MessageEvent(
+        text="ok",
+        source=source,
+        reply_to_message_id="42",
+        reply_to_text="hi",
+        reply_to_date=ts,
+    )
+    result = await runner._prepare_inbound_message_text(
+        event=event, source=source, history=[]
+    )
+    assert result.startswith('[Replying to message at 09:30: "hi"]')
+

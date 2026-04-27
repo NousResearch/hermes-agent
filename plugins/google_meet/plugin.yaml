@@ -1,0 +1,16 @@
+name: google_meet
+version: 0.2.0
+description: "Join a Google Meet call, transcribe live captions, speak in realtime, and follow up afterwards. v1 transcribe-only is the default; v2 realtime duplex audio via OpenAI Realtime + BlackHole/PulseAudio ships with mode='realtime'; v3 remote node host lets the bot run on a different machine than the gateway (gateway on Linux, Chrome+signed-in profile on the user's Mac). Explicit-by-design: only joins meet.google.com URLs passed in \u2014 no calendar scanning, no auto-dial."
+author: NousResearch
+kind: standalone
+platforms:
+  - linux
+  - macos
+provides_tools:
+  - meet_join
+  - meet_leave
+  - meet_status
+  - meet_transcript
+  - meet_say
+hooks:
+  - on_session_end

@@ -1,6 +1,6 @@
 ---
 name: excalidraw
-description: Create hand-drawn style diagrams using Excalidraw JSON format. Generate .excalidraw files for architecture diagrams, flowcharts, sequence diagrams, concept maps, and more. Files can be opened at excalidraw.com or uploaded for shareable links.
+description: "Hand-drawn Excalidraw JSON diagrams (arch, flow, seq)."
 version: 1.0.0
 author: Hermes Agent
 license: MIT

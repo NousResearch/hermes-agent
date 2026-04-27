@@ -64,6 +64,36 @@ class TestGenerateTitle:
         with patch("agent.title_generator.call_llm", side_effect=RuntimeError("no provider")):
             assert generate_title("question", "answer") is None
 
+    def test_salvages_unquoted_meta_title(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "The conversation is about Kubernetes pod debugging"
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("my pod keeps crashing", "Let me look...")
+            assert title == "Kubernetes pod debugging"
+
+    def test_extracts_quoted_meta_title(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = 'The conversation is about "Kubernetes pod debugging"'
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("my pod keeps crashing", "Let me look...")
+            assert title == "Kubernetes pod debugging"
+
+    def test_uses_reasoning_when_content_is_empty(self):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = None
+        mock_response.choices[0].message.reasoning = "Redis deployment troubleshooting"
+        mock_response.choices[0].message.reasoning_content = None
+        mock_response.choices[0].message.reasoning_details = None
+
+        with patch("agent.title_generator.call_llm", return_value=mock_response):
+            title = generate_title("redis won't start", "Let's debug it")
+            assert title == "Redis deployment troubleshooting"
+
     def test_truncates_long_messages(self):
         """Long user/assistant messages should be truncated in the LLM request."""
         captured_kwargs = {}

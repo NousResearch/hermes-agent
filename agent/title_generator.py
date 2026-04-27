@@ -5,18 +5,76 @@ adds latency to the user-facing reply.
 """
 
 import logging
+import re
 import threading
 from typing import Optional
 
-from agent.auxiliary_client import call_llm
+from agent.auxiliary_client import call_llm, extract_content_or_reasoning
 
 logger = logging.getLogger(__name__)
 
 _TITLE_PROMPT = (
     "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
     "following exchange. The title should capture the main topic or intent. "
-    "Return ONLY the title text, nothing else. No quotes, no punctuation at the end, no prefixes."
+    "Return ONLY the title text, nothing else. Use the same language as the user when possible. "
+    "Do not mention 'user' or 'assistant'. Do not return reasoning, analysis, or prefixes like "
+    "'The user is asking'. No quotes, no punctuation at the end, no prefixes."
 )
+
+_META_TITLE_PREFIXES = (
+    "the user is asking",
+    "the user wants",
+    "the assistant is",
+    "the conversation is about",
+)
+
+
+def _strip_wrapping_quotes(text: str) -> str:
+    stripped = (text or "").strip()
+    pairs = {
+        ('"', '"'),
+        ("'", "'"),
+        ("“", "”"),
+        ("‘", "’"),
+    }
+    while len(stripped) >= 2 and (stripped[0], stripped[-1]) in pairs:
+        stripped = stripped[1:-1].strip()
+    return stripped
+
+
+def _clean_generated_title(raw_title: str) -> Optional[str]:
+    if not raw_title:
+        return None
+
+    title = re.sub(r"<[^>]+>", " ", raw_title)
+    title = re.sub(r"\s+", " ", title).strip()
+    title = _strip_wrapping_quotes(title)
+
+    if title.lower().startswith("title:"):
+        title = _strip_wrapping_quotes(title[6:].strip())
+
+    lowered = title.lower()
+    if lowered.startswith(_META_TITLE_PREFIXES):
+        quoted = re.search(r'["“\'‘](.+?)["”\'’]', title)
+        if quoted:
+            title = quoted.group(1).strip()
+        else:
+            for prefix in _META_TITLE_PREFIXES:
+                if lowered.startswith(prefix):
+                    title = title[len(prefix):].strip(" :.-")
+                    break
+
+    title = _strip_wrapping_quotes(title)
+    if not title:
+        return None
+
+    if len(title.split()) > 12:
+        return None
+
+    if len(title) > 80:
+        title = title[:77] + "..."
+
+    return title or None
 
 
 def generate_title(user_message: str, assistant_response: str, timeout: float = 30.0) -> Optional[str]:
@@ -42,15 +100,8 @@ def generate_title(user_message: str, assistant_response: str, timeout: float = 
             temperature=0.3,
             timeout=timeout,
         )
-        title = (response.choices[0].message.content or "").strip()
-        # Clean up: remove quotes, trailing punctuation, prefixes like "Title: "
-        title = title.strip('"\'')
-        if title.lower().startswith("title:"):
-            title = title[6:].strip()
-        # Enforce reasonable length
-        if len(title) > 80:
-            title = title[:77] + "..."
-        return title if title else None
+        title = extract_content_or_reasoning(response).strip()
+        return _clean_generated_title(title)
     except Exception as e:
         logger.debug("Title generation failed: %s", e)
         return None

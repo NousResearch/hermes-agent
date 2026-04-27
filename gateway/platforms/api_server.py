@@ -2282,6 +2282,24 @@ class APIServerAdapter(BasePlatformAdapter):
                 conversation_history=conversation_history,
                 task_id="default",
             )
+            final_response = result.get("final_response", "") if isinstance(result, dict) else ""
+            if (
+                final_response
+                and isinstance(result, dict)
+                and not result.get("failed")
+                and not result.get("partial")
+            ):
+                try:
+                    from agent.title_generator import maybe_auto_title
+                    maybe_auto_title(
+                        self._ensure_session_db(),
+                        getattr(agent, "session_id", session_id) or session_id,
+                        user_message,
+                        final_response,
+                        result.get("messages", conversation_history) if isinstance(result, dict) else conversation_history,
+                    )
+                except Exception:
+                    pass
             usage = {
                 "input_tokens": getattr(agent, "session_prompt_tokens", 0) or 0,
                 "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,

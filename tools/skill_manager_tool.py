@@ -214,6 +214,99 @@ def _find_skill(name: str) -> Optional[Dict[str, Any]]:
     return None
 
 
+def _read_skill_text_snapshot(skill_dir: Path) -> Dict[str, str]:
+    """Read text files from a skill directory for local diff evidence."""
+    snapshot: Dict[str, str] = {}
+    if not skill_dir.exists() or not skill_dir.is_dir():
+        return snapshot
+    for path in sorted(skill_dir.rglob("*"), key=lambda p: p.relative_to(skill_dir).as_posix()):
+        if not path.is_file() or path.is_symlink():
+            continue
+        rel = path.relative_to(skill_dir).as_posix()
+        try:
+            snapshot[rel] = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+    return snapshot
+
+
+def _skill_category_from_dir(skill_dir: Path) -> Optional[str]:
+    """Best-effort category from a skill directory relative to SKILLS_DIR."""
+    try:
+        rel = skill_dir.relative_to(SKILLS_DIR)
+    except ValueError:
+        return None
+    if len(rel.parts) <= 1:
+        return None
+    return "/".join(rel.parts[:-1])
+
+
+def _snapshot_for_skill(name: str) -> Optional[Dict[str, Any]]:
+    existing = _find_skill(name)
+    if not existing:
+        return None
+    skill_dir = existing["path"]
+    try:
+        from tools.skill_change_ledger import hash_skill_dir
+        skill_hash = hash_skill_dir(skill_dir)
+    except Exception:
+        skill_hash = None
+    return {
+        "path": skill_dir,
+        "category": _skill_category_from_dir(skill_dir),
+        "hash": skill_hash,
+        "text": _read_skill_text_snapshot(skill_dir),
+    }
+
+
+def _changed_snapshot_files(before: Optional[Dict[str, str]], after: Optional[Dict[str, str]]) -> list[str]:
+    before = before or {}
+    after = after or {}
+    return sorted(path for path in (set(before) | set(after)) if before.get(path) != after.get(path))
+
+
+def _record_skill_manage_change(
+    *,
+    action: str,
+    name: str,
+    reason: Optional[str],
+    session_id: Optional[str],
+    before: Optional[Dict[str, Any]],
+    after: Optional[Dict[str, Any]],
+    file_path: Optional[str],
+    replace_all: bool,
+    result: Dict[str, Any],
+) -> None:
+    """Record a successful skill_manage mutation without making the tool fragile."""
+    try:
+        from tools.skill_change_ledger import record_skill_change
+
+        before_text = before.get("text") if before else {}
+        after_text = after.get("text") if after else {}
+        changed_files = _changed_snapshot_files(before_text, after_text)
+        event = record_skill_change(
+            skill=name,
+            category=(after or before or {}).get("category"),
+            action=action,
+            actor="hermes-agent",
+            source="skill_manage",
+            session_id=session_id,
+            reason=reason,
+            before_hash=before.get("hash") if before else None,
+            after_hash=after.get("hash") if after else None,
+            changed_files=changed_files,
+            before_text=before_text,
+            after_text=after_text,
+            metadata={
+                "file_path": file_path,
+                "replace_all": replace_all,
+            },
+        )
+        result["skill_change_event_id"] = event["event_id"]
+    except Exception as e:
+        logger.warning("Failed to record skill change event for %s/%s: %s", action, name, e, exc_info=True)
+
+
 def _validate_file_path(file_path: str) -> Optional[str]:
     """
     Validate a file path for write_file/remove_file.
@@ -595,12 +688,16 @@ def skill_manage(
     old_string: str = None,
     new_string: str = None,
     replace_all: bool = False,
+    reason: str = None,
+    session_id: str = None,
 ) -> str:
     """
     Manage user-created skills. Dispatches to the appropriate action handler.
 
     Returns JSON string with results.
     """
+    before_snapshot = _snapshot_for_skill(name)
+
     if action == "create":
         if not content:
             return tool_error("content is required for 'create'. Provide the full SKILL.md text (frontmatter + body).", success=False)
@@ -637,6 +734,18 @@ def skill_manage(
         result = {"success": False, "error": f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"}
 
     if result.get("success"):
+        after_snapshot = None if action == "delete" else _snapshot_for_skill(name)
+        _record_skill_manage_change(
+            action=action,
+            name=name,
+            reason=reason,
+            session_id=session_id,
+            before=before_snapshot,
+            after=after_snapshot,
+            file_path=file_path,
+            replace_all=replace_all,
+            result=result,
+        )
         try:
             from agent.prompt_builder import clear_skills_system_prompt_cache
             clear_skills_system_prompt_cache(clear_snapshot=True)
@@ -713,6 +822,13 @@ SKILL_MANAGE_SCHEMA = {
                 "type": "boolean",
                 "description": "For 'patch': replace all occurrences instead of requiring a unique match (default: false)."
             },
+            "reason": {
+                "type": "string",
+                "description": (
+                    "Optional explicit reason for the skill change. Recorded in the local "
+                    "skill change ledger so dashboard users can see why the skill changed."
+                )
+            },
             "category": {
                 "type": "string",
                 "description": (
@@ -756,6 +872,8 @@ registry.register(
         file_content=args.get("file_content"),
         old_string=args.get("old_string"),
         new_string=args.get("new_string"),
-        replace_all=args.get("replace_all", False)),
+        replace_all=args.get("replace_all", False),
+        reason=args.get("reason"),
+        session_id=kw.get("task_id")),
     emoji="📝",
 )

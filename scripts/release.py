@@ -125,6 +125,7 @@ AUTHOR_MAP = {
     "s.ozaki@ebinou.net": "Satoshi-agi",
     "10774721+kunlabs@users.noreply.github.com": "kunlabs",
     "110560187+Wang-tianhao@users.noreply.github.com": "Wang-tianhao",
+    "170458616+ghostmfr@users.noreply.github.com": "ghostmfr",
     "nocoo@users.noreply.github.com": "nocoo",
     "30841158+n-WN@users.noreply.github.com": "n-WN",
     "tsuijinglei@gmail.com": "hiddenpuppy",

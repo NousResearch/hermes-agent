@@ -979,15 +979,13 @@ export default class Ink {
     }
 
     const tWrite = performance.now()
+
     // Capture any stale pending write BEFORE starting this frame's write —
     // if the callback already fired, pendingWriteStart is null and lastDrainMs
     // already reflects the previous frame's drain.  If it hasn't fired, we
     // report "still pending" via a non-zero duration based on now-then so
     // backpressure shows up even if Node never flushes this session.
-    const staleDrain =
-      this.pendingWriteStart !== null
-        ? performance.now() - this.pendingWriteStart
-        : this.lastDrainMs
+    const staleDrain = this.pendingWriteStart !== null ? performance.now() - this.pendingWriteStart : this.lastDrainMs
 
     const prevFrameDrainMs = Math.round(staleDrain * 100) / 100
     this.lastDrainMs = 0
@@ -1016,6 +1014,7 @@ export default class Ink {
           }
         : undefined
     )
+
     const writeMs = performance.now() - tWrite
 
     // Update blit safety for the NEXT frame. The frame just rendered

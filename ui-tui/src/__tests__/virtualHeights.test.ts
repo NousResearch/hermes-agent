@@ -5,10 +5,9 @@ import type { Msg } from '../types.js'
 
 describe('virtual height estimates', () => {
   it('uses stable content keys across resumed message objects', () => {
-    const a: Msg = { role: 'assistant', text: 'same text', tools: ['Search Files [long message]'] }
-    const b: Msg = { role: 'assistant', text: 'same text', tools: ['Search Files [long message]'] }
+    const msg: Msg = { role: 'assistant', text: 'same text', tools: ['Search Files [long message]'] }
 
-    expect(messageHeightKey(a)).toBe(messageHeightKey(b))
+    expect(messageHeightKey(msg)).toBe(messageHeightKey({ ...msg }))
   })
 
   it('accounts for wrapping and preserved blank-block rhythm', () => {

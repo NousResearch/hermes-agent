@@ -4,14 +4,14 @@ name: Sync upstream
 # `main` as an integration branch so a new machine can just `git clone`
 # and check out `main` to get a runtime-ready fork.
 #
-# As of 2026-04-26 both feature branches we used to carry merged upstream
-# (PR #13445 → upstream #15050, PR #14904 → upstream #15191), so the
-# integration build now reduces to:
+# `FEATURE_BRANCHES` carries fork patches that have an open upstream PR.
+# As of 2026-04-27 we carry one branch:
 #
-#   main = upstream/main + ops-overlay
+#   feat/whatsapp-forward-owner-messages-upstream
+#     → NousResearch/hermes-agent#16445 (open)
 #
-# `FEATURE_BRANCHES` is left empty but the loops are kept intact so
-# adding a new fork patch is a one-line edit (see FORK.md).
+# Drop a branch from FEATURE_BRANCHES (and delete it from the fork) once
+# its upstream PR merges — the cherry-pick becomes a no-op.
 #
 # Runs daily at 03:00 UTC and on manual dispatch. See FORK.md for the
 # maintenance model and recovery procedure.
@@ -41,7 +41,7 @@ env:
   # Space-separated list of feature branches to rebase and cherry-pick into main.
   # Order matters: commits from earlier branches are applied first. Empty
   # is the steady-state when no patches are open upstream.
-  FEATURE_BRANCHES: ""
+  FEATURE_BRANCHES: "feat/whatsapp-forward-owner-messages-upstream"
   PLUGIN_REPO: pebble-tech/hermes-plugin-gateway-policy
 
 jobs:

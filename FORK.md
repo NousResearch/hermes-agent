@@ -2,13 +2,13 @@
 
 Fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) used as the deploy target for [pebble-tech/nudge-hermes-agents](https://github.com/pebble-tech/nudge-hermes-agents) customer VPSes. `main` is a runtime-ready integration branch — clone it and it works.
 
-> **Steady state (2026-04-26 onward):** all upstream PRs we previously carried have merged. `main` is now effectively `upstream/main + ops-overlay`, where `ops-overlay` is a single commit holding this README and the daily-sync workflow. The fork stays alive purely as a stable deploy target so customer VPSes pull from a known SHA on our schedule rather than racing upstream.
+> **As of 2026-04-27:** one open upstream PR — [NousResearch/hermes-agent#16445](https://github.com/NousResearch/hermes-agent/pull/16445) — carried via `feat/whatsapp-forward-owner-messages-upstream`. Once merged, drop it from `FEATURE_BRANCHES` and from the fork. Otherwise `main = upstream/main + ops-overlay + open feature branches`. The fork stays alive as a stable deploy target so customer VPSes pull from a known SHA on our schedule rather than racing upstream.
 
 ## Branches
 
 | Branch | Contents | Rebased daily | Use |
 |---|---|---|---|
-| `main` | Rebuilt each sync run as: upstream `main` + `ops-overlay` (no feature branches, currently). | yes (rebuilt) | **Deploy from here.** `git clone && git checkout main`. |
+| `main` | Rebuilt each sync run as: upstream `main` + `ops-overlay` + every open `FEATURE_BRANCHES` entry. | yes (rebuilt) | **Deploy from here.** `git clone && git checkout main`. |
 | `ops-overlay` | Upstream `main` + one commit containing `.github/workflows/sync-upstream.yml` and this `FORK.md`. | yes | Source of truth for fork-level ops. |
 
 Other branches and tags are inherited from the initial fork and are **not** maintained — they will drift over time. Only the two branches above are rebased by the sync workflow.
@@ -81,7 +81,8 @@ Use `NousResearch/hermes-agent` directly. This fork is purely a stable deploy ta
 
 ## Upstream PR history
 
-| PR | Branch (since deleted) | Status |
+| PR | Branch | Status |
 |---|---|---|
-| [NousResearch/hermes-agent#13445](https://github.com/NousResearch/hermes-agent/pull/13445) | `feature/pre-gateway-dispatch` | Merged via [#15050](https://github.com/NousResearch/hermes-agent/pull/15050) on 2026-04-24 |
-| [NousResearch/hermes-agent#14904](https://github.com/NousResearch/hermes-agent/pull/14904) | `feature/whatsapp-dm-canonical-session-key` | Merged via [#15191](https://github.com/NousResearch/hermes-agent/pull/15191) on 2026-04-24, plus an upstream follow-up that extracted the JID/LID helpers into `gateway/whatsapp_identity.py`. |
+| [NousResearch/hermes-agent#13445](https://github.com/NousResearch/hermes-agent/pull/13445) | `feature/pre-gateway-dispatch` (deleted) | Merged via [#15050](https://github.com/NousResearch/hermes-agent/pull/15050) on 2026-04-24 |
+| [NousResearch/hermes-agent#14904](https://github.com/NousResearch/hermes-agent/pull/14904) | `feature/whatsapp-dm-canonical-session-key` (deleted) | Merged via [#15191](https://github.com/NousResearch/hermes-agent/pull/15191) on 2026-04-24, plus an upstream follow-up that extracted the JID/LID helpers into `gateway/whatsapp_identity.py`. |
+| [NousResearch/hermes-agent#16445](https://github.com/NousResearch/hermes-agent/pull/16445) | `feat/whatsapp-forward-owner-messages-upstream` | **Open.** Opt-in `WHATSAPP_FORWARD_OWNER_MESSAGES` flag + `MessageEvent.metadata["whatsapp_from_owner"]` propagation. Default off, no behavior change. |

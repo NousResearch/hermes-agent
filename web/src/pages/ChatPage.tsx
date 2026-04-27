@@ -1015,7 +1015,6 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
           const filePath = match[1];
           const filename = filePath.split('/').pop();
           if (filename) _playMedia(filename);
-          MEDIA_RE.lastIndex = match.index; // keep position for stripping
         }
         // Strip MEDIA: tags before writing to xterm so they don't appear as noise
         let clean = ev.data.replace(/MEDIA:\s*\S+/g, '').trim();

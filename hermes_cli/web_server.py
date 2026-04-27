@@ -15827,6 +15827,52 @@ def mount_spa(application: FastAPI):
 
     application.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets")
 
+    # --- Audio route (TTS playback) --------------------------------
+    # Serves audio files from ~/.hermes/cache/audio/audio_cache/.
+    # Mounted BEFORE the SPA catch-all so /api/audio/* isn't eaten.
+    _AUDIO_CACHEDIR = Path(os.environ.get(
+        "HERMES_AUDIO_CACHE", str(get_hermes_dir("cache/audio", "audio_cache")),
+    ))
+
+
+    @application.get("/api/audio/{filename}")
+    async def get_audio(filename: str):
+        """Serve audio files for WebUI TTS playback."""
+        import urllib.parse as _urlparse
+        decoded = _urlparse.unquote(filename)
+        audio_dir = _AUDIO_CACHEDIR.resolve()
+        file_path = (audio_dir / decoded).resolve()
+        if not file_path.is_relative_to(audio_dir):
+            return JSONResponse({"error": "Access denied"}, status_code=403)
+        if not file_path.exists() or not file_path.is_file():
+            return JSONResponse(
+                {"error": f"Audio file not found: {filename}"},
+                status_code=404,
+            )
+        allowed_ext = {"mp3", "ogg", "wav", "opus", "m4a", "flac", "aac", "webm"}
+        ext = file_path.suffix.lower().lstrip(".")
+        if ext not in allowed_ext:
+            media_type = "application/octet-stream"
+        elif ext == "mp3":
+            media_type = "audio/mpeg"
+        elif ext == "ogg" or ext == "opus":
+            media_type = "audio/ogg"
+        elif ext == "wav":
+            media_type = "audio/wav"
+        elif ext == "m4a":
+            media_type = "audio/mp4"
+        elif ext == "flac":
+            media_type = "audio/flac"
+        elif ext == "aac":
+            media_type = "audio/aac"
+        elif ext == "webm":
+            media_type = "audio/webm"
+        else:
+            media_type = "audio/*"
+        return FileResponse(str(file_path), media_type=media_type)
+
+
+
     @application.get("/{full_path:path}")
     async def serve_spa(full_path: str, request: Request):
         prefix = _normalise_prefix(request.headers.get("x-forwarded-prefix"))

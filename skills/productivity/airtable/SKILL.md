@@ -1,105 +1,112 @@
 ---
 name: airtable
-description: Read/write Airtable bases via REST API
+description: Read/write Airtable bases via REST API using curl. List bases, tables, and records; create, update, and delete records. No dependencies beyond curl.
+version: 1.0.0
+author: community
+license: MIT
+prerequisites:
+  env_vars: [AIRTABLE_API_KEY]
+  commands: [curl]
 metadata:
   hermes:
-    tags: [Productivity, Database, API]
-    config:
-      - key: airtable.api_key
-        description: Airtable personal access token or API key for REST API calls
-        prompt: Airtable API key
+    tags: [Airtable, Productivity, Database, API]
+    homepage: https://airtable.com/developers/web/api/introduction
 ---
 
 # Airtable REST API
 
-Use Airtable's REST API with `curl` and Python stdlib only. Do not add third-party Python packages for this skill.
+Use Airtable's REST API via `curl` to list bases, inspect schemas, and run CRUD against records. No extra packages — `curl` plus Python stdlib for URL encoding is enough.
 
-## When to Use
+## Setup
 
-- Load this skill when the user mentions an Airtable base, table, or record.
-- Use it for listing bases and tables, reading records, filtering records, and creating, updating, or deleting records.
-- Prefer the REST API over browser/UI automation for routine Airtable data work.
+1. Create a personal access token (PAT) at https://airtable.com/create/tokens
+2. Grant these scopes (minimum):
+   - `data.records:read` — read rows
+   - `data.records:write` — create / update / delete rows
+   - `schema.bases:read` — list bases and tables (step 2–3 of the procedure below)
+3. Add to `~/.hermes/.env` (or set via `hermes setup`):
+   ```
+   AIRTABLE_API_KEY=pat_your_token_here
+   ```
+4. In the PAT UI, also add each base you want to access to the token's "Access" list. Tokens are scoped per-base.
+
+> Note: legacy `key...` API keys were deprecated in Feb 2024. PATs (starting with `pat`) are the only supported format.
+
+## API Basics
+
+- **Base URL:** `https://api.airtable.com/v0`
+- **Auth header:** `Authorization: Bearer $AIRTABLE_API_KEY`
+- **Object IDs:** bases `app...`, tables `tbl...`, records `rec...`. Prefer IDs over names when table names have spaces or may change.
+- **Rate limit:** 5 requests/sec/base. On `429`, back off and avoid parallel mutations into the same base.
 
 ## Quick Reference
 
-Use a token header on every request:
-
 ```bash
-AIRTABLE_API_KEY="..."  # from skills.config.airtable.api_key
-AUTH_HEADER="Authorization: Bearer $AIRTABLE_API_KEY"
+AUTH="Authorization: Bearer $AIRTABLE_API_KEY"
+BASE_ID=appXXXXXXXXXXXXXX
+TABLE=Tasks   # or tblXXXXXXXXXXXXXX
 ```
 
-List records:
-
+List records (first 10):
 ```bash
-curl -s "https://api.airtable.com/v0/$BASE_ID/$TABLE?maxRecords=10" \
-  -H "$AUTH_HEADER"
+curl -s "https://api.airtable.com/v0/$BASE_ID/$TABLE?maxRecords=10" -H "$AUTH"
 ```
 
 Create a record:
-
 ```bash
 curl -s -X POST "https://api.airtable.com/v0/$BASE_ID/$TABLE" \
-  -H "$AUTH_HEADER" \
-  -H "Content-Type: application/json" \
+  -H "$AUTH" -H "Content-Type: application/json" \
   -d '{"fields":{"Name":"New task","Status":"Todo"}}'
 ```
 
-Update a record:
-
+Update a record (partial — PATCH preserves other fields):
 ```bash
 curl -s -X PATCH "https://api.airtable.com/v0/$BASE_ID/$TABLE/$RECORD_ID" \
-  -H "$AUTH_HEADER" \
-  -H "Content-Type: application/json" \
+  -H "$AUTH" -H "Content-Type: application/json" \
   -d '{"fields":{"Status":"Done"}}'
 ```
 
 Delete a record:
-
 ```bash
-curl -s -X DELETE "https://api.airtable.com/v0/$BASE_ID/$TABLE/$RECORD_ID" \
-  -H "$AUTH_HEADER"
+curl -s -X DELETE "https://api.airtable.com/v0/$BASE_ID/$TABLE/$RECORD_ID" -H "$AUTH"
 ```
 
 ## Procedure
 
-1. Authenticate first. Read `airtable.api_key` from skill config and use it as the bearer token for every request. If the credential is missing or invalid, stop and ask the user to configure it before continuing.
-2. List bases to find the right `baseId`. Prefer:
+1. **Authenticate.** Confirm `AIRTABLE_API_KEY` is set. If empty, stop and ask the user to add it to `~/.hermes/.env`.
+2. **Find the base.** List all bases the token can see:
    ```bash
-   curl -s "https://api.airtable.com/v0/meta/bases" \
-     -H "$AUTH_HEADER"
+   curl -s "https://api.airtable.com/v0/meta/bases" -H "$AUTH"
    ```
-   If this fails because the token lacks metadata scopes, ask the user for the base ID directly or ask them to provide a token with base schema access.
-3. List tables for the chosen base:
+   Requires `schema.bases:read`. If the token lacks that scope, ask the user for the base ID directly.
+3. **Inspect the schema.** List tables and fields for the chosen base:
    ```bash
-   curl -s "https://api.airtable.com/v0/meta/bases/$BASE_ID/tables" \
-     -H "$AUTH_HEADER"
+   curl -s "https://api.airtable.com/v0/meta/bases/$BASE_ID/tables" -H "$AUTH"
    ```
-   Use this to confirm table names, table IDs, and field names before mutating data.
-4. Perform CRUD against the target table:
-   - Read records with `GET /v0/$BASE_ID/$TABLE`.
-   - Create with `POST /v0/$BASE_ID/$TABLE` and a JSON body shaped like `{"fields": {...}}`.
-   - Update with `PATCH /v0/$BASE_ID/$TABLE/$RECORD_ID` and only the fields that should change.
-   - Delete with `DELETE /v0/$BASE_ID/$TABLE/$RECORD_ID`.
-5. For tables with many records, follow Airtable pagination. Keep requesting the same list endpoint with the returned `offset` value until the response stops including `offset`.
-6. Prefer stable IDs (`app...`, `tbl...`, `rec...`) over human-readable names when the base is large, table names contain spaces, or the user may rename objects while the session is active.
+   Use this to confirm table names, IDs, and field names before mutating data.
+4. **CRUD against the target table.**
+   - Read: `GET /v0/$BASE_ID/$TABLE`
+   - Create: `POST /v0/$BASE_ID/$TABLE` with `{"fields": {...}}`
+   - Update: `PATCH /v0/$BASE_ID/$TABLE/$RECORD_ID` with only the fields to change (use `PUT` for full replacement)
+   - Delete: `DELETE /v0/$BASE_ID/$TABLE/$RECORD_ID`
+5. **Paginate long lists.** The list endpoint caps at 100 records per page. If the response includes `"offset": "..."`, pass it back as `?offset=<value>` on the next call and repeat until the field is absent.
 
 ## Pitfalls
 
-- Airtable's Web API rate limit is `5 req/sec/base`. If you hit HTTP `429`, slow down, retry with backoff, and avoid firing parallel mutations into the same base.
-- `filterByFormula` must be URL-encoded when you are using raw `curl`. Use Python stdlib instead of extra packages:
+- **`filterByFormula` must be URL-encoded.** Use Python stdlib — no extra packages:
   ```bash
-  python -c "import urllib.parse; print(urllib.parse.quote(\"{Status}='Todo'\", safe=''))"
+  ENC=$(python3 -c "import urllib.parse, sys; print(urllib.parse.quote(sys.argv[1], safe=''))" "{Status}='Todo'")
+  curl -s "https://api.airtable.com/v0/$BASE_ID/$TABLE?filterByFormula=$ENC" -H "$AUTH"
   ```
-  Then pass the encoded value as `filterByFormula=...`.
-- List-record responses can omit empty fields. If field names look incomplete, inspect the table schema first instead of assuming the field does not exist.
+- **Empty fields are omitted from responses.** If a record looks like it's missing fields, inspect the table schema (step 3) before concluding the field doesn't exist.
+- **Tokens are per-base.** The PAT UI requires adding each base to the token's Access list. A 403 on a specific base usually means the base wasn't granted, not that the token is wrong.
+- **PATCH vs PUT.** `PATCH` merges the supplied fields into the existing record; `PUT` replaces the record entirely, wiping any fields you didn't include. Default to `PATCH` unless you genuinely want to clear other fields.
 
 ## Verification
 
-Run:
-
 ```bash
-hermes -q "List records in my Airtable base X"
+curl -s -o /dev/null -w "%{http_code}\n" "https://api.airtable.com/v0/meta/bases" \
+  -H "Authorization: Bearer $AIRTABLE_API_KEY"
 ```
 
-Successful verification means Hermes identifies the right base and table, authenticates, and returns records through the REST API instead of asking for extra dependencies.
+Expect `200` with a `bases` array. `401` means the key is wrong; `403` means the token is valid but lacks `schema.bases:read` (use step 2 workaround).

@@ -102,6 +102,7 @@ class ChatCompletionsTransport(ProviderTransport):
             is_nvidia_nim: bool
             is_kimi: bool
             is_custom_provider: bool
+            is_zai: bool
             ollama_num_ctx: int | None
             # Provider routing
             provider_preferences: dict | None
@@ -258,6 +259,16 @@ class ChatCompletionsTransport(ProviderTransport):
 
         if is_nous:
             extra_body["tags"] = ["product=hermes-agent"]
+
+        # ZAI extra_body.thinking
+        if is_zai:
+            if reasoning_config and isinstance(reasoning_config, dict):
+                if reasoning_config.get("enabled") is False:
+                    pass  # omit for ZAI when disabled
+                else:
+                    extra_body["thinking"] = {"type": "enabled"}
+            else:
+                extra_body["thinking"] = {"type": "enabled"}
 
         # Ollama num_ctx
         ollama_ctx = params.get("ollama_num_ctx")

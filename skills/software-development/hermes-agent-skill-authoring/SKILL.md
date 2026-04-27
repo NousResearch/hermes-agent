@@ -1,6 +1,6 @@
 ---
 name: hermes-agent-skill-authoring
-description: Use when authoring or updating a SKILL.md inside the hermes-agent repo itself (skills/ tree, committed to a branch). Covers required frontmatter, validator limits, peer-matching structure, and the write_file-vs-skill_manage distinction for in-repo skills.
+description: "Author in-repo SKILL.md: frontmatter, validator, structure."
 version: 1.0.0
 author: Hermes Agent
 license: MIT

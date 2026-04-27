@@ -169,8 +169,8 @@ API keys are read from `/opt/data/.env` inside the container. You can also pass 
 ```sh
 docker run -it --rm \
   -v ~/.hermes:/opt/data \
-  -e ANTHROPIC_API_KEY="***" \
-  -e OPENAI_API_KEY="***" \
+  -e ANTHROPIC_API_KEY="sk-ant-..." \
+  -e OPENAI_API_KEY="sk-..." \
   nousresearch/hermes-agent
 ```
 
@@ -195,9 +195,9 @@ services:
       - hermes-net
     # Uncomment to forward specific env vars instead of using .env file:
     # environment:
-    #   - ANTHROPIC_API_KEY=${ANTH...KEY}
-    #   - OPENAI_API_KEY=***
-    #   - TELEGRAM_BOT_TOKEN=${TELE...KEN}
+    #   - ANTHROPIC_API_KEY=${ANTHROPIC_API_KEY}
+    #   - OPENAI_API_KEY=${OPENAI_API_KEY}
+    #   - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
     deploy:
       resources:
         limits:

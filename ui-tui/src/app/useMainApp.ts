@@ -133,6 +133,7 @@ export function useMainApp(gw: GatewayClient) {
   const historyItemsRef = useRef(historyItems)
   const lastUserMsgRef = useRef(lastUserMsg)
   const msgIdsRef = useRef(new WeakMap<Msg, string>())
+  const msgIdSeqRef = useRef(0)
   const heightCachesRef = useRef(new Map<string, Map<string, number>>())
 
   colsRef.current = cols
@@ -180,7 +181,7 @@ export function useMainApp(gw: GatewayClient) {
       return hit
     }
 
-    const next = messageHeightKey(msg)
+    const next = `${messageHeightKey(msg)}:${++msgIdSeqRef.current}`
 
     msgIdsRef.current.set(msg, next)
 
@@ -188,7 +189,7 @@ export function useMainApp(gw: GatewayClient) {
   }, [])
 
   const virtualRows = useMemo<TranscriptRow[]>(
-    () => historyItems.map((msg, index) => ({ index, key: `${index}:${messageId(msg)}`, msg })),
+    () => historyItems.map((msg, index) => ({ index, key: messageId(msg), msg })),
     [historyItems, messageId]
   )
 

@@ -53,11 +53,11 @@ const onRender: ProfilerOnRenderCallback = (id, phase, actualMs, baseMs, startTi
   writeRow({
     actualMs: round2(actualMs),
     baseMs: round2(baseMs),
-    commitMs: round2(commitTime),
+    commitTimeMs: round2(commitTime),
     id,
     phase,
     src: 'react',
-    startMs: round2(startTime),
+    startTimeMs: round2(startTime),
     ts: Date.now()
   })
 }

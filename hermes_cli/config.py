@@ -876,11 +876,12 @@ DEFAULT_CONFIG = {
 
     # Approval mode for dangerous commands:
     #   manual — always prompt the user (default)
-    #   smart  — use auxiliary LLM to auto-approve low-risk commands, auto-deny
-    #            high-risk commands, and prompt when uncertain
+    #   smart  — use an auxiliary LLM to review flagged commands:
+    #            APPROVE verdicts run, ESCALATE verdicts prompt, and DENY
+    #            verdicts follow approvals.smart_deny
     #   off    — skip all approval prompts (equivalent to --yolo)
     # smart_deny controls smart DENY verdicts:
-    #   block  — hard-block smart-denied commands (default/current safety behavior)
+    #   block  — hard-block smart DENY verdicts (default/current safety behavior)
     #   ask    — ask the user via the normal manual/gateway approval path
     #
     # cron_mode — what to do when a cron job hits a dangerous command:

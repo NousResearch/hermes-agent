@@ -263,6 +263,9 @@ def test_session_title_queues_when_db_row_not_ready(monkeypatch):
         def get_session_title(self, _key):
             return None
 
+        def get_session(self, _key):
+            return None
+
         def set_session_title(self, _key, _title):
             return False
 
@@ -297,6 +300,9 @@ def test_session_title_clears_pending_after_persist(monkeypatch):
         def get_session_title(self, _key):
             return self.title
 
+        def get_session(self, _key):
+            return {"id": _key, "title": self.title}
+
         def set_session_title(self, _key, title):
             self.title = title
             return True
@@ -316,6 +322,76 @@ def test_session_title_clears_pending_after_persist(monkeypatch):
         assert resp["result"]["pending"] is False
         assert resp["result"]["title"] == "fresh"
         assert server._sessions["sid"]["pending_title"] is None
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_title_does_not_queue_noop_when_row_exists(monkeypatch):
+    class _FakeDB:
+        def __init__(self):
+            self.title = "same title"
+
+        def get_session_title(self, _key):
+            return self.title
+
+        def get_session(self, _key):
+            return {"id": _key, "title": self.title}
+
+        def set_session_title(self, _key, _title):
+            # Simulate sqlite UPDATE rowcount==0 for no-op update.
+            return False
+
+    server._sessions["sid"] = _session(pending_title="stale")
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.title",
+                "params": {"session_id": "sid", "title": "same title"},
+            }
+        )
+
+        assert resp["result"]["pending"] is False
+        assert resp["result"]["title"] == "same title"
+        assert server._sessions["sid"]["pending_title"] is None
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_title_get_falls_back_to_pending_when_db_read_throws(monkeypatch):
+    class _FakeDB:
+        def get_session_title(self, _key):
+            raise RuntimeError("db temporarily locked")
+
+    server._sessions["sid"] = _session(pending_title="queued title")
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.title", "params": {"session_id": "sid"}}
+        )
+        assert resp["result"]["title"] == "queued title"
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_title_rejects_empty_title_with_specific_error_code(monkeypatch):
+    class _FakeDB:
+        def get_session_title(self, _key):
+            return ""
+
+    server._sessions["sid"] = _session()
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.title",
+                "params": {"session_id": "sid", "title": "   "},
+            }
+        )
+        assert "error" in resp
+        assert resp["error"]["code"] == 4021
     finally:
         server._sessions.pop("sid", None)
 

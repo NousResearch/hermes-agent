@@ -508,7 +508,7 @@ class TurnController {
     return { finalMessages, finalText, wasInterrupted }
   }
 
-  recordMessageDelta({ rendered, text }: { rendered?: string; text?: string }) {
+  recordMessageDelta({ text }: { text?: string }) {
     this.pruneTransient()
     this.endReasoningPhase()
 

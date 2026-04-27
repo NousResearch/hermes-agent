@@ -768,6 +768,22 @@ class GatewayRunner:
             except Exception as exc:
                 logger.debug("state.db auto-maintenance skipped: %s", exc)
 
+        # Opportunistic shadow-repo cleanup — deletes orphan/stale
+        # checkpoint repos under ~/.hermes/checkpoints/.  Opt-in via
+        # checkpoints.auto_prune, idempotent via .last_prune marker.
+        try:
+            from hermes_cli.config import load_config as _load_full_config
+            _ckpt_cfg = (_load_full_config().get("checkpoints") or {})
+            if _ckpt_cfg.get("auto_prune", False):
+                from tools.checkpoint_manager import maybe_auto_prune_checkpoints
+                maybe_auto_prune_checkpoints(
+                    retention_days=int(_ckpt_cfg.get("retention_days", 7)),
+                    min_interval_hours=int(_ckpt_cfg.get("min_interval_hours", 24)),
+                    delete_orphans=bool(_ckpt_cfg.get("delete_orphans", True)),
+                )
+        except Exception as exc:
+            logger.debug("checkpoint auto-maintenance skipped: %s", exc)
+
         # DM pairing store for code-based user authorization
         from gateway.pairing import PairingStore
         self.pairing_store = PairingStore()

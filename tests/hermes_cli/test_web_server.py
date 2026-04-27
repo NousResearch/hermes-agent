@@ -585,6 +585,77 @@ class TestNewEndpoints:
         resp = self.client.get("/api/cron/jobs/nonexistent-id")
         assert resp.status_code == 404
 
+    # --- Profiles ---
+
+    def test_profiles_list_includes_default(self):
+        from hermes_constants import get_hermes_home
+        get_hermes_home().mkdir(parents=True, exist_ok=True)
+
+        resp = self.client.get("/api/profiles")
+        assert resp.status_code == 200
+        names = [p["name"] for p in resp.json()["profiles"]]
+        assert "default" in names
+
+    def test_profiles_create_rename_delete_round_trip(self, monkeypatch):
+        # Stub gateway service teardown so the test doesn't shell out to
+        # launchctl/systemctl on the host.
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "_cleanup_gateway_service", lambda *a, **kw: None)
+
+        created = self.client.post("/api/profiles", json={"name": "test-prof"})
+        assert created.status_code == 200
+
+        renamed = self.client.patch(
+            "/api/profiles/test-prof",
+            json={"new_name": "test-prof-2"},
+        )
+        assert renamed.status_code == 200
+
+        names = [p["name"] for p in self.client.get("/api/profiles").json()["profiles"]]
+        assert "test-prof" not in names
+        assert "test-prof-2" in names
+
+        deleted = self.client.delete("/api/profiles/test-prof-2")
+        assert deleted.status_code == 200
+        names = [p["name"] for p in self.client.get("/api/profiles").json()["profiles"]]
+        assert "test-prof-2" not in names
+
+    def test_profiles_create_rejects_invalid_name(self):
+        resp = self.client.post("/api/profiles", json={"name": "Has Spaces"})
+        assert resp.status_code == 400
+
+    def test_profiles_delete_default_forbidden(self):
+        resp = self.client.delete("/api/profiles/default")
+        assert resp.status_code == 400
+
+    def test_profiles_delete_not_found(self):
+        resp = self.client.delete("/api/profiles/does-not-exist")
+        assert resp.status_code == 404
+
+    def test_profile_soul_round_trip(self, monkeypatch):
+        import hermes_cli.profiles as profiles_mod
+        monkeypatch.setattr(profiles_mod, "_cleanup_gateway_service", lambda *a, **kw: None)
+
+        self.client.post("/api/profiles", json={"name": "soul-prof"})
+        get1 = self.client.get("/api/profiles/soul-prof/soul")
+        assert get1.status_code == 200
+        assert get1.json()["exists"] is True
+
+        put = self.client.put(
+            "/api/profiles/soul-prof/soul",
+            json={"content": "# Edited soul"},
+        )
+        assert put.status_code == 200
+
+        got = self.client.get("/api/profiles/soul-prof/soul").json()
+        assert got["content"] == "# Edited soul"
+
+        self.client.delete("/api/profiles/soul-prof")
+
+    def test_profile_soul_unknown_profile_404(self):
+        resp = self.client.get("/api/profiles/nonexistent/soul")
+        assert resp.status_code == 404
+
     def test_skills_list(self):
         resp = self.client.get("/api/skills")
         assert resp.status_code == 200

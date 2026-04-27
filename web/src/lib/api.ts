@@ -122,6 +122,43 @@ export const api = {
   deleteCronJob: (id: string) =>
     fetchJSON<{ ok: boolean }>(`/api/cron/jobs/${id}`, { method: "DELETE" }),
 
+  // Profiles (minimal)
+  getProfiles: () =>
+    fetchJSON<{ profiles: ProfileInfo[] }>("/api/profiles"),
+  createProfile: (body: { name: string; clone_from_default: boolean }) =>
+    fetchJSON<{ ok: boolean; name: string; path: string }>("/api/profiles", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    }),
+  renameProfile: (name: string, newName: string) =>
+    fetchJSON<{ ok: boolean; name: string; path: string }>(
+      `/api/profiles/${encodeURIComponent(name)}`,
+      {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ new_name: newName }),
+      },
+    ),
+  deleteProfile: (name: string) =>
+    fetchJSON<{ ok: boolean }>(
+      `/api/profiles/${encodeURIComponent(name)}`,
+      { method: "DELETE" },
+    ),
+  getProfileSoul: (name: string) =>
+    fetchJSON<{ content: string; exists: boolean }>(
+      `/api/profiles/${encodeURIComponent(name)}/soul`,
+    ),
+  updateProfileSoul: (name: string, content: string) =>
+    fetchJSON<{ ok: boolean }>(
+      `/api/profiles/${encodeURIComponent(name)}/soul`,
+      {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ content }),
+      },
+    ),
+
   // Skills & Toolsets
   getSkills: () => fetchJSON<SkillInfo[]>("/api/skills"),
   toggleSkill: (name: string, enabled: boolean) =>
@@ -368,6 +405,16 @@ export interface AnalyticsResponse {
     summary: AnalyticsSkillsSummary;
     top_skills: AnalyticsSkillEntry[];
   };
+}
+
+export interface ProfileInfo {
+  name: string;
+  path: string;
+  is_default: boolean;
+  model: string | null;
+  provider: string | null;
+  has_env: boolean;
+  skill_count: number;
 }
 
 export interface CronJob {

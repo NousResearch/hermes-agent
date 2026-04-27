@@ -253,3 +253,72 @@ async def test_global_ignore_suppresses_pairing_reply(monkeypatch):
     assert result is None
     runner.pairing_store.generate_code.assert_not_called()
     adapter.send.assert_not_awaited()
+
+
+def test_anonymous_group_missing_user_id_respects_allow_all(monkeypatch):
+    """Channel/group posts may omit user_id; allow-all should still permit."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
+    runner, _adapter = _make_runner(
+        Platform.TELEGRAM,
+        GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="t")}),
+    )
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id=None,
+        chat_id="-100123",
+        user_name=None,
+        chat_type="channel",
+    )
+    assert runner._is_user_authorized(source) is True
+
+
+def test_anonymous_group_missing_user_id_denied_when_allowlist_required(monkeypatch):
+    """With a concrete allowlist, anonymous senders cannot be matched → deny."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "111")
+    runner, _adapter = _make_runner(
+        Platform.TELEGRAM,
+        GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="t")}),
+    )
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id=None,
+        chat_id="-100123",
+        chat_type="group",
+    )
+    assert runner._is_user_authorized(source) is False
+
+
+def test_anonymous_group_star_allowlist_authorizes(monkeypatch):
+    """TELEGRAM_ALLOWED_USERS=* should allow anonymous group traffic too."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("TELEGRAM_ALLOWED_USERS", "*")
+    runner, _adapter = _make_runner(
+        Platform.TELEGRAM,
+        GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="t")}),
+    )
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id=None,
+        chat_id="-100123",
+        chat_type="group",
+    )
+    assert runner._is_user_authorized(source) is True
+
+
+def test_dm_missing_user_id_denies_even_with_allow_all(monkeypatch):
+    """DMs need a sender id for pairing / auditing."""
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("GATEWAY_ALLOW_ALL_USERS", "true")
+    runner, _adapter = _make_runner(
+        Platform.TELEGRAM,
+        GatewayConfig(platforms={Platform.TELEGRAM: PlatformConfig(enabled=True, token="t")}),
+    )
+    source = SessionSource(
+        platform=Platform.TELEGRAM,
+        user_id=None,
+        chat_id="12345",
+        chat_type="dm",
+    )
+    assert runner._is_user_authorized(source) is False

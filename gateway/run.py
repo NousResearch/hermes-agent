@@ -309,6 +309,47 @@ def _expand_whatsapp_auth_aliases(identifier: str) -> set:
 
 logger = logging.getLogger(__name__)
 
+# Platform → env var holding comma-separated allowed user IDs (used in auth checks).
+_AUTH_PLATFORM_ALLOWED_USERS_ENV: Dict[Platform, str] = {
+    Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
+    Platform.DISCORD: "DISCORD_ALLOWED_USERS",
+    Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
+    Platform.SLACK: "SLACK_ALLOWED_USERS",
+    Platform.SIGNAL: "SIGNAL_ALLOWED_USERS",
+    Platform.EMAIL: "EMAIL_ALLOWED_USERS",
+    Platform.SMS: "SMS_ALLOWED_USERS",
+    Platform.MATTERMOST: "MATTERMOST_ALLOWED_USERS",
+    Platform.MATRIX: "MATRIX_ALLOWED_USERS",
+    Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
+    Platform.FEISHU: "FEISHU_ALLOWED_USERS",
+    Platform.WECOM: "WECOM_ALLOWED_USERS",
+    Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOWED_USERS",
+    Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
+    Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
+}
+
+# Platform → env var for per-platform "allow everyone" toggle.
+_AUTH_PLATFORM_ALLOW_ALL_ENV: Dict[Platform, str] = {
+    Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
+    Platform.DISCORD: "DISCORD_ALLOW_ALL_USERS",
+    Platform.WHATSAPP: "WHATSAPP_ALLOW_ALL_USERS",
+    Platform.SLACK: "SLACK_ALLOW_ALL_USERS",
+    Platform.SIGNAL: "SIGNAL_ALLOW_ALL_USERS",
+    Platform.EMAIL: "EMAIL_ALLOW_ALL_USERS",
+    Platform.SMS: "SMS_ALLOW_ALL_USERS",
+    Platform.MATTERMOST: "MATTERMOST_ALLOW_ALL_USERS",
+    Platform.MATRIX: "MATRIX_ALLOW_ALL_USERS",
+    Platform.DINGTALK: "DINGTALK_ALLOW_ALL_USERS",
+    Platform.FEISHU: "FEISHU_ALLOW_ALL_USERS",
+    Platform.WECOM: "WECOM_ALLOW_ALL_USERS",
+    Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOW_ALL_USERS",
+    Platform.WEIXIN: "WEIXIN_ALLOW_ALL_USERS",
+    Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
+}
+
+# Chats where the sender may be omitted (Telegram channel posts, anonymous admin, etc.).
+_GROUP_LIKE_CHAT_TYPES = frozenset({"group", "channel", "forum"})
+
 # Sentinel placed into _running_agents immediately when a session starts
 # processing, *before* any await.  Prevents a second message for the same
 # session from bypassing the "already running" guard during the async gap
@@ -2257,6 +2298,34 @@ class GatewayRunner:
 
         return None
     
+    def _is_anonymous_group_chat_authorized(self, source: SessionSource) -> bool:
+        """True when group/channel traffic lacks sender id but policy allows it.
+
+        Some adapters omit ``user_id`` for channel posts or anonymous admin
+        actions.  Per-user allowlists cannot match those senders, so they
+        deny.  Per-platform and global allow-all flags follow the same rules
+        as :meth:`_is_user_authorized`.
+        """
+        platform_allow_all_var = _AUTH_PLATFORM_ALLOW_ALL_ENV.get(source.platform, "")
+        if platform_allow_all_var and os.getenv(platform_allow_all_var, "").lower() in ("true", "1", "yes"):
+            return True
+
+        platform_allowlist = os.getenv(
+            _AUTH_PLATFORM_ALLOWED_USERS_ENV.get(source.platform, ""), ""
+        ).strip()
+        global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
+        if platform_allowlist or global_allowlist:
+            allowed_ids: set[str] = set()
+            if platform_allowlist:
+                allowed_ids.update(uid.strip() for uid in platform_allowlist.split(",") if uid.strip())
+            if global_allowlist:
+                allowed_ids.update(uid.strip() for uid in global_allowlist.split(",") if uid.strip())
+            if "*" in allowed_ids:
+                return True
+            return False
+
+        return os.getenv("GATEWAY_ALLOW_ALL_USERS", "").lower() in ("true", "1", "yes")
+
     def _is_user_authorized(self, source: SessionSource) -> bool:
         """
         Check if a user is authorized to use the bot.
@@ -2273,50 +2342,19 @@ class GatewayRunner:
         # connection, so HA events are always authorized.
         # Webhook events are authenticated via HMAC signature validation in
         # the adapter itself — no user allowlist applies.
-        if source.platform in (Platform.HOMEASSISTANT, Platform.WEBHOOK):
+        # API server requests are authenticated via HTTP layer (tokens /
+        # bind address), not per-message user ids.
+        if source.platform in (Platform.HOMEASSISTANT, Platform.WEBHOOK, Platform.API_SERVER):
             return True
 
         user_id = source.user_id
         if not user_id:
+            if source.chat_type in _GROUP_LIKE_CHAT_TYPES:
+                return self._is_anonymous_group_chat_authorized(source)
             return False
 
-        platform_env_map = {
-            Platform.TELEGRAM: "TELEGRAM_ALLOWED_USERS",
-            Platform.DISCORD: "DISCORD_ALLOWED_USERS",
-            Platform.WHATSAPP: "WHATSAPP_ALLOWED_USERS",
-            Platform.SLACK: "SLACK_ALLOWED_USERS",
-            Platform.SIGNAL: "SIGNAL_ALLOWED_USERS",
-            Platform.EMAIL: "EMAIL_ALLOWED_USERS",
-            Platform.SMS: "SMS_ALLOWED_USERS",
-            Platform.MATTERMOST: "MATTERMOST_ALLOWED_USERS",
-            Platform.MATRIX: "MATRIX_ALLOWED_USERS",
-            Platform.DINGTALK: "DINGTALK_ALLOWED_USERS",
-            Platform.FEISHU: "FEISHU_ALLOWED_USERS",
-            Platform.WECOM: "WECOM_ALLOWED_USERS",
-            Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOWED_USERS",
-            Platform.WEIXIN: "WEIXIN_ALLOWED_USERS",
-            Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOWED_USERS",
-        }
-        platform_allow_all_map = {
-            Platform.TELEGRAM: "TELEGRAM_ALLOW_ALL_USERS",
-            Platform.DISCORD: "DISCORD_ALLOW_ALL_USERS",
-            Platform.WHATSAPP: "WHATSAPP_ALLOW_ALL_USERS",
-            Platform.SLACK: "SLACK_ALLOW_ALL_USERS",
-            Platform.SIGNAL: "SIGNAL_ALLOW_ALL_USERS",
-            Platform.EMAIL: "EMAIL_ALLOW_ALL_USERS",
-            Platform.SMS: "SMS_ALLOW_ALL_USERS",
-            Platform.MATTERMOST: "MATTERMOST_ALLOW_ALL_USERS",
-            Platform.MATRIX: "MATRIX_ALLOW_ALL_USERS",
-            Platform.DINGTALK: "DINGTALK_ALLOW_ALL_USERS",
-            Platform.FEISHU: "FEISHU_ALLOW_ALL_USERS",
-            Platform.WECOM: "WECOM_ALLOW_ALL_USERS",
-            Platform.WECOM_CALLBACK: "WECOM_CALLBACK_ALLOW_ALL_USERS",
-            Platform.WEIXIN: "WEIXIN_ALLOW_ALL_USERS",
-            Platform.BLUEBUBBLES: "BLUEBUBBLES_ALLOW_ALL_USERS",
-        }
-
         # Per-platform allow-all flag (e.g., DISCORD_ALLOW_ALL_USERS=true)
-        platform_allow_all_var = platform_allow_all_map.get(source.platform, "")
+        platform_allow_all_var = _AUTH_PLATFORM_ALLOW_ALL_ENV.get(source.platform, "")
         if platform_allow_all_var and os.getenv(platform_allow_all_var, "").lower() in ("true", "1", "yes"):
             return True
 
@@ -2326,7 +2364,7 @@ class GatewayRunner:
             return True
 
         # Check platform-specific and global allowlists
-        platform_allowlist = os.getenv(platform_env_map.get(source.platform, ""), "").strip()
+        platform_allowlist = os.getenv(_AUTH_PLATFORM_ALLOWED_USERS_ENV.get(source.platform, ""), "").strip()
         global_allowlist = os.getenv("GATEWAY_ALLOWED_USERS", "").strip()
 
         if not platform_allowlist and not global_allowlist:
@@ -2407,13 +2445,24 @@ class GatewayRunner:
         # are system-generated and must skip user authorization.
         if getattr(event, "internal", False):
             pass
-        elif source.user_id is None:
-            # Messages with no user identity (Telegram service messages,
-            # channel forwards, anonymous admin actions) cannot be
-            # authorized — drop silently instead of triggering the pairing
-            # flow with a None user_id.
-            logger.debug("Ignoring message with no user_id from %s", source.platform.value)
-            return None
+        elif not source.user_id:
+            # DMs need a concrete sender for pairing / allowlists.  Group,
+            # channel, and forum traffic may omit user_id (Telegram channel
+            # posts, anonymous admin).  API server / HA / webhook authenticate
+            # elsewhere — same as :meth:`_is_user_authorized`.
+            if (
+                source.platform
+                in (Platform.HOMEASSISTANT, Platform.WEBHOOK, Platform.API_SERVER)
+                or source.chat_type in _GROUP_LIKE_CHAT_TYPES
+            ):
+                pass
+            else:
+                logger.debug(
+                    "Ignoring message with no user_id from %s (chat_type=%s)",
+                    source.platform.value,
+                    source.chat_type,
+                )
+                return None
         elif not self._is_user_authorized(source):
             logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             # In DMs: offer pairing code. In groups: silently ignore.

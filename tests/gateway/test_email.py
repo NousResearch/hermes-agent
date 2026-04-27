@@ -268,18 +268,18 @@ class TestAuthorizationMaps(unittest.TestCase):
         self.assertIn("Platform.EMAIL", source)
 
     def test_email_in_allowed_users_map(self):
-        """EMAIL_ALLOWED_USERS should be in platform_env_map."""
-        import gateway.run
-        import inspect
-        source = inspect.getsource(gateway.run.GatewayRunner._is_user_authorized)
-        self.assertIn("EMAIL_ALLOWED_USERS", source)
+        """EMAIL_ALLOWED_USERS should appear in the module auth env map."""
+        import gateway.run as gateway_run
+        from gateway.config import Platform
+
+        assert gateway_run._AUTH_PLATFORM_ALLOWED_USERS_ENV[Platform.EMAIL] == "EMAIL_ALLOWED_USERS"
 
     def test_email_in_allow_all_map(self):
-        """EMAIL_ALLOW_ALL_USERS should be in platform_allow_all_map."""
-        import gateway.run
-        import inspect
-        source = inspect.getsource(gateway.run.GatewayRunner._is_user_authorized)
-        self.assertIn("EMAIL_ALLOW_ALL_USERS", source)
+        """EMAIL_ALLOW_ALL_USERS should appear in the module allow-all map."""
+        import gateway.run as gateway_run
+        from gateway.config import Platform
+
+        assert gateway_run._AUTH_PLATFORM_ALLOW_ALL_ENV[Platform.EMAIL] == "EMAIL_ALLOW_ALL_USERS"
 
 
 class TestSendMessageToolRouting(unittest.TestCase):

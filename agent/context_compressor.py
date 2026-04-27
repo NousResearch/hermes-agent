@@ -107,6 +107,47 @@ def _content_length_for_budget(raw_content: Any) -> int:
     return total
 
 
+def _is_transient_summary_transport_error(exc: Exception) -> bool:
+    """Return True for one-off transport failures worth retrying once."""
+    status = getattr(exc, "status_code", None) or getattr(
+        getattr(exc, "response", None), "status_code", None
+    )
+    if isinstance(status, int):
+        if status == 408 or 500 <= status < 600:
+            return True
+        # Do not retry other client errors such as malformed payloads or
+        # auth failures.
+        if 400 <= status < 500:
+            return False
+
+    err_text = f"{type(exc).__name__} {exc}".lower()
+    return any(
+        marker in err_text
+        for marker in (
+            "api connection error",
+            "api timeout error",
+            "apiconnectionerror",
+            "connection aborted",
+            "connection error",
+            "connection reset",
+            "connection refused",
+            "connecterror",
+            "incomplete chunked read",
+            "network is unreachable",
+            "no route to host",
+            "peer closed connection",
+            "protocol error",
+            "read error",
+            "readerror",
+            "remote protocol error",
+            "remoteprotocolerror",
+            "server disconnected",
+            "timed out",
+            "timeout",
+        )
+    )
+
+
 def _content_text_for_contains(content: Any) -> str:
     """Return a best-effort text view of message content.
 
@@ -867,7 +908,19 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             }
             if self.summary_model:
                 call_kwargs["model"] = self.summary_model
-            response = call_llm(**call_kwargs)
+            for attempt in range(2):
+                try:
+                    response = call_llm(**call_kwargs)
+                    break
+                except Exception as e:
+                    if attempt == 0 and _is_transient_summary_transport_error(e):
+                        logging.info(
+                            "Context compression summary transport error; "
+                            "retrying once before fallback: %s",
+                            e,
+                        )
+                        continue
+                    raise
             content = response.choices[0].message.content
             # Handle cases where content is not a string (e.g., dict from llama.cpp)
             if not isinstance(content, str):

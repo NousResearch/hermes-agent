@@ -64,3 +64,7 @@ result
 website/static/api/skills-index.json
 hermes.db
 hermes.db
+
+# Local AI tool config/scratch files
+.claude/
+.codex

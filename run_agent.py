@@ -8160,6 +8160,22 @@ class AIAgent:
             except Exception as e:
                 logger.warning("Session DB compression split failed — new session will NOT be indexed: %s", e)
 
+        # Notify the context engine that the session_id rotated because of
+        # compression (not a fresh /new). Plugin engines (e.g. hermes-lcm) use
+        # boundary_reason="compression" to preserve DAG lineage across the
+        # rollover instead of re-initializing fresh per-session state.
+        # See hermes-lcm#68. Built-in ContextCompressor ignores kwargs.
+        try:
+            _old_sid = locals().get("old_session_id")
+            if _old_sid and hasattr(self.context_compressor, "on_session_start"):
+                self.context_compressor.on_session_start(
+                    self.session_id or "",
+                    boundary_reason="compression",
+                    old_session_id=_old_sid,
+                )
+        except Exception as _ce_err:
+            logger.debug("context engine on_session_start (compression): %s", _ce_err)
+
         # Warn on repeated compressions (quality degrades with each pass)
         _cc = self.context_compressor.compression_count
         if _cc >= 2:

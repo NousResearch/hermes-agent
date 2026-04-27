@@ -1746,20 +1746,41 @@ def _(rid, params: dict) -> dict:
         return _db_unavailable_error(rid, code=5007)
     key = session["session_key"]
     if "title" not in params:
+        fallback = session.get("pending_title") or ""
+        try:
+            resolved_title = db.get_session_title(key) or fallback
+        except Exception:
+            resolved_title = fallback
         return _ok(
             rid,
             {
-                "title": db.get_session_title(key) or session.get("pending_title") or "",
+                "title": resolved_title,
                 "session_key": key,
             },
         )
     title = (params.get("title", "") or "").strip()
     if not title:
-        return _err(rid, 4007, "title required")
+        return _err(rid, 4021, "title required")
     try:
         if db.set_session_title(key, title):
             session["pending_title"] = None
             return _ok(rid, {"pending": False, "title": title})
+        # rowcount == 0 can mean "same value" as well as "missing row".
+        # Queue only when the session row truly does not exist yet.
+        existing_row = None
+        try:
+            existing_row = db.get_session(key)
+        except Exception:
+            existing_row = None
+        if existing_row:
+            session["pending_title"] = None
+            return _ok(
+                rid,
+                {
+                    "pending": False,
+                    "title": (existing_row.get("title") or title),
+                },
+            )
         session["pending_title"] = title
         return _ok(rid, {"pending": True, "title": title})
     except Exception as e:

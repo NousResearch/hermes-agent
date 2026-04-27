@@ -188,6 +188,7 @@ class ChatCompletionsTransport(ProviderTransport):
         anthropic_max_out = params.get("anthropic_max_output")
         is_nvidia_nim = params.get("is_nvidia_nim", False)
         is_kimi = params.get("is_kimi", False)
+        is_zai = params.get("is_zai", False)
         reasoning_config = params.get("reasoning_config")
 
         if ephemeral is not None and max_tokens_fn:
@@ -238,6 +239,16 @@ class ChatCompletionsTransport(ProviderTransport):
                     _kimi_thinking_enabled = False
             extra_body["thinking"] = {
                 "type": "enabled" if _kimi_thinking_enabled else "disabled",
+            }
+
+        # Z.AI (GLM) extra_body.thinking — same format as Kimi
+        if is_zai:
+            _zai_thinking_enabled = True
+            if reasoning_config and isinstance(reasoning_config, dict):
+                if reasoning_config.get("enabled") is False:
+                    _zai_thinking_enabled = False
+            extra_body["thinking"] = {
+                "type": "enabled" if _zai_thinking_enabled else "disabled",
             }
 
         # Reasoning

@@ -5970,7 +5970,7 @@ class AIAgent:
         if cb is None or not isinstance(assistant_msg, dict):
             return
         content = assistant_msg.get("content")
-        visible = self._strip_think_blocks(content or "").strip()
+        visible = sanitize_context(self._strip_think_blocks(content or "")).strip()
         if not visible or visible == "(empty)":
             return
         already_streamed = self._interim_content_was_streamed(visible)
@@ -5988,6 +5988,15 @@ class AIAgent:
         if getattr(self, "_stream_needs_break", False) and text and text.strip():
             self._stream_needs_break = False
             text = "\n\n" + text
+            prepended_break = True
+        else:
+            prepended_break = False
+        if isinstance(text, str):
+            text = sanitize_context(self._strip_think_blocks(text or ""))
+            if not prepended_break:
+                text = text.lstrip("\n")
+        if not text:
+            return
         callbacks = [cb for cb in (self.stream_delta_callback, self._stream_callback) if cb is not None]
         delivered = False
         for cb in callbacks:
@@ -7958,7 +7967,7 @@ class AIAgent:
         # API replay, session transcript, gateway delivery, CLI display,
         # compression, title generation.
         if isinstance(_san_content, str) and _san_content:
-            _san_content = self._strip_think_blocks(_san_content).strip()
+            _san_content = sanitize_context(self._strip_think_blocks(_san_content)).strip()
 
         msg = {
             "role": "assistant",
@@ -9822,10 +9831,12 @@ class AIAgent:
         # Use original_user_message (clean input) — user_message may contain
         # injected skill content that bloats / breaks provider queries.
         _ext_prefetch_cache = ""
+        _memory_system_context = ""
         if self._memory_manager:
             try:
                 _query = original_user_message if isinstance(original_user_message, str) else ""
                 _ext_prefetch_cache = self._memory_manager.prefetch_all(_query) or ""
+                _memory_system_context = build_memory_context_block(_ext_prefetch_cache)
             except Exception:
                 pass
 
@@ -9962,23 +9973,15 @@ class AIAgent:
             for idx, msg in enumerate(messages):
                 api_msg = msg.copy()
 
-                # Inject ephemeral context into the current turn's user message.
-                # Sources: memory manager prefetch + plugin pre_llm_call hooks
-                # with target="user_message" (the default).  Both are
-                # API-call-time only — the original message in `messages` is
-                # never mutated, so nothing leaks into session persistence.
+                # Inject plugin-provided ephemeral context into the current
+                # turn's user message. External recalled memory no longer rides
+                # in the user lane; it is appended to the ephemeral system block
+                # below so persisted/replayed user text stays clean.
                 if idx == current_turn_user_idx and msg.get("role") == "user":
-                    _injections = []
-                    if _ext_prefetch_cache:
-                        _fenced = build_memory_context_block(_ext_prefetch_cache)
-                        if _fenced:
-                            _injections.append(_fenced)
                     if _plugin_user_context:
-                        _injections.append(_plugin_user_context)
-                    if _injections:
                         _base = api_msg.get("content", "")
                         if isinstance(_base, str):
-                            api_msg["content"] = _base + "\n\n" + "\n\n".join(_injections)
+                            api_msg["content"] = _base + "\n\n" + _plugin_user_context
 
                 # For ALL assistant messages, pass reasoning back to the API
                 # This ensures multi-turn reasoning context is preserved
@@ -10003,17 +10006,18 @@ class AIAgent:
                 # The signature field helps maintain reasoning continuity
                 api_messages.append(api_msg)
 
-            # Build the final system message: cached prompt + ephemeral system prompt.
-            # Ephemeral additions are API-call-time only (not persisted to session DB).
-            # External recall context is injected into the user message, not the system
-            # prompt, so the stable cache prefix remains unchanged.
+            # Build the final system message: cached prompt + per-turn recalled
+            # memory + any configured ephemeral system prompt. Dynamic recall now
+            # stays in the private/system lane instead of being appended to the
+            # user message.
             effective_system = active_system_prompt or ""
+            if _memory_system_context:
+                effective_system = (effective_system + "\n\n" + _memory_system_context).strip()
             if self.ephemeral_system_prompt:
                 effective_system = (effective_system + "\n\n" + self.ephemeral_system_prompt).strip()
-            # NOTE: Plugin context from pre_llm_call hooks is injected into the
-            # user message (see injection block above), NOT the system prompt.
-            # This is intentional — system prompt modifications break the prompt
-            # cache prefix.  The system prompt is reserved for Hermes internals.
+            # Plugin context from pre_llm_call hooks still targets the current
+            # user message by default; only recalled memory moved out of that
+            # lane to prevent prompt-structure leakage into visible history.
             if effective_system:
                 api_messages = [{"role": "system", "content": effective_system}] + api_messages
 
@@ -12629,8 +12633,9 @@ class AIAgent:
                         truncated_response_prefix = ""
                         length_continue_retries = 0
                     
-                    # Strip <think> blocks from user-facing response (keep raw in messages for trajectory)
-                    final_response = self._strip_think_blocks(final_response).strip()
+                    # Strip internal context / reasoning wrappers from the user-facing
+                    # response (keep only clean visible text in transcript + UI).
+                    final_response = sanitize_context(self._strip_think_blocks(final_response)).strip()
                     
                     final_msg = self._build_assistant_message(assistant_message, finish_reason)
 

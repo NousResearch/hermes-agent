@@ -545,6 +545,37 @@ def test_cmd_update_no_checkout_when_already_on_main(monkeypatch, tmp_path):
     assert len(checkout_calls) == 0
 
 
+def test_cmd_update_switches_back_to_feature_branch_after_successful_update(monkeypatch, tmp_path):
+    """Successful updates return the user to their original branch."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "/usr/bin/uv" else None)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    side_effect, recorded = _make_update_side_effect(current_branch="fix/something")
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    checkout_main = [c for c in recorded if c == ["git", "checkout", "main"]]
+    checkout_back = [c for c in recorded if c == ["git", "checkout", "fix/something"]]
+    assert len(checkout_main) == 1
+    assert len(checkout_back) == 1
+
+
+def test_cmd_update_rebases_local_overrides_branch_after_successful_update(monkeypatch, tmp_path):
+    """Local overlay branches auto-rebase onto updated main."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+    monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/uv" if name == "uv" else None)
+
+    side_effect, recorded = _make_update_side_effect(current_branch="jim/local-overrides")
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    assert ["git", "checkout", "jim/local-overrides"] in recorded
+    assert ["git", "rebase", "main"] in recorded
+
+
 # ---------------------------------------------------------------------------
 # Fetch failure — friendly error messages
 # ---------------------------------------------------------------------------

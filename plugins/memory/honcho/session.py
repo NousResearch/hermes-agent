@@ -17,6 +17,17 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+# Query terms that are too generic to use as evidence anchors for honcho_search.
+_SEARCH_ANCHOR_STOPWORDS = {
+    "a", "an", "and", "are", "as", "at", "back", "be", "by", "called", "check",
+    "checks", "current", "currently", "do", "does", "for", "from", "get", "goes",
+    "has", "have", "how", "i", "if", "in", "ins", "is", "it", "its", "jim",
+    "living", "me", "my", "name", "names", "of", "on", "only", "or", "please",
+    "real", "tell", "the", "their", "them", "they", "this", "though", "to",
+    "was", "what", "when", "where", "which", "who", "why", "work", "works",
+    "your",
+}
+
 # Sentinel to signal the async writer thread to shut down
 _ASYNC_SHUTDOWN = object()
 
@@ -958,6 +969,28 @@ class HonchoSessionManager:
 
         return normalized
 
+    @staticmethod
+    def _search_anchor_tokens(text: str) -> set[str]:
+        """Extract meaningful lexical anchors from a query/result string."""
+        return {
+            token
+            for token in re.findall(r"[a-z0-9]+", text.lower())
+            if len(token) >= 3 and token not in _SEARCH_ANCHOR_STOPWORDS
+        }
+
+    def _filter_semantic_results(self, query: str, results: list[Any]) -> list[Any]:
+        """Reject semantic-search hits with no meaningful lexical overlap."""
+        query_anchors = self._search_anchor_tokens(query)
+        if not query_anchors:
+            return list(results)
+
+        filtered: list[Any] = []
+        for result in results:
+            content = getattr(result, "content", "") or ""
+            if self._search_anchor_tokens(content) & query_anchors:
+                filtered.append(result)
+        return filtered
+
     def _resolve_observer_target(
         self,
         session: HonchoSession,
@@ -1021,20 +1054,30 @@ class HonchoSessionManager:
             return ""
 
         try:
-            observer_peer_id, target = self._resolve_observer_target(session, peer)
+            target_peer_id = self._resolve_peer_id(session, peer)
+            if target_peer_id == session.assistant_peer_id:
+                observer = self._get_or_create_peer(session.assistant_peer_id)
+                conclusions_scope = observer.conclusions_of(session.assistant_peer_id)
+            elif self._ai_observe_others:
+                observer = self._get_or_create_peer(session.assistant_peer_id)
+                conclusions_scope = observer.conclusions_of(target_peer_id)
+            else:
+                target_peer = self._get_or_create_peer(target_peer_id)
+                conclusions_scope = target_peer.conclusions_of(target_peer_id)
 
-            ctx = self._fetch_peer_context(
-                observer_peer_id,
-                search_query=query,
-                target=target,
-            )
-            parts = []
-            if ctx["representation"]:
-                parts.append(ctx["representation"])
-            card = ctx["card"] or []
-            if card:
-                parts.append("\n".join(f"- {f}" for f in card))
-            return "\n\n".join(parts)
+            results = conclusions_scope.query(query)
+            results = self._filter_semantic_results(query, list(results or []))
+            if not results:
+                return ""
+
+            text = "\n".join(f"- {result.content}" for result in results if getattr(result, "content", ""))
+            if not text:
+                return ""
+
+            budget_chars = max(1, max_tokens) * 4
+            if len(text) > budget_chars:
+                text = text[:budget_chars].rsplit(" ", 1)[0].rstrip() + " …"
+            return text
         except Exception as e:
             logger.debug("Honcho search_context failed: %s", e)
             return ""

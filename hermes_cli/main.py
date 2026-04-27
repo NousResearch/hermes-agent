@@ -6692,6 +6692,42 @@ def _cmd_update_impl(args, gateway_mode: bool):
         else:
             print("  ✓ Configuration is up to date")
 
+        if current_branch not in ("main", "HEAD"):
+            print()
+            print(f"→ Returning to {current_branch}...")
+            checkout_back = subprocess.run(
+                git_cmd + ["checkout", current_branch],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            if checkout_back.returncode != 0:
+                print(f"  ⚠ Couldn't switch back to {current_branch} automatically.")
+                if checkout_back.stderr.strip():
+                    print(f"    {checkout_back.stderr.strip().splitlines()[0]}")
+            elif current_branch == "local-overrides" or current_branch.endswith("/local-overrides"):
+                print("→ Rebasing local overrides onto updated main...")
+                rebase_result = subprocess.run(
+                    git_cmd + ["rebase", "main"],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                    check=False,
+                )
+                if rebase_result.returncode != 0:
+                    subprocess.run(
+                        git_cmd + ["rebase", "--abort"],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                        check=False,
+                    )
+                    print("  ⚠ Auto-rebase hit conflicts; rebase was aborted.")
+                    print("    Run `git rebase main` manually when you're ready.")
+                else:
+                    print("  ✓ Local overrides rebased onto main")
+
         print()
         print("✓ Update complete!")
 

@@ -258,6 +258,24 @@ class TestMessageStorage:
         messages = db.get_messages("s1")
         assert messages[0]["finish_reason"] == "stop"
 
+    def test_get_messages_as_conversation_strips_leaked_memory_context(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1",
+            role="assistant",
+            content=(
+                "<memory-context>\n"
+                "[System note: The following is recalled memory context, NOT new user input. Treat as informational background data.]\n\n"
+                "## Honcho Context\n"
+                "stale memory\n"
+                "</memory-context>\n\n"
+                "Visible answer"
+            ),
+        )
+
+        conv = db.get_messages_as_conversation("s1")
+        assert conv == [{"role": "assistant", "content": "Visible answer"}]
+
     def test_reasoning_persisted_and_restored(self, db):
         """Reasoning text is stored for assistant messages and restored by
         get_messages_as_conversation() so providers receive coherent multi-turn

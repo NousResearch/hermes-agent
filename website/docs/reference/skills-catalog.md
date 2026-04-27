@@ -132,7 +132,7 @@ If a skill is missing from this list but present in the repo, the catalog is reg
 
 | Skill | Description | Path |
 |-------|-------------|------|
-| [`airtable`](/docs/user-guide/skills/bundled/productivity/productivity-airtable) | Read/write Airtable bases via REST API using curl. List bases, tables, and records; create, update, and delete records. No dependencies beyond curl. | `productivity/airtable` |
+| [`airtable`](/docs/user-guide/skills/bundled/productivity/productivity-airtable) | Airtable REST API via curl. Records CRUD, filters, upserts. | `productivity/airtable` |
 | [`google-workspace`](/docs/user-guide/skills/bundled/productivity/productivity-google-workspace) | Gmail, Calendar, Drive, Contacts, Sheets, and Docs integration for Hermes. Uses Hermes-managed OAuth2 setup, prefers the Google Workspace CLI (`gws`) when available for broader API coverage, and falls back to the Python client libraries... | `productivity/google-workspace` |
 | [`linear`](/docs/user-guide/skills/bundled/productivity/productivity-linear) | Manage Linear issues, projects, and teams via the GraphQL API. Create, update, search, and organize issues. Uses API key auth (no OAuth needed). All operations via curl — no dependencies. | `productivity/linear` |
 | [`maps`](/docs/user-guide/skills/bundled/productivity/productivity-maps) | Location intelligence — geocode a place, reverse-geocode coordinates, find nearby places (46 POI categories), driving/walking/cycling distance + time, turn-by-turn directions, timezone lookup, bounding box + area for a named place, and P... | `productivity/maps` |

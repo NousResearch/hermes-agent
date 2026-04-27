@@ -512,6 +512,20 @@ def acquire_scoped_lock(scope: str, identity: str, metadata: Optional[dict[str, 
                     and current_start != existing.get("start_time")
                 ):
                     stale = True
+                # Fallback: when start_time is unavailable (macOS has no
+                # /proc) or the lock record was written without start_time,
+                # check whether the live PID still looks like a Hermes
+                # gateway.  If it does not, the lock is stale — the PID was
+                # reused by an unrelated process (#16376).
+                if not stale:
+                    _record_ok = _record_looks_like_gateway(existing)
+                    _proc_ok = _looks_like_gateway_process(existing_pid)
+                    if _record_ok and not _proc_ok:
+                        stale = True
+                    elif not _record_ok and not _proc_ok:
+                        # Legacy lock without kind/argv metadata *and* the
+                        # live process is not a gateway — treat as stale.
+                        stale = True
                 # Check if process is stopped (Ctrl+Z / SIGTSTP) — stopped
                 # processes still respond to os.kill(pid, 0) but are not
                 # actually running. Treat them as stale so --replace works.

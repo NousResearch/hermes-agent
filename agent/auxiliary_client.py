@@ -2648,8 +2648,11 @@ def resolve_vision_provider_client(
         return resolved_provider, sync_client, final_model
 
     if resolved_base_url:
+        provider_for_base_override = (
+            requested if requested and requested not in ("", "auto") else "custom"
+        )
         client, final_model = resolve_provider_client(
-            "custom",
+            provider_for_base_override,
             model=resolved_model,
             async_mode=async_mode,
             explicit_base_url=resolved_base_url,
@@ -2657,8 +2660,8 @@ def resolve_vision_provider_client(
             api_mode=resolved_api_mode,
         )
         if client is None:
-            return "custom", None, None
-        return "custom", client, final_model
+            return provider_for_base_override, None, None
+        return provider_for_base_override, client, final_model
 
     if requested == "auto":
         # Vision auto-detection order:

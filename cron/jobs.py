@@ -810,6 +810,12 @@ def get_due_jobs() -> List[Dict[str, Any]]:
     the job is fast-forwarded to the next future run instead of firing
     immediately.  This prevents a burst of missed jobs on gateway restart.
     """
+    with _jobs_file_lock:
+        return _get_due_jobs_locked()
+
+
+def _get_due_jobs_locked() -> List[Dict[str, Any]]:
+    """Inner implementation of get_due_jobs(); must be called with _jobs_file_lock held."""
     now = _hermes_now()
     raw_jobs = load_jobs()
     jobs = [_apply_skill_fields(j) for j in copy.deepcopy(raw_jobs)]

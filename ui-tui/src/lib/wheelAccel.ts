@@ -1,9 +1,8 @@
 // Wheel-scroll acceleration state machine.
 //
-// Ported from claude-code's src/components/ScrollKeybindingHandler.tsx
-// (commit cb7cfba6 of their research snapshot at ~/claude-code).  The
-// algorithm is theirs; the tuning constants below are theirs; this file
-// is a straight port adapted to our module structure.
+// Algorithm and tuning constants adapted from a reference implementation
+// of trackpad/wheel-event acceleration in TUI scroll handlers; this file
+// is the port adapted to our module structure.
 //
 // Problem: one wheel event = 1 scrolled row feels sluggish on trackpads
 // (which can fire 200+ events/sec) and during deliberate mouse scrolls.

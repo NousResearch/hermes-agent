@@ -79,7 +79,6 @@ export type ScrollFastPathStats = {
   declined: {
     noPrevScreen: number
     heightDeltaMismatch: number
-    noHint: number
     other: number
   }
   lastDeclineReason?: string
@@ -95,7 +94,6 @@ export const scrollFastPathStats: ScrollFastPathStats = {
   declined: {
     noPrevScreen: 0,
     heightDeltaMismatch: 0,
-    noHint: 0,
     other: 0
   }
 }
@@ -105,7 +103,6 @@ export function resetScrollFastPathStats(): void {
   scrollFastPathStats.taken = 0
   scrollFastPathStats.declined.noPrevScreen = 0
   scrollFastPathStats.declined.heightDeltaMismatch = 0
-  scrollFastPathStats.declined.noHint = 0
   scrollFastPathStats.declined.other = 0
   scrollFastPathStats.lastDeclineReason = undefined
   scrollFastPathStats.lastHeightDelta = undefined

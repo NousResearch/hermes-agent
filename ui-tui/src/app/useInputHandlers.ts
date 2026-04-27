@@ -1,6 +1,6 @@
 import { useInput } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
-import { useRef } from 'react'
+import { useEffect, useRef } from 'react'
 
 import { TYPING_IDLE_MS } from '../config/timing.js'
 import type {
@@ -39,6 +39,16 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   // (passed from useMainApp / the WHEEL_SCROLL_STEP constant) is used
   // as the BASE — final rows = wheelStep × accelMult.
   const wheelAccelRef = useRef(initWheelAccelForHost())
+
+  useEffect(
+    () => () => {
+      if (scrollIdleTimer.current) {
+        clearTimeout(scrollIdleTimer.current)
+        scrollIdleTimer.current = null
+      }
+    },
+    []
+  )
 
   const scrollTranscript = (delta: number) => {
     if (getUiState().busy) {

@@ -1034,6 +1034,11 @@ def merge_pending_message_event(
                     existing.text = event.text
             if existing_is_photo or incoming_is_photo:
                 existing.message_type = MessageType.PHOTO
+            elif (
+                getattr(existing, "message_type", None) == MessageType.TEXT
+                and event.message_type != MessageType.TEXT
+            ):
+                existing.message_type = event.message_type
             return
 
         if (

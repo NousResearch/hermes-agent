@@ -37,10 +37,9 @@ import logging
 import os
 import re
 import shutil
-import tempfile
 from pathlib import Path
 from hermes_constants import get_hermes_home, display_hermes_home
-from typing import Dict, Any, Optional, Tuple
+from typing import Dict, Any, Optional, Tuple, IO
 
 logger = logging.getLogger(__name__)
 
@@ -288,35 +287,13 @@ def _resolve_skill_target(skill_dir: Path, file_path: str) -> Tuple[Optional[Pat
 
 
 def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -> None:
-    """
-    Atomically write text content to a file.
-    
-    Uses a temporary file in the same directory and os.replace() to ensure
-    the target file is never left in a partially-written state if the process
-    crashes or is interrupted.
-    
-    Args:
-        file_path: Target file path
-        content: Content to write
-        encoding: Text encoding (default: utf-8)
-    """
-    file_path.parent.mkdir(parents=True, exist_ok=True)
-    fd, temp_path = tempfile.mkstemp(
-        dir=str(file_path.parent),
-        prefix=f".{file_path.name}.tmp.",
-        suffix="",
-    )
-    try:
-        with os.fdopen(fd, "w", encoding=encoding) as f:
-            f.write(content)
-        os.replace(temp_path, file_path)
-    except Exception:
-        # Clean up temp file on error
-        try:
-            os.unlink(temp_path)
-        except OSError:
-            logger.error("Failed to remove temporary file %s during atomic write", temp_path, exc_info=True)
-        raise
+    """Atomically write text via :func:`atomic_io.cross_platform_atomic_writer`."""
+    from atomic_io import cross_platform_atomic_writer
+
+    def _writer(fp: IO[str]) -> None:
+        fp.write(content)
+
+    cross_platform_atomic_writer(file_path, _writer, binary=False, encoding=encoding)
 
 
 # =============================================================================

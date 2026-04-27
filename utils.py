@@ -3,13 +3,13 @@
 import json
 import logging
 import os
-import stat
-import tempfile
 from pathlib import Path
-from typing import Any, Union
+from typing import Any, IO, Union
 from urllib.parse import urlparse
 
 import yaml
+
+from atomic_io import cross_platform_atomic_writer
 
 logger = logging.getLogger(__name__)
 
@@ -33,31 +33,6 @@ def env_var_enabled(name: str, default: str = "") -> bool:
     return is_truthy_value(os.getenv(name, default), default=False)
 
 
-def _preserve_file_mode(path: Path) -> "int | None":
-    """Capture the permission bits of *path* if it exists, else ``None``."""
-    try:
-        return stat.S_IMODE(path.stat().st_mode) if path.exists() else None
-    except OSError:
-        return None
-
-
-def _restore_file_mode(path: Path, mode: "int | None") -> None:
-    """Re-apply *mode* to *path* after an atomic replace.
-
-    ``tempfile.mkstemp`` creates files with 0o600 (owner-only).  After
-    ``os.replace`` swaps the temp file into place the target inherits
-    those restrictive permissions, breaking Docker / NAS volume mounts
-    that rely on broader permissions set by the user.  Calling this
-    right after ``os.replace`` restores the original permissions.
-    """
-    if mode is None:
-        return
-    try:
-        os.chmod(path, mode)
-    except OSError:
-        pass
-
-
 def atomic_json_write(
     path: Union[str, Path],
     data: Any,
@@ -79,36 +54,17 @@ def atomic_json_write(
             as default=str for non-native types.
     """
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
 
-    original_mode = _preserve_file_mode(path)
+    def _writer(fp: IO[str]) -> None:
+        json.dump(
+            data,
+            fp,
+            indent=indent,
+            ensure_ascii=False,
+            **dump_kwargs,
+        )
 
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(path.parent),
-        prefix=f".{path.stem}_",
-        suffix=".tmp",
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(
-                data,
-                f,
-                indent=indent,
-                ensure_ascii=False,
-                **dump_kwargs,
-            )
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, path)
-        _restore_file_mode(path, original_mode)
-    except BaseException:
-        # Intentionally catch BaseException so temp-file cleanup still runs for
-        # KeyboardInterrupt/SystemExit before re-raising the original signal.
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    cross_platform_atomic_writer(path, _writer, binary=False, encoding="utf-8")
 
 
 def atomic_yaml_write(
@@ -134,32 +90,13 @@ def atomic_yaml_write(
             (e.g. commented-out sections for user reference).
     """
     path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
 
-    original_mode = _preserve_file_mode(path)
+    def _writer(fp: IO[str]) -> None:
+        yaml.dump(data, fp, default_flow_style=default_flow_style, sort_keys=sort_keys)
+        if extra_content:
+            fp.write(extra_content)
 
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(path.parent),
-        prefix=f".{path.stem}_",
-        suffix=".tmp",
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, default_flow_style=default_flow_style, sort_keys=sort_keys)
-            if extra_content:
-                f.write(extra_content)
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, path)
-        _restore_file_mode(path, original_mode)
-    except BaseException:
-        # Match atomic_json_write: cleanup must also happen for process-level
-        # interruptions before we re-raise them.
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    cross_platform_atomic_writer(path, _writer, binary=False, encoding="utf-8")
 
 
 # ─── JSON Helpers ─────────────────────────────────────────────────────────────

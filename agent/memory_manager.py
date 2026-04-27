@@ -179,10 +179,20 @@ def build_memory_context_block(raw_context: str) -> str:
 
     The fence prevents the model from treating recalled context as user
     discourse.  Injected at API-call time only — never persisted.
+
+    A provider returning text that already contains the wrapper is a
+    contract violation (would produce nested fences).  We strip defensively
+    and warn so the buggy provider surfaces in logs instead of silently
+    double-fencing.
     """
     if not raw_context or not raw_context.strip():
         return ""
     clean = sanitize_context(raw_context)
+    if clean != raw_context:
+        logger.warning(
+            "memory provider returned text containing <memory-context> wrapper; "
+            "stripped before re-fencing (provider contract violation)"
+        )
     return (
         "<memory-context>\n"
         "[System note: The following is recalled memory context, "

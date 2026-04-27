@@ -6102,7 +6102,13 @@ class AIAgent:
             else:
                 # Defensive: legacy callers without the scrubber attribute.
                 text = sanitize_context(text)
-            if not prepended_break:
+            # Strip leading newlines only on the very first delta of the stream,
+            # and only when we didn't just prepend a paragraph break ourselves.
+            # Mid-stream "\n" is legitimate markdown (lists, code, paragraphs)
+            # and must survive — chunk boundaries are arbitrary.
+            if not prepended_break and not getattr(
+                self, "_current_streamed_assistant_text", ""
+            ):
                 text = text.lstrip("\n")
         if not text:
             return
@@ -8077,7 +8083,7 @@ class AIAgent:
         # API replay, session transcript, gateway delivery, CLI display,
         # compression, title generation.
         if isinstance(_san_content, str) and _san_content:
-            _san_content = sanitize_context(self._strip_think_blocks(_san_content)).strip()
+            _san_content = self._strip_think_blocks(_san_content).strip()
 
         msg = {
             "role": "assistant",
@@ -9628,16 +9634,6 @@ class AIAgent:
             user_message = _sanitize_surrogates(user_message)
         if isinstance(persist_user_message, str):
             persist_user_message = _sanitize_surrogates(persist_user_message)
-
-        # Strip leaked <memory-context> blocks from user input.  When Honcho's
-        # saveMessages persists a turn that included injected context, the block
-        # can reappear in the next turn's user message via message history.
-        # Stripping here prevents stale memory tags from leaking into the
-        # conversation and being visible to the user or the model as user text.
-        if isinstance(user_message, str):
-            user_message = sanitize_context(user_message)
-        if isinstance(persist_user_message, str):
-            persist_user_message = sanitize_context(persist_user_message)
 
         # Store stream callback for _interruptible_api_call to pick up
         self._stream_callback = stream_callback

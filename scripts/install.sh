@@ -1126,6 +1126,8 @@ install_node_deps() {
         return 0
     fi
 
+    local browser_install_ok=false
+
     if [ -f "$INSTALL_DIR/package.json" ]; then
         log_info "Installing Node.js dependencies (browser tools)..."
         cd "$INSTALL_DIR"
@@ -1134,6 +1136,9 @@ install_node_deps() {
         }
         log_success "Node.js dependencies installed"
 
+        local arch
+        arch="$(uname -m)"
+
         # Install Playwright browser + system dependencies.
         # Playwright's --with-deps only supports apt-based systems natively.
         # For Arch/Manjaro we install the system libs via pacman first.
@@ -1141,12 +1146,29 @@ install_node_deps() {
         log_info "Installing browser engine (Playwright Chromium)..."
         case "$DISTRO" in
             ubuntu|debian|raspbian|pop|linuxmint|elementary|zorin|kali|parrot)
-                log_info "Playwright may request sudo to install browser system dependencies (shared libraries)."
-                log_info "This is standard Playwright setup — Hermes itself does not require root access."
-                cd "$INSTALL_DIR" && npx playwright install --with-deps chromium 2>/dev/null || {
-                    log_warn "Playwright browser installation failed — browser tools will not work."
-                    log_warn "Try running manually: cd $INSTALL_DIR && npx playwright install --with-deps chromium"
-                }
+                if [ "$arch" = "aarch64" ] || [ "$arch" = "arm64" ]; then
+                    log_info "ARM64 detected — trying browser-only install first (no system package escalation)."
+                    if cd "$INSTALL_DIR" && npx playwright install chromium; then
+                        browser_install_ok=true
+                    else
+                        log_warn "Browser-only install failed on ARM64. Trying --with-deps as fallback..."
+                        if cd "$INSTALL_DIR" && npx playwright install --with-deps chromium; then
+                            browser_install_ok=true
+                        else
+                            log_warn "Playwright browser installation failed on ARM64."
+                            log_warn "Try manually: cd $INSTALL_DIR && npx playwright install chromium"
+                        fi
+                    fi
+                else
+                    log_info "Playwright may request sudo to install browser system dependencies (shared libraries)."
+                    log_info "This is standard Playwright setup — Hermes itself does not require root access."
+                    if cd "$INSTALL_DIR" && npx playwright install --with-deps chromium; then
+                        browser_install_ok=true
+                    else
+                        log_warn "Playwright browser installation failed — browser tools will not work."
+                        log_warn "Try running manually: cd $INSTALL_DIR && npx playwright install --with-deps chromium"
+                    fi
+                fi
                 ;;
             arch|manjaro)
                 if command -v pacman &> /dev/null; then
@@ -1162,35 +1184,47 @@ install_node_deps() {
                         log_warn "  sudo pacman -S nss atk at-spi2-core cups libdrm libxkbcommon mesa pango cairo alsa-lib"
                     fi
                 fi
-                cd "$INSTALL_DIR" && npx playwright install chromium 2>/dev/null || {
+                if cd "$INSTALL_DIR" && npx playwright install chromium; then
+                    browser_install_ok=true
+                else
                     log_warn "Playwright browser installation failed — browser tools will not work."
-                }
+                fi
                 ;;
             fedora|rhel|centos|rocky|alma)
                 log_warn "Playwright does not support automatic dependency installation on RPM-based systems."
                 log_info "Install Chromium system dependencies manually before using browser tools:"
                 log_info "  sudo dnf install nss atk at-spi2-core cups-libs libdrm libxkbcommon mesa-libgbm pango cairo alsa-lib"
-                cd "$INSTALL_DIR" && npx playwright install chromium 2>/dev/null || {
+                if cd "$INSTALL_DIR" && npx playwright install chromium; then
+                    browser_install_ok=true
+                else
                     log_warn "Playwright browser installation failed — install dependencies above and retry."
-                }
+                fi
                 ;;
             opensuse*|sles)
                 log_warn "Playwright does not support automatic dependency installation on zypper-based systems."
                 log_info "Install Chromium system dependencies manually before using browser tools:"
                 log_info "  sudo zypper install mozilla-nss libatk-1_0-0 at-spi2-core cups-libs libdrm2 libxkbcommon0 Mesa-libgbm1 pango cairo libasound2"
-                cd "$INSTALL_DIR" && npx playwright install chromium 2>/dev/null || {
+                if cd "$INSTALL_DIR" && npx playwright install chromium; then
+                    browser_install_ok=true
+                else
                     log_warn "Playwright browser installation failed — install dependencies above and retry."
-                }
+                fi
                 ;;
             *)
                 log_warn "Playwright does not support automatic dependency installation on $DISTRO."
                 log_info "Install Chromium/browser system dependencies for your distribution, then run:"
                 log_info "  cd $INSTALL_DIR && npx playwright install chromium"
                 log_info "Browser tools will not work until dependencies are installed."
-                cd "$INSTALL_DIR" && npx playwright install chromium 2>/dev/null || true
+                if cd "$INSTALL_DIR" && npx playwright install chromium; then
+                    browser_install_ok=true
+                fi
                 ;;
         esac
-        log_success "Browser engine setup complete"
+        if [ "$browser_install_ok" = true ]; then
+            log_success "Browser engine setup complete"
+        else
+            log_warn "Browser engine setup incomplete. You can continue using Hermes without browser tools."
+        fi
     fi
 
     # Install TUI dependencies

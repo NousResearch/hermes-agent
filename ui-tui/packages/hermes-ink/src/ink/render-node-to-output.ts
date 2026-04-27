@@ -111,7 +111,6 @@ export function resetScrollFastPathStats(): void {
   scrollFastPathStats.lastPrevHeight = undefined
 }
 
-
 export function getScrollHint(): ScrollHint | null {
   return scrollHint
 }

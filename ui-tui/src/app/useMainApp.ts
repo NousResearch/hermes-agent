@@ -1,4 +1,4 @@
-import { useApp, useHasSelection, useSelection, useStdout, useTerminalTitle, type ScrollBoxHandle } from '@hermes/ink'
+import { type ScrollBoxHandle, useApp, useHasSelection, useSelection, useStdout, useTerminalTitle } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 
@@ -20,7 +20,6 @@ import { appendTranscriptMessage } from '../lib/messages.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import { terminalParityHints } from '../lib/terminalParity.js'
 import { buildToolTrailLine, sameToolTrailGroup, toolTrailLabel } from '../lib/text.js'
-import { getViewportSnapshot } from '../lib/viewportStore.js'
 import { estimatedMsgHeight, messageHeightKey } from '../lib/virtualHeights.js'
 import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
@@ -199,8 +198,10 @@ export function useMainApp(gw: GatewayClient) {
 
     return `${thinking}:${tools}`
   }, [ui.detailsMode, ui.detailsModeCommandOverride, ui.sections])
+
   const detailsVisible = detailsLayoutKey !== 'hidden:hidden'
   const heightCacheKey = `${ui.sid ?? 'draft'}:${cols}:${ui.compact ? '1' : '0'}:${detailsLayoutKey}`
+
   const heightCache = useMemo(() => {
     let cache = heightCachesRef.current.get(heightCacheKey)
 
@@ -215,6 +216,7 @@ export function useMainApp(gw: GatewayClient) {
 
     return cache
   }, [heightCacheKey])
+
   const initialHeights = useMemo(() => {
     const out = new Map<string, number>()
 
@@ -232,6 +234,7 @@ export function useMainApp(gw: GatewayClient) {
 
     return out
   }, [cols, detailsVisible, heightCache, ui.compact, virtualRows])
+
   const syncHeightCache = useCallback(
     (heights: ReadonlyMap<string, number>) => {
       for (const row of virtualRows) {
@@ -719,26 +722,10 @@ export function useMainApp(gw: GatewayClient) {
     [cols, composerActions, composerState, empty, pagerPageSize, submit]
   )
 
-  const liveTailVisible = (() => {
-    const s = scrollRef.current
-
-    if (!s) {
-      return true
-    }
-
-    const { bottom, scrollHeight } = getViewportSnapshot(s)
-
-    return bottom >= scrollHeight - 3
-  })()
-
-  const liveProgress = useMemo(() => ({ showProgressArea }), [showProgressArea])
-
-  // Always pass current progress through. Freezing this while offscreen looked
-  // like a nice scroll optimization, but it also froze the live tail's
-  // thinking/tool state at arbitrary intermediate snapshots. Streaming update
-  // throttling now handles interaction load; progress state should remain
-  // truthful so panels don't randomly disappear.
-  const appProgress = liveProgress
+  // Pass current progress through unfrozen — streaming update throttling
+  // handles interaction load; progress must stay truthful so panels don't
+  // randomly disappear when the live tail scrolls offscreen.
+  const appProgress = useMemo(() => ({ showProgressArea }), [showProgressArea])
 
   const cwd = ui.info?.cwd || process.env.HERMES_CWD || process.cwd()
   const gitBranch = useGitBranch(cwd)

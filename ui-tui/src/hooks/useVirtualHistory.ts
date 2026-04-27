@@ -1,13 +1,13 @@
 import type { ScrollBoxHandle } from '@hermes/ink'
 import {
+  type RefObject,
   useCallback,
   useDeferredValue,
   useEffect,
   useLayoutEffect,
   useRef,
   useState,
-  useSyncExternalStore,
-  type RefObject
+  useSyncExternalStore
 } from 'react'
 
 const ESTIMATE = 4
@@ -98,6 +98,7 @@ export function useVirtualHistory(
   // Bump whenever heightCache mutates so offsets rebuild on next read.
   // Ref (not state) — checked during render phase, zero extra commits.
   const offsetVersion = useRef(0)
+
   // Cached offsets: reused Float64Array keyed on (itemCount, version) so we
   // only rebuild when something actually changed. Previous approach allocated
   // a fresh Array(n+1) every render — at n=10k that's ~80KB/render of GC
@@ -107,6 +108,7 @@ export function useVirtualHistory(
     n: -1,
     version: -1
   })
+
   const [hasScrollRef, setHasScrollRef] = useState(false)
   const metrics = useRef({ sticky: true, top: 0, vp: 0 })
   const lastScrollTopRef = useRef(0)
@@ -158,6 +160,7 @@ export function useVirtualHistory(
     (cb: () => void) => (hasScrollRef ? scrollRef.current?.subscribe(cb) : null) ?? NOOP,
     [hasScrollRef, scrollRef]
   )
+
   useSyncExternalStore(
     subscribe,
     () => {
@@ -310,13 +313,8 @@ export function useVirtualHistory(
     if (velocity > vp * 2) {
       const [pS, pE] = prevRange.current
 
-      if (start < pS - SLIDE_STEP) {
-        start = pS - SLIDE_STEP
-      }
-
-      if (end > pE + SLIDE_STEP) {
-        end = pE + SLIDE_STEP
-      }
+      start = Math.max(start, pS - SLIDE_STEP)
+      end = Math.min(end, pE + SLIDE_STEP)
 
       // A large jump past the capped end can invert (start > end); mount
       // SLIDE_STEP items from the new start so the viewport isn't blank

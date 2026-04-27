@@ -1144,12 +1144,20 @@ class MyahAdapter(BasePlatformAdapter):
         """Return the list of allowed cache directories for media streaming."""
         from hermes_constants import get_hermes_home, get_hermes_dir
         base = get_hermes_home()
-        return [
+        roots = [
+            # ── Myah: root cache dir — allow any artifact the agent writes
+            # directly under /data/.hermes/cache/. Without this, files the
+            # agent creates via execute_code/terminal (which default to the
+            # cache root, not a subdirectory) return 403 and never persist
+            # back to the chat. T3-1001 dogfooding 2026-04-24.
+            (base / 'cache').resolve(),
+            # ────────────────────────────────────────────────────────────
             get_hermes_dir('cache/images', 'image_cache').resolve(),
             get_hermes_dir('cache/audio', 'audio_cache').resolve(),
             get_hermes_dir('cache/documents', 'document_cache').resolve(),
             get_hermes_dir('cache/screenshots', 'browser_screenshots').resolve(),
         ]
+        return roots
 
     async def _handle_media_get(self, request: 'web.Request') -> 'web.Response':
         """GET /myah/v1/media?path=<path> — stream a cached media file.

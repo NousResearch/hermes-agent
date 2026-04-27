@@ -73,6 +73,16 @@ export type Root = {
   waitUntilExit: () => Promise<void>
 }
 
+export const forceRedraw = (stdout: NodeJS.WriteStream = process.stdout): boolean => {
+  const instance = instances.get(stdout)
+  if (!instance) {
+    return false
+  }
+
+  instance.forceRedraw()
+  return true
+}
+
 /**
  * Mount a component and render the output.
  */

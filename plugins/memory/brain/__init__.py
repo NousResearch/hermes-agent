@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 DEFAULT_ITERATIONS = 90
 DEFAULT_TOP_K = 5
 DEFAULT_MAX_EVENTS = 500
+DEFAULT_HIPPOCAMPUS_ENABLED = True
 STATE_VERSION = 1
 
 STATUS_SCHEMA = {
@@ -67,11 +68,45 @@ def _now_ms() -> int:
 
 def _safe_text(value: Any, *, limit: int = 4000) -> str:
     text = "" if value is None else str(value)
+    text = _strip_memory_context(text)
     # Avoid persisting obvious credentials in the local event log. Brain also
     # applies its own boundary, but the provider should minimize raw capture.
     text = re.sub(r"(?i)(api[_-]?key|token|password|secret)\s*[:=]\s*\S+", r"\1=[REDACTED]", text)
     text = re.sub(r"sk-[A-Za-z0-9_-]{16,}", "[REDACTED_API_KEY]", text)
-    return text[:limit]
+    return text[:limit].strip()
+
+
+def _strip_memory_context(text: str) -> str:
+    """Remove recalled memory blocks so they cannot feed back into Brain state."""
+    text = re.sub(r"(?is)<memory-context>.*?</memory-context>", "", text or "")
+    text = re.sub(r"(?is)##\s*Brain Memory\b.*?(?=\n##\s|\Z)", "", text)
+    return text.strip()
+
+
+def _is_noise_event(kind: str, role: str, content: str) -> bool:
+    """Filter internal scaffolding and known assistant echoes before persistence."""
+    lowered = (content or "").lower()
+    normalized_role = (role or "").lower()
+    if normalized_role in {"system", "developer", "tool"}:
+        return True
+    internal_markers = (
+        "review the conversation above and consider whether a skill",
+        "skill save/update",
+        "skill-reflection",
+        "context compaction",
+        "reference only",
+    )
+    if any(marker in lowered for marker in internal_markers):
+        return True
+    if normalized_role == "assistant":
+        assistant_echo_markers = (
+            "brain provider connected as local hermes memory sidecar",
+            "skill update summary",
+            "hermes skill update summary",
+        )
+        if any(marker in lowered for marker in assistant_echo_markers):
+            return True
+    return False
 
 
 def _contains(text: str, query: str) -> bool:
@@ -266,6 +301,7 @@ class BrainMemoryProvider(MemoryProvider):
             data.setdefault("events", [])
             data.setdefault("long_term_candidates", [])
             data.setdefault("last_experiment", None)
+            data["events"] = self._sanitize_events(data.get("events") or [])
             return data
         except Exception:
             logger.warning("Failed to read Brain state; starting empty", exc_info=True)
@@ -277,11 +313,27 @@ class BrainMemoryProvider(MemoryProvider):
         tmp.write_text(json.dumps(self._state, ensure_ascii=False, indent=2), encoding="utf-8")
         tmp.replace(self._state_path)
 
+    def _sanitize_events(self, events: List[Any]) -> List[Dict[str, Any]]:
+        sanitized: List[Dict[str, Any]] = []
+        for raw in events:
+            if not isinstance(raw, dict):
+                continue
+            event = dict(raw)
+            metadata = event.get("metadata") if isinstance(event.get("metadata"), dict) else {}
+            role = str(event.get("role") or metadata.get("role") or "")
+            kind = str(event.get("type") or event.get("kind") or "event")
+            content = _safe_text(event.get("content") or "")
+            if not content or _is_noise_event(kind, role, content):
+                continue
+            event["content"] = content
+            sanitized.append(event)
+        return sanitized
+
     def _append_event(self, kind: str, role: str, content: Any, session_id: str, *, extra: Optional[Dict[str, Any]] = None) -> None:
         if not self._state:
             self._state = self._load_state()
         content_text = _safe_text(content)
-        if not content_text.strip():
+        if not content_text.strip() or _is_noise_event(kind, role, content_text):
             return
         event_id = f"{session_id}:{len(self._state.get('events', [])) + 1}:{kind}:{role}"
         event = {
@@ -324,6 +376,7 @@ class BrainMemoryProvider(MemoryProvider):
             "iterations": iterations,
             "topK": top_k,
             "runtime": {"phase": "idle", "authority": "caller"},
+            "hippocampus": {"enabled": bool(self.config.get("hippocampus_enabled", DEFAULT_HIPPOCAMPUS_ENABLED))},
         }
 
     def _run_and_store(self, *, iterations: int, top_k: int) -> Dict[str, Any]:

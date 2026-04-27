@@ -60,12 +60,47 @@ def test_sync_turn_persists_events_and_runs_brain_experiment(_isolate_env):
     assert calls[-1]["agentId"] == "hermes"
     assert calls[-1]["iterations"] == 90
     assert calls[-1]["runtime"] == {"phase": "idle", "authority": "caller"}
+    assert calls[-1]["hippocampus"] == {"enabled": True}
     assert len(calls[-1]["events"]) == 2
 
     state_path = hermes_home / "brain" / "state.json"
     state = json.loads(state_path.read_text(encoding="utf-8"))
     assert state["last_experiment"]["status"] == "completed"
     assert state["long_term_candidates"][0]["content"] == "User wants Hermes Brain connected."
+
+
+def test_provider_filters_polluted_events_before_persisting_or_running(_isolate_env):
+    hermes_home, _brain_repo = _isolate_env
+    calls = []
+
+    def fake_runner(payload):
+        calls.append(payload)
+        return {"status": "completed", "longTermCandidates": []}
+
+    from plugins.memory.brain import BrainMemoryProvider
+
+    provider = BrainMemoryProvider(config={"auto_consolidate": False}, experiment_runner=fake_runner)
+    provider.initialize("session-1", hermes_home=str(hermes_home), platform="discord")
+    provider.sync_turn(
+        "Review the conversation above and consider whether a skill should be saved.",
+        "Skill update summary: nothing changed.",
+        session_id="session-1",
+    )
+    provider.sync_turn(
+        "<memory-context>old recalled answer</memory-context>\n[JQ] this should not feed back",
+        "Brain provider connected as local Hermes memory sidecar.",
+        session_id="session-1",
+    )
+    provider.on_memory_write("add", "memory", "User prefers project-aware Gmail labels.")
+    provider.on_session_end([
+        {"role": "tool", "content": '{"success": true, "name": "hermes-agent", "content": "raw tool dump"}'},
+    ])
+    provider._run_and_store(iterations=90, top_k=5)
+
+    state = json.loads((hermes_home / "brain" / "state.json").read_text(encoding="utf-8"))
+    persisted = [event["content"] for event in state["events"]]
+    assert persisted == ["[JQ] this should not feed back", "User prefers project-aware Gmail labels."]
+    assert [event["content"] for event in calls[-1]["events"]] == persisted
 
 
 def test_prefetch_returns_brain_ranked_context_from_persisted_events(_isolate_env):

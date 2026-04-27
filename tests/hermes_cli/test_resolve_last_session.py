@@ -89,6 +89,24 @@ def test_resolve_last_session_returns_none_when_empty(monkeypatch):
     assert _resolve_last_session("cli") is None
 
 
+def test_resolve_last_session_closes_db_on_search_error(monkeypatch):
+    class _FailingDB:
+        def __init__(self):
+            self.closed = False
+
+        def search_sessions(self, source=None, limit=20, **_kw):
+            raise RuntimeError("boom")
+
+        def close(self):
+            self.closed = True
+
+    db = _FailingDB()
+    monkeypatch.setattr("hermes_state.SessionDB", lambda: db)
+
+    assert _resolve_last_session("cli") is None
+    assert db.closed is True
+
+
 def test_resolve_last_session_falls_back_to_started_at(monkeypatch):
     # When last_active is missing entirely (legacy row), fall back to
     # started_at so the helper still picks the newest session.

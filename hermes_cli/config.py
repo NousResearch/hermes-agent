@@ -487,6 +487,19 @@ DEFAULT_CONFIG = {
     "checkpoints": {
         "enabled": True,
         "max_snapshots": 50,  # Max checkpoints to keep per directory
+        # Auto-maintenance: shadow repos accumulate forever under
+        # ~/.hermes/checkpoints/ (one per cd'd working directory). Field
+        # reports put the typical offender at 1000+ repos / ~12 GB. When
+        # auto_prune is on, hermes sweeps at startup (at most once per
+        # min_interval_hours) and deletes:
+        #   * orphan repos: HERMES_WORKDIR no longer exists on disk
+        #   * stale repos:  newest mtime older than retention_days
+        # Opt-in so users who rely on /rollback against long-ago sessions
+        # never lose data silently.
+        "auto_prune": False,
+        "retention_days": 7,
+        "delete_orphans": True,
+        "min_interval_hours": 24,
     },
 
     # Maximum characters returned by a single read_file call.  Reads that

@@ -64,6 +64,16 @@ Checkpoints are enabled by default. Configure in `~/.hermes/config.yaml`:
 checkpoints:
   enabled: true          # master switch (default: true)
   max_snapshots: 50      # max checkpoints per directory
+
+  # Auto-maintenance (opt-in): sweep ~/.hermes/checkpoints/ at startup
+  # and delete shadow repos whose working directory no longer exists
+  # (orphans) or whose newest commit is older than retention_days.
+  # Runs at most once per min_interval_hours, tracked via a
+  # .last_prune marker inside ~/.hermes/checkpoints/.
+  auto_prune: false           # default off — enable to reclaim disk
+  retention_days: 7
+  delete_orphans: true        # delete repos whose workdir is gone
+  min_interval_hours: 24
 ```
 
 To disable:

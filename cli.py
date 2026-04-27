@@ -988,6 +988,29 @@ def _run_state_db_auto_maintenance(session_db) -> None:
         logger.debug("state.db auto-maintenance skipped: %s", exc)
 
 
+def _run_checkpoint_auto_maintenance() -> None:
+    """Call ``checkpoint_manager.maybe_auto_prune_checkpoints`` using current config.
+
+    Reads the ``checkpoints:`` section from config.yaml via
+    :func:`hermes_cli.config.load_config`. Honours ``auto_prune`` /
+    ``retention_days`` / ``delete_orphans`` / ``min_interval_hours``.
+    Never raises — maintenance must never block interactive startup.
+    """
+    try:
+        from hermes_cli.config import load_config as _load_full_config
+        cfg = (_load_full_config().get("checkpoints") or {})
+        if not cfg.get("auto_prune", False):
+            return
+        from tools.checkpoint_manager import maybe_auto_prune_checkpoints
+        maybe_auto_prune_checkpoints(
+            retention_days=int(cfg.get("retention_days", 7)),
+            min_interval_hours=int(cfg.get("min_interval_hours", 24)),
+            delete_orphans=bool(cfg.get("delete_orphans", True)),
+        )
+    except Exception as exc:
+        logger.debug("checkpoint auto-maintenance skipped: %s", exc)
+
+
 def _prune_stale_worktrees(repo_root: str, max_age_hours: int = 24) -> None:
     """Remove stale worktrees and orphaned branches on startup.
 
@@ -2053,6 +2076,11 @@ class HermesCLI:
         # it's shared across all Hermes processes for this HERMES_HOME.
         # Never blocks startup on failure.
         _run_state_db_auto_maintenance(self._session_db)
+
+        # Opportunistic shadow-repo cleanup — deletes orphan/stale
+        # checkpoint repos under ~/.hermes/checkpoints/.  Opt-in via
+        # checkpoints.auto_prune, idempotent via .last_prune marker.
+        _run_checkpoint_auto_maintenance()
 
         # Deferred title: stored in memory until the session is created in the DB
         self._pending_title: Optional[str] = None

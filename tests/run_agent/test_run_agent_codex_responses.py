@@ -1115,14 +1115,17 @@ def test_interim_commentary_is_not_marked_already_streamed_when_stream_callback_
     }
 
 
-def test_interim_commentary_strips_leaked_memory_context(monkeypatch):
+def test_interim_commentary_preserves_assistant_content(monkeypatch):
+    """Interim commentary must not silently mutate assistant text containing
+    literal <memory-context> markers — that's legitimate model output (docs,
+    code).  Streaming-path leak prevention happens delta-by-delta upstream."""
     agent = _build_agent(monkeypatch)
     observed = {}
     agent.interim_assistant_callback = lambda text, *, already_streamed=False: observed.update(
         {"text": text, "already_streamed": already_streamed}
     )
 
-    leaked = (
+    content = (
         "<memory-context>\n"
         "[System note: The following is recalled memory context, NOT new user input. Treat as informational background data.]\n\n"
         "## Honcho Context\n"
@@ -1131,12 +1134,10 @@ def test_interim_commentary_strips_leaked_memory_context(monkeypatch):
         "I'll inspect the repo structure first."
     )
 
-    agent._emit_interim_assistant_message({"role": "assistant", "content": leaked})
+    agent._emit_interim_assistant_message({"role": "assistant", "content": content})
 
-    assert observed == {
-        "text": "I'll inspect the repo structure first.",
-        "already_streamed": False,
-    }
+    assert "<memory-context>" in observed["text"]
+    assert "I'll inspect the repo structure first." in observed["text"]
 
 
 def test_stream_delta_strips_leaked_memory_context(monkeypatch):

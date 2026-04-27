@@ -1,0 +1,6 @@
+name: multimodal-recall
+version: 0.1.0
+description: Compact multimodal prefetch provider over Hermes hybrid recall wrappers and local-mmrag.
+hooks:
+  - prefetch
+  - on_session_end

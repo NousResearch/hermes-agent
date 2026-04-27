@@ -383,7 +383,7 @@ def load_cli_config() -> Dict[str, Any]:
 
         "display": {
             "compact": False,
-            "resume_display": "full",
+            "resume_display": "recent",
             "show_reasoning": False,
             "streaming": True,
             "busy_input_mode": "interrupt",
@@ -1629,9 +1629,12 @@ class ChatConsole:
         # Read terminal width at render time so panels adapt to current size
         self._inner.width = shutil.get_terminal_size((80, 24)).columns
         self._inner.print(*args, **kwargs)
-        output = self._buffer.getvalue()
-        for line in output.rstrip("\n").split("\n"):
-            _cprint(line)
+        output = self._buffer.getvalue().rstrip("\n")
+        if output:
+            # Emit one multiline prompt_toolkit render call instead of one call
+            # per line. Large resume/history panels otherwise visibly crawl
+            # down the terminal line-by-line inside the interactive chat loop.
+            _cprint(output)
 
     @contextmanager
     def status(self, *_args, **_kwargs):
@@ -1894,8 +1897,8 @@ class HermesCLI:
         # YAML 1.1 parses bare `off` as boolean False — normalise to string.
         _raw_tp = CLI_CONFIG["display"].get("tool_progress", "all")
         self.tool_progress_mode = "off" if _raw_tp is False else str(_raw_tp)
-        # resume_display: "full" (show history) | "minimal" (one-liner only)
-        self.resume_display = CLI_CONFIG["display"].get("resume_display", "full")
+        # resume_display: "recent" (recent full text), "full" (all user/assistant text), "compact" (recent truncated recap), or "minimal" (one-liner only)
+        self.resume_display = CLI_CONFIG["display"].get("resume_display", "recent")
         # bell_on_complete: play terminal bell (\a) when agent finishes a response
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
         # show_reasoning: display model thinking/reasoning before the response
@@ -3647,24 +3650,29 @@ class HermesCLI:
         return True
 
     def _display_resumed_history(self):
-        """Render a compact recap of previous conversation messages.
+        """Render previous conversation messages on session resume.
 
-        Uses Rich markup with dim/muted styling so the recap is visually
-        distinct from the active conversation.  Caps the display at the
-        last ``MAX_DISPLAY_EXCHANGES`` user/assistant exchanges and shows
-        an indicator for earlier hidden messages.
+        ``display.resume_display`` controls verbosity:
+        - ``recent`` (default): show the most recent full user/assistant text messages.
+        - ``full``: show all user/assistant text messages.
+        - ``compact``: show the last few exchanges with per-message truncation.
+        - ``minimal``/``off``: suppress the history panel.
+        Tool result messages and pure tool-call assistant messages are hidden to
+        avoid flooding the terminal with implementation details.
         """
         if not self.conversation_history:
             return
 
         # Check config: resume_display setting
-        if self.resume_display == "minimal":
+        if self.resume_display in {"minimal", "off"}:
             return
 
-        MAX_DISPLAY_EXCHANGES = 10   # max user+assistant pairs to show
-        MAX_USER_LEN = 300           # truncate user messages
-        MAX_ASST_LEN = 200           # truncate assistant text
-        MAX_ASST_LINES = 3           # max lines of assistant text
+        compact_mode = self.resume_display == "compact"
+        recent_mode = self.resume_display in {"recent", "compact"}
+        MAX_DISPLAY_EXCHANGES = 4    # recent/compact mode: max user+assistant pairs
+        MAX_USER_LEN = 300           # compact mode: truncate user messages
+        MAX_ASST_LEN = 200           # compact mode: truncate assistant text
+        MAX_ASST_LINES = 3           # compact mode: max lines of assistant text
 
         # Collect displayable entries (skip system, tool-result messages)
         entries = []  # list of (role, display_text)
@@ -3691,42 +3699,43 @@ class HermesCLI:
                         elif isinstance(part, dict) and part.get("type") == "image_url":
                             parts.append("[image]")
                     text = " ".join(parts)
-                if len(text) > MAX_USER_LEN:
+                if text.startswith("[SYSTEM:"):
+                    continue
+                if text.startswith("[Note: model was just switched"):
+                    if "]\n\n" in text:
+                        text = text.split("]\n\n", 1)[1]
+                    elif "]\n" in text:
+                        text = text.split("]\n", 1)[1]
+                if compact_mode and len(text) > MAX_USER_LEN:
                     text = text[:MAX_USER_LEN] + "..."
                 entries.append(("user", text))
 
             elif role == "assistant":
                 text = "" if content is None else str(content)
                 text = _strip_reasoning_tags(text)
+                if text.startswith("[CONTEXT COMPACTION"):
+                    # Context compaction is a synthetic handoff inserted by the
+                    # runtime, not a user-visible assistant answer. It also
+                    # marks a display boundary: assistant text after the handoff
+                    # belongs to the resumed task, and must not be paired with
+                    # the user message that triggered compaction.
+                    entries.clear()
+                    _last_asst_idx = None
+                    _last_asst_full = None
+                    continue
                 parts = []
                 full_parts = []  # un-truncated version
                 if text:
                     full_parts.append(text)
-                    lines = text.splitlines()
-                    if len(lines) > MAX_ASST_LINES:
-                        text = "\n".join(lines[:MAX_ASST_LINES]) + " ..."
-                    if len(text) > MAX_ASST_LEN:
-                        text = text[:MAX_ASST_LEN] + "..."
+                    if compact_mode:
+                        lines = text.splitlines()
+                        if len(lines) > MAX_ASST_LINES:
+                            text = "\n".join(lines[:MAX_ASST_LINES]) + " ..."
+                        if len(text) > MAX_ASST_LEN:
+                            text = text[:MAX_ASST_LEN] + "..."
                     parts.append(text)
-                if tool_calls and text:
-                    # If the assistant also provided user-visible text, keep a
-                    # compact hint that tools were involved.  Pure tool-call
-                    # assistant messages are skipped below so resume panels
-                    # don't become a wall of implementation noise.
-                    tc_count = len(tool_calls)
-                    names = []
-                    for tc in tool_calls:
-                        fn = tc.get("function", {})
-                        name = fn.get("name", "unknown") if isinstance(fn, dict) else "unknown"
-                        if name not in names:
-                            names.append(name)
-                    names_str = ", ".join(names[:4])
-                    if len(names) > 4:
-                        names_str += ", ..."
-                    noun = "call" if tc_count == 1 else "calls"
-                    tc_summary = f"[{tc_count} tool {noun}: {names_str}]"
-                    parts.append(tc_summary)
-                    full_parts.append(tc_summary)
+                # Resume display should read like chat history, not execution
+                # logs: omit tool call metadata entirely.
                 if not parts:
                     # Skip pure-reasoning messages and pure tool-call messages
                     # that have no user-visible assistant text.
@@ -3738,18 +3747,37 @@ class HermesCLI:
         if not entries:
             return
 
-        # Determine if we need to truncate
+        # Determine if we need to truncate. In recent/compact modes, select
+        # complete user-led exchanges from the tail instead of slicing raw
+        # messages. Raw message slicing can start with an orphan assistant
+        # response, which makes the recap feel like a head/tail hybrid rather
+        # than "the last few conversations".
         skipped = 0
-        if len(entries) > MAX_DISPLAY_EXCHANGES * 2:
-            skipped = len(entries) - MAX_DISPLAY_EXCHANGES * 2
-            entries = entries[skipped:]
+        skipped_unit = "messages"
+        if recent_mode:
+            exchanges = []
+            current_exchange = None
+            for role, text in entries:
+                if role == "user":
+                    current_exchange = [(role, text)]
+                    exchanges.append(current_exchange)
+                elif role == "assistant" and current_exchange is not None:
+                    current_exchange.append((role, text))
 
-        # Replace last assistant entry with full (un-truncated) text
+            if len(exchanges) > MAX_DISPLAY_EXCHANGES:
+                skipped = len(exchanges) - MAX_DISPLAY_EXCHANGES
+                skipped_unit = "exchanges"
+                exchanges = exchanges[-MAX_DISPLAY_EXCHANGES:]
+
+            entries = [entry for exchange in exchanges for entry in exchange]
+
+        # Replace the last visible assistant entry with full (un-truncated) text
         # so the user can see where they left off without wasting tokens.
-        if _last_asst_idx is not None and _last_asst_full:
-            adj_idx = _last_asst_idx - skipped
-            if 0 <= adj_idx < len(entries):
-                entries[adj_idx] = ("assistant_last", _last_asst_full)
+        if _last_asst_full:
+            for idx in range(len(entries) - 1, -1, -1):
+                if entries[idx][0] == "assistant":
+                    entries[idx] = ("assistant_last", _last_asst_full)
+                    break
 
         # Build the display using Rich
         from rich.panel import Panel
@@ -3771,7 +3799,7 @@ class HermesCLI:
         lines = Text()
         if skipped:
             lines.append(
-                f"  ... {skipped} earlier messages ...\n\n",
+                f"  ... {skipped} earlier {skipped_unit} ...\n\n",
                 style="dim italic",
             )
 

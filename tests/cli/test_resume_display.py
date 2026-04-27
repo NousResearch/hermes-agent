@@ -26,7 +26,7 @@ def _make_cli(config_overrides=None, env_overrides=None, **kwargs):
             "base_url": "https://openrouter.ai/api/v1",
             "provider": "auto",
         },
-        "display": {"compact": False, "tool_progress": "all", "resume_display": "full"},
+        "display": {"compact": False, "tool_progress": "all", "resume_display": "recent"},
         "agent": {},
         "terminal": {"env_type": "local"},
     }
@@ -164,7 +164,7 @@ class TestDisplayResumedHistory:
         assert "Here are some great Python tutorials" in output
 
     def test_long_user_message_truncated(self):
-        cli = _make_cli()
+        cli = _make_cli(config_overrides={"display": {"resume_display": "compact"}})
         long_text = "A" * 500
         cli.conversation_history = [
             {"role": "user", "content": long_text},
@@ -182,7 +182,7 @@ class TestDisplayResumedHistory:
 
     def test_long_assistant_message_truncated(self):
         """Non-last assistant messages are still truncated."""
-        cli = _make_cli()
+        cli = _make_cli(config_overrides={"display": {"resume_display": "compact"}})
         long_text = "B" * 400
         cli.conversation_history = [
             {"role": "user", "content": "Tell me a lot."},
@@ -199,7 +199,7 @@ class TestDisplayResumedHistory:
 
     def test_multiline_assistant_truncated(self):
         """Non-last multiline assistant messages are truncated to 3 lines."""
-        cli = _make_cli()
+        cli = _make_cli(config_overrides={"display": {"resume_display": "compact"}})
         multi = "\n".join([f"Line {i}" for i in range(20)])
         cli.conversation_history = [
             {"role": "user", "content": "Show me lines."},
@@ -246,15 +246,56 @@ class TestDisplayResumedHistory:
         assert "Line 10" in output
         assert "Line 19" in output
 
-    def test_large_history_shows_truncation_indicator(self):
+    def test_compact_large_history_shows_truncation_indicator(self):
+        cli = _make_cli(config_overrides={"display": {"resume_display": "compact"}})
+        cli.conversation_history = _large_history(n_exchanges=15)
+        output = self._capture_display(cli)
+
+        # Compact mode should show "earlier exchanges" indicator.
+        assert "earlier exchanges" in output
+        # Last question should still be visible.
+        assert "Question #15" in output
+
+    def test_recent_large_history_shows_recent_complete_messages(self):
         cli = _make_cli()
         cli.conversation_history = _large_history(n_exchanges=15)
         output = self._capture_display(cli)
 
-        # Should show "earlier messages" indicator
-        assert "earlier messages" in output
-        # Last question should still be visible
+        assert "earlier exchanges" in output
+        assert "Question #1: What is item 1?" not in output
+        assert "Answer #1: Item 1 is great." not in output
+        assert "Question #11: What is item 11?" not in output
+        assert "Answer #11: Item 11 is great." not in output
+        assert "Question #12" in output
+        assert "Answer #12" in output
         assert "Question #15" in output
+        assert "Answer #15" in output
+
+    def test_full_large_history_shows_all_displayable_messages(self):
+        cli = _make_cli(config_overrides={"display": {"resume_display": "full"}})
+        cli.conversation_history = _large_history(n_exchanges=15)
+        output = self._capture_display(cli)
+
+        assert "earlier messages" not in output
+        assert "Question #1" in output
+        assert "Answer #1" in output
+        assert "Question #15" in output
+        assert "Answer #15" in output
+
+    def test_recent_mode_does_not_truncate_long_messages(self):
+        cli = _make_cli()
+        long_user = " ".join(f"user{i}" for i in range(80))
+        long_assistant = "\n".join(f"assistant line {i}" for i in range(20))
+        cli.conversation_history = [
+            {"role": "user", "content": long_user},
+            {"role": "assistant", "content": long_assistant},
+        ]
+        output = self._capture_display(cli)
+
+        assert "user0" in output
+        assert "user79" in output
+        assert "assistant line 0" in output
+        assert "assistant line 19" in output
 
     def test_multimodal_content_handled(self):
         cli = _make_cli()
@@ -279,6 +320,76 @@ class TestDisplayResumedHistory:
         output = self._capture_display(cli)
 
         assert output.strip() == ""
+
+    def test_off_config_suppresses_display(self):
+        cli = _make_cli(config_overrides={"display": {"resume_display": "off"}})
+        cli.conversation_history = _simple_history()
+        output = self._capture_display(cli)
+
+        assert output.strip() == ""
+
+    def test_system_like_user_messages_hidden(self):
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "[SYSTEM: internal instruction]"},
+            {"role": "user", "content": "Real question"},
+            {"role": "assistant", "content": "Real answer"},
+        ]
+        output = self._capture_display(cli)
+
+        assert "internal instruction" not in output
+        assert "Real question" in output
+        assert "Real answer" in output
+
+    def test_model_switch_note_stripped_from_user_message(self):
+        cli = _make_cli()
+        cli.conversation_history = [
+            {
+                "role": "user",
+                "content": "[Note: model was just switched from a to b.]\n\nActual question",
+            },
+            {"role": "assistant", "content": "Actual answer"},
+        ]
+        output = self._capture_display(cli)
+
+        assert "model was just switched" not in output
+        assert "Actual question" in output
+        assert "Actual answer" in output
+
+    def test_context_compaction_assistant_message_hidden(self):
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "assistant", "content": "[CONTEXT COMPACTION — REFERENCE ONLY] noisy summary"},
+            {"role": "user", "content": "Real question"},
+            {"role": "assistant", "content": "Real answer"},
+        ]
+        output = self._capture_display(cli)
+
+        assert "CONTEXT COMPACTION" not in output
+        assert "noisy summary" not in output
+        assert "Real question" in output
+        assert "Real answer" in output
+
+    def test_context_compaction_resets_display_pairing(self):
+        cli = _make_cli()
+        cli.conversation_history = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "Hi!"},
+            {"role": "user", "content": "Old question before compaction"},
+            {"role": "assistant", "content": "[CONTEXT COMPACTION — REFERENCE ONLY] handoff"},
+            {"role": "tool", "content": "internal tool result"},
+            {"role": "assistant", "content": "Post-compaction answer"},
+            {"role": "user", "content": "New question"},
+            {"role": "assistant", "content": "New answer"},
+        ]
+        output = self._capture_display(cli)
+
+        assert "CONTEXT COMPACTION" not in output
+        assert "Old question before compaction" not in output
+        assert "hi" not in output
+        assert "Post-compaction answer" not in output
+        assert "New question" in output
+        assert "New answer" in output
 
     def test_panel_has_title(self):
         cli = _make_cli()
@@ -486,8 +597,8 @@ class TestDisplayResumedHistory:
         output = self._capture_display(cli)
 
         assert "Let me search for that." in output
-        assert "1 tool call" in output
-        assert "terminal" in output
+        assert "1 tool call" not in output
+        assert "terminal" not in output
 
 
 # ── Tests for /resume command display ──────────────────────────────
@@ -673,7 +784,7 @@ class TestResumeDisplayConfig:
         from hermes_cli.config import DEFAULT_CONFIG
         display = DEFAULT_CONFIG.get("display", {})
         assert "resume_display" in display
-        assert display["resume_display"] == "full"
+        assert display["resume_display"] == "recent"
 
     def test_cli_defaults_have_resume_display(self):
         """cli.py load_cli_config defaults include resume_display."""
@@ -687,4 +798,4 @@ class TestResumeDisplayConfig:
             config = load_cli_config()
 
         display = config.get("display", {})
-        assert display.get("resume_display") == "full"
+        assert display.get("resume_display") == "recent"

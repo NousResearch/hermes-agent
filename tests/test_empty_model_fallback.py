@@ -11,8 +11,7 @@ class TestGetDefaultModelForProvider:
         from hermes_cli.models import get_default_model_for_provider
         result = get_default_model_for_provider("openai-codex")
         # Should return first model from _PROVIDER_MODELS["openai-codex"]
-        assert result
-        assert isinstance(result, str)
+        assert result == "gpt-5.5"
 
     def test_openrouter_returns_empty(self):
         """OpenRouter uses dynamic model fetch, no static catalog entry."""

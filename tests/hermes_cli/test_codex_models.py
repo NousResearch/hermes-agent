@@ -312,15 +312,15 @@ class TestNormalizeModelForProvider:
         assert cli._model_is_default is True
         with patch(
             "hermes_cli.codex_models.get_codex_model_ids",
-            return_value=["gpt-5.3-codex", "gpt-5.4"],
+            return_value=["gpt-5.5", "gpt-5.4"],
         ):
             changed = cli._normalize_model_for_provider("openai-codex")
         assert changed is True
         # Uses first from available list
-        assert cli.model == "gpt-5.3-codex"
+        assert cli.model == "gpt-5.5"
 
     def test_default_fallback_when_api_fails(self):
-        """No model configured falls back to gpt-5.3-codex when API unreachable."""
+        """No model configured falls back to gpt-5.5 when API unreachable."""
         import cli as _cli_mod
         _clean_config = {
             "model": {
@@ -346,4 +346,4 @@ class TestNormalizeModelForProvider:
         ):
             changed = cli._normalize_model_for_provider("openai-codex")
         assert changed is True
-        assert cli.model == "gpt-5.3-codex"
+        assert cli.model == "gpt-5.5"

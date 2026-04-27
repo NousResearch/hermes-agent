@@ -21,6 +21,8 @@ import re
 import sqlite3
 import threading
 import time
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Any, Callable, Dict, List, Optional, TypeVar
@@ -31,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 16
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -88,6 +90,262 @@ CREATE INDEX IF NOT EXISTS idx_sessions_source ON sessions(source);
 CREATE INDEX IF NOT EXISTS idx_sessions_parent ON sessions(parent_session_id);
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestamp);
+
+CREATE TABLE IF NOT EXISTS approvals (
+    id TEXT PRIMARY KEY,
+    session_id TEXT,
+    agent_id TEXT,
+    status TEXT NOT NULL DEFAULT 'pending',
+    title TEXT,
+    kind TEXT DEFAULT 'command',
+    details TEXT,
+    command TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    resolved_at TEXT,
+    resolved_by TEXT,
+    choice TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_approvals_session ON approvals(session_id);
+CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status);
+CREATE INDEX IF NOT EXISTS idx_approvals_created ON approvals(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS artifacts (
+    id TEXT PRIMARY KEY,
+    session_id TEXT NOT NULL,
+    tool_call_id TEXT,
+    tool_name TEXT NOT NULL,
+    path TEXT NOT NULL,
+    status TEXT NOT NULL,
+    diff TEXT DEFAULT '',
+    additions INTEGER DEFAULT 0,
+    deletions INTEGER DEFAULT 0,
+    timestamp REAL NOT NULL,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    code_session_id TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_artifacts_session_id ON artifacts(session_id);
+CREATE INDEX IF NOT EXISTS idx_artifacts_timestamp ON artifacts(timestamp);
+CREATE INDEX IF NOT EXISTS idx_artifacts_code_session_id ON artifacts(code_session_id);
+
+CREATE TABLE IF NOT EXISTS code_workspaces (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    path TEXT NOT NULL UNIQUE,
+    repo_url TEXT,
+    is_git_repo INTEGER DEFAULT 0,
+    branch TEXT,
+    detected_stack_json TEXT DEFAULT '[]',
+    package_manager TEXT,
+    commands_json TEXT DEFAULT '[]',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_workspaces_path ON code_workspaces(path);
+CREATE INDEX IF NOT EXISTS idx_code_workspaces_updated_at ON code_workspaces(updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS code_sessions (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    hermes_session_id TEXT,
+    task_id TEXT,
+    title TEXT,
+    provider TEXT,
+    model TEXT,
+    branch TEXT,
+    status TEXT NOT NULL DEFAULT 'planning',
+    summary TEXT,
+    metadata_json TEXT DEFAULT '{}',
+    started_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    completed_at TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_sessions_workspace_id ON code_sessions(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_code_sessions_hermes_session_id ON code_sessions(hermes_session_id);
+CREATE INDEX IF NOT EXISTS idx_code_sessions_task_id ON code_sessions(task_id);
+CREATE INDEX IF NOT EXISTS idx_code_sessions_status ON code_sessions(status);
+CREATE INDEX IF NOT EXISTS idx_code_sessions_updated_at ON code_sessions(updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS code_session_events (
+    id TEXT PRIMARY KEY,
+    code_session_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    message TEXT,
+    payload_json TEXT DEFAULT '{}',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_session_events_session_id ON code_session_events(code_session_id);
+CREATE INDEX IF NOT EXISTS idx_code_session_events_created_at ON code_session_events(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS code_commands (
+    id TEXT PRIMARY KEY,
+    code_session_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    command TEXT NOT NULL,
+    argv_json TEXT DEFAULT '[]',
+    cwd TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    safety TEXT NOT NULL DEFAULT 'safe',
+    stdout TEXT DEFAULT '',
+    stderr TEXT DEFAULT '',
+    exit_code INTEGER,
+    pid INTEGER,
+    timeout_seconds INTEGER DEFAULT 120,
+    started_at TEXT,
+    completed_at TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_commands_code_session_id ON code_commands(code_session_id);
+CREATE INDEX IF NOT EXISTS idx_code_commands_workspace_id ON code_commands(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_code_commands_status ON code_commands(status);
+CREATE INDEX IF NOT EXISTS idx_code_commands_created_at ON code_commands(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS code_git_snapshots (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    code_session_id TEXT,
+    branch TEXT,
+    remote_url TEXT,
+    dirty INTEGER DEFAULT 0,
+    summary_json TEXT DEFAULT '{}',
+    files_json TEXT DEFAULT '[]',
+    diff_stat TEXT,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_git_snapshots_workspace_id ON code_git_snapshots(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_code_git_snapshots_code_session_id ON code_git_snapshots(code_session_id);
+CREATE INDEX IF NOT EXISTS idx_code_git_snapshots_created_at ON code_git_snapshots(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS code_session_model_presets (
+    id TEXT PRIMARY KEY,
+    code_session_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    metadata_json TEXT DEFAULT '{}',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_session_model_presets_session_id ON code_session_model_presets(code_session_id);
+CREATE INDEX IF NOT EXISTS idx_code_session_model_presets_name ON code_session_model_presets(code_session_id, name);
+
+CREATE TABLE IF NOT EXISTS code_session_cost_entries (
+    id TEXT PRIMARY KEY,
+    code_session_id TEXT NOT NULL,
+    provider TEXT NOT NULL,
+    model TEXT NOT NULL,
+    task_type TEXT,
+    input_tokens INTEGER DEFAULT 0,
+    output_tokens INTEGER DEFAULT 0,
+    cache_read_tokens INTEGER DEFAULT 0,
+    cache_write_tokens INTEGER DEFAULT 0,
+    cost_usd REAL DEFAULT 0.0,
+    metadata_json TEXT DEFAULT '{}',
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_session_cost_entries_session_id ON code_session_cost_entries(code_session_id);
+CREATE INDEX IF NOT EXISTS idx_code_session_cost_entries_provider ON code_session_cost_entries(provider);
+CREATE INDEX IF NOT EXISTS idx_code_session_cost_entries_model ON code_session_cost_entries(model);
+CREATE INDEX IF NOT EXISTS idx_code_session_cost_entries_created_at ON code_session_cost_entries(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS code_diagnostics (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    code_session_id TEXT,
+    source TEXT NOT NULL,
+    status TEXT NOT NULL,
+    diagnostics_json TEXT DEFAULT '[]',
+    summary_json TEXT DEFAULT '{}',
+    commands_json TEXT DEFAULT '[]',
+    duration_ms INTEGER DEFAULT 0,
+    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_diagnostics_workspace_id ON code_diagnostics(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_code_diagnostics_code_session_id ON code_diagnostics(code_session_id);
+CREATE INDEX IF NOT EXISTS idx_code_diagnostics_created_at ON code_diagnostics(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS code_agent_flows (
+    id TEXT PRIMARY KEY,
+    code_session_id TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    task_id TEXT,
+    title TEXT,
+    description TEXT,
+    status TEXT NOT NULL DEFAULT 'created',
+    current_role TEXT,
+    provider TEXT,
+    model TEXT,
+    preset TEXT,
+    plan_json TEXT DEFAULT '{}',
+    review_json TEXT,
+    approval_id TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_agent_flows_code_session_id ON code_agent_flows(code_session_id);
+CREATE INDEX IF NOT EXISTS idx_code_agent_flows_workspace_id ON code_agent_flows(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_code_agent_flows_status ON code_agent_flows(status);
+CREATE INDEX IF NOT EXISTS idx_code_agent_flows_created_at ON code_agent_flows(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS code_agent_flow_steps (
+    id TEXT PRIMARY KEY,
+    flow_id TEXT NOT NULL,
+    role TEXT NOT NULL,
+    name TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    input_json TEXT DEFAULT '{}',
+    output_json TEXT DEFAULT '{}',
+    error TEXT,
+    started_at TEXT,
+    completed_at TEXT,
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_agent_flow_steps_flow_id ON code_agent_flow_steps(flow_id);
+CREATE INDEX IF NOT EXISTS idx_code_agent_flow_steps_status ON code_agent_flow_steps(status);
+
+CREATE TABLE IF NOT EXISTS code_skill_runs (
+    id TEXT PRIMARY KEY,
+    skill_name TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    code_session_id TEXT,
+    task_id TEXT,
+    agent_flow_id TEXT,
+    status TEXT NOT NULL DEFAULT 'created',
+    input_json TEXT DEFAULT '{}',
+    output_json TEXT DEFAULT '{}',
+    summary TEXT,
+    diagnostics_before_json TEXT,
+    diagnostics_after_json TEXT,
+    commands_json TEXT DEFAULT '[]',
+    artifacts_json TEXT DEFAULT '[]',
+    approval_id TEXT,
+    error TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_code_skill_runs_workspace_id ON code_skill_runs(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_code_skill_runs_code_session_id ON code_skill_runs(code_session_id);
+CREATE INDEX IF NOT EXISTS idx_code_skill_runs_skill_name ON code_skill_runs(skill_name);
+CREATE INDEX IF NOT EXISTS idx_code_skill_runs_status ON code_skill_runs(status);
+CREATE INDEX IF NOT EXISTS idx_code_skill_runs_created_at ON code_skill_runs(created_at DESC);
 """
 
 FTS_SQL = """
@@ -130,8 +388,8 @@ class SessionDB:
     # application level with random jitter, which naturally staggers competing
     # writers and avoids the convoy.
     _WRITE_MAX_RETRIES = 15
-    _WRITE_RETRY_MIN_S = 0.020   # 20ms
-    _WRITE_RETRY_MAX_S = 0.150   # 150ms
+    _WRITE_RETRY_MIN_S = 0.020  # 20ms
+    _WRITE_RETRY_MAX_S = 0.150  # 150ms
     # Attempt a PASSIVE WAL checkpoint every N successful writes.
     _CHECKPOINT_EVERY_N_WRITES = 50
 
@@ -223,13 +481,12 @@ class SessionDB:
         """
         try:
             with self._lock:
-                result = self._conn.execute(
-                    "PRAGMA wal_checkpoint(PASSIVE)"
-                ).fetchone()
+                result = self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
                 if result and result[1] > 0:
                     logger.debug(
                         "WAL checkpoint: %d/%d pages checkpointed",
-                        result[2], result[1],
+                        result[2],
+                        result[1],
                     )
         except Exception:
             pass  # Best effort — never fatal.
@@ -259,7 +516,9 @@ class SessionDB:
         cursor.execute("SELECT version FROM schema_version LIMIT 1")
         row = cursor.fetchone()
         if row is None:
-            cursor.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
+            cursor.execute(
+                "INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,)
+            )
         else:
             current_version = row["version"] if isinstance(row, sqlite3.Row) else row[0]
             if current_version < 2:
@@ -306,7 +565,9 @@ class SessionDB:
                         # not user input. Double-quote identifier escaping is applied
                         # as defense-in-depth; SQLite DDL cannot be parameterized.
                         safe_name = name.replace('"', '""')
-                        cursor.execute(f'ALTER TABLE sessions ADD COLUMN "{safe_name}" {column_type}')
+                        cursor.execute(
+                            f'ALTER TABLE sessions ADD COLUMN "{safe_name}" {column_type}'
+                        )
                     except sqlite3.OperationalError:
                         pass
                 cursor.execute("UPDATE schema_version SET version = 5")
@@ -329,6 +590,361 @@ class SessionDB:
                     except sqlite3.OperationalError:
                         pass  # Column already exists
                 cursor.execute("UPDATE schema_version SET version = 6")
+            if current_version < 7:
+                cursor.execute(
+                    "CREATE TABLE IF NOT EXISTS approvals ("
+                    "id TEXT PRIMARY KEY,"
+                    "session_id TEXT,"
+                    "agent_id TEXT,"
+                    "status TEXT NOT NULL DEFAULT 'pending',"
+                    "title TEXT,"
+                    "kind TEXT DEFAULT 'command',"
+                    "details TEXT,"
+                    "command TEXT,"
+                    "created_at TEXT NOT NULL,"
+                    "updated_at TEXT NOT NULL,"
+                    "resolved_at TEXT,"
+                    "resolved_by TEXT,"
+                    "choice TEXT"
+                    ")"
+                )
+                for idx_sql in [
+                    "CREATE INDEX IF NOT EXISTS idx_approvals_session ON approvals(session_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status)",
+                    "CREATE INDEX IF NOT EXISTS idx_approvals_created ON approvals(created_at DESC)",
+                ]:
+                    try:
+                        cursor.execute(idx_sql)
+                    except sqlite3.OperationalError:
+                        pass
+                cursor.execute("UPDATE schema_version SET version = 7")
+            if current_version < 8:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS artifacts (
+                        id TEXT PRIMARY KEY,
+                        session_id TEXT NOT NULL,
+                        tool_call_id TEXT,
+                        tool_name TEXT NOT NULL,
+                        path TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        diff TEXT DEFAULT '',
+                        additions INTEGER DEFAULT 0,
+                        deletions INTEGER DEFAULT 0,
+                        timestamp REAL NOT NULL,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                for idx_sql in [
+                    "CREATE INDEX IF NOT EXISTS idx_artifacts_session_id ON artifacts(session_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_artifacts_timestamp ON artifacts(timestamp)",
+                ]:
+                    try:
+                        cursor.execute(idx_sql)
+                    except sqlite3.OperationalError:
+                        pass
+                cursor.execute("UPDATE schema_version SET version = 8")
+            if current_version < 9:
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS code_workspaces (
+                        id TEXT PRIMARY KEY,
+                        name TEXT NOT NULL,
+                        path TEXT NOT NULL UNIQUE,
+                        repo_url TEXT,
+                        is_git_repo INTEGER DEFAULT 0,
+                        branch TEXT,
+                        detected_stack_json TEXT DEFAULT '[]',
+                        package_manager TEXT,
+                        commands_json TEXT DEFAULT '[]',
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    )
+                """)
+                for idx_sql in [
+                    "CREATE INDEX IF NOT EXISTS idx_code_workspaces_path ON code_workspaces(path)",
+                    "CREATE INDEX IF NOT EXISTS idx_code_workspaces_updated_at ON code_workspaces(updated_at DESC)",
+                ]:
+                    try:
+                        cursor.execute(idx_sql)
+                    except sqlite3.OperationalError:
+                        pass
+                cursor.execute("UPDATE schema_version SET version = 9")
+            if current_version < 10:
+                for ddl in [
+                    """CREATE TABLE IF NOT EXISTS code_sessions (
+                        id TEXT PRIMARY KEY,
+                        workspace_id TEXT NOT NULL,
+                        hermes_session_id TEXT,
+                        task_id TEXT,
+                        title TEXT,
+                        provider TEXT,
+                        model TEXT,
+                        branch TEXT,
+                        status TEXT NOT NULL DEFAULT 'planning',
+                        summary TEXT,
+                        metadata_json TEXT DEFAULT '{}',
+                        started_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        completed_at TEXT,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    )""",
+                    """CREATE TABLE IF NOT EXISTS code_session_events (
+                        id TEXT PRIMARY KEY,
+                        code_session_id TEXT NOT NULL,
+                        type TEXT NOT NULL,
+                        message TEXT,
+                        payload_json TEXT DEFAULT '{}',
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    )""",
+                ]:
+                    try:
+                        cursor.execute(ddl)
+                    except sqlite3.OperationalError:
+                        pass
+                for idx_sql in [
+                    "CREATE INDEX IF NOT EXISTS idx_code_sessions_workspace_id ON code_sessions(workspace_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_code_sessions_hermes_session_id ON code_sessions(hermes_session_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_code_sessions_task_id ON code_sessions(task_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_code_sessions_status ON code_sessions(status)",
+                    "CREATE INDEX IF NOT EXISTS idx_code_sessions_updated_at ON code_sessions(updated_at DESC)",
+                    "CREATE INDEX IF NOT EXISTS idx_code_session_events_session_id ON code_session_events(code_session_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_code_session_events_created_at ON code_session_events(created_at DESC)",
+                ]:
+                    try:
+                        cursor.execute(idx_sql)
+                    except sqlite3.OperationalError:
+                        pass
+                try:
+                    cursor.execute(
+                        "ALTER TABLE artifacts ADD COLUMN code_session_id TEXT"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+                try:
+                    cursor.execute(
+                        "CREATE INDEX IF NOT EXISTS idx_artifacts_code_session_id ON artifacts(code_session_id)"
+                    )
+                except sqlite3.OperationalError:
+                    pass
+                cursor.execute("UPDATE schema_version SET version = 10")
+            if current_version < 11:
+                cursor.execute(
+                    """CREATE TABLE IF NOT EXISTS code_commands (
+                        id TEXT PRIMARY KEY,
+                        code_session_id TEXT NOT NULL,
+                        workspace_id TEXT NOT NULL,
+                        command TEXT NOT NULL,
+                        argv_json TEXT DEFAULT '[]',
+                        cwd TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'pending',
+                        safety TEXT NOT NULL DEFAULT 'safe',
+                        stdout TEXT DEFAULT '',
+                        stderr TEXT DEFAULT '',
+                        exit_code INTEGER,
+                        pid INTEGER,
+                        timeout_seconds INTEGER DEFAULT 120,
+                        started_at TEXT,
+                        completed_at TEXT,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    )"""
+                )
+                for idx_sql in [
+                    "CREATE INDEX IF NOT EXISTS idx_code_commands_code_session_id ON code_commands(code_session_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_code_commands_workspace_id ON code_commands(workspace_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_code_commands_status ON code_commands(status)",
+                    "CREATE INDEX IF NOT EXISTS idx_code_commands_created_at ON code_commands(created_at DESC)",
+                ]:
+                    try:
+                        cursor.execute(idx_sql)
+                    except sqlite3.OperationalError:
+                        pass
+                cursor.execute("UPDATE schema_version SET version = 11")
+            if current_version < 12:
+                cursor.execute(
+                    """CREATE TABLE IF NOT EXISTS code_git_snapshots (
+                        id TEXT PRIMARY KEY,
+                        workspace_id TEXT NOT NULL,
+                        code_session_id TEXT,
+                        branch TEXT,
+                        remote_url TEXT,
+                        dirty INTEGER DEFAULT 0,
+                        summary_json TEXT DEFAULT '{}',
+                        files_json TEXT DEFAULT '[]',
+                        diff_stat TEXT,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    )"""
+                )
+                for idx_sql in [
+                    "CREATE INDEX IF NOT EXISTS idx_code_git_snapshots_workspace_id ON code_git_snapshots(workspace_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_code_git_snapshots_code_session_id ON code_git_snapshots(code_session_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_code_git_snapshots_created_at ON code_git_snapshots(created_at DESC)",
+                ]:
+                    try:
+                        cursor.execute(idx_sql)
+                    except sqlite3.OperationalError:
+                        pass
+                cursor.execute("UPDATE schema_version SET version = 12")
+            if current_version < 13:
+                for ddl in [
+                    """CREATE TABLE IF NOT EXISTS code_session_model_presets (
+                        id TEXT PRIMARY KEY,
+                        code_session_id TEXT NOT NULL,
+                        name TEXT NOT NULL,
+                        provider TEXT NOT NULL,
+                        model TEXT NOT NULL,
+                        metadata_json TEXT DEFAULT '{}',
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    )""",
+                    """CREATE TABLE IF NOT EXISTS code_session_cost_entries (
+                        id TEXT PRIMARY KEY,
+                        code_session_id TEXT NOT NULL,
+                        provider TEXT NOT NULL,
+                        model TEXT NOT NULL,
+                        task_type TEXT,
+                        input_tokens INTEGER DEFAULT 0,
+                        output_tokens INTEGER DEFAULT 0,
+                        cache_read_tokens INTEGER DEFAULT 0,
+                        cache_write_tokens INTEGER DEFAULT 0,
+                        cost_usd REAL DEFAULT 0.0,
+                        metadata_json TEXT DEFAULT '{}',
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    )""",
+                ]:
+                    try:
+                        cursor.execute(ddl)
+                    except sqlite3.OperationalError:
+                        pass
+                for idx_sql in [
+                    "CREATE INDEX IF NOT EXISTS idx_code_session_model_presets_session_id ON code_session_model_presets(code_session_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_code_session_model_presets_name ON code_session_model_presets(code_session_id, name)",
+                    "CREATE INDEX IF NOT EXISTS idx_code_session_cost_entries_session_id ON code_session_cost_entries(code_session_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_code_session_cost_entries_provider ON code_session_cost_entries(provider)",
+                    "CREATE INDEX IF NOT EXISTS idx_code_session_cost_entries_model ON code_session_cost_entries(model)",
+                    "CREATE INDEX IF NOT EXISTS idx_code_session_cost_entries_created_at ON code_session_cost_entries(created_at DESC)",
+                ]:
+                    try:
+                        cursor.execute(idx_sql)
+                    except sqlite3.OperationalError:
+                        pass
+                cursor.execute("UPDATE schema_version SET version = 13")
+            if current_version < 14:
+                cursor.execute(
+                    """CREATE TABLE IF NOT EXISTS code_diagnostics (
+                        id TEXT PRIMARY KEY,
+                        workspace_id TEXT NOT NULL,
+                        code_session_id TEXT,
+                        source TEXT NOT NULL,
+                        status TEXT NOT NULL,
+                        diagnostics_json TEXT DEFAULT '[]',
+                        summary_json TEXT DEFAULT '{}',
+                        commands_json TEXT DEFAULT '[]',
+                        duration_ms INTEGER DEFAULT 0,
+                        created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                    )"""
+                )
+                for idx_sql in [
+                    "CREATE INDEX IF NOT EXISTS idx_code_diagnostics_workspace_id ON code_diagnostics(workspace_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_code_diagnostics_code_session_id ON code_diagnostics(code_session_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_code_diagnostics_created_at ON code_diagnostics(created_at DESC)",
+                ]:
+                    try:
+                        cursor.execute(idx_sql)
+                    except sqlite3.OperationalError:
+                        pass
+                cursor.execute("UPDATE schema_version SET version = 14")
+            if current_version < 15:
+                for ddl in [
+                    """CREATE TABLE IF NOT EXISTS code_agent_flows (
+                        id TEXT PRIMARY KEY,
+                        code_session_id TEXT NOT NULL,
+                        workspace_id TEXT NOT NULL,
+                        task_id TEXT,
+                        title TEXT,
+                        description TEXT,
+                        status TEXT NOT NULL DEFAULT 'created',
+                        current_role TEXT,
+                        provider TEXT,
+                        model TEXT,
+                        preset TEXT,
+                        plan_json TEXT DEFAULT '{}',
+                        review_json TEXT,
+                        approval_id TEXT,
+                        error TEXT,
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        completed_at TEXT
+                    )""",
+                    """CREATE TABLE IF NOT EXISTS code_agent_flow_steps (
+                        id TEXT PRIMARY KEY,
+                        flow_id TEXT NOT NULL,
+                        role TEXT NOT NULL,
+                        name TEXT NOT NULL,
+                        status TEXT NOT NULL DEFAULT 'pending',
+                        input_json TEXT DEFAULT '{}',
+                        output_json TEXT DEFAULT '{}',
+                        error TEXT,
+                        started_at TEXT,
+                        completed_at TEXT,
+                        created_at TEXT NOT NULL
+                    )""",
+                ]:
+                    try:
+                        cursor.execute(ddl)
+                    except sqlite3.OperationalError:
+                        pass
+                for idx_sql in [
+                    "CREATE INDEX IF NOT EXISTS idx_code_agent_flows_code_session_id ON code_agent_flows(code_session_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_code_agent_flows_workspace_id ON code_agent_flows(workspace_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_code_agent_flows_status ON code_agent_flows(status)",
+                    "CREATE INDEX IF NOT EXISTS idx_code_agent_flows_created_at ON code_agent_flows(created_at DESC)",
+                    "CREATE INDEX IF NOT EXISTS idx_code_agent_flow_steps_flow_id ON code_agent_flow_steps(flow_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_code_agent_flow_steps_status ON code_agent_flow_steps(status)",
+                ]:
+                    try:
+                        cursor.execute(idx_sql)
+                    except sqlite3.OperationalError:
+                        pass
+                cursor.execute("UPDATE schema_version SET version = 15")
+            if current_version < 16:
+                try:
+                    cursor.execute(
+                        """CREATE TABLE IF NOT EXISTS code_skill_runs (
+                            id TEXT PRIMARY KEY,
+                            skill_name TEXT NOT NULL,
+                            workspace_id TEXT NOT NULL,
+                            code_session_id TEXT,
+                            task_id TEXT,
+                            agent_flow_id TEXT,
+                            status TEXT NOT NULL DEFAULT 'created',
+                            input_json TEXT DEFAULT '{}',
+                            output_json TEXT DEFAULT '{}',
+                            summary TEXT,
+                            diagnostics_before_json TEXT,
+                            diagnostics_after_json TEXT,
+                            commands_json TEXT DEFAULT '[]',
+                            artifacts_json TEXT DEFAULT '[]',
+                            approval_id TEXT,
+                            error TEXT,
+                            created_at TEXT NOT NULL,
+                            updated_at TEXT NOT NULL,
+                            completed_at TEXT
+                        )"""
+                    )
+                except sqlite3.OperationalError:
+                    pass
+                for idx_sql in [
+                    "CREATE INDEX IF NOT EXISTS idx_code_skill_runs_workspace_id ON code_skill_runs(workspace_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_code_skill_runs_code_session_id ON code_skill_runs(code_session_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_code_skill_runs_skill_name ON code_skill_runs(skill_name)",
+                    "CREATE INDEX IF NOT EXISTS idx_code_skill_runs_status ON code_skill_runs(status)",
+                    "CREATE INDEX IF NOT EXISTS idx_code_skill_runs_created_at ON code_skill_runs(created_at DESC)",
+                ]:
+                    try:
+                        cursor.execute(idx_sql)
+                    except sqlite3.OperationalError:
+                        pass
+                cursor.execute("UPDATE schema_version SET version = 16")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -363,6 +979,7 @@ class SessionDB:
         parent_session_id: str = None,
     ) -> str:
         """Create a new session record. Returns the session_id."""
+
         def _do(conn):
             conn.execute(
                 """INSERT OR IGNORE INTO sessions (id, source, user_id, model, model_config,
@@ -379,34 +996,41 @@ class SessionDB:
                     time.time(),
                 ),
             )
+
         self._execute_write(_do)
         return session_id
 
     def end_session(self, session_id: str, end_reason: str) -> None:
         """Mark a session as ended."""
+
         def _do(conn):
             conn.execute(
                 "UPDATE sessions SET ended_at = ?, end_reason = ? WHERE id = ?",
                 (time.time(), end_reason, session_id),
             )
+
         self._execute_write(_do)
 
     def reopen_session(self, session_id: str) -> None:
         """Clear ended_at/end_reason so a session can be resumed."""
+
         def _do(conn):
             conn.execute(
                 "UPDATE sessions SET ended_at = NULL, end_reason = NULL WHERE id = ?",
                 (session_id,),
             )
+
         self._execute_write(_do)
 
     def update_system_prompt(self, session_id: str, system_prompt: str) -> None:
         """Store the full assembled system prompt snapshot."""
+
         def _do(conn):
             conn.execute(
                 "UPDATE sessions SET system_prompt = ? WHERE id = ?",
                 (system_prompt, session_id),
             )
+
         self._execute_write(_do)
 
     def update_token_counts(
@@ -495,8 +1119,10 @@ class SessionDB:
             model,
             session_id,
         )
+
         def _do(conn):
             conn.execute(sql, params)
+
         self._execute_write(_do)
 
     def ensure_session(
@@ -511,6 +1137,7 @@ class SessionDB:
         create_session() call (e.g. transient SQLite lock at agent startup).
         INSERT OR IGNORE is safe to call even when the row already exists.
         """
+
         def _do(conn):
             conn.execute(
                 """INSERT OR IGNORE INTO sessions
@@ -518,6 +1145,7 @@ class SessionDB:
                    VALUES (?, ?, ?, ?)""",
                 (session_id, source, model, time.time()),
             )
+
         self._execute_write(_do)
 
     def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
@@ -541,8 +1169,7 @@ class SessionDB:
             return exact["id"]
 
         escaped = (
-            session_id_or_prefix
-            .replace("\\", "\\\\")
+            session_id_or_prefix.replace("\\", "\\\\")
             .replace("%", "\\%")
             .replace("_", "\\_")
         )
@@ -579,19 +1206,20 @@ class SessionDB:
         # Remove ASCII control characters (0x00-0x1F, 0x7F) but keep
         # whitespace chars (\t=0x09, \n=0x0A, \r=0x0D) so they can be
         # normalized to spaces by the whitespace collapsing step below
-        cleaned = re.sub(r'[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]', '', title)
+        cleaned = re.sub(r"[\x00-\x08\x0b\x0c\x0e-\x1f\x7f]", "", title)
 
         # Remove problematic Unicode control characters:
         # - Zero-width chars (U+200B-U+200F, U+FEFF)
         # - Directional overrides (U+202A-U+202E, U+2066-U+2069)
         # - Object replacement (U+FFFC), interlinear annotation (U+FFF9-U+FFFB)
         cleaned = re.sub(
-            r'[\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ufffc\ufff9-\ufffb]',
-            '', cleaned,
+            r"[\u200b-\u200f\u2028-\u202e\u2060-\u2069\ufeff\ufffc\ufff9-\ufffb]",
+            "",
+            cleaned,
         )
 
         # Collapse internal whitespace runs and strip
-        cleaned = re.sub(r'\s+', ' ', cleaned).strip()
+        cleaned = re.sub(r"\s+", " ", cleaned).strip()
 
         if not cleaned:
             return None
@@ -612,6 +1240,7 @@ class SessionDB:
         Empty/whitespace-only strings are normalized to None (clearing the title).
         """
         title = self.sanitize_title(title)
+
         def _do(conn):
             if title:
                 # Check uniqueness (allow the same session to keep its own title)
@@ -629,6 +1258,7 @@ class SessionDB:
                 (title, session_id),
             )
             return cursor.rowcount
+
         rowcount = self._execute_write(_do)
         return rowcount > 0
 
@@ -686,7 +1316,7 @@ class SessionDB:
         the highest existing number and increments.
         """
         # Strip existing #N suffix to find the true base
-        match = re.match(r'^(.*?) #(\d+)$', base_title)
+        match = re.match(r"^(.*?) #(\d+)$", base_title)
         if match:
             base = match.group(1)
         else:
@@ -708,7 +1338,7 @@ class SessionDB:
         # Find the highest number
         max_num = 1  # The unnumbered original counts as #1
         for t in existing:
-            m = re.match(r'^.* #(\d+)$', t)
+            m = re.match(r"^.* #(\d+)$", t)
             if m:
                 max_num = max(max_num, int(m.group(1)))
 
@@ -810,12 +1440,10 @@ class SessionDB:
         """
         # Serialize structured fields to JSON before entering the write txn
         reasoning_details_json = (
-            json.dumps(reasoning_details)
-            if reasoning_details else None
+            json.dumps(reasoning_details) if reasoning_details else None
         )
         codex_items_json = (
-            json.dumps(codex_reasoning_items)
-            if codex_reasoning_items else None
+            json.dumps(codex_reasoning_items) if codex_reasoning_items else None
         )
         tool_calls_json = json.dumps(tool_calls) if tool_calls else None
 
@@ -878,7 +1506,9 @@ class SessionDB:
                 try:
                     msg["tool_calls"] = json.loads(msg["tool_calls"])
                 except (json.JSONDecodeError, TypeError):
-                    logger.warning("Failed to deserialize tool_calls in get_messages, falling back to []")
+                    logger.warning(
+                        "Failed to deserialize tool_calls in get_messages, falling back to []"
+                    )
                     msg["tool_calls"] = []
             result.append(msg)
         return result
@@ -907,7 +1537,9 @@ class SessionDB:
                 try:
                     msg["tool_calls"] = json.loads(row["tool_calls"])
                 except (json.JSONDecodeError, TypeError):
-                    logger.warning("Failed to deserialize tool_calls in conversation replay, falling back to []")
+                    logger.warning(
+                        "Failed to deserialize tool_calls in conversation replay, falling back to []"
+                    )
                     msg["tool_calls"] = []
             # Restore reasoning fields on assistant messages so providers
             # that replay reasoning (OpenRouter, OpenAI, Nous) receive
@@ -919,13 +1551,19 @@ class SessionDB:
                     try:
                         msg["reasoning_details"] = json.loads(row["reasoning_details"])
                     except (json.JSONDecodeError, TypeError):
-                        logger.warning("Failed to deserialize reasoning_details, falling back to None")
+                        logger.warning(
+                            "Failed to deserialize reasoning_details, falling back to None"
+                        )
                         msg["reasoning_details"] = None
                 if row["codex_reasoning_items"]:
                     try:
-                        msg["codex_reasoning_items"] = json.loads(row["codex_reasoning_items"])
+                        msg["codex_reasoning_items"] = json.loads(
+                            row["codex_reasoning_items"]
+                        )
                     except (json.JSONDecodeError, TypeError):
-                        logger.warning("Failed to deserialize codex_reasoning_items, falling back to None")
+                        logger.warning(
+                            "Failed to deserialize codex_reasoning_items, falling back to None"
+                        )
                         msg["codex_reasoning_items"] = None
             messages.append(msg)
         return messages
@@ -961,7 +1599,7 @@ class SessionDB:
         sanitized = re.sub(r'"[^"]*"', _preserve_quoted, query)
 
         # Step 2: Strip remaining (unmatched) FTS5-special characters
-        sanitized = re.sub(r'[+{}()\"^]', " ", sanitized)
+        sanitized = re.sub(r"[+{}()\"^]", " ", sanitized)
 
         # Step 3: Collapse repeated * (e.g. "***") into a single one,
         # and remove leading * (prefix-only needs at least one char before *)
@@ -1162,14 +1800,14 @@ class SessionDB:
 
     def clear_messages(self, session_id: str) -> None:
         """Delete all messages for a session and reset its counters."""
+
         def _do(conn):
-            conn.execute(
-                "DELETE FROM messages WHERE session_id = ?", (session_id,)
-            )
+            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute(
                 "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?",
                 (session_id,),
             )
+
         self._execute_write(_do)
 
     def delete_session(self, session_id: str) -> bool:
@@ -1179,6 +1817,7 @@ class SessionDB:
         than cascade-deleted, so they remain accessible independently.
         Returns True if the session was found and deleted.
         """
+
         def _do(conn):
             cursor = conn.execute(
                 "SELECT COUNT(*) FROM sessions WHERE id = ?", (session_id,)
@@ -1194,6 +1833,7 @@ class SessionDB:
             conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
             return True
+
         return self._execute_write(_do)
 
     def prune_sessions(self, older_than_days: int = 90, source: str = None) -> int:
@@ -1236,3 +1876,1682 @@ class SessionDB:
             return len(session_ids)
 
         return self._execute_write(_do)
+
+    def create_artifact(
+        self,
+        session_id: str,
+        tool_name: str,
+        path: str,
+        status: str,
+        tool_call_id: Optional[str] = None,
+        diff: str = "",
+        additions: int = 0,
+        deletions: int = 0,
+        code_session_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        artifact_id = str(uuid.uuid4())
+        now_ts = __import__("time").time()
+        now_iso = datetime.now(timezone.utc).isoformat()
+
+        if diff and additions == 0 and deletions == 0:
+            additions = len([line for line in diff.splitlines() if line.startswith("+") and not line.startswith("+++")])
+            deletions = len([line for line in diff.splitlines() if line.startswith("-") and not line.startswith("---")])
+
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO artifacts
+                   (id, session_id, tool_call_id, tool_name, path, status,
+                    diff, additions, deletions, timestamp, created_at, code_session_id)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    artifact_id,
+                    session_id,
+                    tool_call_id,
+                    tool_name,
+                    path,
+                    status,
+                    diff,
+                    additions,
+                    deletions,
+                    now_ts,
+                    now_iso,
+                    code_session_id,
+                ),
+            )
+
+        self._execute_write(_do)
+        cursor = self._conn.execute(
+            "SELECT * FROM artifacts WHERE id = ?", (artifact_id,)
+        )
+        row = cursor.fetchone()
+        return dict(row) if row else {}
+
+    def get_artifacts_by_session(self, session_id: str) -> List[Dict[str, Any]]:
+        cursor = self._conn.execute(
+            "SELECT * FROM artifacts WHERE session_id = ? ORDER BY timestamp ASC",
+            (session_id,)
+        )
+        artifacts = [dict(row) for row in cursor.fetchall()]
+        if not artifacts:
+            cursor = self._conn.execute(
+                "SELECT * FROM messages WHERE session_id = ? AND role = 'tool' ORDER BY timestamp ASC",
+                (session_id,)
+            )
+            for row in cursor.fetchall():
+                try:
+                    import json
+                    content = json.loads(row["content"])
+                    if "files_modified" in content:
+                        for f in content["files_modified"]:
+                            artifacts.append({
+                                "id": f"legacy_{row['id']}",
+                                "session_id": session_id,
+                                "tool_call_id": row["tool_call_id"],
+                                "tool_name": row["tool_name"],
+                                "path": f,
+                                "status": "modified",
+                                "diff": content.get("diff", ""),
+                                "additions": len([line for line in content.get("diff", "").splitlines() if line.startswith("+") and not line.startswith("+++")]),
+                                "deletions": len([line for line in content.get("diff", "").splitlines() if line.startswith("-") and not line.startswith("---")]),
+                                "timestamp": row["timestamp"],
+                                "created_at": datetime.fromtimestamp(row["timestamp"], tz=timezone.utc).isoformat() if "timestamp" in row else None,
+                                "code_session_id": None
+                            })
+                except Exception:
+                    pass
+        return artifacts
+
+
+
+class WorkspaceDB:
+    """SQLite-backed storage for code workspaces.
+
+    Uses the same DB as SessionDB to enable foreign-key relationships.
+    """
+
+    def __init__(self, db_path: Path = None):
+        self.db_path = db_path or DEFAULT_DB_PATH
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(
+            str(self.db_path),
+            check_same_thread=False,
+            timeout=1.0,
+            isolation_level=None,
+        )
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA foreign_keys=ON")
+        self._init_schema()
+
+    def _init_schema(self):
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """CREATE TABLE IF NOT EXISTS code_workspaces (
+                id TEXT PRIMARY KEY,
+                name TEXT NOT NULL,
+                path TEXT NOT NULL UNIQUE,
+                repo_url TEXT,
+                is_git_repo INTEGER DEFAULT 0,
+                branch TEXT,
+                detected_stack_json TEXT DEFAULT '[]',
+                package_manager TEXT,
+                commands_json TEXT DEFAULT '[]',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+        for idx_sql in [
+            "CREATE INDEX IF NOT EXISTS idx_code_workspaces_path ON code_workspaces(path)",
+            "CREATE INDEX IF NOT EXISTS idx_code_workspaces_updated_at ON code_workspaces(updated_at DESC)",
+        ]:
+            try:
+                cursor.execute(idx_sql)
+            except sqlite3.OperationalError:
+                pass
+        self._conn.commit()
+
+    def close(self):
+        if self._conn:
+            self._conn.close()
+            self._conn = None
+
+    def upsert_workspace(
+        self,
+        path: str,
+        name: str,
+        is_git_repo: bool = False,
+        branch: str = None,
+        repo_url: str = None,
+        detected_stack: List[str] = None,
+        package_manager: str = None,
+        commands: List[str] = None,
+    ) -> dict:
+        """Insert or update a workspace. Returns the workspace record."""
+        now = datetime.now(timezone.utc).isoformat()
+        workspace_id = str(uuid.uuid4())
+
+        def _do(conn):
+            existing = conn.execute(
+                "SELECT id FROM code_workspaces WHERE path = ?", (path,)
+            ).fetchone()
+            if existing:
+                conn.execute(
+                    """UPDATE code_workspaces SET
+                        name = ?, is_git_repo = ?, branch = ?, repo_url = ?,
+                        detected_stack_json = ?, package_manager = ?,
+                        commands_json = ?, updated_at = ?
+                       WHERE path = ?""",
+                    (
+                        name,
+                        int(is_git_repo),
+                        branch,
+                        repo_url,
+                        json.dumps(detected_stack or []),
+                        package_manager,
+                        json.dumps(commands or []),
+                        now,
+                        path,
+                    ),
+                )
+                return conn.execute(
+                    "SELECT * FROM code_workspaces WHERE path = ?", (path,)
+                ).fetchone()
+            else:
+                conn.execute(
+                    """INSERT INTO code_workspaces
+                       (id, name, path, is_git_repo, branch, repo_url,
+                        detected_stack_json, package_manager, commands_json,
+                        created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        workspace_id,
+                        name,
+                        path,
+                        int(is_git_repo),
+                        branch,
+                        repo_url,
+                        json.dumps(detected_stack or []),
+                        package_manager,
+                        json.dumps(commands or []),
+                        now,
+                        now,
+                    ),
+                )
+                return conn.execute(
+                    "SELECT * FROM code_workspaces WHERE id = ?", (workspace_id,)
+                ).fetchone()
+
+        with self._lock:
+            self._conn.execute("BEGIN IMMEDIATE")
+            try:
+                row = _do(self._conn)
+                self._conn.commit()
+            except BaseException:
+                self._conn.rollback()
+                raise
+        return self._row_to_dict(row)
+
+    def get_workspace(self, workspace_id: str) -> Optional[dict]:
+        """Get a workspace by ID."""
+        cursor = self._conn.execute(
+            "SELECT * FROM code_workspaces WHERE id = ?", (workspace_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return self._row_to_dict(row)
+
+    def list_workspaces(self, limit: int = 500, offset: int = 0) -> list:
+        cursor = self._conn.execute(
+            "SELECT * FROM code_workspaces ORDER BY updated_at DESC LIMIT ? OFFSET ?",
+            (limit, offset),
+        )
+        return [self._row_to_dict(row) for row in cursor.fetchall()]
+
+    def _row_to_dict(self, row: sqlite3.Row) -> dict:
+        result = dict(row)
+        if result.get("detected_stack_json"):
+            try:
+                result["detected_stack"] = json.loads(result["detected_stack_json"])
+            except (json.JSONDecodeError, TypeError):
+                result["detected_stack"] = []
+        else:
+            result["detected_stack"] = []
+        if result.get("commands_json"):
+            try:
+                result["commands"] = json.loads(result["commands_json"])
+            except (json.JSONDecodeError, TypeError):
+                result["commands"] = []
+        else:
+            result["commands"] = []
+        if "is_git_repo" in result:
+            result["is_git_repo"] = bool(result["is_git_repo"])
+        return result
+
+
+class CodeDiagnosticsDB:
+    """SQLite-backed storage for code diagnostics results."""
+
+    _WRITE_MAX_RETRIES = 15
+    _WRITE_RETRY_MIN_S = 0.020
+    _WRITE_RETRY_MAX_S = 0.150
+
+    def __init__(self, db_path: Path = None):
+        self.db_path = db_path or DEFAULT_DB_PATH
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(
+            str(self.db_path),
+            check_same_thread=False,
+            timeout=1.0,
+            isolation_level=None,
+        )
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA foreign_keys=ON")
+        self._init_schema()
+
+    def _init_schema(self):
+        cursor = self._conn.cursor()
+        cursor.execute(
+            """CREATE TABLE IF NOT EXISTS code_diagnostics (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                code_session_id TEXT,
+                source TEXT NOT NULL,
+                status TEXT NOT NULL,
+                diagnostics_json TEXT DEFAULT '[]',
+                summary_json TEXT DEFAULT '{}',
+                commands_json TEXT DEFAULT '[]',
+                duration_ms INTEGER DEFAULT 0,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )"""
+        )
+        for idx_sql in [
+            "CREATE INDEX IF NOT EXISTS idx_code_diagnostics_workspace_id ON code_diagnostics(workspace_id)",
+            "CREATE INDEX IF NOT EXISTS idx_code_diagnostics_code_session_id ON code_diagnostics(code_session_id)",
+            "CREATE INDEX IF NOT EXISTS idx_code_diagnostics_created_at ON code_diagnostics(created_at DESC)",
+        ]:
+            try:
+                cursor.execute(idx_sql)
+            except sqlite3.OperationalError:
+                pass
+        self._conn.commit()
+
+    def _execute_write(self, fn: Callable) -> Any:
+        last_err = None
+        for attempt in range(self._WRITE_MAX_RETRIES):
+            try:
+                with self._lock:
+                    self._conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        result = fn(self._conn)
+                        self._conn.commit()
+                    except BaseException:
+                        self._conn.rollback()
+                        raise
+                    return result
+            except sqlite3.OperationalError as e:
+                last_err = e
+                if "locked" not in str(e).lower():
+                    raise
+                time.sleep(
+                    random.uniform(self._WRITE_RETRY_MIN_S, self._WRITE_RETRY_MAX_S)
+                )
+        raise last_err
+
+    def close(self):
+        if self._conn:
+            self._conn.close()
+            self._conn = None
+
+    def save_diagnostics(
+        self,
+        workspace_id: str,
+        code_session_id: Optional[str],
+        source: str,
+        status: str,
+        diagnostics: List[Dict[str, Any]],
+        summary: Dict[str, int],
+        commands: List[str],
+        duration_ms: int,
+    ) -> Dict[str, Any]:
+        diag_id = str(uuid.uuid4())
+
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO code_diagnostics
+                   (id, workspace_id, code_session_id, source, status,
+                    diagnostics_json, summary_json, commands_json, duration_ms)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    diag_id,
+                    workspace_id,
+                    code_session_id,
+                    source,
+                    status,
+                    json.dumps(diagnostics),
+                    json.dumps(summary),
+                    json.dumps(commands),
+                    duration_ms,
+                ),
+            )
+
+        self._execute_write(_do)
+        return self.get_diagnostics(diag_id)
+
+    def get_diagnostics(self, diag_id: str) -> Optional[Dict[str, Any]]:
+        cursor = self._conn.execute(
+            "SELECT * FROM code_diagnostics WHERE id = ?", (diag_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return self._row_to_dict(row)
+
+    def list_diagnostics(
+        self,
+        workspace_id: str,
+        limit: int = 50,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        cursor = self._conn.execute(
+            """SELECT * FROM code_diagnostics
+               WHERE workspace_id = ?
+               ORDER BY created_at DESC
+               LIMIT ? OFFSET ?""",
+            (workspace_id, limit, offset),
+        )
+        return [self._row_to_dict(row) for row in cursor.fetchall()]
+
+    def get_latest_diagnostics(
+        self, workspace_id: str, source: str = None
+    ) -> Optional[Dict[str, Any]]:
+        if source:
+            cursor = self._conn.execute(
+                """SELECT * FROM code_diagnostics
+                   WHERE workspace_id = ? AND source = ?
+                   ORDER BY created_at DESC LIMIT 1""",
+                (workspace_id, source),
+            )
+        else:
+            cursor = self._conn.execute(
+                """SELECT * FROM code_diagnostics
+                   WHERE workspace_id = ?
+                   ORDER BY created_at DESC LIMIT 1""",
+                (workspace_id,),
+            )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return self._row_to_dict(row)
+
+    def _row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
+        result = dict(row)
+        for old_field, new_field in (
+            ("diagnostics_json", "diagnostics"),
+            ("summary_json", "summary"),
+            ("commands_json", "commands"),
+        ):
+            if result.get(old_field):
+                try:
+                    result[new_field] = json.loads(result[old_field])
+                except (json.JSONDecodeError, TypeError):
+                    result[new_field] = []
+            else:
+                result[new_field] = []
+        return result
+
+
+# ---------------------------------------------------------------------------
+# Utility
+# ---------------------------------------------------------------------------
+
+
+def count_diff_changes(diff_text: str) -> tuple:
+    """Count additions and deletions in a unified diff. Returns (additions, deletions)."""
+    additions = 0
+    deletions = 0
+    for line in diff_text.splitlines():
+        if line.startswith("+") and not line.startswith("+++"):
+            additions += 1
+        elif line.startswith("-") and not line.startswith("---"):
+            deletions += 1
+    return additions, deletions
+
+
+# ---------------------------------------------------------------------------
+# CodeSessionDB
+# ---------------------------------------------------------------------------
+
+_CODE_SESSION_VALID_STATUSES = frozenset(
+    {"planning", "coding", "reviewing", "done", "cancelled", "error", "failed"}
+)
+
+
+class CodeSessionDB:
+    """SQLite-backed storage for code sessions and their timeline events."""
+
+    _WRITE_MAX_RETRIES = 15
+    _WRITE_RETRY_MIN_S = 0.020
+    _WRITE_RETRY_MAX_S = 0.150
+
+    def __init__(self, db_path: Path = None):
+        self.db_path = db_path or DEFAULT_DB_PATH
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(
+            str(self.db_path),
+            check_same_thread=False,
+            timeout=1.0,
+            isolation_level=None,
+        )
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA foreign_keys=ON")
+        self._init_schema()
+
+    def _init_schema(self):
+        cursor = self._conn.cursor()
+        for ddl in [
+            """CREATE TABLE IF NOT EXISTS code_sessions (
+                id TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                hermes_session_id TEXT,
+                task_id TEXT,
+                title TEXT,
+                provider TEXT,
+                model TEXT,
+                branch TEXT,
+                status TEXT NOT NULL DEFAULT 'planning',
+                summary TEXT,
+                metadata_json TEXT DEFAULT '{}',
+                started_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                completed_at TEXT,
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )""",
+            """CREATE TABLE IF NOT EXISTS code_session_events (
+                id TEXT PRIMARY KEY,
+                code_session_id TEXT NOT NULL,
+                type TEXT NOT NULL,
+                message TEXT,
+                payload_json TEXT DEFAULT '{}',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )""",
+        ]:
+            try:
+                cursor.execute(ddl)
+            except sqlite3.OperationalError:
+                pass
+        for idx_sql in [
+            "CREATE INDEX IF NOT EXISTS idx_code_sessions_workspace_id ON code_sessions(workspace_id)",
+            "CREATE INDEX IF NOT EXISTS idx_code_sessions_status ON code_sessions(status)",
+            "CREATE INDEX IF NOT EXISTS idx_code_sessions_updated_at ON code_sessions(updated_at DESC)",
+            "CREATE INDEX IF NOT EXISTS idx_code_session_events_session_id ON code_session_events(code_session_id)",
+            "CREATE INDEX IF NOT EXISTS idx_code_session_events_created_at ON code_session_events(created_at DESC)",
+        ]:
+            try:
+                cursor.execute(idx_sql)
+            except sqlite3.OperationalError:
+                pass
+        self._conn.commit()
+
+    def _execute_write(self, fn: Callable) -> Any:
+        last_err = None
+        for _ in range(self._WRITE_MAX_RETRIES):
+            try:
+                with self._lock:
+                    self._conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        result = fn(self._conn)
+                        self._conn.commit()
+                    except BaseException:
+                        self._conn.rollback()
+                        raise
+                    return result
+            except sqlite3.OperationalError as e:
+                last_err = e
+                if "locked" not in str(e).lower():
+                    raise
+                time.sleep(
+                    random.uniform(self._WRITE_RETRY_MIN_S, self._WRITE_RETRY_MAX_S)
+                )
+        raise last_err
+
+    def close(self):
+        if self._conn:
+            self._conn.close()
+            self._conn = None
+
+    def _session_row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
+        result = dict(row)
+        for field, default in (("metadata_json", {}),):
+            raw = result.pop(field, None)
+            key = field[: -len("_json")]
+            try:
+                result[key] = json.loads(raw) if raw else default
+            except (json.JSONDecodeError, TypeError):
+                result[key] = default
+        return result
+
+    def create_session(
+        self,
+        workspace_id: str,
+        hermes_session_id: Optional[str] = None,
+        branch: Optional[str] = None,
+        title: Optional[str] = None,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+        task_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        session_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO code_sessions
+                   (id, workspace_id, hermes_session_id, task_id, title,
+                    provider, model, branch, status, metadata_json,
+                    started_at, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'planning', '{}', ?, ?, ?)""",
+                (
+                    session_id,
+                    workspace_id,
+                    hermes_session_id,
+                    task_id,
+                    title,
+                    provider,
+                    model,
+                    branch,
+                    now,
+                    now,
+                    now,
+                ),
+            )
+
+        self._execute_write(_do)
+        return self.get_session(session_id)
+
+    def get_session(self, session_id: str) -> Optional[Dict[str, Any]]:
+        cursor = self._conn.execute(
+            "SELECT * FROM code_sessions WHERE id = ?", (session_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return self._session_row_to_dict(row)
+
+    def list_sessions(
+        self,
+        workspace_id: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM code_sessions WHERE 1=1"
+        params: list = []
+        if workspace_id:
+            query += " AND workspace_id = ?"
+            params.append(workspace_id)
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        query += " ORDER BY updated_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        cursor = self._conn.execute(query, params)
+        return [self._session_row_to_dict(row) for row in cursor.fetchall()]
+
+    def update_session(
+        self, session_id: str, fields: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        if "status" in fields and fields["status"] not in _CODE_SESSION_VALID_STATUSES:
+            raise ValueError(
+                f"Invalid status: {fields['status']}. "
+                f"Must be one of: {', '.join(sorted(_CODE_SESSION_VALID_STATUSES))}"
+            )
+        now = datetime.now(timezone.utc).isoformat()
+
+        allowed = {
+            "status", "summary", "provider", "model", "branch",
+            "title", "hermes_session_id", "task_id",
+            "completed_at", "metadata",
+        }
+        set_clauses = ["updated_at = ?"]
+        values: list = [now]
+        for key, val in fields.items():
+            if key not in allowed:
+                continue
+            if key == "metadata":
+                set_clauses.append("metadata_json = ?")
+                values.append(json.dumps(val or {}))
+            else:
+                set_clauses.append(f"{key} = ?")
+                values.append(val)
+        values.append(session_id)
+
+        def _do(conn):
+            conn.execute(
+                f"UPDATE code_sessions SET {', '.join(set_clauses)} WHERE id = ?",
+                values,
+            )
+
+        self._execute_write(_do)
+        return self.get_session(session_id)
+
+    def add_event(
+        self,
+        code_session_id: str,
+        event_type: str,
+        message: Optional[str] = None,
+        payload: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        event_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO code_session_events
+                   (id, code_session_id, type, message, payload_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                (
+                    event_id,
+                    code_session_id,
+                    event_type,
+                    message,
+                    json.dumps(payload or {}),
+                    now,
+                ),
+            )
+
+        self._execute_write(_do)
+        cursor = self._conn.execute(
+            "SELECT * FROM code_session_events WHERE id = ?", (event_id,)
+        )
+        row = cursor.fetchone()
+        result = dict(row)
+        try:
+            result["payload"] = json.loads(result.pop("payload_json", "{}") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            result["payload"] = {}
+        return result
+
+    def list_events(
+        self, code_session_id: str, limit: int = 200
+    ) -> List[Dict[str, Any]]:
+        cursor = self._conn.execute(
+            """SELECT * FROM code_session_events
+               WHERE code_session_id = ?
+               ORDER BY created_at ASC LIMIT ?""",
+            (code_session_id, limit),
+        )
+        events = []
+        for row in cursor.fetchall():
+            result = dict(row)
+            try:
+                result["payload"] = json.loads(result.pop("payload_json", "{}") or "{}")
+            except (json.JSONDecodeError, TypeError):
+                result["payload"] = {}
+            events.append(result)
+        return events
+
+    def list_artifacts_for_code_session(
+        self,
+        code_session_id: str,
+        hermes_session_id: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        # Direct link via code_session_id column on artifacts table
+        try:
+            cursor = self._conn.execute(
+                "SELECT * FROM artifacts WHERE code_session_id = ? ORDER BY created_at ASC",
+                (code_session_id,),
+            )
+            rows = cursor.fetchall()
+        except sqlite3.OperationalError:
+            rows = []
+
+        if rows:
+            return [dict(r) for r in rows]
+
+        # Fallback: look up by hermes_session_id
+        if hermes_session_id:
+            try:
+                cursor = self._conn.execute(
+                    "SELECT * FROM artifacts WHERE session_id = ? ORDER BY created_at ASC",
+                    (hermes_session_id,),
+                )
+                return [dict(r) for r in cursor.fetchall()]
+            except sqlite3.OperationalError:
+                pass
+
+        return []
+
+    def link_artifact_to_session(
+        self, artifact_id: str, code_session_id: str
+    ) -> Optional[Dict[str, Any]]:
+        def _do(conn):
+            cursor = conn.execute(
+                "SELECT id FROM artifacts WHERE id = ?", (artifact_id,)
+            )
+            if not cursor.fetchone():
+                return None
+            conn.execute(
+                "UPDATE artifacts SET code_session_id = ? WHERE id = ?",
+                (code_session_id, artifact_id),
+            )
+
+        try:
+            self._execute_write(_do)
+        except sqlite3.OperationalError:
+            return None
+
+        try:
+            cursor = self._conn.execute(
+                "SELECT * FROM artifacts WHERE id = ?", (artifact_id,)
+            )
+            row = cursor.fetchone()
+            return dict(row) if row else None
+        except sqlite3.OperationalError:
+            return None
+
+
+# ---------------------------------------------------------------------------
+# CodeCommandDB
+# ---------------------------------------------------------------------------
+
+
+class CodeCommandDB:
+    """SQLite-backed storage for code commands."""
+
+    _WRITE_MAX_RETRIES = 15
+    _WRITE_RETRY_MIN_S = 0.020
+    _WRITE_RETRY_MAX_S = 0.150
+
+    def __init__(self, db_path: Path = None):
+        self.db_path = db_path or DEFAULT_DB_PATH
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(
+            str(self.db_path),
+            check_same_thread=False,
+            timeout=1.0,
+            isolation_level=None,
+        )
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA foreign_keys=ON")
+        self._init_schema()
+
+    def _init_schema(self):
+        cursor = self._conn.cursor()
+        try:
+            cursor.execute(
+                """CREATE TABLE IF NOT EXISTS code_commands (
+                    id TEXT PRIMARY KEY,
+                    code_session_id TEXT NOT NULL,
+                    workspace_id TEXT NOT NULL,
+                    command TEXT NOT NULL,
+                    argv_json TEXT DEFAULT '[]',
+                    cwd TEXT NOT NULL,
+                    status TEXT NOT NULL DEFAULT 'pending',
+                    safety TEXT NOT NULL DEFAULT 'safe',
+                    stdout TEXT DEFAULT '',
+                    stderr TEXT DEFAULT '',
+                    exit_code INTEGER,
+                    pid INTEGER,
+                    timeout_seconds INTEGER DEFAULT 120,
+                    started_at TEXT,
+                    completed_at TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                    updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )"""
+            )
+        except sqlite3.OperationalError:
+            pass
+        for idx_sql in [
+            "CREATE INDEX IF NOT EXISTS idx_code_commands_code_session_id ON code_commands(code_session_id)",
+            "CREATE INDEX IF NOT EXISTS idx_code_commands_workspace_id ON code_commands(workspace_id)",
+            "CREATE INDEX IF NOT EXISTS idx_code_commands_status ON code_commands(status)",
+            "CREATE INDEX IF NOT EXISTS idx_code_commands_created_at ON code_commands(created_at DESC)",
+        ]:
+            try:
+                cursor.execute(idx_sql)
+            except sqlite3.OperationalError:
+                pass
+        self._conn.commit()
+
+    def _execute_write(self, fn: Callable) -> Any:
+        last_err = None
+        for _ in range(self._WRITE_MAX_RETRIES):
+            try:
+                with self._lock:
+                    self._conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        result = fn(self._conn)
+                        self._conn.commit()
+                    except BaseException:
+                        self._conn.rollback()
+                        raise
+                    return result
+            except sqlite3.OperationalError as e:
+                last_err = e
+                if "locked" not in str(e).lower():
+                    raise
+                time.sleep(
+                    random.uniform(self._WRITE_RETRY_MIN_S, self._WRITE_RETRY_MAX_S)
+                )
+        raise last_err
+
+    def close(self):
+        if self._conn:
+            self._conn.close()
+            self._conn = None
+
+    def _row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
+        result = dict(row)
+        raw_argv = result.pop("argv_json", "[]")
+        try:
+            result["argv"] = json.loads(raw_argv) if raw_argv else []
+        except (json.JSONDecodeError, TypeError):
+            result["argv"] = []
+        return result
+
+    def create_command(
+        self,
+        code_session_id: str,
+        workspace_id: str,
+        command: str,
+        argv: List[str],
+        cwd: str,
+        timeout_seconds: int = 120,
+        status: str = "pending",
+        safety: str = "safe",
+    ) -> Dict[str, Any]:
+        cmd_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO code_commands
+                   (id, code_session_id, workspace_id, command, argv_json,
+                    cwd, status, safety, timeout_seconds, created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    cmd_id,
+                    code_session_id,
+                    workspace_id,
+                    command,
+                    json.dumps(argv),
+                    cwd,
+                    status,
+                    safety,
+                    timeout_seconds,
+                    now,
+                    now,
+                ),
+            )
+
+        self._execute_write(_do)
+        return self.get_command(cmd_id)
+
+    def get_command(self, command_id: str) -> Optional[Dict[str, Any]]:
+        cursor = self._conn.execute(
+            "SELECT * FROM code_commands WHERE id = ?", (command_id,)
+        )
+        row = cursor.fetchone()
+        if not row:
+            return None
+        return self._row_to_dict(row)
+
+    def list_commands(
+        self, code_session_id: str, limit: int = 200
+    ) -> List[Dict[str, Any]]:
+        cursor = self._conn.execute(
+            """SELECT * FROM code_commands
+               WHERE code_session_id = ?
+               ORDER BY created_at ASC LIMIT ?""",
+            (code_session_id, limit),
+        )
+        return [self._row_to_dict(row) for row in cursor.fetchall()]
+
+    def update_command(self, command_id: str, **kwargs) -> Dict[str, Any]:
+        allowed = {
+            "status", "stdout", "stderr", "exit_code", "pid",
+            "started_at", "completed_at",
+        }
+        now = datetime.now(timezone.utc).isoformat()
+        set_clauses = ["updated_at = ?"]
+        values: list = [now]
+        for key, val in kwargs.items():
+            if key in allowed:
+                set_clauses.append(f"{key} = ?")
+                values.append(val)
+        values.append(command_id)
+
+        def _do(conn):
+            conn.execute(
+                f"UPDATE code_commands SET {', '.join(set_clauses)} WHERE id = ?",
+                values,
+            )
+
+        self._execute_write(_do)
+        return self.get_command(command_id)
+
+
+# ---------------------------------------------------------------------------
+# GitSnapshotDB
+# ---------------------------------------------------------------------------
+
+
+class GitSnapshotDB:
+    """SQLite-backed storage for git snapshots."""
+
+    _WRITE_MAX_RETRIES = 15
+    _WRITE_RETRY_MIN_S = 0.020
+    _WRITE_RETRY_MAX_S = 0.150
+
+    def __init__(self, db_path: Path = None):
+        self.db_path = db_path or DEFAULT_DB_PATH
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(
+            str(self.db_path),
+            check_same_thread=False,
+            timeout=1.0,
+            isolation_level=None,
+        )
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA foreign_keys=ON")
+        self._init_schema()
+
+    def _init_schema(self):
+        cursor = self._conn.cursor()
+        try:
+            cursor.execute(
+                """CREATE TABLE IF NOT EXISTS code_git_snapshots (
+                    id TEXT PRIMARY KEY,
+                    workspace_id TEXT NOT NULL,
+                    code_session_id TEXT,
+                    branch TEXT,
+                    remote_url TEXT,
+                    dirty INTEGER DEFAULT 0,
+                    summary_json TEXT DEFAULT '{}',
+                    files_json TEXT DEFAULT '[]',
+                    diff_stat TEXT,
+                    created_at TEXT DEFAULT CURRENT_TIMESTAMP
+                )"""
+            )
+        except sqlite3.OperationalError:
+            pass
+        for idx_sql in [
+            "CREATE INDEX IF NOT EXISTS idx_code_git_snapshots_workspace_id ON code_git_snapshots(workspace_id)",
+            "CREATE INDEX IF NOT EXISTS idx_code_git_snapshots_code_session_id ON code_git_snapshots(code_session_id)",
+            "CREATE INDEX IF NOT EXISTS idx_code_git_snapshots_created_at ON code_git_snapshots(created_at DESC)",
+        ]:
+            try:
+                cursor.execute(idx_sql)
+            except sqlite3.OperationalError:
+                pass
+        self._conn.commit()
+
+    def _execute_write(self, fn: Callable) -> Any:
+        last_err = None
+        for _ in range(self._WRITE_MAX_RETRIES):
+            try:
+                with self._lock:
+                    self._conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        result = fn(self._conn)
+                        self._conn.commit()
+                    except BaseException:
+                        self._conn.rollback()
+                        raise
+                    return result
+            except sqlite3.OperationalError as e:
+                last_err = e
+                if "locked" not in str(e).lower():
+                    raise
+                time.sleep(
+                    random.uniform(self._WRITE_RETRY_MIN_S, self._WRITE_RETRY_MAX_S)
+                )
+        raise last_err
+
+    def close(self):
+        if self._conn:
+            self._conn.close()
+            self._conn = None
+
+    def _row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
+        result = dict(row)
+        for field, default in (("summary_json", {}), ("files_json", [])):
+            raw = result.pop(field, None)
+            key = field[: -len("_json")]
+            try:
+                result[key] = json.loads(raw) if raw else default
+            except (json.JSONDecodeError, TypeError):
+                result[key] = default
+        if "dirty" in result:
+            result["dirty"] = bool(result["dirty"])
+        return result
+
+    def create_snapshot(
+        self,
+        workspace_id: str,
+        code_session_id: Optional[str] = None,
+        branch: Optional[str] = None,
+        remote_url: Optional[str] = None,
+        dirty: bool = False,
+        summary: Optional[Dict[str, Any]] = None,
+        files: Optional[List[Any]] = None,
+        diff_stat: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        snap_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO code_git_snapshots
+                   (id, workspace_id, code_session_id, branch, remote_url,
+                    dirty, summary_json, files_json, diff_stat, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    snap_id,
+                    workspace_id,
+                    code_session_id,
+                    branch,
+                    remote_url,
+                    int(dirty),
+                    json.dumps(summary or {}),
+                    json.dumps(files or []),
+                    diff_stat,
+                    now,
+                ),
+            )
+
+        self._execute_write(_do)
+        cursor = self._conn.execute(
+            "SELECT * FROM code_git_snapshots WHERE id = ?", (snap_id,)
+        )
+        return self._row_to_dict(cursor.fetchone())
+
+    def list_snapshots(
+        self,
+        workspace_id: str,
+        code_session_id: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        if code_session_id:
+            cursor = self._conn.execute(
+                """SELECT * FROM code_git_snapshots
+                   WHERE workspace_id = ? AND code_session_id = ?
+                   ORDER BY created_at DESC LIMIT ?""",
+                (workspace_id, code_session_id, limit),
+            )
+        else:
+            cursor = self._conn.execute(
+                """SELECT * FROM code_git_snapshots
+                   WHERE workspace_id = ?
+                   ORDER BY created_at DESC LIMIT ?""",
+                (workspace_id, limit),
+            )
+        return [self._row_to_dict(row) for row in cursor.fetchall()]
+
+    def get_snapshot(self, snapshot_id: str) -> Optional[Dict[str, Any]]:
+        cursor = self._conn.execute(
+            "SELECT * FROM code_git_snapshots WHERE id = ?", (snapshot_id,)
+        )
+        row = cursor.fetchone()
+        return self._row_to_dict(row) if row else None
+
+
+# ---------------------------------------------------------------------------
+# ProviderRouterDB
+# ---------------------------------------------------------------------------
+
+
+class ProviderRouterDB:
+    """SQLite-backed storage for model presets and cost tracking."""
+
+    _WRITE_MAX_RETRIES = 15
+    _WRITE_RETRY_MIN_S = 0.020
+    _WRITE_RETRY_MAX_S = 0.150
+
+    def __init__(self, db_path: Path = None):
+        self.db_path = db_path or DEFAULT_DB_PATH
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(
+            str(self.db_path),
+            check_same_thread=False,
+            timeout=1.0,
+            isolation_level=None,
+        )
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA foreign_keys=ON")
+        self._init_schema()
+
+    def _init_schema(self):
+        cursor = self._conn.cursor()
+        for ddl in [
+            """CREATE TABLE IF NOT EXISTS code_session_model_presets (
+                id TEXT PRIMARY KEY,
+                code_session_id TEXT NOT NULL,
+                name TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                metadata_json TEXT DEFAULT '{}',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )""",
+            """CREATE TABLE IF NOT EXISTS code_session_cost_entries (
+                id TEXT PRIMARY KEY,
+                code_session_id TEXT NOT NULL,
+                provider TEXT NOT NULL,
+                model TEXT NOT NULL,
+                task_type TEXT,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_write_tokens INTEGER DEFAULT 0,
+                cost_usd REAL DEFAULT 0.0,
+                metadata_json TEXT DEFAULT '{}',
+                created_at TEXT DEFAULT CURRENT_TIMESTAMP
+            )""",
+        ]:
+            try:
+                cursor.execute(ddl)
+            except sqlite3.OperationalError:
+                pass
+        for idx_sql in [
+            "CREATE INDEX IF NOT EXISTS idx_code_session_model_presets_session_id ON code_session_model_presets(code_session_id)",
+            "CREATE INDEX IF NOT EXISTS idx_code_session_model_presets_name ON code_session_model_presets(code_session_id, name)",
+            "CREATE INDEX IF NOT EXISTS idx_code_session_cost_entries_session_id ON code_session_cost_entries(code_session_id)",
+            "CREATE INDEX IF NOT EXISTS idx_code_session_cost_entries_provider ON code_session_cost_entries(provider)",
+            "CREATE INDEX IF NOT EXISTS idx_code_session_cost_entries_model ON code_session_cost_entries(model)",
+            "CREATE INDEX IF NOT EXISTS idx_code_session_cost_entries_created_at ON code_session_cost_entries(created_at DESC)",
+        ]:
+            try:
+                cursor.execute(idx_sql)
+            except sqlite3.OperationalError:
+                pass
+        self._conn.commit()
+
+    def _execute_write(self, fn: Callable) -> Any:
+        last_err = None
+        for _ in range(self._WRITE_MAX_RETRIES):
+            try:
+                with self._lock:
+                    self._conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        result = fn(self._conn)
+                        self._conn.commit()
+                    except BaseException:
+                        self._conn.rollback()
+                        raise
+                    return result
+            except sqlite3.OperationalError as e:
+                last_err = e
+                if "locked" not in str(e).lower():
+                    raise
+                time.sleep(
+                    random.uniform(self._WRITE_RETRY_MIN_S, self._WRITE_RETRY_MAX_S)
+                )
+        raise last_err
+
+    def close(self):
+        if self._conn:
+            self._conn.close()
+            self._conn = None
+
+    def _preset_row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
+        result = dict(row)
+        raw = result.pop("metadata_json", "{}")
+        try:
+            result["metadata"] = json.loads(raw) if raw else {}
+        except (json.JSONDecodeError, TypeError):
+            result["metadata"] = {}
+        return result
+
+    def _cost_row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
+        result = dict(row)
+        raw = result.pop("metadata_json", "{}")
+        try:
+            result["metadata"] = json.loads(raw) if raw else {}
+        except (json.JSONDecodeError, TypeError):
+            result["metadata"] = {}
+        return result
+
+    # ── Presets ──
+
+    def create_preset(
+        self,
+        code_session_id: str,
+        name: str,
+        provider: str,
+        model: str,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        preset_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO code_session_model_presets
+                   (id, code_session_id, name, provider, model, metadata_json,
+                    created_at, updated_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    preset_id,
+                    code_session_id,
+                    name,
+                    provider,
+                    model,
+                    json.dumps(metadata or {}),
+                    now,
+                    now,
+                ),
+            )
+
+        self._execute_write(_do)
+        cursor = self._conn.execute(
+            "SELECT * FROM code_session_model_presets WHERE id = ?", (preset_id,)
+        )
+        return self._preset_row_to_dict(cursor.fetchone())
+
+    def get_preset_by_name(
+        self, code_session_id: str, name: str
+    ) -> Optional[Dict[str, Any]]:
+        cursor = self._conn.execute(
+            "SELECT * FROM code_session_model_presets WHERE code_session_id = ? AND name = ?",
+            (code_session_id, name),
+        )
+        row = cursor.fetchone()
+        return self._preset_row_to_dict(row) if row else None
+
+    def get_preset(self, preset_id: str) -> Optional[Dict[str, Any]]:
+        cursor = self._conn.execute(
+            "SELECT * FROM code_session_model_presets WHERE id = ?", (preset_id,)
+        )
+        row = cursor.fetchone()
+        return self._preset_row_to_dict(row) if row else None
+
+    def list_presets(self, code_session_id: str) -> List[Dict[str, Any]]:
+        cursor = self._conn.execute(
+            "SELECT * FROM code_session_model_presets WHERE code_session_id = ? ORDER BY name ASC",
+            (code_session_id,),
+        )
+        return [self._preset_row_to_dict(row) for row in cursor.fetchall()]
+
+    def update_preset(
+        self,
+        preset_id: str,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        now = datetime.now(timezone.utc).isoformat()
+        set_clauses = ["updated_at = ?"]
+        values: list = [now]
+        if provider is not None:
+            set_clauses.append("provider = ?")
+            values.append(provider)
+        if model is not None:
+            set_clauses.append("model = ?")
+            values.append(model)
+        if metadata is not None:
+            set_clauses.append("metadata_json = ?")
+            values.append(json.dumps(metadata))
+        values.append(preset_id)
+
+        def _do(conn):
+            conn.execute(
+                f"UPDATE code_session_model_presets SET {', '.join(set_clauses)} WHERE id = ?",
+                values,
+            )
+
+        self._execute_write(_do)
+        return self.get_preset(preset_id)
+
+    def delete_preset(self, preset_id: str) -> bool:
+        def _do(conn):
+            cursor = conn.execute(
+                "DELETE FROM code_session_model_presets WHERE id = ?", (preset_id,)
+            )
+            return cursor.rowcount > 0
+
+        return bool(self._execute_write(_do))
+
+    # ── Cost tracking ──
+
+    def add_cost_entry(
+        self,
+        code_session_id: str,
+        provider: str,
+        model: str,
+        task_type: Optional[str] = None,
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        cache_read_tokens: int = 0,
+        cache_write_tokens: int = 0,
+        cost_usd: float = 0.0,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        entry_id = str(uuid.uuid4())
+        now = datetime.now(timezone.utc).isoformat()
+
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO code_session_cost_entries
+                   (id, code_session_id, provider, model, task_type,
+                    input_tokens, output_tokens, cache_read_tokens,
+                    cache_write_tokens, cost_usd, metadata_json, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    entry_id,
+                    code_session_id,
+                    provider,
+                    model,
+                    task_type,
+                    input_tokens,
+                    output_tokens,
+                    cache_read_tokens,
+                    cache_write_tokens,
+                    cost_usd,
+                    json.dumps(metadata or {}),
+                    now,
+                ),
+            )
+
+        self._execute_write(_do)
+        cursor = self._conn.execute(
+            "SELECT * FROM code_session_cost_entries WHERE id = ?", (entry_id,)
+        )
+        return self._cost_row_to_dict(cursor.fetchone())
+
+    def get_cost_summary(self, code_session_id: str) -> Dict[str, Any]:
+        cursor = self._conn.execute(
+            """SELECT provider, model,
+                      SUM(input_tokens) as input_tokens,
+                      SUM(output_tokens) as output_tokens,
+                      SUM(cache_read_tokens) as cache_read_tokens,
+                      SUM(cache_write_tokens) as cache_write_tokens,
+                      SUM(cost_usd) as cost_usd,
+                      COUNT(*) as entry_count
+               FROM code_session_cost_entries
+               WHERE code_session_id = ?
+               GROUP BY provider, model""",
+            (code_session_id,),
+        )
+        rows = cursor.fetchall()
+
+        by_provider: Dict[str, Any] = {}
+        total_cost = 0.0
+        total_entries = 0
+        total_input = 0
+        total_output = 0
+        for row in rows:
+            r = dict(row)
+            prov = r["provider"]
+            cost = r["cost_usd"] or 0.0
+            inp = r["input_tokens"] or 0
+            out = r["output_tokens"] or 0
+            total_cost += cost
+            total_entries += r["entry_count"]
+            total_input += inp
+            total_output += out
+            if prov not in by_provider:
+                by_provider[prov] = {
+                    "cost_usd": 0.0,
+                    "input_tokens": 0,
+                    "output_tokens": 0,
+                    "entry_count": 0,
+                }
+            by_provider[prov]["cost_usd"] += cost
+            by_provider[prov]["input_tokens"] += inp
+            by_provider[prov]["output_tokens"] += out
+            by_provider[prov]["entry_count"] += r["entry_count"]
+
+        return {
+            "code_session_id": code_session_id,
+            "total_cost_usd": round(total_cost, 8),
+            "total_input_tokens": total_input,
+            "total_output_tokens": total_output,
+            "entry_count": total_entries,
+            "by_provider": by_provider,
+        }
+
+    def list_cost_entries(
+        self,
+        code_session_id: str,
+        limit: int = 100,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        cursor = self._conn.execute(
+            """SELECT * FROM code_session_cost_entries
+               WHERE code_session_id = ?
+               ORDER BY created_at DESC LIMIT ? OFFSET ?""",
+            (code_session_id, limit, offset),
+        )
+        return [self._cost_row_to_dict(row) for row in cursor.fetchall()]
+
+
+# ---------------------------------------------------------------------------
+# ApprovalDB
+# ---------------------------------------------------------------------------
+
+
+class ApprovalDB:
+    """SQLite-backed storage for approval requests."""
+
+    _WRITE_MAX_RETRIES = 15
+    _WRITE_RETRY_MIN_S = 0.020
+    _WRITE_RETRY_MAX_S = 0.150
+
+    def __init__(self, db_path: Path = None):
+        self.db_path = db_path or DEFAULT_DB_PATH
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._lock = threading.Lock()
+        self._conn = sqlite3.connect(
+            str(self.db_path),
+            check_same_thread=False,
+            timeout=1.0,
+            isolation_level=None,
+        )
+        self._conn.row_factory = sqlite3.Row
+        self._conn.execute("PRAGMA journal_mode=WAL")
+        self._conn.execute("PRAGMA foreign_keys=ON")
+        self._init_schema()
+
+    def _init_schema(self):
+        cursor = self._conn.cursor()
+        try:
+            cursor.execute(
+                "CREATE TABLE IF NOT EXISTS approvals ("
+                "id TEXT PRIMARY KEY,"
+                "session_id TEXT,"
+                "agent_id TEXT,"
+                "status TEXT NOT NULL DEFAULT 'pending',"
+                "title TEXT,"
+                "kind TEXT DEFAULT 'command',"
+                "details TEXT,"
+                "command TEXT,"
+                "created_at TEXT NOT NULL,"
+                "updated_at TEXT NOT NULL,"
+                "resolved_at TEXT,"
+                "resolved_by TEXT,"
+                "choice TEXT"
+                ")"
+            )
+        except sqlite3.OperationalError:
+            pass
+        for idx_sql in [
+            "CREATE INDEX IF NOT EXISTS idx_approvals_session ON approvals(session_id)",
+            "CREATE INDEX IF NOT EXISTS idx_approvals_status ON approvals(status)",
+            "CREATE INDEX IF NOT EXISTS idx_approvals_created ON approvals(created_at DESC)",
+        ]:
+            try:
+                cursor.execute(idx_sql)
+            except sqlite3.OperationalError:
+                pass
+        self._conn.commit()
+
+    def _execute_write(self, fn: Callable) -> Any:
+        last_err = None
+        for _ in range(self._WRITE_MAX_RETRIES):
+            try:
+                with self._lock:
+                    self._conn.execute("BEGIN IMMEDIATE")
+                    try:
+                        result = fn(self._conn)
+                        self._conn.commit()
+                    except BaseException:
+                        self._conn.rollback()
+                        raise
+                    return result
+            except sqlite3.OperationalError as e:
+                last_err = e
+                if "locked" not in str(e).lower():
+                    raise
+                time.sleep(
+                    random.uniform(self._WRITE_RETRY_MIN_S, self._WRITE_RETRY_MAX_S)
+                )
+        raise last_err
+
+    def close(self):
+        if self._conn:
+            self._conn.close()
+            self._conn = None
+
+    def _row_to_dict(self, row: sqlite3.Row) -> Dict[str, Any]:
+        return dict(row)
+
+    def create_approval(
+        self,
+        approval_id: str,
+        session_id: Optional[str],
+        agent_id: Optional[str],
+        title: Optional[str],
+        command: Optional[str],
+        created_at: str,
+        kind: str = "command",
+        details: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        now = created_at
+
+        def _do(conn):
+            conn.execute(
+                """INSERT INTO approvals
+                   (id, session_id, agent_id, status, title, kind, details,
+                    command, created_at, updated_at)
+                   VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)""",
+                (
+                    approval_id,
+                    session_id,
+                    agent_id,
+                    title,
+                    kind,
+                    details,
+                    command,
+                    now,
+                    now,
+                ),
+            )
+
+        self._execute_write(_do)
+        return self.get_approval(approval_id)
+
+    def get_approval(self, approval_id: str) -> Optional[Dict[str, Any]]:
+        cursor = self._conn.execute(
+            "SELECT * FROM approvals WHERE id = ?", (approval_id,)
+        )
+        row = cursor.fetchone()
+        return self._row_to_dict(row) if row else None
+
+    def list_approvals(
+        self,
+        status: Optional[str] = None,
+        session_id: Optional[str] = None,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> List[Dict[str, Any]]:
+        query = "SELECT * FROM approvals WHERE 1=1"
+        params: list = []
+        if status:
+            query += " AND status = ?"
+            params.append(status)
+        if session_id:
+            query += " AND session_id = ?"
+            params.append(session_id)
+        query += " ORDER BY created_at DESC LIMIT ? OFFSET ?"
+        params.extend([limit, offset])
+        cursor = self._conn.execute(query, params)
+        return [self._row_to_dict(row) for row in cursor.fetchall()]
+
+    def resolve_approval(
+        self,
+        approval_id: str,
+        status: str,
+        resolved_by: Optional[str] = None,
+        choice: Optional[str] = None,
+    ) -> bool:
+        now = datetime.now(timezone.utc).isoformat()
+        updated = [False]
+
+        def _do(conn):
+            cursor = conn.execute(
+                """UPDATE approvals SET
+                   status = ?, resolved_at = ?, resolved_by = ?,
+                   choice = ?, updated_at = ?
+                   WHERE id = ? AND status = 'pending'""",
+                (status, now, resolved_by, choice, now, approval_id),
+            )
+            if cursor.rowcount > 0:
+                updated[0] = True
+
+        self._execute_write(_do)
+        return updated[0]
+
+    def get_pending_count(self) -> int:
+        cursor = self._conn.execute("SELECT COUNT(*) FROM approvals WHERE status = 'pending'")
+        row = cursor.fetchone()
+        return row[0] if row else 0
+
+    def upsert_from_queue(
+        self,
+        approval_id: str,
+        session_id: str,
+        agent_id: str,
+        title: Optional[str],
+        command: str,
+        created_at: str,
+        kind: str = "command",
+        details: Optional[str] = None,
+    ) -> None:
+        now = datetime.now(timezone.utc).isoformat()
+
+        def _do(conn):
+            cursor = conn.execute("SELECT status FROM approvals WHERE id = ?", (approval_id,))
+            row = cursor.fetchone()
+            if row:
+                if row[0] == 'pending':
+                    return
+                conn.execute(
+                    """UPDATE approvals SET
+                       session_id = ?, agent_id = ?, status = 'pending', title = ?,
+                       kind = ?, details = ?, command = ?, created_at = ?,
+                       updated_at = ?, resolved_at = NULL, resolved_by = NULL, choice = NULL
+                       WHERE id = ?""",
+                    (session_id, agent_id, title, kind, details, command, created_at, now, approval_id)
+                )
+            else:
+                conn.execute(
+                    """INSERT INTO approvals
+                       (id, session_id, agent_id, status, title, kind, details, command, created_at, updated_at)
+                       VALUES (?, ?, ?, 'pending', ?, ?, ?, ?, ?, ?)""",
+                    (approval_id, session_id, agent_id, title, kind, details, command, created_at, now)
+                )
+
+        self._execute_write(_do)

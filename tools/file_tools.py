@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """File Tools Module - LLM agent file manipulation tools."""
 
+import difflib
 import errno
 import json
 import logging
@@ -12,6 +13,32 @@ from tools.file_operations import ShellFileOperations
 from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
+
+# ---------------------------------------------------------------------------
+# Artifact WS callback — set by web_server at startup so file tools can
+# emit artifact.created WebSocket events without importing the web layer.
+# ---------------------------------------------------------------------------
+_on_artifact_created = None
+
+
+def set_artifact_created_callback(cb) -> None:
+    """Register a sync callback(artifact_dict, session_id) for WS events.
+
+    Called once at web server startup. The callback may use
+    asyncio.run_coroutine_threadsafe internally (same pattern as _StepEmitter).
+    """
+    global _on_artifact_created
+    _on_artifact_created = cb
+
+
+def _emit_artifact_event(artifact: dict, session_id: str) -> None:
+    """Fire the registered artifact callback. Never raises."""
+    if _on_artifact_created is None:
+        return
+    try:
+        _on_artifact_created(artifact, session_id)
+    except Exception:
+        pass
 
 
 _EXPECTED_WRITE_ERRNOS = {errno.EACCES, errno.EPERM, errno.EROFS}
@@ -546,13 +573,31 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
     try:
         stale_warning = _check_file_staleness(path, task_id)
         file_ops = _get_file_ops(task_id)
+
+        # Read old content before write so we can generate a real diff.
+        old_content = ""
+        file_existed = False
+        try:
+            read_result = file_ops.read_file_raw(path)
+            if not read_result.error:
+                old_content = read_result.content or ""
+                file_existed = True
+        except Exception:
+            pass
+
         result = file_ops.write_file(path, content)
         result_dict = result.to_dict()
         if stale_warning:
             result_dict["_warning"] = stale_warning
-        # Refresh the stored timestamp so consecutive writes by this
-        # task don't trigger false staleness warnings.
         _update_read_timestamp(path, task_id)
+
+        # Persist artifact when write succeeded.
+        if not result_dict.get("error") and task_id:
+            try:
+                _persist_write_file_artifact(task_id, path, old_content, content, file_existed)
+            except Exception as art_err:
+                logger.debug("artifact creation failed for write_file: %s", art_err)
+
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:
         if _is_expected_write_exception(e):
@@ -560,6 +605,43 @@ def write_file_tool(path: str, content: str, task_id: str = "default") -> str:
         else:
             logger.error("write_file error: %s: %s", type(e).__name__, e, exc_info=True)
         return tool_error(str(e))
+
+
+def _persist_write_file_artifact(
+    task_id: str, path: str, old_content: str, new_content: str, file_existed: bool
+) -> None:
+    """Create and persist an artifact for a write_file operation.
+
+    task_id == session_id in the main agent flow (run_agent.py line 3030).
+    """
+    from hermes_state import SessionDB, count_diff_changes
+
+    # Generate unified diff between old and new content.
+    diff = "".join(
+        difflib.unified_diff(
+            old_content.splitlines(keepends=True),
+            new_content.splitlines(keepends=True),
+            fromfile=f"a/{path}",
+            tofile=f"b/{path}",
+        )
+    )
+    status = "modified" if file_existed else "added"
+    additions, deletions = count_diff_changes(diff)
+
+    db = SessionDB()
+    try:
+        artifact = db.create_artifact(
+            session_id=task_id,
+            tool_name="write_file",
+            path=path,
+            status=status,
+            diff=diff,
+            additions=additions,
+            deletions=deletions,
+        )
+        _emit_artifact_event(artifact, task_id)
+    finally:
+        db.close()
 
 
 def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
@@ -609,6 +691,13 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         if not result_dict.get("error"):
             for _p in _paths_to_check:
                 _update_read_timestamp(_p, task_id)
+        # Persist artifacts when patch succeeded.
+        if not result_dict.get("error") and task_id:
+            try:
+                _persist_patch_artifacts(task_id, result_dict)
+            except Exception as art_err:
+                logger.debug("artifact creation failed for patch: %s", art_err)
+
         result_json = json.dumps(result_dict, ensure_ascii=False)
         # Hint when old_string not found — saves iterations where the agent
         # retries with stale content instead of re-reading the file.
@@ -617,6 +706,41 @@ def patch_tool(mode: str = "replace", path: str = None, old_string: str = None,
         return result_json
     except Exception as e:
         return tool_error(str(e))
+
+
+def _persist_patch_artifacts(task_id: str, result_dict: dict) -> None:
+    """Create and persist artifacts for a successful patch operation."""
+    from hermes_state import SessionDB
+
+    diff = result_dict.get("diff") or ""
+    files_modified = result_dict.get("files_modified") or []
+    files_created = result_dict.get("files_created") or []
+    files_deleted = result_dict.get("files_deleted") or []
+
+    # Build per-file artifacts. Unified diff may contain multiple file blocks;
+    # for simplicity, assign the full diff to the first file and empty to rest.
+    all_files = (
+        [(p, "modified") for p in files_modified]
+        + [(p, "added") for p in files_created]
+        + [(p, "deleted") for p in files_deleted]
+    )
+    if not all_files:
+        return
+
+    db = SessionDB()
+    try:
+        for i, (path, status) in enumerate(all_files):
+            file_diff = diff if i == 0 else ""
+            artifact = db.create_artifact(
+                session_id=task_id,
+                tool_name="patch",
+                path=path,
+                status=status,
+                diff=file_diff,
+            )
+            _emit_artifact_event(artifact, task_id)
+    finally:
+        db.close()
 
 
 def search_tool(pattern: str, target: str = "content", path: str = ".",

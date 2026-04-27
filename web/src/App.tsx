@@ -1,5 +1,5 @@
 import { Routes, Route, NavLink, Navigate } from "react-router-dom";
-import { Activity, BarChart3, Clock, FileText, KeyRound, MessageSquare, Package, Settings } from "lucide-react";
+import { Activity, BarChart3, Clock, FileText, KeyRound, MessageSquare, Package, Settings, Code2 } from "lucide-react";
 import StatusPage from "@/pages/StatusPage";
 import ConfigPage from "@/pages/ConfigPage";
 import EnvPage from "@/pages/EnvPage";
@@ -8,12 +8,14 @@ import LogsPage from "@/pages/LogsPage";
 import AnalyticsPage from "@/pages/AnalyticsPage";
 import CronPage from "@/pages/CronPage";
 import SkillsPage from "@/pages/SkillsPage";
+import CodeCockpitPage from "@/features/code/CodeCockpitPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
 import { useI18n } from "@/i18n";
 
 const NAV_ITEMS = [
   { path: "/", labelKey: "status" as const, icon: Activity },
   { path: "/sessions", labelKey: "sessions" as const, icon: MessageSquare },
+  { path: "/code", labelKey: "code" as const, icon: Code2 },
   { path: "/analytics", labelKey: "analytics" as const, icon: BarChart3 },
   { path: "/logs", labelKey: "logs" as const, icon: FileText },
   { path: "/cron", labelKey: "cron" as const, icon: Clock },
@@ -79,6 +81,7 @@ export default function App() {
         <Routes>
           <Route path="/" element={<StatusPage />} />
           <Route path="/sessions" element={<SessionsPage />} />
+          <Route path="/code" element={<CodeCockpitPage />} />
           <Route path="/analytics" element={<AnalyticsPage />} />
           <Route path="/logs" element={<LogsPage />} />
           <Route path="/cron" element={<CronPage />} />

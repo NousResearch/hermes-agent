@@ -182,6 +182,30 @@ export const api = {
       },
     );
   },
+
+  // Code Intelligence / Diagnostics
+  getWorkspaceDiagnostics: (workspaceId: string, codeSessionId?: string) => {
+    const qs = codeSessionId ? `?code_session_id=${encodeURIComponent(codeSessionId)}` : "";
+    return fetchJSON<{ result: WorkspaceDiagnosticsResult }>(
+      `/api/code/workspaces/${encodeURIComponent(workspaceId)}/diagnostics${qs}`,
+    );
+  },
+  getFileDiagnostics: (workspaceId: string, filePath: string, codeSessionId?: string) => {
+    const qs = new URLSearchParams({ path: filePath });
+    if (codeSessionId) qs.set("code_session_id", codeSessionId);
+    return fetchJSON<{ result: FileDiagnosticsResult }>(
+      `/api/code/workspaces/${encodeURIComponent(workspaceId)}/diagnostics/file?${qs.toString()}`,
+    );
+  },
+  getSupportedLanguages: (workspaceId: string) =>
+    fetchJSON<{ languages: string[] }>(
+      `/api/code/workspaces/${encodeURIComponent(workspaceId)}/languages`,
+    ),
+  restartLanguageServices: (workspaceId: string) =>
+    fetchJSON<LspRestartResult>(
+      `/api/code/workspaces/${encodeURIComponent(workspaceId)}/lsp/restart`,
+      { method: "POST" },
+    ),
 };
 
 export interface PlatformStatus {
@@ -414,4 +438,46 @@ export interface OAuthPollResponse {
   status: "pending" | "approved" | "denied" | "expired" | "error";
   error_message?: string | null;
   expires_at?: number | null;
+}
+
+// ── Code Intelligence / Diagnostics types ──────────────────────────────
+
+export interface Diagnostic {
+  file: string;
+  line: number | null;
+  column: number | null;
+  severity: "error" | "warning" | "info" | "hint";
+  source: string;
+  code: string | null;
+  message: string;
+  raw: string | null;
+}
+
+export interface DiagnosticsSummary {
+  errors: number;
+  warnings: number;
+  info: number;
+  hints: number;
+  total: number;
+}
+
+export interface WorkspaceDiagnosticsResult {
+  workspace_id: string;
+  status: "ok" | "error" | "partial" | "unsupported";
+  diagnostics: Diagnostic[];
+  summary: DiagnosticsSummary;
+  commands_run: string[];
+  duration_ms: number;
+  created_at: string;
+}
+
+export interface FileDiagnosticsResult extends WorkspaceDiagnosticsResult {
+  file_path: string;
+}
+
+export interface LspRestartResult {
+  workspace_id: string;
+  action: string;
+  status: string;
+  message: string;
 }

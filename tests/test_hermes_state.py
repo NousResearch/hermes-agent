@@ -20,6 +20,7 @@ def db(tmp_path):
 # Session lifecycle
 # =========================================================================
 
+
 class TestSessionLifecycle:
     def test_create_and_get_session(self, db):
         sid = db.create_session(
@@ -64,14 +65,20 @@ class TestSessionLifecycle:
 
     def test_update_token_counts_backfills_model_when_null(self, db):
         db.create_session(session_id="s1", source="telegram")
-        db.update_token_counts("s1", input_tokens=10, output_tokens=5, model="openai/gpt-5.4")
+        db.update_token_counts(
+            "s1", input_tokens=10, output_tokens=5, model="openai/gpt-5.4"
+        )
 
         session = db.get_session("s1")
         assert session["model"] == "openai/gpt-5.4"
 
     def test_update_token_counts_preserves_existing_model(self, db):
-        db.create_session(session_id="s1", source="cli", model="anthropic/claude-opus-4.6")
-        db.update_token_counts("s1", input_tokens=10, output_tokens=5, model="openai/gpt-5.4")
+        db.create_session(
+            session_id="s1", source="cli", model="anthropic/claude-opus-4.6"
+        )
+        db.update_token_counts(
+            "s1", input_tokens=10, output_tokens=5, model="openai/gpt-5.4"
+        )
 
         session = db.get_session("s1")
         assert session["model"] == "anthropic/claude-opus-4.6"
@@ -87,6 +94,7 @@ class TestSessionLifecycle:
 # =========================================================================
 # Message storage
 # =========================================================================
+
 
 class TestMessageStorage:
     def test_append_and_get_messages(self, db):
@@ -136,8 +144,14 @@ class TestMessageStorage:
 
         # Assistant makes 2 parallel tool calls in one message
         tool_calls = [
-            {"id": "call_1", "function": {"name": "ha_call_service", "arguments": "{}"}},
-            {"id": "call_2", "function": {"name": "ha_call_service", "arguments": "{}"}},
+            {
+                "id": "call_1",
+                "function": {"name": "ha_call_service", "arguments": "{}"},
+            },
+            {
+                "id": "call_2",
+                "function": {"name": "ha_call_service", "arguments": "{}"},
+            },
         ]
         db.append_message("s1", role="assistant", content="", tool_calls=tool_calls)
 
@@ -154,7 +168,9 @@ class TestMessageStorage:
 
     def test_tool_calls_serialization(self, db):
         db.create_session(session_id="s1", source="cli")
-        tool_calls = [{"id": "call_1", "function": {"name": "web_search", "arguments": "{}"}}]
+        tool_calls = [
+            {"id": "call_1", "function": {"name": "web_search", "arguments": "{}"}}
+        ]
         db.append_message("s1", role="assistant", tool_calls=tool_calls)
 
         messages = db.get_messages("s1")
@@ -187,17 +203,28 @@ class TestMessageStorage:
             "s1",
             role="assistant",
             content=None,
-            tool_calls=[{"function": {"name": "cronjob", "arguments": "{}"}, "id": "c1", "type": "function"}],
+            tool_calls=[
+                {
+                    "function": {"name": "cronjob", "arguments": "{}"},
+                    "id": "c1",
+                    "type": "function",
+                }
+            ],
             reasoning="I should call the cronjob tool to schedule this.",
         )
-        db.append_message("s1", role="tool", content='{"job_id": "abc"}', tool_call_id="c1")
+        db.append_message(
+            "s1", role="tool", content='{"job_id": "abc"}', tool_call_id="c1"
+        )
 
         conv = db.get_messages_as_conversation("s1")
         assert len(conv) == 3
         # reasoning must be present on the assistant message
         assistant = conv[1]
         assert assistant["role"] == "assistant"
-        assert assistant.get("reasoning") == "I should call the cronjob tool to schedule this."
+        assert (
+            assistant.get("reasoning")
+            == "I should call the cronjob tool to schedule this."
+        )
         # user and tool messages must NOT carry reasoning
         assert "reasoning" not in conv[0]
         assert "reasoning" not in conv[2]
@@ -260,12 +287,15 @@ class TestMessageStorage:
         conv = db.get_messages_as_conversation("s1")
         assert len(conv) == 1
         assert conv[0]["codex_reasoning_items"] == codex_items
-        assert conv[0]["codex_reasoning_items"][0]["encrypted_content"] == "enc_blob_123"
+        assert (
+            conv[0]["codex_reasoning_items"][0]["encrypted_content"] == "enc_blob_123"
+        )
 
 
 # =========================================================================
 # FTS5 search
 # =========================================================================
+
 
 class TestFTS5Search:
     def test_search_finds_content(self, db):
@@ -308,11 +338,20 @@ class TestFTS5Search:
         for src in ("cli", "telegram", "signal", "homeassistant", "acp", "matrix"):
             sid = f"s-{src}"
             db.create_session(session_id=sid, source=src)
-            db.append_message(sid, role="user", content=f"universal search test from {src}")
+            db.append_message(
+                sid, role="user", content=f"universal search test from {src}"
+            )
 
         results = db.search_messages("universal search test")
         found_sources = {r["source"] for r in results}
-        assert found_sources == {"cli", "telegram", "signal", "homeassistant", "acp", "matrix"}
+        assert found_sources == {
+            "cli",
+            "telegram",
+            "signal",
+            "homeassistant",
+            "acp",
+            "matrix",
+        }
 
     def test_search_with_role_filter(self, db):
         db.create_session(session_id="s1", source="cli")
@@ -326,7 +365,9 @@ class TestFTS5Search:
     def test_search_returns_context(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="user", content="Tell me about Kubernetes")
-        db.append_message("s1", role="assistant", content="Kubernetes is an orchestrator.")
+        db.append_message(
+            "s1", role="assistant", content="Kubernetes is an orchestrator."
+        )
 
         results = db.search_messages("Kubernetes")
         assert len(results) == 2
@@ -341,14 +382,14 @@ class TestFTS5Search:
 
         # Each of these previously caused sqlite3.OperationalError
         dangerous_queries = [
-            'C++',              # + is FTS5 column filter
-            '"unterminated',    # unbalanced double-quote
-            '(problem',         # unbalanced parenthesis
-            'hello AND',        # dangling boolean operator
-            '***',              # repeated wildcard
-            '{test}',           # curly braces (column reference)
-            'OR hello',         # leading boolean operator
-            'a AND OR b',       # adjacent operators
+            "C++",  # + is FTS5 column filter
+            '"unterminated',  # unbalanced double-quote
+            "(problem",  # unbalanced parenthesis
+            "hello AND",  # dangling boolean operator
+            "***",  # repeated wildcard
+            "{test}",  # curly braces (column reference)
+            "OR hello",  # leading boolean operator
+            "a AND OR b",  # adjacent operators
         ]
         for query in dangerous_queries:
             # Must not raise — should return list (possibly empty)
@@ -373,14 +414,20 @@ class TestFTS5Search:
         results = db.search_messages("chat-send")
         assert isinstance(results, list)
         assert len(results) >= 1
-        assert any("chat-send" in (r.get("snippet") or r.get("content", "")).lower()
-                    for r in results)
+        assert any(
+            "chat-send" in (r.get("snippet") or r.get("content", "")).lower()
+            for r in results
+        )
 
     def test_search_dotted_term_does_not_crash(self, db):
         """Dotted terms like 'P2.2' or 'simulate.p2.test.ts' should not crash FTS5."""
         db.create_session(session_id="s1", source="cli")
-        db.append_message("s1", role="user", content="Working on P2.2 session_search edge cases")
-        db.append_message("s1", role="assistant", content="See simulate.p2.test.ts for details")
+        db.append_message(
+            "s1", role="user", content="Working on P2.2 session_search edge cases"
+        )
+        db.append_message(
+            "s1", role="assistant", content="See simulate.p2.test.ts for details"
+        )
 
         results = db.search_messages("P2.2")
         assert isinstance(results, list)
@@ -406,23 +453,25 @@ class TestFTS5Search:
     def test_sanitize_fts5_query_strips_dangerous_chars(self):
         """Unit test for _sanitize_fts5_query static method."""
         from hermes_state import SessionDB
+
         s = SessionDB._sanitize_fts5_query
-        assert s('hello world') == 'hello world'
-        assert '+' not in s('C++')
+        assert s("hello world") == "hello world"
+        assert "+" not in s("C++")
         assert '"' not in s('"unterminated')
-        assert '(' not in s('(problem')
-        assert '{' not in s('{test}')
+        assert "(" not in s("(problem")
+        assert "{" not in s("{test}")
         # Dangling operators removed
-        assert s('hello AND') == 'hello'
-        assert s('OR world') == 'world'
+        assert s("hello AND") == "hello"
+        assert s("OR world") == "world"
         # Leading bare * removed
-        assert s('***') == ''
+        assert s("***") == ""
         # Valid prefix kept
-        assert s('deploy*') == 'deploy*'
+        assert s("deploy*") == "deploy*"
 
     def test_sanitize_fts5_preserves_quoted_phrases(self):
         """Properly paired double-quoted phrases should be preserved."""
         from hermes_state import SessionDB
+
         s = SessionDB._sanitize_fts5_query
         # Simple quoted phrase
         assert s('"exact phrase"') == '"exact phrase"'
@@ -438,18 +487,19 @@ class TestFTS5Search:
     def test_sanitize_fts5_quotes_hyphenated_terms(self):
         """Hyphenated terms should be wrapped in quotes for exact matching."""
         from hermes_state import SessionDB
+
         s = SessionDB._sanitize_fts5_query
         # Simple hyphenated term
-        assert s('chat-send') == '"chat-send"'
+        assert s("chat-send") == '"chat-send"'
         # Multiple hyphens
-        assert s('docker-compose-up') == '"docker-compose-up"'
+        assert s("docker-compose-up") == '"docker-compose-up"'
         # Hyphenated term with other words
-        result = s('fix chat-send bug')
+        result = s("fix chat-send bug")
         assert '"chat-send"' in result
-        assert 'fix' in result
-        assert 'bug' in result
+        assert "fix" in result
+        assert "bug" in result
         # Multiple hyphenated terms with OR
-        result = s('chat-send OR deploy-prod')
+        result = s("chat-send OR deploy-prod")
         assert '"chat-send"' in result
         assert '"deploy-prod"' in result
         # Already-quoted hyphenated term — no double quoting
@@ -460,28 +510,30 @@ class TestFTS5Search:
     def test_sanitize_fts5_quotes_dotted_terms(self):
         """Dotted terms should be wrapped in quotes to avoid FTS5 query parse edge cases."""
         from hermes_state import SessionDB
+
         s = SessionDB._sanitize_fts5_query
 
-        assert s('P2.2') == '"P2.2"'
-        assert s('simulate.p2') == '"simulate.p2"'
-        assert s('simulate.p2.test.ts') == '"simulate.p2.test.ts"'
+        assert s("P2.2") == '"P2.2"'
+        assert s("simulate.p2") == '"simulate.p2"'
+        assert s("simulate.p2.test.ts") == '"simulate.p2.test.ts"'
 
         # Already quoted — no double quoting
         assert s('"P2.2"') == '"P2.2"'
 
         # Works with boolean syntax
-        result = s('P2.2 OR simulate.p2')
+        result = s("P2.2 OR simulate.p2")
         assert '"P2.2"' in result
         assert '"simulate.p2"' in result
 
         # Mixed dots and hyphens — single pass avoids double-quoting
-        assert s('my-app.config') == '"my-app.config"'
-        assert s('my-app.config.ts') == '"my-app.config.ts"'
+        assert s("my-app.config") == '"my-app.config"'
+        assert s("my-app.config.ts") == '"my-app.config.ts"'
 
 
 # =========================================================================
 # Session search and listing
 # =========================================================================
+
 
 class TestSearchSessions:
     def test_list_all_sessions(self, db):
@@ -513,6 +565,7 @@ class TestSearchSessions:
 # =========================================================================
 # Counts
 # =========================================================================
+
 
 class TestCounts:
     def test_session_count(self, db):
@@ -549,6 +602,7 @@ class TestCounts:
 # Delete and export
 # =========================================================================
 
+
 class TestDeleteAndExport:
     def test_delete_session(self, db):
         db.create_session(session_id="s1", source="cli")
@@ -563,7 +617,9 @@ class TestDeleteAndExport:
 
     def test_resolve_session_id_exact(self, db):
         db.create_session(session_id="20260315_092437_c9a6ff", source="cli")
-        assert db.resolve_session_id("20260315_092437_c9a6ff") == "20260315_092437_c9a6ff"
+        assert (
+            db.resolve_session_id("20260315_092437_c9a6ff") == "20260315_092437_c9a6ff"
+        )
 
     def test_resolve_session_id_unique_prefix(self, db):
         db.create_session(session_id="20260315_092437_c9a6ff", source="cli")
@@ -612,6 +668,7 @@ class TestDeleteAndExport:
 # =========================================================================
 # Prune
 # =========================================================================
+
 
 class TestPruneSessions:
     def test_prune_old_ended_sessions(self, db):
@@ -679,7 +736,12 @@ class TestPruneSessions:
         db.end_session("D", end_reason="done")
 
         # Backdate A and B to be old; C and D stay recent
-        for sid, ts in [("A", old_ts), ("B", old_ts), ("C", recent_ts), ("D", recent_ts)]:
+        for sid, ts in [
+            ("A", old_ts),
+            ("B", old_ts),
+            ("C", recent_ts),
+            ("D", recent_ts),
+        ]:
             db._conn.execute(
                 "UPDATE sessions SET started_at = ? WHERE id = ?", (ts, sid)
             )
@@ -726,7 +788,9 @@ class TestDeleteSessionOrphansChildren:
         """Deleting a parent session orphans its children."""
         db.create_session(session_id="parent", source="cli")
         db.create_session(session_id="child", source="cli", parent_session_id="parent")
-        db.create_session(session_id="grandchild", source="cli", parent_session_id="child")
+        db.create_session(
+            session_id="grandchild", source="cli", parent_session_id="child"
+        )
 
         # Should not raise IntegrityError
         result = db.delete_session("parent")
@@ -749,6 +813,7 @@ class TestDeleteSessionOrphansChildren:
 # =========================================================================
 # Session title
 # =========================================================================
+
 
 class TestSessionTitle:
     def test_set_and_get_title(self, db):
@@ -935,7 +1000,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 6
+        assert version == 16
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -991,12 +1056,12 @@ class TestSchemaInit:
         conn.commit()
         conn.close()
 
-        # Open with SessionDB — should migrate to v6
+        # Open with SessionDB — should migrate to v11
         migrated_db = SessionDB(db_path=db_path)
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 6
+        assert cursor.fetchone()[0] == 16
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
@@ -1068,6 +1133,7 @@ class TestTitleLineage:
     def test_resolve_returns_latest_numbered(self, db):
         """When numbered variants exist, return the most recent one."""
         import time
+
         db.create_session("s1", "cli")
         db.set_session_title("s1", "my project")
         time.sleep(0.01)
@@ -1180,6 +1246,7 @@ class TestListSessionsRich:
 
     def test_last_active_from_latest_message(self, db):
         import time
+
         db.create_session("s1", "cli")
         db.append_message("s1", "user", "Hello")
         time.sleep(0.01)
@@ -1218,6 +1285,7 @@ class TestListSessionsRich:
 # =========================================================================
 # Session source exclusion (--source flag for third-party isolation)
 # =========================================================================
+
 
 class TestExcludeSources:
     """Tests for exclude_sources on list_sessions_rich and search_messages."""
@@ -1318,6 +1386,7 @@ class TestResolveSessionByNameOrId:
 # Concurrent write safety / lock contention fixes (#3139)
 # =========================================================================
 
+
 class TestConcurrentWriteSafety:
     def test_create_session_insert_or_ignore_is_idempotent(self, db):
         """create_session with the same ID twice must not raise (INSERT OR IGNORE)."""
@@ -1365,13 +1434,267 @@ class TestConcurrentWriteSafety:
         assert msgs[0]["content"] == "hello after lock"
 
     def test_sqlite_timeout_is_at_least_30s(self, db):
-        """Connection timeout should be >= 30s to survive CLI/gateway contention."""
+        """Connection timeout should be at least 30s to survive CLI/gateway contention."""
         # Access the underlying connection timeout via sqlite3 introspection.
         # There is no public API, so we check the kwarg via the module default.
         import sqlite3
         import inspect
         from hermes_state import SessionDB as _SessionDB
+
         src = inspect.getsource(_SessionDB.__init__)
         assert "30" in src, (
             "SQLite timeout should be at least 30s to handle CLI/gateway lock contention"
         )
+
+
+# =========================================================================
+# ApprovalDB tests
+# =========================================================================
+
+
+@pytest.fixture()
+def approval_db(tmp_path):
+    """Create an ApprovalDB with a temp database file."""
+    from hermes_state import ApprovalDB
+
+    db_path = tmp_path / "test_approvals.db"
+    db = ApprovalDB(db_path=db_path)
+    yield db
+    db.close()
+
+
+class TestApprovalDB:
+    def test_create_and_get_approval(self, approval_db):
+        """create_approval inserts a pending approval and get_approval retrieves it."""
+        approval_db.create_approval(
+            approval_id="approval-test-123",
+            session_id="sess-abc",
+            agent_id="agent-sess-abc",
+            title="recursive delete",
+            command="rm -rf /tmp/build",
+            created_at="2026-04-23T12:00:00+00:00",
+            details="Command matches dangerous pattern: recursive delete",
+        )
+
+        result = approval_db.get_approval("approval-test-123")
+        assert result is not None
+        assert result["id"] == "approval-test-123"
+        assert result["session_id"] == "sess-abc"
+        assert result["status"] == "pending"
+        assert result["title"] == "recursive delete"
+        assert result["command"] == "rm -rf /tmp/build"
+
+    def test_get_nonexistent_approval(self, approval_db):
+        """get_approval returns None for unknown id."""
+        assert approval_db.get_approval("nonexistent-id") is None
+
+    def test_list_approvals_empty(self, approval_db):
+        """list_approvals returns empty list when no approvals exist."""
+        result = approval_db.list_approvals()
+        assert result == []
+
+    def test_list_approvals_with_pending(self, approval_db):
+        """list_approvals returns pending approvals."""
+        approval_db.create_approval(
+            approval_id="approval-pending-1",
+            session_id="sess-1",
+            agent_id="agent-sess-1",
+            title="test",
+            command="echo hello",
+            created_at="2026-04-23T12:00:00+00:00",
+        )
+        approval_db.create_approval(
+            approval_id="approval-pending-2",
+            session_id="sess-2",
+            agent_id="agent-sess-2",
+            title="test2",
+            command="echo world",
+            created_at="2026-04-23T12:01:00+00:00",
+        )
+
+        result = approval_db.list_approvals(status="pending")
+        assert len(result) == 2
+
+        result_all = approval_db.list_approvals()
+        assert len(result_all) == 2
+
+    def test_resolve_approval(self, approval_db):
+        """resolve_approval updates status to approved/rejected."""
+        approval_db.create_approval(
+            approval_id="approval-resolve-1",
+            session_id="sess-1",
+            agent_id="agent-sess-1",
+            title="test",
+            command="echo hello",
+            created_at="2026-04-23T12:00:00+00:00",
+        )
+
+        updated = approval_db.resolve_approval(
+            "approval-resolve-1", "approved", resolved_by="sess-1", choice="session"
+        )
+        assert updated is True
+
+        result = approval_db.get_approval("approval-resolve-1")
+        assert result["status"] == "approved"
+        assert result["resolved_at"] is not None
+        assert result["resolved_by"] == "sess-1"
+        assert result["choice"] == "session"
+
+    def test_resolve_approval_rejected(self, approval_db):
+        """resolve_approval can set status to rejected."""
+        approval_db.create_approval(
+            approval_id="approval-reject-1",
+            session_id="sess-1",
+            agent_id="agent-sess-1",
+            title="test",
+            command="rm -rf /",
+            created_at="2026-04-23T12:00:00+00:00",
+        )
+
+        updated = approval_db.resolve_approval(
+            "approval-reject-1", "rejected", resolved_by="sess-1", choice="deny"
+        )
+        assert updated is True
+
+        result = approval_db.get_approval("approval-reject-1")
+        assert result["status"] == "rejected"
+        assert result["choice"] == "deny"
+
+    def test_resolve_approval_already_resolved(self, approval_db):
+        """resolve_approval returns False if already resolved."""
+        approval_db.create_approval(
+            approval_id="approval-double-1",
+            session_id="sess-1",
+            agent_id="agent-sess-1",
+            title="test",
+            command="echo hello",
+            created_at="2026-04-23T12:00:00+00:00",
+        )
+
+        approval_db.resolve_approval(
+            "approval-double-1", "approved", resolved_by="sess-1", choice="session"
+        )
+        updated = approval_db.resolve_approval(
+            "approval-double-1", "rejected", resolved_by="sess-1", choice="deny"
+        )
+        assert updated is False
+
+    def test_resolve_nonexistent_approval(self, approval_db):
+        """resolve_approval returns False for unknown id."""
+        updated = approval_db.resolve_approval(
+            "nonexistent-id", "approved", resolved_by="sess-1", choice="session"
+        )
+        assert updated is False
+
+    def test_list_approvals_filtered_by_status(self, approval_db):
+        """list_approvals with status filter only returns matching approvals."""
+        approval_db.create_approval(
+            approval_id="approval-filter-1",
+            session_id="sess-1",
+            agent_id="agent-sess-1",
+            title="test1",
+            command="echo hello",
+            created_at="2026-04-23T12:00:00+00:00",
+        )
+        approval_db.create_approval(
+            approval_id="approval-filter-2",
+            session_id="sess-2",
+            agent_id="agent-sess-2",
+            title="test2",
+            command="echo world",
+            created_at="2026-04-23T12:01:00+00:00",
+        )
+
+        approval_db.resolve_approval(
+            "approval-filter-1", "approved", resolved_by="sess-1", choice="session"
+        )
+
+        pending = approval_db.list_approvals(status="pending")
+        assert len(pending) == 1
+        assert pending[0]["id"] == "approval-filter-2"
+
+        approved = approval_db.list_approvals(status="approved")
+        assert len(approved) == 1
+        assert approved[0]["id"] == "approval-filter-1"
+
+    def test_get_pending_count(self, approval_db):
+        """get_pending_count returns correct count."""
+        assert approval_db.get_pending_count() == 0
+
+        approval_db.create_approval(
+            approval_id="approval-count-1",
+            session_id="sess-1",
+            agent_id="agent-sess-1",
+            title="test",
+            command="echo hello",
+            created_at="2026-04-23T12:00:00+00:00",
+        )
+        assert approval_db.get_pending_count() == 1
+
+        approval_db.create_approval(
+            approval_id="approval-count-2",
+            session_id="sess-2",
+            agent_id="agent-sess-2",
+            title="test2",
+            command="echo world",
+            created_at="2026-04-23T12:01:00+00:00",
+        )
+        assert approval_db.get_pending_count() == 2
+
+        approval_db.resolve_approval(
+            "approval-count-1", "approved", resolved_by="sess-1", choice="session"
+        )
+        assert approval_db.get_pending_count() == 1
+
+    def test_upsert_from_queue_noop_when_pending(self, approval_db):
+        """upsert_from_queue does nothing if record already exists and is pending."""
+        approval_db.create_approval(
+            approval_id="approval-upsert-1",
+            session_id="sess-1",
+            agent_id="agent-sess-1",
+            title="test",
+            command="echo hello",
+            created_at="2026-04-23T12:00:00+00:00",
+        )
+
+        approval_db.upsert_from_queue(
+            approval_id="approval-upsert-1",
+            session_id="sess-1",
+            agent_id="agent-sess-1",
+            title="updated-title",
+            command="echo updated",
+            created_at="2026-04-23T12:05:00+00:00",
+        )
+
+        result = approval_db.get_approval("approval-upsert-1")
+        assert result["title"] == "test"
+        assert result["command"] == "echo hello"
+
+    def test_upsert_from_queue_updates_if_resolved(self, approval_db):
+        """upsert_from_queue replaces resolved record with new pending."""
+        approval_db.create_approval(
+            approval_id="approval-upsert-2",
+            session_id="sess-1",
+            agent_id="agent-sess-1",
+            title="test",
+            command="echo hello",
+            created_at="2026-04-23T12:00:00+00:00",
+        )
+
+        approval_db.resolve_approval(
+            "approval-upsert-2", "approved", resolved_by="sess-1", choice="session"
+        )
+
+        approval_db.upsert_from_queue(
+            approval_id="approval-upsert-2",
+            session_id="sess-1",
+            agent_id="agent-sess-1",
+            title="new-title",
+            command="echo new",
+            created_at="2026-04-23T12:10:00+00:00",
+        )
+
+        result = approval_db.get_approval("approval-upsert-2")
+        assert result["status"] == "pending"
+        assert result["title"] == "new-title"
+        assert result["command"] == "echo new"

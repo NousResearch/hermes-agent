@@ -55,6 +55,7 @@ export const en: Translations = {
     nav: {
       status: "Status",
       sessions: "Sessions",
+      code: "Code",
       analytics: "Analytics",
       logs: "Logs",
       cron: "Cron",

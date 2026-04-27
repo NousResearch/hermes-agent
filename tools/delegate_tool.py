@@ -1032,6 +1032,23 @@ def _build_child_agent(
     # fallback_model parameter (which handles both list and dict forms).
     parent_fallback = getattr(parent_agent, "_fallback_chain", None) or None
 
+    # Inherit the parent's OpenRouter provider-preference filters by default
+    # (so subagents routed to the same provider honour the same routing
+    # constraints).  BUT: when `delegation.provider` is set the user is
+    # explicitly asking the child to run on a different provider, and
+    # parent-level OpenRouter filters (e.g. `only=["Anthropic"]`) would
+    # silently force the child back onto the parent's provider. Clear the
+    # filters in that case so the delegated provider is honoured.
+    child_providers_allowed = getattr(parent_agent, "providers_allowed", None)
+    child_providers_ignored = getattr(parent_agent, "providers_ignored", None)
+    child_providers_order = getattr(parent_agent, "providers_order", None)
+    child_provider_sort = getattr(parent_agent, "provider_sort", None)
+    if override_provider:
+        child_providers_allowed = None
+        child_providers_ignored = None
+        child_providers_order = None
+        child_provider_sort = None
+
     child = AIAgent(
         base_url=effective_base_url,
         api_key=effective_api_key,
@@ -1056,10 +1073,10 @@ def _build_child_agent(
         thinking_callback=child_thinking_cb,
         session_db=getattr(parent_agent, "_session_db", None),
         parent_session_id=getattr(parent_agent, "session_id", None),
-        providers_allowed=parent_agent.providers_allowed,
-        providers_ignored=parent_agent.providers_ignored,
-        providers_order=parent_agent.providers_order,
-        provider_sort=parent_agent.provider_sort,
+        providers_allowed=child_providers_allowed,
+        providers_ignored=child_providers_ignored,
+        providers_order=child_providers_order,
+        provider_sort=child_provider_sort,
         tool_progress_callback=child_progress_cb,
         iteration_budget=None,  # fresh budget per subagent
     )

@@ -982,6 +982,48 @@ class TestDelegationProviderIntegration(unittest.TestCase):
 
     @patch("tools.delegate_tool._load_config")
     @patch("tools.delegate_tool._resolve_delegation_credentials")
+    def test_provider_override_clears_parent_openrouter_filters(
+        self, mock_creds, mock_cfg
+    ):
+        """Delegated provider should not inherit parent provider-preference filters."""
+        mock_cfg.return_value = {
+            "max_iterations": 45,
+            "model": "google/gemini-3-flash-preview",
+            "provider": "openrouter",
+        }
+        mock_creds.return_value = {
+            "model": "google/gemini-3-flash-preview",
+            "provider": "openrouter",
+            "base_url": "https://openrouter.ai/api/v1",
+            "api_key": "sk-or-key",
+            "api_mode": "chat_completions",
+        }
+        parent = _make_mock_parent(depth=0)
+        parent.providers_allowed = ["anthropic/claude-3.5-sonnet"]
+        parent.providers_ignored = ["openai/gpt-4o-mini"]
+        parent.providers_order = ["google/gemini-2.5-pro"]
+        parent.provider_sort = "price"
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "api_calls": 1,
+            }
+            MockAgent.return_value = mock_child
+
+            delegate_task(goal="Cross-provider test", parent_agent=parent)
+
+            _, kwargs = MockAgent.call_args
+            self.assertEqual(kwargs["provider"], "openrouter")
+            self.assertIsNone(kwargs["providers_allowed"])
+            self.assertIsNone(kwargs["providers_ignored"])
+            self.assertIsNone(kwargs["providers_order"])
+            self.assertIsNone(kwargs["provider_sort"])
+
+    @patch("tools.delegate_tool._load_config")
+    @patch("tools.delegate_tool._resolve_delegation_credentials")
     def test_direct_endpoint_credentials_reach_child_agent(self, mock_creds, mock_cfg):
         mock_cfg.return_value = {
             "max_iterations": 45,

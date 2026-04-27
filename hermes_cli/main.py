@@ -868,7 +868,7 @@ def _tui_need_npm_install(root: Path) -> bool:
     try:
         wanted = json.loads(lock.read_text(encoding="utf-8")).get("packages") or {}
         installed = json.loads(marker.read_text(encoding="utf-8")).get("packages") or {}
-    except (OSError, json.JSONDecodeError):
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return lock.stat().st_mtime > marker.stat().st_mtime
 
     def comparable(pkg: dict) -> dict:

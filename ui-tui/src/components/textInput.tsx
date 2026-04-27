@@ -638,14 +638,14 @@ export function TextInput({
 
   const moveCursor = (next: number, extend = false) => {
     const c = snapPos(vRef.current, next)
+    const anchor = selRef.current?.start ?? curRef.current
 
-    if (extend) {
-      const anchor = selRef.current?.start ?? curRef.current
+    if (!extend || anchor === c) {
+      clearSel()
+    } else {
       const nextSel = { end: c, start: anchor }
       selRef.current = nextSel
       setSel(nextSel)
-    } else {
-      clearSel()
     }
 
     setCur(c)

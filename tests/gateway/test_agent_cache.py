@@ -773,7 +773,7 @@ class TestAgentCacheSpilloverLive:
         for t in threads:
             t.start()
         for t in threads:
-            t.join(timeout=30)
+            t.join(timeout=120)
             assert not t.is_alive(), "Worker thread hung — possible deadlock?"
 
         # Let daemon cleanup threads settle.

@@ -14,6 +14,11 @@ from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageTyp
 from gateway.session import SessionSource
 
 
+def _noop_tool_progress(*_a, **_k):
+    """Stand-in when the gateway omits ``tool_progress_callback`` for a fake AIAgent."""
+    pass
+
+
 class ProgressCaptureAdapter(BasePlatformAdapter):
     def __init__(self, platform=Platform.TELEGRAM):
         super().__init__(PlatformConfig(enabled=True, token="***"), platform)
@@ -67,13 +72,14 @@ class NonEditingProgressCaptureAdapter(ProgressCaptureAdapter):
 
 class FakeAgent:
     def __init__(self, **kwargs):
-        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tool_progress_callback = kwargs.get("tool_progress_callback") or _noop_tool_progress
         self.tools = []
 
     def run_conversation(self, message, conversation_history=None, task_id=None):
-        self.tool_progress_callback("tool.started", "terminal", "pwd", {})
+        cb = self.tool_progress_callback or _noop_tool_progress
+        cb("tool.started", "terminal", "pwd", {})
         time.sleep(0.35)
-        self.tool_progress_callback("tool.started", "browser_navigate", "https://example.com", {})
+        cb("tool.started", "browser_navigate", "https://example.com", {})
         time.sleep(0.35)
         return {
             "final_response": "done",
@@ -87,11 +93,12 @@ class LongPreviewAgent:
     LONG_CMD = "cd /home/teknium/.hermes/hermes-agent/.worktrees/hermes-d8860339 && source .venv/bin/activate && python -m pytest tests/gateway/test_run_progress_topics.py -n0 -q"
 
     def __init__(self, **kwargs):
-        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tool_progress_callback = kwargs.get("tool_progress_callback") or _noop_tool_progress
         self.tools = []
 
     def run_conversation(self, message, conversation_history=None, task_id=None):
-        self.tool_progress_callback("tool.started", "terminal", self.LONG_CMD, {})
+        cb = self.tool_progress_callback or _noop_tool_progress
+        cb("tool.started", "terminal", self.LONG_CMD, {})
         time.sleep(0.35)
         return {
             "final_response": "done",
@@ -102,13 +109,14 @@ class LongPreviewAgent:
 
 class DelayedProgressAgent:
     def __init__(self, **kwargs):
-        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tool_progress_callback = kwargs.get("tool_progress_callback") or _noop_tool_progress
         self.tools = []
 
     def run_conversation(self, message, conversation_history=None, task_id=None):
-        self.tool_progress_callback("tool.started", "terminal", "first command", {})
+        cb = self.tool_progress_callback or _noop_tool_progress
+        cb("tool.started", "terminal", "first command", {})
         time.sleep(0.45)
-        self.tool_progress_callback("tool.started", "terminal", "second command", {})
+        cb("tool.started", "terminal", "second command", {})
         time.sleep(0.1)
         return {
             "final_response": "done",
@@ -250,7 +258,15 @@ async def test_run_agent_progress_does_not_use_event_message_id_for_telegram_dm(
 @pytest.mark.asyncio
 async def test_run_agent_progress_uses_event_message_id_for_slack_dm(monkeypatch, tmp_path):
     """Slack DM progress should keep event ts fallback threading."""
+    import yaml
+
     monkeypatch.setenv("HERMES_TOOL_PROGRESS_MODE", "all")
+    # Slack's built-in display default keeps tool_progress off unless overridden;
+    # env alone loses to resolve_display_setting — enable explicitly for this test.
+    (tmp_path / "config.yaml").write_text(
+        yaml.dump({"display": {"platforms": {"slack": {"tool_progress": "all"}}}}),
+        encoding="utf-8",
+    )
 
     fake_dotenv = types.ModuleType("dotenv")
     fake_dotenv.load_dotenv = lambda *args, **kwargs: None
@@ -481,11 +497,12 @@ class VerboseAgent:
     LONG_CODE = "x" * 300
 
     def __init__(self, **kwargs):
-        self.tool_progress_callback = kwargs.get("tool_progress_callback")
+        self.tool_progress_callback = kwargs.get("tool_progress_callback") or _noop_tool_progress
         self.tools = []
 
     def run_conversation(self, message, conversation_history=None, task_id=None):
-        self.tool_progress_callback(
+        cb = self.tool_progress_callback or _noop_tool_progress
+        cb(
             "tool.started", "execute_code", None,
             {"code": self.LONG_CODE},
         )

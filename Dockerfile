@@ -47,7 +47,7 @@ RUN npm ci --no-audit &&\
     rm -rf /tmp/* ~/.npm
 
 # Install the Playwright Chromium shell browser.
-RUN npx playwright install chromium --with-deps --only-shell &&\
+RUN npx playwright install --with-deps chromium --only-shell &&\
     rm -rf /tmp/* ~/.npm /var/lib/apt/lists/* /usr/share/doc /usr/share/man /usr/share/locale &&\
     npm cache clean --force
 
@@ -59,19 +59,19 @@ RUN cd /opt/hermes/scripts/whatsapp-bridge &&\
     npm cache clean --force &&\
     rm -rf /tmp/* ~/.npm
 
-COPY web/package*.json  
+COPY web/package*.json /opt/hermes/web/
 RUN cd /opt/hermes/web &&\
     npm ci --no-audit &&\
     npm run build &&\
     npm cache clean --force &&\
-    rm -rf /tmp/* ~/.npm
+    rm -rf /tmp/* ~/.npm /opt/hermes/web/node_modules
 
 # Hand ownership to hermes user, then install Python deps in a virtualenv
 RUN chown -R hermes:hermes /opt/hermes
 USER hermes
 
 # Create Python virtual environment
-ARG EXTRAS="modal,daytona,messaging,cron,cli,tts-premium,slack,pty,honcho,mcp,homeassistant,sms,acp,voice,dingtalk,feishu,mistral,bedrock,web"
+ARG EXTRAS="modal,daytona,messaging,cron,cli,tts-premium,slack,pty,honcho,mcp,homeassistant,sms,acp,voice,dingtalk,feishu,google,mistral,bedrock,web"
 ENV VIRTUAL_ENV=/opt/hermes/.venv
 ENV PATH="$VIRTUAL_ENV/bin:$PATH"
 
@@ -85,12 +85,6 @@ RUN uv venv "$VIRTUAL_ENV" &&\
 # The venv needs to be traversable too.
 USER root
 RUN chmod -R a+rX /opt/hermes
-# Start as root so the entrypoint can usermod/groupmod + gosu.
-# If HERMES_UID is unset, the entrypoint drops to the default hermes user (10000).
-
-# ---------- Python virtualenv ----------
-RUN uv venv && \
-    uv pip install --no-cache-dir -e ".[all]"
 
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist

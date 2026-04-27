@@ -9073,6 +9073,30 @@ class HermesCLI:
             _welcome_text = "Welcome to Hermes Agent! Type your message or /help for commands."
             _welcome_color = "#FFF8DC"
         self._console_print(f"[{_welcome_color}]{_welcome_text}[/]")
+        # First-time OpenClaw-residue banner — fires once if ~/.openclaw/ exists
+        # after an OpenClaw→Hermes migration (especially migrations done by
+        # OpenClaw's own tool, which doesn't archive the source directory).
+        try:
+            from agent.onboarding import (
+                OPENCLAW_RESIDUE_FLAG,
+                detect_openclaw_residue,
+                is_seen,
+                mark_seen,
+                openclaw_residue_hint_cli,
+            )
+            if not is_seen(self.config, OPENCLAW_RESIDUE_FLAG) and detect_openclaw_residue():
+                try:
+                    _resid_color = _welcome_skin.get_color("banner_dim", "#B8860B")
+                except Exception:
+                    _resid_color = "#B8860B"
+                self._console_print(f"[{_resid_color}]{openclaw_residue_hint_cli()}[/]")
+                try:
+                    from hermes_cli.config import get_config_path as _get_cfg_path_resid
+                    mark_seen(_get_cfg_path_resid(), OPENCLAW_RESIDUE_FLAG)
+                except Exception:
+                    pass  # best-effort — banner will fire again next session
+        except Exception:
+            pass  # banner is non-critical — never break startup
         # Show a random tip to help users discover features
         try:
             from hermes_cli.tips import get_random_tip

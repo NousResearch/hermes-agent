@@ -15,6 +15,7 @@ from datetime import datetime
 from typing import Optional
 
 from hermes_cli.config import get_hermes_home
+from utils import atomic_json_write
 
 logger = logging.getLogger(__name__)
 
@@ -66,6 +67,7 @@ def mirror_to_session(
 
         _append_to_jsonl(session_id, mirror_msg)
         _append_to_sqlite(session_id, mirror_msg)
+        _touch_session_index(session_id)
 
         logger.debug("Mirror: wrote to session %s (from %s)", session_id, source_label)
         return True
@@ -176,3 +178,37 @@ def _append_to_sqlite(session_id: str, message: dict) -> None:
     finally:
         if db is not None:
             db.close()
+
+
+def _touch_session_index(session_id: str) -> None:
+    """Refresh ``updated_at`` in sessions.json for a mirrored session."""
+    if not session_id or not _SESSIONS_INDEX.exists():
+        return
+
+    try:
+        with open(_SESSIONS_INDEX, encoding="utf-8") as f:
+            data = json.load(f)
+    except Exception as e:
+        logger.debug("Mirror session-index read failed: %s", e)
+        return
+
+    if not isinstance(data, dict):
+        return
+
+    now_iso = datetime.now().isoformat()
+    updated = False
+    for entry in data.values():
+        if not isinstance(entry, dict):
+            continue
+        if entry.get("session_id") == session_id:
+            entry["updated_at"] = now_iso
+            updated = True
+            break
+
+    if not updated:
+        return
+
+    try:
+        atomic_json_write(_SESSIONS_INDEX, data)
+    except Exception as e:
+        logger.debug("Mirror session-index write failed: %s", e)

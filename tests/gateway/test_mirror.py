@@ -1,6 +1,7 @@
 """Tests for gateway/mirror.py — session mirroring."""
 
 import json
+from datetime import datetime
 from pathlib import Path
 from unittest.mock import patch, MagicMock
 
@@ -205,6 +206,30 @@ class TestMirrorToSession:
         assert msg["role"] == "assistant"
         assert msg["mirror"] is True
         assert msg["mirror_source"] == "cli"
+
+    def test_successful_mirror_refreshes_session_updated_at(self, tmp_path):
+        sessions_dir, index_file = _setup_sessions(tmp_path, {
+            "s1": {
+                "session_id": "sess_abc",
+                "origin": {"platform": "telegram", "chat_id": "12345"},
+                "updated_at": "2026-01-01T00:00:00",
+            }
+        })
+
+        class _FixedDateTime:
+            @classmethod
+            def now(cls):
+                return datetime(2030, 1, 2, 3, 4, 5)
+
+        with patch.object(mirror_mod, "_SESSIONS_DIR", sessions_dir), \
+             patch.object(mirror_mod, "_SESSIONS_INDEX", index_file), \
+             patch.object(mirror_mod, "datetime", _FixedDateTime), \
+             patch("gateway.mirror._append_to_sqlite"):
+            result = mirror_to_session("telegram", "12345", "Hello!", source_label="cli")
+
+        assert result is True
+        updated = json.loads(index_file.read_text(encoding="utf-8"))
+        assert updated["s1"]["updated_at"] == "2030-01-02T03:04:05"
 
     def test_successful_mirror_uses_thread_id(self, tmp_path):
         sessions_dir, index_file = _setup_sessions(tmp_path, {

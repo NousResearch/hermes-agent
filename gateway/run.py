@@ -4367,6 +4367,51 @@ class GatewayRunner:
             reply_snippet = event.reply_to_text[:500]
             message_text = f'[Replying to: "{reply_snippet}"]\n\n{message_text}'
 
+        # If the quoted (replied-to) message had attached media, enrich the
+        # prompt the same way we would for current-message media: vision-
+        # describe images, transcribe audio, note documents. This is what
+        # makes "reply to a photo and ask about it" actually work — without
+        # this block, the agent only sees the quoted text snippet and is
+        # blind to the image the user is pointing at.
+        reply_media_urls = getattr(event, "reply_to_media_urls", None) or []
+        if reply_media_urls:
+            reply_media_types = getattr(event, "reply_to_media_types", None) or []
+            reply_image_paths: List[str] = []
+            reply_audio_paths: List[str] = []
+            reply_doc_paths: List[tuple[str, str]] = []  # (path, mime)
+            for i, path in enumerate(reply_media_urls):
+                mtype = reply_media_types[i] if i < len(reply_media_types) else ""
+                if mtype.startswith("image/"):
+                    reply_image_paths.append(path)
+                elif mtype.startswith("audio/"):
+                    reply_audio_paths.append(path)
+                elif mtype.startswith(("application/", "text/")) or mtype.startswith("video/"):
+                    reply_doc_paths.append((path, mtype))
+
+            if reply_image_paths:
+                # Reuse the same vision pipeline; tag output as "quoted" so
+                # the agent doesn't confuse it with current-message media.
+                vision_prefix = await self._enrich_message_with_vision("", reply_image_paths)
+                if vision_prefix:
+                    message_text = (
+                        "[The user is replying to a previous message that contained "
+                        f"an image. {vision_prefix}]\n\n{message_text}"
+                    )
+            if reply_audio_paths:
+                audio_prefix = await self._enrich_message_with_transcription("", reply_audio_paths)
+                if audio_prefix:
+                    message_text = (
+                        "[The user is replying to a previous voice/audio message. "
+                        f"{audio_prefix}]\n\n{message_text}"
+                    )
+            for path, mtype in reply_doc_paths:
+                kind = "video" if mtype.startswith("video/") else "document"
+                message_text = (
+                    f"[The user is replying to a previous message that attached a "
+                    f"{kind}. The file is saved at: {path} (mime: {mtype}).]\n\n"
+                    f"{message_text}"
+                )
+
         if "@" in message_text:
             try:
                 from agent.context_references import preprocess_context_references_async

@@ -6,8 +6,10 @@ and implement the required methods.
 """
 
 import asyncio
+import datetime as _dt
 import inspect
 import ipaddress
+import json
 import logging
 import os
 import random
@@ -785,6 +787,64 @@ def cache_document_from_bytes(data: bytes, filename: str) -> str:
     return str(filepath)
 
 
+def write_media_sidecar(media_path: str, metadata: Dict[str, Any]) -> Optional[str]:
+    """Write a JSON sidecar file alongside a cached media file.
+
+    The sidecar is named ``<media_basename>.json`` and lives next to the media
+    in the same cache directory. It records who sent the media so the agent
+    can later answer "who sent that photo?" via search_files / read_file —
+    Telegram does not write any of this into the media bytes themselves and
+    our cache filename is just a random uuid hash.
+
+    Pass any JSON-serialisable dict; common fields:
+      - platform: "telegram" / "discord" / ...
+      - chat_id, chat_type, chat_title
+      - thread_id (Telegram topic id, if any)
+      - from_id, from_name, from_username
+      - message_id, date (ISO 8601 UTC), caption
+      - is_quoted_reply: bool — True when the media came from a reply_to_message
+      - quoted_from_id, quoted_from_name — sender of the quoted message
+
+    Returns the sidecar path on success, None on failure (failure is logged
+    but never raised — the media itself was already cached successfully).
+    """
+    if not media_path:
+        return None
+    try:
+        sidecar_path = f"{media_path}.json"
+        # Always stamp a "saved_at" so old entries can be aged out.
+        payload = dict(metadata)
+        payload.setdefault("saved_at", _dt.datetime.now(_dt.timezone.utc).isoformat())
+        Path(sidecar_path).write_text(
+            json.dumps(payload, ensure_ascii=False, indent=2, default=str),
+            encoding="utf-8",
+        )
+        return sidecar_path
+    except Exception as e:  # noqa: BLE001
+        logging.getLogger(__name__).warning(
+            "Failed to write media sidecar for %s: %s", media_path, e,
+        )
+        return None
+
+
+def read_media_sidecar(media_path: str) -> Optional[Dict[str, Any]]:
+    """Read the JSON sidecar for a cached media file, or return None.
+
+    Convenience for tools that want to ask "who sent this image?" given a
+    path. Returns the parsed dict or None when no sidecar exists / parse
+    fails.
+    """
+    if not media_path:
+        return None
+    sidecar_path = Path(f"{media_path}.json")
+    if not sidecar_path.exists():
+        return None
+    try:
+        return json.loads(sidecar_path.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
 def cleanup_document_cache(max_age_hours: int = 24) -> int:
     """
     Delete cached documents older than *max_age_hours*.
@@ -862,6 +922,12 @@ class MessageEvent:
     # Reply context
     reply_to_message_id: Optional[str] = None
     reply_to_text: Optional[str] = None  # Text of the replied-to message (for context injection)
+    # Media attached to the *quoted* (replied-to) message — downloaded so the
+    # agent can see images/videos/files that the user is implicitly referring
+    # to via the reply pointer. Parallel to media_urls/media_types but for the
+    # quoted message, not the current one.
+    reply_to_media_urls: List[str] = field(default_factory=list)
+    reply_to_media_types: List[str] = field(default_factory=list)
     
     # Auto-loaded skill(s) for topic/channel bindings (e.g., Telegram DM Topics,
     # Discord channel_skill_bindings).  A single name or ordered list.

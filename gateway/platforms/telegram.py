@@ -73,6 +73,7 @@ from gateway.platforms.base import (
     cache_audio_from_bytes,
     cache_video_from_bytes,
     cache_document_from_bytes,
+    write_media_sidecar,
     resolve_proxy_url,
     SUPPORTED_VIDEO_TYPES,
     SUPPORTED_DOCUMENT_TYPES,
@@ -2443,6 +2444,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         event = self._build_message_event(update.message, MessageType.TEXT, update_id=update.update_id)
         event.text = self._clean_bot_trigger_text(event.text)
+        await self._attach_reply_media(event, update.message)
         self._enqueue_text_event(event)
     
     async def _handle_command(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2453,6 +2455,7 @@ class TelegramAdapter(BasePlatformAdapter):
             return
         
         event = self._build_message_event(update.message, MessageType.COMMAND, update_id=update.update_id)
+        await self._attach_reply_media(event, update.message)
         await self.handle_message(event)
     
     async def _handle_location_message(self, update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -2490,6 +2493,7 @@ class TelegramAdapter(BasePlatformAdapter):
 
         event = self._build_message_event(msg, MessageType.LOCATION, update_id=update.update_id)
         event.text = "\n".join(parts)
+        await self._attach_reply_media(event, msg)
         await self.handle_message(event)
 
     # ------------------------------------------------------------------
@@ -2640,6 +2644,7 @@ class TelegramAdapter(BasePlatformAdapter):
             msg_type = MessageType.DOCUMENT
         
         event = self._build_message_event(msg, msg_type, update_id=update.update_id)
+        await self._attach_reply_media(event, msg)
         
         # Add caption as text
         if msg.caption:
@@ -2672,6 +2677,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 event.media_urls = [cached_path]
                 event.media_types = [f"image/{ext.lstrip('.')}" ]
                 logger.info("[Telegram] Cached user photo at %s", cached_path)
+                self._record_media_sender(msg, cached_path)
                 media_group_id = getattr(msg, "media_group_id", None)
                 if media_group_id:
                     await self._queue_media_group_event(str(media_group_id), event)
@@ -2692,6 +2698,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 event.media_urls = [cached_path]
                 event.media_types = ["audio/ogg"]
                 logger.info("[Telegram] Cached user voice at %s", cached_path)
+                self._record_media_sender(msg, cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache voice: %s", e, exc_info=True)
         elif msg.audio:
@@ -2702,6 +2709,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 event.media_urls = [cached_path]
                 event.media_types = ["audio/mp3"]
                 logger.info("[Telegram] Cached user audio at %s", cached_path)
+                self._record_media_sender(msg, cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache audio: %s", e, exc_info=True)
 
@@ -2719,6 +2727,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 event.media_urls = [cached_path]
                 event.media_types = [SUPPORTED_VIDEO_TYPES.get(ext, "video/mp4")]
                 logger.info("[Telegram] Cached user video at %s", cached_path)
+                self._record_media_sender(msg, cached_path)
             except Exception as e:
                 logger.warning("[Telegram] Failed to cache video: %s", e, exc_info=True)
 
@@ -2750,6 +2759,7 @@ class TelegramAdapter(BasePlatformAdapter):
                     event.media_types = [SUPPORTED_VIDEO_TYPES[ext]]
                     event.message_type = MessageType.VIDEO
                     logger.info("[Telegram] Cached user video document at %s", cached_path)
+                    self._record_media_sender(msg, cached_path)
                     await self.handle_message(event)
                     return
 
@@ -2784,6 +2794,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 event.media_urls = [cached_path]
                 event.media_types = [mime_type]
                 logger.info("[Telegram] Cached user document at %s", cached_path)
+                self._record_media_sender(msg, cached_path)
 
                 # For text files, inject content into event.text (capped at 100 KB)
                 MAX_TEXT_INJECT_BYTES = 100 * 1024
@@ -2889,6 +2900,7 @@ class TelegramAdapter(BasePlatformAdapter):
             image_bytes = await file_obj.download_as_bytearray()
             cached_path = cache_image_from_bytes(bytes(image_bytes), ext=".webp")
             logger.info("[Telegram] Analyzing sticker at %s", cached_path)
+            self._record_media_sender(msg, cached_path)
 
             from tools.vision_tools import vision_analyze_tool
             result_json = await vision_analyze_tool(
@@ -3007,6 +3019,180 @@ class TelegramAdapter(BasePlatformAdapter):
                 "[%s] Cached DM topic from message: %s -> thread_id=%s",
                 self.name, cache_key, thread_id,
             )
+
+    async def _download_reply_media(self, reply_msg: Message) -> tuple[list[str], list[str]]:
+        """Download media attached to a quoted (reply_to) Telegram message.
+
+        Telegram delivers reply_to_message with metadata only — the bot must
+        re-fetch any attached photo/video/voice/audio/document via the file_id
+        if it wants the bytes. This mirrors the cache logic in
+        ``_handle_media_message`` but writes nothing to the current event's
+        primary media slots; callers attach the result to
+        ``MessageEvent.reply_to_media_urls`` so the agent can distinguish the
+        quoted media from media in the current message.
+
+        Returns (paths, mime_types). Both empty on failure or no media.
+        """
+        if not reply_msg:
+            return [], []
+        paths: list[str] = []
+        mtypes: list[str] = []
+        try:
+            if getattr(reply_msg, "photo", None):
+                photo = reply_msg.photo[-1]
+                file_obj = await photo.get_file()
+                image_bytes = await file_obj.download_as_bytearray()
+                ext = ".jpg"
+                if file_obj.file_path:
+                    for candidate in [".png", ".webp", ".gif", ".jpeg", ".jpg"]:
+                        if file_obj.file_path.lower().endswith(candidate):
+                            ext = candidate
+                            break
+                cached_path = cache_image_from_bytes(bytes(image_bytes), ext=ext)
+                paths.append(cached_path)
+                mtypes.append(f"image/{ext.lstrip('.')}")
+                logger.info("[Telegram] Cached quoted reply photo at %s", cached_path)
+            elif getattr(reply_msg, "video", None):
+                file_obj = await reply_msg.video.get_file()
+                video_bytes = await file_obj.download_as_bytearray()
+                ext = ".mp4"
+                if getattr(file_obj, "file_path", None):
+                    for candidate in SUPPORTED_VIDEO_TYPES:
+                        if file_obj.file_path.lower().endswith(candidate):
+                            ext = candidate
+                            break
+                cached_path = cache_video_from_bytes(bytes(video_bytes), ext=ext)
+                paths.append(cached_path)
+                mtypes.append(SUPPORTED_VIDEO_TYPES.get(ext, "video/mp4"))
+                logger.info("[Telegram] Cached quoted reply video at %s", cached_path)
+            elif getattr(reply_msg, "voice", None):
+                file_obj = await reply_msg.voice.get_file()
+                audio_bytes = await file_obj.download_as_bytearray()
+                cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".ogg")
+                paths.append(cached_path)
+                mtypes.append("audio/ogg")
+                logger.info("[Telegram] Cached quoted reply voice at %s", cached_path)
+            elif getattr(reply_msg, "audio", None):
+                file_obj = await reply_msg.audio.get_file()
+                audio_bytes = await file_obj.download_as_bytearray()
+                cached_path = cache_audio_from_bytes(bytes(audio_bytes), ext=".mp3")
+                paths.append(cached_path)
+                mtypes.append("audio/mp3")
+                logger.info("[Telegram] Cached quoted reply audio at %s", cached_path)
+            elif getattr(reply_msg, "document", None):
+                doc = reply_msg.document
+                ext = ""
+                original_filename = doc.file_name or ""
+                if original_filename:
+                    _, ext = os.path.splitext(original_filename)
+                    ext = ext.lower()
+                if not ext and doc.mime_type:
+                    mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
+                    ext = mime_to_ext.get(doc.mime_type, "")
+                MAX_DOC_BYTES = 20 * 1024 * 1024
+                if doc.file_size and doc.file_size <= MAX_DOC_BYTES and ext in SUPPORTED_DOCUMENT_TYPES:
+                    file_obj = await doc.get_file()
+                    doc_bytes = await file_obj.download_as_bytearray()
+                    cached_path = cache_document_from_bytes(bytes(doc_bytes), original_filename or f"document{ext}")
+                    paths.append(cached_path)
+                    mtypes.append(SUPPORTED_DOCUMENT_TYPES[ext])
+                    logger.info("[Telegram] Cached quoted reply document at %s", cached_path)
+            elif getattr(reply_msg, "sticker", None):
+                # Stickers are images — fetch the static .webp representation.
+                sticker = reply_msg.sticker
+                file_obj = await sticker.get_file()
+                image_bytes = await file_obj.download_as_bytearray()
+                cached_path = cache_image_from_bytes(bytes(image_bytes), ext=".webp")
+                paths.append(cached_path)
+                mtypes.append("image/webp")
+                logger.info("[Telegram] Cached quoted reply sticker at %s", cached_path)
+        except Exception as e:
+            logger.warning("[Telegram] Failed to download reply-quoted media: %s", e, exc_info=True)
+        return paths, mtypes
+
+    async def _attach_reply_media(self, event: MessageEvent, message: Message) -> None:
+        """Populate ``event.reply_to_media_urls/types`` if the message replies
+        to one with attached media. Safe to call for every inbound event —
+        no-op when there's no reply or no media in the quoted message."""
+        reply_msg = getattr(message, "reply_to_message", None)
+        if not reply_msg:
+            return
+        # Skip if the quoted message has no media at all (cheap check).
+        if not any(getattr(reply_msg, attr, None) for attr in (
+            "photo", "video", "voice", "audio", "document", "sticker",
+        )):
+            return
+        paths, mtypes = await self._download_reply_media(reply_msg)
+        if paths:
+            event.reply_to_media_urls = paths
+            event.reply_to_media_types = mtypes
+            # Record sidecars for the quoted media too — this is the case
+            # that motivated the feature: the user replies to a previous
+            # photo and asks "who sent that?" and we want a definitive answer.
+            for p in paths:
+                self._record_media_sender(reply_msg, p, is_quoted_reply=True)
+
+    def _record_media_sender(
+        self,
+        message: "Message",
+        cached_path: str,
+        *,
+        is_quoted_reply: bool = False,
+    ) -> None:
+        """Write a JSON sidecar next to a cached media file recording who sent it.
+
+        Telegram does not write sender metadata into media bytes and our cache
+        filenames are random uuid hashes, so without this sidecar the agent
+        has no way to answer "who sent that photo?" after the fact. Best-effort:
+        any failure is swallowed (the media itself is already cached).
+        """
+        if not cached_path or not message:
+            return
+        try:
+            from_user = getattr(message, "from_user", None)
+            chat = getattr(message, "chat", None)
+            metadata: dict = {
+                "platform": "telegram",
+                "is_quoted_reply": is_quoted_reply,
+                "message_id": getattr(message, "message_id", None),
+            }
+            if from_user is not None:
+                metadata["from_id"] = str(getattr(from_user, "id", "") or "")
+                metadata["from_name"] = (
+                    getattr(from_user, "full_name", None)
+                    or getattr(from_user, "first_name", None)
+                    or ""
+                )
+                metadata["from_username"] = getattr(from_user, "username", None) or ""
+                metadata["from_is_bot"] = bool(getattr(from_user, "is_bot", False))
+            if chat is not None:
+                metadata["chat_id"] = str(getattr(chat, "id", "") or "")
+                metadata["chat_type"] = getattr(chat, "type", None) or ""
+                metadata["chat_title"] = (
+                    getattr(chat, "title", None)
+                    or getattr(chat, "username", None)
+                    or ""
+                )
+            thread_id = getattr(message, "message_thread_id", None)
+            if thread_id is not None:
+                metadata["thread_id"] = str(thread_id)
+            date = getattr(message, "date", None)
+            if date is not None:
+                try:
+                    metadata["date"] = date.isoformat()
+                except Exception:
+                    metadata["date"] = str(date)
+            caption = getattr(message, "caption", None)
+            if caption:
+                metadata["caption"] = caption[:500]
+            text = getattr(message, "text", None)
+            if text and is_quoted_reply:
+                # For a reply, the quoted message's plain text (if any) is also
+                # useful context — captures e.g. "here's lunch".
+                metadata["quoted_text"] = text[:500]
+            write_media_sidecar(cached_path, metadata)
+        except Exception as e:  # noqa: BLE001
+            logger.debug("[Telegram] _record_media_sender failed: %s", e)
 
     def _build_message_event(
         self,

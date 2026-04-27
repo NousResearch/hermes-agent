@@ -3042,7 +3042,22 @@ def _resolve_task_provider_model(
     if task:
         # Config.yaml is the primary source for per-task overrides.
         if cfg_base_url:
-            return "custom", resolved_model, cfg_base_url, cfg_api_key, resolved_api_mode
+            # When the user configures a named provider (e.g. zai) with a custom
+            # base_url but leaves api_key blank, look up that provider's credential
+            # from the registry so env vars like ZAI_API_KEY are honoured.
+            resolved_key = cfg_api_key
+            if not resolved_key and cfg_provider and cfg_provider not in ("auto", "custom", ""):
+                try:
+                    from hermes_cli.auth import (
+                        PROVIDER_REGISTRY,
+                        resolve_api_key_provider_credentials,
+                    )
+                    if cfg_provider in PROVIDER_REGISTRY:
+                        creds = resolve_api_key_provider_credentials(cfg_provider)
+                        resolved_key = str(creds.get("api_key", "")).strip() or None
+                except ImportError:
+                    pass
+            return "custom", resolved_model, cfg_base_url, resolved_key, resolved_api_mode
         if cfg_provider and cfg_provider != "auto":
             return cfg_provider, resolved_model, None, None, resolved_api_mode
 

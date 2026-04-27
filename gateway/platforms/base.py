@@ -811,6 +811,37 @@ def cache_video_from_bytes(data: bytes, ext: str = ".mp4") -> str:
 # ---------------------------------------------------------------------------
 
 DOCUMENT_CACHE_DIR = get_hermes_dir("cache/documents", "document_cache")
+SCREENSHOT_CACHE_DIR = get_hermes_dir("cache/screenshots", "browser_screenshots")
+
+MEDIA_DELIVERY_ALLOW_DIRS_ENV = "HERMES_MEDIA_ALLOW_DIRS"
+MEDIA_DELIVERY_SAFE_ROOTS = (
+    IMAGE_CACHE_DIR,
+    AUDIO_CACHE_DIR,
+    VIDEO_CACHE_DIR,
+    DOCUMENT_CACHE_DIR,
+    SCREENSHOT_CACHE_DIR,
+)
+
+
+def _media_delivery_allowed_roots() -> list[Path]:
+    """Return roots from which model-emitted MEDIA tags may attach files."""
+    roots = [Path(root) for root in MEDIA_DELIVERY_SAFE_ROOTS]
+    extra_roots = os.environ.get(MEDIA_DELIVERY_ALLOW_DIRS_ENV, "")
+    for chunk in extra_roots.split(os.pathsep):
+        for raw_root in chunk.split(","):
+            raw_root = raw_root.strip()
+            if raw_root:
+                roots.append(Path(os.path.expanduser(raw_root)))
+    return roots
+
+
+def _path_is_within(path: Path, root: Path) -> bool:
+    try:
+        path.relative_to(root)
+        return True
+    except ValueError:
+        return False
+
 
 SUPPORTED_DOCUMENT_TYPES = {
     ".pdf": "application/pdf",
@@ -2074,6 +2105,47 @@ class BasePlatformAdapter(ABC):
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to, metadata=metadata)
 
     @staticmethod
+    def validate_media_delivery_path(path: str) -> Optional[str]:
+        """Validate a MEDIA tag path before native attachment delivery.
+
+        MEDIA tags are model-controlled text. Only existing regular files under
+        Hermes-managed media cache roots (or explicit operator-configured roots)
+        may be delivered. Symlinks are resolved before the containment check so
+        a link inside an allowed cache cannot point at an arbitrary host file.
+        """
+        if not path:
+            return None
+
+        candidate = path.strip()
+        if len(candidate) >= 2 and candidate[0] == candidate[-1] and candidate[0] in "`\"'":
+            candidate = candidate[1:-1].strip()
+        candidate = candidate.lstrip("`\"'").rstrip("`\"',.;:)}]")
+        if not candidate:
+            return None
+
+        expanded = Path(os.path.expanduser(candidate))
+        if not expanded.is_absolute():
+            return None
+
+        try:
+            resolved = expanded.resolve(strict=True)
+        except (OSError, RuntimeError):
+            return None
+
+        if not resolved.is_file():
+            return None
+
+        for root in _media_delivery_allowed_roots():
+            try:
+                resolved_root = root.expanduser().resolve(strict=False)
+            except (OSError, RuntimeError):
+                continue
+            if _path_is_within(resolved, resolved_root):
+                return str(resolved)
+
+        return None
+
+    @staticmethod
     def extract_media(content: str) -> Tuple[List[Tuple[str, bool]], str]:
         """
         Extract MEDIA:<path> tags and [[audio_as_voice]] directives from response text.
@@ -2116,12 +2188,9 @@ class BasePlatformAdapter(ABC):
             r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
         )
         for match in media_pattern.finditer(content):
-            path = match.group("path").strip()
-            if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
-                path = path[1:-1].strip()
-            path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
+            path = BasePlatformAdapter.validate_media_delivery_path(match.group("path"))
             if path:
-                media.append((os.path.expanduser(path), has_voice_tag))
+                media.append((path, has_voice_tag))
 
         # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
         if media:

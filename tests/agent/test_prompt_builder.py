@@ -1084,8 +1084,104 @@ class TestOpenAIModelExecutionGuidance:
 
 
 # =========================================================================
-# Budget warning history stripping
+# Session 16: lazy skill loading via skills.lazy_load + skills.always_load
 # =========================================================================
 
 
+class TestLazyLoadGate:
+    """When ``skills.lazy_load: true`` in config.yaml, the bulk skills
+    index in the system prompt is restricted to ``skills.always_load``
+    (pinned core). Other skills remain discoverable via ``skills_list``,
+    ``skill_view``, and the ``skills.semantic_search`` MCP tool.
 
+    Default behavior (lazy_load absent or False) is preserved exactly —
+    upstream consumers see no change.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _clear_skills_cache(self):
+        from agent.prompt_builder import clear_skills_system_prompt_cache
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+        yield
+        clear_skills_system_prompt_cache(clear_snapshot=True)
+
+    def _seed_skills(self, tmp_path):
+        skills_dir = tmp_path / "skills"
+        for name, desc in [
+            ("hermes-agent", "Hermes self-knowledge"),
+            ("claude-code", "Claude Code interop"),
+            ("systematic-debugging", "Debug systematically"),
+            ("random-skill-a", "Some other skill A"),
+            ("random-skill-b", "Some other skill B"),
+        ]:
+            d = skills_dir / "core" / name
+            d.mkdir(parents=True, exist_ok=True)
+            (d / "SKILL.md").write_text(
+                f"---\nname: {name}\ndescription: {desc}\n---\nbody\n"
+            )
+
+    def test_lazy_load_off_keeps_all_skills(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._seed_skills(tmp_path)
+        # No config file → lazy_load defaults to False.
+        result = build_skills_system_prompt()
+        assert "hermes-agent" in result
+        assert "random-skill-a" in result
+        assert "random-skill-b" in result
+
+    def test_lazy_load_on_filters_to_always_load(self, monkeypatch, tmp_path):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._seed_skills(tmp_path)
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n"
+            "  lazy_load: true\n"
+            "  always_load:\n"
+            "    - hermes-agent\n"
+            "    - claude-code\n"
+            "    - systematic-debugging\n"
+            "  semantic_top_k: 5\n"
+        )
+        result = build_skills_system_prompt()
+        assert "hermes-agent" in result
+        assert "claude-code" in result
+        assert "systematic-debugging" in result
+        # The non-pinned skills are filtered out.
+        assert "random-skill-a" not in result
+        assert "random-skill-b" not in result
+
+    def test_lazy_load_on_with_empty_always_load_keeps_all(self, monkeypatch, tmp_path):
+        """Safety: if always_load is empty, do NOT silently strip every
+        skill — that would be more disruptive than not enabling lazy
+        load. Behavior matches lazy_load=False."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        self._seed_skills(tmp_path)
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n"
+            "  lazy_load: true\n"
+            "  always_load: []\n"
+        )
+        result = build_skills_system_prompt()
+        assert "hermes-agent" in result
+        assert "random-skill-a" in result
+
+    def test_get_skills_lazy_load_config_defaults(self, monkeypatch, tmp_path):
+        from agent.skill_utils import get_skills_lazy_load_config
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        cfg = get_skills_lazy_load_config()
+        assert cfg["lazy_load"] is False
+        assert cfg["always_load"] == set()
+        assert cfg["semantic_top_k"] == 5
+
+    def test_get_skills_lazy_load_config_parsed(self, monkeypatch, tmp_path):
+        from agent.skill_utils import get_skills_lazy_load_config
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        (tmp_path / "config.yaml").write_text(
+            "skills:\n"
+            "  lazy_load: true\n"
+            "  always_load: [hermes-agent, claude-code]\n"
+            "  semantic_top_k: 7\n"
+        )
+        cfg = get_skills_lazy_load_config()
+        assert cfg["lazy_load"] is True
+        assert cfg["always_load"] == {"hermes-agent", "claude-code"}
+        assert cfg["semantic_top_k"] == 7

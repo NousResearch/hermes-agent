@@ -20,6 +20,7 @@ from agent.skill_utils import (
     extract_skill_description,
     get_all_skills_dirs,
     get_disabled_skill_names,
+    get_skills_lazy_load_config,
     iter_skill_index_files,
     parse_frontmatter,
     skill_matches_platform,
@@ -681,6 +682,15 @@ def build_skills_system_prompt(
         or ""
     )
     disabled = get_disabled_skill_names()
+    # Session 16 lazy-load: when skills.lazy_load is True in config.yaml,
+    # restrict the bulk skills index to ``skills.always_load`` (pinned core).
+    # Other skills remain discoverable via ``skills_list`` / ``skill_view``
+    # and the ``skills.semantic_search`` MCP tool. Saves ~125k tokens
+    # per session by removing the ~55-skill bulk index from the system
+    # prompt. When lazy_load is False (default), behavior is unchanged.
+    _lazy_cfg = get_skills_lazy_load_config()
+    _lazy_load = bool(_lazy_cfg.get("lazy_load", False))
+    _always_load = set(_lazy_cfg.get("always_load") or set())
     cache_key = (
         str(skills_dir.resolve()),
         tuple(str(d) for d in external_dirs),
@@ -688,6 +698,8 @@ def build_skills_system_prompt(
         tuple(sorted(str(ts) for ts in (available_toolsets or set()))),
         _platform_hint,
         tuple(sorted(disabled)),
+        _lazy_load,
+        tuple(sorted(_always_load)),
     )
     with _SKILLS_PROMPT_CACHE_LOCK:
         cached = _SKILLS_PROMPT_CACHE.get(cache_key)
@@ -714,6 +726,12 @@ def build_skills_system_prompt(
                 continue
             if frontmatter_name in disabled or skill_name in disabled:
                 continue
+            # Session 16 lazy-load filter (snapshot path).
+            if _lazy_load and _always_load and (
+                frontmatter_name not in _always_load
+                and skill_name not in _always_load
+            ):
+                continue
             if not _skill_should_show(
                 entry.get("conditions") or {},
                 available_tools,
@@ -738,6 +756,12 @@ def build_skills_system_prompt(
                 continue
             skill_name = entry["skill_name"]
             if entry["frontmatter_name"] in disabled or skill_name in disabled:
+                continue
+            # Session 16 lazy-load filter (cold path).
+            if _lazy_load and _always_load and (
+                entry["frontmatter_name"] not in _always_load
+                and skill_name not in _always_load
+            ):
                 continue
             if not _skill_should_show(
                 extract_skill_conditions(frontmatter),
@@ -793,6 +817,12 @@ def build_skills_system_prompt(
                 if frontmatter_name in seen_skill_names:
                     continue
                 if frontmatter_name in disabled or skill_name in disabled:
+                    continue
+                # Session 16 lazy-load filter (external dirs path).
+                if _lazy_load and _always_load and (
+                    frontmatter_name not in _always_load
+                    and skill_name not in _always_load
+                ):
                     continue
                 if not _skill_should_show(
                     extract_skill_conditions(frontmatter),

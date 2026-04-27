@@ -168,6 +168,54 @@ def _normalize_string_set(values) -> Set[str]:
     return {str(v).strip() for v in values if str(v).strip()}
 
 
+# ── Lazy skill loading (Session 16 / memory-palace embed DB) ─────────────
+
+
+def get_skills_lazy_load_config() -> Dict[str, Any]:
+    """Read the ``skills.lazy_load``, ``skills.always_load`` and
+    ``skills.semantic_top_k`` fields from config.yaml.
+
+    Returns a dict with:
+      - ``lazy_load`` (bool, default False): when True, the bulk skills
+        index in the system prompt is filtered down to ``always_load``
+        — saving ~125k tokens per session. Other skills remain
+        discoverable on demand via the ``skills.semantic_search`` MCP
+        tool and ``skills_list`` / ``skill_view``.
+      - ``always_load`` (Set[str]): pinned-core skills that always appear
+        in the bulk index. Names match SKILL.md frontmatter ``name``.
+      - ``semantic_top_k`` (int, default 5): hint for callers using the
+        ``skills.semantic_search`` MCP tool.
+
+    Reads config directly to keep this helper lightweight (matches
+    ``get_disabled_skill_names`` pattern).
+    """
+    out: Dict[str, Any] = {
+        "lazy_load": False,
+        "always_load": set(),
+        "semantic_top_k": 5,
+    }
+    config_path = get_config_path()
+    if not config_path.exists():
+        return out
+    try:
+        parsed = yaml_load(config_path.read_text(encoding="utf-8"))
+    except Exception as e:
+        logger.debug("Could not read lazy-load config %s: %s", config_path, e)
+        return out
+    if not isinstance(parsed, dict):
+        return out
+    skills_cfg = parsed.get("skills")
+    if not isinstance(skills_cfg, dict):
+        return out
+    out["lazy_load"] = bool(skills_cfg.get("lazy_load", False))
+    out["always_load"] = _normalize_string_set(skills_cfg.get("always_load"))
+    try:
+        out["semantic_top_k"] = int(skills_cfg.get("semantic_top_k", 5) or 5)
+    except (TypeError, ValueError):
+        out["semantic_top_k"] = 5
+    return out
+
+
 # ── External skills directories ──────────────────────────────────────────
 
 

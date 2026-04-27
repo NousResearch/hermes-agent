@@ -731,39 +731,39 @@ def _run_cleanup():
     _cleanup_done = True
     try:
         _cleanup_all_terminals()
-    except Exception:
-        pass
+    except Exception as e:
+        logging.warning("Failed to cleanup terminals: %s", e)
     try:
         _cleanup_all_browsers()
-    except Exception:
-        pass
+    except Exception as e:
+        logging.warning("Failed to cleanup browsers: %s", e)
     try:
         from tools.mcp_tool import shutdown_mcp_servers
         shutdown_mcp_servers()
-    except Exception:
-        pass
+    except Exception as e:
+        logging.warning("Failed to shutdown MCP servers: %s", e)
     # Close cached auxiliary LLM clients (sync + async) so that
     # AsyncHttpxClientWrapper.__del__ doesn't fire on a closed event loop
     # and trigger prompt_toolkit's "Press ENTER to continue..." handler.
     try:
         from agent.auxiliary_client import shutdown_cached_clients
         shutdown_cached_clients()
-    except Exception:
-        pass
+    except Exception as e:
+        logging.warning("Failed to shutdown cached clients: %s", e)
     # Shut down memory provider (on_session_end + shutdown_all) at actual
     # session boundary — NOT per-turn inside run_conversation().
     try:
         from hermes_cli.plugins import invoke_hook as _invoke_hook
         _invoke_hook("on_session_finalize", session_id=_active_agent_ref.session_id if _active_agent_ref else None, platform="cli")
-    except Exception:
-        pass
+    except Exception as e:
+        logging.warning("Failed to invoke on_session_finalize hook: %s", e)
     try:
         if _active_agent_ref and hasattr(_active_agent_ref, 'shutdown_memory_provider'):
             _active_agent_ref.shutdown_memory_provider(
                 getattr(_active_agent_ref, 'conversation_history', None) or []
             )
-    except Exception:
-        pass
+    except Exception as e:
+        logging.warning("Failed to shutdown memory provider: %s", e)
 
 
 # =============================================================================

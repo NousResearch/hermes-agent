@@ -2386,6 +2386,23 @@ class GatewayRunner:
         """
         source = event.source
 
+        # ── aaocubo guardrail input (V7) ───────────────────────────
+        if os.getenv('HERMES_GUARDRAILS_ENABLED', 'false').lower() == 'true':
+            try:
+                import sys as _sys
+                if '/root/.hermes/shared' not in _sys.path:
+                    _sys.path.insert(0, '/root/.hermes/shared')
+                from guardrails import classify_input as _aaocubo_classify_input
+                _aaocubo_msg = getattr(event, 'text', None) or getattr(event, 'message', None) or ''
+                if isinstance(_aaocubo_msg, str) and _aaocubo_msg.strip():
+                    _aaocubo_v = _aaocubo_classify_input(_aaocubo_msg)
+                    if not _aaocubo_v.safe:
+                        logger.warning('aaocubo guardrail blocked: %s — %s', _aaocubo_v.verdict, _aaocubo_v.reason)
+                        return f'Mensagem rejeitada (motivo: {_aaocubo_v.verdict}). Reformule por favor.'
+            except Exception as _gerr:
+                logger.warning('aaocubo guardrail error (passthrough): %s', _gerr)
+        # ───────────────────────────────────────────────────────────
+
         # Internal events (e.g. background-process completion notifications)
         # are system-generated and must skip user authorization.
         if getattr(event, "internal", False):

@@ -198,6 +198,14 @@ PROVIDER_REGISTRY: Dict[str, ProviderConfig] = {
         api_key_env_vars=("MINIMAX_CN_API_KEY",),
         base_url_env_var="MINIMAX_CN_BASE_URL",
     ),
+    "fireworks": ProviderConfig(
+        id="fireworks",
+        name="Fireworks AI",
+        auth_type="api_key",
+        inference_base_url="https://api.fireworks.ai/inference/v1",
+        api_key_env_vars=("FIREWORKS_API_KEY",),
+        base_url_env_var="FIREWORKS_BASE_URL",
+    ),
     "deepseek": ProviderConfig(
         id="deepseek",
         name="DeepSeek",

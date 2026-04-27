@@ -230,11 +230,30 @@ def _resolve_cdp_override(cdp_url: str) -> str:
 def _get_cdp_override() -> str:
     """Return a normalized user-supplied CDP URL override, or empty string.
 
-    When ``BROWSER_CDP_URL`` is set (e.g. via ``/browser connect``), we skip
-    both Browserbase and the local headless launcher and connect directly to
-    the supplied Chrome DevTools Protocol endpoint.
+    aaocubo V7.3 browser: health-check the CDP endpoint before committing.
+    If BROWSER_CDP_URL is set but unreachable, return empty string so the
+    caller falls through to local Playwright launcher (CDP-first, Playwright-
+    fallback semantics).
     """
-    return _resolve_cdp_override(os.environ.get("BROWSER_CDP_URL", ""))
+    raw = os.environ.get("BROWSER_CDP_URL", "").strip()
+    if not raw:
+        return ""
+    # Health check (5s timeout) - avoid hanging if Chromium-for-Testing is down
+    try:
+        check_url = raw.rstrip("/")
+        if check_url.lower().startswith(("ws://", "wss://")):
+            check_url = ("http://" if check_url.startswith("ws://") else "https://") + check_url.split("://", 1)[1]
+        if not check_url.endswith("/json/version"):
+            check_url = check_url + "/json/version"
+        r = requests.get(check_url, timeout=5)
+        r.raise_for_status()
+    except Exception as e:
+        logger.warning(
+            "aaocubo V7.3 browser: BROWSER_CDP_URL=%s unreachable (%s); falling back to Playwright local",
+            raw, e,
+        )
+        return ""
+    return _resolve_cdp_override(raw)
 
 
 # ============================================================================

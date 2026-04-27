@@ -904,6 +904,29 @@ def load_soul_md() -> Optional[str]:
             return None
         content = _scan_context_content(content, "SOUL.md")
         content = _truncate_content(content, "SOUL.md")
+
+        # aaocubo V7.3.1: inject STATUS.md as task tracker (live, every turn)
+        # Path corrigido: usa o STATUS.md real em ~/.hermes/STATUS.md (HERMES_HOME)
+        try:
+            from pathlib import Path as _P
+            _candidates = [
+                get_hermes_home() / "STATUS.md",
+                _P("/root/.hermes/STATUS.md"),
+                _P("/opt/data/shared/obsidian-vault/Sistema/STATUS.md"),
+            ]
+            _status_path = next((p for p in _candidates if p.exists()), None)
+            if _status_path is not None:
+                _status = _status_path.read_text(encoding="utf-8").strip()
+                if _status:
+                    content = (
+                        "## CURRENT TASK STATE (from STATUS.md - LIDA EM TODO TURNO)\n\n"
+                        + _status
+                        + "\n\n---\n\n"
+                        + content
+                    )
+                    logger.debug("STATUS.md injected from %s", _status_path)
+        except Exception as _e:
+            logger.debug("aaocubo STATUS.md inject failed (non-fatal): %s", _e)
         return content
     except Exception as e:
         logger.debug("Could not read SOUL.md from %s: %s", soul_path, e)

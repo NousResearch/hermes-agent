@@ -82,6 +82,12 @@ _reveal_timestamps: List[float] = []
 _REVEAL_MAX_PER_WINDOW = 5
 _REVEAL_WINDOW_SECONDS = 30
 
+
+def _session_preview_message() -> str:
+    """Return the configured session preview selection mode."""
+    value = str(load_config().get("display", {}).get("resume_preview_message", "last")).strip().lower()
+    return value if value in ("first", "last") else "last"
+
 # CORS: restrict to localhost origins only.  The web UI is intended to run
 # locally; binding to 0.0.0.0 with allow_origins=["*"] would let any website
 # read/modify config and secrets.
@@ -283,6 +289,11 @@ _SCHEMA_OVERRIDES: Dict[str, Dict[str, Any]] = {
         "type": "select",
         "description": "How resumed sessions display history",
         "options": ["minimal", "full", "off"],
+    },
+    "display.resume_preview_message": {
+        "type": "select",
+        "description": "Which user message to show in session previews",
+        "options": ["last", "first"],
     },
     "display.busy_input_mode": {
         "type": "select",
@@ -725,7 +736,11 @@ async def get_sessions(limit: int = 20, offset: int = 0):
         from hermes_state import SessionDB
         db = SessionDB()
         try:
-            sessions = db.list_sessions_rich(limit=limit, offset=offset)
+            sessions = db.list_sessions_rich(
+                limit=limit,
+                offset=offset,
+                preview_message=_session_preview_message(),
+            )
             total = db.session_count()
             now = time.time()
             for s in sessions:

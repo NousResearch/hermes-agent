@@ -383,6 +383,7 @@ def load_cli_config() -> Dict[str, Any]:
         "display": {
             "compact": False,
             "resume_display": "full",
+            "resume_preview_message": "last",
             "show_reasoning": False,
             "streaming": True,
             "busy_input_mode": "interrupt",
@@ -1844,6 +1845,9 @@ class HermesCLI:
         self.tool_progress_mode = "off" if _raw_tp is False else str(_raw_tp)
         # resume_display: "full" (show history) | "minimal" (one-liner only)
         self.resume_display = CLI_CONFIG["display"].get("resume_display", "full")
+        # resume_preview_message: "last" (most recent user message) | "first" (opening user message)
+        _rpm = str(CLI_CONFIG["display"].get("resume_preview_message", "last")).strip().lower()
+        self.resume_preview_message = _rpm if _rpm in ("first", "last") else "last"
         # bell_on_complete: play terminal bell (\a) when agent finishes a response
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
         # show_reasoning: display model thinking/reasoning before the response
@@ -4554,6 +4558,7 @@ class HermesCLI:
                 source="cli",
                 exclude_sources=["tool"],
                 limit=limit,
+                preview_message=self.resume_preview_message,
             )
         except Exception:
             return []

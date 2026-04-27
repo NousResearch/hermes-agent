@@ -808,11 +808,12 @@ class SessionDB:
         offset: int = 0,
         include_children: bool = False,
         project_compression_tips: bool = True,
+        preview_message: str = "last",
     ) -> List[Dict[str, Any]]:
-        """List sessions with preview (first user message) and last active timestamp.
+        """List sessions with preview (first or most recent user message) and last active timestamp.
 
         Returns dicts with keys: id, source, model, title, started_at, ended_at,
-        message_count, preview (first 60 chars of first user message),
+        message_count, preview (first 60 chars of the selected user message),
         last_active (timestamp of last message).
 
         Uses a single query with correlated subqueries instead of N+2 queries.
@@ -828,6 +829,15 @@ class SessionDB:
         delegate subagents and branches hidden. Pass ``False`` to return the
         raw root rows (useful for admin/debug UIs).
         """
+        preview_message = str(preview_message or "last").strip().lower()
+        if preview_message not in {"first", "last"}:
+            raise ValueError("preview_message must be 'first' or 'last'")
+        preview_order_sql = (
+            "m.timestamp, m.id"
+            if preview_message == "first"
+            else "m.timestamp DESC, m.id DESC"
+        )
+
         where_clauses = []
         params = []
 
@@ -860,7 +870,7 @@ class SessionDB:
                     (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
                      FROM messages m
                      WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
-                     ORDER BY m.timestamp, m.id LIMIT 1),
+                     ORDER BY {preview_order_sql} LIMIT 1),
                     ''
                 ) AS _preview_raw,
                 COALESCE(
@@ -904,7 +914,9 @@ class SessionDB:
                 if tip_id == s["id"]:
                     projected.append(s)
                     continue
-                tip_row = self._get_session_rich_row(tip_id)
+                tip_row = self._get_session_rich_row(
+                    tip_id, preview_message=preview_message
+                )
                 if not tip_row:
                     projected.append(s)
                     continue
@@ -924,18 +936,30 @@ class SessionDB:
 
         return sessions
 
-    def _get_session_rich_row(self, session_id: str) -> Optional[Dict[str, Any]]:
+    def _get_session_rich_row(
+        self,
+        session_id: str,
+        preview_message: str = "last",
+    ) -> Optional[Dict[str, Any]]:
         """Fetch a single session with the same enriched columns as
         ``list_sessions_rich`` (preview + last_active). Returns None if the
         session doesn't exist.
         """
-        query = """
+        preview_message = str(preview_message or "last").strip().lower()
+        if preview_message not in {"first", "last"}:
+            raise ValueError("preview_message must be 'first' or 'last'")
+        preview_order_sql = (
+            "m.timestamp, m.id"
+            if preview_message == "first"
+            else "m.timestamp DESC, m.id DESC"
+        )
+        query = f"""
             SELECT s.*,
                 COALESCE(
                     (SELECT SUBSTR(REPLACE(REPLACE(m.content, X'0A', ' '), X'0D', ' '), 1, 63)
                      FROM messages m
                      WHERE m.session_id = s.id AND m.role = 'user' AND m.content IS NOT NULL
-                     ORDER BY m.timestamp, m.id LIMIT 1),
+                     ORDER BY {preview_order_sql} LIMIT 1),
                     ''
                 ) AS _preview_raw,
                 COALESCE(
@@ -1688,4 +1712,3 @@ class SessionDB:
             result["error"] = str(exc)
 
         return result
-

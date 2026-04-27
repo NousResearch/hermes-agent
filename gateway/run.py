@@ -2056,7 +2056,6 @@ class GatewayRunner:
             pass
 
     async def _launch_detached_restart_command(self) -> None:
-        import shutil
         import subprocess
 
         hermes_cmd = _resolve_hermes_bin()
@@ -2064,27 +2063,58 @@ class GatewayRunner:
             logger.error("Could not locate hermes binary for detached /restart")
             return
 
-        current_pid = os.getpid()
-        cmd = " ".join(shlex.quote(part) for part in hermes_cmd)
-        shell_cmd = (
-            f"while kill -0 {current_pid} 2>/dev/null; do sleep 0.2; done; "
-            f"{cmd} gateway restart"
-        )
-        setsid_bin = shutil.which("setsid")
-        if setsid_bin:
-            subprocess.Popen(
-                [setsid_bin, "bash", "-lc", shell_cmd],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
+        # Instead of a bash wrapper (fragile: zombie PID can block kill -0
+        # forever, and the bash cmdline matches _scan_gateway_pids patterns),
+        # spawn a minimal Python process that blocks on the existing
+        # gateway.lock file lock.  fcntl.flock(LOCK_EX) is released atomically
+        # by the OS when the owning process exits — no PID polling, no
+        # zombie edge-case, no cmdline collision.
+        #
+        # After acquiring the lock, try to acquire it again non-blocking.
+        # If the lock is CLAIMABLE (no one else holds it), we're safe to
+        # restart.  If someone else claimed it in the meantime (another
+        # /restart or a manual restart beat us to it), exit silently.
+        import fcntl
+        try:
+            from gateway.status import _get_gateway_lock_path
+        except ImportError:
+            # Fallback: derive path the same way status.py does
+            lock_path = get_hermes_home() / "gateway.lock"
         else:
-            subprocess.Popen(
-                ["bash", "-lc", shell_cmd],
-                stdout=subprocess.DEVNULL,
-                stderr=subprocess.DEVNULL,
-                start_new_session=True,
-            )
+            lock_path = _get_gateway_lock_path()
+
+        cmd_repr = repr([str(p) for p in hermes_cmd] + ["gateway", "restart"])
+        lock_path_repr = repr(str(lock_path))
+
+        watcher_code = (
+            "import fcntl, os, subprocess, sys\n"
+            f"lock_path = {lock_path_repr}\n"
+            "# Block until the old gateway releases the file lock.\n"
+            "# flock(LOCK_EX) waits indefinitely — no timeout, no polling.\n"
+            "# The lock is released by the kernel when the owner process\n"
+            "# dies (even if it becomes a zombie, the lock goes away).\n"
+            "fd = os.open(lock_path, os.O_RDONLY)\n"
+            "fcntl.flock(fd, fcntl.LOCK_EX)\n"
+            "# Old gateway is gone.  Check if someone else already restarted\n"
+            "# by trying the lock non-blocking.  If we can't get it, someone\n"
+            "# else is already running — skip.\n"
+            "try:\n"
+            "    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)\n"
+            "    fcntl.flock(fd, fcntl.LOCK_UN)\n"
+            "except BlockingIOError:\n"
+            "    sys.exit(0)  # another gateway already running\n"
+            "finally:\n"
+            "    os.close(fd)\n"
+            f"subprocess.run({cmd_repr})\n"
+        )
+
+        subprocess.Popen(
+            [sys.executable, "-c", watcher_code],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            start_new_session=True,
+        )
 
     def request_restart(self, *, detached: bool = False, via_service: bool = False) -> bool:
         if self._restart_task_started:

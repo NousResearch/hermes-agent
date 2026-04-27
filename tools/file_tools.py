@@ -381,6 +381,7 @@ def _get_file_ops(task_id: str = "default") -> ShellFileOperations:
                     "docker_volumes": config.get("docker_volumes", []),
                     "docker_mount_cwd_to_workspace": config.get("docker_mount_cwd_to_workspace", False),
                     "docker_forward_env": config.get("docker_forward_env", []),
+                    "docker_env": config.get("docker_env", {}),
                 }
 
             ssh_config = None

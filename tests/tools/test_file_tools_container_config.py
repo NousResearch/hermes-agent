@@ -21,6 +21,7 @@ def _make_env_config(**overrides):
         "docker_volumes": [],
         "docker_mount_cwd_to_workspace": True,
         "docker_forward_env": ["MY_SECRET", "API_KEY"],
+        "docker_env": {"MY_SECRET": "configured"},
     }
     base.update(overrides)
     return base
@@ -50,6 +51,11 @@ class TestFileToolsContainerConfig:
         cc = self._run(_make_env_config(docker_forward_env=["MY_SECRET"]), "t2")
         assert cc.get("docker_forward_env") == ["MY_SECRET"]
 
+    def test_docker_env_passed(self):
+        """docker_env is forwarded to container_config."""
+        cc = self._run(_make_env_config(docker_env={"MY_SECRET": "configured"}), "t5")
+        assert cc.get("docker_env") == {"MY_SECRET": "configured"}
+
     def test_docker_mount_cwd_defaults_to_false(self):
         """docker_mount_cwd_to_workspace defaults to False when absent from config."""
         cfg = _make_env_config()
@@ -63,3 +69,10 @@ class TestFileToolsContainerConfig:
         del cfg["docker_forward_env"]
         cc = self._run(cfg, "t4")
         assert cc.get("docker_forward_env") == []
+
+    def test_docker_env_defaults_to_empty_dict(self):
+        """docker_env defaults to {} when absent from config."""
+        cfg = _make_env_config()
+        del cfg["docker_env"]
+        cc = self._run(cfg, "t6")
+        assert cc.get("docker_env") == {}

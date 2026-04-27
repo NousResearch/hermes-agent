@@ -1988,6 +1988,18 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
             live = fetch_api_models(api_key, base_url)
             if live:
                 return live
+    # Bedrock uses live discovery keyed by the resolved AWS region so that
+    # EU/AP users see eu.*/ap.* model IDs instead of the static us.* list.
+    # Note: early return intentionally skips _MODELS_DEV_PREFERRED merge
+    # below — bedrock is not expected to appear in that table.
+    if normalized == "bedrock":
+        try:
+            from agent.bedrock_adapter import bedrock_model_ids_or_none
+            ids = bedrock_model_ids_or_none()
+            if ids is not None:
+                return ids
+        except Exception:
+            pass
     curated_static = list(_PROVIDER_MODELS.get(normalized, []))
     if normalized in _MODELS_DEV_PREFERRED:
         return _merge_with_models_dev(normalized, curated_static)

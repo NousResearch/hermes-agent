@@ -71,6 +71,32 @@ class TestSaveModelChoiceAlwaysDict:
 
 
 class TestProviderPersistsAfterModelSave:
+    def test_update_config_for_provider_uses_atomic_yaml_write(self, config_home):
+        """Provider switches should delegate config writes to atomic_yaml_write."""
+        from hermes_cli.auth import _update_config_for_provider
+
+        config_path = config_home / "config.yaml"
+        original_text = config_path.read_text(encoding="utf-8")
+
+        def _boom(path, data, **kwargs):
+            assert path == config_path
+            assert data["model"]["provider"] == "nous"
+            assert data["model"]["base_url"] == "https://inference.example.com/v1"
+            assert data["model"]["default"] == "some-old-model"
+            assert kwargs["sort_keys"] is False
+            raise OSError("simulated atomic write failure")
+
+        with patch("hermes_cli.auth.atomic_yaml_write", side_effect=_boom) as mock_write:
+            with pytest.raises(OSError, match="simulated atomic write failure"):
+                _update_config_for_provider(
+                    "nous",
+                    "https://inference.example.com/v1/",
+                    default_model="llama-3.3",
+                )
+
+        assert mock_write.call_count == 1
+        assert config_path.read_text(encoding="utf-8") == original_text
+
     def test_api_key_provider_saved_when_model_was_string(self, config_home, monkeypatch):
         """_model_flow_api_key_provider must persist the provider even when
         config.model started as a plain string."""

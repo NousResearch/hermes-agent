@@ -27,7 +27,7 @@ import os
 import shutil
 from pathlib import Path
 from hermes_constants import get_hermes_home
-from typing import Dict, List, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
@@ -173,6 +173,78 @@ def _dir_hash(directory: Path) -> str:
     return hasher.hexdigest()
 
 
+def _read_text_snapshot(directory: Path) -> Dict[str, str]:
+    """Read text files from a skill directory for diff artifacts."""
+    snapshot: Dict[str, str] = {}
+    if not directory.exists() or not directory.is_dir():
+        return snapshot
+    for fpath in sorted(directory.rglob("*"), key=lambda p: p.relative_to(directory).as_posix()):
+        if not fpath.is_file() or fpath.is_symlink():
+            continue
+        try:
+            snapshot[fpath.relative_to(directory).as_posix()] = fpath.read_text(
+                encoding="utf-8", errors="replace"
+            )
+        except OSError:
+            continue
+    return snapshot
+
+
+def _sha256_skill_hash(directory: Path) -> Optional[str]:
+    try:
+        from tools.skill_change_ledger import hash_skill_dir
+        return hash_skill_dir(directory)
+    except Exception:
+        return None
+
+
+def _skill_category(dest: Path) -> Optional[str]:
+    try:
+        rel = dest.relative_to(SKILLS_DIR)
+    except ValueError:
+        return None
+    if len(rel.parts) <= 1:
+        return None
+    return "/".join(rel.parts[:-1])
+
+
+def _record_sync_change(
+    *,
+    skill_name: str,
+    action: str,
+    dest: Path,
+    before_text: Optional[Dict[str, str]],
+    after_text: Optional[Dict[str, str]],
+    before_hash: Optional[str],
+    after_hash: Optional[str],
+    metadata: Optional[Dict[str, Any]] = None,
+) -> None:
+    """Record skills_sync changes without making sync brittle."""
+    try:
+        from tools.skill_change_ledger import record_skill_change
+
+        record_skill_change(
+            skill=skill_name,
+            category=_skill_category(dest),
+            action=action,
+            actor="hermes-system",
+            source="skills_sync",
+            reason=(
+                "Bundled skill copied during skills sync."
+                if action == "bundled_copy"
+                else "Bundled skill updated during skills sync."
+            ),
+            reason_kind="system",
+            before_hash=before_hash,
+            after_hash=after_hash,
+            before_text=before_text or {},
+            after_text=after_text or {},
+            metadata=metadata or {},
+        )
+    except Exception as e:
+        logger.debug("Could not record skills_sync change for %s: %s", skill_name, e, exc_info=True)
+
+
 def sync_skills(quiet: bool = False) -> dict:
     """
     Sync bundled skills into ~/.hermes/skills/ using the manifest.
@@ -214,6 +286,16 @@ def sync_skills(quiet: bool = False) -> dict:
                     shutil.copytree(skill_src, dest)
                     copied.append(skill_name)
                     manifest[skill_name] = bundled_hash
+                    _record_sync_change(
+                        skill_name=skill_name,
+                        action="bundled_copy",
+                        dest=dest,
+                        before_text={},
+                        after_text=_read_text_snapshot(dest),
+                        before_hash=None,
+                        after_hash=_sha256_skill_hash(dest),
+                        metadata={"bundled_hash": bundled_hash},
+                    )
                     if not quiet:
                         print(f"  + {skill_name}")
             except (OSError, IOError) as e:
@@ -247,6 +329,8 @@ def sync_skills(quiet: bool = False) -> dict:
             # User copy matches origin — check if bundled has a newer version
             if bundled_hash != origin_hash:
                 try:
+                    before_text = _read_text_snapshot(dest)
+                    before_sha = _sha256_skill_hash(dest)
                     # Move old copy to a backup so we can restore on failure
                     backup = dest.with_suffix(".bak")
                     shutil.move(str(dest), str(backup))
@@ -254,6 +338,19 @@ def sync_skills(quiet: bool = False) -> dict:
                         shutil.copytree(skill_src, dest)
                         manifest[skill_name] = bundled_hash
                         updated.append(skill_name)
+                        _record_sync_change(
+                            skill_name=skill_name,
+                            action="bundled_update",
+                            dest=dest,
+                            before_text=before_text,
+                            after_text=_read_text_snapshot(dest),
+                            before_hash=before_sha,
+                            after_hash=_sha256_skill_hash(dest),
+                            metadata={
+                                "origin_hash": origin_hash,
+                                "bundled_hash": bundled_hash,
+                            },
+                        )
                         if not quiet:
                             print(f"  ↑ {skill_name} (updated)")
                         # Remove backup after successful copy

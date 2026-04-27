@@ -26,6 +26,41 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { cn } from "@/lib/utils";
 import { Copy, PanelRight, RotateCcw, X } from "lucide-react";
+
+// -----------------------------------------------------------------------------
+// TTS: MEDIA: tag detection via WebSocket intercept.
+// xterm writes to WebGL canvas so DOM scanning won't find tags.
+// We intercept at the wire: ws.onmessage → check → term.write.
+// -----------------------------------------------------------------------------
+// _mediaCache deduplicates audio playback per client. Multi-client problem:
+// if two browser tabs have WebUI open, each maintains its own cache.
+// Each media file is keyed by filename so the same file doesn't get played
+// twice even if the message renders twice. Only one <audio> per filename.
+const _mediaCache = new Map<string, string>();
+
+function _playMedia(filename: string): void {
+  const url = `/api/audio/${encodeURIComponent(filename)}`;
+  if (_mediaCache.has(filename)) return;
+  _mediaCache.set(filename, url);
+
+  const audio = new Audio(url);
+  audio.play().catch(() => {});
+  audio.addEventListener('ended', () => {
+    _mediaCache.delete(filename);
+    audio.remove();
+  }, { once: true });
+  audio.addEventListener('error', () => {
+    _mediaCache.delete(filename);
+    audio.remove();
+  }, { once: true });
+  // Clear cache periodically to avoid leaks
+  if (_mediaCache.size > 200) {
+    const keys = Array.from(_mediaCache.keys());
+    for (const k of keys.slice(0, 100)) {
+      _mediaCache.delete(k);
+    }
+  }
+}
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
@@ -974,7 +1009,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
 
     ws.onmessage = (ev) => {
       if (typeof ev.data === "string") {
-        term.write(ev.data);
+        const MEDIA_RE = /MEDIA:\s*(\/?[\w./\-_%]+\.\w+)/g;
+        let match: RegExpExecArray | null;
+        while ((match = MEDIA_RE.exec(ev.data)) != null) {
+          const filePath = match[1];
+          const filename = filePath.split('/').pop();
+          if (filename) _playMedia(filename);
+          MEDIA_RE.lastIndex = match.index; // keep position for stripping
+        }
+        // Strip MEDIA: tags before writing to xterm so they don't appear as noise
+        let clean = ev.data.replace(/MEDIA:\s*\S+/g, '').trim();
+        if (clean) term.write(clean);
       } else {
         term.write(new Uint8Array(ev.data as ArrayBuffer));
       }
@@ -1501,6 +1546,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
         )}
       </div>
       <PluginSlot name="chat:bottom" />
+    
     </div>
   );
 }

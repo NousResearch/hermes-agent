@@ -6102,10 +6102,7 @@ class AIAgent:
             else:
                 # Defensive: legacy callers without the scrubber attribute.
                 text = sanitize_context(text)
-            # Strip leading newlines only on the very first delta of the stream,
-            # and only when we didn't just prepend a paragraph break ourselves.
-            # Mid-stream "\n" is legitimate markdown (lists, code, paragraphs)
-            # and must survive — chunk boundaries are arbitrary.
+            # Only strip leading newlines on the first delta — mid-stream "\n" is legitimate markdown.
             if not prepended_break and not getattr(
                 self, "_current_streamed_assistant_text", ""
             ):

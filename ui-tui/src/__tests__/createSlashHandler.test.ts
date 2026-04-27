@@ -43,6 +43,28 @@ describe('createSlashHandler', () => {
     })
   })
 
+  it('honors TUI picker session scope without adding --global', async () => {
+    patchUiState({ sid: 'sid-abc' })
+
+    const ctx = buildCtx({
+      gateway: {
+        ...buildGateway(),
+        rpc: vi.fn(() => Promise.resolve({ value: 'anthropic/claude-sonnet-4.6' }))
+      }
+    })
+
+    expect(
+      createSlashHandler(ctx)(
+        '/model anthropic/claude-sonnet-4.6 --provider openrouter --tui-session'
+      )
+    ).toBe(true)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      key: 'model',
+      session_id: 'sid-abc',
+      value: 'anthropic/claude-sonnet-4.6 --provider openrouter'
+    })
+  })
+
   it('does not duplicate --global for explicit persistent model switches', () => {
     patchUiState({ sid: 'sid-abc' })
     const ctx = buildCtx()

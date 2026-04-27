@@ -188,7 +188,24 @@ class ToolRegistry:
         max_result_size_chars: int | float | None = None,
         can_memoize: bool = False,
     ):
-        """Register a tool.  Called at module-import time by each tool file."""
+        """Register a tool.  Called at module-import time by each tool file.
+
+        Args:
+            can_memoize: When True, ``handle_function_call`` caches the tool's
+                result keyed by ``(tool_name, args_hash)`` within the current
+                agent session and turn.  The cache is cleared at the start of
+                every turn, so results never go stale across turns.
+
+                **Only set this for tools that are genuinely idempotent and
+                have no observable side effects.**  Tools that perform logging,
+                increment rate-limit counters, record metrics, or mutate any
+                external state must NOT set ``can_memoize=True``, even if their
+                primary purpose is to read data.  The plugin hooks
+                ``pre_tool_call``, ``post_tool_call``, and
+                ``transform_tool_result`` are bypassed on cache hits, so any
+                plugin relying on those hooks for audit or enforcement will not
+                fire for cached calls.
+        """
         with self._lock:
             existing = self._tools.get(name)
             if existing and existing.toolset != toolset:

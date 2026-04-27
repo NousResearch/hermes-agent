@@ -495,8 +495,23 @@ def _coerce_boolean(value: str):
 # ---------------------------------------------------------------------------
 # Tool result memoization cache
 # ---------------------------------------------------------------------------
+#
+# Design constraints:
+#   - Scoped per session_id so concurrent gateway sessions cannot observe each
+#     other's cached results (data confidentiality).
+#   - Bounded per session: at most _MEMO_MAX_ENTRIES_PER_SESSION entries are
+#     kept; oldest entries are evicted when the limit is reached.
+#   - Cleared at the start of every agent turn via clear_memo_cache(session_id)
+#     so stale file contents or web responses from a prior turn are never
+#     served in a later turn where the underlying resource may have changed.
+#
+# Structure: { session_id -> OrderedDict[cache_key, result_str] }
 
-_memo_cache: Dict[str, str] = {}
+from collections import OrderedDict
+
+_MEMO_MAX_ENTRIES_PER_SESSION = 128
+
+_memo_cache: Dict[str, "OrderedDict[str, str]"] = {}
 _memo_lock = threading.Lock()
 
 
@@ -508,10 +523,42 @@ def _memo_key(tool_name: str, args: Dict[str, Any]) -> str:
     return f"{tool_name}:{args_hash}"
 
 
-def clear_memo_cache() -> None:
-    """Invalidate all cached tool results."""
+def _memo_get(session_id: str, key: str) -> Optional[str]:
+    """Return a cached result for *key* within *session_id*, or None."""
     with _memo_lock:
-        _memo_cache.clear()
+        session_cache = _memo_cache.get(session_id)
+        if session_cache is None:
+            return None
+        result = session_cache.get(key)
+        if result is not None:
+            # Move to end (most-recently-used) to support LRU eviction.
+            session_cache.move_to_end(key)
+        return result
+
+
+def _memo_set(session_id: str, key: str, value: str) -> None:
+    """Store *value* under *key* for *session_id*, evicting oldest if full."""
+    with _memo_lock:
+        session_cache = _memo_cache.setdefault(session_id, OrderedDict())
+        if key in session_cache:
+            session_cache.move_to_end(key)
+        session_cache[key] = value
+        while len(session_cache) > _MEMO_MAX_ENTRIES_PER_SESSION:
+            session_cache.popitem(last=False)  # evict oldest
+
+
+def clear_memo_cache(session_id: Optional[str] = None) -> None:
+    """Invalidate cached tool results.
+
+    When *session_id* is provided only that session's cache is cleared
+    (called at the start of every agent turn).  When omitted, the entire
+    process-level cache is cleared (used in tests and on process shutdown).
+    """
+    with _memo_lock:
+        if session_id is not None:
+            _memo_cache.pop(session_id, None)
+        else:
+            _memo_cache.clear()
 
 
 def handle_function_call(
@@ -543,15 +590,18 @@ def handle_function_call(
     # Coerce string arguments to their schema-declared types (e.g. "42"→42)
     function_args = coerce_tool_args(function_name, function_args)
 
-    # Check memoization cache for idempotent tools
+    # Check memoization cache for idempotent tools.
+    # NOTE: hooks (pre_tool_call, post_tool_call, transform_tool_result) are
+    # intentionally NOT fired on cache hits.  The cache is scoped to
+    # session_id so cross-session data leakage cannot occur.  The cache is
+    # cleared at the start of every agent turn (via clear_memo_cache) so
+    # stale results from prior turns are never served.
     entry = registry.get_entry(function_name)
     if entry and entry.can_memoize:
         cache_key = _memo_key(function_name, function_args)
-        with _memo_lock:
-            cached = _memo_cache.get(cache_key)
-            if cached is not None:
-                return cached
-
+        cached = _memo_get(session_id or "", cache_key)
+        if cached is not None:
+            return cached
 
     try:
         if function_name in _AGENT_LOOP_TOOLS:
@@ -668,13 +718,21 @@ def handle_function_call(
 
         # Cache result for memoizable tools (skip error results).
         # Runs after transform_tool_result so we cache the final value.
+        # Uses _memo_set which is session-scoped and LRU-bounded.
         if entry and entry.can_memoize:
             try:
                 parsed = json.loads(result)
-                if "error" not in parsed:
+                # Treat the result as an error only when the top-level
+                # "error" key is present AND truthy.  Tools like web_tools
+                # and vision_tools use {"error": None, ...} as their success
+                # envelope, so a None value must not suppress caching.
+                is_error = (
+                    isinstance(parsed, dict)
+                    and bool(parsed.get("error"))
+                )
+                if not is_error:
                     cache_key = _memo_key(function_name, function_args)
-                    with _memo_lock:
-                        _memo_cache[cache_key] = result
+                    _memo_set(session_id or "", cache_key, result)
             except (json.JSONDecodeError, TypeError):
                 pass
 

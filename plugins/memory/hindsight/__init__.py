@@ -1490,6 +1490,79 @@ class HindsightMemoryProvider(MemoryProvider):
         self._register_atexit()
         self._retain_queue.put(_do_retain)
 
+    def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
+        """Flush any buffered turns to Hindsight at session end.
+
+        Called when the session ends (gateway restart, idle timeout, /reset
+        or /new). sync_turn() batches retention every N turns — turns
+        accumulated since the last boundary would otherwise be lost. This
+        hook forces a final synchronous retention of any remaining buffered
+        turns so that no conversation context is dropped on session exit.
+        """
+        if not self._auto_retain:
+            logger.debug("on_session_end: skipped (auto_retain disabled)")
+            return
+        if not self._client:
+            logger.debug("on_session_end: skipped (no client)")
+            return
+
+        # Wait for any in-flight async sync to finish
+        if self._sync_thread and self._sync_thread.is_alive():
+            logger.debug("on_session_end: waiting for in-flight sync")
+            self._sync_thread.join(timeout=10.0)
+
+        # How many turns have accumulated since the last batch boundary?
+        remaining = self._turn_counter % self._retain_every_n_turns
+        if remaining == 0 and self._turn_counter > 0:
+            # All turns already retained at the last boundary — nothing to flush.
+            logger.debug("on_session_end: all %d turns already retained (batch aligned)",
+                         self._turn_counter)
+            return
+        if remaining == 0 and self._turn_counter == 0:
+            logger.debug("on_session_end: no turns to retain")
+            return
+
+        # Take only the unbuffered remainder (last `remaining` turns)
+        turns_to_flush = self._session_turns[-remaining:] if remaining > 0 else []
+        if not turns_to_flush:
+            logger.debug("on_session_end: no buffered turns to flush")
+            return
+
+        logger.debug("on_session_end: flushing %d buffered turns (session total: %d)",
+                     len(turns_to_flush), self._turn_counter)
+        content = "[" + ",".join(turns_to_flush) + "]"
+
+        lineage_tags: list[str] = []
+        if self._session_id:
+            lineage_tags.append("session:{0}".format(self._session_id))
+        if self._parent_session_id:
+            lineage_tags.append("parent:{0}".format(self._parent_session_id))
+
+        try:
+            item = self._build_retain_kwargs(
+                content,
+                context=self._retain_context,
+                metadata=self._build_metadata(
+                    message_count=len(turns_to_flush) * 2,
+                    turn_index=self._turn_index,
+                ),
+                tags=lineage_tags or None,
+            )
+            item.pop("bank_id", None)
+            item.pop("retain_async", None)
+            self._run_hindsight_operation(
+                lambda client: client.aretain_batch(
+                    bank_id=self._bank_id,
+                    items=[item],
+                    document_id=self._document_id,
+                    retain_async=False,  # synchronous at session end — must complete
+                )
+            )
+            logger.debug("Hindsight on_session_end: flushed %d turns successfully",
+                         len(turns_to_flush))
+        except Exception as e:
+            logger.warning("Hindsight on_session_end flush failed: %s", e, exc_info=True)
+
     def get_tool_schemas(self) -> List[Dict[str, Any]]:
         if self._memory_mode == "context":
             return []

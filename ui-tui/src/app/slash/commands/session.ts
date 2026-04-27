@@ -17,10 +17,27 @@ import type { SlashCommand } from '../types.js'
 
 const GLOBAL_MODEL_FLAG_RE = /(?:^|\s)--global(?:\s|$)/
 
+/** Stripped before `config.set`; TUI model picker uses this for session-scoped switches. */
+const TUI_SESSION_MODEL_RE = /(?:^|\s)--tui-session(?:\s|$)/
+
 const persistedModelArg = (arg: string) => {
   const trimmed = arg.trim()
 
   return !trimmed || GLOBAL_MODEL_FLAG_RE.test(trimmed) ? trimmed : `${trimmed} --global`
+}
+
+const modelValueForConfigSet = (arg: string) => {
+  const trimmed = arg.trim()
+
+  if (!trimmed) {
+    return trimmed
+  }
+
+  if (TUI_SESSION_MODEL_RE.test(trimmed)) {
+    return trimmed.replace(/\s*--tui-session\b\s*/g, ' ').replace(/\s+/g, ' ').trim()
+  }
+
+  return persistedModelArg(trimmed)
 }
 
 export const sessionCommands: SlashCommand[] = [
@@ -60,7 +77,7 @@ export const sessionCommands: SlashCommand[] = [
       }
 
       ctx.gateway
-        .rpc<ConfigSetResponse>('config.set', { key: 'model', session_id: ctx.sid, value: persistedModelArg(arg) })
+        .rpc<ConfigSetResponse>('config.set', { key: 'model', session_id: ctx.sid, value: modelValueForConfigSet(arg) })
         .then(
           ctx.guarded<ConfigSetResponse>(r => {
             if (!r.value) {

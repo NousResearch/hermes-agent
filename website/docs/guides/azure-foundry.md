@@ -72,7 +72,7 @@ model:
 
 Important behaviour:
 
-- **gpt-5.x stays on `/chat/completions`.** Unlike `api.openai.com`, Azure OpenAI does not support the Responses API — Hermes detects Azure endpoints and keeps gpt-5.x on `chat_completions` where Azure actually serves it.
+- **GPT-5.x, codex, and o-series auto-route to the Responses API.** Azure Foundry deploys GPT-5 / codex / o1 / o3 / o4 models as Responses-API-only — calling `/chat/completions` against them returns `400 "The requested operation is unsupported."`. Hermes detects these model families by name and upgrades `api_mode` to `codex_responses` transparently, even when `config.yaml` still reads `api_mode: chat_completions`. GPT-4, GPT-4o, Llama, Mistral, and other deployments stay on `/chat/completions`.
 - **`max_completion_tokens` is used automatically.** Azure OpenAI (like direct OpenAI) requires `max_completion_tokens` for gpt-4o, o-series, and gpt-5.x models. Hermes sends the right parameter based on the endpoint.
 - **Pre-v1 endpoints that require `api-version`.** If you have a legacy base URL like `https://<resource>.openai.azure.com/openai?api-version=2025-04-01-preview`, Hermes extracts the query string and forwards it via `default_query` on every request (the OpenAI SDK otherwise drops it when joining paths).
 

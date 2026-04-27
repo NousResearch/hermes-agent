@@ -3,6 +3,7 @@
 from unittest.mock import patch
 
 from hermes_cli.models import (
+    azure_foundry_model_api_mode,
     copilot_model_api_mode,
     fetch_github_model_catalog,
     curated_models_for_provider,
@@ -412,6 +413,69 @@ class TestCopilotNormalization:
         assert opencode_model_api_mode("opencode-go", "opencode-go/kimi-k2.5") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "minimax-m2.5") == "anthropic_messages"
         assert opencode_model_api_mode("opencode-go", "opencode-go/minimax-m2.5") == "anthropic_messages"
+
+
+class TestAzureFoundryModelApiMode:
+    """Azure Foundry deploys GPT-5.x / codex / o-series as Responses-API-only.
+
+    Azure returns ``400 "The requested operation is unsupported."`` when
+    /chat/completions is called against these deployments.  Verified in the
+    wild by a user debug bundle on 2026-04-26: gpt-5.3-codex failed with
+    that exact payload while gpt-4o-pure worked on the same endpoint.
+    """
+
+    def test_gpt5_family_uses_responses(self):
+        assert azure_foundry_model_api_mode("gpt-5") == "codex_responses"
+        assert azure_foundry_model_api_mode("gpt-5.3") == "codex_responses"
+        assert azure_foundry_model_api_mode("gpt-5.4") == "codex_responses"
+        assert azure_foundry_model_api_mode("gpt-5-codex") == "codex_responses"
+        assert azure_foundry_model_api_mode("gpt-5.3-codex") == "codex_responses"
+        # gpt-5-mini exceptions are Copilot-specific; Azure deploys the whole
+        # gpt-5 family on Responses API uniformly.
+        assert azure_foundry_model_api_mode("gpt-5-mini") == "codex_responses"
+
+    def test_codex_family_uses_responses(self):
+        assert azure_foundry_model_api_mode("codex") == "codex_responses"
+        assert azure_foundry_model_api_mode("codex-mini") == "codex_responses"
+
+    def test_o_series_reasoning_uses_responses(self):
+        assert azure_foundry_model_api_mode("o1") == "codex_responses"
+        assert azure_foundry_model_api_mode("o1-preview") == "codex_responses"
+        assert azure_foundry_model_api_mode("o1-mini") == "codex_responses"
+        assert azure_foundry_model_api_mode("o3") == "codex_responses"
+        assert azure_foundry_model_api_mode("o3-mini") == "codex_responses"
+        assert azure_foundry_model_api_mode("o4-mini") == "codex_responses"
+
+    def test_gpt4_family_returns_none(self):
+        """GPT-4, GPT-4o, etc. speak chat completions on Azure."""
+        assert azure_foundry_model_api_mode("gpt-4") is None
+        assert azure_foundry_model_api_mode("gpt-4o") is None
+        assert azure_foundry_model_api_mode("gpt-4o-pure") is None
+        assert azure_foundry_model_api_mode("gpt-4o-mini") is None
+        assert azure_foundry_model_api_mode("gpt-4-turbo") is None
+        assert azure_foundry_model_api_mode("gpt-4.1") is None
+        assert azure_foundry_model_api_mode("gpt-3.5-turbo") is None
+
+    def test_non_openai_deployments_return_none(self):
+        """Llama, Mistral, Grok, etc. keep the default chat completions."""
+        assert azure_foundry_model_api_mode("llama-3.1-70b") is None
+        assert azure_foundry_model_api_mode("mistral-large") is None
+        assert azure_foundry_model_api_mode("grok-4") is None
+        assert azure_foundry_model_api_mode("phi-3-medium") is None
+
+    def test_vendor_prefix_stripped(self):
+        """Users who copy-paste ``openai/gpt-5.3-codex`` should still match."""
+        assert azure_foundry_model_api_mode("openai/gpt-5.3-codex") == "codex_responses"
+        assert azure_foundry_model_api_mode("openai/gpt-4o") is None
+
+    def test_empty_and_none_return_none(self):
+        assert azure_foundry_model_api_mode(None) is None
+        assert azure_foundry_model_api_mode("") is None
+        assert azure_foundry_model_api_mode("   ") is None
+
+    def test_case_insensitive(self):
+        assert azure_foundry_model_api_mode("GPT-5.3-Codex") == "codex_responses"
+        assert azure_foundry_model_api_mode("Codex-Mini") == "codex_responses"
 
 
 # -- validate — format checks -----------------------------------------------

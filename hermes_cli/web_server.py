@@ -2118,16 +2118,63 @@ class ProfileSoulUpdate(BaseModel):
     content: str
 
 
+def _profile_attr(info, name: str, default: Any = None) -> Any:
+    try:
+        return getattr(info, name)
+    except Exception:
+        return default
+
+
 def _profile_to_dict(info) -> Dict[str, Any]:
     return {
-        "name": info.name,
-        "path": str(info.path),
-        "is_default": info.is_default,
-        "model": info.model,
-        "provider": info.provider,
-        "has_env": info.has_env,
-        "skill_count": info.skill_count,
+        "name": _profile_attr(info, "name", ""),
+        "path": str(_profile_attr(info, "path", "")),
+        "is_default": bool(_profile_attr(info, "is_default", False)),
+        "model": _profile_attr(info, "model"),
+        "provider": _profile_attr(info, "provider"),
+        "has_env": bool(_profile_attr(info, "has_env", False)),
+        "skill_count": int(_profile_attr(info, "skill_count", 0) or 0),
     }
+
+
+def _fallback_profile_dicts(profiles_mod) -> List[Dict[str, Any]]:
+    def _safe(callable_, default):
+        try:
+            return callable_()
+        except Exception:
+            return default
+
+    profiles: List[Dict[str, Any]] = []
+    default_home = profiles_mod._get_default_hermes_home()
+    if default_home.is_dir():
+        model, provider = _safe(lambda: profiles_mod._read_config_model(default_home), (None, None))
+        profiles.append({
+            "name": "default",
+            "path": str(default_home),
+            "is_default": True,
+            "model": model,
+            "provider": provider,
+            "has_env": (default_home / ".env").exists(),
+            "skill_count": _safe(lambda: profiles_mod._count_skills(default_home), 0),
+        })
+
+    profiles_root = profiles_mod._get_profiles_root()
+    if profiles_root.is_dir():
+        for entry in sorted(profiles_root.iterdir()):
+            if not entry.is_dir() or not profiles_mod._PROFILE_ID_RE.match(entry.name):
+                continue
+            model, provider = _safe(lambda entry=entry: profiles_mod._read_config_model(entry), (None, None))
+            profiles.append({
+                "name": entry.name,
+                "path": str(entry),
+                "is_default": False,
+                "model": model,
+                "provider": provider,
+                "has_env": (entry / ".env").exists(),
+                "skill_count": _safe(lambda entry=entry: profiles_mod._count_skills(entry), 0),
+            })
+
+    return profiles
 
 
 def _resolve_profile_dir(name: str) -> Path:
@@ -2145,7 +2192,11 @@ def _resolve_profile_dir(name: str) -> Path:
 @app.get("/api/profiles")
 async def list_profiles_endpoint():
     from hermes_cli import profiles as profiles_mod
-    return {"profiles": [_profile_to_dict(p) for p in profiles_mod.list_profiles()]}
+    try:
+        return {"profiles": [_profile_to_dict(p) for p in profiles_mod.list_profiles()]}
+    except Exception:
+        _log.exception("GET /api/profiles failed; falling back to profile directory scan")
+        return {"profiles": _fallback_profile_dicts(profiles_mod)}
 
 
 @app.post("/api/profiles")

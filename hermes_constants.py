@@ -6,6 +6,7 @@ without risk of circular imports.
 
 import os
 import platform
+from builtins import open as _builtin_open
 from pathlib import Path
 
 
@@ -198,7 +199,7 @@ def is_wsl() -> bool:
 
     proc_ver = ""
     try:
-        with open("/proc/version", "r") as f:
+        with _builtin_open("/proc/version", "r") as f:
             proc_ver = f.read().lower()
     except Exception:
         proc_ver = ""

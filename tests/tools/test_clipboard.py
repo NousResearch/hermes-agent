@@ -227,14 +227,13 @@ class TestIsWsl:
         hermes_constants._wsl_detected = None
 
     def _patch_proc_open(self, read_data: str):
-        """Patch ``open`` where ``is_wsl()`` resolves it (Linux CI uses LOAD_GLOBAL)."""
+        """Patch ``hermes_constants._builtin_open`` (bound name tests can reach on all Pythons)."""
         import hermes_constants
 
         return patch.object(
             hermes_constants,
-            "open",
+            "_builtin_open",
             mock_open(read_data=read_data),
-            create=True,
         )
 
     def test_wsl2_detected(self):
@@ -257,9 +256,8 @@ class TestIsWsl:
 
         with patch.object(
             hermes_constants,
-            "open",
+            "_builtin_open",
             side_effect=FileNotFoundError,
-            create=True,
         ):
             assert _is_wsl() is False
 

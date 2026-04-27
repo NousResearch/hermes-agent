@@ -9928,6 +9928,12 @@ class HermesCLI:
             placeholder while preserving any existing user text in the
             buffer.
             """
+            # Diagnostic canary: measure how long the paste handler blocks
+            # the prompt_toolkit event loop. If this exceeds ~500ms we log
+            # it so recurring "CLI freezes on paste" reports (issue #16263,
+            # macOS Tahoe 26 + iTerm2/Ghostty) arrive with data attached.
+            _paste_handler_start = time.perf_counter()
+            _paste_raw_size = len(event.data or "")
             pasted_text = event.data or ""
             # Normalise line endings — Windows \r\n and old Mac \r both become \n
             # so the 5-line collapse threshold and display are consistent.
@@ -9956,6 +9962,17 @@ class HermesCLI:
                     buf.insert_text(prefix + placeholder)
                 else:
                     buf.insert_text(pasted_text)
+            _paste_handler_elapsed_ms = (time.perf_counter() - _paste_handler_start) * 1000.0
+            if _paste_handler_elapsed_ms > 500.0:
+                logger.warning(
+                    "Slow bracketed-paste handler: %.1fms to process %d bytes "
+                    "(%d lines) on %s. If the input becomes unresponsive after "
+                    "this, attach this log line to the bug report.",
+                    _paste_handler_elapsed_ms,
+                    _paste_raw_size,
+                    pasted_text.count('\n') + 1 if pasted_text else 0,
+                    sys.platform,
+                )
 
         @kb.add('c-v')
         def handle_ctrl_v(event):

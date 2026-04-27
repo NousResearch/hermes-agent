@@ -741,6 +741,139 @@ class TestChatCompletionsEndpoint:
                 assert '"label": "Python docs"' in body
 
     @pytest.mark.asyncio
+    async def test_stream_emits_tool_lifecycle_with_call_id(self, adapter):
+        """Regression for #16588.
+
+        ``/v1/chat/completions`` streaming previously emitted only a
+        ``tool.started``-style ``hermes.tool.progress`` event; clients
+        rendering tool lifecycle UI had no way to mark a tool as finished
+        because no matching ``status: completed`` event was emitted, and
+        no ``toolCallId`` was carried for correlation.
+
+        The fix adds ``tool_start_callback`` / ``tool_complete_callback``
+        to the chat completions agent invocation and writes both halves
+        of the lifecycle pair on the same ``event: hermes.tool.progress``
+        SSE line, with stable ``toolCallId`` and ``status``.
+        """
+        import asyncio
+        import json as _json
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                tp_cb = kwargs.get("tool_progress_callback")
+                ts_cb = kwargs.get("tool_start_callback")
+                tc_cb = kwargs.get("tool_complete_callback")
+                # Both pairs fire on a real tool call, side-by-side in
+                # run_agent.py — emulate that ordering here.
+                if tp_cb:
+                    tp_cb("tool.started", "terminal", "ls -la", {"command": "ls -la"})
+                if ts_cb:
+                    ts_cb("call_terminal_1", "terminal", {"command": "ls -la"})
+                if tc_cb:
+                    tc_cb("call_terminal_1", "terminal", {"command": "ls -la"}, "ok")
+                if cb:
+                    await asyncio.sleep(0.05)
+                    cb("done.")
+                return (
+                    {"final_response": "done.", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "list"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+            # Walk the SSE body and pull out hermes.tool.progress payloads
+            # so the assertions are about *structured* contents rather
+            # than substring coincidence.
+            statuses = []
+            seen_call_ids = set()
+            lines = body.splitlines()
+            for i, line in enumerate(lines):
+                if line.strip() != "event: hermes.tool.progress":
+                    continue
+                # Find the next non-blank ``data:`` line for this event.
+                for follow in lines[i + 1: i + 4]:
+                    if follow.startswith("data: "):
+                        try:
+                            payload = _json.loads(follow[len("data: "):])
+                        except _json.JSONDecodeError:
+                            break
+                        status = payload.get("status")
+                        if status:
+                            statuses.append(status)
+                        if "toolCallId" in payload:
+                            seen_call_ids.add(payload["toolCallId"])
+                        break
+
+            # Both halves of the lifecycle pair must be emitted, in order,
+            # and tied to the same toolCallId — that's the contract the
+            # issue asks for.
+            assert "running" in statuses, f"missing running status; got {statuses}"
+            assert "completed" in statuses, f"missing completed status; got {statuses}"
+            assert statuses.index("running") < statuses.index("completed")
+            assert seen_call_ids == {"call_terminal_1"}, seen_call_ids
+
+    @pytest.mark.asyncio
+    async def test_stream_tool_lifecycle_skips_internal_and_orphan_completes(self, adapter):
+        """Internal tools (``_thinking``-style) and ``completed`` events
+        without a prior matching ``running`` must produce no lifecycle
+        events on the wire — otherwise clients would see orphaned
+        ``status: completed`` updates they cannot correlate."""
+        import asyncio
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                ts_cb = kwargs.get("tool_start_callback")
+                tc_cb = kwargs.get("tool_complete_callback")
+                # Internal tool — must be filtered.
+                if ts_cb:
+                    ts_cb("call_internal_1", "_thinking", {})
+                if tc_cb:
+                    tc_cb("call_internal_1", "_thinking", {}, "")
+                # Completion without start — orphan, must be dropped.
+                if tc_cb:
+                    tc_cb("call_orphan_1", "web_search", {}, "ok")
+                if cb:
+                    await asyncio.sleep(0.05)
+                    cb("ok.")
+                return (
+                    {"final_response": "ok.", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/chat/completions",
+                    json={
+                        "model": "test",
+                        "messages": [{"role": "user", "content": "ok"}],
+                        "stream": True,
+                    },
+                )
+                assert resp.status == 200
+                body = await resp.text()
+
+            # Neither the internal call_id nor the orphan call_id should
+            # surface as a lifecycle payload on the wire.
+            assert "call_internal_1" not in body
+            assert "call_orphan_1" not in body
+            assert '"status": "running"' not in body
+            assert '"status": "completed"' not in body
+
+    @pytest.mark.asyncio
     async def test_no_user_message_returns_400(self, adapter):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:

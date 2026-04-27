@@ -963,6 +963,46 @@ class APIServerAdapter(BasePlatformAdapter):
                     "label": label,
                 }))
 
+            # Track which tool_call_ids we've emitted a "running" lifecycle
+            # event for, so a "completed" event without a matching "running"
+            # (e.g. internal/filtered tools) is silently dropped instead of
+            # producing an orphaned event clients can't correlate.
+            _started_tool_call_ids: set[str] = set()
+
+            def _on_tool_start(tool_call_id, function_name, function_args):
+                """Emit a per-call ``status: running`` lifecycle event.
+
+                Mirrors the existing ``_on_tool_progress`` filter (skip
+                tools whose names start with ``_``) so the lifecycle pair
+                stays consistent with the legacy emoji/label event.  Carries
+                ``toolCallId`` so SSE consumers can correlate the matching
+                ``status: completed`` emitted by ``_on_tool_complete``.
+                See #16588.
+                """
+                if not tool_call_id or function_name.startswith("_"):
+                    return
+                _started_tool_call_ids.add(tool_call_id)
+                _stream_q.put(("__tool_lifecycle__", {
+                    "toolCallId": tool_call_id,
+                    "tool": function_name,
+                    "status": "running",
+                }))
+
+            def _on_tool_complete(tool_call_id, function_name, function_args, function_result):
+                """Emit the matching ``status: completed`` lifecycle event.
+
+                Skipped if the start was filtered (internal tool, missing
+                id) so we never emit an orphaned ``completed`` event.
+                """
+                if not tool_call_id or tool_call_id not in _started_tool_call_ids:
+                    return
+                _started_tool_call_ids.discard(tool_call_id)
+                _stream_q.put(("__tool_lifecycle__", {
+                    "toolCallId": tool_call_id,
+                    "tool": function_name,
+                    "status": "completed",
+                }))
+
             # Start agent in background.  agent_ref is a mutable container
             # so the SSE writer can interrupt the agent on client disconnect.
             agent_ref = [None]
@@ -973,6 +1013,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 session_id=session_id,
                 stream_delta_callback=_on_delta,
                 tool_progress_callback=_on_tool_progress,
+                tool_start_callback=_on_tool_start,
+                tool_complete_callback=_on_tool_complete,
                 agent_ref=agent_ref,
             ))
 
@@ -1088,8 +1130,19 @@ class APIServerAdapter(BasePlatformAdapter):
                 as a custom ``event: hermes.tool.progress`` SSE event so
                 frontends can display them without storing the markers in
                 conversation history.  See #6972.
+
+                Tagged tuples ``("__tool_lifecycle__", payload)`` are
+                emitted on the same ``event: hermes.tool.progress`` line
+                but carry ``toolCallId`` and ``status`` (``running`` /
+                ``completed``) so API consumers can update tool cards on
+                exact call-id correlation instead of guessing locally.
+                See #16588.
                 """
-                if isinstance(item, tuple) and len(item) == 2 and item[0] == "__tool_progress__":
+                if (
+                    isinstance(item, tuple)
+                    and len(item) == 2
+                    and item[0] in ("__tool_progress__", "__tool_lifecycle__")
+                ):
                     event_data = json.dumps(item[1])
                     await response.write(
                         f"event: hermes.tool.progress\ndata: {event_data}\n\n".encode()

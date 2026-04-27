@@ -1360,6 +1360,9 @@ class AIAgent:
                 elif base_url_host_matches(effective_base, "chatgpt.com"):
                     from agent.auxiliary_client import _codex_cloudflare_headers
                     client_kwargs["default_headers"] = _codex_cloudflare_headers(api_key)
+                elif base_url_host_matches(effective_base, "api.z.ai") and "/coding/" in effective_base:
+                    # Z.AI Coding Plan requires X-Title header to identify as supported client
+                    client_kwargs["default_headers"] = {"X-Title": "Claude-Code"}
             else:
                 # No explicit creds — use the centralized provider router
                 from agent.auxiliary_client import resolve_provider_client

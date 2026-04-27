@@ -521,19 +521,27 @@ def detect_zai_endpoint(api_key: str, timeout: float = 8.0) -> Optional[Dict[str
     for ep_id, base_url, probe_models, label in ZAI_ENDPOINTS:
         for model in probe_models:
             try:
+                # Add X-Title header for Z.AI Coding Plan endpoints (required to bypass client verification)
+                headers = {
+                    "Authorization": f"Bearer {api_key}",
+                    "Content-Type": "application/json",
+                }
+                if "/coding/" in base_url:
+                    headers["X-Title"] = "Claude-Code"
+                
+                # Use larger max_tokens for reasoning models (GLM-5.x produces reasoning_content first)
+                max_tokens = 500 if "/coding/" in base_url else 1
+                
                 resp = httpx.post(
                     f"{base_url}/chat/completions",
-                    headers={
-                        "Authorization": f"Bearer {api_key}",
-                        "Content-Type": "application/json",
-                    },
+                    headers=headers,
                     json={
                         "model": model,
                         "stream": False,
-                        "max_tokens": 1,
+                        "max_tokens": max_tokens,
                         "messages": [{"role": "user", "content": "ping"}],
                     },
-                    timeout=timeout,
+                    timeout=30.0,
                 )
                 if resp.status_code == 200:
                     logger.debug("Z.AI endpoint probe: %s (%s) model=%s OK", ep_id, base_url, model)

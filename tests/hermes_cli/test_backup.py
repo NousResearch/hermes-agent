@@ -103,6 +103,18 @@ class TestShouldExclude:
         from hermes_cli.backup import _should_exclude
         assert _should_exclude(Path("backups/pre-update-2026-04-27-063400.zip"))
 
+    def test_excludes_sqlite_sidecars(self):
+        """SQLite WAL/SHM/journal sidecars must not ship alongside the
+        safe-copied .db — pairing a fresh snapshot with stale sidecar state
+        produces a torn restore."""
+        from hermes_cli.backup import _should_exclude
+        assert _should_exclude(Path("state.db-wal"))
+        assert _should_exclude(Path("state.db-shm"))
+        assert _should_exclude(Path("state.db-journal"))
+        assert _should_exclude(Path("memory_store.db-wal"))
+        # The .db itself is still included (and safe-copied separately)
+        assert not _should_exclude(Path("state.db"))
+
     def test_includes_config(self):
         from hermes_cli.backup import _should_exclude
         assert not _should_exclude(Path("config.yaml"))

@@ -49,6 +49,81 @@ class TestChatCompletionsBasic:
 
 class TestChatCompletionsBuildKwargs:
 
+    def test_gemini_adds_thinking_config(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemini-2.5-pro", messages=msgs,
+            is_gemini=True,
+            reasoning_config={"enabled": True, "effort": "medium"}
+        )
+        assert kw["extra_body"]["google"]["thinking_config"]["include_thoughts"] is True
+        assert kw["extra_body"]["google"]["thinking_config"]["thinking_budget"] == 1024
+
+    def test_gemini_effort_mapping(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        
+        # xhigh -> 4096
+        kw1 = transport.build_kwargs(model="gemini", messages=msgs, is_gemini=True, reasoning_config={"enabled": True, "effort": "xhigh"})
+        assert kw1["extra_body"]["google"]["thinking_config"]["thinking_budget"] == 4096
+        
+        # max -> 4096
+        kw2 = transport.build_kwargs(model="gemini", messages=msgs, is_gemini=True, reasoning_config={"enabled": True, "effort": "max"})
+        assert kw2["extra_body"]["google"]["thinking_config"]["thinking_budget"] == 4096
+        
+        # high -> 2048
+        kw3 = transport.build_kwargs(model="gemini", messages=msgs, is_gemini=True, reasoning_config={"enabled": True, "effort": "high"})
+        assert kw3["extra_body"]["google"]["thinking_config"]["thinking_budget"] == 2048
+        
+        # medium -> 1024
+        kw4 = transport.build_kwargs(model="gemini", messages=msgs, is_gemini=True, reasoning_config={"enabled": True, "effort": "medium"})
+        assert kw4["extra_body"]["google"]["thinking_config"]["thinking_budget"] == 1024
+        
+        # low -> 512
+        kw5 = transport.build_kwargs(model="gemini", messages=msgs, is_gemini=True, reasoning_config={"enabled": True, "effort": "low"})
+        assert kw5["extra_body"]["google"]["thinking_config"]["thinking_budget"] == 512
+        
+        # minimal -> 512
+        kw6 = transport.build_kwargs(model="gemini", messages=msgs, is_gemini=True, reasoning_config={"enabled": True, "effort": "minimal"})
+        assert kw6["extra_body"]["google"]["thinking_config"]["thinking_budget"] == 512
+
+    def test_gemini_disabled_reasoning_skips(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemini-2.5-pro", messages=msgs,
+            is_gemini=True,
+            reasoning_config={"enabled": False}
+        )
+        eb = kw.get("extra_body", {})
+        assert "google" not in eb
+
+    def test_non_gemini_no_thinking_config(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gpt-4o", messages=msgs,
+            is_gemini=False,
+            reasoning_config={"enabled": True, "effort": "xhigh"}
+        )
+        eb = kw.get("extra_body", {})
+        assert "google" not in eb
+
+    def test_gemini_default_effort_medium(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemini-2.5-pro", messages=msgs,
+            is_gemini=True,
+            reasoning_config={"enabled": True}  # no effort specified
+        )
+        assert kw["extra_body"]["google"]["thinking_config"]["thinking_budget"] == 1024
+
+    def test_gemini_include_thoughts_true(self, transport):
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemini-2.5-pro", messages=msgs,
+            is_gemini=True,
+            reasoning_config={"enabled": True, "effort": "high"}
+        )
+        assert kw["extra_body"]["google"]["thinking_config"]["include_thoughts"] is True
+
     def test_basic_kwargs(self, transport):
         msgs = [{"role": "user", "content": "Hello"}]
         kw = transport.build_kwargs(model="gpt-4o", messages=msgs, timeout=30.0)

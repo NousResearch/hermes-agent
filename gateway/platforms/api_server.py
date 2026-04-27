@@ -30,6 +30,7 @@ import os
 import socket as _socket
 import re
 import sqlite3
+import threading
 import time
 import uuid
 from typing import Any, Dict, List, Optional
@@ -559,6 +560,38 @@ except ImportError:
     _cron_trigger = None
 
 
+class _AuthFailTracker:
+    """Sliding-window per-IP authentication failure tracker."""
+
+    def __init__(self, max_failures: int = 10, window_seconds: int = 60) -> None:
+        self._max = max_failures
+        self._window = window_seconds
+        self._buckets: Dict[str, List[float]] = {}
+        self._lock = threading.Lock()
+
+    def is_blocked(self, ip: str) -> bool:
+        if self._max == 0:
+            return False
+        cutoff = time.time() - self._window
+        with self._lock:
+            active = [t for t in self._buckets.get(ip, []) if t > cutoff]
+            self._buckets[ip] = active
+            return len(active) >= self._max
+
+    def record_failure(self, ip: str) -> None:
+        if self._max == 0:
+            return
+        with self._lock:
+            self._buckets.setdefault(ip, []).append(time.time())
+
+    def retry_after(self, ip: str) -> int:
+        with self._lock:
+            ts = self._buckets.get(ip, [])
+            if not ts:
+                return 0
+            return max(0, int(min(ts) + self._window - time.time())) + 1
+
+
 class APIServerAdapter(BasePlatformAdapter):
     """
     OpenAI-compatible HTTP API server adapter.
@@ -591,6 +624,10 @@ class APIServerAdapter(BasePlatformAdapter):
         self._active_run_agents: Dict[str, Any] = {}
         self._active_run_tasks: Dict[str, "asyncio.Task"] = {}
         self._session_db: Optional[Any] = None  # Lazy-init SessionDB for session continuity
+        self._auth_fail_tracker = _AuthFailTracker(
+            max_failures=int(os.environ.get("API_SERVER_AUTH_FAIL_LIMIT", "10")),
+            window_seconds=60,
+        )
 
     @staticmethod
     def _parse_cors_origins(value: Any) -> tuple[str, ...]:
@@ -668,9 +705,23 @@ class APIServerAdapter(BasePlatformAdapter):
         Returns None if auth is OK, or a 401 web.Response on failure.
         If no API key is configured, all requests are allowed (only when API
         server is local).
+
+        Repeated failures from the same IP are rate-limited: after
+        API_SERVER_AUTH_FAIL_LIMIT (default 10) failures within a 60-second
+        sliding window the IP receives 429 responses until the window clears.
         """
         if not self._api_key:
             return None  # No key configured — allow all (local-only use)
+
+        client_ip = request.remote or "unknown"
+
+        if self._auth_fail_tracker.is_blocked(client_ip):
+            retry_after = self._auth_fail_tracker.retry_after(client_ip)
+            return web.json_response(
+                {"error": "Too many authentication failures"},
+                status=429,
+                headers={"Retry-After": str(retry_after)},
+            )
 
         auth_header = request.headers.get("Authorization", "")
         if auth_header.startswith("Bearer "):
@@ -678,6 +729,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if hmac.compare_digest(token, self._api_key):
                 return None  # Auth OK
 
+        self._auth_fail_tracker.record_failure(client_ip)
         return web.json_response(
             {"error": {"message": "Invalid API key", "type": "invalid_request_error", "code": "invalid_api_key"}},
             status=401,

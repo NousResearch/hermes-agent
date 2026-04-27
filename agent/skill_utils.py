@@ -301,6 +301,117 @@ def extract_skill_conditions(frontmatter: Dict[str, Any]) -> Dict[str, List]:
     }
 
 
+# ── Trigger extraction (unified trigger framework) ────────────────────────
+
+
+_KNOWN_TRIGGER_TYPES = ("mention", "slash", "button", "reaction", "cron")
+
+
+def extract_skill_triggers(frontmatter: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Extract explicit triggers from skill frontmatter (Schema α — type-keyed dict).
+
+    Skills declare event triggers via::
+
+        metadata:
+          hermes:
+            triggers:
+              mention:
+                regex: "..."
+                channel_filter: ["...", "..."]
+              slash:
+                name: "approve"
+              button:
+                custom_id_pattern: "approve_*"
+              reaction:
+                emoji: "✅"
+                channel_filter: ["..."]
+                age_limit: "30d"
+              cron:
+                schedule: "0 9 * * *"
+
+    Each entry is normalized to ``{"type": <type>, ...other fields}``. Unknown
+    trigger types are skipped. Returns ``[]`` when no ``triggers`` field exists.
+
+    This is a pure function: no I/O, no network, safe to call repeatedly.
+    """
+    metadata = frontmatter.get("metadata")
+    if not isinstance(metadata, dict):
+        return []
+    hermes = metadata.get("hermes")
+    if not isinstance(hermes, dict):
+        return []
+    raw = hermes.get("triggers")
+    if not isinstance(raw, dict):
+        return []
+
+    result: List[Dict[str, Any]] = []
+    for trigger_type, payload in raw.items():
+        type_str = str(trigger_type).lower().strip()
+        if type_str not in _KNOWN_TRIGGER_TYPES:
+            continue
+        if payload is None:
+            entry = {"type": type_str}
+        elif isinstance(payload, dict):
+            entry = {"type": type_str}
+            for k, v in payload.items():
+                if k == "type":
+                    continue
+                entry[str(k)] = v
+        else:
+            # Scalar shorthand (e.g., `slash: approve`) treated as `name`/`regex`/etc.
+            shorthand_field = {
+                "mention": "regex",
+                "slash": "name",
+                "button": "custom_id_pattern",
+                "reaction": "emoji",
+                "cron": "schedule",
+            }[type_str]
+            entry = {"type": type_str, shorthand_field: payload}
+        result.append(entry)
+    return result
+
+
+def derive_implicit_triggers(frontmatter: Dict[str, Any]) -> List[Dict[str, Any]]:
+    """Derive implicit triggers from existing frontmatter fields for backward compatibility.
+
+    Rule 1 (only): if ``metadata.hermes.slash_command`` is present, derive a
+    slash trigger with that name. This preserves BC for skills that pre-date
+    the unified trigger framework.
+
+    Rule 2 (slash-name-matches-gateway-registration) was considered and dropped:
+    the gateway's hardcoded slash registry is not user-skill-derivable, so the
+    rule would never fire. Keeping the function pure (no gateway state) is
+    preferred — see plan §1.
+
+    For the current skill corpus most skills have no derivable triggers; this
+    function returns ``[]`` for them. BC for those skills is preserved through
+    the existing prompt-builder injection path, NOT via derived triggers.
+    """
+    metadata = frontmatter.get("metadata")
+    if not isinstance(metadata, dict):
+        return []
+    hermes = metadata.get("hermes")
+    if not isinstance(hermes, dict):
+        return []
+    slash_name = hermes.get("slash_command")
+    if not isinstance(slash_name, str) or not slash_name.strip():
+        return []
+    return [{"type": "slash", "name": slash_name.strip()}]
+
+
+def get_skill_triggers(frontmatter: Dict[str, Any]) -> Tuple[List[Dict[str, Any]], bool]:
+    """Return ``(triggers, has_explicit_triggers)`` for a skill's frontmatter.
+
+    If the skill has an explicit ``metadata.hermes.triggers`` field, those
+    triggers are returned and ``has_explicit_triggers`` is True. Otherwise
+    triggers are derived implicitly via :func:`derive_implicit_triggers`.
+    """
+    explicit = extract_skill_triggers(frontmatter)
+    if explicit:
+        return explicit, True
+    return derive_implicit_triggers(frontmatter), False
+
+
 # ── Skill config extraction ───────────────────────────────────────────────
 
 

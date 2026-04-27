@@ -20,11 +20,52 @@ suppress delivery.
 import logging
 import threading
 
+from hermes_constants import get_hermes_home
+
 logger = logging.getLogger("hooks.boot-md")
 
-from hermes_constants import get_hermes_home
 HERMES_HOME = get_hermes_home()
 BOOT_FILE = HERMES_HOME / "BOOT.md"
+
+
+def _resolve_boot_agent_kwargs() -> dict:
+    """Use the configured gateway runtime for BOOT.md sessions."""
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        config = load_config()
+        model_cfg = config.get("model")
+        model = ""
+        provider = None
+        if isinstance(model_cfg, dict):
+            model = str(model_cfg.get("default") or model_cfg.get("model") or "").strip()
+            provider = str(model_cfg.get("provider") or "").strip() or None
+        elif isinstance(model_cfg, str):
+            model = model_cfg.strip()
+
+        runtime = resolve_runtime_provider(
+            requested=provider,
+            target_model=model or None,
+        )
+        kwargs = {
+            "api_key": runtime.get("api_key"),
+            "base_url": runtime.get("base_url"),
+            "provider": runtime.get("provider"),
+            "api_mode": runtime.get("api_mode"),
+            "command": runtime.get("command"),
+            "args": list(runtime.get("args") or []),
+            "credential_pool": runtime.get("credential_pool"),
+            "fallback_model": (
+                config.get("fallback_providers") or config.get("fallback_model")
+            ),
+        }
+        if model:
+            kwargs["model"] = model
+        return kwargs
+    except Exception as e:
+        logger.warning("boot-md runtime config resolution failed: %s", e)
+        return {}
 
 
 def _build_boot_prompt(content: str) -> str:
@@ -49,6 +90,7 @@ def _run_boot_agent(content: str) -> None:
 
         prompt = _build_boot_prompt(content)
         agent = AIAgent(
+            **_resolve_boot_agent_kwargs(),
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,

@@ -11,6 +11,7 @@ Environment variables:
     MATRIX_PASSWORD             Password (alternative to access token)
     MATRIX_ENCRYPTION           Set "true" to enable E2EE
     MATRIX_DEVICE_ID            Stable device ID for E2EE persistence across restarts
+    MATRIX_PROXY                HTTP(S) or SOCKS proxy URL for Matrix traffic
     MATRIX_ALLOWED_USERS    Comma-separated Matrix user IDs (@user:server)
     MATRIX_HOME_ROOM        Room ID for cron/notification delivery
     MATRIX_REACTIONS        Set "false" to disable processing lifecycle reactions
@@ -96,6 +97,8 @@ from gateway.platforms.base import (
     MessageType,
     ProcessingOutcome,
     SendResult,
+    resolve_proxy_url,
+    proxy_kwargs_for_aiohttp,
 )
 from gateway.platforms.helpers import ThreadParticipationTracker
 
@@ -160,6 +163,39 @@ def _looks_like_matrix_image_filename(text: str) -> bool:
     if guessed_type and guessed_type.startswith("image/"):
         return True
     return suffix in _MATRIX_IMAGE_FILENAME_EXTS
+
+
+def _create_matrix_session(proxy_url: str | None):
+    """Create an ``aiohttp.ClientSession`` whose proxy applies to *all* requests.
+
+    mautrix's ``HTTPAPI._send()`` calls ``session.request()`` without forwarding
+    per-request ``proxy=`` kwargs.  For HTTP(S) proxies we use aiohttp's native
+    ``proxy=`` session parameter which sets a default for every request.  For SOCKS
+    we use ``aiohttp_socks.ProxyConnector`` (connector-level).
+    When no proxy is configured we enable ``trust_env`` so standard env vars
+    (``HTTP_PROXY`` / ``HTTPS_PROXY``) are honoured automatically.
+    """
+    import aiohttp
+
+    if not proxy_url:
+        return aiohttp.ClientSession(trust_env=True)
+
+    if proxy_url.split("://")[0].lower().startswith("socks"):
+        try:
+            from aiohttp_socks import ProxyConnector
+
+            return aiohttp.ClientSession(
+                connector=ProxyConnector.from_url(proxy_url, rdns=True),
+            )
+        except ImportError:
+            logger.warning(
+                "aiohttp_socks not installed — SOCKS proxy %s ignored. "
+                "Run: pip install aiohttp-socks",
+                proxy_url,
+            )
+            return aiohttp.ClientSession(trust_env=True)
+
+    return aiohttp.ClientSession(proxy=proxy_url)
 
 
 def _check_e2ee_deps() -> bool:
@@ -315,6 +351,11 @@ class MatrixAdapter(BasePlatformAdapter):
         ).lower() not in ("false", "0", "no")
         self._pending_reactions: dict[tuple[str, str], str] = {}
 
+        # Proxy support — resolve once at init, reuse for all HTTP traffic.
+        self._proxy_url: str | None = resolve_proxy_url(platform_env_var="MATRIX_PROXY")
+        if self._proxy_url:
+            logger.info("Matrix: proxy configured — %s", self._proxy_url)
+
         # Text batching: merge rapid successive messages (Telegram-style).
         # Matrix clients split long messages around 4000 chars.
         self._text_batch_delay_seconds = float(
@@ -467,9 +508,11 @@ class MatrixAdapter(BasePlatformAdapter):
         _STORE_DIR.mkdir(parents=True, exist_ok=True)
 
         # Create the HTTP API layer.
+        client_session = _create_matrix_session(self._proxy_url)
         api = HTTPAPI(
             base_url=self._homeserver,
             token=self._access_token or "",
+            client_session=client_session,
         )
 
         # Create the client.
@@ -931,10 +974,12 @@ class MatrixAdapter(BasePlatformAdapter):
             # Try aiohttp first (always available), fall back to httpx
             try:
                 import aiohttp as _aiohttp
-
-                async with _aiohttp.ClientSession(trust_env=True) as http:
+                _sess_kw, _req_kw = proxy_kwargs_for_aiohttp(self._proxy_url)
+                async with _aiohttp.ClientSession(**_sess_kw) as http:
                     async with http.get(
-                        image_url, timeout=_aiohttp.ClientTimeout(total=30)
+                        image_url,
+                        timeout=_aiohttp.ClientTimeout(total=30),
+                        **_req_kw,
                     ) as resp:
                         resp.raise_for_status()
                         data = await resp.read()
@@ -944,8 +989,10 @@ class MatrixAdapter(BasePlatformAdapter):
                         )
             except ImportError:
                 import httpx
-
-                async with httpx.AsyncClient() as http:
+                _httpx_kw: dict = {}
+                if self._proxy_url:
+                    _httpx_kw["proxy"] = self._proxy_url
+                async with httpx.AsyncClient(**_httpx_kw) as http:
                     resp = await http.get(image_url, follow_redirects=True, timeout=30)
                     resp.raise_for_status()
                     data = resp.content

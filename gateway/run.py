@@ -639,6 +639,22 @@ class GatewayRunner:
     _stop_task: Optional[asyncio.Task] = None
     _session_model_overrides: Dict[str, Dict[str, str]] = {}
     _session_reasoning_overrides: Dict[str, Dict[str, Any]] = {}
+
+    @staticmethod
+    def _send_metadata_for_source(event: MessageEvent, source: SessionSource) -> Optional[Dict[str, Any]]:
+        """Build platform send metadata while preserving the session thread.
+
+        Some gateway-originated notifications are sent while handling a
+        ``MessageEvent`` that may not carry platform metadata.  In threaded
+        platforms (Telegram forum topics, Discord threads, Slack threads), the
+        stable thread context lives on ``SessionSource.thread_id``.  Preserve any
+        incoming metadata, but derive ``thread_id`` from the session source when
+        available so notifications stay in the originating thread/topic.
+        """
+        metadata = getattr(event, "metadata", None) or {}
+        if getattr(source, "thread_id", None):
+            metadata = {**metadata, "thread_id": source.thread_id}
+        return metadata or None
     
     def __init__(self, config: Optional[GatewayConfig] = None):
         self.config = config or load_gateway_config()
@@ -4512,7 +4528,7 @@ class GatewayRunner:
                             pass
                         await adapter.send(
                             source.chat_id, notice,
-                            metadata=getattr(event, 'metadata', None),
+                            metadata=self._send_metadata_for_source(event, source),
                         )
             except Exception as e:
                 logger.debug("Auto-reset notification failed (non-fatal): %s", e)

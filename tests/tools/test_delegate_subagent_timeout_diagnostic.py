@@ -268,17 +268,21 @@ class TestRunSingleChildTimeoutDump:
         assert "Diagnostic:" in result["error"]
         assert str(dump_path) in result["error"]
 
-    def test_nonzero_api_calls_skips_dump_and_uses_old_message(self, hermes_home, monkeypatch):
+    def test_nonzero_api_calls_skips_dump_and_uses_progress_message(self, hermes_home, monkeypatch):
         child = _StubChild(api_call_count=5, hang_seconds=10.0)
         result = self._invoke_with_short_timeout(child, monkeypatch)
 
         assert result["status"] == "timeout"
         assert result["api_calls"] == 5
         # No diagnostic file should be written for timeouts that made
-        # actual API calls — the old generic "stuck on slow call" message
-        # still applies.
+        # actual API calls.
         assert result.get("diagnostic_path") is None
-        assert "stuck on a slow API call" in result["error"]
+        # Error message now uses the progress-event format.
+        assert "timed out after" in result["error"]
+        assert "tool call(s)" in result["error"]
+        # partial_events and last_tool keys are always present on timeout.
+        assert "partial_events" in result
+        assert "last_tool" in result
         # And no subagent-timeout-* file should exist under logs/
         logs_dir = hermes_home / "logs"
         if logs_dir.is_dir():

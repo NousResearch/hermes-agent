@@ -1245,6 +1245,10 @@ def _run_single_child(
     """
     child_start = time.monotonic()
 
+    # Accumulate per-tool-call progress events for timeout/error visibility.
+    # Capped at 50 entries so the dict stays bounded regardless of run length.
+    _partial_events: List[Dict[str, Any]] = []
+
     # Get the progress callback from the child agent
     child_progress_cb = getattr(child, "tool_progress_callback", None)
 
@@ -1304,6 +1308,24 @@ def _run_single_child(
                 iter_advanced = child_iter > _last_seen_iter[0]
                 tool_changed = child_tool != _last_seen_tool[0]
                 if iter_advanced or tool_changed:
+                    # Record a progress event when a tool starts or the
+                    # iteration count advances (tool completed and model is
+                    # choosing the next action).  Cap at 50 entries.
+                    if tool_changed and child_tool and len(_partial_events) < 50:
+                        preview = child_summary.get("last_activity_desc", "") or ""
+                        _partial_events.append(
+                            {
+                                "tool": child_tool,
+                                "status": "running",
+                                "preview": preview[:200],
+                            }
+                        )
+                    elif iter_advanced and _partial_events and len(_partial_events) < 50:
+                        # Mark the most-recent event as completed when the
+                        # iteration counter advances (tool call returned).
+                        last = _partial_events[-1]
+                        if last.get("status") == "running":
+                            last["status"] = "completed"
                     _last_seen_iter[0] = child_iter
                     _last_seen_tool[0] = child_tool
                     _stale_count[0] = 0
@@ -1487,6 +1509,10 @@ def _run_single_child(
                 except Exception:
                     pass
 
+            _last_tool_name: Optional[str] = (
+                _partial_events[-1]["tool"] if _partial_events else None
+            )
+
             if is_timeout:
                 if child_api_calls == 0:
                     _err = (
@@ -1498,10 +1524,13 @@ def _run_single_child(
                     if diagnostic_path:
                         _err += f" Diagnostic: {diagnostic_path}"
                 else:
+                    _tool_calls_count = len(_partial_events)
+                    _last_action_str = (
+                        f" Last action: {_last_tool_name}" if _last_tool_name else ""
+                    )
                     _err = (
-                        f"Subagent timed out after {child_timeout}s with "
-                        f"{child_api_calls} API call(s) completed — likely "
-                        f"stuck on a slow API call or unresponsive network request."
+                        f"Subagent timed out after {_tool_calls_count} tool call(s)."
+                        f"{_last_action_str}"
                     )
             else:
                 _err = str(_timeout_exc)
@@ -1516,6 +1545,8 @@ def _run_single_child(
                 "duration_seconds": duration,
                 "_child_role": getattr(child, "_delegate_role", None),
                 "diagnostic_path": diagnostic_path,
+                "partial_events": _partial_events,
+                "last_tool": _last_tool_name,
             }
         finally:
             # Shut down executor without waiting — if the child thread

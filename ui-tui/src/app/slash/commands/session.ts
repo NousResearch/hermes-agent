@@ -16,16 +16,8 @@ import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
 import type { SlashCommand } from '../types.js'
 
-const GLOBAL_MODEL_FLAG_RE = /(?:^|\s)--global(?:\s|$)/
-
 const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\s|$)`)
 const TUI_SESSION_STRIP_RE = new RegExp(`\\s*${TUI_SESSION_MODEL_FLAG}\\b\\s*`, 'g')
-
-const persistedModelArg = (arg: string) => {
-  const trimmed = arg.trim()
-
-  return !trimmed || GLOBAL_MODEL_FLAG_RE.test(trimmed) ? trimmed : `${trimmed} --global`
-}
 
 const stripTuiSessionFlag = (trimmed: string) => trimmed.replace(TUI_SESSION_STRIP_RE, ' ').replace(/\s+/g, ' ').trim()
 
@@ -40,7 +32,7 @@ const modelValueForConfigSet = (arg: string) => {
     return stripTuiSessionFlag(trimmed)
   }
 
-  return persistedModelArg(trimmed)
+  return trimmed
 }
 
 export const sessionCommands: SlashCommand[] = [

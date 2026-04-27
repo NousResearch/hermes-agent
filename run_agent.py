@@ -6069,7 +6069,7 @@ class AIAgent:
         if cb is None or not isinstance(assistant_msg, dict):
             return
         content = assistant_msg.get("content")
-        visible = sanitize_context(self._strip_think_blocks(content or "")).strip()
+        visible = self._strip_think_blocks(content or "").strip()
         if not visible or visible == "(empty)":
             return
         already_streamed = self._interim_content_was_streamed(visible)
@@ -12748,9 +12748,7 @@ class AIAgent:
                         truncated_response_prefix = ""
                         length_continue_retries = 0
                     
-                    # Strip internal context / reasoning wrappers from the user-facing
-                    # response (keep only clean visible text in transcript + UI).
-                    final_response = sanitize_context(self._strip_think_blocks(final_response)).strip()
+                    final_response = self._strip_think_blocks(final_response).strip()
                     
                     final_msg = self._build_assistant_message(assistant_message, finish_reason)
 

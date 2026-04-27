@@ -507,6 +507,22 @@ def load_gateway_config() -> GatewayConfig:
             with open(config_yaml_path, encoding="utf-8") as f:
                 yaml_cfg = yaml.safe_load(f) or {}
 
+            # Hydrate top-level UPPERCASE_HOME_CHANNEL keys from config.yaml
+            # into os.environ so `_apply_env_overrides` picks them up on boot.
+            # Without this, /sethome-written yaml entries get orphaned across
+            # gateway restarts (yaml survives, process env does not), which
+            # makes onboarding prompts and home-channel routing flap between
+            # sessions.  Env var (if already set) takes precedence.
+            for _k, _v in yaml_cfg.items():
+                if (
+                    isinstance(_k, str)
+                    and _k.endswith("_HOME_CHANNEL")
+                    and _k.isupper()
+                    and _v
+                    and not os.getenv(_k)
+                ):
+                    os.environ[_k] = str(_v)
+
             # Map config.yaml keys → GatewayConfig.from_dict() schema.
             # Each key overwrites whatever gateway.json may have set.
             sr = yaml_cfg.get("session_reset")

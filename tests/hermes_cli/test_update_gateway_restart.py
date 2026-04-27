@@ -849,13 +849,20 @@ class TestGetServicePids:
         monkeypatch.setattr(gateway_cli, "is_linux", lambda: False)
         monkeypatch.setattr(gateway_cli, "is_macos", lambda: True)
         monkeypatch.setattr(gateway_cli, "get_launchd_label", lambda: "ai.hermes.gateway")
+        monkeypatch.setattr(gateway_cli, "get_launchd_plist_path", lambda: SimpleNamespace(exists=lambda: True))
+        monkeypatch.setattr(gateway_cli, "_launchd_domain", lambda: "gui/501")
 
         def fake_run(cmd, **kwargs):
             joined = " ".join(str(c) for c in cmd)
-            if "launchctl" in joined and "list" in joined:
+            if "launchctl" in joined and "print" in joined:
                 return subprocess.CompletedProcess(
                     cmd, 0,
-                    stdout="PID\tStatus\tLabel\n67890\t0\tai.hermes.gateway\n",
+                    stdout=(
+                        "state = running\n"
+                        "path = /Users/example/Library/LaunchAgents/ai.hermes.gateway.plist\n"
+                        "program = /Users/example/.hermes/hermes-agent/.venv/bin/python\n"
+                        "pid = 67890\n"
+                    ),
                     stderr="",
                 )
             return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")

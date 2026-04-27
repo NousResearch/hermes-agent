@@ -99,25 +99,10 @@ def _get_service_pids() -> set:
 
     # --- launchd (macOS) ---
     if is_macos():
-        try:
-            label = get_launchd_label()
-            result = subprocess.run(
-                ["launchctl", "list", label],
-                capture_output=True, text=True, timeout=5,
-            )
-            if result.returncode == 0:
-                # Output: "PID\tStatus\tLabel" header, then one data line
-                for line in result.stdout.strip().splitlines():
-                    parts = line.split()
-                    if len(parts) >= 3 and parts[2] == label:
-                        try:
-                            pid = int(parts[0])
-                            if pid > 0:
-                                pids.add(pid)
-                        except ValueError:
-                            pass
-        except (FileNotFoundError, subprocess.TimeoutExpired):
-            pass
+        _loaded, info = _launchd_job_info()
+        pid = _launchd_job_pid(info)
+        if pid is not None:
+            pids.add(pid)
 
     return pids
 
@@ -173,6 +158,119 @@ def _request_gateway_self_restart(pid: int) -> bool:
     except (ProcessLookupError, PermissionError, OSError):
         return False
     return True
+
+
+_SAFE_LAUNCHD_PRINT_FIELDS = (
+    "state",
+    "path",
+    "program",
+    "pid",
+    "runs",
+    "last exit code",
+)
+
+
+def _parse_launchd_print_fields(output: str) -> dict[str, str]:
+    """Extract non-sensitive service metadata from ``launchctl print`` output."""
+    fields: dict[str, str] = {}
+    for line in output.splitlines():
+        stripped = line.strip()
+        if " = " not in stripped:
+            continue
+        key, value = stripped.split(" = ", 1)
+        if key in _SAFE_LAUNCHD_PRINT_FIELDS and key not in fields:
+            fields[key] = value.strip()
+    return fields
+
+
+def _parse_launchctl_list_fields(output: str, label: str) -> dict[str, str]:
+    """Extract launchd service metadata from legacy ``launchctl list`` output."""
+    fields: dict[str, str] = {"label": label}
+
+    for line in output.splitlines():
+        stripped = line.strip().rstrip(";")
+        if not stripped:
+            continue
+
+        # Table form from ``launchctl list``.
+        parts = stripped.split()
+        if len(parts) >= 3 and parts[-1] == label and parts[0] != "PID":
+            fields["pid"] = parts[0]
+            fields["status"] = parts[1]
+            if parts[0].isdigit() and int(parts[0]) > 0:
+                fields.setdefault("state", "running")
+            else:
+                fields.setdefault("state", "loaded")
+            continue
+
+        # Plist-like form from ``launchctl list <label>`` on some macOS releases.
+        if " = " not in stripped:
+            continue
+        key, value = stripped.split(" = ", 1)
+        normalized_key = key.strip('"')
+        value = value.strip('"')
+        if normalized_key == "PID":
+            fields["pid"] = value
+            if value.isdigit() and int(value) > 0:
+                fields.setdefault("state", "running")
+        elif normalized_key == "LastExitStatus":
+            fields["last exit code"] = value
+        elif normalized_key == "Program":
+            fields["program"] = value
+        elif normalized_key == "Label":
+            fields["label"] = value
+
+    return fields
+
+
+def _launchd_job_info() -> tuple[bool, dict[str, str]]:
+    """Return whether the launchd job is loaded plus sanitized metadata."""
+    if not get_launchd_plist_path().exists():
+        return False, {}
+
+    label = get_launchd_label()
+    try:
+        result = subprocess.run(
+            ["launchctl", "print", f"{_launchd_domain()}/{label}"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            fields = _parse_launchd_print_fields(result.stdout)
+            fields["label"] = label
+            return True, fields
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+
+    try:
+        result = subprocess.run(
+            ["launchctl", "list", label],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return False, {}
+
+    if result.returncode != 0:
+        return False, {}
+    return True, _parse_launchctl_list_fields(result.stdout, label)
+
+
+def _launchd_job_pid(info: dict[str, str]) -> int | None:
+    raw_pid = info.get("pid", "").strip()
+    try:
+        pid = int(raw_pid)
+    except ValueError:
+        return None
+    return pid if pid > 0 else None
+
+
+def _launchd_job_is_running(info: dict[str, str]) -> bool:
+    if info.get("state", "").lower() == "running":
+        return True
+    return _launchd_job_pid(info) is not None
 
 
 def _graceful_restart_via_sigusr1(pid: int, drain_timeout: float) -> bool:
@@ -529,18 +627,8 @@ def _recover_pending_systemd_restart(system: bool = False, previous_pid: int | N
 
 
 def _probe_launchd_service_running() -> bool:
-    if not get_launchd_plist_path().exists():
-        return False
-    try:
-        result = subprocess.run(
-            ["launchctl", "list", get_launchd_label()],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-    except subprocess.TimeoutExpired:
-        return False
-    return result.returncode == 0
+    loaded, info = _launchd_job_info()
+    return loaded and _launchd_job_is_running(info)
 
 
 def get_gateway_runtime_snapshot(system: bool = False) -> GatewayRuntimeSnapshot:
@@ -2284,19 +2372,7 @@ def launchd_restart():
 
 def launchd_status(deep: bool = False):
     plist_path = get_launchd_plist_path()
-    label = get_launchd_label()
-    try:
-        result = subprocess.run(
-            ["launchctl", "list", label],
-            capture_output=True,
-            text=True,
-            timeout=10,
-        )
-        loaded = result.returncode == 0
-        loaded_output = result.stdout
-    except subprocess.TimeoutExpired:
-        loaded = False
-        loaded_output = ""
+    loaded, info = _launchd_job_info()
 
     print(f"Launchd plist: {plist_path}")
     if launchd_plist_is_current():
@@ -2307,7 +2383,10 @@ def launchd_status(deep: bool = False):
 
     if loaded:
         print("✓ Gateway service is loaded")
-        print(loaded_output)
+        for key in _SAFE_LAUNCHD_PRINT_FIELDS:
+            value = info.get(key)
+            if value:
+                print(f"  {key}: {value}")
     else:
         print("✗ Gateway service is not loaded")
         print("  Service definition exists locally but launchd has not loaded it.")
@@ -3147,14 +3226,7 @@ def _is_service_running() -> bool:
 
         return False
     elif is_macos() and get_launchd_plist_path().exists():
-        try:
-            result = subprocess.run(
-                ["launchctl", "list", get_launchd_label()],
-                capture_output=True, text=True, timeout=10,
-            )
-            return result.returncode == 0
-        except subprocess.TimeoutExpired:
-            return False
+        return _probe_launchd_service_running()
     # Check for manual processes
     return len(find_gateway_pids()) > 0
 

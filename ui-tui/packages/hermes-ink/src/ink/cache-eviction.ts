@@ -34,7 +34,6 @@ export function inkCacheSizes(): InkCacheSizes {
 export type EvictLevel = 'all' | 'half'
 
 export function evictInkCaches(level: EvictLevel = 'half'): InkCacheSizes {
-  const before = inkCacheSizes()
   const keep = level === 'half' ? 0.5 : 0
 
   evictWidthCache(keep)
@@ -42,5 +41,5 @@ export function evictInkCaches(level: EvictLevel = 'half'): InkCacheSizes {
   evictSliceCache(keep)
   evictLineWidthCache(keep)
 
-  return before
+  return inkCacheSizes()
 }

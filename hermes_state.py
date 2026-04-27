@@ -1144,16 +1144,14 @@ class SessionDB:
             session_ids = self._session_lineage_root_to_tip(session_id)
 
         with self._lock:
-            rows = []
-            for sid in session_ids:
-                cursor = self._conn.execute(
-                    "SELECT role, content, tool_call_id, tool_calls, tool_name, "
-                    "reasoning, reasoning_content, reasoning_details, codex_reasoning_items, "
-                    "codex_message_items "
-                    "FROM messages WHERE session_id = ? ORDER BY timestamp, id",
-                    (sid,),
-                )
-                rows.extend(cursor.fetchall())
+            placeholders = ",".join("?" for _ in session_ids)
+            rows = self._conn.execute(
+                "SELECT role, content, tool_call_id, tool_calls, tool_name, "
+                "reasoning, reasoning_content, reasoning_details, codex_reasoning_items, "
+                "codex_message_items "
+                f"FROM messages WHERE session_id IN ({placeholders}) ORDER BY timestamp, id",
+                tuple(session_ids),
+            ).fetchall()
 
         messages = []
         for row in rows:

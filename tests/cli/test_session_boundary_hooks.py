@@ -37,7 +37,8 @@ def test_session_finalize_on_reset(mock_invoke_hook):
 
 
 @patch("hermes_cli.plugins.invoke_hook")
-def test_session_finalize_on_cleanup(mock_invoke_hook):
+@patch("model_tools.shutdown_async_bridge_loop")
+def test_session_finalize_on_cleanup(mock_shutdown_bridge, mock_invoke_hook):
     """Verify on_session_finalize fires during CLI exit cleanup."""
     import cli as cli_mod
 
@@ -55,6 +56,7 @@ def test_session_finalize_on_cleanup(mock_invoke_hook):
         and c.kwargs["reason"] == "shutdown"
         for c in mock_invoke_hook.call_args_list
     )
+    mock_shutdown_bridge.assert_called_once()
 
 
 @patch("hermes_cli.plugins.invoke_hook")

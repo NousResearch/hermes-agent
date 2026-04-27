@@ -1100,6 +1100,11 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
         shutdown_cached_clients()
     except Exception:
         pass
+    try:
+        from model_tools import shutdown_async_bridge_loop
+        shutdown_async_bridge_loop()
+    except BaseException:
+        pass
     # Shut down memory provider (on_session_end + shutdown_all) at actual
     # session boundary — NOT per-turn inside run_conversation().
     if notify_session_finalize:

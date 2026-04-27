@@ -8422,6 +8422,11 @@ class GatewayRunner(GatewayAuthorizationMixin, GatewayKanbanWatchersMixin, Gatew
                 shutdown_cached_clients()
             except Exception as _e:
                 logger.debug("shutdown_cached_clients error: %s", _e)
+            try:
+                from model_tools import shutdown_async_bridge_loop
+                shutdown_async_bridge_loop()
+            except Exception as _e:
+                logger.debug("shutdown_async_bridge_loop error: %s", _e)
 
             # Close SQLite session DBs so the WAL write lock is released.
             # Without this, --replace and similar restart flows leave the

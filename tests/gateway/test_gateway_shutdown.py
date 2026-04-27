@@ -556,3 +556,18 @@ def test_pid_exists_zombie_via_proc_fallback_returns_false(monkeypatch):
 
     assert status._pid_exists(4242) is False
     kill.assert_not_called()
+
+
+@pytest.mark.asyncio
+async def test_gateway_stop_shuts_down_async_bridge_loop():
+    runner, adapter = make_restart_runner()
+    adapter.disconnect = AsyncMock()
+
+    with (
+        patch("gateway.status.remove_pid_file"),
+        patch("gateway.status.write_runtime_status"),
+        patch("model_tools.shutdown_async_bridge_loop") as mock_shutdown_bridge,
+    ):
+        await runner.stop()
+
+    mock_shutdown_bridge.assert_called_once()

@@ -52,10 +52,10 @@ from gateway.platforms.base import (
 logger = logging.getLogger(__name__)
 
 # ── Correlation ID context ─────────────────────────────────────────────
-_correlation_id: contextvars.ContextVar[str] = contextvars.ContextVar("correlation_id", default=None)
+_correlation_id: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar("correlation_id", default=None)
 
 
-def _get_correlation_id() -> str:
+def _get_correlation_id() -> Optional[str]:
     return _correlation_id.get()
 
 
@@ -434,8 +434,7 @@ if AIOHTTP_AVAILABLE:
     @web.middleware
     async def correlation_id_middleware(request, handler):
         """Assign a unique correlation ID to each request for log tracing."""
-        import uuid
-        cid = request.headers.get("X-Correlation-ID") or str(uuid.uuid4())[:8]
+        cid = request.headers.get("X-Correlation-ID") or uuid.uuid4().hex
         _set_correlation_id(cid)
         response = await handler(request)
         response.headers["X-Correlation-ID"] = cid
@@ -2292,8 +2291,15 @@ class APIServerAdapter(BasePlatformAdapter):
         another thread to stop in-progress LLM calls.
         """
         loop = asyncio.get_running_loop()
+        # ContextVar values are not propagated to ThreadPoolExecutor threads
+        # automatically.  Capture the current correlation ID here (in the async
+        # context where it is set) and restore it inside the thread so that any
+        # logging emitted by the agent carries the same request-scoped ID.
+        captured_cid = _get_correlation_id()
 
         def _run():
+            if captured_cid is not None:
+                _set_correlation_id(captured_cid)
             agent = self._create_agent(
                 ephemeral_system_prompt=ephemeral_system_prompt,
                 session_id=session_id,
@@ -2473,7 +2479,13 @@ class APIServerAdapter(BasePlatformAdapter):
                     tool_progress_callback=event_cb,
                 )
                 self._active_run_agents[run_id] = agent
+                # Capture correlation ID in the async context before handing off
+                # to a ThreadPoolExecutor thread, which would otherwise see None.
+                captured_cid = _get_correlation_id()
+
                 def _run_sync():
+                    if captured_cid is not None:
+                        _set_correlation_id(captured_cid)
                     r = agent.run_conversation(
                         user_message=user_message,
                         conversation_history=conversation_history,

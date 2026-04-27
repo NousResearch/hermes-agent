@@ -41,6 +41,7 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
     web = None  # type: ignore[assignment]
 
+from agent.redact import redact_sensitive_text
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
     BasePlatformAdapter,
@@ -996,18 +997,18 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_completion)
             except Exception as e:
-                logger.error("Error running agent for chat completions: %s", e, exc_info=True)
+                logger.error("Error running agent for chat completions: %s", redact_sensitive_text(str(e)), exc_info=True)
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error("Internal server error", err_type="server_error"),
                     status=500,
                 )
         else:
             try:
                 result, usage = await _compute_completion()
             except Exception as e:
-                logger.error("Error running agent for chat completions: %s", e, exc_info=True)
+                logger.error("Error running agent for chat completions: %s", redact_sensitive_text(str(e)), exc_info=True)
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error("Internal server error", err_type="server_error"),
                     status=500,
                 )
 
@@ -1544,8 +1545,8 @@ class APIServerAdapter(BasePlatformAdapter):
                 if isinstance(result, dict) and result.get("error") and not final_response_text:
                     agent_error = result["error"]
             except Exception as e:  # noqa: BLE001
-                logger.error("Error running agent for streaming responses: %s", e, exc_info=True)
-                agent_error = str(e)
+                logger.error("Error running agent for streaming responses: %s", redact_sensitive_text(str(e)), exc_info=True)
+                agent_error = "Internal server error"
 
             # Close the message item if it was opened
             final_response_text = "".join(final_text_parts) or final_response_text
@@ -1867,18 +1868,18 @@ class APIServerAdapter(BasePlatformAdapter):
             try:
                 result, usage = await _idem_cache.get_or_set(idempotency_key, fp, _compute_response)
             except Exception as e:
-                logger.error("Error running agent for responses: %s", e, exc_info=True)
+                logger.error("Error running agent for responses: %s", redact_sensitive_text(str(e)), exc_info=True)
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error("Internal server error", err_type="server_error"),
                     status=500,
                 )
         else:
             try:
                 result, usage = await _compute_response()
             except Exception as e:
-                logger.error("Error running agent for responses: %s", e, exc_info=True)
+                logger.error("Error running agent for responses: %s", redact_sensitive_text(str(e)), exc_info=True)
                 return web.json_response(
-                    _openai_error(f"Internal server error: {e}", err_type="server_error"),
+                    _openai_error("Internal server error", err_type="server_error"),
                     status=500,
                 )
 

@@ -674,13 +674,32 @@ def _build_child_progress_callback(
     """
     spinner = getattr(parent_agent, "_delegate_spinner", None)
     parent_cb = getattr(parent_agent, "tool_progress_callback", None)
+    pf = getattr(parent_agent, "_progress_file", None)
 
-    if not spinner and not parent_cb:
+    if not spinner and not parent_cb and not pf:
         return None  # No display → no callback → zero behavior change
 
     # Show 1-indexed prefix only in batch mode (multiple tasks)
     prefix = f"[{task_index + 1}] " if task_count > 1 else ""
     goal_label = (goal or "").strip()
+
+    # Progress-file writer closure
+    import json as _json
+
+    def _write_progress(evt: str, tool: str | None, prev: str | None, extra: dict):
+        try:
+            entry = {"ts": time.time(), "event": evt}
+            if tool:
+                entry["tool"] = tool
+            if prev and len(str(prev)) < 500:
+                entry["preview"] = str(prev)[:200]
+            if extra and isinstance(extra, dict):
+                entry.update({k: v for k, v in extra.items() if k not in ("args",)})
+            with open(pf, "a") as f:
+                f.write(_json.dumps(entry, default=str) + "\n")
+                f.flush()
+        except Exception:
+            pass  # best-effort, don't crash subagent for file I/O
 
     # Gateway: batch tool names, flush periodically
     _BATCH_SIZE = 5
@@ -709,6 +728,9 @@ def _build_child_progress_callback(
     def _relay(
         event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs
     ):
+        # Write to progress file if configured
+        if pf:
+            _write_progress(event_type, tool_name, preview, kwargs)
         if not parent_cb:
             return
         payload = _identity_kwargs()
@@ -1798,6 +1820,7 @@ def delegate_task(
     acp_command: Optional[str] = None,
     acp_args: Optional[List[str]] = None,
     role: Optional[str] = None,
+    progress_file: Optional[str] = None,
     parent_agent=None,
 ) -> str:
     """
@@ -1870,6 +1893,10 @@ def delegate_task(
         creds = _resolve_delegation_credentials(cfg, parent_agent)
     except ValueError as exc:
         return tool_error(str(exc))
+
+    # Attach progress_file to parent_agent so child callbacks can write to it
+    if progress_file:
+        parent_agent._progress_file = progress_file
 
     # Normalize to task list
     max_children = _get_max_concurrent_children()
@@ -2441,6 +2468,15 @@ DELEGATE_TASK_SCHEMA = {
                     "Only used when acp_command is set. Example: ['--acp', '--stdio', '--model', 'claude-opus-4-6']"
                 ),
             },
+            "progress_file": {
+                "type": "string",
+                "description": (
+                    "Absolute path to a progress log file. When set, the subagent writes "
+                    "JSON-line progress events (tool calls, thinking) to this file in real time. "
+                    "The parent can tail/read this file to monitor subagent activity. "
+                    "Example: '/tmp/hermes-delegate-progress.jsonl'"
+                ),
+            },
         },
         "required": [],
     },
@@ -2463,6 +2499,7 @@ registry.register(
         acp_command=args.get("acp_command"),
         acp_args=args.get("acp_args"),
         role=args.get("role"),
+        progress_file=args.get("progress_file"),
         parent_agent=kw.get("parent_agent"),
     ),
     check_fn=check_delegate_requirements,

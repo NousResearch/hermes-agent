@@ -1037,6 +1037,19 @@ DEFAULT_CONFIG = {
         "seen": {},
     },
 
+    # ``hermes update`` behaviour.
+    "updates": {
+        # Run a full ``hermes backup``-style zip of HERMES_HOME before every
+        # ``hermes update``.  Backups land in ``<HERMES_HOME>/backups/`` and
+        # can be restored with ``hermes import <path>``.  Set to false to
+        # skip the backup entirely; use the ``--no-backup`` flag on a single
+        # update invocation to override just that run.
+        "pre_update_backup": True,
+        # How many pre-update backup zips to retain.  Older ones are pruned
+        # automatically after each successful backup.
+        "backup_keep": 5,
+    },
+
     # Config schema version - bump this when adding new required fields
     "_config_version": 22,
 }

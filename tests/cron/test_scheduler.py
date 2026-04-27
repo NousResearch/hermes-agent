@@ -1164,6 +1164,16 @@ class TestRunJobSkillBacked:
 class TestSilentDelivery:
     """Verify that [SILENT] responses suppress delivery while still saving output."""
 
+    @pytest.fixture(autouse=True)
+    def _isolate_tick_lock(self, tmp_path):
+        """Point the tick file lock at a per-test temp dir to avoid xdist contention."""
+        lock_dir = tmp_path / "cron"
+        lock_dir.mkdir()
+        with patch("cron.scheduler._LOCK_DIR", lock_dir), \
+             patch("cron.scheduler._LOCK_FILE", lock_dir / ".tick.lock"), \
+             patch("cron.scheduler.advance_next_run"):
+            yield
+
     def _make_job(self):
         return {
             "id": "monitor-job",

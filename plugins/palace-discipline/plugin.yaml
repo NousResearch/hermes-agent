@@ -1,0 +1,6 @@
+name: palace-discipline
+version: 0.1.0
+description: "Mechanical palace discipline: injects memory.init context, type-prompt, Discord-delivery prompt (when applicable), top-K skills, and top-K canon hits BEFORE Hermes sees the user message. Hook fires on pre_gateway_dispatch and rewrites event.text. Failure-tolerant: any MCP error logs a warning and degrades silently."
+author: "Alberto (memory-palace Session 18)"
+hooks:
+  - pre_gateway_dispatch

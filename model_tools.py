@@ -41,6 +41,39 @@ _tool_loop = None          # persistent loop for the main (CLI) thread
 _tool_loop_lock = threading.Lock()
 _worker_thread_local = threading.local()  # per-worker-thread persistent loops
 
+# =============================================================================
+# Async Bridge for running-loop contexts
+# =============================================================================
+
+_bridge_loop = None          # dedicated event loop for running-loop callers
+_bridge_thread = None        # thread that runs the bridge loop
+_bridge_loop_ready = threading.Event()  # set when the bridge loop is ready
+
+
+def _start_bridge_loop():
+    """Start the bridge loop in a dedicated thread."""
+    global _bridge_loop, _bridge_thread
+    if _bridge_loop is not None:
+        return
+    def run_bridge():
+        global _bridge_loop
+        _bridge_loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(_bridge_loop)
+        _bridge_loop_ready.set()
+        _bridge_loop.run_forever()
+    _bridge_thread = threading.Thread(target=run_bridge, name='HermesBridgeLoop', daemon=True)
+    _bridge_thread.start()
+    # Wait for the loop to be ready
+    _bridge_loop_ready.wait()
+
+def _stop_bridge_loop():
+    """Stop the bridge loop."""
+    global _bridge_loop, _bridge_thread
+    if _bridge_loop is not None and _bridge_loop.is_running():
+        _bridge_loop.call_soon_threadsafe(_bridge_loop.stop)
+    # Note: we don't wait for the thread to finish because it's a daemon thread.
+
+
 
 def _get_tool_loop():
     """Return a long-lived event loop for running async tool handlers.
@@ -106,19 +139,17 @@ def _run_async(coro):
     except RuntimeError:
         loop = None
 
-    if loop and loop.is_running():
-        # Inside an async context (gateway, RL env) — run in a fresh thread.
-        import concurrent.futures
-        pool = concurrent.futures.ThreadPoolExecutor(max_workers=1)
-        future = pool.submit(asyncio.run, coro)
-        try:
-            return future.result(timeout=300)
-        except concurrent.futures.TimeoutError:
-            future.cancel()
-            raise
-        finally:
-            pool.shutdown(wait=False, cancel_futures=True)
-
+    if loop and loop.is_running():                # Inside an async context (gateway, RL env) — run on the dedicated bridge loop.
+                _start_bridge_loop()
+                future = asyncio.run_coroutine_threadsafe(coro, _bridge_loop)
+                try:
+                    return future.result(timeout=300)
+                except asyncio.TimeoutError:
+                    future.cancel()
+                    raise
+                except Exception:
+                    future.cancel()
+                    raise
     # If we're on a worker thread (e.g., parallel tool execution in
     # delegate_task), use a per-thread persistent loop.  This avoids
     # contention with the main thread's shared loop while keeping cached

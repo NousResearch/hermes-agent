@@ -405,6 +405,21 @@ class TestGatewayConfigGate:
         joined = "\n".join(lines)
         assert "`/verbose" in joined
 
+    def test_config_gate_quoted_false_stays_disabled_everywhere(self, tmp_path, monkeypatch):
+        """Quoted false must not enable config-gated gateway commands."""
+        config_file = tmp_path / "config.yaml"
+        config_file.write_text('display:\n  tool_progress_command: "false"\n')
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        lines = gateway_help_lines()
+        joined = "\n".join(lines)
+        names = {name for name, _ in telegram_bot_commands()}
+        mapping = slack_subcommand_map()
+
+        assert "`/verbose" not in joined
+        assert "verbose" not in names
+        assert "verbose" not in mapping
+
     def test_config_gate_excluded_from_telegram_when_off(self, tmp_path, monkeypatch):
         config_file = tmp_path / "config.yaml"
         config_file.write_text("display:\n  tool_progress_command: false\n")

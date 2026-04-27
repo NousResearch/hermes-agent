@@ -19,6 +19,8 @@ from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
+from utils import is_truthy_value
+
 # prompt_toolkit is an optional CLI dependency — only needed for
 # SlashCommandCompleter and SlashCommandAutoSuggest.  Gateway and test
 # environments that lack it must still be able to import this module
@@ -371,7 +373,7 @@ def _resolve_config_gates() -> set[str]:
             else:
                 val = None
                 break
-        if val:
+        if is_truthy_value(val, default=False):
             result.add(cmd.name)
     return result
 

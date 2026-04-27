@@ -188,6 +188,33 @@ def tmp_cron_dir(tmp_path, monkeypatch):
     return tmp_path
 
 
+def _stored_cron_job(
+    job_id="cron-job",
+    next_run_at="2026-04-27T07:00:00+00:00",
+    last_run_at=None,
+):
+    return {
+        "id": job_id,
+        "name": "Cron job",
+        "prompt": "Daily report",
+        "schedule": {"kind": "cron", "expr": "0 7 * * *", "display": "0 7 * * *"},
+        "schedule_display": "0 7 * * *",
+        "repeat": {"times": None, "completed": 0},
+        "enabled": True,
+        "state": "scheduled",
+        "paused_at": None,
+        "paused_reason": None,
+        "created_at": "2026-04-26T07:00:00+00:00",
+        "next_run_at": next_run_at,
+        "last_run_at": last_run_at,
+        "last_status": None,
+        "last_error": None,
+        "last_delivery_error": None,
+        "deliver": "local",
+        "origin": None,
+    }
+
+
 class TestJobCRUD:
     def test_create_and_get(self, tmp_cron_dir):
         job = create_job(prompt="Check server status", schedule="30m")
@@ -368,6 +395,20 @@ class TestMarkJobRun:
         assert updated["last_status"] == "error"
         assert updated["last_error"] == "model timeout"
         assert updated["last_delivery_error"] == "platform 'discord' not enabled"
+
+    def test_recurring_cron_missing_croniter_stays_enabled(self, tmp_cron_dir, monkeypatch):
+        monkeypatch.setattr("cron.jobs.HAS_CRONITER", False)
+        save_jobs([_stored_cron_job("cron-missing")])
+
+        mark_job_run("cron-missing", success=True)
+
+        updated = get_job("cron-missing")
+        assert updated["enabled"] is True
+        assert updated["state"] == "error"
+        assert updated["next_run_at"] is None
+        assert updated["last_status"] == "error"
+        assert "croniter" in updated["last_error"]
+        assert updated["repeat"]["completed"] == 1
 
 
 class TestAdvanceNextRun:
@@ -564,6 +605,45 @@ class TestGetDueJobs:
 
         assert get_due_jobs() == []
         assert get_job("oneshot-stale")["next_run_at"] is None
+
+    def test_recurring_cron_without_next_run_is_recovered(self, tmp_cron_dir, monkeypatch):
+        pytest.importorskip("croniter")
+        now = datetime(2026, 4, 27, 6, 0, 0, tzinfo=timezone.utc)
+        monkeypatch.setattr("cron.jobs._hermes_now", lambda: now)
+        save_jobs([
+            _stored_cron_job(
+                "cron-recover",
+                next_run_at=None,
+                last_run_at="2026-04-26T07:00:00+00:00",
+            )
+        ])
+
+        due = get_due_jobs()
+
+        assert due == []
+        updated = get_job("cron-recover")
+        assert updated["enabled"] is True
+        assert updated["state"] == "scheduled"
+        assert updated["next_run_at"] is not None
+        assert datetime.fromisoformat(updated["next_run_at"]) > now
+
+    def test_recurring_cron_without_next_run_missing_croniter_records_error(
+        self,
+        tmp_cron_dir,
+        monkeypatch,
+    ):
+        monkeypatch.setattr("cron.jobs.HAS_CRONITER", False)
+        save_jobs([_stored_cron_job("cron-unrecoverable", next_run_at=None)])
+
+        due = get_due_jobs()
+
+        assert due == []
+        updated = get_job("cron-unrecoverable")
+        assert updated["enabled"] is True
+        assert updated["state"] == "error"
+        assert updated["next_run_at"] is None
+        assert updated["last_status"] == "error"
+        assert "croniter" in updated["last_error"]
 
 
 class TestEnabledToolsets:

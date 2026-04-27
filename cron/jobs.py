@@ -287,6 +287,35 @@ def _compute_grace_seconds(schedule: dict) -> int:
     return MIN_GRACE
 
 
+def _is_recurring_schedule(schedule: Dict[str, Any]) -> bool:
+    return isinstance(schedule, dict) and schedule.get("kind") in ("cron", "interval")
+
+
+def _next_run_failure_message(schedule: Dict[str, Any], error: Optional[BaseException] = None) -> str:
+    kind = schedule.get("kind", "unknown") if isinstance(schedule, dict) else "unknown"
+    if error:
+        return f"Failed to compute next run for recurring {kind} schedule: {error}"
+    if kind == "cron" and not HAS_CRONITER:
+        return "Failed to compute next run for cron schedule because the 'croniter' package is not installed"
+    return f"Failed to compute next run for recurring {kind} schedule"
+
+
+def _mark_next_run_failure(
+    job: Dict[str, Any],
+    schedule: Dict[str, Any],
+    error: Optional[BaseException] = None,
+) -> None:
+    message = _next_run_failure_message(schedule, error)
+    existing_error = job.get("last_error")
+    if existing_error and message not in existing_error:
+        job["last_error"] = f"{existing_error}; {message}"
+    else:
+        job["last_error"] = message
+    job["last_status"] = "error"
+    if job.get("state") != "paused":
+        job["state"] = "error"
+
+
 def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None) -> Optional[str]:
     """
     Compute the next run time for a schedule.
@@ -696,12 +725,28 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                         return
                 
                 # Compute next run
-                job["next_run_at"] = compute_next_run(job["schedule"], now)
+                next_run_error = None
+                schedule = job.get("schedule", {})
+                try:
+                    job["next_run_at"] = compute_next_run(schedule, now)
+                except Exception as e:
+                    if not _is_recurring_schedule(schedule):
+                        raise
+                    job["next_run_at"] = None
+                    next_run_error = e
 
                 # If no next run (one-shot completed), disable
                 if job["next_run_at"] is None:
-                    job["enabled"] = False
-                    job["state"] = "completed"
+                    if _is_recurring_schedule(schedule):
+                        _mark_next_run_failure(job, schedule, next_run_error)
+                        logger.error(
+                            "Job '%s' remains enabled but errored because next_run_at could not be computed: %s",
+                            job.get("name", job["id"]),
+                            job["last_error"],
+                        )
+                    else:
+                        job["enabled"] = False
+                        job["state"] = "completed"
                 elif job.get("state") != "paused":
                     job["state"] = "scheduled"
 
@@ -760,24 +805,48 @@ def get_due_jobs() -> List[Dict[str, Any]]:
 
         next_run = job.get("next_run_at")
         if not next_run:
-            recovered_next = _recoverable_oneshot_run_at(
-                job.get("schedule", {}),
-                now,
-                last_run_at=job.get("last_run_at"),
-            )
+            schedule = job.get("schedule", {})
+            recovery_error = None
+            if _is_recurring_schedule(schedule):
+                try:
+                    recovered_next = compute_next_run(schedule, job.get("last_run_at"))
+                except Exception as e:
+                    recovered_next = None
+                    recovery_error = e
+            else:
+                recovered_next = _recoverable_oneshot_run_at(
+                    schedule,
+                    now,
+                    last_run_at=job.get("last_run_at"),
+                )
             if not recovered_next:
+                if _is_recurring_schedule(schedule):
+                    for rj in raw_jobs:
+                        if rj["id"] == job["id"]:
+                            _mark_next_run_failure(rj, schedule, recovery_error)
+                            needs_save = True
+                            break
+                    logger.error(
+                        "Job '%s' has no next_run_at and could not be recovered: %s",
+                        job.get("name", job["id"]),
+                        _next_run_failure_message(schedule, recovery_error),
+                    )
                 continue
 
             job["next_run_at"] = recovered_next
             next_run = recovered_next
+            schedule_kind = schedule.get("kind", "unknown") if isinstance(schedule, dict) else "unknown"
             logger.info(
-                "Job '%s' had no next_run_at; recovering one-shot run at %s",
+                "Job '%s' had no next_run_at; recovering %s run at %s",
                 job.get("name", job["id"]),
+                schedule_kind,
                 recovered_next,
             )
             for rj in raw_jobs:
                 if rj["id"] == job["id"]:
                     rj["next_run_at"] = recovered_next
+                    if _is_recurring_schedule(schedule) and rj.get("state") != "paused":
+                        rj["state"] = "scheduled"
                     needs_save = True
                     break
 
@@ -793,7 +862,12 @@ def get_due_jobs() -> List[Dict[str, Any]]:
             if kind in ("cron", "interval") and (now - next_run_dt).total_seconds() > grace:
                 # Job is past its catch-up grace window — this is a stale missed run.
                 # Grace scales with schedule period: daily=2h, hourly=30m, 10min=5m.
-                new_next = compute_next_run(schedule, now.isoformat())
+                fast_forward_error = None
+                try:
+                    new_next = compute_next_run(schedule, now.isoformat())
+                except Exception as e:
+                    new_next = None
+                    fast_forward_error = e
                 if new_next:
                     logger.info(
                         "Job '%s' missed its scheduled time (%s, grace=%ds). "
@@ -810,6 +884,17 @@ def get_due_jobs() -> List[Dict[str, Any]]:
                             needs_save = True
                             break
                     continue  # Skip this run
+                for rj in raw_jobs:
+                    if rj["id"] == job["id"]:
+                        _mark_next_run_failure(rj, schedule, fast_forward_error)
+                        needs_save = True
+                        break
+                logger.error(
+                    "Job '%s' missed its scheduled time but could not be fast-forwarded: %s",
+                    job.get("name", job["id"]),
+                    _next_run_failure_message(schedule, fast_forward_error),
+                )
+                continue
 
             due.append(job)
 

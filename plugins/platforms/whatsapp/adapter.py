@@ -1309,6 +1309,18 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                         except Exception as e:
                             print(f"[{self.name}] Failed to read document text: {e}", flush=True)
 
+            metadata: Dict[str, Any] = {}
+            # The bridge sets ``fromOwner: true`` on inbound fromMe messages
+            # that look owner-typed (linked-device send, not echoed from our
+            # own /send).  Surfaced under a platform-prefixed key so plugins
+            # can detect "owner just replied in this customer chat" without
+            # having to peek at raw_message.  Gated by
+            # ``WHATSAPP_FORWARD_OWNER_MESSAGES`` at the bridge layer; the
+            # propagation here is unconditional so a future producer can set
+            # the flag without us having to touch this code path again.
+            if data.get("fromOwner"):
+                metadata["whatsapp_from_owner"] = True
+
             return MessageEvent(
                 text=body,
                 message_type=msg_type,
@@ -1317,6 +1329,7 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
                 message_id=data.get("messageId"),
                 media_urls=cached_urls,
                 media_types=media_types,
+                metadata=metadata,
             )
         except Exception as e:
             print(f"[{self.name}] Error building event: {e}")

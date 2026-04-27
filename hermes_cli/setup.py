@@ -129,6 +129,12 @@ def _set_reasoning_effort(config: Dict[str, Any], effort: str) -> None:
     agent_cfg["reasoning_effort"] = effort
 
 
+def _is_module_available(module_name: str) -> bool:
+    """Return whether an optional Python module can be imported."""
+    try:
+        return importlib.util.find_spec(module_name) is not None
+    except Exception:
+        return False
 
 
 # Import config helpers
@@ -472,21 +478,12 @@ def _print_setup_summary(config: dict, hermes_home):
     elif tts_provider == "gemini" and (get_env_value("GEMINI_API_KEY") or get_env_value("GOOGLE_API_KEY")):
         tool_status.append(("Text-to-Speech (Google Gemini)", True, None))
     elif tts_provider == "neutts":
-        try:
-            neutts_ok = importlib.util.find_spec("neutts") is not None
-        except Exception:
-            neutts_ok = False
-        if neutts_ok:
+        if _is_module_available("neutts"):
             tool_status.append(("Text-to-Speech (NeuTTS local)", True, None))
         else:
             tool_status.append(("Text-to-Speech (NeuTTS — not installed)", False, "run 'hermes setup tts'"))
     elif tts_provider == "kittentts":
-        try:
-            import importlib.util
-            kittentts_ok = importlib.util.find_spec("kittentts") is not None
-        except Exception:
-            kittentts_ok = False
-        if kittentts_ok:
+        if _is_module_available("kittentts"):
             tool_status.append(("Text-to-Speech (KittenTTS local)", True, None))
         else:
             tool_status.append(("Text-to-Speech (KittenTTS — not installed)", False, "run 'hermes setup tts'"))
@@ -1142,10 +1139,7 @@ def _setup_tts_provider(config: dict):
 
     if selected == "neutts":
         # Check if already installed
-        try:
-            already_installed = importlib.util.find_spec("neutts") is not None
-        except Exception:
-            already_installed = False
+        already_installed = _is_module_available("neutts")
 
         if already_installed:
             print_success("NeuTTS is already installed")
@@ -1250,11 +1244,7 @@ def _setup_tts_provider(config: dict):
 
     elif selected == "kittentts":
         # Check if already installed
-        try:
-            import importlib.util
-            already_installed = importlib.util.find_spec("kittentts") is not None
-        except Exception:
-            already_installed = False
+        already_installed = _is_module_available("kittentts")
 
         if already_installed:
             print_success("KittenTTS is already installed")

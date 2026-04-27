@@ -468,15 +468,25 @@ def _load_cfg() -> dict:
 
 def _save_cfg(cfg: dict):
     global _cfg_cache, _cfg_mtime
-    import yaml
+    from hermes_cli.config import save_config
 
-    path = _hermes_home / "config.yaml"
-    with open(path, "w") as f:
-        yaml.safe_dump(cfg, f)
+    # Ensure save_config writes to the same directory as _hermes_home.
+    # In production they match; in tests, _hermes_home may be monkeypatched
+    # to a tmpdir while HERMES_HOME still points to ~/.hermes.
+    prev_home = os.environ.get("HERMES_HOME")
+    try:
+        os.environ["HERMES_HOME"] = str(_hermes_home)
+        save_config(cfg)
+    finally:
+        if prev_home is None:
+            os.environ.pop("HERMES_HOME", None)
+        else:
+            os.environ["HERMES_HOME"] = prev_home
+
     with _cfg_lock:
         _cfg_cache = copy.deepcopy(cfg)
         try:
-            _cfg_mtime = path.stat().st_mtime
+            _cfg_mtime = (_hermes_home / "config.yaml").stat().st_mtime
         except Exception:
             _cfg_mtime = None
 

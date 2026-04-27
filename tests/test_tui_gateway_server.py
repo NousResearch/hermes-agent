@@ -396,6 +396,34 @@ def test_session_title_rejects_empty_title_with_specific_error_code(monkeypatch)
         server._sessions.pop("sid", None)
 
 
+def test_session_title_set_errors_when_row_lookup_fails_after_noop(monkeypatch):
+    class _FakeDB:
+        def get_session_title(self, _key):
+            return ""
+
+        def get_session(self, _key):
+            raise RuntimeError("row lookup failed")
+
+        def set_session_title(self, _key, _title):
+            return False
+
+    server._sessions["sid"] = _session()
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.title",
+                "params": {"session_id": "sid", "title": "fresh"},
+            }
+        )
+        assert "error" in resp
+        assert resp["error"]["code"] == 5007
+        assert "row lookup failed" in resp["error"]["message"]
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_config_set_yolo_toggles_session_scope():
     from tools.approval import clear_session, is_session_yolo_enabled
 

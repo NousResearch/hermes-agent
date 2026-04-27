@@ -268,7 +268,7 @@ export const en: Translations = {
     modelSaved: "Model saved",
     gatewayDidNotStart: "Gateway did not come up",
     checkLog: "check logs/gateway-restart.log",
-    tokenShared: "token shared",
+    tokenConflict: "token conflict",
     sharedWith: "shared with",
   },
 

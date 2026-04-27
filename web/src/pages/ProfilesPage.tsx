@@ -33,6 +33,15 @@ import { useI18n } from "@/i18n";
 // PATCH/POST request and burning a toast cycle.
 const PROFILE_NAME_RE = /^[a-z0-9][a-z0-9_-]{0,63}$/;
 
+// Friendly display names for env keys returned in shared_tokens — keep in
+// sync with the `_EXCLUSIVE_TOKEN_ENV_KEYS` tuple in hermes_cli/web_server.py.
+// These are user-facing brand names; deliberately not translated.
+const TOKEN_PLATFORM_LABEL: Record<string, string> = {
+  WEIXIN_TOKEN: "WeChat",
+  TELEGRAM_BOT_TOKEN: "Telegram",
+  DISCORD_BOT_TOKEN: "Discord",
+};
+
 export default function ProfilesPage() {
   const [profiles, setProfiles] = useState<ProfileInfo[]>([]);
   const [active, setActive] = useState<string>("default");
@@ -562,23 +571,23 @@ export default function ProfilesPage() {
                     {p.has_env && (
                       <Badge variant="outline">{t.profiles.hasEnv}</Badge>
                     )}
-                    {p.shared_tokens.length > 0 && (
-                      <Badge
-                        variant="destructive"
-                        title={p.shared_tokens
-                          .map(
-                            (s) =>
-                              `${s.key} ${t.profiles.sharedWith} ${s.with.join(", ")}`,
-                          )
-                          .join("\n")}
-                      >
-                        <AlertTriangle
-                          aria-hidden
-                          className="mr-1 h-3 w-3"
-                        />
-                        {t.profiles.tokenShared}
-                      </Badge>
-                    )}
+                    {p.shared_tokens.map((s) => {
+                      const label =
+                        TOKEN_PLATFORM_LABEL[s.key] ?? s.key;
+                      return (
+                        <Badge
+                          key={s.key}
+                          variant="destructive"
+                          title={`${s.key} — ${t.profiles.sharedWith} ${s.with.join(", ")}`}
+                        >
+                          <AlertTriangle
+                            aria-hidden
+                            className="mr-1 h-3 w-3"
+                          />
+                          {`${t.profiles.tokenConflict} (${label})`}
+                        </Badge>
+                      );
+                    })}
                   </div>
                   {isRenaming &&
                     (() => {

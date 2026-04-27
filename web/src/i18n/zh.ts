@@ -264,7 +264,7 @@ export const zh: Translations = {
     modelSaved: "模型已保存",
     gatewayDidNotStart: "网关未能启动",
     checkLog: "查看 logs/gateway-restart.log",
-    tokenShared: "token 冲突",
+    tokenConflict: "token 冲突",
     sharedWith: "与以下 profile 共享",
   },
 

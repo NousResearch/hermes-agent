@@ -269,7 +269,7 @@ export interface Translations {
     modelSaved: string;
     gatewayDidNotStart: string;
     checkLog: string;
-    tokenShared: string;
+    tokenConflict: string;
     sharedWith: string;
   };
 

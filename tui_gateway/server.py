@@ -1530,6 +1530,7 @@ def _(rid, params: dict) -> dict:
         "history_lock": threading.Lock(),
         "history_version": 0,
         "image_counter": 0,
+        "pending_title": None,
         "running": False,
         "session_key": key,
         "show_reasoning": _load_show_reasoning(),
@@ -1567,6 +1568,13 @@ def _(rid, params: dict) -> dict:
             db = _get_db()
             if db is not None:
                 db.create_session(key, source="tui", model=_resolve_model())
+                pending_title = (session.get("pending_title") or "").strip()
+                if pending_title:
+                    try:
+                        if db.set_session_title(key, pending_title):
+                            session["pending_title"] = None
+                    except Exception:
+                        pass
             session["agent"] = agent
 
             try:
@@ -1736,12 +1744,24 @@ def _(rid, params: dict) -> dict:
     db = _get_db()
     if db is None:
         return _db_unavailable_error(rid, code=5007)
-    title, key = params.get("title", ""), session["session_key"]
+    key = session["session_key"]
+    if "title" not in params:
+        return _ok(
+            rid,
+            {
+                "title": db.get_session_title(key) or session.get("pending_title") or "",
+                "session_key": key,
+            },
+        )
+    title = (params.get("title", "") or "").strip()
     if not title:
-        return _ok(rid, {"title": db.get_session_title(key) or "", "session_key": key})
+        return _err(rid, 4007, "title required")
     try:
-        db.set_session_title(key, title)
-        return _ok(rid, {"title": title})
+        if db.set_session_title(key, title):
+            session["pending_title"] = None
+            return _ok(rid, {"pending": False, "title": title})
+        session["pending_title"] = title
+        return _ok(rid, {"pending": True, "title": title})
     except Exception as e:
         return _err(rid, 5007, str(e))
 

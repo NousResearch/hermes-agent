@@ -1765,7 +1765,21 @@ def _(rid, params: dict) -> dict:
     if "title" not in params:
         fallback = session.get("pending_title") or ""
         try:
-            resolved_title = db.get_session_title(key) or fallback
+            resolved_title = db.get_session_title(key) or ""
+            if not resolved_title and fallback:
+                if db.set_session_title(key, fallback):
+                    session["pending_title"] = None
+                    resolved_title = fallback
+                else:
+                    existing_row = db.get_session(key)
+                    existing_title = ((existing_row or {}).get("title") or "").strip()
+                    if existing_title == fallback:
+                        session["pending_title"] = None
+                        resolved_title = fallback
+                    else:
+                        resolved_title = fallback
+            elif resolved_title:
+                session["pending_title"] = None
         except Exception:
             resolved_title = fallback
         return _ok(
@@ -1796,6 +1810,8 @@ def _(rid, params: dict) -> dict:
             )
         session["pending_title"] = title
         return _ok(rid, {"pending": True, "title": title})
+    except ValueError as e:
+        return _err(rid, 4022, str(e))
     except Exception as e:
         return _err(rid, 5007, str(e))
 

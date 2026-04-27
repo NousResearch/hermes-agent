@@ -375,6 +375,34 @@ def test_session_title_get_falls_back_to_pending_when_db_read_throws(monkeypatch
         server._sessions.pop("sid", None)
 
 
+def test_session_title_get_retries_persist_for_pending_title(monkeypatch):
+    class _FakeDB:
+        def __init__(self):
+            self.title = ""
+
+        def get_session_title(self, _key):
+            return self.title
+
+        def set_session_title(self, _key, title):
+            self.title = title
+            return True
+
+        def get_session(self, _key):
+            return {"id": _key, "title": self.title}
+
+    db = _FakeDB()
+    server._sessions["sid"] = _session(pending_title="queued title")
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.title", "params": {"session_id": "sid"}}
+        )
+        assert resp["result"]["title"] == "queued title"
+        assert server._sessions["sid"]["pending_title"] is None
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_session_title_rejects_empty_title_with_specific_error_code(monkeypatch):
     class _FakeDB:
         def get_session_title(self, _key):
@@ -392,6 +420,34 @@ def test_session_title_rejects_empty_title_with_specific_error_code(monkeypatch)
         )
         assert "error" in resp
         assert resp["error"]["code"] == 4021
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_title_set_maps_valueerror_to_user_error(monkeypatch):
+    class _FakeDB:
+        def get_session_title(self, _key):
+            return ""
+
+        def get_session(self, _key):
+            return {"id": _key}
+
+        def set_session_title(self, _key, _title):
+            raise ValueError("Title already in use")
+
+    server._sessions["sid"] = _session()
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.title",
+                "params": {"session_id": "sid", "title": "dup"},
+            }
+        )
+        assert "error" in resp
+        assert resp["error"]["code"] == 4022
+        assert "already in use" in resp["error"]["message"]
     finally:
         server._sessions.pop("sid", None)
 

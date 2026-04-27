@@ -672,6 +672,79 @@ class TestRunJobSessionPersistence:
         assert call_args[0][0].startswith("cron_test-job_")
         assert call_args[0][1] == "cron_complete"
         fake_db.close.assert_called_once()
+        mock_agent.close.assert_called_once()
+
+    def test_run_job_closes_agent_on_failure_to_prevent_fd_leak(self, tmp_path):
+        # Regression: if ``run_conversation`` raises, the ephemeral cron
+        # agent was previously leaked — over days of ticks this accumulated
+        # httpx transports and hit EMFILE / "too many open files".
+        job = {
+            "id": "failing-job",
+            "name": "failing",
+            "prompt": "hello",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.side_effect = RuntimeError("boom")
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is False
+        assert final_response == ""
+        assert "RuntimeError: boom" in error
+        mock_agent.close.assert_called_once()
+
+    def test_run_job_reaps_stale_auxiliary_clients_per_tick(self, tmp_path):
+        # Regression: auxiliary clients bound to the cron worker's dead
+        # event loop must be reaped each tick. Without this, ``_client_cache``
+        # holds onto transports whose underlying sockets can no longer be
+        # closed (their loop is gone), leaking one fd batch per cron run.
+        job = {
+            "id": "aux-clean-job",
+            "name": "aux-clean",
+            "prompt": "hello",
+        }
+        fake_db = MagicMock()
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch(
+                 "hermes_cli.runtime_provider.resolve_runtime_provider",
+                 return_value={
+                     "api_key": "***",
+                     "base_url": "https://example.invalid/v1",
+                     "provider": "openrouter",
+                     "api_mode": "chat_completions",
+                 },
+             ), \
+             patch("run_agent.AIAgent") as mock_agent_cls, \
+             patch("agent.auxiliary_client.cleanup_stale_async_clients") as cleanup_mock:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, _output, _final_response, _error = run_job(job)
+
+        assert success is True
+        cleanup_mock.assert_called_once()
 
     def _make_run_job_patches(self, tmp_path):
         """Common patches for run_job tests."""

@@ -1,4 +1,5 @@
-import { Button, Typography } from "@nous-research/ui";
+import { Button } from "@nous-research/ui/ui/components/button";
+import { Typography } from "@/components/NouiTypography";
 import { useI18n } from "@/i18n/context";
 
 /**

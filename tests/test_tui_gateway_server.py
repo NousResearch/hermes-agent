@@ -258,6 +258,68 @@ def _session(agent=None, **extra):
     }
 
 
+def test_session_title_queues_when_db_row_not_ready(monkeypatch):
+    class _FakeDB:
+        def get_session_title(self, _key):
+            return None
+
+        def set_session_title(self, _key, _title):
+            return False
+
+    server._sessions["sid"] = _session(pending_title=None)
+    monkeypatch.setattr(server, "_get_db", lambda: _FakeDB())
+    try:
+        set_resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.title",
+                "params": {"session_id": "sid", "title": "queued title"},
+            }
+        )
+
+        assert set_resp["result"]["pending"] is True
+        assert set_resp["result"]["title"] == "queued title"
+        assert server._sessions["sid"]["pending_title"] == "queued title"
+
+        get_resp = server.handle_request(
+            {"id": "2", "method": "session.title", "params": {"session_id": "sid"}}
+        )
+        assert get_resp["result"]["title"] == "queued title"
+    finally:
+        server._sessions.pop("sid", None)
+
+
+def test_session_title_clears_pending_after_persist(monkeypatch):
+    class _FakeDB:
+        def __init__(self):
+            self.title = "old"
+
+        def get_session_title(self, _key):
+            return self.title
+
+        def set_session_title(self, _key, title):
+            self.title = title
+            return True
+
+    db = _FakeDB()
+    server._sessions["sid"] = _session(pending_title="stale")
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    try:
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "session.title",
+                "params": {"session_id": "sid", "title": "fresh"},
+            }
+        )
+
+        assert resp["result"]["pending"] is False
+        assert resp["result"]["title"] == "fresh"
+        assert server._sessions["sid"]["pending_title"] is None
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_config_set_yolo_toggles_session_scope():
     from tools.approval import clear_session, is_session_yolo_enabled
 

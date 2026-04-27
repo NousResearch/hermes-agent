@@ -150,7 +150,7 @@ export function useMainApp(gw: GatewayClient) {
 
   const clearSelection = useCallback(() => {
     selection.clearSelection()
-    getInputSelection()?.clear()
+    getInputSelection()?.collapseToEnd()
   }, [selection])
 
   const composer = useComposerState({

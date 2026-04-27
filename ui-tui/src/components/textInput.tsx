@@ -391,13 +391,19 @@ export function TextInput({
       return
     }
 
-    setInputSelection({
-      clear: () => {
-        if (selRef.current) {
-          selRef.current = null
-          setSel(null)
-        }
+    const dropSel = () => {
+      if (!selRef.current) {
+        return
+      }
 
+      selRef.current = null
+      setSel(null)
+    }
+
+    setInputSelection({
+      clear: dropSel,
+      collapseToEnd: () => {
+        dropSel()
         setCur(vRef.current.length)
         curRef.current = vRef.current.length
       },

@@ -138,13 +138,27 @@ const ComposerPane = memo(function ComposerPane({
     inputMouseRef.current?.startAtBeginning()
   }
 
-  const dragIntoInput = (e: GutterMouseEvent) => {
+  // Drag origin matches the input box's top-left, so localRow / localCol
+  // map directly into TextInput coords (after backing out the prompt cell).
+  const dragFromPromptRow = (e: GutterMouseEvent) => {
     if (e.button !== 0) {
       return
     }
 
     e.stopImmediatePropagation?.()
     inputMouseRef.current?.dragAt(e.localRow ?? 0, (e.localCol ?? 0) - pw)
+  }
+
+  // Spacer rows live on a different vertical origin; only the column is
+  // parent-aligned with the input. Force row=0 so vertical drags can't
+  // jump the cursor to the wrong wrapped line.
+  const dragFromSpacer = (e: GutterMouseEvent) => {
+    if (e.button !== 0) {
+      return
+    }
+
+    e.stopImmediatePropagation?.()
+    inputMouseRef.current?.dragAt(0, (e.localCol ?? 0) - pw)
   }
 
   const endInputDrag = () => inputMouseRef.current?.end()
@@ -181,7 +195,7 @@ const ComposerPane = memo(function ComposerPane({
           {status.stickyPrompt}
         </Text>
       ) : (
-        <Box height={1} onMouseDown={captureInputDrag} onMouseDrag={dragIntoInput} onMouseUp={endInputDrag} />
+        <Box height={1} onMouseDown={captureInputDrag} onMouseDrag={dragFromSpacer} onMouseUp={endInputDrag} />
       )}
 
       <StatusRulePane at="top" composer={composer} status={status} />
@@ -208,7 +222,7 @@ const ComposerPane = memo(function ComposerPane({
               </Box>
             ))}
 
-            <Box onMouseDown={captureInputDrag} onMouseDrag={dragIntoInput} onMouseUp={endInputDrag} position="relative">
+            <Box onMouseDown={captureInputDrag} onMouseDrag={dragFromPromptRow} onMouseUp={endInputDrag} position="relative">
               <Box width={pw}>
                 {sh ? (
                   <Text color={ui.theme.color.shellDollar}>$ </Text>

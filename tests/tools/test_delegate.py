@@ -193,6 +193,67 @@ class TestBridgeTransportConfig(unittest.TestCase):
             env = data["mcpServers"]["worker-bridge"]["env"]
             self.assertEqual(env["AGENT_ORCHESTRATOR_SESSION_ID"], "hermes-two")
 
+    def test_claude_bridge_config_includes_configured_extra_mcp_servers_only(self):
+        from tools.delegate_bridge_transport import _write_claude_mcp_config
+
+        with tempfile.TemporaryDirectory() as tmp:
+            session_dir = Path(tmp) / "session"
+            session_dir.mkdir()
+            root = Path(tmp) / "cache"
+            bridge_server = Path(tmp) / "bridge-mcp" / "server.js"
+            cfg = {
+                "bridge_extra_mcp_servers": {
+                    "hindsight-prv": {
+                        "type": "http",
+                        "url": "http://localhost:8888/mcp/prv/",
+                    }
+                }
+            }
+
+            config_path = _write_claude_mcp_config(
+                session_dir,
+                root,
+                "hermes-test",
+                bridge_server,
+                cfg,
+            )
+
+            servers = json.loads(config_path.read_text())["mcpServers"]
+            self.assertEqual(set(servers), {"worker-bridge", "hindsight-prv"})
+            self.assertEqual(servers["hindsight-prv"]["url"], "http://localhost:8888/mcp/prv/")
+
+    def test_claude_bridge_allows_configured_extra_mcp_tools(self):
+        from tools.delegate_bridge_transport import _build_worker_command
+
+        with tempfile.TemporaryDirectory() as tmp:
+            session_dir = Path(tmp) / "session"
+            session_dir.mkdir()
+            cfg = {
+                "bridge_extra_allowed_tools": [
+                    "mcp__hindsight-prv__recall",
+                    "mcp__hindsight-prv__reflect",
+                ]
+            }
+
+            command, args = _build_worker_command(
+                worker_type="claude",
+                model="opus",
+                prompt="test",
+                unsafe_allow_writes=False,
+                acp_args=[],
+                session_dir=session_dir,
+                root=Path(tmp) / "cache",
+                session_id="hermes-test",
+                bridge_server=Path(tmp) / "bridge-mcp" / "server.js",
+                cfg=cfg,
+            )
+
+            self.assertEqual(command, "claude")
+            allowed = args[args.index("--allowedTools") + 1]
+            self.assertIn("mcp__worker-bridge__report_to_orchestrator", allowed)
+            self.assertIn("mcp__hindsight-prv__recall", allowed)
+            self.assertIn("mcp__hindsight-prv__reflect", allowed)
+
     def test_bridge_status_reports_starting_before_ipc_dir_exists(self):
         from tools.delegate_bridge_transport import bridge_status
 

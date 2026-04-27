@@ -821,6 +821,15 @@ delegation:
   # persona_workdir: "~/code/project"         # Optional default workdir for persona-backed bridge workers.
   # agent_orchestrator_dir: "~/.hermes/cache/agent-orchestrator"
                                               # Private IPC/cache root for bridge workers.
+  # bridge_extra_mcp_servers:                 # Optional extra MCPs for Claude bridge workers.
+  #   hindsight-prv:                          # Keep this allowlisted; do not forward every project MCP.
+  #     type: http
+  #     url: "http://localhost:8888/mcp/prv/"
+  # bridge_extra_allowed_tools:
+  #   - "mcp__hindsight-prv__retain"
+  #   - "mcp__hindsight-prv__sync_retain"
+  #   - "mcp__hindsight-prv__recall"
+  #   - "mcp__hindsight-prv__reflect"
 
   # Bridge-first local CLI setup:
   # default_transport: "auto"

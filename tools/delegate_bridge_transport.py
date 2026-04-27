@@ -186,7 +186,27 @@ def _child_env(root: Path, session_id: str) -> dict[str, str]:
     return env
 
 
-def _write_claude_mcp_config(session_dir: Path, root: Path, session_id: str, bridge_server: Path) -> Path:
+def _bridge_extra_mcp_servers(cfg: dict[str, Any] | None = None) -> dict[str, Any]:
+    raw = (cfg or {}).get("bridge_extra_mcp_servers") or {}
+    if not isinstance(raw, dict):
+        return {}
+    return {str(name): server for name, server in raw.items() if isinstance(server, dict)}
+
+
+def _bridge_extra_allowed_tools(cfg: dict[str, Any] | None = None) -> list[str]:
+    raw = (cfg or {}).get("bridge_extra_allowed_tools") or []
+    if not isinstance(raw, list):
+        return []
+    return [str(tool) for tool in raw if str(tool).strip()]
+
+
+def _write_claude_mcp_config(
+    session_dir: Path,
+    root: Path,
+    session_id: str,
+    bridge_server: Path,
+    cfg: dict[str, Any] | None = None,
+) -> Path:
     config_path = session_dir / "worker-bridge.mcp.json"
     config = {
         "mcpServers": {
@@ -202,6 +222,7 @@ def _write_claude_mcp_config(session_dir: Path, root: Path, session_id: str, bri
             }
         }
     }
+    config["mcpServers"].update(_bridge_extra_mcp_servers(cfg))
     config_path.write_text(json.dumps(config, indent=2), encoding="utf-8")
     return config_path
 
@@ -314,9 +335,14 @@ def _build_worker_command(
     root: Path,
     session_id: str,
     bridge_server: Path,
+    cfg: dict[str, Any] | None = None,
 ) -> tuple[str, list[str]]:
     if worker_type == "claude":
-        mcp_config = _write_claude_mcp_config(session_dir, root, session_id, bridge_server)
+        mcp_config = _write_claude_mcp_config(session_dir, root, session_id, bridge_server, cfg)
+        allowed_tools = [
+            "mcp__worker-bridge__report_to_orchestrator",
+            *_bridge_extra_allowed_tools(cfg),
+        ]
         args = [
             "-p",
             "--model",
@@ -327,7 +353,7 @@ def _build_worker_command(
             str(mcp_config),
             "--strict-mcp-config",
             "--allowedTools",
-            "mcp__worker-bridge__report_to_orchestrator",
+            ",".join(allowed_tools),
             "--permission-mode",
             _permission_mode(acp_args, unsafe_allow_writes),
         ]
@@ -493,6 +519,7 @@ def spawn_bridge_session(
         root=root,
         session_id=sid,
         bridge_server=bridge_server,
+        cfg=cfg,
     )
 
     stdout_path = session_dir / ".agent-stdout.txt"

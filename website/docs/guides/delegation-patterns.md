@@ -105,6 +105,8 @@ delegate_task(
 
 Use `persona_provider="cursor-agent"` for Cursor-backed code/test workers, for example with `persona_model="gpt-5.5-extra-high"` when that model is available locally. The local CLI owns its own auth in bridge mode.
 
+Claude bridge workers receive a strict generated MCP config. Add shared memory MCPs such as Hindsight through `delegation.bridge_extra_mcp_servers` and allow only the specific memory tools needed by workers through `delegation.bridge_extra_allowed_tools`; this keeps unrelated project MCPs out of child sessions.
+
 :::warning The Context Problem
 Subagents know **absolutely nothing** about your conversation. They start completely fresh. If you delegate "fix the bug we were discussing," the subagent has no idea what bug you mean. Always pass file paths, error messages, project structure, and constraints explicitly.
 :::
@@ -233,6 +235,7 @@ Restricting toolsets keeps the subagent focused and prevents accidental side eff
 - **Default 3 parallel tasks**: batches default to 3 concurrent subagents (configurable via `delegation.max_concurrent_children` in config.yaml, no hard ceiling, only a floor of 1)
 - **Nested delegation is opt-in**: leaf subagents (default) cannot call `delegate_task`, `clarify`, `memory`, `send_message`, or `execute_code`. Orchestrator subagents (`role="orchestrator"`) retain `delegate_task` for further delegation, but only when `delegation.max_spawn_depth` is raised above the default of 1 (1-3 supported); the other four remain blocked. Disable globally via `delegation.orchestrator_enabled: false`.
 - **Transport choice is explicit**: `auto` prefers bridge for bridge-capable Claude/Cursor personas or commands; use `embedded-api` for cheap API-backed reasoning workers, `simple-pipe` for legacy one-shot CLI calls, and `experimental-oauth` only for deliberate local OAuth/proxy experiments.
+- **Worker memory is allowlisted**: Claude bridge workers get only the bridge MCP unless extra servers/tools are configured; Cursor workers use the workspace MCP config.
 
 ### Recommended Transport Patterns
 

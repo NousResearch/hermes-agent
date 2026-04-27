@@ -140,6 +140,8 @@ Hermes supports four delegation transport/auth modes:
 
 With `transport="auto"` or `delegation.default_transport: "auto"`, bridge-capable Claude/Cursor personas or `acp_command` values use `bridge`. Embedded API delegation happens when no bridge-capable command/persona is selected, or when you explicitly choose `embedded-api`.
 
+Claude Code bridge workers run with a strict per-session MCP config. By default that config contains only the worker bridge MCP so the child can report back to Hermes. If a deployment wants Claude bridge workers to use shared memory MCPs such as Hindsight, add them explicitly with `delegation.bridge_extra_mcp_servers` and expose only the required tools through `delegation.bridge_extra_allowed_tools`. Do not forward the whole project MCP surface unless every server is intended for child workers.
+
 ## Child Personas vs Parent Personality
 
 `SOUL.md` and `/personality` define the parent Hermes session. The optional `persona` field on `delegate_task` is different: it is per-child routing and context for a delegated worker. It can select a named reviewer/tester/researcher profile, a local CLI provider (`persona_provider="claude"` or `"cursor-agent"`), and a model/workdir without changing the parent agent's identity.
@@ -259,6 +261,15 @@ delegation:
   default_transport: "auto"
   persona_provider: "claude"
   persona_workdir: "/home/user/myproject"
+  bridge_extra_mcp_servers:
+    hindsight-prv:
+      type: http
+      url: "http://localhost:8888/mcp/prv/"
+  bridge_extra_allowed_tools:
+    - "mcp__hindsight-prv__retain"
+    - "mcp__hindsight-prv__sync_retain"
+    - "mcp__hindsight-prv__recall"
+    - "mcp__hindsight-prv__reflect"
 
 # Or use a direct custom endpoint instead of provider:
 delegation:

@@ -154,46 +154,50 @@ def uninstall_gateway_service():
     if system == "Linux":
         try:
             from hermes_cli.gateway import (
-                get_systemd_unit_path,
-                get_service_name,
+                _systemd_service_targets,
                 _systemctl_cmd,
             )
-            svc_name = get_service_name()
 
             for is_system in (False, True):
-                unit_path = get_systemd_unit_path(system=is_system)
-                if not unit_path.exists():
-                    continue
-
                 scope = "system" if is_system else "user"
-                try:
-                    if is_system and os.geteuid() != 0:
-                        log_warn(f"System gateway service exists at {unit_path} "
-                                 f"but needs sudo to remove")
+                for target_svc, unit_path in _systemd_service_targets(system=is_system):
+                    if not unit_path.exists():
                         continue
 
-                    cmd = _systemctl_cmd(is_system)
-                    subprocess.run(cmd + ["stop", svc_name],
-                                   capture_output=True, check=False)
-                    subprocess.run(cmd + ["disable", svc_name],
-                                   capture_output=True, check=False)
-                    unit_path.unlink()
-                    subprocess.run(cmd + ["daemon-reload"],
-                                   capture_output=True, check=False)
-                    log_success(f"Removed {scope} gateway service ({unit_path})")
-                    stopped_something = True
-                except Exception as e:
-                    log_warn(f"Could not remove {scope} gateway service: {e}")
+                    try:
+                        if is_system and os.geteuid() != 0:
+                            log_warn(f"System gateway service exists at {unit_path} "
+                                     f"but needs sudo to remove")
+                            continue
+
+                        cmd = _systemctl_cmd(is_system)
+                        subprocess.run(cmd + ["stop", target_svc],
+                                       capture_output=True, check=False)
+                        subprocess.run(cmd + ["disable", target_svc],
+                                       capture_output=True, check=False)
+                        unit_path.unlink()
+                        subprocess.run(cmd + ["daemon-reload"],
+                                       capture_output=True, check=False)
+                        log_success(f"Removed {scope} gateway service ({unit_path})")
+                        stopped_something = True
+                    except Exception as e:
+                        log_warn(f"Could not remove {scope} gateway service: {e}")
         except Exception as e:
             log_warn(f"Could not check systemd gateway services: {e}")
 
     # 3. macOS: uninstall launchd plist
     elif system == "Darwin":
         try:
-            from hermes_cli.gateway import get_launchd_plist_path
-            plist_path = get_launchd_plist_path()
-            if plist_path.exists():
-                subprocess.run(["launchctl", "unload", str(plist_path)],
+            from hermes_cli.gateway import (
+                _launchd_domain,
+                _launchd_service_targets,
+            )
+
+            for label, plist_path in _launchd_service_targets():
+                if not plist_path.exists():
+                    continue
+
+                subprocess.run(["launchctl", "bootout", f"{_launchd_domain()}/{label}"],
                                capture_output=True, check=False)
                 plist_path.unlink()
                 log_success(f"Removed macOS gateway service ({plist_path})")

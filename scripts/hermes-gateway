@@ -34,8 +34,19 @@ SCRIPT_DIR = Path(__file__).parent.resolve()
 PROJECT_DIR = SCRIPT_DIR.parent
 sys.path.insert(0, str(PROJECT_DIR))
 
+from hermes_constants import (
+    display_hermes_home,
+    get_hermes_home,
+)
+from hermes_cli.gateway_service_identity import (
+    gateway_launchd_plist_path,
+    get_gateway_service_identity,
+    service_definition_declares_hermes_home,
+    service_definition_matches_hermes_home,
+)
+
 # Load .env file
-from dotenv import load_dotenv
+from dotenv import dotenv_values, load_dotenv
 env_path = PROJECT_DIR / '.env'
 if env_path.exists():
     load_dotenv(dotenv_path=env_path)
@@ -45,16 +56,208 @@ if env_path.exists():
 # Service Configuration
 # =============================================================================
 
-SERVICE_NAME = "hermes-gateway"
 SERVICE_DESCRIPTION = "Hermes Agent Gateway - Messaging Platform Integration"
+LEGACY_SYSTEMD_SERVICE_NAME = "hermes-gateway"
+LEGACY_LAUNCHD_LABEL = "ai.hermes.gateway"
+
+def get_systemd_service_name() -> str:
+    """Return the systemd service name, scoped when HERMES_HOME is not default."""
+    return get_gateway_service_identity().systemd_service_name
+
+def get_launchd_label() -> str:
+    """Return the launchd label, scoped when HERMES_HOME is not the default."""
+    return get_gateway_service_identity().launchd_label
 
 def get_systemd_unit_path() -> Path:
     """Get the path for the systemd user service file."""
-    return Path.home() / ".config" / "systemd" / "user" / f"{SERVICE_NAME}.service"
+    return Path.home() / ".config" / "systemd" / "user" / f"{get_systemd_service_name()}.service"
 
 def get_launchd_plist_path() -> Path:
     """Get the path for the launchd plist file (macOS)."""
-    return Path.home() / "Library" / "LaunchAgents" / f"ai.hermes.gateway.plist"
+    return gateway_launchd_plist_path(Path.home())
+
+def get_legacy_systemd_unit_path() -> Path:
+    """Return the historical unsuffixed systemd unit path."""
+    return Path.home() / ".config" / "systemd" / "user" / f"{LEGACY_SYSTEMD_SERVICE_NAME}.service"
+
+def get_legacy_launchd_plist_path() -> Path:
+    """Return the historical unsuffixed launchd plist path."""
+    return Path.home() / "Library" / "LaunchAgents" / f"{LEGACY_LAUNCHD_LABEL}.plist"
+
+def legacy_service_matches_current_install(path: Path) -> bool:
+    """Return True when *path* targets this Hermes home or this script.
+
+    Older versions of this standalone entry point did not write HERMES_HOME
+    into service definitions. Treat those script-path-only definitions as a
+    current-root match only when the checkout .env explicitly pins HERMES_HOME
+    to this root; otherwise the legacy service could be the default install
+    from the same checkout.
+    """
+    if service_definition_matches_hermes_home(path):
+        return True
+    if service_definition_declares_hermes_home(path):
+        return False
+
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except (OSError, PermissionError):
+        return False
+
+    return (
+        get_gateway_script_path() in text
+        and project_env_matches_current_hermes_home()
+    )
+
+def has_legacy_systemd_service() -> bool:
+    """Return True when the old unsuffixed unit targets this HERMES_HOME."""
+    legacy_path = get_legacy_systemd_unit_path()
+    return (
+        get_systemd_service_name() != LEGACY_SYSTEMD_SERVICE_NAME
+        and legacy_path != get_systemd_unit_path()
+        and legacy_path.exists()
+        and legacy_service_matches_current_install(legacy_path)
+    )
+
+def has_legacy_launchd_service() -> bool:
+    """Return True when the old unsuffixed plist targets this HERMES_HOME."""
+    legacy_path = get_legacy_launchd_plist_path()
+    return (
+        get_launchd_label() != LEGACY_LAUNCHD_LABEL
+        and legacy_path != get_launchd_plist_path()
+        and legacy_path.exists()
+        and legacy_service_matches_current_install(legacy_path)
+    )
+
+def systemd_management_target() -> tuple[str, Path]:
+    """Return the service name/path to use for management commands."""
+    return systemd_management_targets()[0]
+
+def systemd_management_targets() -> list[tuple[str, Path]]:
+    """Return all systemd service definitions for this Hermes home."""
+    current_path = get_systemd_unit_path()
+    targets = []
+    if current_path.exists():
+        targets.append((get_systemd_service_name(), current_path))
+    if has_legacy_systemd_service():
+        targets.append((LEGACY_SYSTEMD_SERVICE_NAME, get_legacy_systemd_unit_path()))
+    return targets or [(get_systemd_service_name(), current_path)]
+
+def launchd_management_target() -> tuple[str, Path]:
+    """Return the launchd label/plist to use for management commands."""
+    return launchd_management_targets()[0]
+
+def launchd_management_targets() -> list[tuple[str, Path]]:
+    """Return all launchd service definitions for this Hermes home."""
+    current_path = get_launchd_plist_path()
+    targets = []
+    if current_path.exists():
+        targets.append((get_launchd_label(), current_path))
+    if has_legacy_launchd_service():
+        targets.append((LEGACY_LAUNCHD_LABEL, get_legacy_launchd_plist_path()))
+    return targets or [(get_launchd_label(), current_path)]
+
+def systemd_service_is_active(service_name: str) -> bool:
+    """Return True when the systemd user service is currently active."""
+    result = subprocess.run(
+        ["systemctl", "--user", "is-active", service_name],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip() == "active"
+
+def systemd_service_is_enabled(service_name: str) -> bool:
+    """Return True when the systemd user service is currently enabled."""
+    result = subprocess.run(
+        ["systemctl", "--user", "is-enabled", service_name],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    return result.stdout.strip() == "enabled"
+
+def parse_launchd_pid(stdout: str, label: str) -> int | None:
+    """Parse a PID from launchctl output for a specific label."""
+    import re
+
+    for line in stdout.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        parts = stripped.split()
+        if len(parts) >= 3 and parts[2] == label:
+            try:
+                pid = int(parts[0])
+            except ValueError:
+                continue
+            return pid if pid > 0 else None
+
+        match = re.search(r'"?PID"?\s*=\s*(\d+)', stripped)
+        if match:
+            pid = int(match.group(1))
+            return pid if pid > 0 else None
+    return None
+
+def launchd_label_pid(label: str) -> int | None:
+    """Return the running PID for a launchd label, if launchd reports one."""
+    try:
+        result = subprocess.run(
+            ["launchctl", "list", label],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+    except FileNotFoundError:
+        return None
+    if result.returncode != 0:
+        return None
+    return parse_launchd_pid(result.stdout, label)
+
+def wait_for_pid_exit(pid: int | None, timeout: float = 10.0) -> bool:
+    """Return True once the captured process exits."""
+    if pid is None or pid <= 0:
+        return True
+
+    import time
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        try:
+            os.kill(pid, 0)
+        except ProcessLookupError:
+            return True
+        except PermissionError:
+            pass
+        time.sleep(0.3)
+    return False
+
+def remove_legacy_launchd_service() -> bool:
+    """Unload and remove the old unsuffixed launchd plist if it matches."""
+    if not has_legacy_launchd_service():
+        return False
+    legacy_path = get_legacy_launchd_plist_path()
+    legacy_pid = launchd_label_pid(LEGACY_LAUNCHD_LABEL)
+    unload = subprocess.run(
+        ["launchctl", "unload", str(legacy_path)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if unload.returncode not in (0, 3, 113):
+        raise subprocess.CalledProcessError(
+            unload.returncode,
+            unload.args,
+            output=unload.stdout,
+            stderr=unload.stderr,
+        )
+    if unload.returncode == 0 and not wait_for_pid_exit(legacy_pid, timeout=10.0):
+        raise RuntimeError(
+            "Legacy launchd gateway did not stop cleanly; refusing to start "
+            f"{get_launchd_label()} while {LEGACY_LAUNCHD_LABEL} may still be running"
+        )
+    legacy_path.unlink(missing_ok=True)
+    print(f"↻ Migrated legacy service from {LEGACY_LAUNCHD_LABEL} to {get_launchd_label()}")
+    return True
 
 def get_python_path() -> str:
     """Get the path to the Python interpreter."""
@@ -68,6 +271,28 @@ def get_gateway_script_path() -> str:
     """Get the path to this script."""
     return str(Path(__file__).resolve())
 
+def project_env_matches_current_hermes_home() -> bool:
+    """Return True when this checkout's .env pins HERMES_HOME to this root."""
+    project_env = PROJECT_DIR / ".env"
+    if not project_env.exists():
+        return False
+
+    try:
+        value = (dotenv_values(project_env).get("HERMES_HOME") or "").strip()
+    except Exception:
+        return False
+    if not value:
+        return False
+
+    configured_home = Path(value).expanduser()
+    if not configured_home.is_absolute():
+        configured_home = PROJECT_DIR / configured_home
+
+    try:
+        return configured_home.resolve() == get_hermes_home().resolve()
+    except OSError:
+        return False
+
 
 # =============================================================================
 # Systemd Service (Linux)
@@ -78,6 +303,7 @@ def generate_systemd_unit() -> str:
     python_path = get_python_path()
     script_path = get_gateway_script_path()
     working_dir = str(PROJECT_DIR)
+    hermes_home = str(get_hermes_home().resolve())
     
     return f"""[Unit]
 Description={SERVICE_DESCRIPTION}
@@ -89,6 +315,7 @@ StartLimitBurst=5
 Type=simple
 ExecStart={python_path} {script_path} run
 WorkingDirectory={working_dir}
+Environment="HERMES_HOME={hermes_home}"
 Restart=on-failure
 RestartSec=30
 StandardOutput=journal
@@ -104,63 +331,112 @@ WantedBy=default.target
 
 def install_systemd():
     """Install the systemd user service."""
+    service_name = get_systemd_service_name()
     unit_path = get_systemd_unit_path()
+    legacy_path = get_legacy_systemd_unit_path()
+    should_migrate_legacy = has_legacy_systemd_service()
+    legacy_was_active = should_migrate_legacy and systemd_service_is_active(
+        LEGACY_SYSTEMD_SERVICE_NAME
+    )
+    scoped_was_enabled = systemd_service_is_enabled(service_name)
+    enabled_scoped_during_install = False
+    previous_unit = unit_path.read_text(encoding="utf-8") if unit_path.exists() else None
+
     unit_path.parent.mkdir(parents=True, exist_ok=True)
-    
     print(f"Installing systemd service to: {unit_path}")
-    unit_path.write_text(generate_systemd_unit())
-    
-    # Reload systemd
-    subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
-    
-    # Enable the service (start on boot)
-    subprocess.run(["systemctl", "--user", "enable", SERVICE_NAME], check=True)
+
+    try:
+        unit_path.write_text(generate_systemd_unit())
+
+        # Reload systemd
+        subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
+
+        # Enable the service (start on boot)
+        subprocess.run(["systemctl", "--user", "enable", service_name], check=True)
+        enabled_scoped_during_install = not scoped_was_enabled
+        if legacy_was_active:
+            subprocess.run(
+                ["systemctl", "--user", "stop", LEGACY_SYSTEMD_SERVICE_NAME],
+                check=True,
+            )
+            try:
+                subprocess.run(["systemctl", "--user", "start", service_name], check=True)
+            except Exception:
+                subprocess.run(
+                    ["systemctl", "--user", "start", LEGACY_SYSTEMD_SERVICE_NAME],
+                    check=False,
+                )
+                raise
+    except Exception:
+        if enabled_scoped_during_install:
+            subprocess.run(["systemctl", "--user", "disable", service_name], check=False)
+        if previous_unit is None:
+            unit_path.unlink(missing_ok=True)
+        else:
+            unit_path.write_text(previous_unit, encoding="utf-8")
+        subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
+        raise
+
+    if should_migrate_legacy and legacy_path.exists():
+        subprocess.run(["systemctl", "--user", "disable", LEGACY_SYSTEMD_SERVICE_NAME], check=False)
+        legacy_path.unlink(missing_ok=True)
+        subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
+        print(f"↻ Migrated legacy service from {LEGACY_SYSTEMD_SERVICE_NAME} to {service_name}")
     
     print(f"✓ Service installed and enabled")
     print(f"")
     print(f"To start the service:")
-    print(f"  systemctl --user start {SERVICE_NAME}")
+    print(f"  systemctl --user start {service_name}")
     print(f"")
     print(f"To view logs:")
-    print(f"  journalctl --user -u {SERVICE_NAME} -f")
+    print(f"  journalctl --user -u {service_name} -f")
     print(f"")
     print(f"To enable lingering (keeps service running after logout):")
     print(f"  sudo loginctl enable-linger $USER")
 
 def uninstall_systemd():
     """Uninstall the systemd user service."""
+    service_name = get_systemd_service_name()
     unit_path = get_systemd_unit_path()
-    
-    # Stop and disable first
-    subprocess.run(["systemctl", "--user", "stop", SERVICE_NAME], check=False)
-    subprocess.run(["systemctl", "--user", "disable", SERVICE_NAME], check=False)
-    
-    # Remove the unit file
-    if unit_path.exists():
-        unit_path.unlink()
-        print(f"✓ Removed {unit_path}")
-    
+    targets = [(service_name, unit_path)]
+    if has_legacy_systemd_service():
+        targets.append((LEGACY_SYSTEMD_SERVICE_NAME, get_legacy_systemd_unit_path()))
+
+    for target_name, target_path in targets:
+        # Stop and disable first
+        subprocess.run(["systemctl", "--user", "stop", target_name], check=False)
+        subprocess.run(["systemctl", "--user", "disable", target_name], check=False)
+
+        # Remove the unit file
+        if target_path.exists():
+            target_path.unlink()
+            print(f"✓ Removed {target_path}")
+
     # Reload systemd
     subprocess.run(["systemctl", "--user", "daemon-reload"], check=True)
     print(f"✓ Service uninstalled")
 
 def systemd_status():
     """Show systemd service status."""
-    subprocess.run(["systemctl", "--user", "status", SERVICE_NAME])
+    for service_name, _unit_path in systemd_management_targets():
+        subprocess.run(["systemctl", "--user", "status", service_name])
 
 def systemd_start():
     """Start the systemd service."""
-    subprocess.run(["systemctl", "--user", "start", SERVICE_NAME], check=True)
+    service_name, _unit_path = systemd_management_target()
+    subprocess.run(["systemctl", "--user", "start", service_name], check=True)
     print(f"✓ Service started")
 
 def systemd_stop():
     """Stop the systemd service."""
-    subprocess.run(["systemctl", "--user", "stop", SERVICE_NAME], check=True)
+    for service_name, _unit_path in systemd_management_targets():
+        subprocess.run(["systemctl", "--user", "stop", service_name], check=True)
     print(f"✓ Service stopped")
 
 def systemd_restart():
     """Restart the systemd service."""
-    subprocess.run(["systemctl", "--user", "restart", SERVICE_NAME], check=True)
+    service_name, _unit_path = systemd_management_target()
+    subprocess.run(["systemctl", "--user", "restart", service_name], check=True)
     print(f"✓ Service restarted")
 
 
@@ -173,14 +449,17 @@ def generate_launchd_plist() -> str:
     python_path = get_python_path()
     script_path = get_gateway_script_path()
     working_dir = str(PROJECT_DIR)
-    log_dir = Path.home() / ".hermes" / "logs"
+    hermes_home_path = get_hermes_home().resolve()
+    hermes_home = str(hermes_home_path)
+    log_dir = hermes_home_path / "logs"
+    label = get_launchd_label()
     
     return f"""<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
 <dict>
     <key>Label</key>
-    <string>ai.hermes.gateway</string>
+    <string>{label}</string>
     
     <key>ProgramArguments</key>
     <array>
@@ -211,6 +490,8 @@ def generate_launchd_plist() -> str:
     <dict>
         <key>PATH</key>
         <string>/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+        <key>HERMES_HOME</key>
+        <string>{hermes_home}</string>
     </dict>
 </dict>
 </plist>
@@ -219,53 +500,99 @@ def generate_launchd_plist() -> str:
 def install_launchd():
     """Install the launchd service (macOS)."""
     plist_path = get_launchd_plist_path()
+    legacy_path = get_legacy_launchd_plist_path()
+    should_migrate_legacy = has_legacy_launchd_service()
+    previous_plist = plist_path.read_text(encoding="utf-8") if plist_path.exists() else None
     plist_path.parent.mkdir(parents=True, exist_ok=True)
     
     # Ensure log directory exists
-    log_dir = Path.home() / ".hermes" / "logs"
+    log_dir = get_hermes_home().resolve() / "logs"
     log_dir.mkdir(parents=True, exist_ok=True)
     
     print(f"Installing launchd service to: {plist_path}")
-    plist_path.write_text(generate_launchd_plist())
-    
-    # Load the service
-    subprocess.run(["launchctl", "load", str(plist_path)], check=True)
+    legacy_pid = launchd_label_pid(LEGACY_LAUNCHD_LABEL) if should_migrate_legacy else None
+    legacy_unloaded = False
+
+    try:
+        if should_migrate_legacy:
+            unload = subprocess.run(
+                ["launchctl", "unload", str(legacy_path)],
+                check=False,
+                capture_output=True,
+                text=True,
+            )
+            if unload.returncode not in (0, 3, 113):
+                raise subprocess.CalledProcessError(
+                    unload.returncode,
+                    unload.args,
+                    output=unload.stdout,
+                    stderr=unload.stderr,
+                )
+            legacy_unloaded = unload.returncode == 0
+            if legacy_unloaded and not wait_for_pid_exit(legacy_pid, timeout=10.0):
+                raise RuntimeError(
+                    "Legacy launchd gateway did not stop cleanly; refusing to start "
+                    f"{get_launchd_label()} while {LEGACY_LAUNCHD_LABEL} may still be running"
+                )
+
+        plist_path.write_text(generate_launchd_plist())
+
+        # Load the service
+        subprocess.run(["launchctl", "load", str(plist_path)], check=True)
+    except Exception:
+        if previous_plist is None:
+            plist_path.unlink(missing_ok=True)
+        else:
+            plist_path.write_text(previous_plist, encoding="utf-8")
+        if legacy_unloaded and legacy_path.exists():
+            subprocess.run(["launchctl", "load", str(legacy_path)], check=False)
+        raise
+
+    if should_migrate_legacy and legacy_path.exists():
+        legacy_path.unlink(missing_ok=True)
+        print(f"↻ Migrated legacy service from {LEGACY_LAUNCHD_LABEL} to {get_launchd_label()}")
     
     print(f"✓ Service installed and loaded")
     print(f"")
     print(f"To view logs:")
-    print(f"  tail -f ~/.hermes/logs/gateway.log")
+    print(f"  tail -f {display_hermes_home()}/logs/gateway.log")
     print(f"")
     print(f"To manage the service:")
-    print(f"  launchctl start ai.hermes.gateway")
-    print(f"  launchctl stop ai.hermes.gateway")
+    print(f"  launchctl start {get_launchd_label()}")
+    print(f"  launchctl stop {get_launchd_label()}")
 
 def uninstall_launchd():
     """Uninstall the launchd service (macOS)."""
-    plist_path = get_launchd_plist_path()
-    
-    # Unload first
-    subprocess.run(["launchctl", "unload", str(plist_path)], check=False)
-    
-    # Remove the plist file
-    if plist_path.exists():
-        plist_path.unlink()
-        print(f"✓ Removed {plist_path}")
+    targets = [(get_launchd_label(), get_launchd_plist_path())]
+    if has_legacy_launchd_service():
+        targets.append((LEGACY_LAUNCHD_LABEL, get_legacy_launchd_plist_path()))
+
+    for _label, plist_path in targets:
+        # Unload first
+        subprocess.run(["launchctl", "unload", str(plist_path)], check=False)
+
+        # Remove the plist file
+        if plist_path.exists():
+            plist_path.unlink()
+            print(f"✓ Removed {plist_path}")
     
     print(f"✓ Service uninstalled")
 
 def launchd_status():
     """Show launchd service status."""
-    subprocess.run(["launchctl", "list", "ai.hermes.gateway"])
+    for label, _plist_path in launchd_management_targets():
+        subprocess.run(["launchctl", "list", label])
 
 def launchd_start():
     """Start the launchd service."""
-    subprocess.run(["launchctl", "start", "ai.hermes.gateway"], check=True)
+    label, _plist_path = launchd_management_target()
+    subprocess.run(["launchctl", "start", label], check=True)
     print(f"✓ Service started")
 
 def launchd_stop():
     """Stop the launchd service."""
-    subprocess.run(["launchctl", "stop", "ai.hermes.gateway"], check=True)
+    for label, _plist_path in launchd_management_targets():
+        subprocess.run(["launchctl", "stop", label], check=True)
     print(f"✓ Service stopped")
 
 def launchd_restart():

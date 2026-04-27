@@ -7610,6 +7610,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             restarted_services = []
             killed_pids = set()
             relaunched_profiles = []
+            extra_service_pids = set()
 
             # --- Systemd services (Linux) ---
             # Discover all hermes-gateway* units (default + profiles)
@@ -7786,26 +7787,54 @@ def _cmd_update_impl(args, gateway_mode: bool):
             if is_macos():
                 try:
                     from hermes_cli.gateway import (
-                        launchd_restart,
-                        get_launchd_label,
-                        get_launchd_plist_path,
+                        _graceful_restart_via_sigusr1 as _gateway_sigusr1_restart,
+                        _launchd_domain,
+                        _launchd_label_pid,
                     )
 
-                    plist_path = get_launchd_plist_path()
-                    if plist_path.exists():
-                        check = subprocess.run(
-                            ["launchctl", "list", get_launchd_label()],
-                            capture_output=True,
-                            text=True,
-                            timeout=5,
-                        )
-                        if check.returncode == 0:
-                            try:
-                                launchd_restart()
-                                restarted_services.append(get_launchd_label())
-                            except subprocess.CalledProcessError as e:
-                                stderr = (getattr(e, "stderr", "") or "").strip()
+                    launchd_list = subprocess.run(
+                        ["launchctl", "list"],
+                        capture_output=True,
+                        text=True,
+                        timeout=10,
+                    )
+                    launchd_labels = []
+                    for line in launchd_list.stdout.splitlines():
+                        parts = line.split()
+                        if len(parts) < 3:
+                            continue
+                        label = parts[2]
+                        if label.startswith("ai.hermes.gateway"):
+                            launchd_labels.append(label)
+
+                    for label in sorted(set(launchd_labels)):
+                        target = f"{_launchd_domain()}/{label}"
+                        pid = _launchd_label_pid(label)
+                        graceful_ok = False
+                        if pid:
+                            print(
+                                f"  → {label}: draining (up to {int(_drain_budget)}s)..."
+                            )
+                            graceful_ok = _gateway_sigusr1_restart(
+                                pid, drain_timeout=_drain_budget,
+                            )
+                        if not graceful_ok:
+                            restart = subprocess.run(
+                                ["launchctl", "kickstart", "-k", target],
+                                capture_output=True,
+                                text=True,
+                                timeout=90,
+                            )
+                            if restart.returncode != 0:
+                                stderr = (restart.stderr or "").strip()
                                 print(f"  ⚠ Gateway restart failed: {stderr}")
+                                continue
+                        restarted_services.append(label)
+
+                    for label in launchd_labels:
+                        pid = _launchd_label_pid(label)
+                        if pid:
+                            extra_service_pids.add(pid)
                 except (FileNotFoundError, subprocess.TimeoutExpired, ImportError):
                     pass
 
@@ -7814,6 +7843,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # Exclude PIDs that belong to just-restarted services so we don't
             # immediately kill the process that systemd/launchd just spawned.
             service_pids = _get_service_pids()
+            service_pids.update(extra_service_pids)
             manual_pids = find_gateway_pids(
                 exclude_pids=service_pids, all_profiles=True
             )
@@ -7837,9 +7867,9 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 if not drained:
                     try:
                         os.kill(pid, _signal.SIGTERM)
+                        killed_pids.add(pid)
                     except (ProcessLookupError, PermissionError):
                         pass
-                killed_pids.add(pid)
                 relaunched_profiles.append(proc.profile)
 
             for pid in manual_pids:
@@ -7851,14 +7881,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 except (ProcessLookupError, PermissionError):
                     pass
 
-            if restarted_services or killed_pids:
+            if restarted_services or killed_pids or relaunched_profiles:
                 print()
                 for svc in restarted_services:
                     print(f"  ✓ Restarted {svc}")
                 if relaunched_profiles:
                     names = ", ".join(relaunched_profiles)
                     print(f"  ✓ Restarting manual gateway profile(s): {names}")
-                unmapped_count = len(killed_pids) - len(relaunched_profiles)
+                unmapped_count = len(
+                    [pid for pid in killed_pids if pid not in profile_processes]
+                )
                 if unmapped_count:
                     print(f"  → Stopped {unmapped_count} manual gateway process(es)")
                     print("    Restart manually: hermes gateway run")

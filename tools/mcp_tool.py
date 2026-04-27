@@ -1204,12 +1204,24 @@ class MCPServerTask:
         """Discover tools from the connected session."""
         if self.session is None:
             return
-        tools_result = await self.session.list_tools()
-        self._tools = (
-            tools_result.tools
-            if hasattr(tools_result, "tools")
-            else []
-        )
+        try:
+            tools_result = await self.session.list_tools()
+            self._tools = (
+                tools_result.tools
+                if hasattr(tools_result, "tools")
+                else []
+            )
+        except Exception as exc:
+            # Some MCP servers (e.g. @postman/postman-mcp-server) may fail tool
+            # discovery with an error like "Cannot read properties of undefined
+            # (reading '_zod')" due to internal Zod schema processing bugs.
+            # Handle gracefully so the connection stays alive.
+            logger.warning(
+                "MCP server '%s' tool discovery failed: %s",
+                self.name,
+                exc,
+            )
+            self._tools = []
 
     async def run(self, config: dict):
         """Long-lived coroutine: connect, discover tools, wait, disconnect.

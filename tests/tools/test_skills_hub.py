@@ -12,6 +12,7 @@ from tools.skills_hub import (
     GitHubSource,
     LobeHubSource,
     SkillsShSource,
+    UrlSource,
     WellKnownSkillSource,
     OptionalSkillSource,
     SkillMeta,
@@ -673,6 +674,146 @@ class TestWellKnownSkillSource:
         assert bundle is None
 
 
+class TestUrlSource:
+    def _source(self):
+        return UrlSource()
+
+    # ── _matches ────────────────────────────────────────────────────────
+    def test_matches_bare_md_url(self):
+        assert self._source()._matches("https://example.com/path/SKILL.md") is True
+
+    def test_matches_http_scheme(self):
+        assert self._source()._matches("http://example.com/SKILL.md") is True
+
+    def test_rejects_non_md_url(self):
+        assert self._source()._matches("https://example.com/path/") is False
+        assert self._source()._matches("https://example.com/skills.json") is False
+
+    def test_rejects_well_known_url(self):
+        # Leave these for WellKnownSkillSource.
+        assert self._source()._matches(
+            "https://example.com/.well-known/skills/git-workflow/SKILL.md"
+        ) is False
+        assert self._source()._matches(
+            "https://example.com/.well-known/skills/index.json"
+        ) is False
+
+    def test_rejects_wrapped_identifiers(self):
+        assert self._source()._matches("github:owner/repo/skill") is False
+        assert self._source()._matches("well-known:https://example.com/x") is False
+        assert self._source()._matches("official/security/1password") is False
+
+    def test_rejects_non_string(self):
+        assert self._source()._matches(None) is False  # type: ignore[arg-type]
+        assert self._source()._matches(123) is False   # type: ignore[arg-type]
+
+    def test_search_returns_empty(self):
+        # Direct-URL source is not searchable.
+        assert self._source().search("anything") == []
+
+    # ── inspect ─────────────────────────────────────────────────────────
+    @patch("tools.skills_hub.httpx.get")
+    def test_inspect_reads_frontmatter_from_url(self, mock_get):
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            text=(
+                "---\n"
+                "name: sharethis-chat\n"
+                "description: Share agent conversations.\n"
+                "metadata:\n"
+                "  hermes:\n"
+                "    tags: [sharing, chat]\n"
+                "---\n\n# Body\n"
+            ),
+        )
+        meta = self._source().inspect("https://sharethis.chat/SKILL.md")
+        assert meta is not None
+        assert meta.name == "sharethis-chat"
+        assert meta.description == "Share agent conversations."
+        assert meta.source == "url"
+        assert meta.identifier == "https://sharethis.chat/SKILL.md"
+        assert meta.trust_level == "community"
+        assert meta.tags == ["sharing", "chat"]
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_inspect_returns_none_when_url_not_md(self, mock_get):
+        # _matches filters first — no HTTP call.
+        meta = self._source().inspect("https://example.com/not-a-skill")
+        assert meta is None
+        mock_get.assert_not_called()
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_inspect_returns_none_on_404(self, mock_get):
+        mock_get.return_value = MagicMock(status_code=404)
+        assert self._source().inspect("https://example.com/SKILL.md") is None
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_inspect_returns_none_on_http_error(self, mock_get):
+        mock_get.side_effect = httpx.HTTPError("boom")
+        assert self._source().inspect("https://example.com/SKILL.md") is None
+
+    # ── fetch ───────────────────────────────────────────────────────────
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_builds_single_file_bundle(self, mock_get):
+        skill_md = (
+            "---\n"
+            "name: sharethis-chat\n"
+            "description: Share.\n"
+            "---\n\n# Body\n"
+        )
+        mock_get.return_value = MagicMock(status_code=200, text=skill_md)
+
+        bundle = self._source().fetch("https://sharethis.chat/SKILL.md")
+
+        assert bundle is not None
+        assert bundle.name == "sharethis-chat"
+        assert bundle.source == "url"
+        assert bundle.identifier == "https://sharethis.chat/SKILL.md"
+        assert bundle.trust_level == "community"
+        assert bundle.files == {"SKILL.md": skill_md}
+        assert bundle.metadata == {"url": "https://sharethis.chat/SKILL.md"}
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_falls_back_to_url_directory_name(self, mock_get):
+        # Frontmatter has no ``name:`` — we slug from the URL directory.
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            text="---\ndescription: No name.\n---\n\n# Body\n",
+        )
+        bundle = self._source().fetch("https://example.com/my-skill/SKILL.md")
+        assert bundle is not None
+        assert bundle.name == "my-skill"
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_falls_back_to_filename_when_no_parent_dir(self, mock_get):
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            text="---\ndescription: Bare file.\n---\n",
+        )
+        bundle = self._source().fetch("https://example.com/my-skill.md")
+        assert bundle is not None
+        assert bundle.name == "my-skill"
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_rejects_unsafe_skill_name(self, mock_get):
+        # Path traversal via frontmatter name must be rejected.
+        mock_get.return_value = MagicMock(
+            status_code=200,
+            text="---\nname: ../evil\ndescription: Bad.\n---\n",
+        )
+        assert self._source().fetch("https://example.com/SKILL.md") is None
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_returns_none_on_404(self, mock_get):
+        mock_get.return_value = MagicMock(status_code=404)
+        assert self._source().fetch("https://example.com/SKILL.md") is None
+
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_skips_non_matching_identifier(self, mock_get):
+        assert self._source().fetch("owner/repo/skill") is None
+        mock_get.assert_not_called()
+
+
 class TestCheckForSkillUpdates:
     def test_bundle_content_hash_matches_installed_content_hash(self, tmp_path):
         from tools.skills_guard import content_hash
@@ -754,6 +895,17 @@ class TestCreateSourceRouter:
     def test_includes_well_known_source(self):
         sources = create_source_router(auth=MagicMock(spec=GitHubAuth))
         assert any(isinstance(src, WellKnownSkillSource) for src in sources)
+
+    def test_includes_url_source(self):
+        sources = create_source_router(auth=MagicMock(spec=GitHubAuth))
+        assert any(isinstance(src, UrlSource) for src in sources)
+
+    def test_url_source_runs_before_github_source(self):
+        # UrlSource must win over GitHubSource when both could claim a URL.
+        sources = create_source_router(auth=MagicMock(spec=GitHubAuth))
+        url_idx = next(i for i, src in enumerate(sources) if isinstance(src, UrlSource))
+        gh_idx = next(i for i, src in enumerate(sources) if isinstance(src, GitHubSource))
+        assert url_idx < gh_idx
 
 
 # ---------------------------------------------------------------------------

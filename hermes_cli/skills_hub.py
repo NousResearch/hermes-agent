@@ -1221,6 +1221,7 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         /skills search kubernetes
         /skills install openai/skills/skill-creator
         /skills install openai/skills/skill-creator --force
+        /skills install https://example.com/path/SKILL.md
         /skills inspect openai/skills/skill-creator
         /skills list
         /skills list --source hub
@@ -1297,7 +1298,7 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
 
     elif action == "install":
         if not args:
-            c.print("[bold red]Usage:[/] /skills install <identifier> [--category <cat>] [--force] [--now]\n")
+            c.print("[bold red]Usage:[/] /skills install <identifier-or-url> [--category <cat>] [--force] [--now]\n")
             return
         identifier = args[0]
         category = ""

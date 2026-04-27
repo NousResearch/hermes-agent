@@ -932,6 +932,144 @@ class WellKnownSkillSource(SkillSource):
 
 
 # ---------------------------------------------------------------------------
+# Direct URL source adapter
+# ---------------------------------------------------------------------------
+
+class UrlSource(SkillSource):
+    """Fetch a single-file SKILL.md skill directly from an HTTP(S) URL.
+
+    The identifier IS the URL (e.g. ``https://example.com/path/SKILL.md``).
+    Only single-file skills are supported — multi-file skills with
+    ``references/`` or ``scripts/`` subfolders need a manifest we can't
+    discover from a bare URL.
+
+    The skill name is read from the ``name:`` field in the SKILL.md YAML
+    frontmatter (with a URL-slug fallback). Trust level is always
+    ``community`` and the same security scan runs as for every other source.
+    """
+
+    def source_id(self) -> str:
+        return "url"
+
+    def trust_level_for(self, identifier: str) -> str:
+        return "community"
+
+    # Search is meaningless for a direct URL — skip (return empty).
+    def search(self, query: str, limit: int = 10) -> List[SkillMeta]:
+        return []
+
+    def _matches(self, identifier: str) -> bool:
+        """Return True iff this source should handle ``identifier``.
+
+        We claim bare HTTP(S) URLs that end in ``.md`` (typically
+        ``.../SKILL.md``). Wrapped identifiers (``github:``,
+        ``well-known:``, etc.) and ``/.well-known/skills/`` URLs are
+        left for their respective adapters.
+        """
+        if not isinstance(identifier, str):
+            return False
+        ident = identifier.strip()
+        if not ident.lower().startswith(("http://", "https://")):
+            return False
+        # Don't steal well-known URLs.
+        if "/.well-known/skills/" in ident or ident.rstrip("/").endswith("/index.json"):
+            return False
+        # Only claim URLs that look like a markdown file.
+        try:
+            path = urlparse(ident).path
+        except ValueError:
+            return False
+        return path.lower().endswith(".md")
+
+    def inspect(self, identifier: str) -> Optional[SkillMeta]:
+        if not self._matches(identifier):
+            return None
+        url = identifier.strip()
+        text = self._fetch_text(url)
+        if text is None:
+            return None
+        fm = GitHubSource._parse_frontmatter_quick(text)
+        name = self._resolve_skill_name(fm, url)
+        description = str(fm.get("description") or "")
+        tags: List[str] = []
+        metadata = fm.get("metadata", {})
+        if isinstance(metadata, dict):
+            hermes_meta = metadata.get("hermes", {})
+            if isinstance(hermes_meta, dict):
+                raw_tags = hermes_meta.get("tags", [])
+                if isinstance(raw_tags, list):
+                    tags = [str(t) for t in raw_tags]
+        return SkillMeta(
+            name=name,
+            description=description,
+            source="url",
+            identifier=url,
+            trust_level="community",
+            path=name,
+            tags=tags,
+            extra={"url": url},
+        )
+
+    def fetch(self, identifier: str) -> Optional[SkillBundle]:
+        if not self._matches(identifier):
+            return None
+        url = identifier.strip()
+        text = self._fetch_text(url)
+        if text is None:
+            return None
+
+        fm = GitHubSource._parse_frontmatter_quick(text)
+        name = self._resolve_skill_name(fm, url)
+        try:
+            skill_name = _validate_skill_name(name)
+        except ValueError:
+            logger.warning("URL skill %s produced unsafe skill name: %r", url, name)
+            return None
+
+        return SkillBundle(
+            name=skill_name,
+            files={"SKILL.md": text},
+            source="url",
+            identifier=url,
+            trust_level="community",
+            metadata={"url": url},
+        )
+
+    @staticmethod
+    def _fetch_text(url: str) -> Optional[str]:
+        try:
+            resp = httpx.get(url, timeout=20, follow_redirects=True)
+            if resp.status_code == 200:
+                return resp.text
+        except httpx.HTTPError as exc:
+            logger.debug("UrlSource fetch failed for %s: %s", url, exc)
+            return None
+        return None
+
+    @staticmethod
+    def _resolve_skill_name(fm: dict, url: str) -> str:
+        """Pick a skill name — frontmatter ``name:`` wins, URL slug fallback."""
+        name = fm.get("name") if isinstance(fm, dict) else None
+        if isinstance(name, str) and name.strip():
+            return name.strip()
+        # Fall back to the parent directory name (e.g. ``sharethis-chat`` from
+        # ``https://sharethis.chat/SKILL.md`` → ``sharethis-chat``; or the
+        # directory one level up if the URL ends in SKILL.md).
+        try:
+            path = urlparse(url).path
+        except ValueError:
+            return "unnamed-skill"
+        parts = [p for p in path.split("/") if p]
+        if parts and parts[-1].lower() == "skill.md" and len(parts) >= 2:
+            return parts[-2]
+        if parts:
+            # Strip the .md extension from a single-file URL.
+            return re.sub(r"\.md$", "", parts[-1], flags=re.IGNORECASE) or "unnamed-skill"
+        host = urlparse(url).hostname or "unnamed-skill"
+        return host.replace(".", "-")
+
+
+# ---------------------------------------------------------------------------
 # skills.sh source adapter
 # ---------------------------------------------------------------------------
 
@@ -2931,6 +3069,7 @@ def create_source_router(auth: Optional[GitHubAuth] = None) -> List[SkillSource]
         HermesIndexSource(auth=auth), # Centralized index (search + resolved install paths)
         SkillsShSource(auth=auth),
         WellKnownSkillSource(),
+        UrlSource(),                  # Direct HTTP(S) URL to a SKILL.md file
         GitHubSource(auth=auth, extra_taps=extra_taps),
         ClawHubSource(),
         ClaudeMarketplaceSource(auth=auth),

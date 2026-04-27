@@ -91,6 +91,18 @@ class TestShouldExclude:
         assert _should_exclude(Path("gateway.pid"))
         assert _should_exclude(Path("cron.pid"))
 
+    def test_excludes_checkpoints(self):
+        """checkpoints/ is session-local trajectory cache — hash-keyed,
+        regenerated per-session, won't port to another machine anyway."""
+        from hermes_cli.backup import _should_exclude
+        assert _should_exclude(Path("checkpoints/abc123/trajectory.json"))
+        assert _should_exclude(Path("checkpoints/deadbeef/step_0001.json"))
+
+    def test_excludes_backups_dir(self):
+        """backups/ is excluded so pre-update backups don't nest exponentially."""
+        from hermes_cli.backup import _should_exclude
+        assert _should_exclude(Path("backups/pre-update-2026-04-27-063400.zip"))
+
     def test_includes_config(self):
         from hermes_cli.backup import _should_exclude
         assert not _should_exclude(Path("config.yaml"))

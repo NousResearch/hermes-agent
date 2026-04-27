@@ -384,6 +384,55 @@ class TestPostSetup:
         assert "HINDSIGHT_API_LLM_API_KEY=existing-key\n" in profile_env.read_text()
 
 
+    def test_local_embedded_setup_blank_inputs_preserve_existing_config(self, tmp_path, monkeypatch):
+        """Pressing Enter through setup should keep existing Hindsight values."""
+        hermes_home = tmp_path / "hermes-home"
+        user_home = tmp_path / "user-home"
+        user_home.mkdir()
+        monkeypatch.setenv("HOME", str(user_home))
+        monkeypatch.setattr("plugins.memory.hindsight.get_hermes_home", lambda: hermes_home)
+
+        existing_config = {
+            "mode": "local_embedded",
+            "llm_provider": "openai_compatible",
+            "llm_base_url": "http://192.168.1.161:8060/v1",
+            "llm_api_key": "9913",
+            "llm_model": "gemma-4-26B-A4B-it-heretic-oQ4",
+            "bank_id": "hermes",
+            "recall_budget": "mid",
+            "idle_timeout": 0,
+            "HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT": "0",
+            "HINDSIGHT_API_CONSOLIDATION_LLM_BATCH_SIZE": "1",
+            "timeout": 120,
+        }
+        provider = HindsightMemoryProvider()
+        provider.save_config(existing_config, str(hermes_home))
+
+        # Simulate pressing Enter at the mode and LLM-provider pickers, which
+        # should select their current values, and pressing Enter at text prompts.
+        monkeypatch.setattr("hermes_cli.memory_setup._curses_select", lambda *args, **kwargs: kwargs.get("default", 0))
+        monkeypatch.setattr("shutil.which", lambda name: None)
+        monkeypatch.setattr("builtins.input", lambda prompt="": "")
+        monkeypatch.setattr("sys.stdin.isatty", lambda: True)
+        monkeypatch.setattr("getpass.getpass", lambda prompt="": "")
+        monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
+
+        provider = HindsightMemoryProvider()
+        provider.post_setup(str(hermes_home), {"memory": {}})
+
+        saved = json.loads((hermes_home / "hindsight" / "config.json").read_text())
+        assert saved["mode"] == "local_embedded"
+        assert saved["llm_provider"] == "openai_compatible"
+        assert saved["llm_base_url"] == "http://192.168.1.161:8060/v1"
+        assert saved["llm_api_key"] == "9913"
+        assert saved["llm_model"] == "gemma-4-26B-A4B-it-heretic-oQ4"
+        assert saved["idle_timeout"] == 0
+        assert saved["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] == "0"
+        assert saved["HINDSIGHT_API_CONSOLIDATION_LLM_BATCH_SIZE"] == "1"
+        assert saved["timeout"] == 120
+
+
+
 # ---------------------------------------------------------------------------
 # Tool handler tests
 # ---------------------------------------------------------------------------

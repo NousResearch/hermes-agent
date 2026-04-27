@@ -1,13 +1,12 @@
 """Tests for _enrich_message_with_vision — regression for #5719.
 
-The auxiliary vision LLM can echo system-prompt Honcho memory back into
-its analysis output. When that echo reaches the user as the enriched
-image description, recalled memory context (personal facts, dialectic
-output) surfaces into a user-visible message.
+The auxiliary vision LLM can echo system-prompt memory-context back into
+its analysis output.  The boundary fix in gateway/run.py runs the generic
+sanitize_context helper over the description so the fenced wrapper and
+its system-note are removed before the description reaches the user.
 
-The boundary fix in gateway/run.py strips both <memory-context>...</memory-context>
-fenced blocks AND any "## Honcho Context" section from vision descriptions
-before they're embedded into the enriched user message.
+Plugin-specific header cleanup (e.g. "## Honcho Context") belongs at the
+provider boundary, not in this shared gateway path.
 """
 
 import asyncio
@@ -43,22 +42,6 @@ class TestEnrichMessageWithVision:
             out = _run(gateway_runner._enrich_message_with_vision("caption", ["/tmp/img.jpg"]))
         assert "sunset over the ocean" in out
 
-    def test_honcho_context_header_stripped(self, gateway_runner):
-        """'## Honcho Context' section and everything after is removed."""
-        leaked = (
-            "A photograph of a sunset.\n\n"
-            "## Honcho Context\n"
-            "User prefers concise answers, works at Plastic Labs,\n"
-            "uses OPSEC pseudonyms.\n"
-        )
-        fake_result = json.dumps({"success": True, "analysis": leaked})
-        with patch("tools.vision_tools.vision_analyze_tool", new=AsyncMock(return_value=fake_result)):
-            out = _run(gateway_runner._enrich_message_with_vision("caption", ["/tmp/img.jpg"]))
-        assert "sunset" in out
-        assert "Honcho Context" not in out
-        assert "Plastic Labs" not in out
-        assert "OPSEC" not in out
-
     def test_memory_context_fence_stripped(self, gateway_runner):
         """<memory-context>...</memory-context> fenced block is scrubbed."""
         leaked = (
@@ -77,23 +60,21 @@ class TestEnrichMessageWithVision:
         assert "User details and preferences" not in out
         assert "System note" not in out
 
-    def test_both_leak_patterns_together_stripped(self, gateway_runner):
-        """A vision output containing both leak shapes is fully scrubbed."""
+    def test_fenced_leak_stripped_plugin_header_preserved(self, gateway_runner):
+        """The fenced wrapper is stripped; plugin-specific text outside the
+        fence (e.g. a "## Honcho Context" header) is left to the plugin layer.
+        Gateway core stays plugin-agnostic."""
         leaked = (
             "<memory-context>\n"
             "[System note: The following is recalled memory context, NOT new "
             "user input. Treat as informational background data.]\n"
             "fenced leak\n"
             "</memory-context>\n"
-            "A photograph of a dog.\n\n"
-            "## Honcho Context\n"
-            "header leak\n"
+            "A photograph of a dog."
         )
         fake_result = json.dumps({"success": True, "analysis": leaked})
         with patch("tools.vision_tools.vision_analyze_tool", new=AsyncMock(return_value=fake_result)):
             out = _run(gateway_runner._enrich_message_with_vision("caption", ["/tmp/img.jpg"]))
         assert "photograph of a dog" in out
         assert "fenced leak" not in out
-        assert "header leak" not in out
-        assert "Honcho Context" not in out
         assert "<memory-context>" not in out

@@ -4951,22 +4951,37 @@ class HermesCLI:
         _cprint(f"  Branch session:   {new_session_id}")
 
     def save_conversation(self):
-        """Save the current conversation to a file."""
+        """Save the current conversation to a JSON snapshot under ~/.hermes/sessions/saved/.
+
+        The snapshot is a convenience export for sharing or off-line inspection;
+        every message is already persisted incrementally to the SQLite session
+        DB, so the live session remains resumable via ``hermes --resume <id>``
+        regardless of whether the user ever runs ``/save``.
+        """
         if not self.conversation_history:
             print("(;_;) No conversation to save.")
             return
-        
+
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-        filename = f"hermes_conversation_{timestamp}.json"
-        
+        saved_dir = get_hermes_home() / "sessions" / "saved"
         try:
-            with open(filename, "w", encoding="utf-8") as f:
+            saved_dir.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            print(f"(x_x) Failed to create save directory {saved_dir}: {e}")
+            return
+        path = saved_dir / f"hermes_conversation_{timestamp}.json"
+
+        try:
+            with open(path, "w", encoding="utf-8") as f:
                 json.dump({
                     "model": self.model,
+                    "session_id": self.session_id,
                     "session_start": self.session_start.isoformat(),
                     "messages": self.conversation_history,
                 }, f, indent=2, ensure_ascii=False)
-            print(f"(^_^)v Conversation saved to: {filename}")
+            print(f"(^_^)v Conversation snapshot saved to: {path}")
+            if self.session_id:
+                print(f"       Resume the live session with: hermes --resume {self.session_id}")
         except Exception as e:
             print(f"(x_x) Failed to save: {e}")
     

@@ -333,22 +333,15 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
     if not requested_norm or requested_norm == "custom":
         return None
 
-    # Raw names should only map to custom providers when they are not already
-    # valid built-in providers or aliases. Explicit menu keys like
-    # ``custom:local`` always target the saved custom provider.
     if requested_norm == "auto":
         return None
-    if not requested_norm.startswith("custom:"):
-        try:
-            auth_mod.resolve_provider(requested_norm)
-        except AuthError:
-            pass
-        else:
-            return None
 
     config = load_config()
-    
-    # First check providers: dict (new-style user-defined providers)
+
+    # First check providers: dict (new-style user-defined providers) — do this
+    # BEFORE the builtin provider guard so that user-defined providers whose
+    # name happens to match a _PROVIDER_ALIASES entry (e.g. "llama-cpp" → "custom")
+    # are found in the providers dict instead of being rejected as a builtin.
     providers = config.get("providers")
     if isinstance(providers, dict):
         for ep_name, entry in providers.items():
@@ -441,6 +434,16 @@ def _get_named_custom_provider(requested_provider: str) -> Optional[Dict[str, An
         if model_name:
             result["model"] = model_name
         return result
+
+    # Only if not found in any user-defined provider, check if this is a
+    # built-in provider (not a custom provider at all).
+    if not requested_norm.startswith("custom:"):
+        try:
+            auth_mod.resolve_provider(requested_norm)
+        except AuthError:
+            pass
+        else:
+            return None
 
     return None
 

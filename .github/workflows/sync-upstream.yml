@@ -41,7 +41,17 @@ env:
   # Space-separated list of feature branches to rebase and cherry-pick into main.
   # Order matters: commits from earlier branches are applied first. Empty
   # is the steady-state when no patches are open upstream.
-  FEATURE_BRANCHES: "feat/whatsapp-forward-owner-messages-upstream"
+  # Order matters when one branch stacks on another: cherry-picking the
+  # later branch's range against upstream/main re-applies any earlier
+  # commits already in its history, which would either duplicate or
+  # conflict. We list only the *tip* branch, which contains all earlier
+  # patches as ancestors.
+  #
+  # Currently: fix/whatsapp-forward-owner-allowlist-upstream is stacked
+  # on feat/whatsapp-forward-owner-messages-upstream (PR #16445), so it
+  # carries that feature commit too. The feature branch itself stays in
+  # the fork to keep PR #16445's head ref alive but is not tracked here.
+  FEATURE_BRANCHES: "fix/whatsapp-forward-owner-allowlist-upstream"
   PLUGIN_REPO: pebble-tech/hermes-plugin-gateway-policy
 
 jobs:

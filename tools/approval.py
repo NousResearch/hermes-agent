@@ -531,6 +531,19 @@ def _get_approval_timeout() -> int:
         return 60
 
 
+def _get_approval_context() -> str | None:
+    """Read the optional smart-approval context from config.
+
+    When `approvals.context` is set, its contents are appended to the
+    smart-approval prompt so users can inject agent-specific guidance
+    (e.g. "curl to local LAN addresses is always safe").
+    """
+    context = _get_approval_config().get("context")
+    if isinstance(context, str) and context.strip():
+        return context.strip()
+    return None
+
+
 def _smart_approve(command: str, description: str) -> str:
     """Use the auxiliary LLM to assess risk and decide approval.
 
@@ -548,6 +561,11 @@ def _smart_approve(command: str, description: str) -> str:
             logger.debug("Smart approvals: no aux client available, escalating")
             return "escalate"
 
+        context_block = ""
+        custom_context = _get_approval_context()
+        if custom_context:
+            context_block = f"\n\nAdditional context for this agent:\n{custom_context}\n"
+
         prompt = f"""You are a security reviewer for an AI coding agent. A terminal command was flagged by pattern matching as potentially dangerous.
 
 Command: {command}
@@ -558,7 +576,7 @@ Assess the ACTUAL risk of this command. Many flagged commands are false positive
 Rules:
 - APPROVE if the command is clearly safe (benign script execution, safe file operations, development tools, package installs, git operations, etc.)
 - DENY if the command could genuinely damage the system (recursive delete of important paths, overwriting system files, fork bombs, wiping disks, dropping databases, etc.)
-- ESCALATE if you're uncertain
+- ESCALATE if you're uncertain{context_block}
 
 Respond with exactly one word: APPROVE, DENY, or ESCALATE"""
 

@@ -1219,6 +1219,8 @@ Control how Hermes handles potentially dangerous commands:
 ```yaml
 approvals:
   mode: manual   # manual | smart | off
+  timeout: 60    # seconds to wait for user response (default: 60)
+  context: null  # optional agent-specific context for smart mode (string or null)
 ```
 
 | Mode | Behavior |
@@ -1228,6 +1230,22 @@ approvals:
 | `off` | Skip all approval checks. Equivalent to `HERMES_YOLO_MODE=true`. **Use with caution.** |
 
 Smart mode is particularly useful for reducing approval fatigue — it lets the agent work more autonomously on safe operations while still catching genuinely destructive commands.
+
+### Smart Approval Context
+
+The optional `approvals.context` key lets you inject agent-specific guidance into the smart-approval prompt. This is useful for specialized agents that routinely run commands which would otherwise be flagged as dangerous:
+
+```yaml
+approvals:
+  mode: smart
+  context: |
+    This agent manages a Home Assistant instance. The following are always safe in this context:
+    - curl requests to homeassistant.local or local LAN addresses (192.168.x.x)
+    - python -c commands that read environment variables
+    - SSH commands to ha@192.168.x.x
+```
+
+When `context` is set, its contents are appended to the prompt sent to the auxiliary LLM, helping it make context-aware approve/deny/escalate decisions.
 
 :::warning
 Setting `approvals.mode: off` disables all safety checks for terminal commands. Only use this in trusted, sandboxed environments.

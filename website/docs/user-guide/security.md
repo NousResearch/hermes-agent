@@ -40,6 +40,22 @@ approvals:
 | **smart** | Use an auxiliary LLM to assess risk. Low-risk commands (e.g., `python -c "print('hello')"`) are auto-approved. Genuinely dangerous commands are auto-denied. Uncertain cases escalate to a manual prompt. |
 | **off** | Disable all approval checks — equivalent to running with `--yolo`. All commands execute without prompts. |
 
+### Smart Approval Context
+
+When using `smart` mode, you can inject agent-specific context into the auxiliary LLM's assessment prompt. This reduces false positives for specialized agents that have legitimate but unusual command patterns:
+
+```yaml
+approvals:
+  mode: smart
+  context: |
+    This agent manages a Home Assistant instance. The following are always safe in this context:
+    - curl requests to homeassistant.local or local LAN addresses (192.168.x.x)
+    - python -c commands that read environment variables
+    - SSH commands to ha@192.168.x.x
+```
+
+The `context` field is optional. When set, its contents are appended to the smart-approval prompt so the LLM can make context-aware decisions.
+
 :::warning
 Setting `approvals.mode: off` disables all safety prompts. Use only in trusted environments (CI/CD, containers, etc.).
 :::

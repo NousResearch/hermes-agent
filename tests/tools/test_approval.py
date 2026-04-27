@@ -2,11 +2,13 @@
 
 import ast
 from pathlib import Path
-from unittest.mock import patch as mock_patch
+from unittest.mock import MagicMock, patch as mock_patch
 
 import tools.approval as approval_module
 from tools.approval import (
+    _get_approval_context,
     _get_approval_mode,
+    _smart_approve,
     approve_session,
     detect_dangerous_command,
     is_approved,
@@ -819,5 +821,63 @@ class TestChmodExecuteCombo:
         cmd = "chmod +x script.sh"
         dangerous, _, _ = detect_dangerous_command(cmd)
         assert dangerous is False
+
+
+class TestApprovalContext:
+    """Reading approvals.context from config."""
+
+    def test_no_context_returns_none(self):
+        with mock_patch("hermes_cli.config.load_config", return_value={"approvals": {}}):
+            assert _get_approval_context() is None
+
+    def test_empty_string_returns_none(self):
+        with mock_patch("hermes_cli.config.load_config", return_value={"approvals": {"context": ""}}):
+            assert _get_approval_context() is None
+
+    def test_whitespace_string_returns_none(self):
+        with mock_patch("hermes_cli.config.load_config", return_value={"approvals": {"context": "   \n  "}}):
+            assert _get_approval_context() is None
+
+    def test_valid_context_returns_stripped_string(self):
+        ctx = "curl to 192.168.x.x is safe"
+        with mock_patch("hermes_cli.config.load_config", return_value={"approvals": {"context": ctx}}):
+            assert _get_approval_context() == ctx
+
+    def test_context_gets_injected_into_smart_approve_prompt(self):
+        """When approvals.context is set, _smart_approve appends it to the LLM prompt."""
+        ctx = "This agent manages Home Assistant. curl to local IPs is always safe."
+        fake_client = MagicMock()
+        fake_response = MagicMock()
+        fake_response.choices = [MagicMock(message=MagicMock(content="APPROVE"))]
+        fake_client.chat.completions.create.return_value = fake_response
+
+        with mock_patch("hermes_cli.config.load_config", return_value={"approvals": {"context": ctx}}), \
+             mock_patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(fake_client, "test-model")), \
+             mock_patch("agent.auxiliary_client.auxiliary_max_tokens_param", return_value={"max_tokens": 16}):
+            result = _smart_approve("curl http://192.168.0.10:8123", "network request")
+            assert result == "approve"
+
+            call_args = fake_client.chat.completions.create.call_args
+            prompt = call_args.kwargs["messages"][0]["content"]
+            assert "Additional context for this agent:" in prompt
+            assert ctx in prompt
+            assert "Respond with exactly one word: APPROVE, DENY, or ESCALATE" in prompt
+
+    def test_no_context_omits_context_block(self):
+        """When approvals.context is absent, the prompt does not contain the context block."""
+        fake_client = MagicMock()
+        fake_response = MagicMock()
+        fake_response.choices = [MagicMock(message=MagicMock(content="ESCALATE"))]
+        fake_client.chat.completions.create.return_value = fake_response
+
+        with mock_patch("hermes_cli.config.load_config", return_value={"approvals": {}}), \
+             mock_patch("agent.auxiliary_client.get_text_auxiliary_client", return_value=(fake_client, "test-model")), \
+             mock_patch("agent.auxiliary_client.auxiliary_max_tokens_param", return_value={"max_tokens": 16}):
+            result = _smart_approve("python3 -c 'print(1)'", "script execution via -c flag")
+            assert result == "escalate"
+
+            call_args = fake_client.chat.completions.create.call_args
+            prompt = call_args.kwargs["messages"][0]["content"]
+            assert "Additional context for this agent:" not in prompt
 
 

@@ -729,6 +729,9 @@ DEFAULT_CONFIG = {
     "approvals": {
         "mode": "manual",
         "timeout": 60,
+        # Optional agent-specific context injected into the smart-approval prompt.
+        # Use this to reduce false positives for specialized agents (e.g. HA admin).
+        "context": None,
     },
 
     # Permanently allowed dangerous command patterns (added via "always" approval)
@@ -777,7 +780,7 @@ DEFAULT_CONFIG = {
     },
 
     # Config schema version - bump this when adding new required fields
-    "_config_version": 18,
+    "_config_version": 19,
 }
 
 # =============================================================================

@@ -2008,3 +2008,130 @@ def test_prompt_submit_skips_auto_title_when_response_empty(monkeypatch):
         )
 
     mock_title.assert_not_called()
+
+
+# ── max_iterations config reading ─────────────────────────────────────
+
+
+def _setup_make_agent_mocks(monkeypatch, cfg):
+    """Common mock setup for _make_agent max_iterations tests."""
+    monkeypatch.setattr(server, "_load_cfg", lambda: cfg)
+    monkeypatch.setattr(
+        server, "_resolve_startup_runtime",
+        lambda: ("test-model", None),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda requested=None, target_model=None: {
+            "provider": None,
+            "base_url": None,
+            "api_key": None,
+            "api_mode": None,
+            "command": None,
+            "args": None,
+            "credential_pool": None,
+        },
+    )
+    monkeypatch.setattr(
+        server, "_load_tool_progress_mode", lambda: "off"
+    )
+    monkeypatch.setattr(
+        server, "_load_reasoning_config", lambda: None
+    )
+    monkeypatch.setattr(server, "_load_service_tier", lambda: None)
+    monkeypatch.setattr(server, "_load_enabled_toolsets", lambda: None)
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    monkeypatch.setattr(server, "_agent_cbs", lambda sid: {})
+
+
+def test_make_agent_reads_agent_max_turns(monkeypatch):
+    """_make_agent() reads max_iterations from agent.max_turns in config."""
+    _setup_make_agent_mocks(monkeypatch, {"agent": {"max_turns": 200}})
+
+    with patch("run_agent.AIAgent") as MockAgent:
+        server._make_agent("sid1", "key1")
+        _, kwargs = MockAgent.call_args
+        assert kwargs["max_iterations"] == 200
+
+
+def test_make_agent_falls_back_to_root_max_turns(monkeypatch):
+    """Without agent.max_turns, fall back to root-level max_turns."""
+    _setup_make_agent_mocks(monkeypatch, {"max_turns": 150})
+
+    with patch("run_agent.AIAgent") as MockAgent:
+        server._make_agent("sid1", "key1")
+        _, kwargs = MockAgent.call_args
+        assert kwargs["max_iterations"] == 150
+
+
+def test_make_agent_defaults_to_90(monkeypatch):
+    """With no max_turns anywhere, default to 90."""
+    _setup_make_agent_mocks(monkeypatch, {})
+
+    with patch("run_agent.AIAgent") as MockAgent:
+        server._make_agent("sid1", "key1")
+        _, kwargs = MockAgent.call_args
+        assert kwargs["max_iterations"] == 90
+
+
+def test_make_agent_agent_max_turns_takes_priority(monkeypatch):
+    """agent.max_turns takes priority over root-level max_turns."""
+    _setup_make_agent_mocks(
+        monkeypatch, {"agent": {"max_turns": 500}, "max_turns": 100}
+    )
+
+    with patch("run_agent.AIAgent") as MockAgent:
+        server._make_agent("sid1", "key1")
+        _, kwargs = MockAgent.call_args
+        assert kwargs["max_iterations"] == 500
+
+
+class _FakeAgentForBackground:
+    """Minimal stub with the attributes _background_agent_kwargs reads."""
+    base_url = None
+    api_key = None
+    provider = None
+    api_mode = None
+    acp_command = None
+    acp_args = None
+    model = "test-model"
+    enabled_toolsets = None
+    ephemeral_system_prompt = None
+    providers_allowed = None
+    providers_ignored = None
+    providers_order = None
+    provider_sort = None
+    provider_require_parameters = False
+    provider_data_collection = None
+    reasoning_config = None
+    service_tier = None
+    request_overrides = {}
+    _fallback_model = None
+
+
+def test_background_agent_kwargs_reads_agent_max_turns(monkeypatch):
+    """_background_agent_kwargs() reads max_iterations from agent.max_turns."""
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"agent": {"max_turns": 300}}
+    )
+
+    kwargs = server._background_agent_kwargs(_FakeAgentForBackground(), "task_1")
+    assert kwargs["max_iterations"] == 300
+
+
+def test_background_agent_kwargs_defaults_to_25(monkeypatch):
+    """With no max_turns, _background_agent_kwargs defaults to 25."""
+    monkeypatch.setattr(server, "_load_cfg", lambda: {})
+
+    kwargs = server._background_agent_kwargs(_FakeAgentForBackground(), "task_1")
+    assert kwargs["max_iterations"] == 25
+
+
+def test_background_agent_kwargs_falls_back_to_root_max_turns(monkeypatch):
+    """Without agent.max_turns, _background_agent_kwargs falls back to root max_turns."""
+    monkeypatch.setattr(
+        server, "_load_cfg", lambda: {"max_turns": 50}
+    )
+
+    kwargs = server._background_agent_kwargs(_FakeAgentForBackground(), "task_1")
+    assert kwargs["max_iterations"] == 50

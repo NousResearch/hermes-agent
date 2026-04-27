@@ -287,6 +287,40 @@ class TestSendDocument:
         call_kwargs = adapter._app.client.files_upload_v2.call_args[1]
         assert call_kwargs["thread_ts"] == "1234567890.123456"
 
+    @pytest.mark.asyncio
+    async def test_send_document_thread_upload_marks_bot_participation(self, adapter, tmp_path):
+        test_file = tmp_path / "notes.txt"
+        test_file.write_bytes(b"some notes")
+
+        adapter._app.client.files_upload_v2 = AsyncMock(return_value={"ok": True})
+
+        await adapter.send_document(
+            chat_id="C123",
+            file_path=str(test_file),
+            metadata={"thread_id": "1234567890.123456"},
+        )
+
+        assert "1234567890.123456" in adapter._bot_message_ts
+
+    @pytest.mark.asyncio
+    async def test_send_document_retries_transient_upload_error(self, adapter, tmp_path):
+        test_file = tmp_path / "notes.txt"
+        test_file.write_bytes(b"some notes")
+
+        adapter._app.client.files_upload_v2 = AsyncMock(
+            side_effect=[RuntimeError("Connection reset by peer"), {"ok": True}]
+        )
+
+        with patch("asyncio.sleep", new_callable=AsyncMock) as sleep_mock:
+            result = await adapter.send_document(
+                chat_id="C123",
+                file_path=str(test_file),
+            )
+
+        assert result.success
+        assert adapter._app.client.files_upload_v2.await_count == 2
+        sleep_mock.assert_awaited_once()
+
 
 # ---------------------------------------------------------------------------
 # TestSendVideo
@@ -429,6 +463,36 @@ class TestIncomingDocumentHandling:
 
         msg_event = adapter.handle_message.call_args[0][0]
         assert "# Title" in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_json_snippet_injects_content(self, adapter):
+        """A .json snippet should be treated as a text document and injected."""
+        content = b'{"hello": "world", "count": 2}'
+
+        with patch.object(adapter, "_download_slack_file_bytes", new_callable=AsyncMock) as dl:
+            dl.return_value = content
+            event = self._make_event(
+                text="can you parse this",
+                files=[{
+                    "mimetype": "text/plain",
+                    "name": "zapfile.json",
+                    "filetype": "json",
+                    "pretty_type": "JSON",
+                    "mode": "snippet",
+                    "editable": True,
+                    "url_private_download": "https://files.slack.com/zapfile.json",
+                    "size": len(content),
+                }],
+            )
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.DOCUMENT
+        assert len(msg_event.media_urls) == 1
+        assert msg_event.media_types == ["application/json"]
+        assert '[Content of zapfile.json]' in msg_event.text
+        assert '"hello": "world"' in msg_event.text
+        assert 'can you parse this' in msg_event.text
 
     @pytest.mark.asyncio
     async def test_large_txt_not_injected(self, adapter):
@@ -2089,6 +2153,48 @@ class TestSendImageSSRFGuards:
         call_kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
         assert "see this" in call_kwargs["text"]
         assert "https://public.example/image.png" in call_kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_send_image_fallback_preserves_thread_metadata(self, adapter):
+        redirect_response = MagicMock()
+        redirect_response.is_redirect = True
+        redirect_response.next_request = MagicMock(
+            url="http://169.254.169.254/latest/meta-data"
+        )
+
+        client_kwargs = {}
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        async def fake_get(_url):
+            for hook in client_kwargs["event_hooks"]["response"]:
+                await hook(redirect_response)
+
+        mock_client.get = AsyncMock(side_effect=fake_get)
+        adapter._app.client.files_upload_v2 = AsyncMock(return_value={"ok": True})
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "reply_ts"})
+
+        def fake_async_client(*args, **kwargs):
+            client_kwargs.update(kwargs)
+            return mock_client
+
+        def fake_is_safe_url(url):
+            return url == "https://public.example/image.png"
+
+        with (
+            patch("tools.url_safety.is_safe_url", side_effect=fake_is_safe_url),
+            patch("httpx.AsyncClient", side_effect=fake_async_client),
+        ):
+            await adapter.send_image(
+                chat_id="C123",
+                image_url="https://public.example/image.png",
+                caption="see this",
+                metadata={"thread_id": "parent_ts_789"},
+            )
+
+        call_kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert call_kwargs.get("thread_ts") == "parent_ts_789"
 
 
 # ---------------------------------------------------------------------------

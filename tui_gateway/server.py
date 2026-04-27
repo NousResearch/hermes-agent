@@ -2310,7 +2310,6 @@ def _(rid, params: dict) -> dict:
                         _parts, _skipped = build_native_content_parts(
                             prompt,
                             images,
-                            provider=_read_main_provider(),
                         )
                         if _skipped:
                             print(

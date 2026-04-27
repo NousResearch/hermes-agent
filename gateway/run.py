@@ -10450,11 +10450,9 @@ class GatewayRunner:
                 if _native_imgs:
                     try:
                         from agent.image_routing import build_native_content_parts
-                        from agent.auxiliary_client import _read_main_provider
                         _parts, _skipped = build_native_content_parts(
                             message,
                             _native_imgs,
-                            provider=_read_main_provider(),
                         )
                         if _skipped:
                             logger.warning(

@@ -8393,7 +8393,6 @@ class HermesCLI:
                     _parts, _skipped = build_native_content_parts(
                         _text_for_parts,
                         _img_str_paths,
-                        provider=(self.provider or "").strip(),
                     )
                     if _skipped:
                         _cprint(

@@ -176,168 +176,38 @@ class TestBuildNativeContentParts:
 # ─── Oversize handling ───────────────────────────────────────────────────────
 
 
-class TestOversizeHandling:
-    """Provider-aware oversize handling.
-
-    Anthropic has a hard 5 MB base64 ceiling (empirically verified April
-    2026 — returns 400 above that). OpenAI / Codex / OpenRouter accept
-    49 MB+ without issue. Gemini documents 100 MB. When provider is
-    unknown or has no known ceiling, we pass images through at native
-    size and let the provider return its own error.
+class TestLargeImageHandling:
+    """Large images attach at native size; shrink is handled reactively at
+    retry time in ``run_agent._try_shrink_image_parts_in_messages`` rather
+    than proactively here.
     """
 
-    def _fake_stat_factory(self, real_stat, size_bytes):
-        class _FakeStat:
-            st_size = size_bytes
-            st_mode = real_stat.st_mode
-            st_uid = real_stat.st_uid
-            st_gid = real_stat.st_gid
-            st_mtime = real_stat.st_mtime
-            st_ctime = real_stat.st_ctime
-            st_atime = real_stat.st_atime
-            st_nlink = real_stat.st_nlink
-            st_ino = real_stat.st_ino
-            st_dev = real_stat.st_dev
-        return _FakeStat
-
-    def test_no_ceiling_passes_through_large_image(self, tmp_path: Path, monkeypatch):
-        """OpenAI / unknown provider: 30 MB image attached as-is, no resize."""
+    def test_large_image_passes_through_unchanged(self, tmp_path: Path):
+        """A multi-MB image is attached as-is — no resize, no skip."""
         from agent import image_routing as _ir
 
-        img = tmp_path / "huge.png"
-        img.write_bytes(_png_bytes())
-        real_stat = img.stat()
-        fake = self._fake_stat_factory(real_stat, 30 * 1024 * 1024)
-        monkeypatch.setattr(Path, "stat", lambda self: fake())
+        img = tmp_path / "medium.png"
+        # 200 KB of real bytes; not huge but enough to verify no size gate fires.
+        img.write_bytes(b"\x89PNG\r\n\x1a\n" + b"X" * 200_000)
+        url = _ir._file_to_data_url(img)
+        assert url is not None
+        assert url.startswith("data:image/png;base64,")
+        # Base64 expansion means output is ~4/3 of input, plus header.
+        assert len(url) > 200_000
 
-        resize_called = {"count": 0}
+    def test_missing_file_returns_none(self, tmp_path: Path):
+        from agent import image_routing as _ir
+        missing = tmp_path / "does_not_exist.png"
+        assert _ir._file_to_data_url(missing) is None
 
-        def _fake_resize(*a, **kw):
-            resize_called["count"] += 1
-            return "should-not-be-called"
-
-        monkeypatch.setattr(
-            "tools.vision_tools._resize_image_for_vision",
-            _fake_resize,
-            raising=False,
-        )
-
-        # openai provider has no ceiling → pass through at native size.
-        url = _ir._file_to_data_url(img, ceiling=None)
-        assert resize_called["count"] == 0
-        assert url is not None and url.startswith("data:image/png;base64,")
-
-    def test_anthropic_ceiling_triggers_resize(self, tmp_path: Path, monkeypatch):
-        """Anthropic: 10 MB image triggers auto-resize to fit under 5 MB."""
+    def test_build_native_parts_no_provider_kwarg(self, tmp_path: Path):
+        """build_native_content_parts takes text + paths, no provider kwarg."""
         from agent import image_routing as _ir
 
-        img = tmp_path / "big.png"
+        img = tmp_path / "cat.png"
         img.write_bytes(_png_bytes())
-        real_stat = img.stat()
-        fake = self._fake_stat_factory(real_stat, 10 * 1024 * 1024)
-        monkeypatch.setattr(Path, "stat", lambda self: fake())
-
-        resize_called = {"count": 0, "target": None}
-
-        def _fake_resize(path, mime_type=None, max_base64_bytes=None):
-            resize_called["count"] += 1
-            resize_called["target"] = max_base64_bytes
-            return "data:image/jpeg;base64,ZmFrZXJlc2l6ZWQ="
-
-        monkeypatch.setattr(
-            "tools.vision_tools._resize_image_for_vision",
-            _fake_resize,
-            raising=False,
-        )
-
-        url = _ir._file_to_data_url(img, ceiling=5 * 1024 * 1024)
-        assert resize_called["count"] == 1
-        # Resize target should be capped at the ceiling (5 MB), not exceed it.
-        assert resize_called["target"] <= 5 * 1024 * 1024
-        assert url == "data:image/jpeg;base64,ZmFrZXJlc2l6ZWQ="
-
-    def test_anthropic_ceiling_when_resize_fails(self, tmp_path: Path, monkeypatch):
-        """If Pillow missing or resize overshoots, return None so caller skips."""
-        from agent import image_routing as _ir
-
-        img = tmp_path / "big.png"
-        img.write_bytes(_png_bytes())
-        real_stat = img.stat()
-        fake = self._fake_stat_factory(real_stat, 10 * 1024 * 1024)
-        monkeypatch.setattr(Path, "stat", lambda self: fake())
-
-        def _boom(*a, **kw):
-            raise RuntimeError("no Pillow")
-
-        monkeypatch.setattr(
-            "tools.vision_tools._resize_image_for_vision",
-            _boom,
-            raising=False,
-        )
-
-        assert _ir._file_to_data_url(img, ceiling=5 * 1024 * 1024) is None
-
-    def test_build_native_parts_wires_provider_ceiling(self, tmp_path: Path, monkeypatch):
-        """Calling with provider='anthropic' applies the 5 MB ceiling; provider='openai' does not."""
-        from agent import image_routing as _ir
-
-        img = tmp_path / "big.png"
-        img.write_bytes(_png_bytes())
-        real_stat = img.stat()
-        fake = self._fake_stat_factory(real_stat, 10 * 1024 * 1024)
-        monkeypatch.setattr(Path, "stat", lambda self: fake())
-
-        resize_hits = {"count": 0}
-
-        def _fake_resize(path, mime_type=None, max_base64_bytes=None):
-            resize_hits["count"] += 1
-            return "data:image/jpeg;base64,UkVTSVpFRA=="
-
-        monkeypatch.setattr(
-            "tools.vision_tools._resize_image_for_vision",
-            _fake_resize,
-            raising=False,
-        )
-
-        # anthropic → resize fires
-        parts_anth, skipped_anth = _ir.build_native_content_parts(
-            "hi", [str(img)], provider="anthropic"
-        )
-        assert resize_hits["count"] == 1
-        assert skipped_anth == []
-        assert any(p.get("type") == "image_url" for p in parts_anth)
-
-        # openai → no resize, image passes through at native size
-        parts_oai, skipped_oai = _ir.build_native_content_parts(
-            "hi", [str(img)], provider="openai-codex"
-        )
-        assert resize_hits["count"] == 1  # unchanged; openai-codex has no ceiling
-        assert skipped_oai == []
-        # The attached URL should be the raw-encoded original (big b64),
-        # not the "RESIZED" fake.
-        image_part = next(p for p in parts_oai if p.get("type") == "image_url")
-        assert "UkVTSVpFRA" not in image_part["image_url"]["url"]
-
-    def test_build_native_parts_unknown_provider_no_ceiling(self, tmp_path: Path, monkeypatch):
-        """Provider not in the table → no ceiling, image attached as-is."""
-        from agent import image_routing as _ir
-
-        img = tmp_path / "big.png"
-        img.write_bytes(_png_bytes())
-        real_stat = img.stat()
-        fake = self._fake_stat_factory(real_stat, 50 * 1024 * 1024)
-        monkeypatch.setattr(Path, "stat", lambda self: fake())
-
-        resize_hits = {"count": 0}
-        monkeypatch.setattr(
-            "tools.vision_tools._resize_image_for_vision",
-            lambda *a, **kw: resize_hits.__setitem__("count", resize_hits["count"] + 1) or "resized",
-            raising=False,
-        )
-
-        parts, skipped = _ir.build_native_content_parts(
-            "x", [str(img)], provider="some-future-provider"
-        )
-        assert resize_hits["count"] == 0
+        parts, skipped = _ir.build_native_content_parts("hi", [str(img)])
         assert skipped == []
-        assert any(p.get("type") == "image_url" for p in parts)
+        assert len(parts) == 2
+        assert parts[0]["type"] == "text"
+        assert parts[1]["type"] == "image_url"

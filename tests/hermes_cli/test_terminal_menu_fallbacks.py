@@ -104,3 +104,63 @@ def test_named_custom_provider_model_picker_falls_back_on_terminalmenu_runtime_e
     assert reloaded["model"]["provider"] == "custom"
     assert reloaded["model"]["base_url"] == "http://localhost:8000/v1"
     assert reloaded["model"]["default"] == "model-b"
+
+
+def test_named_provider_model_picker_uses_key_env_without_persisting_secret(tmp_path, monkeypatch):
+    from hermes_cli.main import _model_flow_named_custom
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("LOCAL_CUSTOM_KEY", "env-secret")
+    monkeypatch.setitem(
+        sys.modules,
+        "simple_term_menu",
+        types.SimpleNamespace(TerminalMenu=_BrokenTerminalMenu),
+    )
+
+    calls = []
+
+    def fake_fetch_api_models(api_key, base_url, **kwargs):
+        calls.append((api_key, base_url, kwargs))
+        return ["model-a"]
+
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", fake_fetch_api_models)
+    monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda: None)
+
+    cfg = load_config()
+    cfg["providers"] = {
+        "local-custom": {
+            "name": "Local Custom",
+            "base_url": "http://localhost:8000/v1",
+            "key_env": "LOCAL_CUSTOM_KEY",
+            "api_key": "inline-secret",
+            "default_model": "old-model",
+        }
+    }
+    save_config(cfg)
+
+    responses = iter(["1"])
+    monkeypatch.setattr("builtins.input", lambda _prompt="": next(responses))
+
+    _model_flow_named_custom(
+        cfg,
+        {
+            "name": "Local Custom",
+            "base_url": "http://localhost:8000/v1",
+            "key_env": "LOCAL_CUSTOM_KEY",
+            "model": "old-model",
+            "provider_key": "local-custom",
+        },
+    )
+
+    assert calls
+    assert calls[0][0] == "env-secret"
+    assert calls[0][1] == "http://localhost:8000/v1"
+
+    reloaded = load_config()
+    assert reloaded["model"]["provider"] == "local-custom"
+    assert reloaded["model"].get("api_key") in (None, "")
+    provider_cfg = reloaded["providers"]["local-custom"]
+    assert provider_cfg["key_env"] == "LOCAL_CUSTOM_KEY"
+    assert provider_cfg["default_model"] == "model-a"
+    assert provider_cfg.get("api_key") == "inline-secret"
+    assert "env-secret" not in str(reloaded)

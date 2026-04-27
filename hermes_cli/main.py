@@ -3202,20 +3202,16 @@ def _model_flow_named_custom(config, provider_info):
     Falls back to the saved model if probing fails.
     """
     from hermes_cli.auth import _save_model_choice, deactivate_provider
-    from hermes_cli.config import load_config, save_config
+    from hermes_cli.config import get_env_value, load_config, save_config
     from hermes_cli.models import fetch_api_models
 
     name = provider_info["name"]
     base_url = provider_info["base_url"]
     api_mode = provider_info.get("api_mode", "")
-    api_key = provider_info.get("api_key", "")
     key_env = provider_info.get("key_env", "")
+    api_key = (get_env_value(key_env) or "") if key_env else provider_info.get("api_key", "")
     saved_model = provider_info.get("model", "")
     provider_key = (provider_info.get("provider_key") or "").strip()
-
-    # Resolve key from env var if api_key not set directly
-    if not api_key and key_env:
-        api_key = os.environ.get(key_env, "")
     config_api_key = _custom_provider_api_key_config_value(provider_info, api_key)
 
     print(f"  Provider: {name}")
@@ -3358,7 +3354,8 @@ def _model_flow_named_custom(config, provider_info):
                 cfg["providers"] = providers_cfg
                 save_config(cfg)
     else:
-        # Save model name to the custom_providers entry for next time
+        # Save model name to the custom_providers entry for next time. Keep an
+        # env reference, not the key_env-resolved secret, when applicable.
         _save_custom_provider(base_url, config_api_key, model_name)
 
     print(f"\n✅ Model set to: {model_name}")

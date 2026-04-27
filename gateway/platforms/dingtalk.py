@@ -299,14 +299,35 @@ class DingTalkAdapter(BasePlatformAdapter):
             return False
 
     async def _run_stream(self) -> None:
-        """Run the async stream client with auto-reconnection."""
+        """Run the async stream client with auto-reconnection.
+
+        The dingtalk-stream SDK's ``start()`` loops internally with its own
+        reconnect backoff, but it only handles explicit
+        ``ConnectionClosedError``.  When the underlying TCP connection drops
+        silently (proxy timeout / RST without close-frame), the websockets
+        ``async for`` iterator may hang forever — no exception, no return.
+        We guard against that with a generous timeout so we always recover.
+        """
         backoff_idx = 0
+        STREAM_START_TIMEOUT = 300  # 5 min — a healthy stream gets messages far more often
         while self._running:
             try:
                 logger.debug("[%s] Starting stream client...", self.name)
-                await self._stream_client.start()
+                await asyncio.wait_for(
+                    self._stream_client.start(),
+                    timeout=STREAM_START_TIMEOUT,
+                )
             except asyncio.CancelledError:
                 return
+            except asyncio.TimeoutError:
+                if not self._running:
+                    return
+                logger.warning(
+                    "[%s] Stream client timed out after %ds — WebSocket may have silently "
+                    "disconnected; will reconnect",
+                    self.name,
+                    STREAM_START_TIMEOUT,
+                )
             except Exception as e:
                 if not self._running:
                     return

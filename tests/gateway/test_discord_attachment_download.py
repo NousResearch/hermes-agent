@@ -350,6 +350,7 @@ class TestHandleMessageUsesAuthenticatedRead:
                 reference=None,
                 created_at=datetime.now(timezone.utc),
                 channel=chan,
+                guild=None,
                 author=SimpleNamespace(id=42, display_name="U", name="U"),
             )
             await adapter._handle_message(msg)
@@ -358,3 +359,48 @@ class TestHandleMessageUsesAuthenticatedRead:
         event = adapter.handle_message.call_args[0][0]
         assert event.media_urls == ["/tmp/img_from_read.png"]
         assert event.media_types == ["image/png"]
+
+    @pytest.mark.asyncio
+    async def test_unknown_document_extension_is_cached_as_generic_binary(self, monkeypatch):
+        """Unknown document extensions should still be delivered to the agent."""
+        adapter = _make_adapter()
+        adapter._client = SimpleNamespace(user=SimpleNamespace(id=999))
+        adapter.handle_message = AsyncMock()
+        adapter._cache_discord_document = AsyncMock(return_value=b"custom payload")
+
+        with patch(
+            "gateway.platforms.discord.cache_document_from_bytes",
+            return_value="/tmp/custom.mqxlz",
+        ):
+            att = SimpleNamespace(
+                url="https://cdn.discordapp.com/attachments/fake/custom.mqxlz",
+                filename="custom.mqxlz",
+                content_type=None,
+                size=14,
+                read=AsyncMock(return_value=b"custom payload"),
+            )
+            from datetime import datetime, timezone
+
+            class _FakeDMChannel:
+                id = 100
+                name = "dm"
+
+            monkeypatch.setattr(
+                "gateway.platforms.discord.discord.DMChannel",
+                _FakeDMChannel,
+            )
+            chan = _FakeDMChannel()
+            msg = SimpleNamespace(
+                id=1, content="", attachments=[att], mentions=[],
+                reference=None,
+                created_at=datetime.now(timezone.utc),
+                channel=chan,
+                guild=None,
+                author=SimpleNamespace(id=42, display_name="U", name="U"),
+            )
+            await adapter._handle_message(msg)
+
+        adapter._cache_discord_document.assert_awaited_once_with(att, ".mqxlz")
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_urls == ["/tmp/custom.mqxlz"]
+        assert event.media_types == ["application/octet-stream"]

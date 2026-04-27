@@ -3264,13 +3264,10 @@ class DiscordAdapter(BasePlatformAdapter):
                     elif att.content_type.startswith("audio/"):
                         msg_type = MessageType.AUDIO
                     else:
-                        doc_ext = ""
-                        if att.filename:
-                            _, doc_ext = os.path.splitext(att.filename)
-                            doc_ext = doc_ext.lower()
-                        if doc_ext in SUPPORTED_DOCUMENT_TYPES:
-                            msg_type = MessageType.DOCUMENT
-                    break
+                        msg_type = MessageType.DOCUMENT
+                else:
+                    msg_type = MessageType.DOCUMENT
+                break
 
         # When auto-threading kicked in, route responses to the new thread
         effective_channel = auto_threaded_channel or message.channel
@@ -3314,7 +3311,7 @@ class DiscordAdapter(BasePlatformAdapter):
         media_types = []
         pending_text_injection: Optional[str] = None
         for att in message.attachments:
-            content_type = att.content_type or "unknown"
+            content_type = att.content_type or ""
             if content_type.startswith("image/"):
                 try:
                     # Determine extension from content type (image/png -> .png)
@@ -3352,47 +3349,49 @@ class DiscordAdapter(BasePlatformAdapter):
                 if not ext and content_type:
                     mime_to_ext = {v: k for k, v in SUPPORTED_DOCUMENT_TYPES.items()}
                     ext = mime_to_ext.get(content_type, "")
+                # Unknown extensions are accepted as generic binary documents
                 if ext not in SUPPORTED_DOCUMENT_TYPES:
+                    logger.info(
+                        "[Discord] Unknown document type '%s' (%s), treating as generic octet-stream",
+                        ext or "unknown", content_type or "unknown",
+                    )
+                MAX_DOC_BYTES = 32 * 1024 * 1024
+                if att.size and att.size > MAX_DOC_BYTES:
                     logger.warning(
-                        "[Discord] Unsupported document type '%s' (%s), skipping",
-                        ext or "unknown", content_type,
+                        "[Discord] Document too large (%s bytes), skipping: %s",
+                        att.size, att.filename,
                     )
                 else:
-                    MAX_DOC_BYTES = 32 * 1024 * 1024
-                    if att.size and att.size > MAX_DOC_BYTES:
-                        logger.warning(
-                            "[Discord] Document too large (%s bytes), skipping: %s",
-                            att.size, att.filename,
+                    try:
+                        raw_bytes = await self._cache_discord_document(att, ext)
+                        cached_path = cache_document_from_bytes(
+                            raw_bytes, att.filename or f"document{ext}"
                         )
-                    else:
-                        try:
-                            raw_bytes = await self._cache_discord_document(att, ext)
-                            cached_path = cache_document_from_bytes(
-                                raw_bytes, att.filename or f"document{ext}"
-                            )
-                            doc_mime = SUPPORTED_DOCUMENT_TYPES[ext]
-                            media_urls.append(cached_path)
-                            media_types.append(doc_mime)
-                            logger.info("[Discord] Cached user document: %s", cached_path)
-                            # Inject text content for plain-text documents (capped at 100 KB)
-                            MAX_TEXT_INJECT_BYTES = 100 * 1024
-                            if ext in (".md", ".txt", ".log") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
-                                try:
-                                    text_content = raw_bytes.decode("utf-8")
-                                    display_name = att.filename or f"document{ext}"
-                                    display_name = re.sub(r'[^\w.\- ]', '_', display_name)
-                                    injection = f"[Content of {display_name}]:\n{text_content}"
-                                    if pending_text_injection:
-                                        pending_text_injection = f"{pending_text_injection}\n\n{injection}"
-                                    else:
-                                        pending_text_injection = injection
-                                except UnicodeDecodeError:
-                                    pass
-                        except Exception as e:
-                            logger.warning(
-                                "[Discord] Failed to cache document %s: %s",
-                                att.filename, e, exc_info=True,
-                            )
+                        doc_mime = SUPPORTED_DOCUMENT_TYPES.get(
+                            ext, content_type or "application/octet-stream"
+                        )
+                        media_urls.append(cached_path)
+                        media_types.append(doc_mime)
+                        logger.info("[Discord] Cached user document: %s", cached_path)
+                        # Inject text content for plain-text documents (capped at 100 KB)
+                        MAX_TEXT_INJECT_BYTES = 100 * 1024
+                        if ext in (".md", ".txt", ".log") and len(raw_bytes) <= MAX_TEXT_INJECT_BYTES:
+                            try:
+                                text_content = raw_bytes.decode("utf-8")
+                                display_name = att.filename or f"document{ext}"
+                                display_name = re.sub(r'[^\w.\- ]', '_', display_name)
+                                injection = f"[Content of {display_name}]:\n{text_content}"
+                                if pending_text_injection:
+                                    pending_text_injection = f"{pending_text_injection}\n\n{injection}"
+                                else:
+                                    pending_text_injection = injection
+                            except UnicodeDecodeError:
+                                pass
+                    except Exception as e:
+                        logger.warning(
+                            "[Discord] Failed to cache document %s: %s",
+                            att.filename, e, exc_info=True,
+                        )
 
         # Use normalized_content (saved before auto-threading) instead of message.content,
         # to detect /slash commands in channel messages.

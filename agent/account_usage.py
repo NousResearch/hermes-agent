@@ -7,7 +7,7 @@ from typing import Any, Optional
 import httpx
 
 from agent.anthropic_adapter import _is_oauth_token, resolve_anthropic_token
-from hermes_cli.auth import _read_codex_tokens, resolve_codex_runtime_credentials
+from hermes_cli.auth import _decode_jwt_claims, resolve_codex_runtime_credentials
 from hermes_cli.runtime_provider import resolve_runtime_provider
 
 
@@ -113,6 +113,105 @@ def render_account_usage_lines(snapshot: Optional[AccountUsageSnapshot], *, mark
     return lines
 
 
+def _format_reset_compact(dt: Optional[datetime]) -> Optional[str]:
+    if not dt:
+        return None
+    total_seconds = int((dt - _utc_now()).total_seconds())
+    if total_seconds <= 0:
+        return "now"
+    minutes_total = max(1, total_seconds // 60)
+    hours_total, minutes = divmod(minutes_total, 60)
+    days, hours = divmod(hours_total, 24)
+    if days:
+        return f"{days}d {hours}h"
+    if hours:
+        return f"{hours}h {minutes}m"
+    return f"{minutes}m"
+
+
+def _provider_status_label(provider: str) -> str:
+    normalized = (provider or "").strip().lower()
+    if normalized == "openai-codex":
+        return "Codex"
+    if normalized == "openrouter":
+        return "OpenRouter"
+    if normalized == "anthropic":
+        return "Claude"
+    return normalized.replace("-", " ").title() or "Provider"
+
+
+def _window_status_label(label: str) -> str:
+    normalized = (label or "").strip().lower()
+    if not normalized:
+        return "limit"
+    if "session" in normalized:
+        # Codex/Claude subscription APIs both use this for the short window.
+        return "5h"
+    if "opus" in normalized and "week" in normalized:
+        return "opus wk"
+    if "sonnet" in normalized and "week" in normalized:
+        return "sonnet wk"
+    if "week" in normalized or "weekly" in normalized:
+        return "week"
+    if "quota" in normalized:
+        return "quota"
+    return normalized.split()[0][:10]
+
+
+def _limit_level(used_percent: float) -> str:
+    if used_percent >= 90:
+        return "critical"
+    if used_percent >= 80:
+        return "warn"
+    return "ok"
+
+
+def build_account_limit_status(
+    snapshot: Optional[AccountUsageSnapshot],
+    *,
+    max_windows: Optional[int] = None,
+) -> Optional[dict[str, Any]]:
+    """Compact account-limit payload for status bars.
+
+    This intentionally stays provider-agnostic: any provider-specific usage API
+    only needs to return AccountUsageSnapshot windows.
+    """
+    if not snapshot or snapshot.unavailable_reason:
+        return None
+
+    windows: list[dict[str, Any]] = []
+    for window in snapshot.windows:
+        if window.used_percent is None:
+            continue
+        used = max(0.0, min(100.0, float(window.used_percent)))
+        remaining = max(0.0, 100.0 - used)
+        windows.append(
+            {
+                "label": _window_status_label(window.label),
+                "full_label": window.label,
+                "used_percent": round(used),
+                "remaining_percent": round(remaining),
+                "reset": _format_reset_compact(window.reset_at),
+                "level": _limit_level(used),
+            }
+        )
+
+    if max_windows is not None:
+        windows = windows[:max(0, max_windows)]
+    if not windows:
+        return None
+
+    level_rank = {"ok": 0, "warn": 1, "critical": 2}
+    level = max((str(w.get("level") or "ok") for w in windows), key=lambda value: level_rank.get(value, 0))
+    return {
+        "provider": snapshot.provider,
+        "label": _provider_status_label(snapshot.provider),
+        "plan": snapshot.plan,
+        "level": level,
+        "windows": windows,
+    }
+
+
 def _resolve_codex_usage_url(base_url: str) -> str:
     normalized = (base_url or "").strip().rstrip("/")
     if not normalized:
@@ -124,20 +223,43 @@ def _resolve_codex_usage_url(base_url: str) -> str:
     return normalized + "/api/codex/usage"
 
 
-def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
-    creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
-    token_data = _read_codex_tokens()
-    tokens = token_data.get("tokens") or {}
-    account_id = str(tokens.get("account_id", "") or "").strip() or None
+def _codex_account_id_from_access_token(access_token: str) -> Optional[str]:
+    claims = _decode_jwt_claims(access_token)
+    auth_claim = claims.get("https://api.openai.com/auth")
+    if not isinstance(auth_claim, dict):
+        return None
+    account_id = auth_claim.get("chatgpt_account_id")
+    if isinstance(account_id, str) and account_id.strip():
+        return account_id.strip()
+    return None
+
+
+def _fetch_codex_account_usage(
+    *,
+    base_url: Optional[str] = None,
+    api_key: Optional[str] = None,
+    timeout: float = 15.0,
+) -> Optional[AccountUsageSnapshot]:
+    token = str(api_key or "").strip()
+    resolved_base_url = str(base_url or "").strip().rstrip("/")
+    if not token:
+        creds = resolve_codex_runtime_credentials(refresh_if_expiring=True)
+        token = str(creds.get("api_key", "") or "").strip()
+        if not resolved_base_url:
+            resolved_base_url = str(creds.get("base_url", "") or "").strip().rstrip("/")
+    if not token:
+        return None
+
+    account_id = _codex_account_id_from_access_token(token)
     headers = {
-        "Authorization": f"Bearer {creds['api_key']}",
+        "Authorization": f"Bearer {token}",
         "Accept": "application/json",
         "User-Agent": "codex-cli",
     }
     if account_id:
         headers["ChatGPT-Account-Id"] = account_id
-    with httpx.Client(timeout=15.0) as client:
-        response = client.get(_resolve_codex_usage_url(creds.get("base_url", "")), headers=headers)
+    with httpx.Client(timeout=timeout) as client:
+        response = client.get(_resolve_codex_usage_url(resolved_base_url), headers=headers)
         response.raise_for_status()
     payload = response.json() or {}
     rate_limit = payload.get("rate_limit") or {}
@@ -172,8 +294,12 @@ def _fetch_codex_account_usage() -> Optional[AccountUsageSnapshot]:
     )
 
 
-def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
-    token = (resolve_anthropic_token() or "").strip()
+def _fetch_anthropic_account_usage(
+    *,
+    api_key: Optional[str] = None,
+    timeout: float = 15.0,
+) -> Optional[AccountUsageSnapshot]:
+    token = str(api_key or "").strip() or (resolve_anthropic_token() or "").strip()
     if not token:
         return None
     if not _is_oauth_token(token):
@@ -190,7 +316,7 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
         "anthropic-beta": "oauth-2025-04-20",
         "User-Agent": "claude-code/2.1.0",
     }
-    with httpx.Client(timeout=15.0) as client:
+    with httpx.Client(timeout=timeout) as client:
         response = client.get("https://api.anthropic.com/api/oauth/usage", headers=headers)
         response.raise_for_status()
     payload = response.json() or {}
@@ -233,7 +359,11 @@ def _fetch_anthropic_account_usage() -> Optional[AccountUsageSnapshot]:
     )
 
 
-def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[str]) -> Optional[AccountUsageSnapshot]:
+def _fetch_openrouter_account_usage(
+    base_url: Optional[str],
+    api_key: Optional[str],
+    timeout: float = 10.0,
+) -> Optional[AccountUsageSnapshot]:
     runtime = resolve_runtime_provider(
         requested="openrouter",
         explicit_base_url=base_url,
@@ -249,7 +379,7 @@ def _fetch_openrouter_account_usage(base_url: Optional[str], api_key: Optional[s
         "Authorization": f"Bearer {token}",
         "Accept": "application/json",
     }
-    with httpx.Client(timeout=10.0) as client:
+    with httpx.Client(timeout=timeout) as client:
         credits_resp = client.get(credits_url, headers=headers)
         credits_resp.raise_for_status()
         credits = (credits_resp.json() or {}).get("data") or {}
@@ -310,17 +440,22 @@ def fetch_account_usage(
     *,
     base_url: Optional[str] = None,
     api_key: Optional[str] = None,
+    timeout: Optional[float] = None,
 ) -> Optional[AccountUsageSnapshot]:
     normalized = str(provider or "").strip().lower()
     if normalized in {"", "auto", "custom"}:
         return None
     try:
         if normalized == "openai-codex":
-            return _fetch_codex_account_usage()
+            return _fetch_codex_account_usage(
+                base_url=base_url,
+                api_key=api_key,
+                timeout=timeout or 15.0,
+            )
         if normalized == "anthropic":
-            return _fetch_anthropic_account_usage()
+            return _fetch_anthropic_account_usage(api_key=api_key, timeout=timeout or 15.0)
         if normalized == "openrouter":
-            return _fetch_openrouter_account_usage(base_url, api_key)
+            return _fetch_openrouter_account_usage(base_url, api_key, timeout=timeout or 10.0)
     except Exception:
         return None
     return None

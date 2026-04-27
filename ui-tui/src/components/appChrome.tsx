@@ -12,7 +12,7 @@ import { buildSubagentTree, treeTotals, widthByDepth } from '../lib/subagentTree
 import { fmtK } from '../lib/text.js'
 import { useViewportSnapshot } from '../lib/viewportStore.js'
 import type { Theme } from '../theme.js'
-import type { Msg, Usage } from '../types.js'
+import type { AccountLimitStatus, Msg, Usage } from '../types.js'
 
 const FACE_TICK_MS = 2500
 const HEART_COLORS = ['#ff5fa2', '#ff4d6d']
@@ -63,6 +63,70 @@ function ctxBar(pct: number | undefined, w = 10) {
   const filled = Math.round((p / 100) * w)
 
   return '█'.repeat(filled) + '░'.repeat(w - filled)
+}
+
+function accountLimitColor(level: string | undefined, t: Theme) {
+  if (level === 'critical') {
+    return t.color.statusCritical
+  }
+
+  if (level === 'warn') {
+    return t.color.statusWarn
+  }
+
+  return t.color.statusGood
+}
+
+function accountLimitWindowLabel(label: string, fullLabel?: string) {
+  const normalized = (fullLabel || label).toLowerCase()
+
+  if (normalized.includes('week')) {
+    return 'weekly'
+  }
+
+  return label
+}
+
+function accountLimitCredentialLabel(label?: null | string) {
+  const normalized = String(label ?? '')
+    .trim()
+    .replace(/\s+/g, '-')
+
+  if (!normalized) {
+    return ''
+  }
+
+  const chars = Array.from(normalized)
+
+  return chars.length > 10 ? `${chars.slice(0, 9).join('')}…` : normalized
+}
+
+function AccountLimitHud({ accountLimits, t }: { accountLimits?: AccountLimitStatus | null; t: Theme }) {
+  if (!accountLimits?.windows?.length) {
+    return null
+  }
+
+  const providerLabel = accountLimits.label?.trim()
+  const credentialLabel = accountLimitCredentialLabel(accountLimits.credential_label)
+
+  return (
+    <Text color={t.color.dim}>
+      {' │ '}
+      {providerLabel ? <Text color={t.color.dim}>{providerLabel} </Text> : null}
+      {credentialLabel ? <Text color={t.color.dim}>{credentialLabel} </Text> : null}
+      {accountLimits.windows.slice(0, 4).map((window, index) => {
+        const color = accountLimitColor(window.level, t)
+        const label = accountLimitWindowLabel(window.label, window.full_label)
+
+        return (
+          <Text color={t.color.dim} key={`${window.label}-${window.full_label ?? ''}`}>
+            {index > 0 ? ' • ' : ''}
+            {label} <Text color={color}>{window.remaining_percent}%</Text>
+          </Text>
+        )
+      })}
+    </Text>
+  )
 }
 
 function SpawnHud({ t }: { t: Theme }) {
@@ -186,6 +250,7 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
 }
 
 export function StatusRule({
+  accountLimits,
   cwdLabel,
   cols,
   busy,
@@ -232,6 +297,7 @@ export function StatusRule({
               <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${pct}%` : ''}</Text>
             </Text>
           ) : null}
+          <AccountLimitHud accountLimits={accountLimits} t={t} />
           {sessionStartedAt ? (
             <Text color={t.color.dim}>
               {' │ '}
@@ -355,6 +421,7 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
 }
 
 interface StatusRuleProps {
+  accountLimits?: AccountLimitStatus | null
   bgCount: number
   busy: boolean
   cols: number

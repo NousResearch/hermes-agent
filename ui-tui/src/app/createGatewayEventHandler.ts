@@ -546,8 +546,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         setStatus('ready')
 
-        if (ev.payload?.usage) {
-          patchUiState(state => ({ ...state, usage: { ...state.usage, ...ev.payload!.usage } }))
+        if (ev.payload?.usage || 'account_limits' in (ev.payload ?? {})) {
+          patchUiState(state => ({
+            ...state,
+            info: state.info ? { ...state.info, account_limits: ev.payload?.account_limits ?? null } : state.info,
+            usage: ev.payload?.usage ? { ...state.usage, ...ev.payload.usage } : state.usage
+          }))
         }
 
         return

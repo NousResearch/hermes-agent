@@ -1,8 +1,11 @@
+import base64
+import json
 from datetime import datetime, timezone
 
 from agent.account_usage import (
     AccountUsageSnapshot,
     AccountUsageWindow,
+    build_account_limit_status,
     fetch_account_usage,
     render_account_usage_lines,
 )
@@ -22,8 +25,9 @@ class _Response:
 
 
 class _Client:
-    def __init__(self, payload):
+    def __init__(self, payload, requests=None):
         self._payload = payload
+        self._requests = requests
 
     def __enter__(self):
         return self
@@ -32,35 +36,97 @@ class _Client:
         return False
 
     def get(self, url, headers=None):
+        if self._requests is not None:
+            self._requests.append((url, dict(headers or {})))
         return _Response(self._payload)
 
 
-class _RoutingClient:
-    def __init__(self, payloads):
-        self._payloads = payloads
+def _fake_jwt(claims):
+    def encode(payload):
+        raw = json.dumps(payload, separators=(",", ":")).encode("utf-8")
+        return base64.urlsafe_b64encode(raw).decode("ascii").rstrip("=")
 
-    def __enter__(self):
-        return self
+    return f"{encode({'alg': 'none'})}.{encode(claims)}."
 
-    def __exit__(self, exc_type, exc, tb):
-        return False
 
-    def get(self, url, headers=None):
-        return _Response(self._payloads[url])
+def test_build_account_limit_status_compacts_provider_windows(monkeypatch):
+    now = datetime(2030, 1, 1, 12, 0, tzinfo=timezone.utc)
+    monkeypatch.setattr("agent.account_usage._utc_now", lambda: now)
+    snapshot = AccountUsageSnapshot(
+        provider="openai-codex",
+        source="usage_api",
+        fetched_at=now,
+        plan="Pro",
+        windows=(
+            AccountUsageWindow(
+                label="Session",
+                used_percent=82.4,
+                reset_at=datetime(2030, 1, 1, 14, 30, tzinfo=timezone.utc),
+            ),
+            AccountUsageWindow(
+                label="Weekly",
+                used_percent=91.2,
+                reset_at=datetime(2030, 1, 4, 18, 0, tzinfo=timezone.utc),
+            ),
+            AccountUsageWindow(label="Ignored", used_percent=None),
+        ),
+    )
+
+    status = build_account_limit_status(snapshot)
+
+    assert status == {
+        "provider": "openai-codex",
+        "label": "Codex",
+        "plan": "Pro",
+        "level": "critical",
+        "windows": [
+            {
+                "label": "5h",
+                "full_label": "Session",
+                "used_percent": 82,
+                "remaining_percent": 18,
+                "reset": "2h 30m",
+                "level": "warn",
+            },
+            {
+                "label": "week",
+                "full_label": "Weekly",
+                "used_percent": 91,
+                "remaining_percent": 9,
+                "reset": "3d 6h",
+                "level": "critical",
+            },
+        ],
+    }
+
+
+def test_build_account_limit_status_returns_none_when_unavailable():
+    snapshot = AccountUsageSnapshot(
+        provider="anthropic",
+        source="oauth_usage_api",
+        fetched_at=datetime.now(timezone.utc),
+        unavailable_reason="not oauth",
+    )
+
+    assert build_account_limit_status(snapshot) is None
 
 
 def test_fetch_account_usage_codex(monkeypatch):
+    requests = []
+    token = _fake_jwt(
+        {
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acct_123",
+            }
+        }
+    )
     monkeypatch.setattr(
         "agent.account_usage.resolve_codex_runtime_credentials",
         lambda refresh_if_expiring=True: {
             "provider": "openai-codex",
             "base_url": "https://chatgpt.com/backend-api/codex",
-            "api_key": "access-token",
+            "api_key": token,
         },
-    )
-    monkeypatch.setattr(
-        "agent.account_usage._read_codex_tokens",
-        lambda: {"tokens": {"account_id": "acct_123"}},
     )
     monkeypatch.setattr(
         "agent.account_usage.httpx.Client",
@@ -80,7 +146,8 @@ def test_fetch_account_usage_codex(monkeypatch):
                     },
                 },
                 "credits": {"has_credits": True, "balance": 12.5},
-            }
+            },
+            requests=requests,
         ),
     )
 
@@ -93,6 +160,57 @@ def test_fetch_account_usage_codex(monkeypatch):
     assert snapshot.windows[0].used_percent == 15.0
     assert snapshot.windows[0].reset_at == datetime.fromtimestamp(1_900_000_000, tz=timezone.utc)
     assert "Credits balance: $12.50" in snapshot.details
+    assert requests[0][0] == "https://chatgpt.com/backend-api/wham/usage"
+    assert requests[0][1]["ChatGPT-Account-Id"] == "acct_123"
+
+
+def test_fetch_account_usage_codex_prefers_runtime_credentials(monkeypatch):
+    requests = []
+    runtime_token = _fake_jwt(
+        {
+            "https://api.openai.com/auth": {
+                "chatgpt_account_id": "acct_runtime",
+            }
+        }
+    )
+
+    def fail_resolve(refresh_if_expiring=True):
+        raise AssertionError("runtime api_key should be used before stored Codex auth state")
+
+    monkeypatch.setattr("agent.account_usage.resolve_codex_runtime_credentials", fail_resolve)
+    monkeypatch.setattr(
+        "agent.account_usage.httpx.Client",
+        lambda timeout=15.0: _Client(
+            {
+                "plan_type": "plus",
+                "rate_limit": {
+                    "primary_window": {"used_percent": 33},
+                },
+            },
+            requests=requests,
+        ),
+    )
+
+    snapshot = fetch_account_usage(
+        "openai-codex",
+        base_url="https://runtime.example/backend-api/codex",
+        api_key=runtime_token,
+    )
+
+    assert snapshot is not None
+    assert snapshot.plan == "Plus"
+    assert snapshot.windows[0].used_percent == 33.0
+    assert requests == [
+        (
+            "https://runtime.example/backend-api/wham/usage",
+            {
+                "Authorization": f"Bearer {runtime_token}",
+                "Accept": "application/json",
+                "User-Agent": "codex-cli",
+                "ChatGPT-Account-Id": "acct_runtime",
+            },
+        )
+    ]
 
 
 def test_render_account_usage_lines_includes_reset_and_provider():
@@ -116,6 +234,20 @@ def test_render_account_usage_lines_includes_reset_and_provider():
     assert "openai-codex (Pro)" in lines[1]
     assert "Session: 75% remaining (25% used)" in lines[2]
     assert "Credits balance: $9.99" in lines[3]
+
+
+class _RoutingClient:
+    def __init__(self, payloads):
+        self._payloads = payloads
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc, tb):
+        return False
+
+    def get(self, url, headers=None):
+        return _Response(self._payloads[url])
 
 
 def test_fetch_account_usage_openrouter_uses_limit_remaining_and_ignores_deprecated_rate_limit(monkeypatch):

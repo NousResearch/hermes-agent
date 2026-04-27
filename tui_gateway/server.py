@@ -2,6 +2,7 @@ import atexit
 import concurrent.futures
 import contextvars
 import copy
+import hashlib
 import json
 import logging
 import os
@@ -117,6 +118,11 @@ from tui_gateway.render import make_stream_renderer, render_diff, render_message
 _sessions: dict[str, dict] = {}
 _methods: dict[str, callable] = {}
 _pending: dict[str, tuple[str, threading.Event]] = {}
+
+_ACCOUNT_LIMIT_CACHE_TTL_SECONDS = 300
+_ACCOUNT_LIMIT_FETCH_TIMEOUT_SECONDS = 2.0
+_ACCOUNT_LIMIT_CACHE: dict[str, tuple[float, Optional[dict]]] = {}
+_ACCOUNT_LIMIT_CACHE_LOCK = threading.Lock()
 _answers: dict[str, str] = {}
 _db = None
 _db_error: str | None = None
@@ -826,6 +832,69 @@ def _compress_session_history(
     return len(history) - len(compressed), _get_usage(agent)
 
 
+def _account_limit_cache_key(agent) -> str:
+    provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    if not provider:
+        return ""
+    base_url = str(getattr(agent, "base_url", "") or "").strip().rstrip("/")
+    api_key = str(getattr(agent, "api_key", "") or "")
+    api_key_hash = hashlib.sha256(api_key.encode("utf-8")).hexdigest()[:16] if api_key else ""
+    return f"{provider}\0{base_url}\0{api_key_hash}"
+
+
+def _active_credential_label(agent) -> Optional[str]:
+    """Return the active pooled credential label without exposing secrets."""
+    pool = getattr(agent, "_credential_pool", None)
+    if pool is None:
+        return None
+    try:
+        entry = pool.current() or pool.peek()
+    except Exception:
+        return None
+    label = str(getattr(entry, "label", "") or "").strip() if entry is not None else ""
+    return label or None
+
+
+def _get_account_limit_status(agent) -> Optional[dict]:
+    """Fetch compact provider quota status for the TUI status bar.
+
+    The display layer stays provider-agnostic.  Provider-specific work happens
+    in agent.account_usage and is cached here so session info/message.complete
+    cannot hammer usage APIs.
+    """
+    key = _account_limit_cache_key(agent)
+    if not key:
+        return None
+
+    now = time.time()
+    with _ACCOUNT_LIMIT_CACHE_LOCK:
+        cached = _ACCOUNT_LIMIT_CACHE.get(key)
+        if cached and cached[0] > now:
+            return copy.deepcopy(cached[1]) if cached[1] is not None else None
+
+    payload = None
+    try:
+        from agent.account_usage import build_account_limit_status, fetch_account_usage
+
+        snapshot = fetch_account_usage(
+            getattr(agent, "provider", None),
+            base_url=getattr(agent, "base_url", None),
+            api_key=getattr(agent, "api_key", None),
+            timeout=_ACCOUNT_LIMIT_FETCH_TIMEOUT_SECONDS,
+        )
+        payload = build_account_limit_status(snapshot, max_windows=4)
+        if payload:
+            credential_label = _active_credential_label(agent)
+            if credential_label:
+                payload["credential_label"] = credential_label
+    except Exception:
+        payload = None
+
+    with _ACCOUNT_LIMIT_CACHE_LOCK:
+        _ACCOUNT_LIMIT_CACHE[key] = (now + _ACCOUNT_LIMIT_CACHE_TTL_SECONDS, copy.deepcopy(payload))
+    return payload
+
+
 def _get_usage(agent) -> dict:
     g = lambda k, fb=None: getattr(agent, k, 0) or (getattr(agent, fb, 0) if fb else 0)
     usage = {
@@ -934,6 +1003,7 @@ def _session_info(agent) -> dict:
         "update_behind": None,
         "update_command": "",
         "usage": _get_usage(agent),
+        "account_limits": _get_account_limit_status(agent),
     }
     try:
         from hermes_cli import __version__, __release_date__
@@ -2382,7 +2452,12 @@ def _(rid, params: dict) -> dict:
                 raw = str(result)
                 status = "complete"
 
-            payload = {"text": raw, "usage": _get_usage(agent), "status": status}
+            payload = {
+                "text": raw,
+                "usage": _get_usage(agent),
+                "account_limits": _get_account_limit_status(agent),
+                "status": status,
+            }
             if last_reasoning:
                 payload["reasoning"] = last_reasoning
             if status_note:

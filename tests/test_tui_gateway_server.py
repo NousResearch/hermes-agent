@@ -1115,6 +1115,69 @@ def test_session_info_includes_mcp_servers(monkeypatch):
     assert info["mcp_servers"] == fake_status
 
 
+def test_session_info_includes_account_limit_status(monkeypatch):
+    payload = {
+        "provider": "openai-codex",
+        "label": "Codex",
+        "level": "warn",
+        "windows": [{"label": "5h", "used_percent": 82, "remaining_percent": 18, "level": "warn"}],
+    }
+    monkeypatch.setattr(server, "_get_account_limit_status", lambda _agent: payload)
+
+    info = server._session_info(types.SimpleNamespace(tools=[], model="gpt-5.5"))
+
+    assert info["account_limits"] == payload
+
+
+def test_get_account_limit_status_fetches_and_caches(monkeypatch):
+    from datetime import datetime, timezone
+
+    from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+
+    calls = []
+
+    def fake_fetch(provider, *, base_url=None, api_key=None, timeout=None):
+        calls.append({"api_key": api_key, "base_url": base_url, "provider": provider, "timeout": timeout})
+        return AccountUsageSnapshot(
+            provider="openai-codex",
+            source="usage_api",
+            fetched_at=datetime.now(timezone.utc),
+            windows=(AccountUsageWindow(label="Session", used_percent=81),),
+        )
+
+    monkeypatch.setattr("agent.account_usage.fetch_account_usage", fake_fetch)
+    server._ACCOUNT_LIMIT_CACHE.clear()
+
+    class _Pool:
+        def current(self):
+            return types.SimpleNamespace(label="work-account-long")
+
+        def peek(self):
+            return None
+
+    agent = types.SimpleNamespace(
+        api_key="secret-one",
+        base_url="https://chatgpt.com/backend-api/codex",
+        provider="openai-codex",
+        _credential_pool=_Pool(),
+    )
+
+    first = server._get_account_limit_status(agent)
+    second = server._get_account_limit_status(agent)
+
+    assert first == second
+    assert first["label"] == "Codex"
+    assert first["credential_label"] == "work-account-long"
+    assert first["windows"][0]["label"] == "5h"
+    assert len(calls) == 1
+    assert calls[0] == {
+        "api_key": "secret-one",
+        "base_url": "https://chatgpt.com/backend-api/codex",
+        "provider": "openai-codex",
+        "timeout": server._ACCOUNT_LIMIT_FETCH_TIMEOUT_SECONDS,
+    }
+
+
 # ---------------------------------------------------------------------------
 # History-mutating commands must reject while session.running is True.
 # Without these guards, prompt.submit's post-run history write either

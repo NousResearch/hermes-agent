@@ -285,6 +285,7 @@ export interface AppLayoutActions {
   answerClarify: (answer: string) => void
   answerSecret: (value: string) => void
   answerSudo: (pw: string) => void
+  clearSelection: () => void
   onModelSelect: (value: string) => void
   resumeById: (id: string) => void
   setStickyPrompt: (value: string) => void

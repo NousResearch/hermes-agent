@@ -25,6 +25,7 @@ import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
+import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type TranscriptRow } from './interfaces.js'
 import { $overlayState, patchOverlayState } from './overlayStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
@@ -146,6 +147,11 @@ export function useMainApp(gw: GatewayClient) {
   useEffect(() => {
     selection.setSelectionBgColor(ui.theme.color.selectionBg)
   }, [selection, ui.theme.color.selectionBg])
+
+  const clearSelection = useCallback(() => {
+    selection.clearSelection()
+    getInputSelection()?.collapseToEnd()
+  }, [selection])
 
   const composer = useComposerState({
     gw,
@@ -519,6 +525,7 @@ export function useMainApp(gw: GatewayClient) {
     [
       appendMessage,
       bellOnComplete,
+      clearSelection,
       composerActions.setInput,
       gateway,
       panel,
@@ -691,11 +698,12 @@ export function useMainApp(gw: GatewayClient) {
       answerClarify,
       answerSecret,
       answerSudo,
+      clearSelection,
       onModelSelect,
       resumeById: session.resumeById,
       setStickyPrompt
     }),
-    [answerApproval, answerClarify, answerSecret, answerSudo, onModelSelect, session.resumeById]
+    [answerApproval, answerClarify, answerSecret, answerSudo, clearSelection, onModelSelect, session.resumeById]
   )
 
   const appComposer = useMemo(

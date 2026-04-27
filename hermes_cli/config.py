@@ -1582,6 +1582,44 @@ OPTIONAL_ENV_VARS = {
         "category": "tool",
     },
 
+    # ── Bundled skills (opt-in: only needed if the user uses that skill) ──
+    # These use category="skill" (distinct from "tool") so the sandbox
+    # env blocklist in tools/environments/local.py does NOT rewrite them —
+    # skills legitimately need these passed through to curl via
+    # tools/env_passthrough.py when the user's skill calls out.
+    "NOTION_API_KEY": {
+        "description": "Notion integration token (used by the `notion` skill)",
+        "prompt": "Notion API key",
+        "url": "https://www.notion.so/my-integrations",
+        "password": True,
+        "category": "skill",
+        "advanced": True,
+    },
+    "LINEAR_API_KEY": {
+        "description": "Linear personal API key (used by the `linear` skill)",
+        "prompt": "Linear API key",
+        "url": "https://linear.app/settings/api",
+        "password": True,
+        "category": "skill",
+        "advanced": True,
+    },
+    "AIRTABLE_API_KEY": {
+        "description": "Airtable personal access token (used by the `airtable` skill)",
+        "prompt": "Airtable API key",
+        "url": "https://airtable.com/create/tokens",
+        "password": True,
+        "category": "skill",
+        "advanced": True,
+    },
+    "TENOR_API_KEY": {
+        "description": "Tenor API key for GIF search (used by the `gif-search` skill)",
+        "prompt": "Tenor API key",
+        "url": "https://developers.google.com/tenor/guides/quickstart",
+        "password": True,
+        "category": "skill",
+        "advanced": True,
+    },
+
     # ── Honcho ──
     "HONCHO_API_KEY": {
         "description": "Honcho API key for AI-native persistent memory",

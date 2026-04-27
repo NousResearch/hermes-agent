@@ -9,6 +9,7 @@ from gateway.config import (
     Platform,
     PlatformConfig,
     SessionResetPolicy,
+    StreamingConfig,
     _apply_env_overrides,
     load_gateway_config,
 )
@@ -147,6 +148,24 @@ class TestSessionResetPolicy:
     def test_from_dict_coerces_quoted_false_notify(self):
         restored = SessionResetPolicy.from_dict({"notify": "false"})
         assert restored.notify is False
+
+
+class TestStreamingConfig:
+    def test_from_dict_coerces_quoted_false_enabled(self):
+        restored = StreamingConfig.from_dict({"enabled": "false"})
+        assert restored.enabled is False
+
+    def test_from_dict_malformed_numeric_values_fall_back_to_defaults(self):
+        restored = StreamingConfig.from_dict(
+            {
+                "edit_interval": "oops",
+                "buffer_threshold": "oops",
+                "fresh_final_after_seconds": "oops",
+            }
+        )
+        assert restored.edit_interval == 1.0
+        assert restored.buffer_threshold == 40
+        assert restored.fresh_final_after_seconds == 60.0
 
 
 class TestGatewayConfigRoundtrip:

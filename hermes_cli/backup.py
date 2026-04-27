@@ -45,6 +45,14 @@ _EXCLUDED_DIRS = {
 _EXCLUDED_SUFFIXES = (
     ".pyc",
     ".pyo",
+    # SQLite sidecar files — the backup takes a consistent snapshot of ``*.db``
+    # via ``sqlite3.backup()``, so shipping the live WAL / shared-memory /
+    # rollback-journal alongside would pair a fresh snapshot with stale sidecar
+    # state and produce a torn restore on the next open. They're transient and
+    # regenerated on first connection anyway.
+    ".db-wal",
+    ".db-shm",
+    ".db-journal",
 )
 
 # File names to skip (runtime state that's meaningless on another machine)

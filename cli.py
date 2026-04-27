@@ -1574,6 +1574,34 @@ def _strip_leaked_bracketed_paste_wrappers(text: str) -> str:
     return text
 
 
+# Cursor Position Report (CPR / DSR) response, format ``ESC[<row>;<col>R``.
+# prompt_toolkit's _on_resize() + renderer send ``ESC[6n`` queries to the
+# terminal; under resize storms or tab switches the terminal's reply can
+# race past the input parser and end up in the input buffer as literal
+# text (see issue #14692). Also matches the visible-form ``^[[<row>;<col>R``
+# that appears when the ESC byte was stripped by a prior filter.
+_DSR_CPR_ESC_RE = re.compile(r"\x1b\[\d+;\d+R")
+_DSR_CPR_VISIBLE_RE = re.compile(r"\^\[\[\d+;\d+R")
+
+
+def _strip_leaked_terminal_responses(text: str) -> str:
+    """Strip leaked terminal control-response sequences from user input.
+
+    Covers Cursor Position Report (CPR / DSR) responses — ``ESC[<row>;<col>R``
+    and the visible ``^[[<row>;<col>R`` form. These are replies the terminal
+    sends back to queries prompt_toolkit makes during ``_on_resize`` /
+    ``_request_absolute_cursor_position``. When the input parser drops one
+    (resize storms, multiplexer focus changes, slow PTYs) the response
+    lands in the input buffer as literal text and corrupts what the user
+    typed.
+    """
+    if not text:
+        return text
+    text = _DSR_CPR_ESC_RE.sub("", text)
+    text = _DSR_CPR_VISIBLE_RE.sub("", text)
+    return text
+
+
 def _collect_query_images(query: str | None, image_arg: str | None = None) -> tuple[str, list[Path]]:
     """Collect local image attachments for single-query CLI flows."""
     message = query or ""
@@ -2181,6 +2209,42 @@ class HermesCLI:
         if hasattr(self, "_app") and self._app and (now - self._last_invalidate) >= min_interval:
             self._last_invalidate = now
             self._app.invalidate()
+
+    def _force_full_redraw(self) -> None:
+        """Force a clean full-screen repaint of the prompt_toolkit UI.
+
+        Used to recover from terminal buffer drift caused by external
+        redraws we can't detect — e.g. macOS cmux / tmux tab switches,
+        ``clear`` issued from a subshell, or SSH window restores. These
+        wipe or repaint the terminal without firing SIGWINCH, so
+        prompt_toolkit's tracked ``_cursor_pos`` no longer matches reality
+        and the next incremental redraw stacks on top of stale content
+        (ghost status bars, duplicated prompts).
+
+        Bound to Ctrl+L and exposed as the ``/redraw`` slash command,
+        matching the standard terminal-UX convention (bash, zsh, fish,
+        vim, htop).
+        """
+        app = getattr(self, "_app", None)
+        if not app:
+            return
+        try:
+            renderer = app.renderer
+            out = renderer.output
+            out.reset_attributes()
+            out.erase_screen()
+            out.cursor_goto(0, 0)
+            out.flush()
+            # Drop prompt_toolkit's cached screen + cursor state so the
+            # next _redraw() starts from a known (0, 0) origin and
+            # re-renders every cell rather than diffing against stale.
+            renderer.reset(leave_alternate_screen=False)
+        except Exception:
+            pass
+        try:
+            app.invalidate()
+        except Exception:
+            pass
 
     def _status_bar_context_style(self, percent_used: Optional[int]) -> str:
         if percent_used is None:
@@ -5998,6 +6062,12 @@ class HermesCLI:
             self.show_toolsets()
         elif canonical == "config":
             self.show_config()
+        elif canonical == "redraw":
+            # Manual recovery for terminal buffer drift from multiplexer
+            # tab switches, subshell ``clear``, SSH window restores, etc.
+            # See issue #8688 (cmux). Ctrl+L is bound to the same helper.
+            self._force_full_redraw()
+            _cprint(f"  {_DIM}✓ UI redrawn{_RST}")
         elif canonical == "clear":
             self.new_session(silent=True)
             # Clear terminal screen.  Inside the TUI, Rich's console.clear()
@@ -9563,6 +9633,17 @@ class HermesCLI:
             """Down arrow: browse history when on last line, else move cursor down."""
             event.app.current_buffer.auto_down(count=event.arg)
 
+        @kb.add('c-l')
+        def handle_ctrl_l(event):
+            """Ctrl+L: force a clean full-screen repaint.
+
+            Recovers the UI after external terminal buffer drift — tmux /
+            cmux tab switches, ``clear`` from a subshell, SSH window
+            restores, etc. — that prompt_toolkit can't detect on its own.
+            Matches the universal bash/zsh/fish/vim/htop convention.
+            """
+            self._force_full_redraw()
+
         @kb.add('c-c')
         def handle_ctrl_c(event):
             """Handle Ctrl+C - cancel interactive prompts, interrupt agent, or exit.
@@ -9795,6 +9876,7 @@ class HermesCLI:
             # so the 5-line collapse threshold and display are consistent.
             pasted_text = pasted_text.replace('\r\n', '\n').replace('\r', '\n')
             pasted_text = _strip_leaked_bracketed_paste_wrappers(pasted_text)
+            pasted_text = _strip_leaked_terminal_responses(pasted_text)
             if _should_auto_attach_clipboard_image_on_paste(pasted_text) and self._try_attach_clipboard_image():
                 event.app.invalidate()
             if pasted_text:
@@ -9937,6 +10019,7 @@ class HermesCLI:
                event so it never triggers this.
             """
             text = _strip_leaked_bracketed_paste_wrappers(buf.text)
+            text = _strip_leaked_terminal_responses(text)
             if text != buf.text:
                 cursor = min(buf.cursor_position, len(text))
                 _paste_just_collapsed[0] = True
@@ -10601,36 +10684,30 @@ class HermesCLI:
         # only cursor_up()s by the stored layout height, missing the extra
         # rows created by reflow — leaving ghost duplicates visible.
         #
-        # Fix: before the standard erase, inflate _cursor_pos.y so the
-        # cursor moves up far enough to cover the reflowed ghost content.
+        # It's not just column-shrink: widening, row-shrinking, and
+        # multiplexer-driven SIGWINCH-less redraws (cmux / tmux tab switch)
+        # all produce the same class of drift, where the renderer's tracked
+        # _cursor_pos.y no longer matches terminal reality. The only reliable
+        # recovery is a full screen-clear (\x1b[2J\x1b[H) before the next
+        # redraw, so we force one on every resize rather than trying to
+        # compute the exact drift.
         _original_on_resize = app._on_resize
 
         def _resize_clear_ghosts():
-            from prompt_toolkit.data_structures import Point as _Pt
             renderer = app.renderer
             try:
-                old_size = renderer._last_size
-                new_size = renderer.output.get_size()
-                if (
-                    old_size
-                    and new_size.columns < old_size.columns
-                    and new_size.columns > 0
-                ):
-                    reflow_factor = (
-                        (old_size.columns + new_size.columns - 1)
-                        // new_size.columns
-                    )
-                    last_h = (
-                        renderer._last_screen.height
-                        if renderer._last_screen
-                        else 0
-                    )
-                    extra = last_h * (reflow_factor - 1)
-                    if extra > 0:
-                        renderer._cursor_pos = _Pt(
-                            x=renderer._cursor_pos.x,
-                            y=renderer._cursor_pos.y + extra,
-                        )
+                out = renderer.output
+                # Reset attributes, erase the entire screen, and home the
+                # cursor. This overwrites any reflowed status-bar rows or
+                # stale content the terminal kept from the prior layout.
+                out.reset_attributes()
+                out.erase_screen()
+                out.cursor_goto(0, 0)
+                out.flush()
+                # Tell the renderer its tracked position is fresh so its
+                # own erase() inside _on_resize doesn't cursor_up() past
+                # the top of the screen.
+                renderer.reset(leave_alternate_screen=False)
             except Exception:
                 pass  # never break resize handling
             _original_on_resize()
@@ -10695,6 +10772,7 @@ class HermesCLI:
 
                     if isinstance(user_input, str):
                         user_input = _strip_leaked_bracketed_paste_wrappers(user_input)
+                        user_input = _strip_leaked_terminal_responses(user_input)
                     
                     # Check for commands — but detect dragged/pasted file paths first.
                     # See _detect_file_drop() for details.

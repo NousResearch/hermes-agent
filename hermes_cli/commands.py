@@ -62,6 +62,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("reset",)),
     CommandDef("clear", "Clear screen and start a new session", "Session",
                cli_only=True),
+    CommandDef("redraw", "Force a full UI repaint (recovers from terminal drift)", "Session",
+               cli_only=True),
     CommandDef("history", "Show conversation history", "Session",
                cli_only=True),
     CommandDef("save", "Save the current conversation", "Session",

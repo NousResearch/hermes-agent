@@ -481,6 +481,43 @@ class TestHttpSessionLifecycle:
         mock_proc.kill.assert_not_called()
 
     @pytest.mark.asyncio
+    async def test_disconnect_cancels_poll_before_terminating_bridge(self):
+        """disconnect() should not let poll observe our intentional SIGTERM as fatal."""
+        adapter = _make_adapter()
+        calls = []
+
+        class AwaitableTask:
+            def done(self):
+                return False
+
+            def cancel(self):
+                calls.append("cancel_poll")
+
+            def __await__(self):
+                async def _wait():
+                    calls.append("await_poll")
+                return _wait().__await__()
+
+        mock_proc = MagicMock()
+        mock_proc.pid = 12345
+        mock_proc.poll.return_value = 0
+        adapter._poll_task = AwaitableTask()
+        adapter._http_session = None
+        adapter._bridge_process = mock_proc
+        adapter._running = True
+        adapter._session_lock_identity = None
+
+        def _record_terminate(_proc, *, force=False):
+            calls.append(f"terminate:{force}")
+
+        with patch("gateway.platforms.whatsapp._terminate_bridge_process", side_effect=_record_terminate), \
+             patch("gateway.platforms.whatsapp.asyncio.sleep", new_callable=AsyncMock):
+            await adapter.disconnect()
+
+        assert calls[:3] == ["cancel_poll", "await_poll", "terminate:False"]
+        assert adapter._poll_task is None
+
+    @pytest.mark.asyncio
     async def test_session_closed_on_disconnect(self):
         """disconnect() should close self._http_session."""
         adapter = _make_adapter()

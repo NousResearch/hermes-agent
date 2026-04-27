@@ -516,15 +516,6 @@ class TestPerToolThresholds:
         except ImportError:
             pytest.skip("terminal_tool not importable in test env")
 
-    def test_read_file_result_size_cap(self):
-        from tools.registry import registry
-        try:
-            import tools.file_tools  # noqa: F401
-            val = registry.get_max_result_size("read_file")
-            assert val == 100_000
-        except ImportError:
-            pytest.skip("file_tools not importable in test env")
-
     def test_read_file_registry_cap_is_100k(self):
         """Regression test: read_file must have a 100_000 char registry cap (Layer 2 safety net)."""
         from tools.registry import registry

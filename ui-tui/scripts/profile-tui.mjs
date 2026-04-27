@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+/* global Buffer, console, process, setImmediate */
 import inspector from 'node:inspector'
 import { performance } from 'node:perf_hooks'
 
@@ -15,6 +16,9 @@ const post = (method, params = {}) => new Promise((resolve, reject) => {
   session.post(method, params, (err, result) => err ? reject(err) : resolve(result))
 })
 
+const historySize = Number(process.env.HISTORY || 500)
+const mountedRows = Number(process.env.MOUNTED || 120)
+
 class Sink {
   columns = Number(process.env.COLS || 120)
   rows = Number(process.env.ROWS || 42)
@@ -23,8 +27,7 @@ class Sink {
   writes = 0
   listeners = new Map()
   write(chunk) {
-    const s = String(chunk ?? '')
-    this.bytes += Buffer.byteLength(s)
+    this.bytes += Buffer.byteLength(String(chunk ?? ''))
     this.writes++
     return true
   }
@@ -45,13 +48,17 @@ const theme = {
 }
 
 const noop = () => {}
-const makeMsg = i => ({ role: i % 5 === 0 ? 'user' : 'assistant', text: `message ${i}\n${'lorem ipsum '.repeat(80)}` })
-const historyItems = [{ kind: 'intro', role: 'system', text: '', info: { model: 'test', tools: {}, skills: {}, version: 'test' } }, ...Array.from({ length: Number(process.env.HISTORY || 500) }, (_, i) => makeMsg(i))]
-const mkRows = items => items.map((msg, index) => ({ index, key: `m${index}`, msg }))
+const historyItems = [
+  { kind: 'intro', role: 'system', text: '', info: { model: 'test', tools: {}, skills: {}, version: 'test' } },
+  ...Array.from({ length: historySize }, (_, i) => ({
+    role: i % 5 === 0 ? 'user' : 'assistant',
+    text: `message ${i}\n${'lorem ipsum '.repeat(80)}`
+  }))
+]
 const scrollRef = { current: {
   getScrollTop: () => 0,
   getPendingDelta: () => 0,
-  getScrollHeight: () => Number(process.env.HISTORY || 500) * 4,
+  getScrollHeight: () => historySize * 4,
   getViewportHeight: () => 30,
   getViewportTop: () => 0,
   isSticky: () => true,
@@ -76,13 +83,15 @@ const baseProps = streamingText => ({
   transcript: {
     historyItems,
     scrollRef,
-    virtualHistory: { bottomSpacer: 0, end: historyItems.length, measureRef: () => noop, offsets: historyItems.map((_, i) => i * 4), start: Math.max(0, historyItems.length - Number(process.env.MOUNTED || 120)), topSpacer: 0 },
-    virtualRows: mkRows(historyItems)
+    virtualHistory: { bottomSpacer: 0, end: historyItems.length, measureRef: () => noop, offsets: historyItems.map((_, i) => i * 4), start: Math.max(0, historyItems.length - mountedRows), topSpacer: 0 },
+    virtualRows: historyItems.map((msg, index) => ({ index, key: `m${index}`, msg }))
   }
 })
 
 async function main() {
-  resetUiState(); resetTurnState(); resetOverlayState()
+  resetUiState()
+  resetTurnState()
+  resetOverlayState()
   const stdout = new Sink()
   const stdin = { isTTY: true, setRawMode: noop, on: noop, off: noop, resume: noop, pause: noop }
   const text = Array.from({ length: Number(process.env.LINES || 1200) }, (_, i) => `stream line ${i} ${'x'.repeat(90)}`).join('\n')

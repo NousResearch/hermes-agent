@@ -245,6 +245,32 @@ class TestResolveQuickCommandAliasText:
         )
         assert resolve_quick_command_alias_text("/broken") is None
 
+    def test_resolves_uppercase_alias(self, monkeypatch):
+        from hermes_cli.commands import resolve_quick_command_alias_text
+        _patch_quick_commands(
+            monkeypatch, {"halt": {"type": "alias", "target": "/stop"}},
+        )
+        assert resolve_quick_command_alias_text("/HALT") == "/stop"
+        assert resolve_quick_command_alias_text("/Halt") == "/stop"
+
+    def test_resolves_alias_with_bot_suffix(self, monkeypatch):
+        from hermes_cli.commands import resolve_quick_command_alias_text
+        _patch_quick_commands(
+            monkeypatch, {"halt": {"type": "alias", "target": "/stop"}},
+        )
+        assert resolve_quick_command_alias_text("/halt@HermesBot") == "/stop"
+        assert resolve_quick_command_alias_text("/HALT@HermesBot") == "/stop"
+
+    def test_resolves_uppercase_alias_with_bot_suffix_and_args(self, monkeypatch):
+        from hermes_cli.commands import resolve_quick_command_alias_text
+        _patch_quick_commands(
+            monkeypatch, {"m": {"type": "alias", "target": "/model"}},
+        )
+        assert (
+            resolve_quick_command_alias_text("/M@HermesBot claude-sonnet-4-6")
+            == "/model claude-sonnet-4-6"
+        )
+
 
 # ---------------------------------------------------------------------------
 # Adapter-level tests: aliased commands bypass active-session guard

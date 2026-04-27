@@ -357,6 +357,13 @@ def resolve_quick_command_alias_text(text: str | None) -> str | None:
     user_args = parts[1].strip() if len(parts) > 1 else ""
     if not base:
         return None
+    # Match MessageEvent.get_command() normalization: lowercase and strip
+    # the bot suffix so /HALT and /halt@HermesBot resolve the same as /halt.
+    if "@" in base:
+        base = base.split("@", 1)[0]
+    base = base.lower()
+    if not base:
+        return None
 
     try:
         from hermes_cli.config import read_raw_config

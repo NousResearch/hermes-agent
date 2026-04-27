@@ -372,6 +372,19 @@ function SessionRow({
           <Button
             variant="ghost"
             size="icon"
+            className="h-7 w-7 text-muted-foreground hover:text-primary"
+            aria-label="Resume in Web Chat"
+            title="Resume in Web Chat"
+            onClick={(e) => {
+              e.stopPropagation();
+              navigate(`/webui?resume=${encodeURIComponent(session.id)}`);
+            }}
+          >
+            <MessageSquare className="h-3.5 w-3.5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
             className="h-7 w-7 text-muted-foreground hover:text-destructive"
             aria-label={t.sessions.deleteSession}
             onClick={(e) => {

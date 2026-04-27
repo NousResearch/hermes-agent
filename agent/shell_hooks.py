@@ -754,7 +754,11 @@ def _resolve_effective_accept(
     if env in ("1", "true", "yes", "on"):
         return True
     cfg_val = cfg.get("hooks_auto_accept", False)
-    return bool(cfg_val)
+    if isinstance(cfg_val, bool):
+        return cfg_val
+    if isinstance(cfg_val, str):
+        return cfg_val.strip().lower() in ("1", "true", "yes", "on")
+    return False
 
 
 # ---------------------------------------------------------------------------

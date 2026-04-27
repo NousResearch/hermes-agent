@@ -8672,12 +8672,20 @@ class HermesCLI:
             if response and result and not result.get("failed") and not result.get("partial"):
                 try:
                     from agent.title_generator import maybe_auto_title
+                    # Route title-generation failures through the agent's
+                    # user-visible warning channel so a depleted auxiliary
+                    # provider doesn't silently leave sessions untitled
+                    # (issue #15775).
+                    _title_failure_cb = getattr(
+                        self.agent, "_emit_auxiliary_failure", None
+                    ) if self.agent else None
                     maybe_auto_title(
                         self._session_db,
                         self.session_id,
                         message,
                         response,
                         self.conversation_history,
+                        failure_callback=_title_failure_cb,
                     )
                 except Exception:
                     pass

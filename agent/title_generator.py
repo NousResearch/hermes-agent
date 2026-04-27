@@ -6,11 +6,17 @@ adds latency to the user-facing reply.
 
 import logging
 import threading
-from typing import Optional
+from typing import Callable, Optional
 
 from agent.auxiliary_client import call_llm
 
 logger = logging.getLogger(__name__)
+
+# Callback signature: (task_name, exception) -> None. Used to surface
+# auxiliary failures to the user through AIAgent._emit_auxiliary_failure
+# so silent-drops (e.g. OpenRouter 402 exhausting the fallback chain)
+# become visible instead of piling up as NULL session titles.
+FailureCallback = Callable[[str, BaseException], None]
 
 _TITLE_PROMPT = (
     "Generate a short, descriptive title (3-7 words) for a conversation that starts with the "
@@ -19,11 +25,21 @@ _TITLE_PROMPT = (
 )
 
 
-def generate_title(user_message: str, assistant_response: str, timeout: float = 30.0) -> Optional[str]:
+def generate_title(
+    user_message: str,
+    assistant_response: str,
+    timeout: float = 30.0,
+    failure_callback: Optional[FailureCallback] = None,
+) -> Optional[str]:
     """Generate a session title from the first exchange.
 
     Uses the auxiliary LLM client (cheapest/fastest available model).
     Returns the title string or None on failure.
+
+    ``failure_callback`` is invoked with ``(task, exception)`` when the
+    auxiliary call raises — the caller typically wires this to
+    ``AIAgent._emit_auxiliary_failure`` so the user sees a warning instead
+    of silently accumulating untitled sessions.
     """
     # Truncate long messages to keep the request small
     user_snippet = user_message[:500] if user_message else ""
@@ -52,7 +68,15 @@ def generate_title(user_message: str, assistant_response: str, timeout: float = 
             title = title[:77] + "..."
         return title if title else None
     except Exception as e:
-        logger.debug("Title generation failed: %s", e)
+        # Log at WARNING so this shows up in agent.log without debug mode.
+        # Full detail at debug level for operators who need the stack.
+        logger.warning("Title generation failed: %s", e)
+        logger.debug("Title generation traceback", exc_info=True)
+        if failure_callback is not None:
+            try:
+                failure_callback("title generation", e)
+            except Exception:
+                logger.debug("Title generation failure_callback raised", exc_info=True)
         return None
 
 
@@ -61,6 +85,7 @@ def auto_title_session(
     session_id: str,
     user_message: str,
     assistant_response: str,
+    failure_callback: Optional[FailureCallback] = None,
 ) -> None:
     """Generate and set a session title if one doesn't already exist.
 
@@ -81,7 +106,9 @@ def auto_title_session(
     except Exception:
         return
 
-    title = generate_title(user_message, assistant_response)
+    title = generate_title(
+        user_message, assistant_response, failure_callback=failure_callback
+    )
     if not title:
         return
 
@@ -98,6 +125,7 @@ def maybe_auto_title(
     user_message: str,
     assistant_response: str,
     conversation_history: list,
+    failure_callback: Optional[FailureCallback] = None,
 ) -> None:
     """Fire-and-forget title generation after the first exchange.
 
@@ -119,6 +147,7 @@ def maybe_auto_title(
     thread = threading.Thread(
         target=auto_title_session,
         args=(session_db, session_id, user_message, assistant_response),
+        kwargs={"failure_callback": failure_callback},
         daemon=True,
         name="auto-title",
     )

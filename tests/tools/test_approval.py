@@ -173,6 +173,116 @@ class TestSessionKeyContext:
         assert "reset_current_session_key" in called_names
 
 
+class TestCliSessionKeyIsolation:
+    """B5: CLI sessions without an explicit HERMES_SESSION_KEY must not share
+    approval state.
+
+    Before the fix, get_current_session_key() returned "" (or "default") when
+    no key was set, causing all keyless CLI sessions to share the same bucket
+    in _session_approved.  After the fix, a stable per-process UUID is used
+    so each process gets its own isolated bucket.
+    """
+
+    def test_default_key_is_nonempty(self):
+        """Without any env var or context var, the key must be a non-empty UUID."""
+        import tools.approval as am
+
+        # Simulate a CLI context: no context var set, no env var
+        token = am._approval_session_key.set("")
+        try:
+            with mock_patch.dict("os.environ", {}, clear=False):
+                # Remove HERMES_SESSION_KEY if present
+                env_copy = {k: v for k, v in __import__("os").environ.items()
+                            if k != "HERMES_SESSION_KEY"}
+                with mock_patch.dict("os.environ", env_copy, clear=True):
+                    key = am.get_current_session_key()
+        finally:
+            am._approval_session_key.reset(token)
+
+        assert key, "default session key must not be empty"
+        assert key != "default", "default session key must not be the literal string 'default'"
+
+    def test_default_key_is_not_empty_string(self):
+        """Callers passing default='' still receive the process UUID, not ''."""
+        import tools.approval as am
+
+        token = am._approval_session_key.set("")
+        try:
+            env_copy = {k: v for k, v in __import__("os").environ.items()
+                        if k != "HERMES_SESSION_KEY"}
+            with mock_patch.dict("os.environ", env_copy, clear=True):
+                key = am.get_current_session_key(default="")
+        finally:
+            am._approval_session_key.reset(token)
+
+        assert key != "", (
+            "get_current_session_key(default='') must return the process UUID, "
+            "not an empty string — empty string caused cross-session state leaks"
+        )
+
+    def test_two_cli_sessions_do_not_share_approvals(self):
+        """Simulates two separate CLI processes by patching _DEFAULT_CLI_SESSION_KEY.
+
+        Session 1 approves a dangerous pattern.  Session 2, with a different
+        process-unique key, must NOT inherit that approval.
+        """
+        import tools.approval as am
+
+        pattern_key = "recursive delete"
+
+        # Session 1: simulate one CLI process
+        session1_key = "cli-process-uuid-aaaa-1111"
+        am._session_approved.pop(session1_key, None)
+        am._session_approved.pop("cli-process-uuid-bbbb-2222", None)
+
+        # Approve a pattern in session 1
+        am.approve_session(session1_key, pattern_key)
+        assert am.is_approved(session1_key, pattern_key) is True, (
+            "session 1 should have the pattern approved"
+        )
+
+        # Session 2: simulate a different CLI process (different UUID)
+        session2_key = "cli-process-uuid-bbbb-2222"
+        assert am.is_approved(session2_key, pattern_key) is False, (
+            "session 2 must NOT inherit the approval from session 1 — "
+            "this was the cross-session state leak fixed in B5"
+        )
+
+        # Cleanup
+        am._session_approved.pop(session1_key, None)
+        am._session_approved.pop(session2_key, None)
+
+    def test_process_uuid_is_stable_within_process(self):
+        """The same process must always get the same default key."""
+        import tools.approval as am
+
+        token = am._approval_session_key.set("")
+        try:
+            env_copy = {k: v for k, v in __import__("os").environ.items()
+                        if k != "HERMES_SESSION_KEY"}
+            with mock_patch.dict("os.environ", env_copy, clear=True):
+                key1 = am.get_current_session_key()
+                key2 = am.get_current_session_key()
+        finally:
+            am._approval_session_key.reset(token)
+
+        assert key1 == key2, (
+            "the default session key must be stable within a process "
+            "(same UUID returned on repeated calls)"
+        )
+
+    def test_explicit_env_var_takes_precedence_over_uuid(self):
+        """When HERMES_SESSION_KEY is set, it overrides the process UUID."""
+        import tools.approval as am
+
+        token = am._approval_session_key.set("")
+        try:
+            with mock_patch.dict("os.environ", {"HERMES_SESSION_KEY": "explicit-key"}, clear=False):
+                key = am.get_current_session_key()
+        finally:
+            am._approval_session_key.reset(token)
+
+        assert key == "explicit-key"
 
 
 class TestRmFalsePositiveFix:

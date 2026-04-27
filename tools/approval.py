@@ -16,9 +16,19 @@ import sys
 import threading
 import time
 import unicodedata
+import uuid
 from typing import Optional
 
 logger = logging.getLogger(__name__)
+
+# Stable per-process UUID used as the default session key when no explicit
+# HERMES_SESSION_KEY is configured (e.g. plain CLI sessions). This ensures
+# that each independent CLI process gets its own isolated approval bucket in
+# _session_approved, preventing dangerous-command approvals from one process
+# from bleeding into a concurrently-running or subsequent CLI session that
+# also lacks an explicit key.  Gateway sessions always receive an explicit key
+# via set_current_session_key(), so this value is never used there.
+_DEFAULT_CLI_SESSION_KEY: str = str(uuid.uuid4())
 
 # Per-thread/per-task gateway session identity.
 # Gateway runs agent turns concurrently in executor threads, so reading a
@@ -40,19 +50,27 @@ def reset_current_session_key(token: contextvars.Token[str]) -> None:
     _approval_session_key.reset(token)
 
 
-def get_current_session_key(default: str = "default") -> str:
+def get_current_session_key(default: str = "") -> str:
     """Return the active session key, preferring context-local state.
 
     Resolution order:
     1. approval-specific contextvars (set by gateway before agent.run)
     2. session_context contextvars (set by _set_session_env)
-    3. os.environ fallback (CLI, cron, tests)
+    3. HERMES_SESSION_KEY env var (CLI, cron, tests)
+    4. *default* if non-empty, otherwise _DEFAULT_CLI_SESSION_KEY
+
+    Callers that explicitly pass ``default=""`` still receive the
+    process-unique key rather than an empty string, which prevents all
+    keyless CLI sessions from sharing the same ``""`` approval bucket.
     """
     session_key = _approval_session_key.get()
     if session_key:
         return session_key
     from gateway.session_context import get_session_env
-    return get_session_env("HERMES_SESSION_KEY", default)
+    key = get_session_env("HERMES_SESSION_KEY", "")
+    if key:
+        return key
+    return default if default else _DEFAULT_CLI_SESSION_KEY
 
 # Sensitive write targets that should trigger approval even when referenced
 # via shell expansions like $HOME or $HERMES_HOME.
@@ -442,7 +460,7 @@ def is_session_yolo_enabled(session_key: str) -> bool:
 
 def is_current_session_yolo_enabled() -> bool:
     """Return True when the active approval session has YOLO bypass enabled."""
-    return is_session_yolo_enabled(get_current_session_key(default=""))
+    return is_session_yolo_enabled(get_current_session_key())
 
 
 def is_approved(session_key: str, pattern_key: str) -> bool:

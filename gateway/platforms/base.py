@@ -2188,7 +2188,20 @@ class BasePlatformAdapter(ABC):
             # session lifecycle and its cleanup races with the running task
             # (see PR #4926).
             cmd = event.get_command()
-            from hermes_cli.commands import should_bypass_active_session
+
+            # Resolve quick_command aliases (#16094). Without this, an
+            # alias like `/halt → /stop` or `/fresh → /new` is unknown
+            # to should_bypass_active_session and gets queued as text or
+            # interrupts the running agent — breaking the contract that
+            # alias commands behave like the built-in they target.
+            from hermes_cli.commands import (
+                resolve_quick_command_alias_text,
+                should_bypass_active_session,
+            )
+            resolved_text = resolve_quick_command_alias_text(event.text)
+            if resolved_text and resolved_text != event.text:
+                event.text = resolved_text
+                cmd = event.get_command()
 
             if should_bypass_active_session(cmd):
                 # /stop, /new, /reset must cancel the in-flight adapter task

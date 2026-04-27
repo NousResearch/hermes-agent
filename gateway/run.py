@@ -4064,12 +4064,28 @@ class GatewayRunner:
                 elif qcmd.get("type") == "alias":
                     target = qcmd.get("target", "").strip()
                     if target:
+                        # Mirror CLI's process_command(aliased_command) pattern
+                        # (#16094): recurse through _handle_message so the
+                        # canonical command lookup re-runs against the
+                        # resolved target. The previous "fall through" left
+                        # `command` set to the whole compound string (e.g.
+                        # "model claude-sonnet-4-6 --provider anthropic")
+                        # which never matched any canonical built-in, so the
+                        # request landed in the plugin/skill/unknown-command
+                        # branches and returned "Unknown command".
                         target = target if target.startswith("/") else f"/{target}"
-                        target_command = target.lstrip("/")
                         user_args = event.get_command_args().strip()
-                        event.text = f"{target} {user_args}".strip()
-                        command = target_command
-                        # Fall through to normal command dispatch below
+                        aliased_command = f"{target} {user_args}".strip()
+                        # Depth guard against alias-of-alias loops.
+                        depth = getattr(event, "_alias_depth", 0)
+                        if depth >= 5:
+                            return (
+                                f"Quick command alias depth exceeded "
+                                f"resolving '/{command}' → '{target}'."
+                            )
+                        event._alias_depth = depth + 1
+                        event.text = aliased_command
+                        return await self._handle_message(event)
                     else:
                         return f"Quick command '/{command}' has no target defined."
                 else:

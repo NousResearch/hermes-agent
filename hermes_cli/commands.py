@@ -329,6 +329,58 @@ def should_bypass_active_session(command_name: str | None) -> bool:
     return resolve_command(command_name) is not None if command_name else False
 
 
+def resolve_quick_command_alias_text(text: str | None) -> str | None:
+    """Resolve a quick_command alias to its target text.
+
+    Reads ``quick_commands`` from ``~/.hermes/config.yaml``.  If *text*
+    invokes an entry of ``type: alias`` whose ``target`` is a slash
+    command, returns the full resolved text — target plus the alias's
+    pre-baked args plus any runtime args the user appended.  Returns
+    ``None`` for non-aliases, exec quick_commands, empty/missing target,
+    or non-slash text.
+
+    Used by the gateway adapter (#16094): the active-session bypass
+    check at ``gateway/platforms/base.py`` runs before the runner's
+    quick_command resolution, so aliases like ``/halt → /stop`` or
+    ``/fresh → /new`` would otherwise be queued/interrupted as ordinary
+    text while an agent is running.  Resolving once at the adapter lets
+    those aliases participate in the same Level-1 bypass that built-in
+    commands enjoy.
+    """
+    if not text:
+        return None
+    stripped = text.strip()
+    if not stripped.startswith("/"):
+        return None
+    parts = stripped.split(None, 1)
+    base = parts[0].lstrip("/")
+    user_args = parts[1].strip() if len(parts) > 1 else ""
+    if not base:
+        return None
+
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+    except Exception:
+        return None
+    if not isinstance(cfg, dict):
+        return None
+    quick_commands = cfg.get("quick_commands")
+    if not isinstance(quick_commands, dict):
+        return None
+    qcmd = quick_commands.get(base)
+    if not isinstance(qcmd, dict):
+        return None
+    if qcmd.get("type") != "alias":
+        return None
+    target = str(qcmd.get("target", "") or "").strip()
+    if not target:
+        return None
+    if not target.startswith("/"):
+        target = "/" + target
+    return f"{target} {user_args}".strip() if user_args else target
+
+
 def _resolve_config_gates() -> set[str]:
     """Return canonical names of commands whose ``gateway_config_gate`` is truthy.
 

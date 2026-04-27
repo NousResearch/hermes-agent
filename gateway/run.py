@@ -698,8 +698,7 @@ class GatewayRunner:
         # Crash-recovery checkpoint — records in-flight agent runs to disk
         # so that a gateway restart can detect interrupted sessions.
         from gateway.session import SessionCrashCheckpoint
-        from hermes_constants import HERMES_HOME
-        _checkpoint_path = os.path.join(HERMES_HOME, "agent_checkpoints.json")
+        _checkpoint_path = os.path.join(str(_hermes_home), "agent_checkpoints.json")
         self._crash_checkpoint = SessionCrashCheckpoint(path=_checkpoint_path)
 
         # Cache AIAgent instances per session to preserve prompt caching.
@@ -3861,6 +3860,7 @@ class GatewayRunner:
                 if event.get_command() == "stop":
                     # Force-clean the sentinel so the session is unlocked.
                     self._release_running_agent_state(_quick_key)
+                    self._crash_checkpoint.mark_completed(_quick_key)
                     logger.info("HARD STOP (pending) for session %s — sentinel cleared", _quick_key)
                     return "⚡ Force-stopped. The agent was still starting — session unlocked."
                 # Queue the message so it will be picked up after the
@@ -11234,10 +11234,11 @@ class GatewayRunner:
                 # were unwinding has already installed its own state; this
                 # guard prevents an old run from clobbering it on the way
                 # out.
-                self._release_running_agent_state(
+                released = self._release_running_agent_state(
                     session_key, run_generation=run_generation
                 )
-                self._crash_checkpoint.mark_completed(session_key)
+                if released:
+                    self._crash_checkpoint.mark_completed(session_key)
             if self._draining:
                 self._update_runtime_status("draining")
             

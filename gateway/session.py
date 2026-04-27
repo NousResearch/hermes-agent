@@ -1405,11 +1405,23 @@ class SessionCrashCheckpoint:
             return {}
 
     def _write(self, data: Dict[str, Any]) -> None:
-        """Atomically write checkpoint data to disk."""
-        tmp_path = self.path + ".tmp"
-        with open(tmp_path, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp_path, self.path)
+        """Atomically write checkpoint data to disk with fsync for crash safety."""
+        import tempfile
+        dir_path = os.path.dirname(self.path) or "."
+        os.makedirs(dir_path, exist_ok=True)
+        fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp", prefix=".cp_")
+        try:
+            with os.fdopen(fd, "w", encoding="utf-8") as f:
+                json.dump(data, f, ensure_ascii=False, indent=2)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self.path)
+        except BaseException:
+            try:
+                os.unlink(tmp_path)
+            except OSError:
+                pass
+            raise
 
     # ── Public API ────────────────────────────────────────────────────
 

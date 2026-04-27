@@ -76,3 +76,12 @@ def test_dockerfile_entrypoint_routes_through_the_init(dockerfile_text):
         "If tini is only installed but not wired into ENTRYPOINT, hermes "
         "still runs as PID 1 and zombies will accumulate (#15012)."
     )
+
+
+def test_dockerfile_installs_tui_dependencies(dockerfile_text):
+    assert "ui-tui/package.json" in dockerfile_text
+    assert "cd ui-tui && npm install" in dockerfile_text
+
+
+def test_dockerfile_builds_tui_assets(dockerfile_text):
+    assert "cd ../ui-tui && npm run build" in dockerfile_text

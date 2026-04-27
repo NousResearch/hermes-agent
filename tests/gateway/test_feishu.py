@@ -252,6 +252,77 @@ class TestFeishuAdapterMessaging(unittest.TestCase):
         )
         release_lock.assert_called_once_with("feishu-app-id", "cli_app")
 
+    def test_disconnect_sends_websocket_close_frame(self):
+        """Regression test for #10202: disconnect() must call the WSS
+        client's ``_disconnect()`` coroutine so a WebSocket CLOSE frame
+        is sent to Feishu. Without this, Feishu's server continues
+        routing to the stale connection, silencing the channel.
+        """
+        import threading
+        from types import SimpleNamespace
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+
+        # Real thread loop to schedule the close coroutine on.
+        ws_thread_loop = asyncio.new_event_loop()
+        ready = threading.Event()
+
+        def _run_loop() -> None:
+            asyncio.set_event_loop(ws_thread_loop)
+            ready.set()
+            ws_thread_loop.run_forever()
+
+        thread = threading.Thread(target=_run_loop, daemon=True)
+        thread.start()
+        ready.wait()
+
+        close_called = threading.Event()
+
+        async def _fake_disconnect() -> None:
+            close_called.set()
+
+        ws_client = SimpleNamespace(_disconnect=_fake_disconnect, _auto_reconnect=True)
+        adapter._ws_client = ws_client
+        adapter._ws_thread_loop = ws_thread_loop
+        adapter._ws_future = None
+
+        try:
+            asyncio.run(adapter.disconnect())
+        finally:
+            if not ws_thread_loop.is_closed():
+                ws_thread_loop.call_soon_threadsafe(ws_thread_loop.stop)
+            thread.join(timeout=2.0)
+            if not ws_thread_loop.is_closed():
+                ws_thread_loop.close()
+
+        self.assertTrue(
+            close_called.is_set(),
+            "disconnect() must schedule ws_client._disconnect() on the ws thread loop",
+        )
+        # _disable_websocket_auto_reconnect() must still run.
+        self.assertIsNone(adapter._ws_client)
+
+    def test_disconnect_tolerates_missing_internal_disconnect(self):
+        """If the lark_oapi client layout changes and ``_disconnect``
+        disappears, disconnect() must not raise — fall through to the
+        existing task-cancel path.
+        """
+        from types import SimpleNamespace
+        from gateway.config import PlatformConfig
+        from gateway.platforms.feishu import FeishuAdapter
+
+        adapter = FeishuAdapter(PlatformConfig())
+        # No ``_disconnect`` attribute — ``hasattr`` guard should skip.
+        adapter._ws_client = SimpleNamespace(_auto_reconnect=True)
+        adapter._ws_thread_loop = None
+        adapter._ws_future = None
+
+        # Must not raise.
+        asyncio.run(adapter.disconnect())
+        self.assertIsNone(adapter._ws_client)
+
     @patch.dict(os.environ, {
         "FEISHU_APP_ID": "cli_app",
         "FEISHU_APP_SECRET": "secret_app",

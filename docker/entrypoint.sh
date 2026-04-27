@@ -41,6 +41,15 @@ if [ "$(id -u)" = "0" ]; then
             echo "Warning: chown failed (rootless container?) — continuing anyway"
     fi
 
+    # Ensure config.yaml is readable by the hermes runtime user even if it was
+    # edited on the host after initial ownership setup. Must run here (as root)
+    # rather than after the gosu drop, otherwise a non-root caller like
+    # `docker run -u $(id -u):$(id -g)` hits "Operation not permitted" (#15865).
+    if [ -f "$HERMES_HOME/config.yaml" ]; then
+        chown hermes:hermes "$HERMES_HOME/config.yaml" 2>/dev/null || true
+        chmod 640 "$HERMES_HOME/config.yaml" 2>/dev/null || true
+    fi
+
     echo "Dropping root privileges"
     exec gosu hermes "$0" "$@"
 fi
@@ -65,13 +74,6 @@ fi
 # config.yaml
 if [ ! -f "$HERMES_HOME/config.yaml" ]; then
     cp "$INSTALL_DIR/cli-config.yaml.example" "$HERMES_HOME/config.yaml"
-fi
-
-# Ensure the main config file remains accessible to the hermes runtime user
-# even if it was edited on the host after initial ownership setup.
-if [ -f "$HERMES_HOME/config.yaml" ]; then
-    chown hermes:hermes "$HERMES_HOME/config.yaml"
-    chmod 640 "$HERMES_HOME/config.yaml"
 fi
 
 # SOUL.md

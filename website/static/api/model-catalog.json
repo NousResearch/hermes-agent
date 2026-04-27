@@ -1,0 +1,245 @@
+{
+  "version": 1,
+  "updated_at": "2026-04-26T19:27:12Z",
+  "metadata": {
+    "source": "hermes-agent repo",
+    "docs": "https://hermes-agent.nousresearch.com/docs/reference/model-catalog"
+  },
+  "providers": {
+    "openrouter": {
+      "metadata": {
+        "display_name": "OpenRouter",
+        "note": "Descriptions drive picker badges. Live /api/v1/models filters curated ids by tool-calling support and free pricing."
+      },
+      "models": [
+        {
+          "id": "moonshotai/kimi-k2.6",
+          "description": "recommended"
+        },
+        {
+          "id": "anthropic/claude-opus-4.7",
+          "description": ""
+        },
+        {
+          "id": "anthropic/claude-opus-4.6",
+          "description": ""
+        },
+        {
+          "id": "anthropic/claude-sonnet-4.6",
+          "description": ""
+        },
+        {
+          "id": "qwen/qwen3.6-plus",
+          "description": ""
+        },
+        {
+          "id": "anthropic/claude-sonnet-4.5",
+          "description": ""
+        },
+        {
+          "id": "anthropic/claude-haiku-4.5",
+          "description": ""
+        },
+        {
+          "id": "openrouter/elephant-alpha",
+          "description": "free"
+        },
+        {
+          "id": "openai/gpt-5.5",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-5.4-mini",
+          "description": ""
+        },
+        {
+          "id": "xiaomi/mimo-v2.5-pro",
+          "description": ""
+        },
+        {
+          "id": "xiaomi/mimo-v2.5",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-5.3-codex",
+          "description": ""
+        },
+        {
+          "id": "google/gemini-3-pro-image-preview",
+          "description": ""
+        },
+        {
+          "id": "google/gemini-3-flash-preview",
+          "description": ""
+        },
+        {
+          "id": "google/gemini-3.1-pro-preview",
+          "description": ""
+        },
+        {
+          "id": "google/gemini-3.1-flash-lite-preview",
+          "description": ""
+        },
+        {
+          "id": "qwen/qwen3.5-plus-02-15",
+          "description": ""
+        },
+        {
+          "id": "qwen/qwen3.5-35b-a3b",
+          "description": ""
+        },
+        {
+          "id": "stepfun/step-3.5-flash",
+          "description": ""
+        },
+        {
+          "id": "minimax/minimax-m2.7",
+          "description": ""
+        },
+        {
+          "id": "minimax/minimax-m2.5",
+          "description": ""
+        },
+        {
+          "id": "minimax/minimax-m2.5:free",
+          "description": "free"
+        },
+        {
+          "id": "z-ai/glm-5.1",
+          "description": ""
+        },
+        {
+          "id": "z-ai/glm-5v-turbo",
+          "description": ""
+        },
+        {
+          "id": "z-ai/glm-5-turbo",
+          "description": ""
+        },
+        {
+          "id": "x-ai/grok-4.20",
+          "description": ""
+        },
+        {
+          "id": "nvidia/nemotron-3-super-120b-a12b",
+          "description": ""
+        },
+        {
+          "id": "nvidia/nemotron-3-super-120b-a12b:free",
+          "description": "free"
+        },
+        {
+          "id": "arcee-ai/trinity-large-preview:free",
+          "description": "free"
+        },
+        {
+          "id": "arcee-ai/trinity-large-thinking",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-5.5-pro",
+          "description": ""
+        },
+        {
+          "id": "openai/gpt-5.4-nano",
+          "description": ""
+        }
+      ]
+    },
+    "nous": {
+      "metadata": {
+        "display_name": "Nous Portal",
+        "note": "Free-tier gating is determined live via Portal pricing (partition_nous_models_by_tier), not this manifest."
+      },
+      "models": [
+        {
+          "id": "moonshotai/kimi-k2.6"
+        },
+        {
+          "id": "xiaomi/mimo-v2.5-pro"
+        },
+        {
+          "id": "xiaomi/mimo-v2.5"
+        },
+        {
+          "id": "anthropic/claude-opus-4.7"
+        },
+        {
+          "id": "anthropic/claude-opus-4.6"
+        },
+        {
+          "id": "anthropic/claude-sonnet-4.6"
+        },
+        {
+          "id": "anthropic/claude-sonnet-4.5"
+        },
+        {
+          "id": "anthropic/claude-haiku-4.5"
+        },
+        {
+          "id": "openai/gpt-5.5"
+        },
+        {
+          "id": "openai/gpt-5.4-mini"
+        },
+        {
+          "id": "openai/gpt-5.3-codex"
+        },
+        {
+          "id": "google/gemini-3-pro-preview"
+        },
+        {
+          "id": "google/gemini-3-flash-preview"
+        },
+        {
+          "id": "google/gemini-3.1-pro-preview"
+        },
+        {
+          "id": "google/gemini-3.1-flash-lite-preview"
+        },
+        {
+          "id": "qwen/qwen3.5-plus-02-15"
+        },
+        {
+          "id": "qwen/qwen3.5-35b-a3b"
+        },
+        {
+          "id": "stepfun/step-3.5-flash"
+        },
+        {
+          "id": "minimax/minimax-m2.7"
+        },
+        {
+          "id": "minimax/minimax-m2.5"
+        },
+        {
+          "id": "minimax/minimax-m2.5:free"
+        },
+        {
+          "id": "z-ai/glm-5.1"
+        },
+        {
+          "id": "z-ai/glm-5v-turbo"
+        },
+        {
+          "id": "z-ai/glm-5-turbo"
+        },
+        {
+          "id": "x-ai/grok-4.20-beta"
+        },
+        {
+          "id": "nvidia/nemotron-3-super-120b-a12b"
+        },
+        {
+          "id": "arcee-ai/trinity-large-thinking"
+        },
+        {
+          "id": "openai/gpt-5.5-pro"
+        },
+        {
+          "id": "openai/gpt-5.4-nano"
+        }
+      ]
+    }
+  }
+}

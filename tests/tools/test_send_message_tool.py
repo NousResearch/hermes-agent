@@ -810,6 +810,44 @@ class TestParseTargetRefE164:
         assert _parse_target_ref("matrix", "+15551234567")[2] is False
 
 
+class TestParseTargetRefSlack:
+    """_parse_target_ref recognizes Slack channel/user IDs as explicit."""
+
+    def test_public_channel_id_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("slack", "C0B0QV5434G")
+        assert chat_id == "C0B0QV5434G"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_private_channel_id_is_explicit(self):
+        assert _parse_target_ref("slack", "G123ABCDEF")[2] is True
+
+    def test_dm_id_is_explicit(self):
+        assert _parse_target_ref("slack", "D123ABCDEF")[2] is True
+
+    def test_user_id_is_not_explicit(self):
+        """Slack user IDs (U...) and workspace IDs (W...) are NOT explicit send
+        targets. chat.postMessage rejects them — a DM must be opened first via
+        conversations.open to obtain a D... conversation ID.
+        """
+        assert _parse_target_ref("slack", "U123ABCDEF")[2] is False
+        assert _parse_target_ref("slack", "W123ABCDEF")[2] is False
+
+    def test_whitespace_is_stripped(self):
+        chat_id, _, is_explicit = _parse_target_ref("slack", "  C0B0QV5434G  ")
+        assert chat_id == "C0B0QV5434G"
+        assert is_explicit is True
+
+    def test_lowercase_or_short_id_is_not_explicit(self):
+        assert _parse_target_ref("slack", "c0b0qv5434g")[2] is False
+        assert _parse_target_ref("slack", "C123")[2] is False
+        assert _parse_target_ref("slack", "X0B0QV5434G")[2] is False
+
+    def test_slack_id_not_explicit_for_other_platforms(self):
+        assert _parse_target_ref("discord", "C0B0QV5434G")[2] is False
+        assert _parse_target_ref("telegram", "C0B0QV5434G")[2] is False
+
+
 class TestSendDiscordThreadId:
     """_send_discord uses thread_id when provided."""
 

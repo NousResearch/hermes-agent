@@ -5,6 +5,7 @@ import { isSectionName, nextDetailsMode, parseDetailsMode, SECTION_NAMES } from 
 import type {
   ConfigGetValueResponse,
   ConfigSetResponse,
+  SessionSaveResponse,
   SessionSteerResponse,
   SessionUndoResponse
 } from '../../../gatewayTypes.js'
@@ -250,11 +251,17 @@ export const coreCommands: SlashCommand[] = [
   {
     help: 'copy selection or assistant message',
     name: 'copy',
-    run: (arg, ctx) => {
+    run: async (arg, ctx) => {
       const { sys } = ctx.transcript
 
-      if (!arg && ctx.composer.hasSelection && ctx.composer.selection.copySelection()) {
-        return sys('copied selection')
+      if (!arg && ctx.composer.hasSelection) {
+        const text = await ctx.composer.selection.copySelection()
+
+        if (text) {
+          return sys(`copied ${text.length} characters`)
+        } else {
+          return sys('clipboard copy failed — try HERMES_TUI_FORCE_OSC52=1 to force the escape sequence; HERMES_TUI_DEBUG_CLIPBOARD=1 for details')
+        }
       }
 
       if (arg && Number.isNaN(parseInt(arg, 10))) {
@@ -348,6 +355,39 @@ export const coreCommands: SlashCommand[] = [
       })
 
       ctx.transcript.page(lines.join('\n\n'), 'History')
+    }
+  },
+
+  {
+    help: 'save the current transcript to JSON',
+    name: 'save',
+    run: (_arg, ctx) => {
+      const hasConversation = ctx.local
+        .getHistoryItems()
+        .some(m => m.role === 'user' || m.role === 'assistant' || m.role === 'tool')
+
+      if (!hasConversation) {
+        return ctx.transcript.sys('no conversation yet')
+      }
+
+      if (!ctx.sid) {
+        return ctx.transcript.sys('no active session — nothing to save')
+      }
+
+      ctx.gateway
+        .rpc<SessionSaveResponse>('session.save', { session_id: ctx.sid })
+        .then(
+          ctx.guarded<SessionSaveResponse>(r => {
+            const file = r?.file
+
+            if (file) {
+              ctx.transcript.sys(`conversation saved to: ${file}`)
+            } else {
+              ctx.transcript.sys('failed to save')
+            }
+          })
+        )
+        .catch(ctx.guardedErr)
     }
   },
 

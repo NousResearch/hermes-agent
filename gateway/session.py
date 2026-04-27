@@ -310,8 +310,9 @@ def build_session_context_prompt(
             "**Platform notes:** You are running inside Slack. "
             "You do NOT have access to Slack-specific APIs — you cannot search "
             "channel history, pin/unpin messages, manage channels, or list users. "
-            "Do not promise to perform these actions. If the user asks, explain "
-            "that you can only read messages sent directly to you and respond."
+            "Do not promise to perform these actions. The gateway may inline the "
+            "current message's Slack block/attachment payload when available, but "
+            "you still cannot call Slack APIs yourself."
         )
     elif context.source.platform == Platform.DISCORD:
         # Inject the Discord IDs block only when the agent actually has
@@ -1232,6 +1233,7 @@ class SessionStore:
                     reasoning_content=message.get("reasoning_content") if message.get("role") == "assistant" else None,
                     reasoning_details=message.get("reasoning_details") if message.get("role") == "assistant" else None,
                     codex_reasoning_items=message.get("codex_reasoning_items") if message.get("role") == "assistant" else None,
+                    codex_message_items=message.get("codex_message_items") if message.get("role") == "assistant" else None,
                 )
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
@@ -1264,6 +1266,7 @@ class SessionStore:
                         reasoning_content=msg.get("reasoning_content") if role == "assistant" else None,
                         reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                         codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
+                        codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
                     )
             except Exception as e:
                 logger.debug("Failed to rewrite transcript in DB: %s", e)

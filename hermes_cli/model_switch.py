@@ -533,6 +533,7 @@ def resolve_display_context_length(
     base_url: str = "",
     api_key: str = "",
     model_info: Optional[ModelInfo] = None,
+    custom_providers: list | None = None,
 ) -> Optional[int]:
     """Resolve the context length to show in /model output.
 
@@ -542,6 +543,11 @@ def resolve_display_context_length(
     ``agent.model_metadata.get_model_context_length`` which already knows
     about Codex OAuth, Copilot, Nous, and falls back to models.dev for the
     rest.
+
+    When ``custom_providers`` is provided, per-model ``context_length``
+    overrides from ``custom_providers[].models.<id>.context_length`` are
+    honored — this closes #15779 where ``/model`` switch ignored user-set
+    overrides.
 
     Prefer the provider-aware value; fall back to ``model_info.context_window``
     only if the resolver returns nothing.
@@ -553,6 +559,7 @@ def resolve_display_context_length(
             base_url=base_url or "",
             api_key=api_key or "",
             provider=provider or None,
+            custom_providers=custom_providers,
         )
         if ctx:
             return int(ctx)
@@ -831,9 +838,14 @@ def switch_model(
                 requested=current_provider,
                 target_model=new_model,
             )
-            api_key = runtime.get("api_key", "")
-            base_url = runtime.get("base_url", "")
-            api_mode = runtime.get("api_mode", "")
+            # If resolution fell through to "custom" (e.g. named custom provider like
+            # "ollama-launch" that resolve_runtime_provider doesn't know), keep existing
+            # credentials. Otherwise use the resolved values (picks up credential rotation,
+            # base_url adjustments for OpenCode, etc.).
+            if runtime.get("provider") != "custom":
+                api_key = runtime.get("api_key", "")
+                base_url = runtime.get("base_url", "")
+                api_mode = runtime.get("api_mode", "")
         except Exception:
             pass
 
@@ -867,16 +879,31 @@ def switch_model(
             "message": f"Could not validate `{new_model}`: {e}",
         }
 
+    # Override rejection if model is in the user's saved provider config.
+    # API /v1/models may not list cloud/aliased models even though the server supports them.
     if not validation.get("accepted"):
-        msg = validation.get("message", "Invalid model")
-        return ModelSwitchResult(
-            success=False,
-            new_model=new_model,
-            target_provider=target_provider,
-            provider_label=provider_label,
-            is_global=is_global,
-            error_message=msg,
-        )
+        override = False
+        if user_providers:
+            for up in user_providers:
+                if isinstance(up, dict) and up.get("provider") == target_provider:
+                    cfg_models = up.get("models", [])
+                    if new_model in cfg_models or any(
+                        m.get("name") == new_model for m in cfg_models if isinstance(m, dict)
+                    ):
+                        override = True
+                        break
+        if override:
+            validation = {"accepted": True, "persist": True, "recognized": False, "message": validation.get("message", "")}
+        else:
+            msg = validation.get("message", "Invalid model")
+            return ModelSwitchResult(
+                success=False,
+                new_model=new_model,
+                target_provider=target_provider,
+                provider_label=provider_label,
+                is_global=is_global,
+                error_message=msg,
+            )
 
     # Apply auto-correction if validation found a closer match
     if validation.get("corrected_model"):

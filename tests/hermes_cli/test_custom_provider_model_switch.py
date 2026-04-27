@@ -52,7 +52,12 @@ class TestCustomProviderModelSwitch:
             _model_flow_named_custom({}, provider_info)
 
         # fetch_api_models MUST be called even though model was saved
-        mock_fetch.assert_called_once_with("sk-test", "https://vllm.example.com/v1", timeout=8.0)
+        mock_fetch.assert_called_once_with(
+            "sk-test",
+            "https://vllm.example.com/v1",
+            timeout=8.0,
+            api_mode=None,
+        )
 
     def test_can_switch_to_different_model(self, config_home):
         """User selects a different model than the saved one."""
@@ -173,3 +178,147 @@ class TestCustomProviderModelSwitch:
         model = config.get("model")
         assert isinstance(model, dict)
         assert "api_mode" not in model, "Stale api_mode should be removed"
+
+    def test_env_template_api_key_is_preserved_in_model_config(self, config_home, monkeypatch):
+        """Selecting an env-backed custom provider must not inline the secret."""
+        import yaml
+        from hermes_cli.main import _model_flow_named_custom
+
+        config_path = config_home / "config.yaml"
+        config_path.write_text(
+            "model:\n"
+            "  default: old-model\n"
+            "  provider: openrouter\n"
+            "custom_providers:\n"
+            "- name: Example Provider\n"
+            "  base_url: https://api.example-provider.test/v1\n"
+            "  api_key: ${EXAMPLE_PROVIDER_API_KEY}\n"
+            "  model: qwen3.6-35b-fast\n"
+        )
+        monkeypatch.setenv("EXAMPLE_PROVIDER_API_KEY", "sk-live-example-provider")
+
+        provider_info = {
+            "name": "Example Provider",
+            "base_url": "https://api.example-provider.test/v1",
+            "api_key": "sk-live-example-provider",
+            "api_key_ref": "${EXAMPLE_PROVIDER_API_KEY}",
+            "model": "qwen3.6-35b-fast",
+        }
+
+        with patch("hermes_cli.models.fetch_api_models", return_value=["qwen3.6-35b-fast"]) as mock_fetch, \
+             patch.dict("sys.modules", {"simple_term_menu": None}), \
+             patch("builtins.input", return_value="1"), \
+             patch("builtins.print"):
+            _model_flow_named_custom({}, provider_info)
+
+        mock_fetch.assert_called_once_with(
+            "sk-live-example-provider",
+            "https://api.example-provider.test/v1",
+            timeout=8.0,
+            api_mode=None,
+        )
+        config = yaml.safe_load(config_path.read_text()) or {}
+        assert config["model"]["api_key"] == "${EXAMPLE_PROVIDER_API_KEY}"
+        assert config["custom_providers"][0]["api_key"] == "${EXAMPLE_PROVIDER_API_KEY}"
+        assert "sk-live-example-provider" not in config_path.read_text()
+
+    def test_key_env_custom_provider_persists_reference_not_secret(self, config_home, monkeypatch):
+        """key_env custom providers should also avoid writing plaintext keys."""
+        import yaml
+        from hermes_cli.main import _model_flow_named_custom
+
+        config_path = config_home / "config.yaml"
+        config_path.write_text(
+            "model:\n"
+            "  default: old-model\n"
+            "custom_providers:\n"
+            "- name: Example Provider\n"
+            "  base_url: https://api.example-provider.test/v1\n"
+            "  key_env: EXAMPLE_PROVIDER_API_KEY\n"
+            "  model: qwen3.6-35b-fast\n"
+        )
+        monkeypatch.setenv("EXAMPLE_PROVIDER_API_KEY", "sk-live-example-provider")
+
+        provider_info = {
+            "name": "Example Provider",
+            "base_url": "https://api.example-provider.test/v1",
+            "api_key": "",
+            "key_env": "EXAMPLE_PROVIDER_API_KEY",
+            "model": "qwen3.6-35b-fast",
+        }
+
+        with patch("hermes_cli.models.fetch_api_models", return_value=["qwen3.6-35b-fast"]), \
+             patch.dict("sys.modules", {"simple_term_menu": None}), \
+             patch("builtins.input", return_value="1"), \
+             patch("builtins.print"):
+            _model_flow_named_custom({}, provider_info)
+
+        config = yaml.safe_load(config_path.read_text()) or {}
+        assert config["model"]["api_key"] == "${EXAMPLE_PROVIDER_API_KEY}"
+        assert config["custom_providers"][0]["key_env"] == "EXAMPLE_PROVIDER_API_KEY"
+        assert "sk-live-example-provider" not in config_path.read_text()
+
+    def test_env_ref_base_url_preserves_api_key_ref_through_picker(
+        self, config_home, monkeypatch
+    ):
+        """Integration regression: when BOTH ``base_url`` and ``api_key`` use
+        ``${VAR}`` templates (the Discord-reported NeuralWatt case), the picker
+        must still preserve the env reference in ``model.api_key``.
+
+        The earlier lookup went through ``get_compatible_custom_providers``
+        which dropped entries whose ``base_url`` was an env-ref template
+        (``urlparse("${NEURALWATT_API_BASE}")`` has no scheme/netloc), causing
+        ``api_key_ref`` to stay empty and the resolved secret to be written to
+        ``config.yaml``. This test drives the real picker-callsite code path.
+        """
+        import yaml
+        from hermes_cli.main import select_provider_and_model
+
+        config_path = config_home / "config.yaml"
+        config_path.write_text(
+            "model:\n"
+            "  default: old-model\n"
+            "  provider: openrouter\n"
+            "custom_providers:\n"
+            "- name: NeuralWatt\n"
+            "  base_url: ${NEURALWATT_API_BASE}\n"
+            "  api_key: ${NEURALWATT_API_KEY}\n"
+            "  model: qwen3.6-35b-fast\n"
+            "  models: []\n"
+        )
+        monkeypatch.setenv("NEURALWATT_API_BASE", "https://api.neuralwatt.com/v1")
+        monkeypatch.setenv("NEURALWATT_API_KEY", "sk-live-neuralwatt-secret")
+
+        # Exercise the real picker: select "custom:neuralwatt" from the
+        # provider menu. ``select_provider_and_model`` prompts for a provider
+        # choice (returns an index), then hands off to
+        # ``_model_flow_named_custom`` with the provider_info built by
+        # ``_named_custom_provider_map``.
+        def _pick_neuralwatt(labels, default=0):
+            for i, label in enumerate(labels):
+                if "NeuralWatt" in label:
+                    return i
+            raise AssertionError(
+                f"NeuralWatt entry missing from provider menu: {labels}"
+            )
+
+        with patch("hermes_cli.main._prompt_provider_choice",
+                   side_effect=_pick_neuralwatt), \
+             patch("hermes_cli.models.fetch_api_models",
+                   return_value=["qwen3.6-35b-fast"]) as mock_fetch, \
+             patch.dict("sys.modules", {"simple_term_menu": None}), \
+             patch("builtins.input", return_value="1"), \
+             patch("builtins.print"):
+            select_provider_and_model()
+
+        # The live probe must still use the resolved secret.
+        mock_fetch.assert_called_once()
+        probe_args, probe_kwargs = mock_fetch.call_args
+        assert probe_args[0] == "sk-live-neuralwatt-secret"
+
+        # But config.yaml must keep the env reference, not the plaintext secret.
+        saved = config_path.read_text()
+        config = yaml.safe_load(saved) or {}
+        assert config["model"]["api_key"] == "${NEURALWATT_API_KEY}"
+        assert config["custom_providers"][0]["api_key"] == "${NEURALWATT_API_KEY}"
+        assert "sk-live-neuralwatt-secret" not in saved

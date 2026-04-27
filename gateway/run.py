@@ -8794,8 +8794,12 @@ class GatewayRunner:
                     tool_name=msg.get("tool_name") or msg.get("name"),
                     tool_calls=msg.get("tool_calls"),
                     tool_call_id=msg.get("tool_call_id"),
+                    finish_reason=msg.get("finish_reason"),
                     reasoning=msg.get("reasoning"),
                     reasoning_content=msg.get("reasoning_content"),
+                    reasoning_details=msg.get("reasoning_details"),
+                    codex_reasoning_items=msg.get("codex_reasoning_items"),
+                    codex_message_items=msg.get("codex_message_items"),
                 )
             except Exception:
                 pass  # Best-effort copy

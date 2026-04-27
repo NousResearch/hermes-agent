@@ -173,6 +173,38 @@ async def test_branch_clears_session_scoped_approval_and_yolo_state():
     assert other_key in runner._update_prompt_pending
 
 
+@pytest.mark.asyncio
+async def test_branch_preserves_persisted_assistant_metadata():
+    runner, _session_key = _make_branch_runner()
+    runner.session_store.load_transcript.return_value = [
+        {"role": "user", "content": "hello"},
+        {
+            "role": "assistant",
+            "content": "world",
+            "finish_reason": "stop",
+            "reasoning": "thinking",
+            "reasoning_content": "provider scratchpad",
+            "reasoning_details": [{"type": "summary", "text": "step"}],
+            "codex_reasoning_items": [{"id": "r1", "type": "reasoning"}],
+            "codex_message_items": [{"id": "m1", "type": "message"}],
+        },
+    ]
+
+    result = await runner._handle_branch_command(_make_event("/branch"))
+
+    assert "Branched to" in result
+    append_calls = runner._session_db.append_message.call_args_list
+    assert len(append_calls) == 2
+    assistant_kwargs = append_calls[1].kwargs
+    assert assistant_kwargs["role"] == "assistant"
+    assert assistant_kwargs["finish_reason"] == "stop"
+    assert assistant_kwargs["reasoning"] == "thinking"
+    assert assistant_kwargs["reasoning_content"] == "provider scratchpad"
+    assert assistant_kwargs["reasoning_details"] == [{"type": "summary", "text": "step"}]
+    assert assistant_kwargs["codex_reasoning_items"] == [{"id": "r1", "type": "reasoning"}]
+    assert assistant_kwargs["codex_message_items"] == [{"id": "m1", "type": "message"}]
+
+
 def test_clear_session_boundary_security_state_is_scoped():
     """The helper must wipe only the target session's approval/yolo state.
 

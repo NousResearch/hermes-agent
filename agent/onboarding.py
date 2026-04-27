@@ -43,10 +43,18 @@ def busy_input_hint_gateway(mode: str) -> str:
             "Send `/busy interrupt` to make new messages stop the current task "
             "immediately, or `/busy status` to check. This notice won't appear again."
         )
+    if mode == "steer":
+        return (
+            "💡 First-time tip — I steered your message into the current run; "
+            "it will arrive after the next tool call instead of interrupting. "
+            "Send `/busy interrupt` or `/busy queue` to change this, or "
+            "`/busy status` to check. This notice won't appear again."
+        )
     return (
         "💡 First-time tip — I just interrupted my current task to answer you. "
         "Send `/busy queue` to queue follow-ups for after the current task instead, "
-        "or `/busy status` to check. This notice won't appear again."
+        "`/busy steer` to inject them mid-run without interrupting, or "
+        "`/busy status` to check. This notice won't appear again."
     )
 
 
@@ -55,13 +63,19 @@ def busy_input_hint_cli(mode: str) -> str:
     if mode == "queue":
         return (
             "(tip) Your message was queued for the next turn. "
-            "Use /busy interrupt to make Enter stop the current run instead. "
-            "This tip only shows once."
+            "Use /busy interrupt to make Enter stop the current run instead, "
+            "or /busy steer to inject mid-run. This tip only shows once."
+        )
+    if mode == "steer":
+        return (
+            "(tip) Your message was steered into the current run; it arrives "
+            "after the next tool call. Use /busy interrupt or /busy queue to "
+            "change this. This tip only shows once."
         )
     return (
         "(tip) Your message interrupted the current run. "
-        "Use /busy queue to queue messages for the next turn instead. "
-        "This tip only shows once."
+        "Use /busy queue to queue messages for the next turn instead, "
+        "or /busy steer to inject mid-run. This tip only shows once."
     )
 
 

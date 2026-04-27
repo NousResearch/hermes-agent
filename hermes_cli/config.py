@@ -627,7 +627,7 @@ DEFAULT_CONFIG = {
         "compact": False,
         "personality": "kawaii",
         "resume_display": "full",
-        "busy_input_mode": "interrupt",
+        "busy_input_mode": "interrupt",  # interrupt | queue | steer
         "bell_on_complete": False,
         "show_reasoning": False,
         "streaming": False,

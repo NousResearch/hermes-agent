@@ -1,48 +1,32 @@
-// Tiny FPS tracker fed by ink's onFrame callback.
+// Tiny FPS tracker fed by ink's onFrame callback. Each entry is an Ink
+// frame (React commit + drain-only frames) — the right notion for
+// user-perceived motion.
 //
-// Keeps a ring buffer of the last N frame timestamps and derives fps
-// from the rolling window.  Updates a nanostore so a corner-overlay
-// component can subscribe without pulling it through props.
-//
-// FPS here means "Ink render rate" — each entry is an ink frame, which
-// includes both React commits and drain-only frames (Ink re-rendering
-// with an updated scrollTop without a React commit).  That's the right
-// notion for user-perceived motion: it's how often the screen buffer
-// actually changes, not how often React reconciles.
-//
-// Zero-cost when HERMES_TUI_FPS is unset: trackFrame is undefined so
-// the onFrame callback short-circuits at the optional chain.
+// Zero-cost when HERMES_TUI_FPS is unset: trackFrame is undefined so the
+// onFrame callback short-circuits at the optional chain.
 
 import { atom } from 'nanostores'
 
 import { SHOW_FPS } from '../config/env.js'
 
-const WINDOW_SIZE = 30 // last 30 frames
+const WINDOW_SIZE = 30
 
 export type FpsState = {
-  /** Frames per second averaged over the last WINDOW_SIZE frames. */
   fps: number
-  /** Total frames counted since start (wraps at JS-safe int so you can
-   *  diff pairs in a debug overlay without worrying about precision). */
+  /** Wraps at JS-safe int — diff pairs in a debug overlay safely. */
   totalFrames: number
-  /** Last frame's durationMs (ink render phase total). */
+  /** Ink render-phase total for the last frame. */
   lastDurationMs: number
 }
 
-export const $fpsState = atom<FpsState>({
-  fps: 0,
-  lastDurationMs: 0,
-  totalFrames: 0
-})
+export const $fpsState = atom<FpsState>({ fps: 0, lastDurationMs: 0, totalFrames: 0 })
 
 const timestamps: number[] = []
 let totalFrames = 0
 
 export const trackFrame = SHOW_FPS
   ? (durationMs: number) => {
-      const now = performance.now()
-
-      timestamps.push(now)
+      timestamps.push(performance.now())
 
       if (timestamps.length > WINDOW_SIZE) {
         timestamps.shift()
@@ -50,20 +34,18 @@ export const trackFrame = SHOW_FPS
 
       totalFrames++
 
-      // FPS = frames-in-window / seconds-in-window. Needs at least 2
-      // timestamps to compute a gap.
-      if (timestamps.length >= 2) {
-        const elapsed = (timestamps[timestamps.length - 1]! - timestamps[0]!) / 1000
+      if (timestamps.length < 2) {
+        return
+      }
 
-        if (elapsed > 0) {
-          const fps = (timestamps.length - 1) / elapsed
+      const elapsed = (timestamps[timestamps.length - 1]! - timestamps[0]!) / 1000
 
-          $fpsState.set({
-            fps: Math.round(fps * 10) / 10,
-            lastDurationMs: Math.round(durationMs * 100) / 100,
-            totalFrames
-          })
-        }
+      if (elapsed > 0) {
+        $fpsState.set({
+          fps: Math.round(((timestamps.length - 1) / elapsed) * 10) / 10,
+          lastDurationMs: Math.round(durationMs * 100) / 100,
+          totalFrames
+        })
       }
     }
   : undefined

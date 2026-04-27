@@ -4,6 +4,8 @@ import stripAnsi from 'strip-ansi'
 
 import { getGraphemeSegmenter } from '../utils/intl.js'
 
+import { lruEvict } from './lru.js'
+
 const EMOJI_REGEX = emojiRegex()
 
 /**
@@ -299,6 +301,7 @@ export const stringWidth: (str: string) => number = str => {
 
       if (code >= 127 || code === 0x1b) {
         asciiOnly = false
+
         break
       }
     }
@@ -334,14 +337,5 @@ export function widthCacheSize(): number {
 }
 
 export function evictWidthCache(keepRatio = 0): void {
-  if (keepRatio <= 0) {
-    widthCache.clear()
-    return
-  }
-
-  const target = Math.floor(widthCache.size * keepRatio)
-
-  while (widthCache.size > target) {
-    widthCache.delete(widthCache.keys().next().value!)
-  }
+  lruEvict(widthCache, keepRatio)
 }

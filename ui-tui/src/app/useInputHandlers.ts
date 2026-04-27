@@ -29,35 +29,19 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
   const overlay = useStore($overlayState)
   const isBlocked = useStore($isBlocked)
   const pagerPageSize = Math.max(5, (terminal.stdout?.rows ?? 24) - 6)
-  const scrollIdleTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const scrollIdleTimer = useRef<null | ReturnType<typeof setTimeout>>(null)
 
-  // Wheel acceleration state machine (ported from claude-code).  Adapts
-  // step size per wheel event based on inter-event timing: fast flicks
-  // ramp up, slow clicks stay at 1 row, direction flips reset.  See
-  // lib/wheelAccel.ts for the full tuning rationale.  The accel state
-  // mutates in place and is kept across renders via a ref.  wheelStep
-  // (passed from useMainApp / the WHEEL_SCROLL_STEP constant) is used
-  // as the BASE — final rows = wheelStep × accelMult.
+  // Wheel accel ported from claude-code: inter-event timing drives step size,
+  // direction flips reset. wheelStep (WHEEL_SCROLL_STEP) is the base; final
+  // rows = wheelStep × accelMult. State mutates in place across renders.
   const wheelAccelRef = useRef(initWheelAccelForHost())
 
-  useEffect(
-    () => () => {
-      if (scrollIdleTimer.current) {
-        clearTimeout(scrollIdleTimer.current)
-        scrollIdleTimer.current = null
-      }
-    },
-    []
-  )
+  useEffect(() => () => clearTimeout(scrollIdleTimer.current ?? undefined), [])
 
   const scrollTranscript = (delta: number) => {
     if (getUiState().busy) {
       turnController.boostStreamingForScroll()
-
-      if (scrollIdleTimer.current) {
-        clearTimeout(scrollIdleTimer.current)
-      }
-
+      clearTimeout(scrollIdleTimer.current ?? undefined)
       scrollIdleTimer.current = setTimeout(() => {
         scrollIdleTimer.current = null
         turnController.relaxStreaming()
@@ -300,16 +284,10 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
 
     if (key.wheelUp || key.wheelDown) {
       const dir: -1 | 1 = key.wheelUp ? -1 : 1
-      const accelRows = computeWheelStep(wheelAccelRef.current, dir, Date.now())
+      // 0 = direction-flip bounce deferred; skip the no-op scroll.
+      const rows = computeWheelStep(wheelAccelRef.current, dir, Date.now())
 
-      // computeWheelStep returns 0 when a direction flip is deferred for
-      // bounce detection — scrollBy(0) is a no-op; skip the call to avoid
-      // needless render scheduling.
-      if (accelRows === 0) {
-        return
-      }
-
-      return scrollTranscript(dir * accelRows * wheelStep)
+      return rows ? scrollTranscript(dir * rows * wheelStep) : undefined
     }
 
     if (key.shift && key.upArrow) {
@@ -321,14 +299,9 @@ export function useInputHandlers(ctx: InputHandlerContext): InputHandlerResult {
     }
 
     if (key.pageUp || key.pageDown) {
+      // Half-viewport keeps 50% continuity and stays under Ink's
+      // `delta < innerHeight` DECSTBM fast-path threshold.
       const viewport = terminal.scrollRef.current?.getViewportHeight() ?? Math.max(6, (terminal.stdout?.rows ?? 24) - 8)
-      // Half-viewport per keystroke.  A whole-viewport jump (our old
-      // `viewport - 2`) fully replaces what's on screen — no visual
-      // continuity, the user can't scan — AND it lands right at Ink's
-      // `delta < innerHeight` fast-path threshold, disqualifying the
-      // DECSTBM blit on every press.  Half-viewport keeps 50% continuity,
-      // well under the threshold, and two presses still scroll the same
-      // total distance.
       const step = Math.max(4, Math.floor(viewport / 2))
 
       return scrollTranscript(key.pageUp ? -step : step)

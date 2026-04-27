@@ -1,3 +1,4 @@
+import { lruEvict } from './lru.js'
 import { stringWidth } from './stringWidth.js'
 
 // During streaming, text grows but completed lines are immutable.
@@ -13,6 +14,7 @@ export function lineWidth(line: string): number {
   if (cached !== undefined) {
     cache.delete(line)
     cache.set(line, cached)
+
     return cached
   }
 
@@ -32,14 +34,5 @@ export function lineWidthCacheSize(): number {
 }
 
 export function evictLineWidthCache(keepRatio = 0): void {
-  if (keepRatio <= 0) {
-    cache.clear()
-    return
-  }
-
-  const target = Math.floor(cache.size * keepRatio)
-
-  while (cache.size > target) {
-    cache.delete(cache.keys().next().value!)
-  }
+  lruEvict(cache, keepRatio)
 }

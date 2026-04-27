@@ -41,10 +41,8 @@ export function startMemoryMonitor({
       return
     }
 
-    // Defensive eviction: prune Ink content caches before dumping/exiting.
-    // 'high' = half-prune (still warm enough to recover quickly);
-    // 'critical' = full drop. Reduces post-dump RSS and gives the user a
-    // chance to keep running rather than auto-restart.
+    // Prune Ink content caches before dump/exit — half on 'high' (recoverable),
+    // full on 'critical' (post-dump RSS reduction, keeps user running).
     evictInkCaches(level === 'critical' ? 'all' : 'half')
 
     dumped.add(level)

@@ -9,11 +9,11 @@
 // (not session-keyed), so cross-session sharing is normally beneficial —
 // only evict when memory tightens or when the user explicitly resets.
 
+import { evictSliceCache, sliceCacheSize } from '../utils/sliceAnsi.js'
+
 import { evictLineWidthCache, lineWidthCacheSize } from './line-width-cache.js'
 import { evictWidthCache, widthCacheSize } from './stringWidth.js'
 import { evictWrapCache, wrapCacheSize } from './wrap-text.js'
-
-import { evictSliceCache, sliceCacheSize } from '../utils/sliceAnsi.js'
 
 export interface InkCacheSizes {
   lineWidth: number

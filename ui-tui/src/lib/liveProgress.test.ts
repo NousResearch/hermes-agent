@@ -104,7 +104,10 @@ describe('appendToolShelfMessage', () => {
 
   it('starts a new shelf across assistant text boundaries', () => {
     const merged = appendToolShelfMessage(
-      [{ kind: 'trail', role: 'system', text: '', tools: ['one ✓'] }, { role: 'assistant', text: 'done' }],
+      [
+        { kind: 'trail', role: 'system', text: '', tools: ['one ✓'] },
+        { role: 'assistant', text: 'done' }
+      ],
       { kind: 'trail', role: 'system', text: '', tools: ['two ✓'] }
     )
 

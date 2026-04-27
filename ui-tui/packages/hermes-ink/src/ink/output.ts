@@ -467,15 +467,15 @@ export default class Output {
 
             if (clipHorizontally) {
               lines = lines.map(line => {
-                const startsBefore = x < clip.x1!
                 const width = stringWidth(line)
+                const startsBefore = x < clip.x1!
                 const endsAfter = x + width > clip.x2!
 
                 // Fast path: line fits entirely within the clip box — skip
-                // the tokenize/slice. This is the common case for transcript
-                // text where containers are wider than the rendered content.
-                // CPU profile (Apr 2026) showed sliceAnsi at 18% total time;
-                // most calls were no-op slices like (line, 0, width).
+                // tokenize/slice. Common case for transcript text where
+                // containers are wider than rendered content. CPU profile
+                // (Apr 2026): sliceAnsi at 18% total during scroll, mostly
+                // no-op (line, 0, width) slices.
                 if (!startsBefore && !endsAfter) {
                   return line
                 }

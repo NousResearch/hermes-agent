@@ -29,10 +29,11 @@ export const writeActiveSessionFile = (sessionId: null | string, file = process.
     return
   }
 
+  // Best-effort shell-epilogue hint; never break live session changes.
   try {
     writeFileSync(file, JSON.stringify({ session_id: sessionId }), { mode: 0o600 })
   } catch {
-    // Best-effort shell epilogue hint only; never break live session changes.
+    /* best-effort */
   }
 }
 
@@ -98,8 +99,8 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
     setLastUserMsg('')
     setStickyPrompt('')
     composerActions.setPasteSnips([])
-    // Half-prune Ink content caches: new session has new keys, but a partial
-    // warm pool helps if the user resumes back to the prior session.
+    // Half-prune: new session has new keys, but keep a warm pool in case
+    // the user resumes back to the prior session.
     evictInkCaches('half')
   }, [composerActions, setHistoryItems, setLastUserMsg, setStickyPrompt, setVoiceProcessing, setVoiceRecording])
 

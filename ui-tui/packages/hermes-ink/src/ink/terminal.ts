@@ -289,9 +289,7 @@ export function writeDiffToTerminal(
   // The 2-arg form attaches a drain callback that fires once the chunk
   // is actually flushed to the OS socket/pipe — giving us end-to-end
   // drain timing, not just "queued in Node".
-  const wrote = onDrain
-    ? terminal.stdout.write(buffer, () => onDrain())
-    : terminal.stdout.write(buffer)
+  const wrote = onDrain ? terminal.stdout.write(buffer, () => onDrain()) : terminal.stdout.write(buffer)
 
   return { bytes: Buffer.byteLength(buffer, 'utf8'), backpressure: !wrote }
 }

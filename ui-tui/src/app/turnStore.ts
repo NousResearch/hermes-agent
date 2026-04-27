@@ -50,6 +50,7 @@ export const archiveTodosAtTurnEnd = () => {
   }
 
   const done = isTodoDone(state.todos)
+
   const msg: Msg = {
     kind: 'trail',
     role: 'system',

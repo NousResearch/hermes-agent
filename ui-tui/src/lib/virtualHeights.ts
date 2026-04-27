@@ -14,18 +14,18 @@ export const hashText = (text: string) => {
 
 export const messageHeightKey = (msg: Msg) => {
   const todoSig = msg.todos?.map(t => `${t.status}:${t.content}`).join('\u0001') ?? ''
+
   const panelSig =
     msg.panelData?.sections
       .map(s => `${s.title ?? ''}:${s.text?.length ?? 0}:${s.items?.length ?? 0}:${s.rows?.length ?? 0}`)
       .join('\u0001') ?? ''
+
   const introSig = msg.kind === 'intro' ? (msg.info?.version ?? '') : ''
 
   return [
     msg.role,
     msg.kind ?? '',
-    hashText(
-      [msg.text, msg.thinking ?? '', msg.tools?.join('\n') ?? '', todoSig, panelSig, introSig].join('\0')
-    )
+    hashText([msg.text, msg.thinking ?? '', msg.tools?.join('\n') ?? '', todoSig, panelSig, introSig].join('\0'))
   ].join(':')
 }
 
@@ -68,11 +68,9 @@ export const estimatedMsgHeight = (
     h += (msg.tools?.length ?? 0) + wrappedLines(msg.thinking ?? '', bodyWidth)
   }
 
-  if (msg.role === 'user' || msg.kind === 'slash' || msg.kind === 'diff') {
-    h++
-  }
-
   if (msg.role === 'user' || msg.kind === 'diff') {
+    h += 2
+  } else if (msg.kind === 'slash') {
     h++
   }
 

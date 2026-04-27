@@ -45,8 +45,13 @@ def _pending_file() -> Path:
     Each entry: ``{"url": "...", "expire_at": <unix_ts>}``.  Scheduled
     DELETEs used to be handled by spawning a detached Python process per
     paste that slept for 6 hours; those accumulated forever if the user
-    ran ``hermes debug share`` repeatedly.  We now persist the schedule
-    to disk and sweep expired entries on the next debug invocation.
+    ran ``hermes debug share`` repeatedly.
+
+    Deletion is now driven by the gateway's cron ticker
+    (``gateway/run.py::_start_cron_ticker``) which calls
+    ``_sweep_expired_pastes`` once per hour.  ``hermes debug share`` also
+    runs an opportunistic sweep on entry as a fallback for CLI-only users
+    who never start the gateway.
     """
     return get_hermes_home() / "pastes" / "pending.json"
 
@@ -223,9 +228,10 @@ def _schedule_auto_delete(urls: list[str], delay_seconds: int = _AUTO_DELETE_SEC
     interpreters that never exited until the sleep completed.
 
     The replacement is stateless: we append to ``~/.hermes/pastes/pending.json``
-    and rely on opportunistic sweeps (``_sweep_expired_pastes``) called from
-    every ``hermes debug`` invocation.  If the user never runs ``hermes debug``
-    again, paste.rs's own retention policy handles cleanup.
+    and the gateway's cron ticker sweeps expired entries once per hour.
+    ``hermes debug share`` also runs an opportunistic sweep as a fallback
+    for CLI-only users.  If neither runs again, paste.rs's own retention
+    policy handles cleanup.
     """
     _record_pending(urls, delay_seconds=delay_seconds)
 

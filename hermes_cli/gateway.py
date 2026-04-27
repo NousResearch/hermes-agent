@@ -59,18 +59,23 @@ class GatewayRuntimeSnapshot:
     def has_process_service_mismatch(self) -> bool:
         return self.service_installed and self.running and not self.service_running
 
-def _get_service_pids() -> set:
+def _get_service_pids(all_profiles: bool = False) -> set:
     """Return PIDs currently managed by systemd or launchd gateway services.
 
     Used to avoid killing freshly-restarted service processes when sweeping
     for stale manual gateway processes after a service restart.  Relies on the
     service manager having committed the new PID before the restart command
     returns (true for both systemd and launchd in practice).
+
+    By default this is scoped to the current Hermes profile, matching
+    ``find_gateway_pids()`` status semantics.  Pass ``all_profiles=True`` for
+    cross-profile update sweeps.
     """
     pids: set = set()
 
     # --- systemd (Linux): user and system scopes ---
     if supports_systemd_services():
+        current_unit_name = f"{get_service_name()}.service"
         for scope_args in [["systemctl", "--user"], ["systemctl"]]:
             try:
                 result = subprocess.run(
@@ -83,6 +88,8 @@ def _get_service_pids() -> set:
                     if not parts or not parts[0].endswith(".service"):
                         continue
                     svc = parts[0]
+                    if not all_profiles and svc != current_unit_name:
+                        continue
                     try:
                         show = subprocess.run(
                             scope_args + ["show", svc,
@@ -362,7 +369,7 @@ def find_gateway_pids(exclude_pids: set | None = None, all_profiles: bool = Fals
             _append_unique_pid(pids, get_running_pid(), _exclude)
         except Exception:
             pass
-    for pid in _get_service_pids():
+    for pid in _get_service_pids(all_profiles=all_profiles):
         _append_unique_pid(pids, pid, _exclude)
     for pid in _scan_gateway_pids(_exclude, all_profiles=all_profiles):
         _append_unique_pid(pids, pid, _exclude)

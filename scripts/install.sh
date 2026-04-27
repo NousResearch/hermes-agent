@@ -1055,10 +1055,37 @@ setup_path() {
         return 0
     fi
 
-    # FHS layout: /usr/local/bin is on PATH for every standard shell, nothing to inject.
+    # FHS layout: /usr/local/bin is normally on PATH for login shells (via
+    # /etc/profile pathmunge), but on RHEL/CentOS/Rocky/Alma 8+ non-login
+    # interactive root shells (su, sudo -s, tmux panes, some web terminals)
+    # only source /etc/bashrc, which does NOT add /usr/local/bin — and
+    # /root/.bash_profile doesn't either.  So verify with `command -v` and
+    # fall back to writing a PATH guard into /root/.bashrc when needed.
     if [ "$ROOT_FHS_LAYOUT" = true ]; then
         export PATH="$command_link_dir:$PATH"
-        log_info "/usr/local/bin is already on PATH for all shells"
+        # Probe a fresh non-login interactive bash the way the user will use it.
+        # `bash -i -c` sources ~/.bashrc but NOT ~/.bash_profile or /etc/profile,
+        # which is the exact scenario where RHEL root loses /usr/local/bin.
+        if env -i HOME="$HOME" TERM="${TERM:-dumb}" bash -i -c 'command -v hermes' \
+                >/dev/null 2>&1; then
+            log_info "/usr/local/bin is already on PATH for all shells"
+            log_success "hermes command ready"
+            return 0
+        fi
+
+        log_info "hermes not on PATH in non-login shells (common on RHEL-family)"
+        PATH_LINE='export PATH="/usr/local/bin:$PATH"'
+        PATH_COMMENT='# Hermes Agent — ensure /usr/local/bin is on PATH (RHEL non-login shells)'
+        for SHELL_CONFIG in "$HOME/.bashrc" "$HOME/.bash_profile"; do
+            [ -f "$SHELL_CONFIG" ] || continue
+            if ! grep -v '^[[:space:]]*#' "$SHELL_CONFIG" 2>/dev/null \
+                    | grep -qE 'PATH=.*(/usr/local/bin|\$command_link_dir)'; then
+                echo "" >> "$SHELL_CONFIG"
+                echo "$PATH_COMMENT" >> "$SHELL_CONFIG"
+                echo "$PATH_LINE" >> "$SHELL_CONFIG"
+                log_success "Added /usr/local/bin to PATH in $SHELL_CONFIG"
+            fi
+        done
         log_success "hermes command ready"
         return 0
     fi

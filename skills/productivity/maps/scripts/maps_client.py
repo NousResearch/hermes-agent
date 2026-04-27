@@ -926,13 +926,18 @@ def cmd_timezone(args):
                 os_ = offset_info.get("seconds", 0)
                 sign = "+" if oh >= 0 else "-"
                 utc_offset = f"{sign}{abs(oh):02d}:{om:02d}"
+                if os_:
+                    utc_offset = f"{utc_offset}:{os_:02d}"
             elif tz_data.get("standardUtcOffset"):
                 offset_info2 = tz_data["standardUtcOffset"]
                 if isinstance(offset_info2, dict):
                     oh = offset_info2.get("hours", 0)
                     om = abs(offset_info2.get("minutes", 0))
+                    os_ = offset_info2.get("seconds", 0)
                     sign = "+" if oh >= 0 else "-"
                     utc_offset = f"{sign}{abs(oh):02d}:{om:02d}"
+                    if os_:
+                        utc_offset = f"{utc_offset}:{os_:02d}"
             timezone_src = "timeapi.io"
     except (RuntimeError, KeyError, TypeError):
         pass  # API may be down; continue to fallback

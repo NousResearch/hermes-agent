@@ -167,6 +167,39 @@ class TestSendMessageTool:
             media_files=[],
         )
 
+    def test_mirror_receives_current_session_user_id(self):
+        config, _telegram_cfg = _make_config()
+
+        with patch("gateway.config.load_gateway_config", return_value=config), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch("model_tools._run_async", side_effect=_run_async_immediately), \
+             patch("tools.send_message_tool._send_to_platform", new=AsyncMock(return_value={"success": True})), \
+             patch("gateway.session_context.get_session_env") as get_session_env_mock, \
+             patch("gateway.mirror.mirror_to_session", return_value=True) as mirror_mock:
+            get_session_env_mock.side_effect = lambda name, default="": {
+                "HERMES_SESSION_PLATFORM": "telegram",
+                "HERMES_SESSION_USER_ID": "user-123",
+            }.get(name, default)
+            result = json.loads(
+                send_message_tool(
+                    {
+                        "action": "send",
+                        "target": "telegram:12345",
+                        "message": "hello",
+                    }
+                )
+            )
+
+        assert result["success"] is True
+        mirror_mock.assert_called_once_with(
+            "telegram",
+            "12345",
+            "hello",
+            source_label="telegram",
+            thread_id=None,
+            user_id="user-123",
+        )
+
     def test_top_level_send_failure_redacts_query_token(self):
         config, _telegram_cfg = _make_config()
         leaked = "very-secret-query-token-123456"
@@ -808,6 +841,44 @@ class TestParseTargetRefE164:
         assert _parse_target_ref("telegram", "+15551234567")[2] is False
         assert _parse_target_ref("discord", "+15551234567")[2] is False
         assert _parse_target_ref("matrix", "+15551234567")[2] is False
+
+
+class TestParseTargetRefSlack:
+    """_parse_target_ref recognizes Slack channel/user IDs as explicit."""
+
+    def test_public_channel_id_is_explicit(self):
+        chat_id, thread_id, is_explicit = _parse_target_ref("slack", "C0B0QV5434G")
+        assert chat_id == "C0B0QV5434G"
+        assert thread_id is None
+        assert is_explicit is True
+
+    def test_private_channel_id_is_explicit(self):
+        assert _parse_target_ref("slack", "G123ABCDEF")[2] is True
+
+    def test_dm_id_is_explicit(self):
+        assert _parse_target_ref("slack", "D123ABCDEF")[2] is True
+
+    def test_user_id_is_not_explicit(self):
+        """Slack user IDs (U...) and workspace IDs (W...) are NOT explicit send
+        targets. chat.postMessage rejects them — a DM must be opened first via
+        conversations.open to obtain a D... conversation ID.
+        """
+        assert _parse_target_ref("slack", "U123ABCDEF")[2] is False
+        assert _parse_target_ref("slack", "W123ABCDEF")[2] is False
+
+    def test_whitespace_is_stripped(self):
+        chat_id, _, is_explicit = _parse_target_ref("slack", "  C0B0QV5434G  ")
+        assert chat_id == "C0B0QV5434G"
+        assert is_explicit is True
+
+    def test_lowercase_or_short_id_is_not_explicit(self):
+        assert _parse_target_ref("slack", "c0b0qv5434g")[2] is False
+        assert _parse_target_ref("slack", "C123")[2] is False
+        assert _parse_target_ref("slack", "X0B0QV5434G")[2] is False
+
+    def test_slack_id_not_explicit_for_other_platforms(self):
+        assert _parse_target_ref("discord", "C0B0QV5434G")[2] is False
+        assert _parse_target_ref("telegram", "C0B0QV5434G")[2] is False
 
 
 class TestSendDiscordThreadId:

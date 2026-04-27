@@ -606,6 +606,7 @@ platform_toolsets:
   signal: [hermes-signal]
   homeassistant: [hermes-homeassistant]
   qqbot: [hermes-qqbot]
+  yuanbao: [hermes-yuanbao]
 
 # =============================================================================
 # Gateway Platform Settings
@@ -847,8 +848,12 @@ display:
   # What Enter does when Hermes is already busy (CLI and gateway platforms).
   #   interrupt: Interrupt the current run and redirect Hermes (default)
   #   queue:     Queue your message for the next turn
+  #   steer:     Inject your message mid-run via /steer, arriving at the agent
+  #              after the next tool call — no interrupt, no role violation.
+  #              Falls back to 'queue' if the agent isn't running yet or if
+  #              images are attached (steer only carries text).
   # Ctrl+C (or /stop in gateway) always interrupts regardless of this setting.
-  # Toggle at runtime with /busy_input_mode <interrupt|queue>.
+  # Toggle at runtime with /busy <interrupt|queue|steer>.
   busy_input_mode: interrupt
 
   # Background process notifications (gateway/messaging only).

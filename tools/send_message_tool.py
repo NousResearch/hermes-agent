@@ -20,7 +20,15 @@ logger = logging.getLogger(__name__)
 
 _TELEGRAM_TOPIC_TARGET_RE = re.compile(r"^\s*(-?\d+)(?::(\d+))?\s*$")
 _FEISHU_TARGET_RE = re.compile(r"^\s*((?:oc|ou|on|chat|open)_[-A-Za-z0-9]+)(?::([-A-Za-z0-9_]+))?\s*$")
+# Slack conversation IDs: C (public channel), G (private/group channel), D (DM).
+# Must be uppercase alphanumeric, 9+ chars. User IDs (U...) and workspace IDs
+# (W...) are NOT valid chat.postMessage channel values — posting to them fails
+# because the API requires a conversation ID. To DM a user you must first call
+# conversations.open to obtain a D... ID. Without this gate, Slack IDs fall
+# through to channel-name resolution, which only matches by name and fails.
+_SLACK_TARGET_RE = re.compile(r"^\s*([CGD][A-Z0-9]{8,})\s*$")
 _WEIXIN_TARGET_RE = re.compile(r"^\s*((?:wxid|gh|v\d+|wm|wb)_[A-Za-z0-9_-]+|[A-Za-z0-9._-]+@chatroom|filehelper)\s*$")
+_YUANBAO_TARGET_RE = re.compile(r"^\s*((?:group|direct):[^:]+)\s*$")
 # Discord snowflake IDs are numeric, same regex pattern as Telegram topic targets.
 _NUMERIC_TOPIC_RE = _TELEGRAM_TOPIC_TARGET_RE
 # Platforms that address recipients by phone number and accept E.164 format
@@ -120,11 +128,11 @@ SEND_MESSAGE_SCHEMA = {
             },
             "target": {
                 "type": "string",
-                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org'"
+                "description": "Delivery target. Format: 'platform' (uses home channel), 'platform:#channel-name', 'platform:chat_id', or 'platform:chat_id:thread_id' for Telegram topics and Discord threads. Examples: 'telegram', 'telegram:-1001234567890:17585', 'discord:999888777:555444333', 'discord:#bot-home', 'slack:#engineering', 'signal:+155****4567', 'matrix:!roomid:server.org', 'matrix:@user:server.org', 'yuanbao:direct:<account_id>' (DM), 'yuanbao:group:<group_code>' (group chat)"
             },
             "message": {
                 "type": "string",
-                "description": "The message text to send"
+                "description": "The message text to send. To send an image or file, include MEDIA:<local_path> (e.g. 'MEDIA:/tmp/hermes/cache/img_xxx.jpg') in the message — the platform will deliver it as a native media attachment."
             }
         },
         "required": []
@@ -215,6 +223,7 @@ def _handle_send(args):
         "weixin": Platform.WEIXIN,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
+        "yuanbao": Platform.YUANBAO,
     }
     platform = platform_map.get(platform_name)
     if not platform:
@@ -292,7 +301,15 @@ def _handle_send(args):
                 from gateway.mirror import mirror_to_session
                 from gateway.session_context import get_session_env
                 source_label = get_session_env("HERMES_SESSION_PLATFORM", "cli")
-                if mirror_to_session(platform_name, chat_id, mirror_text, source_label=source_label, thread_id=thread_id):
+                user_id = get_session_env("HERMES_SESSION_USER_ID", "") or None
+                if mirror_to_session(
+                    platform_name,
+                    chat_id,
+                    mirror_text,
+                    source_label=source_label,
+                    thread_id=thread_id,
+                    user_id=user_id,
+                ):
                     result["mirrored"] = True
             except Exception:
                 pass
@@ -318,10 +335,21 @@ def _parse_target_ref(platform_name: str, target_ref: str):
         match = _NUMERIC_TOPIC_RE.fullmatch(target_ref)
         if match:
             return match.group(1), match.group(2), True
+    if platform_name == "slack":
+        match = _SLACK_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), None, True
     if platform_name == "weixin":
         match = _WEIXIN_TARGET_RE.fullmatch(target_ref)
         if match:
             return match.group(1), None, True
+    if platform_name == "yuanbao":
+        match = _YUANBAO_TARGET_RE.fullmatch(target_ref)
+        if match:
+            return match.group(1), None, True
+        if target_ref.strip().isdigit():
+            return f"group:{target_ref.strip()}", None, True
+        return None, None, False
     if platform_name in _PHONE_PLATFORMS:
         match = _E164_TARGET_RE.fullmatch(target_ref)
         if match:
@@ -532,7 +560,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files and not message.strip():
         return {
             "error": (
-                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, and signal; "
+                f"send_message MEDIA delivery is currently only supported for telegram, discord, matrix, weixin, signal and yuanbao; "
                 f"target {platform.value} had only media attachments"
             )
         }
@@ -540,7 +568,7 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     if media_files:
         warning = (
             f"MEDIA attachments were omitted for {platform.value}; "
-            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, and signal"
+            "native send_message media delivery is currently only supported for telegram, discord, matrix, weixin, signal and yuanbao"
         )
 
     last_result = None
@@ -1508,6 +1536,35 @@ async def _send_qqbot(pconfig, chat_id, message):
                 return _error(f"QQBot send failed: {resp.status_code} {resp.text}")
     except Exception as e:
         return _error(f"QQBot send failed: {e}")
+
+
+async def _send_yuanbao(chat_id, message, media_files=None):
+    """Send via Yuanbao using the running gateway adapter's WebSocket connection.
+
+    Yuanbao uses a persistent WebSocket — unlike HTTP-based platforms, we
+    cannot create a throwaway client.  We obtain the running singleton from
+    the adapter module itself (``get_active_adapter``).
+
+    chat_id format:
+      - Group: "group:<group_code>"
+      - DM:    "direct:<account_id>" or just "<account_id>"
+    """
+    try:
+        from gateway.platforms.yuanbao import get_active_adapter, send_yuanbao_direct
+    except ImportError:
+        return _error("Yuanbao adapter module not available.")
+
+    adapter = get_active_adapter()
+    if adapter is None:
+        return _error(
+            "Yuanbao adapter is not running. "
+            "Start the gateway with yuanbao platform enabled first."
+        )
+
+    try:
+        return await send_yuanbao_direct(adapter, chat_id, message, media_files=media_files)
+    except Exception as e:
+        return _error(f"Yuanbao send failed: {e}")
 
 
 # --- Registry ---

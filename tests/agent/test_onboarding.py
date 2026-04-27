@@ -117,6 +117,12 @@ class TestHintMessages:
         assert "/busy interrupt" in msg
         assert "queued" in msg.lower()
 
+    def test_busy_input_hint_gateway_steer(self):
+        msg = busy_input_hint_gateway("steer")
+        assert "/busy interrupt" in msg
+        assert "/busy queue" in msg
+        assert "steer" in msg.lower()
+
     def test_busy_input_hint_cli_interrupt(self):
         msg = busy_input_hint_cli("interrupt")
         assert "/busy queue" in msg
@@ -124,6 +130,12 @@ class TestHintMessages:
     def test_busy_input_hint_cli_queue(self):
         msg = busy_input_hint_cli("queue")
         assert "/busy interrupt" in msg
+
+    def test_busy_input_hint_cli_steer(self):
+        msg = busy_input_hint_cli("steer")
+        assert "/busy interrupt" in msg
+        assert "/busy queue" in msg
+        assert "steer" in msg.lower()
 
     def test_tool_progress_hints_mention_verbose(self):
         assert "/verbose" in tool_progress_hint_gateway()
@@ -133,8 +145,10 @@ class TestHintMessages:
         for hint in (
             busy_input_hint_gateway("queue"),
             busy_input_hint_gateway("interrupt"),
+            busy_input_hint_gateway("steer"),
             busy_input_hint_cli("queue"),
             busy_input_hint_cli("interrupt"),
+            busy_input_hint_cli("steer"),
             tool_progress_hint_gateway(),
             tool_progress_hint_cli(),
         ):

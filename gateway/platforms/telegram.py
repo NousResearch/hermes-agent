@@ -1209,6 +1209,31 @@ class TelegramAdapter(BasePlatformAdapter):
             )
             return SendResult(success=False, error=str(e))
 
+    async def delete_message(self, chat_id: str, message_id: str) -> bool:
+        """Delete a previously sent Telegram message.
+
+        Used by the stream consumer's fresh-final cleanup path (ported
+        from openclaw/openclaw#72038) to remove long-lived preview
+        messages after sending the completed reply as a fresh message.
+        Telegram's Bot API ``deleteMessage`` works for bot-posted
+        messages in the last 48 hours.  Failures are non-fatal — the
+        caller leaves the preview in place and logs at debug level.
+        """
+        if not self._bot:
+            return False
+        try:
+            await self._bot.delete_message(
+                chat_id=int(chat_id),
+                message_id=int(message_id),
+            )
+            return True
+        except Exception as e:
+            logger.debug(
+                "[%s] Failed to delete Telegram message %s: %s",
+                self.name, message_id, e,
+            )
+            return False
+
     async def send_update_prompt(
         self, chat_id: str, prompt: str, default: str = "",
         session_key: str = "",

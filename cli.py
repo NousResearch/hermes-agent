@@ -1848,9 +1848,16 @@ class HermesCLI:
         self.bell_on_complete = CLI_CONFIG["display"].get("bell_on_complete", False)
         # show_reasoning: display model thinking/reasoning before the response
         self.show_reasoning = CLI_CONFIG["display"].get("show_reasoning", False)
-        # busy_input_mode: "interrupt" (Enter interrupts current run) or "queue" (Enter queues for next turn)
-        _bim = CLI_CONFIG["display"].get("busy_input_mode", "interrupt")
-        self.busy_input_mode = "queue" if str(_bim).strip().lower() == "queue" else "interrupt"
+        # busy_input_mode: "interrupt" (Enter interrupts current run),
+        # "queue" (Enter queues for next turn), or "steer" (Enter injects
+        # mid-run via /steer, arriving after the next tool call).
+        _bim = str(CLI_CONFIG["display"].get("busy_input_mode", "interrupt")).strip().lower()
+        if _bim == "queue":
+            self.busy_input_mode = "queue"
+        elif _bim == "steer":
+            self.busy_input_mode = "steer"
+        else:
+            self.busy_input_mode = "interrupt"
 
         self.verbose = verbose if verbose is not None else (self.tool_progress_mode == "verbose")
         
@@ -6816,24 +6823,36 @@ class HermesCLI:
             /busy               Show current busy input mode
             /busy status        Show current busy input mode
             /busy queue         Queue input for the next turn instead of interrupting
+            /busy steer         Inject Enter mid-run via /steer (after next tool call)
             /busy interrupt     Interrupt the current run on Enter (default)
         """
         parts = cmd.strip().split(maxsplit=1)
         if len(parts) < 2 or parts[1].strip().lower() == "status":
             _cprint(f"  {_ACCENT}Busy input mode: {self.busy_input_mode}{_RST}")
-            _cprint(f"  {_DIM}Enter while busy: {'queues for next turn' if self.busy_input_mode == 'queue' else 'interrupts current run'}{_RST}")
-            _cprint(f"  {_DIM}Usage: /busy [queue|interrupt|status]{_RST}")
+            if self.busy_input_mode == "queue":
+                _behavior = "queues for next turn"
+            elif self.busy_input_mode == "steer":
+                _behavior = "steers into current run (after next tool call)"
+            else:
+                _behavior = "interrupts current run"
+            _cprint(f"  {_DIM}Enter while busy: {_behavior}{_RST}")
+            _cprint(f"  {_DIM}Usage: /busy [queue|steer|interrupt|status]{_RST}")
             return
 
         arg = parts[1].strip().lower()
-        if arg not in {"queue", "interrupt"}:
+        if arg not in {"queue", "interrupt", "steer"}:
             _cprint(f"  {_DIM}(._.) Unknown argument: {arg}{_RST}")
-            _cprint(f"  {_DIM}Usage: /busy [queue|interrupt|status]{_RST}")
+            _cprint(f"  {_DIM}Usage: /busy [queue|steer|interrupt|status]{_RST}")
             return
 
         self.busy_input_mode = arg
         if save_config_value("display.busy_input_mode", arg):
-            behavior = "Enter will queue follow-up input while Hermes is busy." if arg == "queue" else "Enter will interrupt the current run while Hermes is busy."
+            if arg == "queue":
+                behavior = "Enter will queue follow-up input while Hermes is busy."
+            elif arg == "steer":
+                behavior = "Enter will steer your message into the current run (after the next tool call)."
+            else:
+                behavior = "Enter will interrupt the current run while Hermes is busy."
             _cprint(f"  {_ACCENT}✓ Busy input mode set to '{arg}' (saved to config){_RST}")
             _cprint(f"  {_DIM}{behavior}{_RST}")
         else:
@@ -9210,12 +9229,34 @@ class HermesCLI:
                 # Bundle text + images as a tuple when images are present
                 payload = (text, images) if images else text
                 if self._agent_running and not (text and _looks_like_slash_command(text)):
-                    if self.busy_input_mode == "queue":
+                    _effective_mode = self.busy_input_mode
+                    if _effective_mode == "steer":
+                        # Route Enter through /steer — inject mid-run after the
+                        # next tool call.  Images can't ride along (steer only
+                        # appends text), so fall back to queue when images are
+                        # attached.  If the agent lacks steer() or rejects the
+                        # payload, also fall back to queue so nothing is lost.
+                        if images or not text:
+                            _effective_mode = "queue"
+                        else:
+                            accepted = False
+                            try:
+                                if self.agent is not None and hasattr(self.agent, "steer"):
+                                    accepted = bool(self.agent.steer(text))
+                            except Exception as exc:
+                                _cprint(f"  {_DIM}Steer failed ({exc}) — queued for next turn.{_RST}")
+                                accepted = False
+                            if accepted:
+                                preview = text[:80] + ("..." if len(text) > 80 else "")
+                                _cprint(f"  {_ACCENT}⏩ Steered: '{preview}'{_RST}")
+                            else:
+                                _effective_mode = "queue"
+                    if _effective_mode == "queue":
                         # Queue for the next turn instead of interrupting
                         self._pending_input.put(payload)
                         preview = text if text else f"[{len(images)} image{'s' if len(images) != 1 else ''} attached]"
                         _cprint(f"  Queued for the next turn: {preview[:80]}{'...' if len(preview) > 80 else ''}")
-                    else:
+                    elif _effective_mode == "interrupt":
                         self._interrupt_queue.put(payload)
                         # Debug: log to file when message enters interrupt queue
                         try:

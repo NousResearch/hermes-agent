@@ -124,6 +124,7 @@ _stdout_lock = threading.Lock()
 _cfg_lock = threading.Lock()
 _cfg_cache: dict | None = None
 _cfg_mtime: float | None = None
+_cfg_path = None
 _SLASH_WORKER_TIMEOUT_S = max(
     5.0, float(os.environ.get("HERMES_TUI_SLASH_TIMEOUT_S", "45") or 45)
 )
@@ -443,14 +444,14 @@ def _normalize_completion_path(path_part: str) -> str:
 
 
 def _load_cfg() -> dict:
-    global _cfg_cache, _cfg_mtime
+    global _cfg_cache, _cfg_mtime, _cfg_path
     try:
         import yaml
 
         p = _hermes_home / "config.yaml"
         mtime = p.stat().st_mtime if p.exists() else None
         with _cfg_lock:
-            if _cfg_cache is not None and _cfg_mtime == mtime:
+            if _cfg_cache is not None and _cfg_mtime == mtime and _cfg_path == p:
                 return copy.deepcopy(_cfg_cache)
         if p.exists():
             with open(p) as f:
@@ -460,6 +461,7 @@ def _load_cfg() -> dict:
         with _cfg_lock:
             _cfg_cache = copy.deepcopy(data)
             _cfg_mtime = mtime
+            _cfg_path = p
         return data
     except Exception:
         pass
@@ -467,7 +469,7 @@ def _load_cfg() -> dict:
 
 
 def _save_cfg(cfg: dict):
-    global _cfg_cache, _cfg_mtime
+    global _cfg_cache, _cfg_mtime, _cfg_path
     import yaml
 
     path = _hermes_home / "config.yaml"
@@ -475,6 +477,7 @@ def _save_cfg(cfg: dict):
         yaml.safe_dump(cfg, f)
     with _cfg_lock:
         _cfg_cache = copy.deepcopy(cfg)
+        _cfg_path = path
         try:
             _cfg_mtime = path.stat().st_mtime
         except Exception:
@@ -1769,7 +1772,7 @@ def _(rid, params: dict) -> dict:
     return _ok(
         rid,
         {
-            "count": len(session.get("history", [])),
+            "count": len(history),
             "messages": _history_to_messages(history),
         },
     )

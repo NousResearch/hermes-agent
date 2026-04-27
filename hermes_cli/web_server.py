@@ -15828,10 +15828,10 @@ def mount_spa(application: FastAPI):
     application.mount("/assets", StaticFiles(directory=WEB_DIST / "assets"), name="assets")
 
     # --- Audio route (TTS playback) --------------------------------
-    # Serves audio files from ~/.hermes/cache/audio/audio_cache/.
+    # Serves audio files from ~/.hermes/audio_cache/.
     # Mounted BEFORE the SPA catch-all so /api/audio/* isn't eaten.
     _AUDIO_CACHEDIR = Path(os.environ.get(
-        "HERMES_AUDIO_CACHE", str(get_hermes_dir("cache/audio", "audio_cache")),
+        "HERMES_AUDIO_CACHE", str(get_hermes_home() / "audio_cache"),
     ))
 
 

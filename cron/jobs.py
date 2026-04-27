@@ -311,6 +311,12 @@ def compute_next_run(schedule: Dict[str, Any], last_run_at: Optional[str] = None
 
     elif schedule["kind"] == "cron":
         if not HAS_CRONITER:
+            logger.warning(
+                "Cannot compute next run for cron schedule %r: 'croniter' "
+                "is not installed. Install the 'cron' extra (pip install "
+                "'hermes-agent[cron]') to re-enable recurring cron jobs.",
+                schedule.get("expr"),
+            )
             return None
         cron = croniter(schedule["expr"], now)
         next_run = cron.get_next(datetime)
@@ -698,10 +704,32 @@ def mark_job_run(job_id: str, success: bool, error: Optional[str] = None,
                 # Compute next run
                 job["next_run_at"] = compute_next_run(job["schedule"], now)
 
-                # If no next run (one-shot completed), disable
+                # If no next run, decide whether this is terminal completion
+                # (one-shot) or a transient failure (recurring schedule couldn't
+                # compute — e.g. 'croniter' missing from the runtime env).
+                # Recurring jobs must NEVER be silently disabled: that turns a
+                # missing runtime dep into "job completed" and the user's
+                # schedule quietly goes off. See issue #16265.
                 if job["next_run_at"] is None:
-                    job["enabled"] = False
-                    job["state"] = "completed"
+                    kind = job.get("schedule", {}).get("kind")
+                    if kind in ("cron", "interval"):
+                        job["state"] = "error"
+                        if not job.get("last_error"):
+                            job["last_error"] = (
+                                "Failed to compute next run for recurring "
+                                "schedule (is the 'croniter' package "
+                                "installed in the gateway's Python env?)"
+                            )
+                        logger.error(
+                            "Job '%s' (%s) could not compute next_run_at; "
+                            "leaving enabled and marking state=error so the "
+                            "job is not silently disabled.",
+                            job.get("name", job["id"]),
+                            kind,
+                        )
+                    else:
+                        job["enabled"] = False
+                        job["state"] = "completed"
                 elif job.get("state") != "paused":
                     job["state"] = "scheduled"
 

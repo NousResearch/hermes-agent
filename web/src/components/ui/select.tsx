@@ -155,6 +155,7 @@ export function Select({
 }
 
 export function SelectOption(_props: SelectOptionProps) {
+  void _props;
   return null;
 }
 

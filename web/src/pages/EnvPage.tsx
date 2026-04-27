@@ -606,6 +606,7 @@ function CollapsibleUnset({
 }) {
   const [collapsed, setCollapsed] = useState(true);
   const { t } = useI18n();
+  void _category;
 
   return (
     <>

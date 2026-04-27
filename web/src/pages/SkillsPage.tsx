@@ -89,6 +89,7 @@ export default function SkillsPage() {
   const [togglingSkills, setTogglingSkills] = useState<Set<string>>(new Set());
   const { toast, showToast } = useToast();
   const { t } = useI18n();
+  const loadingErrorMessage = t.common.loading;
 
   useEffect(() => {
     Promise.all([api.getSkills(), api.getToolsets()])
@@ -96,9 +97,9 @@ export default function SkillsPage() {
         setSkills(s);
         setToolsets(tsets);
       })
-      .catch(() => showToast(t.common.loading, "error"))
+      .catch(() => showToast(loadingErrorMessage, "error"))
       .finally(() => setLoading(false));
-  }, []);
+  }, [showToast, loadingErrorMessage]);
 
   /* ---- Toggle skill ---- */
   const handleToggleSkill = async (skill: SkillInfo) => {

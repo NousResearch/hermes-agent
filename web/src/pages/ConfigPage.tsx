@@ -85,6 +85,7 @@ export default function ConfigPage() {
   const { toast, showToast } = useToast();
   const fileInputRef = useRef<HTMLInputElement>(null);
   const { t } = useI18n();
+  const failedToLoadRawMessage = t.config.failedToLoadRaw;
 
   function prettyCategoryName(cat: string): string {
     const key = cat as keyof typeof t.config.categories;
@@ -118,10 +119,10 @@ export default function ConfigPage() {
       api
         .getConfigRaw()
         .then((resp) => setYamlText(resp.yaml))
-        .catch(() => showToast(t.config.failedToLoadRaw, "error"))
+        .catch(() => showToast(failedToLoadRawMessage, "error"))
         .finally(() => setYamlLoading(false));
     }
-  }, [yamlMode]);
+  }, [yamlMode, showToast, failedToLoadRawMessage]);
 
   /* ---- Categories ---- */
   const categories = useMemo(() => {

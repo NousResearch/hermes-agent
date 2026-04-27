@@ -10,6 +10,7 @@ import CronPage from "@/pages/CronPage";
 import SkillsPage from "@/pages/SkillsPage";
 import CodeCockpitPage from "@/features/code/CodeCockpitPage";
 import { LanguageSwitcher } from "@/components/LanguageSwitcher";
+import { BackendStatusIndicator } from "@/components/BackendStatusIndicator";
 import { useI18n } from "@/i18n";
 
 const NAV_ITEMS = [
@@ -68,7 +69,8 @@ export default function App() {
             ))}
           </nav>
 
-          <div className="ml-auto flex items-center gap-2 px-2 sm:px-4">
+          <div className="ml-auto flex items-center gap-3 px-2 sm:px-4">
+            <BackendStatusIndicator />
             <LanguageSwitcher />
             <span className="hidden sm:inline font-display text-[0.7rem] tracking-[0.15em] uppercase opacity-50">
               {t.app.webUi}

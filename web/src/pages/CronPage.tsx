@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { Clock, Pause, Play, Plus, Trash2, Zap } from "lucide-react";
 import { api } from "@/lib/api";
 import type { CronJob } from "@/lib/api";
@@ -39,17 +39,17 @@ export default function CronPage() {
   const [deliver, setDeliver] = useState("local");
   const [creating, setCreating] = useState(false);
 
-  const loadJobs = () => {
+  const loadJobs = useCallback(() => {
     api
       .getCronJobs()
       .then(setJobs)
       .catch(() => showToast(t.common.loading, "error"))
       .finally(() => setLoading(false));
-  };
+  }, [showToast, t.common.loading]);
 
   useEffect(() => {
     loadJobs();
-  }, []);
+  }, [loadJobs]);
 
   const handleCreate = async () => {
     if (!prompt.trim() || !schedule.trim()) {

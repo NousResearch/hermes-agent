@@ -69,6 +69,34 @@ export const codeApi = {
     );
   },
 
+  getGitBranch: (workspaceId: string) =>
+    fetchJSON<{ branch: string; remote: string | null }>(
+      `/api/code/workspaces/${encodeURIComponent(workspaceId)}/git/branch`
+    ),
+
+  getGitRemote: (workspaceId: string) =>
+    fetchJSON<{ remote: string; url: string | null }>(
+      `/api/code/workspaces/${encodeURIComponent(workspaceId)}/git/remote`
+    ),
+
+  prepareBranch: (workspaceId: string) =>
+    fetchJSON<{ branch: string; has_changes: boolean }>(
+      `/api/code/workspaces/${encodeURIComponent(workspaceId)}/git/branch/prepare`,
+      { method: "POST" }
+    ),
+
+  prepareCommit: (workspaceId: string) =>
+    fetchJSON<{ message: string | null; has_changes: boolean; staged: string[]; unstaged: string[] }>(
+      `/api/code/workspaces/${encodeURIComponent(workspaceId)}/git/commit/prepare`,
+      { method: "POST" }
+    ),
+
+  snapshot: (workspaceId: string) =>
+    fetchJSON<{ snapshot_id: string; created_at: string }>(
+      `/api/code/workspaces/${encodeURIComponent(workspaceId)}/git/snapshot`,
+      { method: "POST" }
+    ),
+
   // Code Sessions
   getCodeSessions: (params?: { workspace_id?: string; status?: string; limit?: number; offset?: number }) => {
     const qs = new URLSearchParams();
@@ -141,6 +169,16 @@ export const codeApi = {
   getCodeSessionEvents: (codeSessionId: string) =>
     fetchJSON<{ events: CodeSessionEvent[]; total: number }>(
       `/api/code/sessions/${encodeURIComponent(codeSessionId)}/events`
+    ),
+
+  sendEvent: (codeSessionId: string, payload: { type: string; message?: string }) =>
+    fetchJSON<{ event: CodeSessionEvent }>(
+      `/api/code/sessions/${encodeURIComponent(codeSessionId)}/events`,
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(payload),
+      }
     ),
 
   // Commands

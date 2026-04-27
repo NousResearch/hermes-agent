@@ -843,7 +843,13 @@ def list_authenticated_providers(
     # Build reverse mapping: models.dev ID → Hermes provider ID.
     # HERMES_OVERLAYS keys may be models.dev IDs (e.g. "github-copilot")
     # while _PROVIDER_MODELS and config.yaml use Hermes IDs ("copilot").
-    _mdev_to_hermes = {v: k for k, v in PROVIDER_TO_MODELS_DEV.items()}
+    # When several Hermes IDs share one models.dev ID (e.g. kimi-coding and
+    # kimi-coding-cn both → "kimi-for-coding"), keep the *first* so overlay
+    # resolution checks the primary env vars (KIMI_API_KEY) instead of losing
+    # to a later duplicate key in a naive dict comprehension.
+    _mdev_to_hermes: dict[str, str] = {}
+    for _hid, _mdev in PROVIDER_TO_MODELS_DEV.items():
+        _mdev_to_hermes.setdefault(_mdev, _hid)
 
     for pid, overlay in HERMES_OVERLAYS.items():
         if pid in seen_slugs:

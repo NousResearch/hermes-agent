@@ -507,6 +507,13 @@ class CheckpointManager:
         check = candidate
         while check != check.parent:
             if any((check / m).exists() for m in markers):
+                resolved = check.resolve()
+                # Stray project markers directly under /tmp are common on dev
+                # machines (not real project roots).  Skip them unless the repo
+                # is an actual git checkout.
+                if resolved == Path("/tmp").resolve() and not (check / ".git").exists():
+                    check = check.parent
+                    continue
                 return str(check)
             check = check.parent
 

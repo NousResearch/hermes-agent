@@ -198,6 +198,62 @@ class TestFileDedup(unittest.TestCase):
         fake.write_file.assert_not_called()
 
     @patch("tools.file_tools._get_file_ops")
+    def test_write_rejects_status_text_with_small_framing(self, mock_ops):
+        """write_file rejects small wrappers around the status text too.
+
+        Real-world corruption shapes aren't always the verbatim message — the
+        model sometimes prepends a short note or appends a trailing comment
+        before calling write_file.  A short, status-dominated write is still
+        corruption, not legitimate file content.
+        """
+        fake = MagicMock()
+        fake.write_file = MagicMock()
+        mock_ops.return_value = fake
+
+        wrapped = "Note: " + _READ_DEDUP_STATUS_MESSAGE + "\n\n(continuing.)"
+        result = json.loads(write_file_tool(
+            self._tmpfile,
+            wrapped,
+            task_id="guard",
+        ))
+
+        self.assertIn("error", result)
+        self.assertIn("internal read_file status text", result["error"])
+        fake.write_file.assert_not_called()
+
+    @patch("tools.file_tools._get_file_ops")
+    def test_write_allows_large_file_that_quotes_status_text(self, mock_ops):
+        """Legitimate large content that happens to quote the status is allowed.
+
+        Hermes' own docs / SKILL.md files may legitimately mention the dedup
+        message verbatim.  Only short, status-dominated writes are rejected —
+        a normal file that contains the message as one line out of many must
+        still write successfully.
+        """
+        fake = MagicMock()
+        fake.write_file = lambda path, content: MagicMock(
+            to_dict=lambda: {"success": True, "path": path}
+        )
+        mock_ops.return_value = fake
+
+        # Build content that contains the status text but is much larger,
+        # so the status doesn't "dominate" — this is a legitimate file.
+        large_content = (
+            "# Skill reference\n\n"
+            "Example internal message (do not write back):\n\n"
+            f"    {_READ_DEDUP_STATUS_MESSAGE}\n\n"
+            + ("This is documentation content. " * 200)
+        )
+        result = json.loads(write_file_tool(
+            self._tmpfile,
+            large_content,
+            task_id="guard",
+        ))
+
+        self.assertNotIn("error", result)
+        self.assertTrue(result.get("success"))
+
+    @patch("tools.file_tools._get_file_ops")
     def test_modified_file_not_deduped(self, mock_ops):
         """After the file is modified, dedup returns full content."""
         mock_ops.return_value = _make_fake_ops(

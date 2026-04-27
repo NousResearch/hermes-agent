@@ -252,11 +252,10 @@ class _SlashWorker:
 
 
 def _load_busy_input_mode() -> str:
-    raw = (
-        str((_load_cfg().get("display") or {}).get("busy_input_mode", "") or "")
-        .strip()
-        .lower()
-    )
+    display = _load_cfg().get("display")
+    if not isinstance(display, dict):
+        display = {}
+    raw = str(display.get("busy_input_mode", "") or "").strip().lower()
     return raw if raw in {"queue", "steer", "interrupt"} else "interrupt"
 
 

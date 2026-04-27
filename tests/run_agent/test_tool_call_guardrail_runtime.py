@@ -36,10 +36,11 @@ def _mock_response(content="Hello", finish_reason="stop", tool_calls=None):
     return SimpleNamespace(choices=[choice], model="test/model", usage=None)
 
 
-def _make_agent(*tool_names: str, max_iterations: int = 10) -> AIAgent:
+def _make_agent(*tool_names: str, max_iterations: int = 10, config: dict | None = None) -> AIAgent:
     with (
         patch("run_agent.get_tool_definitions", return_value=_make_tool_defs(*tool_names)),
         patch("run_agent.check_toolset_requirements", return_value={}),
+        patch("hermes_cli.config.load_config", return_value=config or {}),
         patch("run_agent.OpenAI"),
     ):
         agent = AIAgent(
@@ -69,8 +70,50 @@ def _seed_exact_failures(agent: AIAgent, tool_name: str, args: dict, count: int 
         )
 
 
-def test_sequential_path_blocks_repeated_exact_failure_before_execution():
+def _hard_stop_config(**overrides) -> dict:
+    cfg = {
+        "tool_loop_guardrails": {
+            "warnings_enabled": True,
+            "hard_stop_enabled": True,
+            "hard_stop_after": {
+                "exact_failure": 2,
+                "same_tool_failure": 8,
+                "idempotent_no_progress": 5,
+            },
+        }
+    }
+    cfg["tool_loop_guardrails"].update(overrides)
+    return cfg
+
+
+def test_default_sequential_path_warns_repeated_exact_failure_without_blocking_execution():
     agent = _make_agent("web_search")
+    args = {"query": "same"}
+    _seed_exact_failures(agent, "web_search", args)
+    starts = []
+    progress = []
+    agent.tool_start_callback = lambda *a, **k: starts.append((a, k))
+    agent.tool_progress_callback = lambda *a, **k: progress.append((a, k))
+    tc = _mock_tool_call("web_search", json.dumps(args), "c-soft")
+    msg = SimpleNamespace(content="", tool_calls=[tc])
+    messages = []
+
+    with patch("run_agent.handle_function_call", return_value=json.dumps({"error": "boom"})) as mock_hfc:
+        agent._execute_tool_calls_sequential(msg, messages, "task-1")
+
+    mock_hfc.assert_called_once()
+    assert len(starts) == 1
+    assert any(event[0][0] == "tool.completed" for event in progress)
+    assert len(messages) == 1
+    assert messages[0]["role"] == "tool"
+    assert messages[0]["tool_call_id"] == "c-soft"
+    assert "repeated_exact_failure_warning" in messages[0]["content"]
+    assert "repeated_exact_failure_block" not in messages[0]["content"]
+    assert agent._tool_guardrail_halt_decision is None
+
+
+def test_config_enabled_hard_stop_blocks_repeated_exact_failure_before_execution():
+    agent = _make_agent("web_search", config=_hard_stop_config())
     args = {"query": "same"}
     _seed_exact_failures(agent, "web_search", args)
     starts = []
@@ -106,12 +149,12 @@ def test_sequential_after_call_appends_guidance_to_tool_result_without_extra_mes
 
     assert [m["role"] for m in messages] == ["tool"]
     assert messages[0]["tool_call_id"] == "c-warn"
-    assert "Tool guardrail" in messages[0]["content"]
+    assert "Tool loop warning" in messages[0]["content"]
     assert "repeated_exact_failure_warning" in messages[0]["content"]
 
 
-def test_concurrent_path_does_not_submit_blocked_calls_and_preserves_result_order():
-    agent = _make_agent("web_search")
+def test_config_enabled_hard_stop_concurrent_path_does_not_submit_blocked_calls_and_preserves_result_order():
+    agent = _make_agent("web_search", config=_hard_stop_config())
     blocked_args = {"query": "blocked"}
     allowed_args = {"query": "allowed"}
     _seed_exact_failures(agent, "web_search", blocked_args)
@@ -164,8 +207,38 @@ def test_plugin_pre_tool_block_wins_without_counting_as_toolguard_block():
     assert agent._tool_guardrails.before_call("web_search", args).action == "allow"
 
 
-def test_run_conversation_returns_controlled_guardrail_halt_without_top_level_error():
+def test_default_run_conversation_warns_without_guardrail_halt():
     agent = _make_agent("web_search", max_iterations=10)
+    same_args = {"query": "same"}
+    responses = [
+        _mock_response(
+            content="",
+            finish_reason="tool_calls",
+            tool_calls=[_mock_tool_call("web_search", json.dumps(same_args), f"c{i}")],
+        )
+        for i in range(1, 4)
+    ]
+    responses.append(_mock_response(content="done", finish_reason="stop", tool_calls=None))
+    agent.client.chat.completions.create.side_effect = responses
+
+    with (
+        patch("run_agent.handle_function_call", return_value=json.dumps({"error": "boom"})) as mock_hfc,
+        patch.object(agent, "_persist_session"),
+        patch.object(agent, "_save_trajectory"),
+        patch.object(agent, "_cleanup_task_resources"),
+    ):
+        result = agent.run_conversation("search repeatedly")
+
+    assert mock_hfc.call_count == 3
+    assert result["turn_exit_reason"].startswith("text_response")
+    assert "guardrail" not in result
+    assert result["final_response"] == "done"
+    tool_contents = [m["content"] for m in result["messages"] if m.get("role") == "tool"]
+    assert any("repeated_exact_failure_warning" in content for content in tool_contents)
+
+
+def test_config_enabled_hard_stop_run_conversation_returns_controlled_guardrail_halt_without_top_level_error():
+    agent = _make_agent("web_search", max_iterations=10, config=_hard_stop_config())
     same_args = {"query": "same"}
     responses = [
         _mock_response(

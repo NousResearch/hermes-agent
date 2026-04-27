@@ -454,6 +454,12 @@ def run_import(args) -> None:
 # Critical state files to include in quick snapshots (relative to HERMES_HOME).
 # Everything else is either regeneratable (logs, cache) or managed separately
 # (skills, repo, sessions/).
+#
+# Entries may be individual files OR directories.  Directories are captured
+# recursively; missing entries are silently skipped.  Pairing data lives in
+# platform-specific JSON blobs outside state.db, so it's listed here explicitly
+# — `hermes update` snapshots this set before pulling so approved-user lists
+# are recoverable if anything goes wrong (issue #15733).
 _QUICK_STATE_FILES = (
     "state.db",
     "config.yaml",
@@ -463,6 +469,10 @@ _QUICK_STATE_FILES = (
     "gateway_state.json",
     "channel_directory.json",
     "processes.json",
+    # Pairing stores (generic + per-platform JSONs outside state.db)
+    "pairing",                          # legacy location (gateway/pairing.py)
+    "platforms/pairing",                # new location (gateway/pairing.py)
+    "feishu_comment_pairing.json",      # Feishu comment subscription pairings
 )
 
 _QUICK_SNAPSHOTS_DIR = "state-snapshots"
@@ -498,7 +508,27 @@ def create_quick_snapshot(
 
     for rel in _QUICK_STATE_FILES:
         src = home / rel
-        if not src.exists() or not src.is_file():
+        if not src.exists():
+            continue
+
+        if src.is_dir():
+            # Walk the directory and record each file individually in the
+            # manifest so restore can treat them uniformly.  Empty dirs are
+            # skipped (nothing to snapshot).
+            for sub in src.rglob("*"):
+                if not sub.is_file():
+                    continue
+                sub_rel = sub.relative_to(home).as_posix()
+                dst = snap_dir / sub_rel
+                dst.parent.mkdir(parents=True, exist_ok=True)
+                try:
+                    shutil.copy2(sub, dst)
+                    manifest[sub_rel] = dst.stat().st_size
+                except (OSError, PermissionError) as exc:
+                    logger.warning("Could not snapshot %s: %s", sub_rel, exc)
+            continue
+
+        if not src.is_file():
             continue
 
         dst = snap_dir / rel

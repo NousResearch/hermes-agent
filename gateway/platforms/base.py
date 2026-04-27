@@ -1600,19 +1600,51 @@ class BasePlatformAdapter(ABC):
         # Extract MEDIA:<path> tags, allowing optional whitespace after the colon
         # and quoted/backticked paths for LLM-formatted outputs.
         media_pattern = re.compile(
-            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|(?:~/|/)\S+(?:[^\S\n]+\S+)*?\.(?:png|jpe?g|gif|webp|mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|txt|csv|apk|ipa)(?=[\s`"',;:)\]}]|$)|\S+)[`"']?'''
+            r'''[`"']?MEDIA:\s*(?P<path>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|[^\s`"']+)[`"']?'''
         )
-        for match in media_pattern.finditer(content):
+
+        # Build spans covered by fenced code blocks and inline code. MEDIA:
+        # examples inside code should remain literal text, not trigger native
+        # attachment delivery or "file not found" warnings.
+        code_spans: list = []
+        for m in re.finditer(r'```[^\n]*\n.*?```', content, re.DOTALL):
+            code_spans.append((m.start(), m.end()))
+        for m in re.finditer(r'`[^`\n]+`', content):
+            code_spans.append((m.start(), m.end()))
+
+        def _in_code(pos: int) -> bool:
+            return any(s <= pos < e for s, e in code_spans)
+
+        remove_spans: list = []
+        search_content = cleaned
+        for match in media_pattern.finditer(search_content):
+            if _in_code(match.start()):
+                continue
             path = match.group("path").strip()
             if len(path) >= 2 and path[0] == path[-1] and path[0] in "`\"'":
                 path = path[1:-1].strip()
             path = path.lstrip("`\"'").rstrip("`\"',.;:)}]")
-            if path:
-                media.append((os.path.expanduser(path), has_voice_tag))
+            if not path:
+                continue
+            expanded = os.path.expanduser(path)
+            # Only real local files are delivered. Non-existent MEDIA: samples
+            # are left in text instead of being attempted as attachments; this
+            # prevents code snippets and test output from polluting errors.log.
+            if os.path.isfile(expanded):
+                media.append((expanded, has_voice_tag))
+                remove_spans.append((match.start(), match.end()))
 
-        # Remove MEDIA tags from content (including surrounding quote/backtick wrappers)
-        if media:
-            cleaned = media_pattern.sub('', cleaned)
+        # Remove only MEDIA tags that were accepted for delivery. Leave skipped
+        # tags (inside code or missing files) intact so examples are not
+        # mutilated.
+        if remove_spans:
+            pieces = []
+            last = 0
+            for start, end in remove_spans:
+                pieces.append(cleaned[last:start])
+                last = end
+            pieces.append(cleaned[last:])
+            cleaned = ''.join(pieces)
             cleaned = re.sub(r'\n{3,}', '\n\n', cleaned).strip()
         
         return media, cleaned

@@ -729,6 +729,16 @@ def test_config_get_statusbar_survives_non_dict_display(monkeypatch):
     assert resp["result"]["value"] == "top"
 
 
+def test_config_get_busy_survives_non_dict_display(monkeypatch):
+    monkeypatch.setattr(server, "_load_cfg", lambda: {"display": "broken"})
+
+    resp = server.handle_request(
+        {"id": "1", "method": "config.get", "params": {"key": "busy"}}
+    )
+
+    assert resp["result"]["value"] == "interrupt"
+
+
 def test_config_set_statusbar_survives_non_dict_display(tmp_path, monkeypatch):
     import yaml
 

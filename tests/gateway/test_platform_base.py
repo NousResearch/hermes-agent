@@ -1791,6 +1791,32 @@ class TestResolveChannelPromptComposite:
         assert resolve_channel_prompt(extra, "5", "-1001") == "Thread prompt"
 
 
+class TestTelegramCallerContractCompositeKey:
+    """Mirror the Telegram adapter's ``resolve_channel_prompt`` arguments."""
+
+    def _telegram_call(self, extra: dict, chat_id: str, thread_id: str | None) -> str | None:
+        return resolve_channel_prompt(
+            extra,
+            thread_id or chat_id,
+            chat_id if thread_id else None,
+        )
+
+    def test_resolves_composite_key(self):
+        extra = {
+            "channel_prompts": {
+                "-1003742888118:5": "AI Villa ops",
+                "-1003953149701:5": "Design ai-villa",
+            }
+        }
+        assert self._telegram_call(extra, "-1003742888118", "5") == "AI Villa ops"
+        assert self._telegram_call(extra, "-1003953149701", "5") == "Design ai-villa"
+
+    def test_falls_through_to_chat_key_when_no_thread(self):
+        # DM or non-forum group: thread_id is None; only the chat-level key applies.
+        extra = {"channel_prompts": {"-1003742888118": "Group prompt"}}
+        assert self._telegram_call(extra, "-1003742888118", None) == "Group prompt"
+
+
 class TestProxyKwargsForAiohttp:
     """Verify proxy_kwargs_for_aiohttp routes all schemes through ProxyConnector."""
 

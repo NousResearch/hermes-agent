@@ -577,3 +577,124 @@ def test_web_requires_env_includes_exa_key():
     from tools.web_tools import _web_requires_env
 
     assert "EXA_API_KEY" in _web_requires_env()
+
+
+# ── _get_extraction_backend() tests ────────────────────────────────────────
+
+class TestExtractionBackend:
+    """Tests for _get_extraction_backend() — searxng fallback logic.
+
+    SearXNG only supports web search, not content extraction.  When the
+    configured backend is searxng, extraction operations should fall back
+    to the first available extraction-capable backend.
+    """
+
+    def setup_method(self):
+        """Clear web-backend env vars before each test."""
+        for key in (
+            "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL",
+            "PARALLEL_API_KEY", "TAVILY_API_KEY", "EXA_API_KEY",
+        ):
+            os.environ.pop(key, None)
+
+    def teardown_method(self):
+        for key in (
+            "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL",
+            "PARALLEL_API_KEY", "TAVILY_API_KEY", "EXA_API_KEY",
+        ):
+            os.environ.pop(key, None)
+
+    # ── Pass-through: non-searxng backends ────────────────────────────
+
+    def test_passthrough_tavily(self):
+        """web.backend=tavily → 'tavily' (no fallback needed)."""
+        from tools.web_tools import _get_extraction_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "tavily"}):
+            assert _get_extraction_backend() == "tavily"
+
+    def test_passthrough_parallel(self):
+        """web.backend=parallel → 'parallel' (no fallback needed)."""
+        from tools.web_tools import _get_extraction_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "parallel"}):
+            assert _get_extraction_backend() == "parallel"
+
+    def test_passthrough_firecrawl(self):
+        """web.backend=firecrawl → 'firecrawl' (no fallback needed)."""
+        from tools.web_tools import _get_extraction_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "firecrawl"}):
+            assert _get_extraction_backend() == "firecrawl"
+
+    def test_passthrough_exa(self):
+        """web.backend=exa → 'exa' (no fallback needed)."""
+        from tools.web_tools import _get_extraction_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "exa"}):
+            assert _get_extraction_backend() == "exa"
+
+    # ── SearXNG fallback: searxng is search-only ──────────────────────
+
+    def test_searxng_fallsback_to_tavily(self):
+        """backend=searxng + TAVILY_API_KEY → 'tavily'."""
+        from tools.web_tools import _get_extraction_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "searxng"}), \
+             patch.dict(os.environ, {"TAVILY_API_KEY": "tvly-test"}):
+            assert _get_extraction_backend() == "tavily"
+
+    def test_searxng_fallsback_to_parallel(self):
+        """backend=searxng + PARALLEL_API_KEY (no tavily) → 'parallel'."""
+        from tools.web_tools import _get_extraction_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "searxng"}), \
+             patch.dict(os.environ, {"PARALLEL_API_KEY": "par-test"}):
+            assert _get_extraction_backend() == "parallel"
+
+    def test_searxng_fallsback_to_exa(self):
+        """backend=searxng + EXA_API_KEY (no tavily/parallel) → 'exa'."""
+        from tools.web_tools import _get_extraction_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "searxng"}), \
+             patch.dict(os.environ, {"EXA_API_KEY": "exa-test"}):
+            assert _get_extraction_backend() == "exa"
+
+    def test_searxng_fallsback_to_firecrawl(self):
+        """backend=searxng + FIRECRAWL_API_KEY (no others) → 'firecrawl'."""
+        from tools.web_tools import _get_extraction_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "searxng"}), \
+             patch.dict(os.environ, {"FIRECRAWL_API_KEY": "fc-test"}):
+            assert _get_extraction_backend() == "firecrawl"
+
+    def test_searxng_no_extraction_backend_available(self):
+        """backend=searxng + no extraction keys → ValueError."""
+        from tools.web_tools import _get_extraction_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "searxng"}):
+            with pytest.raises(ValueError, match="FIRECRAWL_API_KEY"):
+                _get_extraction_backend()
+
+    # ── Priority: tavily > parallel > exa > firecrawl ─────────────────
+
+    def test_searxng_tavily_priority_over_parallel(self):
+        """tavily selected over parallel when both keys are present."""
+        from tools.web_tools import _get_extraction_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "searxng"}), \
+             patch.dict(os.environ, {
+                 "TAVILY_API_KEY": "tvly-test",
+                 "PARALLEL_API_KEY": "par-test",
+             }):
+            assert _get_extraction_backend() == "tavily"
+
+    def test_searxng_parallel_priority_over_exa(self):
+        """parallel selected over exa when both keys are present (no tavily)."""
+        from tools.web_tools import _get_extraction_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "searxng"}), \
+             patch.dict(os.environ, {
+                 "PARALLEL_API_KEY": "par-test",
+                 "EXA_API_KEY": "exa-test",
+             }):
+            assert _get_extraction_backend() == "parallel"
+
+    def test_searxng_exa_priority_over_firecrawl(self):
+        """exa selected over firecrawl when both keys are present (no higher)."""
+        from tools.web_tools import _get_extraction_backend
+        with patch("tools.web_tools._load_web_config", return_value={"backend": "searxng"}), \
+             patch.dict(os.environ, {
+                 "EXA_API_KEY": "exa-test",
+                 "FIRECRAWL_API_KEY": "fc-test",
+             }):
+            assert _get_extraction_backend() == "exa"

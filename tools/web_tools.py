@@ -119,6 +119,51 @@ def _is_backend_available(backend: str) -> bool:
         return _has_env("TAVILY_API_KEY")
     return False
 
+
+def _get_extraction_backend() -> str:
+    """Get the backend to use for content-extraction operations.
+
+    Like :func:`_get_backend` but when the configured backend is
+    ``searxng`` (which only supports search — not page-content
+    extraction), falls back to the first available extraction-capable
+    backend.
+
+    Extraction backends in priority order:
+    ``tavily`` > ``parallel`` > ``exa`` > ``firecrawl``.
+
+    Raises:
+        ValueError: When the configured backend is ``searxng`` and no
+            extraction-capable backend is configured.
+    """
+    backend = _get_backend()
+
+    if backend != "searxng":
+        return backend
+
+    # SearXNG is search-only — find an extraction-capable fallback.
+    extraction_candidates = (
+        ("tavily", _has_env("TAVILY_API_KEY")),
+        ("parallel", _has_env("PARALLEL_API_KEY")),
+        ("exa", _has_env("EXA_API_KEY")),
+        ("firecrawl", (
+            _has_env("FIRECRAWL_API_KEY")
+            or _has_env("FIRECRAWL_API_URL")
+            or _is_tool_gateway_ready()
+        )),
+    )
+    for candidate, available in extraction_candidates:
+        if available:
+            logger.info(
+                "Backend '%s' doesn't support extraction — "
+                "falling back to '%s'.",
+                backend, candidate,
+            )
+            return candidate
+
+    # No extraction backend available.
+    _raise_web_backend_configuration_error()
+    return ""  # unreachable — silences type-checkers
+
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
 
 _firecrawl_client = None
@@ -1239,7 +1284,7 @@ async def web_extract_tool(
         if not safe_urls:
             results = []
         else:
-            backend = _get_backend()
+            backend = _get_extraction_backend()
 
             if backend == "parallel":
                 results = await _parallel_extract(safe_urls)
@@ -1541,7 +1586,7 @@ async def web_crawl_tool(
     try:
         effective_model = model or _get_default_summarizer_model()
         auxiliary_available = check_auxiliary_model()
-        backend = _get_backend()
+        backend = _get_extraction_backend()
 
         # Tavily supports crawl via its /crawl endpoint
         if backend == "tavily":

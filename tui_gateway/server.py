@@ -1766,7 +1766,7 @@ def _(rid, params: dict) -> dict:
         fallback = session.get("pending_title") or ""
         try:
             resolved_title = db.get_session_title(key) or ""
-            if not resolved_title and fallback:
+            if fallback:
                 if db.set_session_title(key, fallback):
                     session["pending_title"] = None
                     resolved_title = fallback
@@ -1776,7 +1776,7 @@ def _(rid, params: dict) -> dict:
                     if existing_title == fallback:
                         session["pending_title"] = None
                         resolved_title = fallback
-                    else:
+                    elif not resolved_title:
                         resolved_title = fallback
             elif resolved_title:
                 session["pending_title"] = None

@@ -403,6 +403,34 @@ def test_session_title_get_retries_persist_for_pending_title(monkeypatch):
         server._sessions.pop("sid", None)
 
 
+def test_session_title_get_retries_pending_even_when_db_has_title(monkeypatch):
+    class _FakeDB:
+        def __init__(self):
+            self.title = "auto title"
+
+        def get_session_title(self, _key):
+            return self.title
+
+        def set_session_title(self, _key, title):
+            self.title = title
+            return True
+
+        def get_session(self, _key):
+            return {"id": _key, "title": self.title}
+
+    db = _FakeDB()
+    server._sessions["sid"] = _session(pending_title="queued title")
+    monkeypatch.setattr(server, "_get_db", lambda: db)
+    try:
+        resp = server.handle_request(
+            {"id": "1", "method": "session.title", "params": {"session_id": "sid"}}
+        )
+        assert resp["result"]["title"] == "queued title"
+        assert server._sessions["sid"]["pending_title"] is None
+    finally:
+        server._sessions.pop("sid", None)
+
+
 def test_session_title_rejects_empty_title_with_specific_error_code(monkeypatch):
     class _FakeDB:
         def get_session_title(self, _key):

@@ -2,6 +2,7 @@ import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { useEffect, useMemo, useState } from 'react'
 
 import { providerDisplayNames } from '../domain/providers.js'
+import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ModelOptionProvider, ModelOptionsResponse } from '../gatewayTypes.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
@@ -112,7 +113,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
 
       if (provider && model) {
         onSelect(
-          `${model} --provider ${provider.slug}${persistGlobal ? ' --global' : ' --tui-session'}`
+          `${model} --provider ${provider.slug}${persistGlobal ? ' --global' : ` ${TUI_SESSION_MODEL_FLAG}`}`
         )
       } else {
         setStage('provider')
@@ -140,7 +141,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
         }
       } else if (provider && models[offset + n - 1]) {
         onSelect(
-          `${models[offset + n - 1]} --provider ${provider.slug}${persistGlobal ? ' --global' : ' --tui-session'}`
+          `${models[offset + n - 1]} --provider ${provider.slug}${persistGlobal ? ' --global' : ` ${TUI_SESSION_MODEL_FLAG}`}`
         )
       }
     }

@@ -10,6 +10,7 @@ import type {
   VoiceToggleResponse
 } from '../../../gatewayTypes.js'
 import { fmtK } from '../../../lib/text.js'
+import { TUI_SESSION_MODEL_FLAG } from '../../../domain/slash.js'
 import type { PanelSection } from '../../../types.js'
 import { patchOverlayState } from '../../overlayStore.js'
 import { patchUiState } from '../../uiStore.js'
@@ -17,14 +18,17 @@ import type { SlashCommand } from '../types.js'
 
 const GLOBAL_MODEL_FLAG_RE = /(?:^|\s)--global(?:\s|$)/
 
-/** Stripped before `config.set`; TUI model picker uses this for session-scoped switches. */
-const TUI_SESSION_MODEL_RE = /(?:^|\s)--tui-session(?:\s|$)/
+const TUI_SESSION_MODEL_RE = new RegExp(`(?:^|\\s)${TUI_SESSION_MODEL_FLAG}(?:\\s|$)`)
+const TUI_SESSION_STRIP_RE = new RegExp(`\\s*${TUI_SESSION_MODEL_FLAG}\\b\\s*`, 'g')
 
 const persistedModelArg = (arg: string) => {
   const trimmed = arg.trim()
 
   return !trimmed || GLOBAL_MODEL_FLAG_RE.test(trimmed) ? trimmed : `${trimmed} --global`
 }
+
+const stripTuiSessionFlag = (trimmed: string) =>
+  trimmed.replace(TUI_SESSION_STRIP_RE, ' ').replace(/\s+/g, ' ').trim()
 
 const modelValueForConfigSet = (arg: string) => {
   const trimmed = arg.trim()
@@ -34,7 +38,7 @@ const modelValueForConfigSet = (arg: string) => {
   }
 
   if (TUI_SESSION_MODEL_RE.test(trimmed)) {
-    return trimmed.replace(/\s*--tui-session\b\s*/g, ' ').replace(/\s+/g, ' ').trim()
+    return stripTuiSessionFlag(trimmed)
   }
 
   return persistedModelArg(trimmed)

@@ -107,8 +107,11 @@ def _strip_mdv2(text: str) -> str:
     Also removes MarkdownV2 formatting markers so the fallback
     doesn't show stray syntax characters from format_message conversion.
     """
-    # Remove escape backslashes before special characters
-    cleaned = re.sub(r'\\([_*\[\]()~`>#\+\-=|{}.!\\])', r'\1', text)
+    # Remove escape backslashes before formatting characters.
+    # Note: '.' is intentionally excluded — it is not a MarkdownV2 formatting
+    # character, and including it would strip backslashes from Windows paths
+    # like D:\Projects\.ai\ → D:\Projects.ai\ (see hermes-agent#16458).
+    cleaned = re.sub(r'\\([_*\[\]()~`>#\+\-=|{}!\\])', r'\1', text)
     # Remove MarkdownV2 bold markers that format_message converted from **bold**
     cleaned = re.sub(r'\*([^*]+)\*', r'\1', cleaned)
     # Remove MarkdownV2 italic markers that format_message converted from *italic*

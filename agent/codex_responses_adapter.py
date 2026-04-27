@@ -870,13 +870,14 @@ def _preflight_codex_api_kwargs(
             # them through the function-tool validation below (which would
             # otherwise reject them with "unsupported type").  See
             # agent/transports/codex.py for where xAI's native web_search is
-            # injected.
+            # injected.  This also covers the opt-in native Codex web_search
+            # declaration injected by run_agent.py.
             if tool_type in _RESPONSES_BUILTIN_TOOL_TYPES:
                 normalized_tools.append(dict(tool))
                 continue
 
             if tool_type != "function":
-                raise ValueError(f"Codex Responses tools[{idx}] has unsupported type {tool.get('type')!r}.")
+                raise ValueError(f"Codex Responses tools[{idx}] has unsupported type {tool_type!r}.")
 
             name = tool.get("name")
             parameters = tool.get("parameters")

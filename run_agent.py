@@ -351,6 +351,65 @@ def _safe_session_filename_component(session_id: str) -> str:
     return f"{sanitized}_{digest}"
 
 
+def _codex_native_web_search_enabled() -> bool:
+    return os.getenv("HERMES_CODEX_NATIVE_WEB_SEARCH", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _codex_native_web_search_disable_managed_enabled() -> bool:
+    return os.getenv("HERMES_CODEX_NATIVE_WEB_SEARCH_DISABLE_MANAGED", "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+
+def _is_managed_web_search_tool(tool: Any) -> bool:
+    if not isinstance(tool, dict) or tool.get("type") != "function":
+        return False
+
+    name = tool.get("name")
+    function = tool.get("function")
+    if name is None and isinstance(function, dict):
+        name = function.get("name")
+    return name == "web_search"
+
+
+def _maybe_add_codex_native_web_search(agent: Any, api_kwargs: Dict[str, Any]) -> None:
+    if not (
+        getattr(agent, "api_mode", None) == "codex_responses"
+        and (getattr(agent, "provider", None) or "").lower() == "openai-codex"
+        and _codex_native_web_search_enabled()
+    ):
+        return
+
+    tools = api_kwargs.get("tools")
+    if not isinstance(tools, list):
+        tools = []
+        api_kwargs["tools"] = tools
+
+    if _codex_native_web_search_disable_managed_enabled():
+        tools[:] = [tool for tool in tools if not _is_managed_web_search_tool(tool)]
+
+    if not any(
+        isinstance(tool, dict) and tool.get("type") in {"web_search", "web_search_preview"}
+        for tool in tools
+    ):
+        tools.append({"type": "web_search", "external_web_access": True})
+
+    includes = api_kwargs.get("include")
+    if not isinstance(includes, list):
+        includes = []
+    if "web_search_call.action.sources" not in includes:
+        includes.append("web_search_call.action.sources")
+    api_kwargs["include"] = includes
+
+
 class _StreamErrorEvent(Exception):
     """Synthesized provider error surfaced from a Responses ``error`` SSE frame.
 

@@ -57,6 +57,78 @@ def _build_agent(monkeypatch):
     return agent
 
 
+def _build_openai_codex_agent(monkeypatch, *, model="gpt-5-codex"):
+    _patch_agent_bootstrap(monkeypatch)
+
+    agent = run_agent.AIAgent(
+        model=model,
+        provider="openai-codex",
+        api_mode="codex_responses",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="codex-token",
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent._cleanup_task_resources = lambda task_id: None
+    agent._persist_session = lambda messages, history=None: None
+    agent._save_trajectory = lambda messages, user_message, completed: None
+    agent._save_session_log = lambda messages: None
+    return agent
+
+
+def _build_openai_codex_agent_with_web_tools(monkeypatch, *, model="gpt-5-codex"):
+    monkeypatch.setattr(
+        run_agent,
+        "get_tool_definitions",
+        lambda **kwargs: [
+            {
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "description": "Search the web.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "web_extract",
+                    "description": "Extract web pages.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+            {
+                "type": "function",
+                "function": {
+                    "name": "terminal",
+                    "description": "Run shell commands.",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            },
+        ],
+    )
+    monkeypatch.setattr(run_agent, "check_toolset_requirements", lambda: {})
+
+    agent = run_agent.AIAgent(
+        model=model,
+        provider="openai-codex",
+        api_mode="codex_responses",
+        base_url="https://chatgpt.com/backend-api/codex",
+        api_key="codex-token",
+        quiet_mode=True,
+        max_iterations=4,
+        skip_context_files=True,
+        skip_memory=True,
+    )
+    agent._cleanup_task_resources = lambda task_id: None
+    agent._persist_session = lambda messages, history=None: None
+    agent._save_trajectory = lambda messages, user_message, completed: None
+    agent._save_session_log = lambda messages: None
+    return agent
+
+
 def _build_copilot_agent(monkeypatch, *, model="gpt-5.4"):
     _patch_agent_bootstrap(monkeypatch)
 
@@ -365,6 +437,131 @@ def test_build_api_kwargs_codex(monkeypatch):
     assert kwargs["timeout"] > 0
     assert "max_tokens" not in kwargs
     assert "extra_body" not in kwargs
+
+
+def test_preflight_codex_api_kwargs_allows_native_web_search_tool():
+    from agent.codex_responses_adapter import _preflight_codex_api_kwargs
+
+    result = _preflight_codex_api_kwargs(
+        {
+            "model": "gpt-5-codex",
+            "instructions": "You are Hermes.",
+            "input": [{"role": "user", "content": "Ping"}],
+            "tools": [{"type": "web_search", "external_web_access": True}],
+            "store": False,
+        }
+    )
+
+    assert result["tools"][0]["type"] == "web_search"
+    assert result["tools"][0]["external_web_access"] is True
+
+
+def test_codex_native_web_search_default_off(monkeypatch):
+    monkeypatch.delenv("HERMES_CODEX_NATIVE_WEB_SEARCH", raising=False)
+    agent = _build_openai_codex_agent(monkeypatch)
+
+    assert agent.provider == "openai-codex"
+    assert agent.api_mode == "codex_responses"
+
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "Ping"}])
+
+    assert not any(
+        isinstance(tool, dict) and tool.get("type") == "web_search"
+        for tool in kwargs.get("tools", [])
+    )
+
+
+def test_codex_native_web_search_env_adds_tool_and_sources_include(monkeypatch):
+    monkeypatch.setenv("HERMES_CODEX_NATIVE_WEB_SEARCH", "1")
+    agent = _build_openai_codex_agent(monkeypatch)
+
+    assert agent.provider == "openai-codex"
+    assert agent.api_mode == "codex_responses"
+
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "Ping"}])
+
+    assert {"type": "web_search", "external_web_access": True} in kwargs.get("tools", [])
+    assert "web_search_call.action.sources" in kwargs.get("include", [])
+
+
+def test_codex_native_web_search_keeps_managed_web_search_by_default(monkeypatch):
+    monkeypatch.setenv("HERMES_CODEX_NATIVE_WEB_SEARCH", "1")
+    monkeypatch.delenv("HERMES_CODEX_NATIVE_WEB_SEARCH_DISABLE_MANAGED", raising=False)
+    agent = _build_openai_codex_agent_with_web_tools(monkeypatch)
+
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "Ping"}])
+    tools = kwargs.get("tools", [])
+
+    assert any(
+        isinstance(tool, dict)
+        and tool.get("type") == "function"
+        and tool.get("name") == "web_search"
+        for tool in tools
+    )
+    assert any(
+        isinstance(tool, dict)
+        and tool.get("type") == "function"
+        and tool.get("name") == "web_extract"
+        for tool in tools
+    )
+    assert {"type": "web_search", "external_web_access": True} in tools
+
+
+def test_codex_native_web_search_disable_managed_removes_only_function_web_search(monkeypatch):
+    monkeypatch.setenv("HERMES_CODEX_NATIVE_WEB_SEARCH", "1")
+    monkeypatch.setenv("HERMES_CODEX_NATIVE_WEB_SEARCH_DISABLE_MANAGED", "1")
+    agent = _build_openai_codex_agent_with_web_tools(monkeypatch)
+
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "Ping"}])
+    tools = kwargs.get("tools", [])
+
+    assert not any(
+        isinstance(tool, dict)
+        and tool.get("type") == "function"
+        and tool.get("name") == "web_search"
+        for tool in tools
+    )
+    assert any(
+        isinstance(tool, dict)
+        and tool.get("type") == "function"
+        and tool.get("name") == "web_extract"
+        for tool in tools
+    )
+    assert any(
+        isinstance(tool, dict)
+        and tool.get("type") == "function"
+        and tool.get("name") == "terminal"
+        for tool in tools
+    )
+    assert {"type": "web_search", "external_web_access": True} in tools
+    assert "web_search_call.action.sources" in kwargs.get("include", [])
+
+
+def test_codex_native_web_search_disable_managed_without_native_search_is_noop(monkeypatch):
+    monkeypatch.delenv("HERMES_CODEX_NATIVE_WEB_SEARCH", raising=False)
+    monkeypatch.setenv("HERMES_CODEX_NATIVE_WEB_SEARCH_DISABLE_MANAGED", "1")
+    agent = _build_openai_codex_agent_with_web_tools(monkeypatch)
+
+    kwargs = agent._build_api_kwargs([{"role": "user", "content": "Ping"}])
+    tools = kwargs.get("tools", [])
+
+    assert any(
+        isinstance(tool, dict)
+        and tool.get("type") == "function"
+        and tool.get("name") == "web_search"
+        for tool in tools
+    )
+    assert not any(
+        isinstance(tool, dict) and tool.get("type") == "web_search"
+        for tool in tools
+    )
+
+
+def test_codex_native_web_search_uses_explicit_helper_without_module_level_wrapper():
+    assert hasattr(run_agent, "_codex_native_web_search_enabled")
+    assert hasattr(run_agent, "_maybe_add_codex_native_web_search")
+    assert not hasattr(run_agent, "_ORIGINAL_BUILD_API_KWARGS_FOR_NATIVE_CODEX_WEB_SEARCH")
+    assert not hasattr(run_agent, "_build_api_kwargs_with_native_codex_web_search")
 
 
 def test_build_api_kwargs_codex_clamps_minimal_effort(monkeypatch):

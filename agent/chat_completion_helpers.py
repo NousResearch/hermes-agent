@@ -863,7 +863,7 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
                     getattr(agent, "log_prefix", ""), exc,
                 )
 
-        return _ct.build_kwargs(
+        api_kwargs = _ct.build_kwargs(
             model=agent.model,
             messages=_msgs_for_codex,
             tools=tools_for_api,
@@ -880,6 +880,8 @@ def build_api_kwargs(agent, api_messages: list) -> dict:
                 getattr(agent, "_codex_reasoning_replay_enabled", True)
             ),
         )
+        _ra()._maybe_add_codex_native_web_search(agent, api_kwargs)
+        return api_kwargs
 
     # ── chat_completions (default) ─────────────────────────────────────
     _ct = agent._get_transport()

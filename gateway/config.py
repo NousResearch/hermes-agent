@@ -195,6 +195,14 @@ class StreamingConfig:
     edit_interval: float = 1.0    # Seconds between message edits (Telegram rate-limits at ~1/s)
     buffer_threshold: int = 40    # Chars before forcing an edit
     cursor: str = " ▉"           # Cursor shown during streaming
+    # Ported from openclaw/openclaw#72038.  When >0, the final edit for
+    # a long-running streamed response is delivered as a fresh message
+    # if the original preview has been visible for at least this many
+    # seconds, so the platform's visible timestamp reflects completion
+    # time instead of the preview creation time.  Currently applied to
+    # Telegram only (other platforms ignore the setting).  Default 60s
+    # matches the OpenClaw rollout.  Set to 0 to disable.
+    fresh_final_after_seconds: float = 60.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -203,6 +211,7 @@ class StreamingConfig:
             "edit_interval": self.edit_interval,
             "buffer_threshold": self.buffer_threshold,
             "cursor": self.cursor,
+            "fresh_final_after_seconds": self.fresh_final_after_seconds,
         }
 
     @classmethod
@@ -215,6 +224,9 @@ class StreamingConfig:
             edit_interval=float(data.get("edit_interval", 1.0)),
             buffer_threshold=int(data.get("buffer_threshold", 40)),
             cursor=data.get("cursor", " ▉"),
+            fresh_final_after_seconds=float(
+                data.get("fresh_final_after_seconds", 60.0)
+            ),
         )
 
 

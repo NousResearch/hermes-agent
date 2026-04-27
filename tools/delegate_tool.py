@@ -2337,7 +2337,7 @@ def _load_config() -> dict:
     try:
         from cli import CLI_CONFIG
 
-        cfg = CLI_CONFIG.get("delegation", {})
+        cfg = CLI_CONFIG.get("delegation") or {}
         if cfg:
             return cfg
     except Exception:
@@ -2346,7 +2346,7 @@ def _load_config() -> dict:
         from hermes_cli.config import load_config
 
         full = load_config()
-        return full.get("delegation", {})
+        return full.get("delegation") or {}
     except Exception:
         return {}
 

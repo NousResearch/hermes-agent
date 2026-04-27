@@ -27,6 +27,16 @@ triggers:
 site's complete visual language: color palette, typography hierarchy, component styles, spacing
 system, shadows, responsive behavior, and practical agent prompts with exact CSS values.
 
+## Related design skills
+
+- **`claude-design`** — use for the design *process and taste* (scoping a brief,
+  producing variants, verifying a local HTML artifact, avoiding AI-design slop).
+  Pair it with this skill when the user wants a thoughtfully-designed page styled
+  after a known brand: `claude-design` drives the workflow, this skill supplies
+  the visual vocabulary.
+- **`design-md`** — use when the deliverable is a formal DESIGN.md token spec
+  file, not a rendered artifact.
+
 ## How to Use
 
 1. Pick a design from the catalog below

@@ -449,6 +449,8 @@ process.stdout.write(JSON.stringify(result));
 
     def _status(self) -> Dict[str, Any]:
         last = self._state.get("last_experiment") if isinstance(self._state, dict) else None
+        last_graph = last.get("graph") if isinstance(last, dict) and isinstance(last.get("graph"), dict) else {}
+        last_hippocampus = last.get("hippocampus") if isinstance(last, dict) and isinstance(last.get("hippocampus"), dict) else {}
         return {
             "provider": "brain",
             "brain_repo": str(self._resolve_brain_repo() or ""),
@@ -456,6 +458,9 @@ process.stdout.write(JSON.stringify(result));
             "events": len(self._state.get("events") or []),
             "long_term_candidates": len(self._state.get("long_term_candidates") or []),
             "default_iterations": DEFAULT_ITERATIONS,
+            "hippocampus_enabled": bool(last_hippocampus.get("enabled", self.config.get("hippocampus_enabled", DEFAULT_HIPPOCAMPUS_ENABLED))),
+            "last_graph_nodes": len(last_graph.get("nodes") or []),
+            "last_graph_edges": len(last_graph.get("edges") or []),
             "last_experiment": last,
             "state_path": str(self._state_path),
         }

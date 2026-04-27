@@ -135,6 +135,11 @@ def test_brain_tool_status_and_search_use_provider_state(_isolate_env):
     def fake_runner(_payload):
         return {
             "status": "completed",
+            "hippocampus": {"enabled": True},
+            "graph": {
+                "nodes": [{"memoryId": "mem-1"}],
+                "edges": [{"from": "mem-1", "to": "mem-2", "relation": "shared-concept"}],
+            },
             "longTermCandidates": [
                 {"memoryId": "mem-1", "content": "Hermes Brain adapter is active.", "score": 0.9}
             ],
@@ -151,6 +156,9 @@ def test_brain_tool_status_and_search_use_provider_state(_isolate_env):
     assert status["provider"] == "brain"
     assert status["events"] == 1
     assert status["brain_repo_available"] is True
+    assert status["hippocampus_enabled"] is True
+    assert status["last_graph_nodes"] == 1
+    assert status["last_graph_edges"] == 1
 
     search = json.loads(provider.handle_tool_call("brain_search", {"query": "adapter", "top_k": 1}))
     assert search["count"] == 1

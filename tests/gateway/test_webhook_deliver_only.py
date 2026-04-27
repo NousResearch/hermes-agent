@@ -471,3 +471,116 @@ class TestDirectDeliverUnit:
             )
             assert result.success is True
             mock_gh.assert_awaited_once()
+
+
+# ===================================================================
+# platform:chat_id shorthand in the deliver field
+# ===================================================================
+
+class TestDeliverShorthand:
+    """Tests for the ``"platform:chat_id"`` shorthand in ``deliver``.
+
+    When a route specifies ``"discord:1494411283582292058"`` as the deliver
+    value, the adapter should extract the chat_id and normalise the deliver
+    type to ``"discord"`` so it routes through ``_deliver_cross_platform``.
+    """
+
+    @pytest.mark.asyncio
+    async def test_shorthand_in_deliver_only_route(self):
+        """``deliver: "discord:998877"`` works the same as separate fields."""
+        routes = {
+            "r": {
+                "secret": _INSECURE_NO_AUTH,
+                "deliver": "discord:998877",
+                "deliver_only": True,
+                "prompt": "hello from {service}",
+            }
+        }
+        adapter = _make_adapter(routes)
+        mock_target = _wire_mock_target(adapter, "discord")
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            resp = await cli.post(
+                "/webhooks/r",
+                json={"service": "monitoring"},
+                headers={"X-GitHub-Delivery": "d-shorthand-1"},
+            )
+            assert resp.status == 200
+
+        mock_target.send.assert_awaited_once()
+        chat_id_arg = mock_target.send.await_args.args[0]
+        content_arg = mock_target.send.await_args.args[1]
+        assert chat_id_arg == "998877"
+        assert content_arg == "hello from monitoring"
+
+    @pytest.mark.asyncio
+    async def test_shorthand_in_direct_deliver_unit(self):
+        """``_direct_deliver`` resolves shorthand without separate chat_id."""
+        adapter = _make_adapter({})
+        mock_target = _wire_mock_target(adapter, "discord")
+
+        delivery = {"deliver": "discord:112233"}
+        result = await adapter._direct_deliver("test msg", delivery)
+
+        assert result.success is True
+        mock_target.send.assert_awaited_once_with(
+            "112233", "test msg", metadata=None
+        )
+        # The delivery dict should be normalised in-place.
+        assert delivery["deliver"] == "discord"
+        assert delivery["deliver_extra"]["chat_id"] == "112233"
+
+    @pytest.mark.asyncio
+    async def test_shorthand_does_not_overwrite_existing_chat_id(self):
+        """If deliver_extra.chat_id already exists, shorthand still wins."""
+        adapter = _make_adapter({})
+        mock_target = _wire_mock_target(adapter, "telegram")
+
+        delivery = {
+            "deliver": "telegram:from-shorthand",
+            "deliver_extra": {"chat_id": "from-extra"},
+        }
+        result = await adapter._direct_deliver("msg", delivery)
+
+        assert result.success is True
+        chat_id_arg = mock_target.send.await_args.args[0]
+        # setdefault doesn't overwrite — existing value wins
+        assert chat_id_arg == "from-extra"
+
+    def test_resolve_shorthand_non_platform_prefix_ignored(self):
+        """``"something:else"`` where "something" isn't a platform → passthrough."""
+        from gateway.platforms.webhook import _resolve_deliver_shorthand
+
+        delivery = {"deliver": "custom:my-value"}
+        result = _resolve_deliver_shorthand(delivery)
+        assert result == "custom:my-value"
+        assert "deliver_extra" not in delivery
+
+    def test_resolve_shorthand_log_untouched(self):
+        """``"log"`` is never treated as shorthand."""
+        from gateway.platforms.webhook import _resolve_deliver_shorthand
+
+        delivery = {"deliver": "log"}
+        result = _resolve_deliver_shorthand(delivery)
+        assert result == "log"
+
+    def test_resolve_shorthand_telegram_with_chat_id(self):
+        """``"telegram:12345"`` resolves and normalises."""
+        from gateway.platforms.webhook import _resolve_deliver_shorthand
+
+        delivery = {"deliver": "telegram:12345"}
+        result = _resolve_deliver_shorthand(delivery)
+        assert result == "telegram"
+        assert delivery["deliver"] == "telegram"
+        assert delivery["deliver_extra"]["chat_id"] == "12345"
+
+    def test_resolve_shorthand_no_colon_passthrough(self):
+        """Bare platform name without colon passes through unchanged."""
+        from gateway.platforms.webhook import _resolve_deliver_shorthand
+
+        delivery = {"deliver": "discord"}
+        result = _resolve_deliver_shorthand(delivery)
+        assert result == "discord"
+        # No deliver_extra injected
+        assert delivery.get("deliver_extra", {}) == {}

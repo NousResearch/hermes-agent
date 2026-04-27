@@ -56,6 +56,14 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_HOST = "0.0.0.0"
 DEFAULT_PORT = 8644
+
+# Valid cross-platform target names for deliver routing.
+_CROSS_PLATFORM_NAMES = frozenset((
+    "telegram", "discord", "slack", "signal", "sms", "whatsapp",
+    "matrix", "mattermost", "homeassistant", "email", "dingtalk",
+    "feishu", "wecom", "wecom_callback", "weixin", "bluebubbles",
+    "qqbot",
+))
 _INSECURE_NO_AUTH = "INSECURE_NO_AUTH"
 _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
 
@@ -63,6 +71,28 @@ _DYNAMIC_ROUTES_FILENAME = "webhook_subscriptions.json"
 def check_webhook_requirements() -> bool:
     """Check if webhook adapter dependencies are available."""
     return AIOHTTP_AVAILABLE
+
+
+def _resolve_deliver_shorthand(delivery: dict) -> str:
+    """Parse ``"platform:chat_id"`` shorthand in the ``deliver`` field.
+
+    When the ``deliver`` value contains a colon and the prefix matches a
+    known platform name (e.g. ``"discord:1494411283582292058"``), the
+    chat_id portion is stashed into ``delivery["deliver_extra"]["chat_id"]``
+    and ``deliver`` is normalised to the bare platform name.  This lets n8n
+    routes specify the target channel in a single string instead of
+    requiring a separate ``deliver_extra.chat_id`` entry.
+
+    Returns the (possibly rewritten) ``deliver_type``.
+    """
+    deliver_type = delivery.get("deliver", "log")
+    if ":" in deliver_type and deliver_type != "log":
+        platform_name, _, target_chat_id = deliver_type.partition(":")
+        if platform_name in _CROSS_PLATFORM_NAMES:
+            delivery.setdefault("deliver_extra", {})["chat_id"] = target_chat_id
+            deliver_type = platform_name
+            delivery["deliver"] = deliver_type  # normalise for retries
+    return deliver_type
 
 
 class WebhookAdapter(BasePlatformAdapter):
@@ -193,7 +223,7 @@ class WebhookAdapter(BasePlatformAdapter):
         to the ``log`` deliver type.  TTL cleanup happens on POST.
         """
         delivery = self._delivery_info.get(chat_id, {})
-        deliver_type = delivery.get("deliver", "log")
+        deliver_type = _resolve_deliver_shorthand(delivery)
 
         if deliver_type == "log":
             logger.info("[webhook] Response for %s: %s", chat_id, content[:200])
@@ -203,25 +233,7 @@ class WebhookAdapter(BasePlatformAdapter):
             return await self._deliver_github_comment(content, delivery)
 
         # Cross-platform delivery — any platform with a gateway adapter
-        if self.gateway_runner and deliver_type in (
-            "telegram",
-            "discord",
-            "slack",
-            "signal",
-            "sms",
-            "whatsapp",
-            "matrix",
-            "mattermost",
-            "homeassistant",
-            "email",
-            "dingtalk",
-            "feishu",
-            "wecom",
-            "wecom_callback",
-            "weixin",
-            "bluebubbles",
-            "qqbot",
-        ):
+        if self.gateway_runner and deliver_type in _CROSS_PLATFORM_NAMES:
             return await self._deliver_cross_platform(
                 deliver_type, content, delivery
             )
@@ -658,7 +670,7 @@ class WebhookAdapter(BasePlatformAdapter):
         work in agent mode work here — Telegram, Discord, Slack, GitHub
         PR comments, etc.
         """
-        deliver_type = delivery.get("deliver", "log")
+        deliver_type = _resolve_deliver_shorthand(delivery)
 
         if deliver_type == "log":
             # Shouldn't reach here — startup validation rejects deliver_only

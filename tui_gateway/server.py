@@ -1040,13 +1040,14 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
             pass
         session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
     if _tool_progress_enabled(sid):
-        payload = {"tool_id": tool_call_id, "name": name, "context": _tool_ctx(name, args)}
-        if name == "todo" and isinstance(args, dict) and isinstance(args.get("todos"), list):
-            payload["todos"] = args.get("todos")
+        # Don't echo args.todos on tool.start — for merge=true (or partial
+        # replacement) it's only the items being updated, not the full list,
+        # and would flicker the live count. tool.complete is the source of
+        # truth (always returns the full list from the tool result).
         _emit(
             "tool.start",
             sid,
-            payload,
+            {"tool_id": tool_call_id, "name": name, "context": _tool_ctx(name, args)},
         )
 
 

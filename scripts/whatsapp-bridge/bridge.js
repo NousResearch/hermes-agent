@@ -31,6 +31,7 @@ import { tmpdir } from 'os';
 import qrcode from 'qrcode-terminal';
 import { matchesAllowedUser, parseAllowedUsers } from './allowlist.js';
 import { createOutboundIdTracker } from './outbound_ids.js';
+import { classifyOwnerMessageGate } from './owner_message_gate.js';
 
 // Parse CLI args
 const args = process.argv.slice(2);
@@ -334,9 +335,31 @@ async function startSocket() {
           //
           // We always drop (a). We drop (b) too unless the operator opts in
           // via WHATSAPP_FORWARD_OWNER_MESSAGES so existing deployments see
-          // no behavior change.
-          if (recentlySentIds.has(msg.key.id)) continue;
-          if (!FORWARD_OWNER_MESSAGES) continue;
+          // no behavior change. When opted in, we still gate on the
+          // customer chatId allowlist — without that gate, any contact
+          // the owner replied to would leak into Hermes and trigger
+          // implicit handover. See `owner_message_gate.js`.
+          const decision = classifyOwnerMessageGate({
+            fromMe: true,
+            fromOwnerEnabled: FORWARD_OWNER_MESSAGES,
+            recentlySent: recentlySentIds,
+            allowlistMatches: (id) => matchesAllowedUser(id, ALLOWED_USERS, SESSION_DIR),
+            messageId: msg.key.id,
+            chatId,
+          });
+          if (decision.action === 'drop_echo') continue;
+          if (decision.action === 'drop_disabled') continue;
+          if (decision.action === 'drop_allowlist') {
+            try {
+              console.log(JSON.stringify({
+                event: 'ignored',
+                reason: 'allowlist_mismatch_owner_chat',
+                chatId,
+                senderId,
+              }));
+            } catch {}
+            continue;
+          }
           fromOwner = true;
         } else {
           // Self-chat mode: only allow messages in the user's own self-chat.

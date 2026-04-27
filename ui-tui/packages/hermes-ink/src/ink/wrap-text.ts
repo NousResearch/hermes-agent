@@ -1,5 +1,6 @@
 import sliceAnsi from '../utils/sliceAnsi.js'
 
+import { lruEvict } from './lru.js'
 import { stringWidth } from './stringWidth.js'
 import type { Styles } from './styles.js'
 import { wrapAnsi } from './wrapAnsi.js'
@@ -113,14 +114,5 @@ export function wrapCacheSize(): number {
 }
 
 export function evictWrapCache(keepRatio = 0): void {
-  if (keepRatio <= 0) {
-    wrapCache.clear()
-    return
-  }
-
-  const target = Math.floor(wrapCache.size * keepRatio)
-
-  while (wrapCache.size > target) {
-    wrapCache.delete(wrapCache.keys().next().value!)
-  }
+  lruEvict(wrapCache, keepRatio)
 }

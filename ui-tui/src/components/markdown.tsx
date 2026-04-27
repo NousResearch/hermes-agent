@@ -1,5 +1,5 @@
 import { Box, Link, Text } from '@hermes/ink'
-import { memo, useMemo, type ReactNode } from 'react'
+import { memo, type ReactNode, useMemo } from 'react'
 
 import { ensureEmojiPresentation } from '../lib/emoji.js'
 import { highlightLine, isHighlightable } from '../lib/syntax.js'
@@ -213,26 +213,23 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
   return <Text>{parts.length ? parts : <Text>{text}</Text>}</Text>
 }
 
-// Cross-instance parsed-children cache. `Md` is mounted fresh whenever a
-// virtualized row enters the mount window — useMemo's per-instance cache
-// doesn't survive remounts, so PageUp into cold/resumed history reparses
-// every row (markdown scan + per-line syntax highlight).
-//
-// Outer WeakMap keyed by theme so palette swaps drop stale baked-in colors
-// without code intervention. Inner Map is LRU-bounded; key folds `compact`
-// in so the two layout modes don't poison each other.
+// Cross-instance parsed-children cache: useMemo's per-instance cache dies
+// on remount, so virtualization re-parses every row that scrolls back into
+// view. Theme-keyed WeakMap drops stale palettes; inner Map is LRU-bounded.
 const MD_CACHE_LIMIT = 512
 const mdCache = new WeakMap<Theme, Map<string, ReactNode[]>>()
 
 const cacheBucket = (t: Theme) => {
-  let b = mdCache.get(t)
+  const b = mdCache.get(t)
 
-  if (!b) {
-    b = new Map()
-    mdCache.set(t, b)
+  if (b) {
+    return b
   }
 
-  return b
+  const fresh = new Map<string, ReactNode[]>()
+  mdCache.set(t, fresh)
+
+  return fresh
 }
 
 const cacheGet = (b: Map<string, ReactNode[]>, key: string) => {

@@ -1,5 +1,6 @@
 import { type AnsiCode, ansiCodesToString, reduceAnsiCodes, tokenize, undoAnsiCodes } from '@alcalzone/ansi-tokenize'
 
+import { lruEvict } from '../ink/lru.js'
 import { stringWidth } from '../ink/stringWidth.js'
 
 function isEndCode(code: AnsiCode): boolean {
@@ -19,7 +20,9 @@ const sliceCache = new Map<string, string>()
 const SLICE_CACHE_LIMIT = 4096
 
 export default function sliceAnsi(str: string, start: number, end?: number): string {
-  if (!str) return ''
+  if (!str) {
+    return ''
+  }
 
   // Hot-path: only cache when end is defined (the Output.get() use-case).
   if (end !== undefined) {
@@ -29,6 +32,7 @@ export default function sliceAnsi(str: string, start: number, end?: number): str
     if (cached !== undefined) {
       sliceCache.delete(key)
       sliceCache.set(key, cached)
+
       return cached
     }
 
@@ -39,6 +43,7 @@ export default function sliceAnsi(str: string, start: number, end?: number): str
     }
 
     sliceCache.set(key, result)
+
     return result
   }
 
@@ -50,16 +55,7 @@ export function sliceCacheSize(): number {
 }
 
 export function evictSliceCache(keepRatio = 0): void {
-  if (keepRatio <= 0) {
-    sliceCache.clear()
-    return
-  }
-
-  const target = Math.floor(sliceCache.size * keepRatio)
-
-  while (sliceCache.size > target) {
-    sliceCache.delete(sliceCache.keys().next().value!)
-  }
+  lruEvict(sliceCache, keepRatio)
 }
 
 function computeSlice(str: string, start: number, end?: number): string {

@@ -57,3 +57,55 @@ class TestContextWindowTelemetry:
         summary = report.summary()
         assert "42" in summary
         assert "50,000" in summary or "50000" in summary
+
+    def test_zero_total_tokens_returns_zero_percent(self):
+        """A zero context limit must not raise ZeroDivisionError."""
+        from run_agent import ContextUsageReport
+
+        report = ContextUsageReport(
+            used_tokens=1000,
+            total_tokens=0,
+            message_count=5,
+        )
+
+        assert report.percentage == 0.0
+        assert report.is_warning() is False
+
+    def test_over_100_percent_usage(self):
+        """Used tokens exceeding the limit should report > 100% and warn."""
+        from run_agent import ContextUsageReport
+
+        report = ContextUsageReport(
+            used_tokens=130000,
+            total_tokens=128000,
+            message_count=60,
+        )
+
+        assert report.percentage > 100.0
+        assert report.is_warning() is True
+
+    def test_is_warning_at_exact_threshold(self):
+        """is_warning should be True when usage equals the threshold exactly."""
+        from run_agent import ContextUsageReport
+
+        # 108,800 / 128,000 = exactly 85.0%
+        report = ContextUsageReport(
+            used_tokens=108800,
+            total_tokens=128000,
+            message_count=30,
+        )
+
+        assert report.percentage == pytest.approx(85.0)
+        assert report.is_warning(threshold_percent=85.0) is True
+
+    def test_is_warning_just_below_threshold(self):
+        """is_warning should be False for usage just below the threshold."""
+        from run_agent import ContextUsageReport
+
+        report = ContextUsageReport(
+            used_tokens=108799,
+            total_tokens=128000,
+            message_count=30,
+        )
+
+        assert report.is_warning(threshold_percent=85.0) is False

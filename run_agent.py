@@ -1214,6 +1214,10 @@ class AIAgent:
         # after each API call.  Accessed by /usage slash command.
         self._rate_limit_state: Optional["RateLimitState"] = None
 
+        # Context window warning deduplication — emit once per conversation,
+        # not once per API call iteration.
+        self._context_warning_emitted: bool = False
+
         # Centralized logging — agent.log (INFO+) and errors.log (WARNING+)
         # both live under ~/.hermes/logs/.  Idempotent, so gateway mode
         # (which creates a new AIAgent per message) won't duplicate handlers.
@@ -9683,6 +9687,7 @@ class AIAgent:
         self._last_content_tools_all_housekeeping = False
         self._mute_post_response = False
         self._unicode_sanitization_passes = 0
+        self._context_warning_emitted = False
 
         # Pre-turn connection health check: detect and clean up dead TCP
         # connections left over from provider outages or dropped streams.
@@ -10233,19 +10238,24 @@ class AIAgent:
             approx_tokens = estimate_messages_tokens_rough(api_messages)
 
             # ── Context window usage telemetry ──
+            # Use estimate_request_tokens_rough so tool schemas (20-30K tokens
+            # with 50+ tools) are included in the utilisation figure.  The
+            # system prompt is already embedded as a system-role dict inside
+            # api_messages, so no separate system_prompt= argument is needed.
             _compressor = getattr(self, "context_compressor", None)
             _ctx_limit = getattr(_compressor, "context_length", None) if _compressor else None
             if _ctx_limit:
+                _full_tokens = estimate_request_tokens_rough(
+                    api_messages, tools=self.tools or None
+                )
                 _usage = ContextUsageReport(
-                    used_tokens=approx_tokens,
+                    used_tokens=_full_tokens,
                     total_tokens=_ctx_limit,
                     message_count=len(api_messages),
                 )
-                if _usage.is_warning(threshold_percent=85):
-                    self._vprint(
-                        f"{self.log_prefix}⚠️  {_usage.summary()}",
-                        force=True,
-                    )
+                if _usage.is_warning(threshold_percent=85) and not self._context_warning_emitted:
+                    self._context_warning_emitted = True
+                    self._emit_warning(f"⚠️  {_usage.summary()}")
 
             # Thinking spinner for quiet mode (animated during API call)
             thinking_spinner = None

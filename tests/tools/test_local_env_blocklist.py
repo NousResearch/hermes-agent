@@ -86,6 +86,7 @@ class TestProviderEnvBlocklist:
             "MINIMAX_API_KEY": "mm-key",
             "MINIMAX_CN_API_KEY": "mmcn-key",
             "DEEPSEEK_API_KEY": "deepseek-key",
+            "NVIDIA_API_KEY": "nvidia-key",
         }
         result_env = _run_with_env(extra_os_env=registry_vars)
 

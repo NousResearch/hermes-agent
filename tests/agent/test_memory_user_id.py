@@ -79,6 +79,28 @@ class TestMemoryManagerUserIdThreading:
         assert p._init_kwargs.get("platform") == "telegram"
         assert p._init_session_id == "sess-123"
 
+    def test_chat_context_forwarded_to_provider(self):
+        mgr = MemoryManager()
+        p = RecordingProvider()
+        mgr.add_provider(p)
+
+        mgr.initialize_all(
+            session_id="sess-chat",
+            platform="discord",
+            user_id="discord_u_7",
+            user_name="fakeusername",
+            chat_id="1485316232612941897",
+            chat_name="fakeassistantname-forums",
+            chat_type="thread",
+            thread_id="1491249007475949698",
+        )
+
+        assert p._init_kwargs.get("user_name") == "fakeusername"
+        assert p._init_kwargs.get("chat_id") == "1485316232612941897"
+        assert p._init_kwargs.get("chat_name") == "fakeassistantname-forums"
+        assert p._init_kwargs.get("chat_type") == "thread"
+        assert p._init_kwargs.get("thread_id") == "1491249007475949698"
+
     def test_no_user_id_when_cli(self):
         """CLI sessions should not have user_id in kwargs."""
         mgr = MemoryManager()
@@ -208,34 +230,81 @@ class TestMem0UserIdScoping:
 
 
 class TestHonchoUserIdScoping:
-    """Verify Honcho plugin uses gateway user_id for peer_name when provided."""
+    """Verify Honcho plugin keeps runtime user scoping separate from config peer_name."""
 
-    def test_gateway_user_id_overrides_peer_name(self):
-        """When user_id is in kwargs and no explicit peer_name, user_id should be used."""
+    def test_gateway_user_id_is_passed_as_runtime_peer(self):
+        """Gateway user_id should scope Honcho sessions without mutating config peer_name."""
         from plugins.memory.honcho import HonchoMemoryProvider
 
         provider = HonchoMemoryProvider()
 
-        # Create a mock config with NO explicit peer_name
         mock_cfg = MagicMock()
         mock_cfg.enabled = True
         mock_cfg.api_key = "test-key"
         mock_cfg.base_url = None
-        mock_cfg.peer_name = ""  # No explicit peer_name — user_id should fill it
-        mock_cfg.recall_mode = "tools"  # Use tools mode to defer session init
+        mock_cfg.peer_name = "static-user"
+        mock_cfg.recall_mode = "context"
+        mock_cfg.context_tokens = None
+        mock_cfg.raw = {}
+        mock_cfg.dialectic_depth = 1
+        mock_cfg.dialectic_depth_levels = None
+        mock_cfg.init_on_session_start = False
+        mock_cfg.ai_peer = "hermes"
+        mock_cfg.resolve_session_name.return_value = "test-sess"
+        mock_cfg.session_strategy = "shared"
 
         with patch(
             "plugins.memory.honcho.client.HonchoClientConfig.from_global_config",
             return_value=mock_cfg,
-        ):
+        ), patch(
+            "plugins.memory.honcho.client.get_honcho_client",
+            return_value=MagicMock(),
+        ), patch(
+            "plugins.memory.honcho.session.HonchoSessionManager",
+        ) as mock_manager_cls:
+            mock_manager = MagicMock()
+            mock_manager.get_or_create.return_value = MagicMock(messages=[])
+            mock_manager_cls.return_value = mock_manager
             provider.initialize(
                 session_id="test-sess",
                 user_id="discord_user_789",
                 platform="discord",
             )
 
-        # The config's peer_name should have been overridden with the user_id
-        assert mock_cfg.peer_name == "discord_user_789"
+        assert mock_cfg.peer_name == "static-user"
+        assert mock_manager_cls.call_args.kwargs["runtime_user_peer_name"] == "discord_user_789"
+
+    def test_session_manager_prefers_runtime_user_id_over_config_peer_name(self):
+        """Session manager should isolate gateway users even when config peer_name is static."""
+        from plugins.memory.honcho.session import HonchoSessionManager
+
+        mock_cfg = MagicMock()
+        mock_cfg.peer_name = "static-user"
+        mock_cfg.ai_peer = "hermes"
+        mock_cfg.write_frequency = "sync"
+        mock_cfg.dialectic_reasoning_level = "low"
+        mock_cfg.dialectic_dynamic = True
+        mock_cfg.dialectic_max_chars = 600
+        mock_cfg.observation_mode = "directional"
+        mock_cfg.user_observe_me = True
+        mock_cfg.user_observe_others = True
+        mock_cfg.ai_observe_me = True
+        mock_cfg.ai_observe_others = True
+
+        manager = HonchoSessionManager(
+            honcho=MagicMock(),
+            config=mock_cfg,
+            runtime_user_peer_name="discord_user_789",
+        )
+
+        with patch.object(manager, "_get_or_create_peer", return_value=MagicMock()), patch.object(
+            manager,
+            "_get_or_create_honcho_session",
+            return_value=(MagicMock(), []),
+        ):
+            session = manager.get_or_create("discord:channel-1")
+
+        assert session.user_peer_id == "discord_user_789"
 
     def test_no_user_id_preserves_config_peer_name(self):
         """Without user_id, the config peer_name should be preserved."""
@@ -287,3 +356,4 @@ class TestAIAgentUserIdPropagation:
             agent = object.__new__(AIAgent)
             agent._user_id = None
             assert agent._user_id is None
+

@@ -83,6 +83,25 @@ Standard OpenAI Chat Completions format. Stateless — the full conversation is 
 }
 ```
 
+**Inline image input:** user messages may send `content` as an array of `text` and `image_url` parts. Both remote `http(s)` URLs and `data:image/...` URLs are supported:
+
+```json
+{
+  "model": "hermes-agent",
+  "messages": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "text", "text": "What is in this image?"},
+        {"type": "image_url", "image_url": {"url": "https://example.com/cat.png", "detail": "high"}}
+      ]
+    }
+  ]
+}
+```
+
+Uploaded files (`file` / `input_file` / `file_id`) and non-image `data:` URLs return `400 unsupported_content_type`.
+
 **Streaming** (`"stream": true`): Returns Server-Sent Events (SSE) with token-by-token response chunks. For **Chat Completions**, the stream uses standard `chat.completion.chunk` events plus Hermes' custom `hermes.tool.progress` event for tool-start UX. For **Responses**, the stream uses OpenAI Responses event types such as `response.created`, `response.output_text.delta`, `response.output_item.added`, `response.output_item.done`, and `response.completed`.
 
 **Tool progress in streams**:
@@ -119,6 +138,25 @@ OpenAI Responses API format. Supports server-side conversation state via `previo
 }
 ```
 
+**Inline image input:** `input[].content` can contain `input_text` and `input_image` parts. Both remote URLs and `data:image/...` URLs are supported:
+
+```json
+{
+  "model": "hermes-agent",
+  "input": [
+    {
+      "role": "user",
+      "content": [
+        {"type": "input_text", "text": "Describe this screenshot."},
+        {"type": "input_image", "image_url": "data:image/png;base64,iVBORw0K..."}
+      ]
+    }
+  ]
+}
+```
+
+Uploaded files (`input_file` / `file_id`) and non-image `data:` URLs return `400 unsupported_content_type`.
+
 #### Multi-turn with previous_response_id
 
 Chain responses to maintain full context (including tool calls) across turns:
@@ -154,11 +192,63 @@ Delete a stored response.
 
 ### GET /v1/models
 
-Lists the agent as an available model. The advertised model name defaults to the [profile](/docs/user-guide/features/profiles) name (or `hermes-agent` for the default profile). Required by most frontends for model discovery.
+Lists the agent as an available model. The advertised model name defaults to the [profile](/docs/user-guide/profiles) name (or `hermes-agent` for the default profile). Required by most frontends for model discovery.
 
 ### GET /health
 
 Health check. Returns `{"status": "ok"}`. Also available at **GET /v1/health** for OpenAI-compatible clients that expect the `/v1/` prefix.
+
+### GET /health/detailed
+
+Extended health check that also reports active sessions, running agents, and resource usage. Useful for monitoring/observability tooling.
+
+## Runs API (streaming-friendly alternative)
+
+In addition to `/v1/chat/completions` and `/v1/responses`, the server exposes a **runs** API for long-form sessions where the client wants to subscribe to progress events instead of managing streaming themselves.
+
+### POST /v1/runs
+
+Create a new agent run. Returns a `run_id` that can be used to subscribe to progress events.
+
+### GET /v1/runs/\{run_id\}/events
+
+Server-Sent Events stream of the run's tool-call progress, token deltas, and lifecycle events. Designed for dashboards and thick clients that want to attach/detach without losing state.
+
+## Jobs API (background scheduled work)
+
+The server exposes a lightweight jobs CRUD surface for managing scheduled / background agent runs from a remote client. All endpoints are gated behind the same bearer auth.
+
+### GET /api/jobs
+
+List all scheduled jobs.
+
+### POST /api/jobs
+
+Create a new scheduled job. Body accepts the same shape as `hermes cron` — prompt, schedule, skills, provider override, delivery target.
+
+### GET /api/jobs/\{job_id\}
+
+Fetch a single job's definition and last-run state.
+
+### PATCH /api/jobs/\{job_id\}
+
+Update fields on an existing job (prompt, schedule, etc.). Partial updates are merged.
+
+### DELETE /api/jobs/\{job_id\}
+
+Remove a job. Also cancels any in-flight run.
+
+### POST /api/jobs/\{job_id\}/pause
+
+Pause a job without deleting it. Next-scheduled-run timestamps are suspended until resumed.
+
+### POST /api/jobs/\{job_id\}/resume
+
+Resume a previously paused job.
+
+### POST /api/jobs/\{job_id\}/run
+
+Trigger the job to run immediately, out of schedule.
 
 ## System Prompt Handling
 
@@ -247,7 +337,7 @@ Any frontend that supports the OpenAI API format works. Tested/documented integr
 
 ## Multi-User Setup with Profiles
 
-To give multiple users their own isolated Hermes instance (separate config, memory, skills), use [profiles](/docs/user-guide/features/profiles):
+To give multiple users their own isolated Hermes instance (separate config, memory, skills), use [profiles](/docs/user-guide/profiles):
 
 ```bash
 # Create a profile per user
@@ -278,7 +368,7 @@ In Open WebUI, add each as a separate connection. The model dropdown shows `alic
 ## Limitations
 
 - **Response storage** — stored responses (for `previous_response_id`) are persisted in SQLite and survive gateway restarts. Max 100 stored responses (LRU eviction).
-- **No file upload** — vision/document analysis via uploaded files is not yet supported through the API.
+- **No file upload** — inline images are supported on both `/v1/chat/completions` and `/v1/responses`, but uploaded files (`file`, `input_file`, `file_id`) and non-image document inputs are not supported through the API.
 - **Model field is cosmetic** — the `model` field in requests is accepted but the actual LLM model used is configured server-side in config.yaml.
 
 ## Proxy Mode

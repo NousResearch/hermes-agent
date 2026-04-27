@@ -39,6 +39,73 @@ def test_normalize_usage_openai_subtracts_cached_prompt_tokens():
     assert normalized.output_tokens == 700
 
 
+def test_normalize_usage_openai_reads_top_level_anthropic_cache_fields():
+    """Some OpenAI-compatible proxies (OpenRouter, Vercel AI Gateway, Cline) expose
+    Anthropic-style cache token counts at the top level of the usage object when
+    routing Claude models, instead of nesting them in prompt_tokens_details.
+
+    Regression guard for the bug fixed in cline/cline#10266 — before this fix,
+    the chat-completions branch of normalize_usage() only read
+    prompt_tokens_details.cache_write_tokens and completely missed the
+    cache_creation_input_tokens case, so cache writes showed as 0 and reflected
+    inputTokens were overstated by the cache-write amount.
+    """
+    usage = SimpleNamespace(
+        prompt_tokens=1000,
+        completion_tokens=200,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=500),
+        cache_creation_input_tokens=300,
+    )
+
+    normalized = normalize_usage(usage, provider="openrouter", api_mode="chat_completions")
+
+    # Expected: cache read from prompt_tokens_details.cached_tokens (preferred),
+    # cache write from top-level cache_creation_input_tokens (fallback).
+    assert normalized.cache_read_tokens == 500
+    assert normalized.cache_write_tokens == 300
+    # input_tokens = prompt_total - cache_read - cache_write = 1000 - 500 - 300 = 200
+    assert normalized.input_tokens == 200
+    assert normalized.output_tokens == 200
+
+
+def test_normalize_usage_openai_reads_top_level_cache_read_when_details_missing():
+    """Some proxies expose only top-level Anthropic-style fields with no
+    prompt_tokens_details object. Regression guard for cline/cline#10266.
+    """
+    usage = SimpleNamespace(
+        prompt_tokens=1000,
+        completion_tokens=200,
+        cache_read_input_tokens=500,
+        cache_creation_input_tokens=300,
+    )
+
+    normalized = normalize_usage(usage, provider="openrouter", api_mode="chat_completions")
+
+    assert normalized.cache_read_tokens == 500
+    assert normalized.cache_write_tokens == 300
+    assert normalized.input_tokens == 200
+
+
+def test_normalize_usage_openai_prefers_prompt_tokens_details_over_top_level():
+    """When both prompt_tokens_details and top-level Anthropic fields are
+    present, we prefer the OpenAI-standard nested fields. Top-level Anthropic
+    fields are only a fallback when the nested ones are absent/zero.
+    """
+    usage = SimpleNamespace(
+        prompt_tokens=1000,
+        completion_tokens=200,
+        prompt_tokens_details=SimpleNamespace(cached_tokens=600, cache_write_tokens=150),
+        # Intentionally different values — proving we ignore these when details exist.
+        cache_read_input_tokens=999,
+        cache_creation_input_tokens=999,
+    )
+
+    normalized = normalize_usage(usage, provider="openrouter", api_mode="chat_completions")
+
+    assert normalized.cache_read_tokens == 600
+    assert normalized.cache_write_tokens == 150
+
+
 def test_openrouter_models_api_pricing_is_converted_from_per_token_to_per_million(monkeypatch):
     monkeypatch.setattr(
         "agent.usage_pricing.fetch_model_metadata",

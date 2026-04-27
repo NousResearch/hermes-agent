@@ -72,7 +72,7 @@ run_conversation()
      - anthropic_messages: convert via anthropic_adapter.py
   6. Inject ephemeral prompt layers (budget warnings, context pressure)
   7. Apply prompt caching markers if on Anthropic
-  8. Make interruptible API call (_api_call_with_interrupt)
+  8. Make interruptible API call (_interruptible_api_call)
   9. Parse response:
      - If tool_calls: execute them, append results, loop back to step 5
      - If text response: persist session, flush memory if needed, return
@@ -105,7 +105,7 @@ Providers validate these sequences and will reject malformed histories.
 
 ## Interruptible API Calls
 
-API requests are wrapped in `_api_call_with_interrupt()` which runs the actual HTTP call in a background thread while monitoring an interrupt event:
+API requests are wrapped in `_interruptible_api_call()` which runs the actual HTTP call in a background thread while monitoring an interrupt event:
 
 ```text
 ┌────────────────────────────────────────────────────┐

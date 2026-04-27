@@ -13,7 +13,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/hermes/.playwright
 # Install system dependencies in one layer, clear APT cache
 RUN apt-get update &&\
     apt-get install -y --no-install-recommends \
-        git curl ripgrep ffmpeg procps \
+        git curl ripgrep ffmpeg procps openssh-client docker-cli tini \
         # Libraries required by Playwright’s headless Chromium
         libnss3 libatk-bridge2.0-0 libcups2 libdrm2 \
         libxkbcommon0 libxcomposite1 libxdamage1 libxrandr2 \
@@ -52,10 +52,17 @@ RUN npx playwright install chromium --with-deps --only-shell &&\
     npm cache clean --force
 
 # Install WhatsApp bridge dependencies.
-RUN mkdir -p /opt/hermes/scripts/whatsapp-bridge
+RUN mkdir -p /opt/hermes/scripts/whatsapp-bridge /opt/hermes/web/
 COPY ./scripts/whatsapp-bridge/package*.json ./scripts/whatsapp-bridge/
 RUN cd /opt/hermes/scripts/whatsapp-bridge &&\
     npm ci --no-audit &&\
+    npm cache clean --force &&\
+    rm -rf /tmp/* ~/.npm
+
+COPY web/package*.json  
+RUN cd /opt/hermes/web &&\
+    npm ci --no-audit &&\
+    npm run build &&\
     npm cache clean --force &&\
     rm -rf /tmp/* ~/.npm
 
@@ -73,9 +80,21 @@ COPY . .
 RUN uv venv "$VIRTUAL_ENV" &&\
     uv pip install --no-cache -e ".[$EXTRAS]"
 
+# ---------- Permissions ----------
+# Make install dir world-readable so any HERMES_UID can read it at runtime.
+# The venv needs to be traversable too.
 USER root
-RUN chmod +x /opt/hermes/docker/entrypoint.sh
+RUN chmod -R a+rX /opt/hermes
+# Start as root so the entrypoint can usermod/groupmod + gosu.
+# If HERMES_UID is unset, the entrypoint drops to the default hermes user (10000).
 
+# ---------- Python virtualenv ----------
+RUN uv venv && \
+    uv pip install --no-cache-dir -e ".[all]"
+
+# ---------- Runtime ----------
+ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist
 ENV HERMES_HOME=/opt/data
+ENV PATH="/opt/data/.local/bin:${PATH}"
 VOLUME [ "/opt/data" ]
-ENTRYPOINT [ "/opt/hermes/docker/entrypoint.sh" ]
+ENTRYPOINT [ "/usr/bin/tini", "-g", "--", "/opt/hermes/docker/entrypoint.sh" ]

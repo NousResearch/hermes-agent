@@ -469,9 +469,12 @@ class TurnController {
       ...(tools.length && { tools })
     }
 
-    const finalMessages = hasDetails(finalDetails) ? [...segments, finalDetails] : [...segments]
-
-    finalMessages.push(...archiveDoneTodos())
+    // Archive todos FIRST so the trail msg sits right after the user prompt,
+    // not between thinking/tools and the final assistant text. Keeps the
+    // panel visually anchored where it lived during streaming.
+    const archived = archiveDoneTodos()
+    const body = hasDetails(finalDetails) ? [...segments, finalDetails] : segments
+    const finalMessages: Msg[] = [...archived, ...body]
 
     if (finalText) {
       finalMessages.push({ role: 'assistant', text: finalText })

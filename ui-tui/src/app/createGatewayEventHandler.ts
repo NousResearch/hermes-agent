@@ -537,10 +537,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const { finalMessages, finalText, wasInterrupted } = turnController.recordMessageComplete(ev.payload ?? {})
 
         if (!wasInterrupted) {
-          // Archive the todo list FIRST so it sits above the final assistant
-          // text in the transcript — same position it held during streaming.
-          // Otherwise the panel would visibly jump from "above live answer" to
-          // "below final answer" at message.complete.
+          // Defensive: turnController.recordMessageComplete already prepends
+          // the archive at the head of finalMessages. This is a no-op in the
+          // normal path (state.todos is empty) but covers any edge where
+          // todos linger past the controller archive.
           archiveTodosAtTurnEnd().forEach(appendMessage)
 
           const msgs: Msg[] = finalMessages.length ? finalMessages : [{ role: 'assistant', text: finalText }]

@@ -51,7 +51,7 @@ hermes              # start chatting!
 ## Getting Started
 
 ```bash
-hermes              # Interactive CLI — start a conversation
+hermes              # Interactive CLI — start a conversation / Code Mode console
 hermes model        # Choose your LLM provider and model
 hermes tools        # Configure which tools are enabled
 hermes config set   # Set individual config values
@@ -60,6 +60,17 @@ hermes setup        # Run the full setup wizard (configures everything at once)
 hermes claw migrate # Migrate from OpenClaw (if coming from OpenClaw)
 hermes update       # Update to the latest version
 hermes doctor       # Diagnose any issues
+```
+
+Inside the interactive CLI, Code Mode helpers include:
+
+```text
+/code               # Show Code Mode help and Cockpit URL
+/web                # Show HermesWeb/backend URLs
+/workspace          # Show current workspace and Git branch
+/session            # Show active code sessions
+/approvals          # Show pending approvals
+/skills-code        # Show coding workflow skills
 ```
 
 📖 **[Full documentation →](https://hermes-agent.nousresearch.com/docs/)**
@@ -91,6 +102,7 @@ All documentation lives at **[hermes-agent.nousresearch.com/docs](https://hermes
 | Section | What's Covered |
 |---------|---------------|
 | [Quickstart](https://hermes-agent.nousresearch.com/docs/getting-started/quickstart) | Install → setup → first conversation in 2 minutes |
+| [Code Mode](https://hermes-agent.nousresearch.com/docs/user-guide/features/code-mode) | Coding console, `/code` Cockpit, workspace/session commands, approvals |
 | [CLI Usage](https://hermes-agent.nousresearch.com/docs/user-guide/cli) | Commands, keybindings, personalities, sessions |
 | [Configuration](https://hermes-agent.nousresearch.com/docs/user-guide/configuration) | Config file, providers, models, all options |
 | [Messaging Gateway](https://hermes-agent.nousresearch.com/docs/user-guide/messaging) | Telegram, Discord, Slack, WhatsApp, Signal, Home Assistant |

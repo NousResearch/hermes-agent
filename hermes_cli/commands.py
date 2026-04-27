@@ -143,6 +143,15 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("plugins", "List installed plugins and their status",
                "Tools & Skills", cli_only=True),
 
+    # Code Mode
+    CommandDef("code", "Hermes Code Mode help and cockpit info", "Code Mode", cli_only=True),
+    CommandDef("web", "Show HermesWeb and backend URLs", "Code Mode", cli_only=True),
+    CommandDef("workspace", "Show current workspace and git branch", "Code Mode", cli_only=True),
+    CommandDef("session", "Show active code sessions", "Code Mode", cli_only=True),
+    CommandDef("approvals", "Show pending approvals", "Code Mode", cli_only=True),
+    CommandDef("skills-code", "List coding skills (fix_build, review_diff, etc.)", "Code Mode",
+               cli_only=True, aliases=("skillscode",)),
+
     # Info
     CommandDef("commands", "Browse all commands and skills (paginated)", "Info",
                gateway_only=True, args_hint="[page]"),

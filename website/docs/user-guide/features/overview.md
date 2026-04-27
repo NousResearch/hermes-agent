@@ -44,6 +44,11 @@ Hermes Agent includes a rich set of capabilities that extend far beyond basic ch
 - **[IDE Integration (ACP)](acp.md)** — Use Hermes inside ACP-compatible editors such as VS Code, Zed, and JetBrains. Chat, tool activity, file diffs, and terminal commands render inside your editor.
 - **[RL Training](rl-training.md)** — Generate trajectory data from agent sessions for reinforcement learning and model fine-tuning.
 
+## Management
+
+- **[Web Dashboard](web-dashboard.md)** — Browser-based UI for managing Hermes configuration, API keys, sessions, and runtime status.
+- **[Code Mode](code-mode.md)** — Coding-focused CLI home screen and HermesWeb Code Cockpit at `/code`, with workspace/session helpers, approvals, and coding skills.
+
 ## Customization
 
 - **[Personality & SOUL.md](personality.md)** — Fully customizable agent personality. `SOUL.md` is the primary identity file — the first thing in the system prompt — and you can swap in built-in or custom `/personality` presets per session.

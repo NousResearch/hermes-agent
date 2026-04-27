@@ -71,6 +71,17 @@ Type `/` in the CLI to open the autocomplete menu. Built-in commands are case-in
 | `/reload` | Reload `.env` variables into the running session (picks up new API keys without restarting) |
 | `/plugins` | List installed plugins and their status |
 
+### Code Mode
+
+| Command | Description |
+|---------|-------------|
+| `/code` | Show Hermes Code Mode help, Code Cockpit URL, backend URL, and related commands. |
+| `/web` | Show HermesWeb frontend, Code Cockpit, backend/status URLs, and local log paths. |
+| `/workspace` | Show the active workspace path, current Git branch when available, and Code Cockpit URL. |
+| `/session` | Show active Code Mode sessions from the backend. Handles backend offline or auth-required responses gracefully. |
+| `/approvals` | Show pending approvals from the backend. Handles backend offline or auth-required responses gracefully. |
+| `/skills-code` (alias: `/skillscode`) | List coding workflow skills: `fix_build`, `review_diff`, `stabilize_hanging_task`, `fix_runtime_error`, `implement_feature`, `refactor_react_page`, and `benchmark_provider`. |
+
 ### Info
 
 | Command | Description |
@@ -158,7 +169,7 @@ The messaging gateway supports the following built-in commands inside Telegram, 
 
 ## Notes
 
-- `/skin`, `/tools`, `/toolsets`, `/browser`, `/config`, `/cron`, `/skills`, `/platforms`, `/paste`, `/image`, `/statusbar`, and `/plugins` are **CLI-only** commands.
+- `/skin`, `/tools`, `/toolsets`, `/browser`, `/config`, `/cron`, `/skills`, `/platforms`, `/paste`, `/image`, `/statusbar`, `/plugins`, `/code`, `/web`, `/workspace`, `/session`, `/approvals`, and `/skills-code` are **CLI-only** commands.
 - `/verbose` is **CLI-only by default**, but can be enabled for messaging platforms by setting `display.tool_progress_command: true` in `config.yaml`. When enabled, it cycles the `display.tool_progress` mode and saves to config.
 - `/sethome`, `/update`, `/restart`, `/approve`, `/deny`, and `/commands` are **messaging-only** commands.
 - `/status`, `/background`, `/voice`, `/reload-mcp`, `/rollback`, `/snapshot`, `/debug`, `/fast`, and `/yolo` work in **both** the CLI and the messaging gateway.

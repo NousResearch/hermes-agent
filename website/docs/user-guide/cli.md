@@ -48,7 +48,7 @@ hermes -w -q "Fix issue #123"     # Single query in worktree
 <img className="docs-terminal-figure" src="/img/docs/cli-layout.svg" alt="Stylized preview of the Hermes CLI layout showing the banner, conversation area, and fixed input prompt." />
 <p className="docs-figure-caption">The Hermes CLI banner, conversation stream, and fixed input prompt rendered as a stable docs figure instead of fragile text art.</p>
 
-The welcome banner shows your model, terminal backend, working directory, available tools, and installed skills at a glance.
+The welcome banner now renders as the **Hermes Code Console**: a coding-focused dashboard with the active provider/model, profile, workspace, Git branch, session ID, backend status, Code Cockpit URL, DB schema, active sessions, pending approvals, and tool/skill counts at a glance. See [Code Mode](features/code-mode.md) for the `/code` Cockpit and Code Mode command reference.
 
 ### Status Bar
 
@@ -111,6 +111,12 @@ Common examples:
 | `/skills browse` | Browse the skills hub and official optional skills |
 | `/background <prompt>` | Run a prompt in a separate background session |
 | `/skin` | Show or switch the active CLI skin |
+| `/code` | Show Code Mode help and the Code Cockpit URL |
+| `/web` | Show HermesWeb/backend URLs and local logs |
+| `/workspace` | Show current workspace path and Git branch |
+| `/session` | Show active code sessions |
+| `/approvals` | Show pending approvals |
+| `/skills-code` | List coding workflow skills |
 | `/voice on` | Enable CLI voice mode (press `Ctrl+B` to record) |
 | `/voice tts` | Toggle spoken playback for Hermes replies |
 | `/reasoning high` | Increase reasoning effort |

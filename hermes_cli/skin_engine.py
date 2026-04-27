@@ -22,6 +22,17 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       banner_accent: "#FFBF00"            # Section headers (Available Tools, etc.)
       banner_dim: "#B8860B"               # Dim/muted text (separators, labels)
       banner_text: "#FFF8DC"              # Body text (tool names, skill names)
+      code_border: "#00838F"              # Code Mode panel border (teal)
+      code_title: "#00E5FF"               # Code Mode title (bright cyan)
+      code_title_dim: "#56B6C2"           # Code Mode secondary title
+      code_accent: "#2DD4BF"              # Code Mode section headers (teal)
+      code_accent_dim: "#00838F"          # Code Mode divider/accent lines
+      code_dim: "#546E7A"                 # Legacy Code Mode muted labels
+      code_text: "#E6EDF3"                # Code Mode main text
+      code_muted: "#8B949E"               # Code Mode muted text
+      code_success: "#7EE787"             # Code Mode success indicators
+      code_warning: "#D29922"             # Code Mode warning indicators
+      code_error: "#F85149"               # Code Mode error indicators
       ui_accent: "#FFBF00"               # General UI accent
       ui_label: "#4dd0e1"                # UI labels
       ui_ok: "#4caf50"                   # Success indicators
@@ -162,6 +173,17 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "banner_accent": "#FFBF00",
             "banner_dim": "#B8860B",
             "banner_text": "#FFF8DC",
+            "code_border": "#00838F",
+            "code_title": "#00E5FF",
+            "code_title_dim": "#56B6C2",
+            "code_accent": "#2DD4BF",
+            "code_accent_dim": "#00838F",
+            "code_dim": "#546E7A",
+            "code_text": "#E6EDF3",
+            "code_muted": "#8B949E",
+            "code_success": "#7EE787",
+            "code_warning": "#D29922",
+            "code_error": "#F85149",
             "ui_accent": "#FFBF00",
             "ui_label": "#4dd0e1",
             "ui_ok": "#4caf50",

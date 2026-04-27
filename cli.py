@@ -576,7 +576,7 @@ from run_agent import AIAgent
 from model_tools import get_tool_definitions, get_toolset_for_tool
 
 # Extracted CLI modules (Phase 3)
-from hermes_cli.banner import build_welcome_banner
+from hermes_cli.banner import build_welcome_banner, build_hermes_code_console, get_available_skills
 from hermes_cli.commands import SlashCommandCompleter, SlashCommandAutoSuggest
 from toolsets import get_all_toolsets, get_toolset_info, validate_toolset
 
@@ -2938,40 +2938,36 @@ class HermesCLI:
             return False
     
     def show_banner(self):
-        """Display the welcome banner in Claude Code style."""
+        """Display the welcome banner in Hermes Code Console style."""
         self.console.clear()
 
-        # Get context length for display before branching so it remains
-        # available to the low-context warning logic in compact mode too.
+        # Get context length for display
         ctx_len = None
         if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
             ctx_len = self.agent.context_compressor.context_length
-        
-        # Auto-compact for narrow terminals — the full banner with caduceus
-        # + tool list needs ~80 columns minimum to render without wrapping.
-        term_width = shutil.get_terminal_size().columns
-        use_compact = self.compact or term_width < 80
-        
-        if use_compact:
-            self.console.print(_build_compact_banner())
-            self._show_status()
-        else:
-            # Get tools for display
-            tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
-            
-            # Get terminal working directory (where commands will execute)
-            cwd = os.getenv("TERMINAL_CWD", os.getcwd())
-            
-            # Build and display the banner
-            build_welcome_banner(
-                console=self.console,
-                model=self.model,
-                cwd=cwd,
-                tools=tools,
-                enabled_toolsets=self.enabled_toolsets,
-                session_id=self.session_id,
-                context_length=ctx_len,
-            )
+
+        tools_count = 0
+        skills_count = 0
+        try:
+            tools_count = len(get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True))
+        except Exception:
+            pass
+        try:
+            skills_count = sum(len(items) for items in get_available_skills().values())
+        except Exception:
+            pass
+
+        # Display new Hermes Code Console banner
+        build_hermes_code_console(
+            console=self.console,
+            model=self.model,
+            provider=getattr(self, "provider", None),
+            profile=None,
+            session_id=self.session_id,
+            tools_count=tools_count,
+            skills_count=skills_count,
+            context_length=ctx_len,
+        )
         
         # Show tool availability warnings if any tools are disabled
         self._show_tool_availability_warnings()
@@ -5307,50 +5303,41 @@ class HermesCLI:
             # and gets mangled by patch_stdout).
             if self._app:
                 cc = ChatConsole()
-                term_w = shutil.get_terminal_size().columns
-                if self.compact or term_w < 80:
-                    cc.print(_build_compact_banner())
-                else:
-                    tools = get_tool_definitions(enabled_toolsets=self.enabled_toolsets, quiet_mode=True)
-                    cwd = os.getenv("TERMINAL_CWD", os.getcwd())
-                    ctx_len = None
-                    if hasattr(self, 'agent') and self.agent and hasattr(self.agent, 'context_compressor'):
-                        ctx_len = self.agent.context_compressor.context_length
-                    build_welcome_banner(
-                        console=cc,
-                        model=self.model,
-                        cwd=cwd,
-                        tools=tools,
-                        enabled_toolsets=self.enabled_toolsets,
-                        session_id=self.session_id,
-                        context_length=ctx_len,
-                    )
-                _cprint("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
+                build_hermes_code_console(
+                    console=cc,
+                    model=self.model,
+                    provider=getattr(self, "provider", None),
+                    profile=None,
+                    session_id=self.session_id,
+                )
+                _cprint("  ✨ Fresh start! Screen cleared and conversation reset.\n")
                 # Show a random tip on new session
                 try:
                     from hermes_cli.tips import get_random_tip
                     _tip = get_random_tip()
+                    _tip_color = "#546E7A"
                     try:
                         from hermes_cli.skin_engine import get_active_skin
-                        _tip_color = get_active_skin().get_color("banner_dim", "#B8860B")
+                        _tip_color = get_active_skin().get_color("code_dim", "#546E7A")
                     except Exception:
-                        _tip_color = "#B8860B"
-                    cc.print(f"[dim {_tip_color}]✦ Tip: {_tip}[/]")
+                        pass
+                    cc.print(f"[dim {_tip_color}]✦ {_tip}[/]")
                 except Exception:
                     pass
             else:
                 self.show_banner()
-                print("  ✨ (◕‿◕)✨ Fresh start! Screen cleared and conversation reset.\n")
+                print("  ✨ Fresh start! Screen cleared and conversation reset.\n")
                 # Show a random tip on new session
                 try:
                     from hermes_cli.tips import get_random_tip
                     _tip = get_random_tip()
+                    _tip_color = "#546E7A"
                     try:
                         from hermes_cli.skin_engine import get_active_skin
-                        _tip_color = get_active_skin().get_color("banner_dim", "#B8860B")
+                        _tip_color = get_active_skin().get_color("code_dim", "#546E7A")
                     except Exception:
-                        _tip_color = "#B8860B"
-                    self.console.print(f"[dim {_tip_color}]✦ Tip: {_tip}[/]")
+                        pass
+                    self.console.print(f"[dim {_tip_color}]✦ {_tip}[/]")
                 except Exception:
                     pass
         elif canonical == "history":
@@ -5515,6 +5502,18 @@ class HermesCLI:
                     _cprint(f"  Queued for the next turn: {payload[:80]}{'...' if len(payload) > 80 else ''}")
                 else:
                     _cprint(f"  Queued: {payload[:80]}{'...' if len(payload) > 80 else ''}")
+        elif canonical == "code":
+            self._handle_code_command(cmd_original)
+        elif canonical == "web":
+            self._handle_web_command(cmd_original)
+        elif canonical == "workspace":
+            self._handle_workspace_command(cmd_original)
+        elif canonical == "session":
+            self._handle_session_command(cmd_original)
+        elif canonical == "approvals":
+            self._handle_approvals_command(cmd_original)
+        elif canonical in ("skills-code", "skillscode"):
+            self._handle_skills_code_command(cmd_original)
         elif canonical == "skin":
             self._handle_skin_command(cmd_original)
         elif canonical == "voice":
@@ -6126,6 +6125,164 @@ class HermesCLI:
             print("   disconnect   Revert to default browser backend")
             print("   status       Show current browser mode")
             print()
+
+    def _handle_code_command(self, cmd: str = ""):
+        """Handle /code — show Code Mode help and Cockpit URL."""
+        _c = "#4DD0E1"
+        _d = "#546E7A"
+        self.console.print()
+        self.console.print(f"[bold {_c}]Hermes Code Mode[/]")
+        self.console.print(f"[{_d}]AI Development Console — cockpit at http://localhost:3001/code[/]")
+        self.console.print()
+        self.console.print(f"[{_d}]Cockpit:[/] http://localhost:3001/code")
+        self.console.print(f"[{_d}]Backend API:[/] http://localhost:9119")
+        self.console.print(f"[{_d}]Useful:[/] /workspace /session /skills-code /approvals /web")
+        self.console.print()
+        self.console.print(f"[{_d}]Commands:[/]")
+        for slash_cmd, desc in [
+            ("/web", "Show all URLs"),
+            ("/workspace", "Current workspace and branch"),
+            ("/session", "Active code sessions"),
+            ("/approvals", "Pending approvals"),
+            ("/skills-code", "Coding skills list"),
+            ("/tools", "All available tools"),
+            ("/skills", "All available skills"),
+            ("/help", "All commands"),
+        ]:
+            self.console.print(f"  [{_c}]{slash_cmd}[/]  [{_d}]{desc}[/]")
+        self.console.print()
+
+    def _handle_web_command(self, cmd: str = ""):
+        """Handle /web — show service URLs."""
+        _c = "#4DD0E1"
+        _d = "#546E7A"
+        self.console.print()
+        self.console.print(f"[bold {_c}]HermesWeb URLs[/]")
+        self.console.print(f"  [{_d}]Frontend:[/]      http://localhost:3001")
+        self.console.print(f"  [{_d}]Code Cockpit:[/]  http://localhost:3001/code")
+        self.console.print(f"  [{_d}]Backend:[/]       http://localhost:9119")
+        self.console.print(f"  [{_d}]Status:[/]        http://localhost:9119/api/status")
+        self.console.print(f"  [{_d}]Agents:[/]        http://localhost:9119/api/agents")
+        self.console.print(f"  [{_d}]Sessions:[/]      http://localhost:9119/api/sessions")
+        self.console.print()
+        self.console.print(f"  [{_d}]Logs (backend):[/]  tail -f /tmp/hermes-backend.log")
+        self.console.print(f"  [{_d}]Logs (frontend):[/] tail -f /tmp/hermes-frontend.log")
+        self.console.print(f"  [{_d}]Logs:[/] tail -f /tmp/hermes-backend.log /tmp/hermes-frontend.log")
+        self.console.print()
+
+    def _handle_workspace_command(self, cmd: str = ""):
+        """Handle /workspace — show current workspace and git branch."""
+        import subprocess as _sp
+        _c = "#4DD0E1"
+        _d = "#546E7A"
+        ws = os.getenv("TERMINAL_CWD", os.getcwd())
+        branch = "not a git repository"
+        try:
+            r = _sp.run(
+                ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+                capture_output=True, text=True, timeout=2, cwd=ws,
+            )
+            if r.returncode == 0 and r.stdout.strip():
+                branch = r.stdout.strip()
+        except Exception:
+            pass
+        self.console.print()
+        self.console.print(f"[bold {_c}]Workspace[/]")
+        self.console.print(f"  [{_d}]Path:[/]    {ws}")
+        self.console.print(f"  [{_d}]Branch:[/]  {branch}")
+        self.console.print(f"  [{_d}]Cockpit:[/] http://localhost:3001/code")
+        self.console.print()
+
+    def _handle_session_command(self, cmd: str = ""):
+        """Handle /session — show active code sessions."""
+        _c = "#4DD0E1"
+        _d = "#546E7A"
+        self.console.print()
+        try:
+            import requests as _req
+            r = _req.get("http://localhost:9119/api/code/sessions", timeout=2)
+            if r.status_code == 200:
+                payload = r.json() or []
+                sessions = payload.get("sessions", []) if isinstance(payload, dict) else payload
+                if not isinstance(sessions, list):
+                    sessions = []
+                active = [s for s in sessions if isinstance(s, dict) and s.get("status") == "active"]
+                if active:
+                    self.console.print(f"[bold {_c}]Active Code Sessions ({len(active)})[/]")
+                    for s in active:
+                        sid = s.get("id", "?")[:12]
+                        ws_path = s.get("workspace", "?")
+                        branch = s.get("branch", "?")
+                        self.console.print(f"  [{_d}]{sid}[/]  {ws_path}  [{_d}]@{branch}[/]")
+                else:
+                    self.console.print(f"[{_d}]No active code sessions.[/]")
+                    self.console.print(f"[{_d}]Start one from the Code Cockpit: http://localhost:3001/code[/]")
+            elif r.status_code in (401, 403):
+                self.console.print(f"[{_d}]No active code sessions.[/]")
+                self.console.print(f"[{_d}]Backend auth required — open Cockpit: http://localhost:3001/code[/]")
+            else:
+                self.console.print(f"[yellow]Backend returned {r.status_code}[/]")
+        except Exception:
+            self.console.print(f"[{_d}]Backend unavailable — cannot fetch sessions.[/]")
+            self.console.print(f"[{_d}]Start the backend with: hermes-up[/]")
+        self.console.print()
+
+    def _handle_approvals_command(self, cmd: str = ""):
+        """Handle /approvals — show pending approvals."""
+        _c = "#4DD0E1"
+        _d = "#546E7A"
+        _w = "#D29922"
+        self.console.print()
+        try:
+            import requests as _req
+            r = _req.get("http://localhost:9119/api/approvals", timeout=2)
+            if r.status_code == 200:
+                payload = r.json() or []
+                approvals = payload.get("approvals", []) if isinstance(payload, dict) else payload
+                if not isinstance(approvals, list):
+                    approvals = []
+                pending = [a for a in approvals if isinstance(a, dict) and a.get("status") == "pending"]
+                if pending:
+                    self.console.print(f"[bold {_w}]Pending Approvals ({len(pending)})[/]")
+                    for a in pending[:5]:
+                        aid = a.get("id", "?")[:12]
+                        desc = a.get("description") or a.get("command") or "?"
+                        self.console.print(f"  [{_w}]{aid}[/]  {desc[:80]}")
+                    if len(pending) > 5:
+                        self.console.print(f"  [{_d}]... and {len(pending) - 5} more[/]")
+                    self.console.print()
+                    self.console.print(f"  [{_d}]Review in Cockpit: http://localhost:3001/code[/]")
+                else:
+                    self.console.print(f"[{_d}]No pending approvals.[/]")
+            elif r.status_code in (401, 403):
+                self.console.print(f"[{_d}]No pending approvals.[/]")
+                self.console.print(f"[{_d}]Backend auth required — review in Cockpit: http://localhost:3001/code[/]")
+            else:
+                self.console.print(f"[yellow]Backend returned {r.status_code}[/]")
+        except Exception:
+            self.console.print(f"[{_d}]Backend unavailable — cannot fetch approvals.[/]")
+        self.console.print()
+
+    def _handle_skills_code_command(self, cmd: str = ""):
+        """Handle /skills-code — list coding skills."""
+        _c = "#4DD0E1"
+        _d = "#546E7A"
+        coding_skills = [
+            ("fix_build", "Diagnose and fix build failures"),
+            ("review_diff", "Review a git diff or code change"),
+            ("stabilize_hanging_task", "Unstick a hanging agent task"),
+            ("fix_runtime_error", "Diagnose and fix runtime exceptions"),
+            ("implement_feature", "Scaffold and implement a new feature"),
+            ("refactor_react_page", "Refactor a React component/page"),
+            ("benchmark_provider", "Benchmark LLM providers for speed/cost"),
+        ]
+        self.console.print()
+        self.console.print(f"[bold {_c}]Coding Skills[/]")
+        for name, desc in coding_skills:
+            self.console.print(f"  [{_c}]/skill {name}[/]  [{_d}]{desc}[/]")
+        self.console.print()
+        self.console.print(f"  [{_d}]Use /skills to see all available skills.[/]")
+        self.console.print()
 
     def _handle_skin_command(self, cmd: str):
         """Handle /skin [name] — show or change the display skin."""
@@ -8203,23 +8360,15 @@ class HermesCLI:
                 self._display_resumed_history()
 
         try:
-            from hermes_cli.skin_engine import get_active_skin
-            _welcome_skin = get_active_skin()
-            _welcome_text = _welcome_skin.get_branding("welcome", "Welcome to Hermes Agent! Type your message or /help for commands.")
-            _welcome_color = _welcome_skin.get_color("banner_text", "#FFF8DC")
-        except Exception:
-            _welcome_text = "Welcome to Hermes Agent! Type your message or /help for commands."
-            _welcome_color = "#FFF8DC"
-        self.console.print(f"[{_welcome_color}]{_welcome_text}[/]")
-        # Show a random tip to help users discover features
-        try:
             from hermes_cli.tips import get_random_tip
             _tip = get_random_tip()
+            _tip_color = "#546E7A"
             try:
-                _tip_color = _welcome_skin.get_color("banner_dim", "#B8860B")
+                from hermes_cli.skin_engine import get_active_skin
+                _tip_color = get_active_skin().get_color("code_dim", "#546E7A")
             except Exception:
-                _tip_color = "#B8860B"
-            self.console.print(f"[dim {_tip_color}]✦ Tip: {_tip}[/]")
+                pass
+            self.console.print(f"[dim {_tip_color}]✦ {_tip}[/]")
         except Exception:
             pass  # Tips are non-critical — never break startup
         if self.preloaded_skills and not self._startup_skills_line_shown:

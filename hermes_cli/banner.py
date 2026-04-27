@@ -5,6 +5,7 @@ Pure display functions with no HermesCLI state dependency.
 
 import json
 import logging
+import os
 import shutil
 import subprocess
 import threading
@@ -13,7 +14,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, List, Optional
 
-from rich.console import Console
+from rich.console import Console, Group
 from rich.panel import Panel
 from rich.table import Table
 
@@ -88,6 +89,29 @@ HERMES_CADUCEUS = """[#CD7F32]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀�
 [#B8860B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⠁⢰⡆⠈⡿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
 [#B8860B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠳⠈⣡⠞⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
 [#B8860B]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]"""
+
+HERMES_CODE_LOGO = """[bold #00E5FF]██╗  ██╗███████╗██████╗ ███╗   ███╗███████╗███████╗     ██████╗ ██████╗ ██████╗ ███████╗[/]
+[bold #56B6C2]██║  ██║██╔════╝██╔══██╗████╗ ████║██╔════╝██╔════╝    ██╔════╝██╔═══██╗██╔══██╗██╔════╝[/]
+[#2DD4BF]███████║█████╗  ██████╔╝██╔████╔██║█████╗  ███████╗    ██║     ██║   ██║██║  ██║█████╗  [/]
+[#2DD4BF]██╔══██║██╔══╝  ██╔══██╗██║╚██╔╝██║██╔══╝  ╚════██║    ██║     ██║   ██║██║  ██║██╔══╝  [/]
+[#00838F]██║  ██║███████╗██║  ██║██║ ╚═╝ ██║███████╗███████║    ╚██████╗╚██████╔╝██████╔╝███████╗[/]
+[#546E7A]╚═╝  ╚═╝╚══════╝╚═╝  ╚═╝╚═╝     ╚═╝╚══════╝╚══════╝     ╚═════╝ ╚═════╝ ╚═════╝ ╚══════╝[/]"""
+
+HERMES_CODE_CADUCEUS = """[#00838F]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⣀⣀⠀⢀⣀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#00838F]⠀⠀⠀⠀⠀⠀⢀⣠⣴⣾⣿⣿⣇⠸⣿⣿⠇⣸⣿⣿⣷⣦⣄⡀⠀⠀⠀⠀⠀⠀[/]
+[#56B6C2]⠀⢀⣠⣴⣶⠿⠋⣩⡿⣿⡿⠻⣿⡇⢠⡄⢸⣿⠟⢿⣿⢿⣍⠙⠿⣶⣦⣄⡀⠀[/]
+[#56B6C2]⠀⠀⠉⠉⠁⠶⠟⠋⠀⠉⠀⢀⣈⣁⡈⢁⣈⣁⡀⠀⠉⠀⠙⠻⠶⠈⠉⠉⠀⠀[/]
+[#00E5FF]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣴⣿⡿⠛⢁⡈⠛⢿⣿⣦⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#00E5FF]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠿⣿⣦⣤⣈⠁⢠⣴⣿⠿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#56B6C2]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠉⠻⢿⣿⣦⡉⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#56B6C2]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠘⢷⣦⣈⠛⠃⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#00838F]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢠⣴⠦⠈⠙⠿⣦⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#00838F]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠸⣿⣤⡈⠁⢤⣿⠇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#546E7A]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠉⠛⠷⠄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#546E7A]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⠑⢶⣄⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#546E7A]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⠁⢰⡆⠈⡿⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#546E7A]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠳⠈⣡⠞⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#546E7A]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]"""
 
 
 
@@ -527,9 +551,345 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     )
 
     console.print()
-    term_width = shutil.get_terminal_size().columns
+    term_width = getattr(console, "width", None) or shutil.get_terminal_size().columns
     if term_width >= 95:
         _logo = _bskin.banner_logo if _bskin and hasattr(_bskin, 'banner_logo') and _bskin.banner_logo else HERMES_AGENT_LOGO
         console.print(_logo)
         console.print()
     console.print(outer_panel)
+
+
+# =========================================================================
+# Hermes Code Console — new banner for Code Mode
+# =========================================================================
+
+CODE_MODE_SKILLS = [
+    "fix_build",
+    "review_diff",
+    "stabilize_hanging_task",
+    "fix_runtime_error",
+    "implement_feature",
+    "refactor_react_page",
+    "benchmark_provider",
+]
+CODE_MODE_SUMMARY_SKILLS = ["fix_build", "review_diff", "implement_feature"]
+
+
+def _first_list(payload, key: str) -> list:
+    """Return a list from either a bare list response or a JSON envelope."""
+    if isinstance(payload, list):
+        return payload
+    if isinstance(payload, dict):
+        value = payload.get(key)
+        if isinstance(value, list):
+            return value
+        value = payload.get("data")
+        if isinstance(value, list):
+            return value
+    return []
+
+
+def _format_code_version_label() -> str:
+    """Return the real Hermes version label rebranded for Code Mode."""
+    label = format_banner_version_label()
+    if label.startswith("Hermes Agent "):
+        return label.replace("Hermes Agent ", "Hermes Agent Code ", 1)
+    if label.startswith("Hermes "):
+        return label.replace("Hermes ", "Hermes Code ", 1)
+    return f"Hermes Agent Code {label}"
+
+
+def _shorten_middle(value: str, max_len: int) -> str:
+    value = str(value or "")
+    if len(value) <= max_len:
+        return value
+    if max_len <= 4:
+        return value[:max_len]
+    return "..." + value[-(max_len - 3):]
+
+
+def _infer_provider_from_model(model: str) -> str:
+    if not model:
+        return "unknown"
+    if "/" in model:
+        return model.split("/", 1)[0]
+    if ":" in model:
+        return model.split(":", 1)[0]
+    return "local"
+
+
+def _schema_label(value) -> Optional[str]:
+    if value is None:
+        return None
+    text_value = str(value).strip()
+    if not text_value:
+        return None
+    return text_value if text_value.startswith("v") else f"v{text_value}"
+
+
+def _schema_number(label: str) -> Optional[int]:
+    try:
+        return int(str(label).strip().lstrip("vV"))
+    except Exception:
+        return None
+
+
+def _local_state_db_schema_label() -> str:
+    try:
+        import sqlite3
+        db_path = get_hermes_home() / "state.db"
+        if db_path.exists():
+            conn = sqlite3.connect(f"file:{db_path}?mode=ro", uri=True, timeout=0.2)
+            try:
+                row = conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()
+            finally:
+                conn.close()
+            label = _schema_label(row[0] if row else None)
+            if label:
+                return label
+    except Exception:
+        pass
+
+    try:
+        from hermes_state import SCHEMA_VERSION
+        return f"v{SCHEMA_VERSION}"
+    except Exception:
+        return "unknown"
+
+
+def _get_code_mode_data():
+    """Collect real-time data for Code Mode console with fast safe fallbacks."""
+    schema = _local_state_db_schema_label()
+
+    workspace = os.getenv("TERMINAL_CWD", os.getcwd())
+    data = {
+        "provider": "unknown",
+        "model": "unknown",
+        "profile": "default",
+        "workspace": workspace,
+        "branch": "not a git repo",
+        "session_id": "",
+        "backend_status": "offline",
+        "backend_port": "9119",
+        "web_url": "http://localhost:3001/code",
+        "db_schema": schema,
+        "tools_available": 0,
+        "skills_available": 0,
+        "code_skills": CODE_MODE_SUMMARY_SKILLS,
+        "active_sessions": 0,
+        "pending_approvals": 0,
+    }
+
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        data["profile"] = get_active_profile_name() or "default"
+    except Exception:
+        pass
+
+    try:
+        result = subprocess.run(
+            ["git", "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=2,
+            cwd=workspace,
+        )
+        if result.returncode == 0 and (result.stdout or "").strip():
+            data["branch"] = result.stdout.strip()
+    except Exception:
+        pass
+
+    try:
+        import requests
+        status_response = requests.get("http://localhost:9119/api/status", timeout=0.8)
+        if status_response.status_code == 200:
+            data["backend_status"] = "online"
+            payload = status_response.json() or {}
+            if isinstance(payload, dict):
+                port = payload.get("port") or payload.get("backend_port")
+                if port:
+                    data["backend_port"] = str(port)
+                schema_value = (
+                    payload.get("schema_version")
+                    or payload.get("db_schema")
+                    or payload.get("database_schema")
+                    or payload.get("config_version")
+                    or payload.get("latest_config_version")
+                )
+                schema_label = _schema_label(schema_value)
+                if schema_label:
+                    current = _schema_number(data["db_schema"])
+                    candidate = _schema_number(schema_label)
+                    if current is None or candidate is None or candidate >= current:
+                        data["db_schema"] = schema_label
+    except Exception:
+        pass
+
+    try:
+        import requests
+        sessions_response = requests.get("http://localhost:9119/api/code/sessions", timeout=0.8)
+        if sessions_response.status_code == 200:
+            sessions = _first_list(sessions_response.json() or [], "sessions")
+            data["active_sessions"] = len([
+                item for item in sessions
+                if isinstance(item, dict) and item.get("status") == "active"
+            ])
+    except Exception:
+        pass
+
+    try:
+        import requests
+        approvals_response = requests.get("http://localhost:9119/api/approvals", timeout=0.8)
+        if approvals_response.status_code == 200:
+            approvals = _first_list(approvals_response.json() or [], "approvals")
+            data["pending_approvals"] = len([
+                item for item in approvals
+                if isinstance(item, dict) and item.get("status") == "pending"
+            ])
+    except Exception:
+        pass
+
+    return data
+
+
+def build_hermes_code_console(
+    console: Console,
+    model: str = None,
+    provider: str = None,
+    profile: str = None,
+    session_id: str = None,
+    tools_count: int = None,
+    skills_count: int = None,
+    context_length: int = None,
+):
+    """Build and print the Hermes Code home screen in the classic banner style."""
+    data = _get_code_mode_data()
+
+    if model:
+        data["model"] = model
+    if provider:
+        data["provider"] = provider
+    elif data.get("provider") in ("", "unknown"):
+        data["provider"] = _infer_provider_from_model(data.get("model", ""))
+    if profile:
+        data["profile"] = profile
+    if session_id:
+        data["session_id"] = session_id
+    if tools_count is not None:
+        data["tools_available"] = tools_count
+    if skills_count is not None:
+        data["skills_available"] = skills_count
+
+    title = _skin_color("code_title", "#00E5FF")
+    title_dim = _skin_color("code_title_dim", "#56B6C2")
+    accent = _skin_color("code_accent", "#2DD4BF")
+    accent_dim = _skin_color("code_accent_dim", "#00838F")
+    border = _skin_color("code_border", "#30363D")
+    text = _skin_color("code_text", "#E6EDF3")
+    muted = _skin_color("code_muted", "#8B949E")
+    success = _skin_color("code_success", "#7EE787")
+    warning = _skin_color("code_warning", "#D29922")
+    error = _skin_color("code_error", "#F85149")
+
+    term_width = getattr(console, "width", None) or shutil.get_terminal_size().columns
+    version_label = _format_code_version_label()
+    model_display = data["model"].split("/", 1)[-1] if "/" in data["model"] else data["model"]
+    backend_color = success if data["backend_status"] == "online" else warning
+    backend_display = f"{data['backend_status']} :{data['backend_port']}"
+    code_skills = data.get("code_skills") or CODE_MODE_SUMMARY_SKILLS
+    code_skills_line = " · ".join(code_skills[:3])
+
+    if term_width < 100:
+        workspace = _shorten_middle(data["workspace"], max(28, term_width - 18))
+        console.print()
+        console.print(f"[bold {title}]HERMES CODE[/] [dim {muted}]· AI Development Console[/]")
+        console.print(f"[{text}]{version_label}[/]")
+        console.print(f"[dim {muted}]Hermes Code Mode Status[/]")
+        console.print(
+            f"[{text}]Provider: {data['provider']} · {model_display} | "
+            f"Profile: {data['profile']}[/]"
+        )
+        console.print(f"[{text}]Workspace: {workspace}[/]")
+        console.print(f"[{text}]Branch: {data['branch']}[/]")
+        console.print(
+            f"[{text}]Backend: {backend_display} | Web: {data['web_url']} | "
+            f"DB: {data['db_schema']}[/]"
+        )
+        console.print(f"[{text}]Web Cockpit: {data['web_url']}[/]")
+        console.print(f"[bold {accent}]Quick Actions[/]")
+        console.print(f"[{accent}]Quick: /code /web /workspace /session /approvals /skills-code /help[/]")
+        console.print(
+            f"[{text}]Tools: {data['tools_available']} — /tools | "
+            f"Skills: {data['skills_available']} — /skills[/]"
+        )
+        console.print()
+        return
+
+    status_lines = [
+        f"[bold {accent}]Code Mode Status[/]",
+        f"[dim {muted}]Provider[/]   [{text}]{data['provider']}[/]",
+        f"[dim {muted}]Model[/]      [{text}]{model_display}[/]",
+        f"[dim {muted}]Profile[/]    [{text}]{data['profile']}[/]",
+        f"[dim {muted}]Workspace[/]  [{text}]{_shorten_middle(data['workspace'], 52)}[/]",
+        f"[dim {muted}]Branch[/]     [{text}]{data['branch']}[/]",
+        f"[dim {muted}]Session[/]    [{text}]{data.get('session_id') or 'new'}[/]",
+        f"[dim {muted}]Backend[/]    [{backend_color}]{backend_display}[/]",
+        f"[dim {muted}]Web Cockpit[/] [{text}]{data['web_url']}[/]",
+        f"[dim {muted}]DB[/]         [{text}]{data['db_schema']}[/]",
+    ]
+    if context_length:
+        status_lines.append(f"[dim {muted}]Context[/]    [{text}]{_format_context_length(context_length)}[/]")
+    if data["active_sessions"] or data["pending_approvals"]:
+        approvals = (
+            f" · [{warning}]{data['pending_approvals']} approvals[/]"
+            if data["pending_approvals"]
+            else ""
+        )
+        status_lines.append(
+            f"[dim {muted}]Activity[/]   [{text}]{data['active_sessions']} sessions[/]{approvals}"
+        )
+
+    quick_lines = [
+        f"[bold {accent}]Quick Actions[/]",
+        f"[{title_dim}]/code[/]         [{muted}]Code Mode help[/]",
+        f"[{title_dim}]/web[/]          [{muted}]URLs and logs[/]",
+        f"[{title_dim}]/workspace[/]    [{muted}]Workspace info[/]",
+        f"[{title_dim}]/session[/]      [{muted}]Code sessions[/]",
+        f"[{title_dim}]/approvals[/]    [{muted}]Pending approvals[/]",
+        f"[{title_dim}]/skills-code[/]  [{muted}]Coding skills[/]",
+        f"[{title_dim}]/help[/]         [{muted}]All commands[/]",
+    ]
+
+    summary_lines = [
+        f"[{text}]Tools: {data['tools_available']} available[/] [dim {muted}]— /tools[/]",
+        f"[{text}]Skills: {data['skills_available']} available[/] [dim {muted}]— /skills[/]",
+        f"[{text}]Code Skills: {code_skills_line}[/]",
+    ]
+
+    layout = Table.grid(padding=(0, 3))
+    layout.add_column("symbol", justify="center", no_wrap=True)
+    layout.add_column("status", justify="left")
+    layout.add_row(HERMES_CODE_CADUCEUS, "\n".join(status_lines))
+
+    panel_content = Group(
+        layout,
+        f"[{accent_dim}]{'─' * 78}[/]",
+        "\n".join(quick_lines),
+        f"[{accent_dim}]{'─' * 78}[/]",
+        "\n".join(summary_lines),
+    )
+    outer_panel = Panel(
+        panel_content,
+        title=f"[bold {title}]Code Mode Status[/]",
+        border_style=border,
+        padding=(0, 2),
+    )
+
+    console.print()
+    console.print(HERMES_CODE_LOGO)
+    console.print(f"[bold {title}]HERMES CODE[/] [dim {muted}]· AI Development Console[/]")
+    console.print(f"[dim {muted}]Hermes Code Mode[/]")
+    console.print(f"[{text}]{version_label}[/] [dim {muted}]· AI Development Console[/]")
+    console.print()
+    console.print(outer_panel)
+    console.print(f"[{text}]Welcome to Hermes Agent Code. Type your message or /help for commands.[/]")

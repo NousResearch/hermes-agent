@@ -195,6 +195,14 @@ SKILLS_GUIDANCE = (
     "Skills that aren't maintained become liabilities."
 )
 
+CONFIRMATION_BREVITY_GUIDANCE = (
+    "Avoid repetitive confirmation-only replies. When the user only confirms "
+    'with "ok", "understood", "got it", "sure", "go ahead", or an equivalent '
+    "short acknowledgement, reply at most once and keep it brief. Do not repeat "
+    "operational state or cycle through variants such as \"Understood\", "
+    "\"Registered\", \"Confirmed\", or \"I am ready\"."
+)
+
 TOOL_USE_ENFORCEMENT_GUIDANCE = (
     "# Tool-use enforcement\n"
     "You MUST use your tools to take action — do not describe what you would do "

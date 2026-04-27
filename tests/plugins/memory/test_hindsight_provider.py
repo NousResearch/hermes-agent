@@ -18,7 +18,7 @@ from plugins.memory.hindsight import (
     REFLECT_SCHEMA,
     RETAIN_SCHEMA,
     _load_config,
-    _normalize_retain_tags,
+    _normalize_tags,
     _resolve_bank_id_template,
     _sanitize_bank_segment,
 )
@@ -73,6 +73,12 @@ def _make_mock_client():
     client.aretain_batch = AsyncMock()
     client.aclose = AsyncMock()
     return client
+
+
+def _run_prefetch(provider, query="test query"):
+    provider.queue_prefetch(query)
+    if provider._prefetch_thread:
+        provider._prefetch_thread.join(timeout=5.0)
 
 
 class _FakeSessionDB:
@@ -136,16 +142,16 @@ def provider_with_config(tmp_path, monkeypatch):
     return _make
 
 
-def test_normalize_retain_tags_accepts_csv_and_dedupes():
-    assert _normalize_retain_tags("agent:fakeassistantname, source_system:hermes-agent, agent:fakeassistantname") == [
+def test_normalize_tags_accepts_csv_and_dedupes():
+    assert _normalize_tags("agent:fakeassistantname, source_system:hermes-agent, agent:fakeassistantname") == [
         "agent:fakeassistantname",
         "source_system:hermes-agent",
     ]
 
 
-def test_normalize_retain_tags_accepts_json_array_string():
+def test_normalize_tags_accepts_json_array_string():
     value = json.dumps(["agent:fakeassistantname", "source_system:hermes-agent"])
-    assert _normalize_retain_tags(value) == ["agent:fakeassistantname", "source_system:hermes-agent"]
+    assert _normalize_tags(value) == ["agent:fakeassistantname", "source_system:hermes-agent"]
 
 
 # ---------------------------------------------------------------------------
@@ -204,6 +210,8 @@ class TestConfig:
             retain_source="hermes",
             retain_user_prefix="User (fakeusername)",
             retain_assistant_prefix="Assistant (fakeassistantname)",
+            recall_prefetch_tags=["prefetch-tag"],
+            recall_prefetch_tags_match="all_strict",
             recall_tags=["recall-tag"],
             recall_tags_match="all",
             auto_retain=False,
@@ -222,6 +230,8 @@ class TestConfig:
         assert p._retain_source == "hermes"
         assert p._retain_user_prefix == "User (fakeusername)"
         assert p._retain_assistant_prefix == "Assistant (fakeassistantname)"
+        assert p._recall_prefetch_tags == ["prefetch-tag"]
+        assert p._recall_prefetch_tags_match == "all_strict"
         assert p._recall_tags == ["recall-tag"]
         assert p._recall_tags_match == "all"
         assert p._auto_retain is False
@@ -250,6 +260,10 @@ class TestConfig:
         assert cfg["apiKey"] == "env-key"
         assert cfg["banks"]["hermes"]["bankId"] == "env-bank"
         assert cfg["banks"]["hermes"]["budget"] == "high"
+
+    def test_default_prefetch_tag_config(self, provider):
+        assert provider._recall_prefetch_tags is None
+        assert provider._recall_prefetch_tags_match == "any"
 
 
 class TestPostSetup:
@@ -446,6 +460,29 @@ class TestToolHandlers:
         ))
         assert "error" in result
 
+    def test_recall_tool_ignores_prefetch_tag_config(self, provider_with_config):
+        p = provider_with_config(
+            recall_tags=["manual-tag"],
+            recall_tags_match="all",
+            recall_prefetch_tags=["prefetch-tag"],
+            recall_prefetch_tags_match="all_strict",
+        )
+        p._client.arecall = AsyncMock(
+            return_value=SimpleNamespace(
+                results=[
+                    SimpleNamespace(
+                        text="Foreign memory",
+                    )
+                ]
+            )
+        )
+
+        result = json.loads(p.handle_tool_call("hindsight_recall", {"query": "test"}))
+        assert result["result"] == "1. Foreign memory"
+        call_kwargs = p._client.arecall.call_args.kwargs
+        assert call_kwargs["tags"] == ["manual-tag"]
+        assert call_kwargs["tags_match"] == "all"
+
 
 # ---------------------------------------------------------------------------
 # Prefetch tests
@@ -508,15 +545,90 @@ class TestPrefetch:
             recall_max_tokens=1024,
             recall_types=["world"],
         )
-        p.queue_prefetch("test query")
-        if p._prefetch_thread:
-            p._prefetch_thread.join(timeout=5.0)
+        _run_prefetch(p)
 
         call_kwargs = p._client.arecall.call_args.kwargs
         assert call_kwargs["max_tokens"] == 1024
         assert call_kwargs["tags"] == ["t1"]
         assert call_kwargs["tags_match"] == "all"
         assert call_kwargs["types"] == ["world"]
+
+    def test_queue_prefetch_default_config_leaves_results_unfiltered(self, provider):
+        provider._client.arecall = AsyncMock(
+            return_value=SimpleNamespace(
+                results=[
+                    SimpleNamespace(
+                        text="Foreign memory",
+                        metadata={"chat_id": "other-chat", "thread_id": "other-thread"},
+                    ),
+                    SimpleNamespace(text="Unscoped memory"),
+                ]
+            )
+        )
+
+        _run_prefetch(provider)
+
+        call_kwargs = provider._client.arecall.call_args.kwargs
+        assert "tags" not in call_kwargs
+        assert "tags_match" not in call_kwargs
+        assert provider._prefetch_result.splitlines() == ["- Foreign memory", "- Unscoped memory"]
+
+    def test_queue_prefetch_uses_prefetch_tags_when_configured(self, provider_with_config):
+        p = provider_with_config(
+            recall_tags=["fallback-tag"],
+            recall_tags_match="all",
+            recall_prefetch_tags=["prefetch-tag", "team:cli"],
+            recall_prefetch_tags_match="all_strict",
+            recall_max_tokens=1024,
+            recall_types=["world"],
+        )
+        p._client.arecall = AsyncMock(
+            return_value=SimpleNamespace(
+                results=[
+                    SimpleNamespace(text="Tagged memory"),
+                ]
+            )
+        )
+
+        _run_prefetch(p)
+
+        call_kwargs = p._client.arecall.call_args.kwargs
+        assert call_kwargs["tags"] == ["prefetch-tag", "team:cli"]
+        assert call_kwargs["tags_match"] == "all_strict"
+        assert call_kwargs["max_tokens"] == 1024
+        assert call_kwargs["types"] == ["world"]
+        assert p._prefetch_result == "- Tagged memory"
+
+    def test_queue_prefetch_with_prefetch_tags_does_not_post_filter_results(self, provider_with_config):
+        p = provider_with_config(
+            recall_prefetch_tags=["prefetch-tag"],
+            recall_prefetch_tags_match="all",
+        )
+        p._client.arecall = AsyncMock(
+            return_value=SimpleNamespace(
+                results=[
+                    SimpleNamespace(text="Unscoped memory"),
+                    SimpleNamespace(text="Foreign memory", metadata={"chat_id": "other-chat"}),
+                ]
+            )
+        )
+
+        _run_prefetch(p)
+
+        assert p._prefetch_result.splitlines() == ["- Unscoped memory", "- Foreign memory"]
+
+    def test_queue_prefetch_reflect_ignores_prefetch_tags(self, provider_with_config):
+        p = provider_with_config(
+            recall_prefetch_method="reflect",
+            recall_prefetch_tags=["prefetch-tag"],
+            recall_prefetch_tags_match="all_strict",
+        )
+        p._client.areflect = AsyncMock(return_value=SimpleNamespace(text="Synthesized answer"))
+
+        _run_prefetch(p)
+
+        assert p._prefetch_result == "Synthesized answer"
+        p._client.arecall.assert_not_called()
 
 
 # ---------------------------------------------------------------------------
@@ -786,6 +898,7 @@ class TestConfigSchema:
             "mode", "api_url", "api_key", "llm_provider", "llm_api_key",
             "llm_model", "bank_id", "bank_id_template", "bank_mission", "bank_retain_mission",
             "recall_budget", "memory_mode", "recall_prefetch_method",
+            "recall_prefetch_tags", "recall_prefetch_tags_match",
             "retain_tags", "retain_source",
             "retain_user_prefix", "retain_assistant_prefix",
             "recall_tags", "recall_tags_match",

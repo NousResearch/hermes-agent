@@ -46,6 +46,7 @@ _DEFAULT_LOCAL_URL = "http://localhost:8888"
 _MIN_CLIENT_VERSION = "0.4.22"
 _DEFAULT_TIMEOUT = 120  # seconds — cloud API can take 30-40s per request
 _VALID_BUDGETS = {"low", "mid", "high"}
+_VALID_TAG_MATCH_MODES = {"any", "all", "any_strict", "all_strict"}
 _PROVIDER_DEFAULT_MODELS = {
     "openai": "gpt-4o-mini",
     "anthropic": "claude-haiku-4-5",
@@ -217,7 +218,7 @@ def _load_config() -> dict:
     }
 
 
-def _normalize_retain_tags(value: Any) -> List[str]:
+def _normalize_tags(value: Any) -> List[str]:
     """Normalize tag config/tool values to a deduplicated list of strings."""
     if value is None:
         return []
@@ -252,6 +253,12 @@ def _normalize_retain_tags(value: Any) -> List[str]:
         seen.add(tag)
         normalized.append(tag)
     return normalized
+
+
+def _normalize_tags_match(value: Any) -> str:
+    """Normalize tag match mode to a supported choice."""
+    candidate = str(value or "any").strip().lower() or "any"
+    return candidate if candidate in _VALID_TAG_MATCH_MODES else "any"
 
 
 def _utc_timestamp() -> str:
@@ -424,6 +431,8 @@ class HindsightMemoryProvider(MemoryProvider):
         self._tags: list[str] | None = None
         self._recall_tags: list[str] | None = None
         self._recall_tags_match = "any"
+        self._recall_prefetch_tags: list[str] | None = None
+        self._recall_prefetch_tags_match = "any"
 
         # Retain controls
         self._auto_retain = True
@@ -678,6 +687,8 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_budget", "description": "Recall thoroughness", "default": "mid", "choices": ["low", "mid", "high"]},
             {"key": "memory_mode", "description": "Memory integration mode", "default": "hybrid", "choices": ["hybrid", "context", "tools"]},
             {"key": "recall_prefetch_method", "description": "Auto-recall method", "default": "recall", "choices": ["recall", "reflect"]},
+            {"key": "recall_prefetch_tags", "description": "Auto-prefetch recall only: explicit tags to use instead of generic recall_tags when searching memories (comma-separated)", "default": ""},
+            {"key": "recall_prefetch_tags_match", "description": "Auto-prefetch recall only: tag matching mode for recall_prefetch_tags", "default": "any", "choices": ["any", "all", "any_strict", "all_strict"]},
             {"key": "retain_tags", "description": "Default tags applied to retained memories (comma-separated)", "default": ""},
             {"key": "retain_source", "description": "Metadata source value attached to retained memories", "default": ""},
             {"key": "retain_user_prefix", "description": "Label used before user turns in retained transcripts", "default": "User"},
@@ -834,13 +845,17 @@ class HindsightMemoryProvider(MemoryProvider):
         self._bank_retain_mission = self._config.get("bank_retain_mission") or None
 
         # Tags
-        self._retain_tags = _normalize_retain_tags(
+        self._retain_tags = _normalize_tags(
             self._config.get("retain_tags")
             or os.environ.get("HINDSIGHT_RETAIN_TAGS", "")
         )
         self._tags = self._retain_tags or None
-        self._recall_tags = self._config.get("recall_tags") or None
-        self._recall_tags_match = self._config.get("recall_tags_match", "any")
+        self._recall_tags = _normalize_tags(self._config.get("recall_tags")) or None
+        self._recall_tags_match = _normalize_tags_match(self._config.get("recall_tags_match", "any"))
+        self._recall_prefetch_tags = _normalize_tags(self._config.get("recall_prefetch_tags")) or None
+        self._recall_prefetch_tags_match = _normalize_tags_match(
+            self._config.get("recall_prefetch_tags_match", "any")
+        )
         self._retain_source = str(
             self._config.get("retain_source") or os.environ.get("HINDSIGHT_RETAIN_SOURCE", "")
         ).strip()
@@ -877,10 +892,10 @@ class HindsightMemoryProvider(MemoryProvider):
                          self._bank_id_template, self._agent_identity, self._agent_workspace,
                          self._platform, self._user_id, self._bank_id)
         logger.debug("Hindsight config: auto_retain=%s, auto_recall=%s, retain_every_n=%d, "
-                     "retain_async=%s, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, tags=%s, recall_tags=%s",
+                     "retain_async=%s, retain_context=%s, recall_max_tokens=%d, recall_max_input_chars=%d, tags=%s, recall_tags=%s, prefetch_tags=%s, prefetch_tags_match=%s",
                      self._auto_retain, self._auto_recall, self._retain_every_n_turns,
                      self._retain_async, self._retain_context, self._recall_max_tokens, self._recall_max_input_chars,
-                     self._tags, self._recall_tags)
+                     self._tags, self._recall_tags, self._recall_prefetch_tags, self._recall_prefetch_tags_match)
 
         # For local mode, start the embedded daemon in the background so it
         # doesn't block the chat. Redirect stdout/stderr to a log file to
@@ -991,9 +1006,15 @@ class HindsightMemoryProvider(MemoryProvider):
                         "bank_id": self._bank_id, "query": query,
                         "budget": self._budget, "max_tokens": self._recall_max_tokens,
                     }
-                    if self._recall_tags:
-                        recall_kwargs["tags"] = self._recall_tags
-                        recall_kwargs["tags_match"] = self._recall_tags_match
+                    prefetch_tags = self._recall_prefetch_tags or self._recall_tags
+                    prefetch_tags_match = (
+                        self._recall_prefetch_tags_match
+                        if self._recall_prefetch_tags
+                        else self._recall_tags_match
+                    )
+                    if prefetch_tags:
+                        recall_kwargs["tags"] = prefetch_tags
+                        recall_kwargs["tags_match"] = prefetch_tags_match
                     if self._recall_types:
                         recall_kwargs["types"] = self._recall_types
                     logger.debug("Prefetch: calling recall (bank=%s, query_len=%d, budget=%s)",
@@ -1075,8 +1096,8 @@ class HindsightMemoryProvider(MemoryProvider):
             kwargs["document_id"] = document_id
         if retain_async is not None:
             kwargs["retain_async"] = retain_async
-        merged_tags = _normalize_retain_tags(self._retain_tags)
-        for tag in _normalize_retain_tags(tags):
+        merged_tags = _normalize_tags(self._retain_tags)
+        for tag in _normalize_tags(tags):
             if tag not in merged_tags:
                 merged_tags.append(tag)
         if merged_tags:

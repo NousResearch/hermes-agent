@@ -365,6 +365,10 @@ The setup wizard installs dependencies automatically and only installs what's ne
 | `retain_user_prefix` | `User` | Label used before user turns in auto-retained transcripts |
 | `retain_assistant_prefix` | `Assistant` | Label used before assistant turns in auto-retained transcripts |
 | `recall_tags` | — | Tags to filter on recall |
+| `recall_prefetch_tags` | — | Auto-prefetch only: explicit tags to use instead of generic `recall_tags` |
+| `recall_prefetch_tags_match` | `any` | Auto-prefetch only: tag matching mode for `recall_prefetch_tags` |
+
+`recall_prefetch_tags` applies only to automatic prefetch recall. When unset, auto-prefetch falls back to `recall_tags`. It does not affect the manual `hindsight_recall` tool, and it only matches memories that already carry those tags.
 
 See [plugin README](https://github.com/NousResearch/hermes-agent/blob/main/plugins/memory/hindsight/README.md) for the full configuration reference.
 

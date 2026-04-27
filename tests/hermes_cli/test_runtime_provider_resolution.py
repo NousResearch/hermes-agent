@@ -1581,7 +1581,10 @@ class TestAzureFoundryResolution:
             "provider": "azure-foundry",
             "base_url": base_url,
             "api_mode": api_mode,
-            "default": "gpt-5.4",
+            # GPT-4 speaks chat completions on Azure, so this test's assertion
+            # about chat_completions stays valid across the Apr 2026 fix that
+            # upgrades GPT-5.x / codex deployments to codex_responses.
+            "default": "gpt-4.1",
         }
 
     def test_azure_foundry_openai_style_explicit(self, monkeypatch):
@@ -1643,3 +1646,108 @@ class TestAzureFoundryResolution:
 
         with pytest.raises(rp.AuthError, match="API key"):
             rp.resolve_runtime_provider(requested="azure-foundry")
+
+    # -- Model-family api_mode inference -------------------------------------
+    # Azure rejects /chat/completions on GPT-5.x / codex / o-series with
+    # ``400 "The requested operation is unsupported."`` — the resolver must
+    # upgrade api_mode to ``codex_responses`` for those models even when the
+    # config was persisted as ``chat_completions`` (the default the setup
+    # wizard writes when the user didn't pick explicitly).
+
+    def _make_cfg_with_model(self, model: str, api_mode: str = "chat_completions"):
+        return {
+            "provider": "azure-foundry",
+            "base_url": "https://synopsisse.openai.azure.com/openai/v1",
+            "api_mode": api_mode,
+            "default": model,
+        }
+
+    def test_gpt5_codex_upgrades_chat_completions_to_responses(self, monkeypatch):
+        """Reproduces Bob's April 2026 bug: gpt-5.3-codex on chat_completions."""
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "az-key")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "azure-foundry")
+        monkeypatch.setattr(rp, "_get_model_config",
+                            lambda: self._make_cfg_with_model("gpt-5.3-codex", "chat_completions"))
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        resolved = rp.resolve_runtime_provider(requested="azure-foundry")
+
+        assert resolved["api_mode"] == "codex_responses"
+        assert resolved["base_url"] == "https://synopsisse.openai.azure.com/openai/v1"
+
+    def test_gpt4o_stays_on_chat_completions(self, monkeypatch):
+        """gpt-4o-pure worked on Bob's endpoint — must not get upgraded."""
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "az-key")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "azure-foundry")
+        monkeypatch.setattr(rp, "_get_model_config",
+                            lambda: self._make_cfg_with_model("gpt-4o-pure", "chat_completions"))
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        resolved = rp.resolve_runtime_provider(requested="azure-foundry")
+
+        assert resolved["api_mode"] == "chat_completions"
+
+    def test_anthropic_messages_not_downgraded(self, monkeypatch):
+        """Anthropic-style endpoint: keep anthropic_messages even for gpt-5 names."""
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "az-key")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "azure-foundry")
+        monkeypatch.setattr(rp, "_get_model_config", lambda: {
+            "provider": "azure-foundry",
+            "base_url": "https://my-resource.services.ai.azure.com/anthropic/v1",
+            "api_mode": "anthropic_messages",
+            "default": "gpt-5.3-codex",  # nonsensical on Anthropic but tests the guard
+        })
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        resolved = rp.resolve_runtime_provider(requested="azure-foundry")
+
+        assert resolved["api_mode"] == "anthropic_messages"
+
+    def test_target_model_overrides_stale_default(self, monkeypatch):
+        """/model switch: target_model should drive api_mode, not the stale config default."""
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "az-key")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "azure-foundry")
+        # Config still pinned to gpt-4o, but user just ran /model gpt-5.3-codex
+        monkeypatch.setattr(rp, "_get_model_config",
+                            lambda: self._make_cfg_with_model("gpt-4o-pure", "chat_completions"))
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        resolved = rp.resolve_runtime_provider(
+            requested="azure-foundry",
+            target_model="gpt-5.3-codex",
+        )
+
+        assert resolved["api_mode"] == "codex_responses"
+
+    def test_target_model_downgrade_path(self, monkeypatch):
+        """/model switch gpt-5.3-codex → gpt-4o: api_mode follows new model."""
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "az-key")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "azure-foundry")
+        # Config was upgraded to codex_responses for the previous model; user
+        # now switches to gpt-4o which speaks chat completions.
+        monkeypatch.setattr(rp, "_get_model_config",
+                            lambda: self._make_cfg_with_model("gpt-5.3-codex", "codex_responses"))
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        resolved = rp.resolve_runtime_provider(
+            requested="azure-foundry",
+            target_model="gpt-4o-pure",
+        )
+
+        # codex_responses was persisted; we keep it because gpt-4o can speak
+        # both protocols but the explicit persisted mode is the safer signal.
+        # (gpt-4o returning None from the inference function means "don't
+        # override" — the persisted codex_responses survives.)
+        assert resolved["api_mode"] == "codex_responses"
+
+    def test_o3_mini_upgrades(self, monkeypatch):
+        monkeypatch.setenv("AZURE_FOUNDRY_API_KEY", "az-key")
+        monkeypatch.setattr(rp, "resolve_provider", lambda *a, **k: "azure-foundry")
+        monkeypatch.setattr(rp, "_get_model_config",
+                            lambda: self._make_cfg_with_model("o3-mini", "chat_completions"))
+        monkeypatch.setattr(rp, "load_pool", lambda provider: None)
+
+        resolved = rp.resolve_runtime_provider(requested="azure-foundry")
+
+        assert resolved["api_mode"] == "codex_responses"
+

@@ -64,6 +64,37 @@ class TestGenerateTitle:
         with patch("agent.title_generator.call_llm", side_effect=RuntimeError("no provider")):
             assert generate_title("question", "answer") is None
 
+    def test_invokes_failure_callback_on_exception(self):
+        """failure_callback must fire so the user sees a warning (issue #15775)."""
+        captured = []
+
+        def _cb(task, exc):
+            captured.append((task, exc))
+
+        exc = RuntimeError("openrouter 402: credits exhausted")
+        with patch("agent.title_generator.call_llm", side_effect=exc):
+            result = generate_title("question", "answer", failure_callback=_cb)
+
+        assert result is None
+        assert len(captured) == 1
+        assert captured[0][0] == "title generation"
+        assert captured[0][1] is exc
+
+    def test_failure_callback_errors_are_swallowed(self):
+        """A broken callback must not crash title generation."""
+
+        def _bad_cb(task, exc):
+            raise ValueError("callback bug")
+
+        with patch("agent.title_generator.call_llm", side_effect=RuntimeError("nope")):
+            # Should return None without re-raising the callback error
+            assert generate_title("q", "a", failure_callback=_bad_cb) is None
+
+    def test_no_callback_matches_legacy_behavior(self):
+        """Omitting failure_callback preserves the silent-None return."""
+        with patch("agent.title_generator.call_llm", side_effect=RuntimeError("nope")):
+            assert generate_title("q", "a") is None
+
     def test_truncates_long_messages(self):
         """Long user/assistant messages should be truncated in the LLM request."""
         captured_kwargs = {}
@@ -150,7 +181,29 @@ class TestMaybeAutoTitle:
             # Wait for the daemon thread to complete
             import time
             time.sleep(0.3)
-            mock_auto.assert_called_once_with(db, "sess-1", "hello", "hi there")
+            mock_auto.assert_called_once_with(
+                db, "sess-1", "hello", "hi there", failure_callback=None
+            )
+
+    def test_forwards_failure_callback_to_worker(self):
+        """maybe_auto_title must forward failure_callback into the thread."""
+        db = MagicMock()
+        db.get_session_title.return_value = None
+        history = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi there"},
+        ]
+
+        def _cb(task, exc):
+            pass
+
+        with patch("agent.title_generator.auto_title_session") as mock_auto:
+            maybe_auto_title(db, "sess-1", "hello", "hi there", history, failure_callback=_cb)
+            import time
+            time.sleep(0.3)
+            mock_auto.assert_called_once_with(
+                db, "sess-1", "hello", "hi there", failure_callback=_cb
+            )
 
     def test_skips_if_no_response(self):
         db = MagicMock()

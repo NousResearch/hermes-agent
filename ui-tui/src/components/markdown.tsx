@@ -213,8 +213,54 @@ function MdInline({ t, text }: { t: Theme; text: string }) {
   return <Text>{parts.length ? parts : <Text>{text}</Text>}</Text>
 }
 
+// Cross-instance parsed-children cache: useMemo's per-instance cache dies
+// on remount, so virtualization re-parses every row that scrolls back into
+// view. Theme-keyed WeakMap drops stale palettes; inner Map is LRU-bounded.
+const MD_CACHE_LIMIT = 512
+const mdCache = new WeakMap<Theme, Map<string, ReactNode[]>>()
+
+const cacheBucket = (t: Theme) => {
+  const b = mdCache.get(t)
+
+  if (b) {
+    return b
+  }
+
+  const fresh = new Map<string, ReactNode[]>()
+  mdCache.set(t, fresh)
+
+  return fresh
+}
+
+const cacheGet = (b: Map<string, ReactNode[]>, key: string) => {
+  const v = b.get(key)
+
+  if (v) {
+    b.delete(key)
+    b.set(key, v)
+  }
+
+  return v
+}
+
+const cacheSet = (b: Map<string, ReactNode[]>, key: string, v: ReactNode[]) => {
+  b.set(key, v)
+
+  if (b.size > MD_CACHE_LIMIT) {
+    b.delete(b.keys().next().value!)
+  }
+}
+
 function MdImpl({ compact, t, text }: MdProps) {
   const nodes = useMemo(() => {
+    const bucket = cacheBucket(t)
+    const cacheKey = `${compact ? '1' : '0'}|${text}`
+    const cached = cacheGet(bucket, cacheKey)
+
+    if (cached) {
+      return cached
+    }
+
     const lines = ensureEmojiPresentation(text).split('\n')
     const nodes: ReactNode[] = []
 
@@ -614,6 +660,8 @@ function MdImpl({ compact, t, text }: MdProps) {
       nodes.push(<MdInline key={key} t={t} text={line} />)
       i++
     }
+
+    cacheSet(bucket, cacheKey, nodes)
 
     return nodes
   }, [compact, t, text])

@@ -26,7 +26,7 @@ from hermes_cli.nous_subscription import (
     get_nous_subscription_features,
 )
 from tools.tool_backend_helpers import fal_key_is_configured, managed_nous_tools_enabled
-from utils import base_url_hostname
+from utils import base_url_hostname, is_truthy_value
 
 logger = logging.getLogger(__name__)
 
@@ -71,6 +71,7 @@ CONFIGURABLE_TOOLSETS = [
     ("spotify",          "🎵 Spotify",                  "playback, search, playlists, library"),
     ("discord",         "💬 Discord (read/participate)", "fetch messages, search members, create thread"),
     ("discord_admin",   "🛡️  Discord Server Admin",    "list channels/roles, pin, assign roles"),
+    ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
 ]
 
 # Toolsets that are OFF by default for new installs.
@@ -1187,7 +1188,7 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
                 configured_provider = image_cfg.get("provider")
                 if configured_provider not in (None, "", "fal"):
                     return False
-                if image_cfg.get("use_gateway") is False:
+                if image_cfg.get("use_gateway") is not None and not is_truthy_value(image_cfg.get("use_gateway"), default=False):
                     return False
             return feature.managed_by_nous
         if provider.get("tts_provider"):
@@ -1219,7 +1220,7 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
         return (
             provider["imagegen_backend"] == "fal"
             and configured_provider in (None, "", "fal")
-            and not image_cfg.get("use_gateway")
+            and not is_truthy_value(image_cfg.get("use_gateway"), default=False)
         )
     return False
 

@@ -3006,6 +3006,13 @@ class GatewayRunner:
                     (_hermes_home / ".clean_shutdown").touch()
                 except Exception:
                     pass
+                # Clear the crash checkpoint on clean shutdown so that stale
+                # entries left by /stop or stale-eviction paths do not cause
+                # false-positive session suspensions if a crash occurs later.
+                try:
+                    self._crash_checkpoint.clear()
+                except Exception as _e:
+                    logger.debug("Failed to clear crash checkpoint on clean shutdown: %s", _e)
             else:
                 logger.info(
                     "Skipping .clean_shutdown marker — drain timed out with "
@@ -3637,6 +3644,12 @@ class GatewayRunner:
                     reason="stale_running_agent_eviction",
                 )
                 self._release_running_agent_state(_quick_key)
+                # The generation was just invalidated, so the agent's finally
+                # block will see released=False and skip mark_completed.  Do
+                # it here so the checkpoint entry is not left as a stale
+                # false-positive that would cause an unwarranted suspension on
+                # the next crash restart.
+                self._crash_checkpoint.mark_completed(_quick_key)
 
         if _quick_key in self._running_agents:
             if event.get_command() == "status":
@@ -9099,6 +9112,11 @@ class GatewayRunner:
         self._pending_messages.pop(session_key, None)
         if release_running_state:
             self._release_running_agent_state(session_key)
+            # The generation was invalidated above, so the interrupted agent's
+            # finally block will see released=False and skip mark_completed.
+            # Remove the checkpoint entry here to avoid a stale false-positive
+            # that would cause an unwarranted suspension on the next crash restart.
+            self._crash_checkpoint.mark_completed(session_key)
 
     def _evict_cached_agent(self, session_key: str) -> None:
         """Remove a cached agent for a session (called on /new, /model, etc)."""

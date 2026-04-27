@@ -12,6 +12,7 @@ import hashlib
 import logging
 import os
 import json
+import tempfile
 import time
 import threading
 import uuid
@@ -1406,7 +1407,6 @@ class SessionCrashCheckpoint:
 
     def _write(self, data: Dict[str, Any]) -> None:
         """Atomically write checkpoint data to disk with fsync for crash safety."""
-        import tempfile
         dir_path = os.path.dirname(self.path) or "."
         os.makedirs(dir_path, exist_ok=True)
         fd, tmp_path = tempfile.mkstemp(dir=dir_path, suffix=".tmp", prefix=".cp_")

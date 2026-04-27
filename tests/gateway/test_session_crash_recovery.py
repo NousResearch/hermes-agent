@@ -132,3 +132,39 @@ class TestCrashRecoveryIntegration:
         # Restart reads empty checkpoint
         cp2 = SessionCrashCheckpoint(path=path)
         assert cp2.get_active_sessions() == {}
+
+    def test_stale_stop_entry_cleared_by_clean_shutdown(self, tmp_path):
+        """Entries left by /stop (generation-invalidated paths) are purged by
+        the clean-shutdown clear() so they do not cause false-positive
+        suspensions after a subsequent crash."""
+        path = _tmp_checkpoint_path(tmp_path)
+
+        cp = SessionCrashCheckpoint(path=path)
+        cp.mark_running("telegram:100:200", session_id="sess_1")
+        # Simulate /stop: mark_completed is called directly (not via finally block)
+        cp.mark_completed("telegram:100:200")
+
+        # A second session that was stopped but whose entry was cleaned up
+        # by _interrupt_and_clear_session
+        cp.mark_running("discord:300", session_id="sess_2")
+        cp.mark_completed("discord:300")
+
+        # Clean shutdown calls clear() — any residual entries are removed
+        cp.clear()
+
+        # After crash on next run, no false-positive suspensions
+        cp2 = SessionCrashCheckpoint(path=path)
+        assert cp2.get_active_sessions() == {}
+
+    def test_stale_eviction_entry_does_not_persist(self, tmp_path):
+        """Entries for stale-evicted agents must be removed so they do not
+        cause false-positive suspensions on the next crash restart."""
+        path = _tmp_checkpoint_path(tmp_path)
+
+        cp = SessionCrashCheckpoint(path=path)
+        cp.mark_running("telegram:100:200", session_id="sess_1")
+        # Stale eviction calls mark_completed directly (generation invalidated)
+        cp.mark_completed("telegram:100:200")
+
+        active = cp.get_active_sessions()
+        assert "telegram:100:200" not in active

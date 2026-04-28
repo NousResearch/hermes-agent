@@ -1346,8 +1346,23 @@ def list_authenticated_providers(
                     if fb:
                         models_list = list(fb)
 
-            # Try to probe /v1/models if URL is set (but don't block on it)
-            # For now just show what we know from config
+            # Prefer the endpoint's live /models list when credentials are
+            # available. This keeps OpenAI-compatible relays (for example CRS)
+            # in sync when the server catalog changes without requiring the
+            # user to mirror every model into config.yaml.
+            api_key = str(ep_cfg.get("api_key", "") or "").strip()
+            if not api_key:
+                key_env = str(ep_cfg.get("key_env", "") or "").strip()
+                api_key = os.environ.get(key_env, "").strip() if key_env else ""
+            if api_url and api_key:
+                try:
+                    from hermes_cli.models import fetch_api_models
+                    live_models = fetch_api_models(api_key, api_url)
+                    if live_models:
+                        models_list = live_models
+                except Exception:
+                    pass
+
             results.append({
                 "slug": ep_name,
                 "name": display_name,

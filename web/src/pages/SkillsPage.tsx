@@ -20,7 +20,7 @@ import type { SkillInfo, ToolsetInfo } from "@/lib/api";
 import { useToast } from "@/hooks/useToast";
 import { Toast } from "@/components/Toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from "@nous-research/ui";
 import { Input } from "@/components/ui/input";
 import { Switch } from "@/components/ui/switch";
 import { useI18n } from "@/i18n";
@@ -359,7 +359,7 @@ export default function SkillsPage() {
                     <Search className="h-4 w-4" />
                     {t.skills.title}
                   </CardTitle>
-                  <Badge variant="secondary" className="text-[10px]">
+                  <Badge tone="secondary" className="text-[10px]">
                     {t.skills.resultCount
                       .replace("{count}", String(searchMatchedSkills.length))
                       .replace(
@@ -403,7 +403,7 @@ export default function SkillsPage() {
                         )
                       : t.skills.all}
                   </CardTitle>
-                  <Badge variant="secondary" className="text-[10px]">
+                  <Badge tone="secondary" className="text-[10px]">
                     {t.skills.skillCount
                       .replace("{count}", String(activeSkills.length))
                       .replace("{s}", activeSkills.length !== 1 ? "s" : "")}
@@ -460,7 +460,7 @@ export default function SkillsPage() {
                                   {labelText}
                                 </span>
                                 <Badge
-                                  variant={ts.enabled ? "success" : "outline"}
+                                  tone={ts.enabled ? "success" : "outline"}
                                   className="text-[10px]"
                                 >
                                   {ts.enabled
@@ -481,7 +481,7 @@ export default function SkillsPage() {
                                   {ts.tools.map((tool) => (
                                     <Badge
                                       key={tool}
-                                      variant="secondary"
+                                      tone="secondary"
                                       className="text-[10px] font-mono"
                                     >
                                       {tool}

@@ -23,7 +23,7 @@ import { useToast } from "@/hooks/useToast";
 import { OAuthProvidersCard } from "@/components/OAuthProvidersCard";
 import { Button } from "@nous-research/ui";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from "@nous-research/ui";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { useI18n } from "@/i18n";
@@ -173,7 +173,7 @@ function EnvVarRow({
       <div className="flex items-center justify-between gap-2 flex-wrap">
         <div className="flex items-center gap-2">
           <Label className="font-mono-ui text-[0.7rem]">{varKey}</Label>
-          <Badge variant={info.is_set ? "success" : "outline"}>
+          <Badge tone={info.is_set ? "success" : "outline"}>
             {info.is_set ? t.common.set : t.env.notSet}
           </Badge>
         </div>
@@ -190,7 +190,7 @@ function EnvVarRow({
       {info.tools.length > 0 && (
         <div className="flex flex-wrap gap-1">
           {info.tools.map((tool) => (
-            <Badge key={tool} variant="secondary" className="text-[0.6rem] py-0 px-1.5">{tool}</Badge>
+            <Badge key={tool} tone="secondary" className="text-[0.6rem] py-0 px-1.5">{tool}</Badge>
           ))}
         </div>
       )}
@@ -296,7 +296,7 @@ function ProviderGroupCard({
           {expanded ? <ChevronDown className="h-3.5 w-3.5 text-muted-foreground shrink-0" /> : <ChevronRight className="h-3.5 w-3.5 text-muted-foreground shrink-0" />}
           <span className="font-semibold text-sm tracking-wide">{group.name === "Other" ? t.common.other : group.name}</span>
           {hasAnyConfigured && (
-            <Badge variant="success" className="text-[0.6rem]">
+            <Badge tone="success" className="text-[0.6rem]">
               {configuredCount} {t.common.set.toLowerCase()}
             </Badge>
           )}

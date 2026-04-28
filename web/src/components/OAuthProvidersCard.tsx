@@ -3,7 +3,7 @@ import { ShieldCheck, ShieldOff, ExternalLink, RefreshCw, LogOut, Terminal, LogI
 import { api, type OAuthProvider } from "@/lib/api";
 import { Button, CopyButton } from "@nous-research/ui";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from "@nous-research/ui";
 import { OAuthLoginModal } from "@/components/OAuthLoginModal";
 import { useI18n } from "@/i18n";
 
@@ -124,21 +124,21 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                   <div className="flex flex-col min-w-0 gap-0.5">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-medium text-sm">{p.name}</span>
-                      <Badge variant="outline" className="text-[11px] uppercase tracking-wide">
+                      <Badge tone="outline" className="text-[11px] uppercase tracking-wide">
                         {t.oauth.flowLabels[p.flow]}
                       </Badge>
                       {p.status.logged_in && (
-                        <Badge variant="success" className="text-[11px]">
+                        <Badge tone="success" className="text-[11px]">
                           {t.oauth.connected}
                         </Badge>
                       )}
                       {expiresLabel === "expired" && (
-                        <Badge variant="destructive" className="text-[11px]">
+                        <Badge tone="destructive" className="text-[11px]">
                           {t.oauth.expired}
                         </Badge>
                       )}
                       {expiresLabel && expiresLabel !== "expired" && (
-                        <Badge variant="outline" className="text-[11px]">
+                        <Badge tone="outline" className="text-[11px]">
                           {expiresLabel}
                         </Badge>
                       )}

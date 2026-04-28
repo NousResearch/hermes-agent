@@ -11,7 +11,7 @@ import type { AnalyticsResponse, AnalyticsDailyEntry, AnalyticsModelEntry, Analy
 import { timeAgo } from "@/lib/utils";
 import { Button, Stats } from "@nous-research/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from "@nous-research/ui";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
@@ -279,7 +279,7 @@ export default function AnalyticsPage() {
         {loading && (
           <div className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-primary border-t-transparent" />
         )}
-        <Badge variant="secondary" className="text-[10px]">
+        <Badge tone="secondary" className="text-[10px]">
           {periodLabel}
         </Badge>
       </span>,

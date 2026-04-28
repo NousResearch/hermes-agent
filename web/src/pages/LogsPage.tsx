@@ -3,7 +3,7 @@ import { FileText, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
 import { Button } from "@nous-research/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from "@nous-research/ui";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
 import { FilterGroup, Segmented } from "@/components/ui/segmented";
@@ -76,7 +76,7 @@ export default function LogsPage() {
         {loading && (
           <div className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-primary border-t-transparent" />
         )}
-        <Badge variant="secondary" className="text-[10px]">
+        <Badge tone="secondary" className="text-[10px]">
           {file} · {level} · {component}
         </Badge>
       </span>,
@@ -93,7 +93,7 @@ export default function LogsPage() {
             {t.logs.autoRefresh}
           </Label>
           {autoRefresh && (
-            <Badge variant="success" className="text-[10px]">
+            <Badge tone="success" className="text-[10px]">
               <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
               {t.common.live}
             </Badge>

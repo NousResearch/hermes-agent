@@ -36,7 +36,7 @@ import { AutoField } from "@/components/AutoField";
 import { Button } from "@nous-research/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from "@nous-research/ui";
 import { useI18n } from "@/i18n";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { PluginSlot } from "@/plugins";
@@ -484,7 +484,7 @@ export default function ConfigPage() {
                       <Search className="h-4 w-4" />
                       {t.config.searchResults}
                     </CardTitle>
-                    <Badge variant="secondary" className="text-[10px]">
+                    <Badge tone="secondary" className="text-[10px]">
                       {searchMatchedFields.length} {t.config.fields.replace("{s}", searchMatchedFields.length !== 1 ? "s" : "")}
                     </Badge>
                   </div>
@@ -508,7 +508,7 @@ export default function ConfigPage() {
                       <CategoryIcon category={activeCategory} className="h-4 w-4" />
                       {prettyCategoryName(activeCategory)}
                     </CardTitle>
-                    <Badge variant="secondary" className="text-[10px]">
+                    <Badge tone="secondary" className="text-[10px]">
                       {activeFields.length} {t.config.fields.replace("{s}", activeFields.length !== 1 ? "s" : "")}
                     </Badge>
                   </div>

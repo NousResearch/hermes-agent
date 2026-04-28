@@ -97,6 +97,7 @@ Platform toolsets define the complete tool configuration for a deployment target
 | `hermes-discord` | Same as `hermes-cli`. |
 | `hermes-slack` | Same as `hermes-cli`. |
 | `hermes-whatsapp` | Same as `hermes-cli`. |
+| `hermes-line` | Same as `hermes-cli`. |
 | `hermes-signal` | Same as `hermes-cli`. |
 | `hermes-matrix` | Same as `hermes-cli`. |
 | `hermes-mattermost` | Same as `hermes-cli`. |

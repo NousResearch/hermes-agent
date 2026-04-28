@@ -94,7 +94,7 @@ Hermes Agent itself is **free and open-source** (MIT license). You pay only for 
 
 ### Can multiple people use one instance?
 
-Yes. The [messaging gateway](../user-guide/messaging/index.md) lets multiple users interact with the same Hermes Agent instance via Telegram, Discord, Slack, WhatsApp, or Home Assistant. Access is controlled through allowlists (specific user IDs) and DM pairing (first user to message claims access).
+Yes. The [messaging gateway](../user-guide/messaging/index.md) lets multiple users interact with the same Hermes Agent instance via Telegram, Discord, Slack, WhatsApp, LINE, or Home Assistant. Access is controlled through allowlists (specific user IDs) and DM pairing (first user to message claims access).
 
 ### What's the difference between memory and skills?
 
@@ -396,7 +396,7 @@ cat ~/.hermes/logs/gateway.log | tail -50
 **Solution:**
 - Verify your bot token is valid with `hermes gateway setup`
 - Check gateway logs: `cat ~/.hermes/logs/gateway.log | tail -50`
-- For webhook-based platforms (Slack, WhatsApp), ensure your server is publicly accessible
+- For webhook-based platforms (Slack, WhatsApp, LINE), ensure your server is publicly accessible
 
 #### Allowlist confusion — who can talk to the bot?
 
@@ -419,7 +419,7 @@ Configure in `~/.hermes/config.yaml` under your gateway's settings. See the [Mes
 **Solution:**
 ```bash
 # Install messaging dependencies
-pip install "hermes-agent[telegram]"   # or [discord], [slack], [whatsapp]
+pip install "hermes-agent[messaging]"  # includes Telegram, Discord, Slack, WhatsApp, LINE, ...
 
 # Check for port conflicts
 lsof -i :8080

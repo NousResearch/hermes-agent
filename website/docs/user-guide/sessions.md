@@ -10,7 +10,7 @@ Hermes Agent automatically saves every conversation as a session. Sessions enabl
 
 ## How Sessions Work
 
-Every conversation — whether from the CLI, Telegram, Discord, Slack, WhatsApp, Signal, Matrix, or any other messaging platform — is stored as a session with full message history. Sessions are tracked in two complementary systems:
+Every conversation — whether from the CLI, Telegram, Discord, Slack, WhatsApp, LINE, Signal, Matrix, or any other messaging platform — is stored as a session with full message history. Sessions are tracked in two complementary systems:
 
 1. **SQLite database** (`~/.hermes/state.db`) — structured session metadata with FTS5 full-text search
 2. **JSONL transcripts** (`~/.hermes/sessions/`) — raw conversation transcripts including tool calls (gateway)
@@ -172,7 +172,7 @@ When you resume by name (`hermes -c "my project"`), it automatically picks the m
 
 ### /title in Messaging Platforms
 
-The `/title` command works in all gateway platforms (Telegram, Discord, Slack, WhatsApp):
+The `/title` command works in all gateway platforms (Telegram, Discord, Slack, WhatsApp, LINE):
 
 - `/title My Research` — set the session title
 - `/title` — show the current title

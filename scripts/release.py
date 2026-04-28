@@ -54,6 +54,7 @@ AUTHOR_MAP = {
     "nbot@liizfq.top": "liizfq",
     "274096618+hermes-agent-dhabibi@users.noreply.github.com": "dhabibi",
     "dejie.guo@gmail.com": "JayGwod",
+    "hussam.alkurdi@sonymusic.com": "TheMHD1",
     "johnnncenaaa77@gmail.com": "johnncenae",
     "thomasjhon6666@gmail.com": "ThomassJonax",
     "focusflow.app.help@gmail.com": "yes999zc",

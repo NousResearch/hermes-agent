@@ -1,0 +1,7 @@
+name: qmd
+version: 0.1.0
+description: "QMD — read-only memory provider for self-hosted QMD-compatible HTTP API (vector + optional rerank)."
+author: "Hussam Alkurdi"
+pip_dependencies: []
+requires_env:
+  - QMD_REMOTE_API_TOKEN

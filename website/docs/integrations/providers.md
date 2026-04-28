@@ -1132,6 +1132,7 @@ You can switch between providers at any time with `hermes model` — no restart 
 | RL Training | [Tinker](https://tinker-console.thinkingmachines.ai/) + [WandB](https://wandb.ai/) | `TINKER_API_KEY`, `WANDB_API_KEY` |
 | Cross-session user modeling | [Honcho](https://honcho.dev/) | `HONCHO_API_KEY` |
 | Semantic long-term memory | [Supermemory](https://supermemory.ai) | `SUPERMEMORY_API_KEY` |
+| Self-hosted vector RAG | QMD-compatible HTTP API | `QMD_REMOTE_API_TOKEN` |
 
 ### Self-Hosting Firecrawl
 

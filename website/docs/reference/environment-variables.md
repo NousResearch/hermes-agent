@@ -129,6 +129,10 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `HONCHO_API_KEY` | Cross-session user modeling ([honcho.dev](https://honcho.dev/)) |
 | `HONCHO_BASE_URL` | Base URL for self-hosted Honcho instances (default: Honcho cloud). No API key required for local instances |
 | `SUPERMEMORY_API_KEY` | Semantic long-term memory with profile recall and session ingest ([supermemory.ai](https://supermemory.ai)) |
+| `QMD_REMOTE_API_TOKEN` | Self-hosted QMD memory provider — bearer token for the remote HTTP API |
+| `QMD_REMOTE_API_BASE_URL` | QMD service base URL (default `http://localhost:18181`) |
+| `QMD_DEFAULT_INDEX` | QMD default index name (default `default`) |
+| `QMD_TIMEOUT` | QMD HTTP timeout in seconds (default `30`) |
 | `TINKER_API_KEY` | RL training ([tinker-console.thinkingmachines.ai](https://tinker-console.thinkingmachines.ai/)) |
 | `WANDB_API_KEY` | RL training metrics ([wandb.ai](https://wandb.ai/)) |
 | `DAYTONA_API_KEY` | Daytona cloud sandboxes ([daytona.io](https://daytona.io/)) |

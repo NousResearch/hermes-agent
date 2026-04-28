@@ -1,12 +1,12 @@
 ---
 sidebar_position: 4
 title: "Memory Providers"
-description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory"
+description: "External memory provider plugins — Honcho, OpenViking, Mem0, Hindsight, Holographic, RetainDB, ByteRover, Supermemory, QMD"
 ---
 
 # Memory Providers
 
-Hermes Agent ships with 8 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
+Hermes Agent ships with 9 external memory provider plugins that give the agent persistent, cross-session knowledge beyond the built-in MEMORY.md and USER.md. Only **one** external provider can be active at a time — the built-in memory is always active alongside it.
 
 ## Quick Start
 
@@ -22,7 +22,7 @@ Or set manually in `~/.hermes/config.yaml`:
 
 ```yaml
 memory:
-  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory
+  provider: openviking   # or honcho, mem0, hindsight, holographic, retaindb, byterover, supermemory, qmd
 ```
 
 ## How It Works
@@ -522,6 +522,48 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 
 ---
 
+### QMD
+
+Read-only retrieval against a self-hosted **QMD-compatible HTTP API** — a small JSON gateway over a vector index (e.g. sqlite-vec) with optional cross-encoder reranking. Designed for users running their own RAG layer over a curated markdown corpus.
+
+| | |
+|---|---|
+| **Best for** | Self-hosted vector RAG over markdown corpora; users who already run a QMD-compatible HTTP service |
+| **Requires** | A reachable QMD-compatible HTTP service + bearer token. No Python dependencies beyond `httpx` (already a Hermes core dep). |
+| **Data storage** | Self-hosted (wherever the QMD service runs) |
+| **Cost** | Free (self-hosted) |
+
+**Tools (2):** `qmd_search` (semantic search with optional `collection_filter` and per-call `index`), `qmd_status` (fetch `/health` for uptime, indexes, document counts, embedding dim).
+
+**Setup:**
+```bash
+hermes memory setup    # select "qmd"
+# Or manually:
+hermes config set memory.provider qmd
+echo 'QMD_REMOTE_API_TOKEN=***' >> ~/.hermes/.env
+```
+
+**Config:** `$HERMES_HOME/qmd.json` (non-secret keys only)
+
+| Key | Default | Description |
+|-----|---------|-------------|
+| `base_url` | `http://localhost:18181` | QMD service base URL |
+| `default_index` | `default` | Index name for searches without an explicit `index` arg |
+| `timeout` | `30` | HTTP timeout (seconds) |
+| `prefetch_top_k` | `3` | Hits to fetch in the per-turn background prefetch |
+| `manual_top_k` | `5` | Default `top_k` for explicit `qmd_search` calls (max 25) |
+| `snippet_max` | `300` | Truncation cap for the `snippet` and `context` fields |
+
+**Environment variables:** `QMD_REMOTE_API_TOKEN` (required), `QMD_REMOTE_API_BASE_URL`, `QMD_DEFAULT_INDEX`, `QMD_TIMEOUT`.
+
+**Key features:**
+- Read-only by design — writes flow through `MEMORY.md` and the QMD ingest pipeline running alongside the QMD server
+- Wire protocol is a thin HTTP shape: `POST /search {query, topK, index}` and `GET /health`
+- Mem0-style circuit breaker (5 consecutive failures → 120s cooldown)
+- Per-turn prefetch with a thread-overlap guard (no duplicate background work)
+- Connection-pooled `httpx.Client` (8 connections / 4 keepalive) for thread-safe concurrent use
+- `collection_filter` is a client-side prefix match on the `qmd://collection/...` URI segment
+
 ## Provider Comparison
 
 | Provider | Storage | Cost | Tools | Dependencies | Unique Feature |
@@ -534,6 +576,7 @@ echo 'SUPERMEMORY_API_KEY=***' >> ~/.hermes/.env
 | **RetainDB** | Cloud | $20/mo | 5 | `requests` | Delta compression |
 | **ByteRover** | Local/Cloud | Free/Paid | 3 | `brv` CLI | Pre-compression extraction |
 | **Supermemory** | Cloud | Paid | 4 | `supermemory` | Context fencing + session graph ingest + multi-container |
+| **QMD** | Self-hosted | Free | 2 | `httpx` (core) | Read-only HTTP RAG over a self-hosted QMD-compatible vector index |
 
 ## Profile Isolation
 

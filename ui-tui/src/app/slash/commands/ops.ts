@@ -2,6 +2,7 @@ import type {
   BrowserManageResponse,
   DelegationPauseResponse,
   ProcessStopResponse,
+  ReloadEnvResponse,
   ReloadMcpResponse,
   RollbackDiffResponse,
   RollbackListResponse,
@@ -83,6 +84,24 @@ export const opsCommands: SlashCommand[] = [
         .then(
           ctx.guarded<ReloadMcpResponse>(r => {
             ctx.transcript.sys(r.status === 'reloaded' ? 'MCP servers reloaded' : 'reload complete')
+          })
+        )
+        .catch(ctx.guardedErr)
+    }
+  },
+
+  {
+    help: 're-read ~/.hermes/.env into the running gateway (CLI parity)',
+    name: 'reload',
+    run: (_arg, ctx) => {
+      ctx.gateway
+        .rpc<ReloadEnvResponse>('reload.env', {})
+        .then(
+          ctx.guarded<ReloadEnvResponse>(r => {
+            const n = Number(r.updated ?? 0)
+            const noun = n === 1 ? 'var' : 'vars'
+
+            ctx.transcript.sys(`reloaded .env (${n} ${noun} updated)`)
           })
         )
         .catch(ctx.guardedErr)

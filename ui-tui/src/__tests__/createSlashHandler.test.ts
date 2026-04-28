@@ -193,6 +193,7 @@ describe('createSlashHandler', () => {
   it.each([
     ['/browser status', 'browser.manage', { action: 'status' }],
     ['/reload-mcp', 'reload.mcp', { session_id: null }],
+    ['/reload', 'reload.env', {}],
     ['/stop', 'process.stop', {}],
     ['/fast status', 'config.get', { key: 'fast', session_id: null }],
     ['/busy status', 'config.get', { key: 'busy' }],

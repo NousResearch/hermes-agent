@@ -308,6 +308,10 @@ export interface ReloadMcpResponse {
   status?: string
 }
 
+export interface ReloadEnvResponse {
+  updated?: number
+}
+
 export interface ProcessStopResponse {
   killed?: number
 }

@@ -43,6 +43,7 @@ AUTHOR_MAP = {
     "teknium1@gmail.com": "teknium1",
     "teknium@nousresearch.com": "teknium1",
     "127238744+teknium1@users.noreply.github.com": "teknium1",
+    "274096618+hermes-agent-dhabibi@users.noreply.github.com": "dhabibi",
     "johnnncenaaa77@gmail.com": "johnncenae",
     "focusflow.app.help@gmail.com": "yes999zc",
     "343873859@qq.com": "DrStrangerUJN",
@@ -53,6 +54,7 @@ AUTHOR_MAP = {
     "maks.mir@yahoo.com": "say8hi",
     "web3blind@users.noreply.github.com": "web3blind",
     "julia@alexland.us": "alexg0bot",
+    "christian@scheid.tech": "scheidti",
     "1060770+benjaminsehl@users.noreply.github.com": "benjaminsehl",
     "nerijusn76@gmail.com": "Nerijusas",
     "itonov@proton.me": "Ito-69",
@@ -61,6 +63,8 @@ AUTHOR_MAP = {
     "CREWorx@users.noreply.github.com": "BadTechBandit",
     "yoimexex@gmail.com": "Yoimex",
     "6548898+romanornr@users.noreply.github.com": "romanornr",
+    "foxion37@gmail.com": "foxion37",
+    "bloodcarter@gmail.com": "bloodcarter",
     # contributors (from noreply pattern)
     "david.vv@icloud.com": "davidvv",
     "wangqiang@wangqiangdeMac-mini.local": "xiaoqiang243",
@@ -552,6 +556,7 @@ AUTHOR_MAP = {
     "chenzeshi@live.com": "chen1749144759",
     "mor.aleksandr@yahoo.com": "MorAlekss",
     "ash@users.noreply.github.com": "ash",
+    "andrewho.sf@gmail.com": "andrewhosf",
 }
 
 

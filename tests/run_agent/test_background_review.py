@@ -71,3 +71,59 @@ def test_background_review_shuts_down_memory_provider_before_close(monkeypatch):
         "shutdown_memory_provider",
         "close",
     ]
+
+
+def test_background_review_installs_auto_deny_approval_callback(monkeypatch):
+    """Regression guard for #15216.
+
+    The background review thread must install a non-interactive approval
+    callback. If it doesn't, any dangerous-command guard the review agent
+    trips falls back to input() on a daemon thread, which deadlocks against
+    the parent's prompt_toolkit TUI.
+    """
+    import tools.terminal_tool as tt
+
+    observed: dict = {"during_run": "<unread>", "after_finally": "<unread>"}
+
+    class FakeReviewAgent:
+        def __init__(self, **kwargs):
+            self._session_messages = []
+
+        def run_conversation(self, **kwargs):
+            # Capture what the callback looks like mid-run. It must be
+            # a callable (the auto-deny) -- not None.
+            observed["during_run"] = tt._get_approval_callback()
+
+        def shutdown_memory_provider(self):
+            pass
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    monkeypatch.setattr(run_agent_module.threading, "Thread", ImmediateThread)
+
+    # Start from a clean slot.
+    tt.set_approval_callback(None)
+    agent = _bare_agent()
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    observed["after_finally"] = tt._get_approval_callback()
+
+    assert callable(observed["during_run"]), (
+        "Background review did not install an approval callback on its "
+        "worker thread; dangerous-command prompts will deadlock against "
+        "the parent TUI (#15216)."
+    )
+    # The installed callback must deny (it's a safety gate, not a prompt).
+    assert observed["during_run"]("rm -rf /", "test") == "deny"
+
+    assert observed["after_finally"] is None, (
+        "Background review leaked its approval callback into the worker "
+        "thread's TLS slot; a recycled thread-id could reuse it."
+    )

@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
+import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import { getOverlayState, resetOverlayState } from '../app/overlayStore.js'
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 
@@ -40,6 +41,28 @@ describe('createSlashHandler', () => {
       key: 'model',
       session_id: 'sid-abc',
       value: 'x-model --global'
+    })
+  })
+
+  it('honors TUI picker session scope without adding --global', async () => {
+    patchUiState({ sid: 'sid-abc' })
+
+    const ctx = buildCtx({
+      gateway: {
+        ...buildGateway(),
+        rpc: vi.fn(() => Promise.resolve({ value: 'anthropic/claude-sonnet-4.6' }))
+      }
+    })
+
+    expect(
+      createSlashHandler(ctx)(
+        `/model anthropic/claude-sonnet-4.6 --provider openrouter ${TUI_SESSION_MODEL_FLAG}`
+      )
+    ).toBe(true)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      key: 'model',
+      session_id: 'sid-abc',
+      value: 'anthropic/claude-sonnet-4.6 --provider openrouter'
     })
   })
 

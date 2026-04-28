@@ -218,23 +218,15 @@ export function useMainApp(gw: GatewayClient) {
     return cache
   }, [heightCacheKey])
 
-  const initialHeights = useMemo(() => {
-    const out = new Map<string, number>()
-
-    for (const row of virtualRows) {
-      out.set(
-        row.key,
-        heightCache.get(row.key) ??
-          estimatedMsgHeight(row.msg, cols, {
-            compact: ui.compact,
-            details: detailsVisible,
-            limitHistory: row.index < virtualRows.length - FULL_RENDER_TAIL_ITEMS
-          })
-      )
-    }
-
-    return out
-  }, [cols, detailsVisible, heightCache, ui.compact, virtualRows])
+  const estimateRowHeight = useCallback(
+    (index: number) =>
+      estimatedMsgHeight(virtualRows[index]!.msg, cols, {
+        compact: ui.compact,
+        details: detailsVisible,
+        limitHistory: index < virtualRows.length - FULL_RENDER_TAIL_ITEMS
+      }),
+    [cols, detailsVisible, ui.compact, virtualRows]
+  )
 
   const syncHeightCache = useCallback(
     (heights: ReadonlyMap<string, number>) => {
@@ -250,7 +242,8 @@ export function useMainApp(gw: GatewayClient) {
   )
 
   const virtualHistory = useVirtualHistory(scrollRef, virtualRows, cols, {
-    initialHeights,
+    estimateHeight: estimateRowHeight,
+    initialHeights: heightCache,
     liveTailActive: turnLiveTailActive,
     onHeightsChange: syncHeightCache
   })
@@ -662,7 +655,7 @@ export function useMainApp(gw: GatewayClient) {
 
   const onModelSelect = useCallback((value: string) => {
     patchOverlayState({ modelPicker: false })
-    slashRef.current(`/model ${value} --global`)
+    slashRef.current(`/model ${value}`)
   }, [])
 
   const hasReasoning = useTurnSelector(state => Boolean(state.reasoning.trim()))

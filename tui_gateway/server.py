@@ -13,7 +13,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -2274,7 +2274,60 @@ def _(rid, params: dict) -> dict:
                     return
                 prompt = ctx.message
 
-            prompt = _enrich_with_attached_images(prompt, images) if images else prompt
+            # Decide image routing per-turn based on active provider/model.
+            # "native" → pass pixels to the main model as OpenAI-style content
+            # parts (adapters translate for Anthropic/Gemini/Bedrock/etc.).
+            # "text"   → pre-analyze with vision_analyze and prepend the text.
+            # See agent/image_routing.py for the full decision table.
+            run_message: Any = prompt
+            if images:
+                try:
+                    from agent.image_routing import (
+                        decide_image_input_mode,
+                        build_native_content_parts,
+                    )
+                    from agent.auxiliary_client import (
+                        _read_main_model,
+                        _read_main_provider,
+                    )
+                    from hermes_cli.config import load_config as _tui_load_config
+
+                    _cfg = _tui_load_config()
+                    _mode = decide_image_input_mode(
+                        _read_main_provider(),
+                        _read_main_model(),
+                        _cfg,
+                    )
+                except Exception as _img_exc:
+                    print(
+                        f"[tui_gateway] image_routing decision failed, defaulting to text: {_img_exc}",
+                        file=sys.stderr,
+                    )
+                    _mode = "text"
+
+                if _mode == "native":
+                    try:
+                        _parts, _skipped = build_native_content_parts(
+                            prompt,
+                            images,
+                        )
+                        if _skipped:
+                            print(
+                                f"[tui_gateway] native image attachment skipped {len(_skipped)} unreadable path(s)",
+                                file=sys.stderr,
+                            )
+                        if any(p.get("type") == "image_url" for p in _parts):
+                            run_message = _parts
+                        else:
+                            run_message = _enrich_with_attached_images(prompt, images)
+                    except Exception as _img_exc:
+                        print(
+                            f"[tui_gateway] native attach failed, falling back to text: {_img_exc}",
+                            file=sys.stderr,
+                        )
+                        run_message = _enrich_with_attached_images(prompt, images)
+                else:
+                    run_message = _enrich_with_attached_images(prompt, images)
 
             def _stream(delta):
                 payload = {"text": delta}
@@ -2283,7 +2336,7 @@ def _(rid, params: dict) -> dict:
                 _emit("message.delta", sid, payload)
 
             result = agent.run_conversation(
-                prompt,
+                run_message,
                 conversation_history=list(history),
                 stream_callback=_stream,
             )

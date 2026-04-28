@@ -255,6 +255,12 @@ if _config_path.exists():
         # config.yaml overrides .env for these since it's the documented config path.
         _terminal_cfg = _cfg.get("terminal", {})
         if _terminal_cfg and isinstance(_terminal_cfg, dict):
+            # Backward-compat: older configs used terminal.env_type.
+            # Keep honoring it when terminal.backend is absent so gateway
+            # sessions match the CLI's backend resolution semantics.
+            if "backend" not in _terminal_cfg and "env_type" in _terminal_cfg:
+                _terminal_cfg = dict(_terminal_cfg)
+                _terminal_cfg["backend"] = _terminal_cfg["env_type"]
             _terminal_env_map = {
                 "backend": "TERMINAL_ENV",
                 "cwd": "TERMINAL_CWD",

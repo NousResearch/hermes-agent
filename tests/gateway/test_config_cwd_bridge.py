@@ -9,8 +9,10 @@ the semantics by reimplementing the relevant config bridge snippet and
 asserting the expected env var outcomes.
 """
 
-import os
 import json
+import importlib
+import os
+import sys
 import pytest
 
 
@@ -205,3 +207,35 @@ class TestNestedTerminalCwdPlaceholderSkip:
         assert result["TERMINAL_ENV"] == "docker"
         assert result["TERMINAL_TIMEOUT"] == "300"
         assert result["TERMINAL_CWD"] == "/from/env"
+
+
+class TestGatewayRunLegacyEnvTypeBridge:
+    """gateway.run should honor legacy terminal.env_type configs."""
+
+    def _reload_gateway_run(self, monkeypatch, hermes_home):
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.delenv("TERMINAL_ENV", raising=False)
+        monkeypatch.delenv("TERMINAL_CWD", raising=False)
+        sys.modules.pop("gateway.run", None)
+        import gateway.run as gateway_run
+        return importlib.reload(gateway_run)
+
+    def test_terminal_env_type_bridges_to_terminal_env(self, tmp_path, monkeypatch):
+        (tmp_path / "config.yaml").write_text(
+            "terminal:\n  env_type: docker\n",
+            encoding="utf-8",
+        )
+
+        self._reload_gateway_run(monkeypatch, tmp_path)
+
+        assert os.environ["TERMINAL_ENV"] == "docker"
+
+    def test_backend_still_wins_over_legacy_env_type(self, tmp_path, monkeypatch):
+        (tmp_path / "config.yaml").write_text(
+            "terminal:\n  backend: modal\n  env_type: docker\n",
+            encoding="utf-8",
+        )
+
+        self._reload_gateway_run(monkeypatch, tmp_path)
+
+        assert os.environ["TERMINAL_ENV"] == "modal"

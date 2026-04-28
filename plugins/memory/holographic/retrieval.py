@@ -494,9 +494,32 @@ class FactRetriever:
 
         # Build query - FTS5 rank is negative (lower = better match)
         # We need to join facts_fts with facts to get all columns
+        # For multi-token queries, use OR to match any token (FTS5 tokenization
+        # splits Chinese on character boundaries, so each character or word becomes
+        # a separate token).  Single-token queries are passed as-is.
+        # For tokens containing ASCII characters (English/case-sensitive), use
+        # prefix matching so "vegf" matches "VEGF通路" in the index.
+        import re
+        tokens = [t.strip(".,!?;:\"'()[]{}-") for t in query.lower().split()]
+        tokens = [t for t in tokens if t]
+        if len(tokens) > 1:
+            fts_terms = []
+            for token in tokens:
+                if re.search(r"[a-zA-Z0-9]", token):
+                    fts_terms.append(token + "*")
+                else:
+                    fts_terms.append(token)
+            fts_query = " OR ".join(fts_terms)
+        elif tokens:
+            # Single token: still apply prefix matching for ASCII tokens
+            token = tokens[0]
+            fts_query = token + "*" if re.search(r"[a-zA-Z0-9]", token) else token
+        else:
+            fts_query = query
+
         params: list = []
         where_clauses = ["facts_fts MATCH ?"]
-        params.append(query)
+        params.append(fts_query)
 
         if category:
             where_clauses.append("f.category = ?")

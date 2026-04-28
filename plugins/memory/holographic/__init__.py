@@ -207,11 +207,87 @@ class HolographicMemoryProvider(MemoryProvider):
         if not self._retriever or not query:
             return ""
         try:
-            results = self._retriever.search(query, min_trust=self._min_trust, limit=5)
-            if not results:
+            # Parallel dual-path retrieval:
+            #   Path A — FTS5 keyword + Jaccard + HRR rerank  (shallow, fast)
+            #   Path B — HRR reason() algebraic bind/unbind      (deep, semantic)
+            # Both paths are independent; results are merged and deduped by fact_id.
+            import concurrent.futures
+
+            fts_results: list[dict] = []
+            hrr_results: list[dict] = []
+
+            def run_fts():
+                return self._retriever.search(
+                    query, min_trust=0.0, limit=8
+                )
+
+            def run_hrr():
+                # reason() does not accept min_trust; trust scoring is applied
+                # during score fusion in the merge step below.
+                tokens = [t.strip(".,!?;:\"'()[]{}-") for t in query.lower().split()]
+                tokens = [t for t in tokens if t]
+                return self._retriever.reason(
+                    tokens if tokens else [query.lower().strip()],
+                    limit=8,
+                )
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as executor:
+                fts_future = executor.submit(run_fts)
+                hrr_future = executor.submit(run_hrr)
+                try:
+                    fts_results = fts_future.result(timeout=2.0)
+                except Exception:
+                    fts_results = []
+                try:
+                    hrr_results = hrr_future.result(timeout=2.0)
+                except Exception:
+                    hrr_results = []
+
+            # Score quality gate:
+            # HRR produces near-random ~0.25 with dim=1024, n=21 when no entity
+            # signal is present.  Use HRR only when:
+            #   (a) FTS has results AND HRR clearly beats them (ratio-gated), OR
+            #   (b) FTS returns nothing — HRR is the only signal, accept if above
+            #       a higher floor since we have no calibration baseline.
+            fts_best = fts_results[0].get("score", 0) if fts_results else 0.0
+            _FTS_FAIL_FLOOR = 0.10   # below this FTS is unreliable
+            _HRR_NOISE_FLOOR = 0.27  # empirical: ~random for this corpus size/dim
+
+            # Merge: FTS primary, HRR supplement
+            seen: dict[int, dict] = {}
+            for r in fts_results:
+                fid = r.get("fact_id")
+                if fid is not None and fid not in seen:
+                    seen[fid] = r
+
+            # Adopt HRR results when FTS is weak or absent
+            for r in hrr_results:
+                fid = r.get("fact_id")
+                if fid is None or fid in seen:
+                    continue
+                hrr_score = r.get("score", 0)
+                # FTS strong enough to judge HRR on ratio?
+                if fts_best >= _FTS_FAIL_FLOOR:
+                    # Yes: require HRR beat FTS by meaningful margin
+                    if hrr_score > fts_best * 1.05 and hrr_score > _HRR_NOISE_FLOOR:
+                        seen[fid] = r
+                else:
+                    # No FTS signal: accept HRR only if above higher floor
+                    # (no calibration baseline, must be clearly non-noise)
+                    if hrr_score > 0.29:
+                        seen[fid] = r
+
+            # Sort by score descending, take top 5
+            merged = sorted(seen.values(), key=lambda x: x.get("score", 0), reverse=True)[:5]
+
+            # Apply trust threshold after score fusion
+            merged = [r for r in merged if r.get("trust_score", 0) >= self._min_trust]
+
+            if not merged:
                 return ""
+
             lines = []
-            for r in results:
+            for r in merged:
                 trust = r.get("trust_score", r.get("trust", 0))
                 lines.append(f"- [{trust:.1f}] {r.get('content', '')}")
             return "## Holographic Memory\n" + "\n".join(lines)
@@ -243,12 +319,19 @@ class HolographicMemoryProvider(MemoryProvider):
 
     def on_memory_write(self, action: str, target: str, content: str) -> None:
         """Mirror built-in memory writes as facts."""
-        if action == "add" and self._store and content:
+        if not self._store or not content:
+            return
+        if action == "add":
             try:
                 category = "user_pref" if target == "user" else "general"
                 self._store.add_fact(content, category=category)
             except Exception as e:
                 logger.debug("Holographic memory_write mirror failed: %s", e)
+        elif action == "remove":
+            try:
+                self._store.remove_fact_by_content(content)
+            except Exception as e:
+                logger.debug("Holographic memory_write remove mirror failed: %s", e)
 
     def shutdown(self) -> None:
         self._store = None

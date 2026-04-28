@@ -352,11 +352,14 @@ class MemoryStore:
                 # All identical -- safe to remove just the first
 
             idx = matches[0][0]
+            deleted_content = entries[idx]
             entries.pop(idx)
             self._set_entries(target, entries)
             self.save_to_disk(target)
 
-        return self._success_response(target, "Entry removed.")
+        response = self._success_response(target, "Entry removed.")
+        response["deleted_content"] = deleted_content
+        return response
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:
         """

@@ -35,19 +35,48 @@ import type { Theme } from '../theme.js'
 
 import { Md } from './markdown.js'
 
-// Count ``` or ~~~ fence toggles in `s` up to `end`. Odd = currently inside
-// a fenced block; we can't split the prefix there or we'd orphan the fence.
+// Count ``` / ~~~ AND `$$` / `\[…\]` fence toggles in `s` up to `end`. Odd
+// = currently inside a fenced block; splitting the prefix there would
+// orphan the fence and let the unstable suffix re-render as broken
+// markdown. Math fences only toggle when the code fence is closed so
+// snippets like ` ```\n$$x$$\n``` ` (math example inside a code block)
+// don't double-count. A `$$x$$` line that opens AND closes on its own
+// produces zero net toggles; that's `len >= 4` plus `endsDollar`.
 const fenceOpenAt = (s: string, end: number) => {
-  let open = false
+  let codeOpen = false
+  let mathOpen = false
+  let mathOpener: '$$' | '\\[' | null = null
   let i = 0
 
   while (i < end) {
     const nl = s.indexOf('\n', i)
     const lineEnd = nl < 0 || nl > end ? end : nl
-    const line = s.slice(i, lineEnd)
+    const line = s.slice(i, lineEnd).trim()
 
-    if (/^\s*(?:`{3,}|~{3,})/.test(line)) {
-      open = !open
+    if (/^(?:`{3,}|~{3,})/.test(line)) {
+      codeOpen = !codeOpen
+    } else if (!codeOpen) {
+      if (!mathOpen && /^\$\$/.test(line)) {
+        const isSingleLine = line.length >= 4 && /\$\$$/.test(line)
+
+        if (!isSingleLine) {
+          mathOpen = true
+          mathOpener = '$$'
+        }
+      } else if (!mathOpen && /^\\\[/.test(line)) {
+        const isSingleLine = /\\\]$/.test(line)
+
+        if (!isSingleLine) {
+          mathOpen = true
+          mathOpener = '\\['
+        }
+      } else if (mathOpen && mathOpener === '$$' && /\$\$$/.test(line)) {
+        mathOpen = false
+        mathOpener = null
+      } else if (mathOpen && mathOpener === '\\[' && /\\\]$/.test(line)) {
+        mathOpen = false
+        mathOpener = null
+      }
     }
 
     if (nl < 0 || nl >= end) {
@@ -57,7 +86,7 @@ const fenceOpenAt = (s: string, end: number) => {
     i = nl + 1
   }
 
-  return open
+  return codeOpen || mathOpen
 }
 
 // Find the last "\n\n" boundary before `end` that is OUTSIDE a fenced code

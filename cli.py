@@ -644,6 +644,9 @@ def load_cli_config() -> Dict[str, Any]:
         redact = security_config.get("redact_secrets")
         if redact is not None:
             os.environ["HERMES_REDACT_SECRETS"] = str(redact).lower()
+        display_only = security_config.get("display_redaction_only")
+        if display_only is not None:
+            os.environ["HERMES_REDACT_DISPLAY_ONLY"] = str(display_only).lower()
 
     return defaults
 
@@ -7335,9 +7338,10 @@ class HermesCLI:
             target=self._reload_mcp, daemon=True
         )
         _reload_thread.start()
-        _reload_thread.join(timeout=30)
-        if _reload_thread.is_alive():
-            print("  ⚠️  MCP reload timed out (30s). Some servers may not have reconnected.")
+        # Do NOT join here — process_loop must remain responsive to user
+        # input.  A 30-second blocking join would freeze the TUI, and a
+        # hung MCP server could block indefinitely.  The reload thread
+        # reports its own status via print().
 
     def _reload_mcp(self):
         """Reload MCP servers: disconnect all, re-read config.yaml, reconnect.
@@ -7616,40 +7620,45 @@ class HermesCLI:
                 return
             self._voice_recording = True
 
-        # Load silence detection params from config
-        voice_cfg = {}
+        # Everything after _voice_recording = True must be inside the try
+        # block — if any step fails (config load, recorder creation, beep,
+        # start), we must reset the flag or subsequent calls will be
+        # silently ignored (process_loop will see _voice_recording=True and
+        # skip voice start forever).
         try:
-            from hermes_cli.config import load_config
-            voice_cfg = load_config().get("voice", {})
-        except Exception:
-            pass
-
-        if self._voice_recorder is None:
-            self._voice_recorder = create_audio_recorder()
-
-        # Apply config-driven silence params
-        self._voice_recorder._silence_threshold = voice_cfg.get("silence_threshold", 200)
-        self._voice_recorder._silence_duration = voice_cfg.get("silence_duration", 3.0)
-
-        def _on_silence():
-            """Called by AudioRecorder when silence is detected after speech."""
-            with self._voice_lock:
-                if not self._voice_recording:
-                    return
-            _cprint(f"\n{_DIM}Silence detected, auto-stopping...{_RST}")
-            if hasattr(self, '_app') and self._app:
-                self._app.invalidate()
-            self._voice_stop_and_transcribe()
-
-        # Audio cue: single beep BEFORE starting stream (avoid CoreAudio conflict)
-        if self._voice_beeps_enabled():
+            # Load silence detection params from config
+            voice_cfg = {}
             try:
-                from tools.voice_mode import play_beep
-                play_beep(frequency=880, count=1)
+                from hermes_cli.config import load_config
+                voice_cfg = load_config().get("voice", {})
             except Exception:
                 pass
 
-        try:
+            if self._voice_recorder is None:
+                self._voice_recorder = create_audio_recorder()
+
+            # Apply config-driven silence params
+            self._voice_recorder._silence_threshold = voice_cfg.get("silence_threshold", 200)
+            self._voice_recorder._silence_duration = voice_cfg.get("silence_duration", 3.0)
+
+            def _on_silence():
+                """Called by AudioRecorder when silence is detected after speech."""
+                with self._voice_lock:
+                    if not self._voice_recording:
+                        return
+                _cprint(f"\n{_DIM}Silence detected, auto-stopping...{_RST}")
+                if hasattr(self, '_app') and self._app:
+                    self._app.invalidate()
+                self._voice_stop_and_transcribe()
+
+            # Audio cue: single beep BEFORE starting stream (avoid CoreAudio conflict)
+            if self._voice_beeps_enabled():
+                try:
+                    from tools.voice_mode import play_beep
+                    play_beep(frequency=880, count=1)
+                except Exception:
+                    pass
+
             self._voice_recorder.start(on_silence_stop=_on_silence)
         except Exception:
             with self._voice_lock:
@@ -10973,8 +10982,21 @@ class HermesCLI:
                         except Exception:
                             pass  # Non-fatal — don't break the main loop
 
-                except Exception as e:
-                    print(f"Error: {e}")
+                except BaseException as e:
+                    # Catch ALL exceptions including KeyboardInterrupt and
+                    # SystemExit.  If this daemon thread dies, the TUI main
+                    # loop keeps running but _pending_input is never consumed
+                    # — the user can type but input disappears into a black
+                    # hole.  Use sys.stderr.write instead of print() because
+                    # print() routes through patch_stdout's StdoutProxy,
+                    # which can itself fail during long sessions.
+                    try:
+                        sys.stderr.write(f"[process_loop error] {type(e).__name__}: {e}\n")
+                        sys.stderr.flush()
+                    except Exception:
+                        pass
+                    # Brief cooldown then retry — never let process_loop die.
+                    time.sleep(0.5)
         
         # Start processing thread
         process_thread = threading.Thread(target=process_loop, daemon=True)

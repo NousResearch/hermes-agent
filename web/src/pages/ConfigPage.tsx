@@ -345,11 +345,11 @@ export default function ConfigPage() {
           </code>
         </div>
         <div className="flex items-center gap-1.5">
-          <Button outlined onClick={handleExport} title={t.config.exportConfig} aria-label={t.config.exportConfig} className="!p-2 aspect-square">
-            <Download className="h-3.5 w-3.5" />
+          <Button ghost size="icon" onClick={handleExport} title={t.config.exportConfig} aria-label={t.config.exportConfig}>
+            <Download />
           </Button>
-          <Button outlined onClick={() => fileInputRef.current?.click()} title={t.config.importConfig} aria-label={t.config.importConfig} className="!p-2 aspect-square">
-            <Upload className="h-3.5 w-3.5" />
+          <Button ghost size="icon" onClick={() => fileInputRef.current?.click()} title={t.config.importConfig} aria-label={t.config.importConfig}>
+            <Upload />
           </Button>
           <input ref={fileInputRef} type="file" accept=".json" className="hidden" onChange={handleImport} />
           {!yamlMode && (() => {
@@ -358,8 +358,8 @@ export default function ConfigPage() {
               : prettyCategoryName(activeCategory);
             const resetTitle = t.config.resetScopeTooltip.replace("{scope}", resetScopeLabel);
             return (
-              <Button outlined onClick={handleReset} title={resetTitle} aria-label={resetTitle} className="!p-2 aspect-square">
-                <RotateCcw className="h-3.5 w-3.5" />
+              <Button ghost size="icon" onClick={handleReset} title={resetTitle} aria-label={resetTitle}>
+                <RotateCcw />
               </Button>
             );
           })()}

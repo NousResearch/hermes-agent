@@ -204,13 +204,10 @@ function EnvVarRow({
           </div>
 
           {info.is_set && (
-            <Button outlined onClick={() => onReveal(varKey)}
+            <Button ghost size="icon" onClick={() => onReveal(varKey)}
               title={isRevealed ? t.env.hideValue : t.env.showValue}
-              aria-label={isRevealed ? `Hide ${varKey}` : `Reveal ${varKey}`}
-              className="!p-2 aspect-square">
-              {isRevealed
-                ? <EyeOff className="h-4 w-4" />
-                : <Eye className="h-4 w-4" />}
+              aria-label={isRevealed ? `Hide ${varKey}` : `Reveal ${varKey}`}>
+              {isRevealed ? <EyeOff /> : <Eye />}
             </Button>
           )}
 
@@ -220,8 +217,7 @@ function EnvVarRow({
           </Button>
 
           {info.is_set && (
-            <Button outlined prefix={<Trash2 />}
-              className="text-destructive hover:!text-destructive"
+            <Button outlined destructive prefix={<Trash2 />}
               onClick={() => onClear(varKey)} disabled={saving === varKey || clearDialogOpen}>
               {saving === varKey ? "..." : t.common.clear}
             </Button>

@@ -110,9 +110,9 @@ export function ConfirmDialog({
           <Button
             data-confirm
             type="button"
+            destructive={destructive}
             onClick={onConfirm}
             disabled={loading}
-            className={destructive ? "!bg-destructive !text-destructive-foreground" : undefined}
           >
             {loading ? "…" : confirmLabel}
           </Button>

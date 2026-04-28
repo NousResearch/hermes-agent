@@ -304,39 +304,39 @@ export default function CronPage() {
 
               <div className="flex items-center gap-1 shrink-0">
                 <Button
-                  outlined
+                  ghost
+                  size="icon"
                   title={job.state === "paused" ? t.cron.resume : t.cron.pause}
                   aria-label={
                     job.state === "paused" ? t.cron.resume : t.cron.pause
                   }
                   onClick={() => handlePauseResume(job)}
-                  className="!p-2 aspect-square"
+                  className={
+                    job.state === "paused" ? "text-success" : "text-warning"
+                  }
                 >
-                  {job.state === "paused" ? (
-                    <Play className="h-4 w-4 text-success" />
-                  ) : (
-                    <Pause className="h-4 w-4 text-warning" />
-                  )}
+                  {job.state === "paused" ? <Play /> : <Pause />}
                 </Button>
 
                 <Button
-                  outlined
+                  ghost
+                  size="icon"
                   title={t.cron.triggerNow}
                   aria-label={t.cron.triggerNow}
                   onClick={() => handleTrigger(job)}
-                  className="!p-2 aspect-square"
                 >
-                  <Zap className="h-4 w-4" />
+                  <Zap />
                 </Button>
 
                 <Button
-                  outlined
+                  ghost
+                  destructive
+                  size="icon"
                   title={t.common.delete}
                   aria-label={t.common.delete}
                   onClick={() => jobDelete.requestDelete(job.id)}
-                  className="!p-2 aspect-square"
                 >
-                  <Trash2 className="h-4 w-4 text-destructive" />
+                  <Trash2 />
                 </Button>
               </div>
             </CardContent>

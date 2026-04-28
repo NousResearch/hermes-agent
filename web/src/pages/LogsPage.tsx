@@ -1,4 +1,10 @@
-import { useEffect, useLayoutEffect, useState, useCallback, useRef } from "react";
+import {
+  useEffect,
+  useLayoutEffect,
+  useState,
+  useCallback,
+  useRef,
+} from "react";
 import { FileText, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
 import { Button } from "@nous-research/ui";
@@ -141,18 +147,25 @@ export default function LogsPage() {
   return (
     <div className="flex flex-col gap-4">
       <PluginSlot name="logs:top" />
-      {/* ═══════════════ Filter toolbar ═══════════════ */}
       <div
         role="toolbar"
         aria-label={t.logs.title}
         className="flex flex-wrap items-center gap-x-6 gap-y-2"
       >
         <FilterGroup label={t.logs.file}>
-          <Segmented value={file} onChange={setFile} options={toOptions(FILES)} />
+          <Segmented
+            value={file}
+            onChange={setFile}
+            options={toOptions(FILES)}
+          />
         </FilterGroup>
 
         <FilterGroup label={t.logs.level}>
-          <Segmented value={level} onChange={setLevel} options={toOptions(LEVELS)} />
+          <Segmented
+            value={level}
+            onChange={setLevel}
+            options={toOptions(LEVELS)}
+          />
         </FilterGroup>
 
         <FilterGroup label={t.logs.component}>
@@ -177,7 +190,6 @@ export default function LogsPage() {
         </FilterGroup>
       </div>
 
-      {/* ═══════════════ Log viewer ═══════════════ */}
       <Card>
         <CardHeader className="py-3 px-4">
           <CardTitle className="text-sm flex items-center gap-2">

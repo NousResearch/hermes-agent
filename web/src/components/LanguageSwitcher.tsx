@@ -18,7 +18,6 @@ export function LanguageSwitcher() {
       title={t.language.switchTo}
       aria-label={t.language.switchTo}
     >
-      {/* Show the *current* language's flag — tooltip advertises the click action */}
       <span className="text-base leading-none">
         {locale === "en" ? "🇬🇧" : "🇨🇳"}
       </span>

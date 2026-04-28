@@ -21,11 +21,7 @@ type Phase =
   | "approved"
   | "error";
 
-export function OAuthLoginModal({
-  provider,
-  onClose,
-  onSuccess,
-}: Props) {
+export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
   const [phase, setPhase] = useState<Phase>("starting");
   const [start, setStart] = useState<OAuthStartResponse | null>(null);
   const [pkceCode, setPkceCode] = useState("");
@@ -202,7 +198,6 @@ export function OAuthLoginModal({
               )}
           </div>
 
-          {/* ── starting ───────────────────────────────────── */}
           {phase === "starting" && (
             <div className="flex items-center gap-3 py-6 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -210,7 +205,6 @@ export function OAuthLoginModal({
             </div>
           )}
 
-          {/* ── PKCE: paste code ───────────────────────────── */}
           {start?.flow === "pkce" && phase === "awaiting_user" && (
             <>
               <ol className="text-sm space-y-2 list-decimal list-inside text-muted-foreground">
@@ -250,7 +244,6 @@ export function OAuthLoginModal({
             </>
           )}
 
-          {/* ── PKCE: submitting exchange ──────────────────── */}
           {phase === "submitting" && (
             <div className="flex items-center gap-3 py-6 text-sm text-muted-foreground">
               <Loader2 className="h-4 w-4 animate-spin" />
@@ -258,7 +251,6 @@ export function OAuthLoginModal({
             </div>
           )}
 
-          {/* ── Device code: show code + URL, polling ──────── */}
           {start?.flow === "device_code" && phase === "polling" && (
             <>
               <p className="text-sm text-muted-foreground">
@@ -309,7 +301,6 @@ export function OAuthLoginModal({
             </>
           )}
 
-          {/* ── approved ───────────────────────────────────── */}
           {phase === "approved" && (
             <div className="flex items-center gap-3 py-6 text-sm text-success">
               <Check className="h-5 w-5" />
@@ -317,7 +308,6 @@ export function OAuthLoginModal({
             </div>
           )}
 
-          {/* ── error ──────────────────────────────────────── */}
           {phase === "error" && (
             <>
               <div className="border border-destructive/30 bg-destructive/10 p-3 text-sm text-destructive">

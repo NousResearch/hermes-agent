@@ -1,8 +1,22 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { ShieldCheck, ShieldOff, ExternalLink, RefreshCw, LogOut, Terminal, LogIn } from "lucide-react";
+import {
+  ShieldCheck,
+  ShieldOff,
+  ExternalLink,
+  RefreshCw,
+  LogOut,
+  Terminal,
+  LogIn,
+} from "lucide-react";
 import { api, type OAuthProvider } from "@/lib/api";
 import { Button, CopyButton } from "@nous-research/ui";
-import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
 import { Badge } from "@nous-research/ui";
 import { OAuthLoginModal } from "@/components/OAuthLoginModal";
 import { useI18n } from "@/i18n";
@@ -12,7 +26,10 @@ interface Props {
   onSuccess?: (msg: string) => void;
 }
 
-function formatExpiresAt(expiresAt: string | null | undefined, expiresInTemplate: string): string | null {
+function formatExpiresAt(
+  expiresAt: string | null | undefined,
+  expiresInTemplate: string,
+): string | null {
   if (!expiresAt) return null;
   try {
     const dt = new Date(expiresAt);
@@ -70,7 +87,8 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
     }
   };
 
-  const connectedCount = providers?.filter((p) => p.status.logged_in).length ?? 0;
+  const connectedCount =
+    providers?.filter((p) => p.status.logged_in).length ?? 0;
   const totalCount = providers?.length ?? 0;
 
   return (
@@ -79,19 +97,25 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-2">
             <ShieldCheck className="h-5 w-5 text-muted-foreground" />
-            <CardTitle className="text-base">{t.oauth.providerLogins}</CardTitle>
+            <CardTitle className="text-base">
+              {t.oauth.providerLogins}
+            </CardTitle>
           </div>
           <Button
             outlined
             onClick={refresh}
             disabled={loading}
-            prefix={<RefreshCw className={loading ? "animate-spin" : undefined} />}
+            prefix={
+              <RefreshCw className={loading ? "animate-spin" : undefined} />
+            }
           >
             {t.common.refresh}
           </Button>
         </div>
         <CardDescription>
-          {t.oauth.description.replace("{connected}", String(connectedCount)).replace("{total}", String(totalCount))}
+          {t.oauth.description
+            .replace("{connected}", String(connectedCount))
+            .replace("{total}", String(totalCount))}
         </CardDescription>
       </CardHeader>
       <CardContent>
@@ -107,14 +131,16 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
         )}
         <div className="flex flex-col divide-y divide-border">
           {providers?.map((p) => {
-            const expiresLabel = formatExpiresAt(p.status.expires_at, t.oauth.expiresIn);
+            const expiresLabel = formatExpiresAt(
+              p.status.expires_at,
+              t.oauth.expiresIn,
+            );
             const isBusy = busyId === p.id;
             return (
               <div
                 key={p.id}
                 className="flex items-center justify-between gap-4 py-3"
               >
-                {/* Left: status icon + name + source */}
                 <div className="flex items-start gap-3 min-w-0 flex-1">
                   {p.status.logged_in ? (
                     <ShieldCheck className="h-5 w-5 text-success shrink-0 mt-0.5" />
@@ -124,7 +150,10 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                   <div className="flex flex-col min-w-0 gap-0.5">
                     <div className="flex items-center gap-2 flex-wrap">
                       <span className="font-medium text-sm">{p.name}</span>
-                      <Badge tone="outline" className="text-[11px] uppercase tracking-wide">
+                      <Badge
+                        tone="outline"
+                        className="text-[11px] uppercase tracking-wide"
+                      >
                         {t.oauth.flowLabels[p.flow]}
                       </Badge>
                       {p.status.logged_in && (
@@ -145,11 +174,12 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                     </div>
                     {p.status.logged_in && p.status.token_preview && (
                       <code className="text-xs font-mono-ui truncate">
-                        <span className="opacity-50">token{" "}</span>
+                        <span className="opacity-50">token </span>
                         {p.status.token_preview}
                         {p.status.source_label && (
                           <span className="opacity-40">
-                            {" "}· {p.status.source_label}
+                            {" "}
+                            · {p.status.source_label}
                           </span>
                         )}
                       </code>
@@ -170,7 +200,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                     )}
                   </div>
                 </div>
-                {/* Right: action buttons */}
+
                 <div className="flex items-center gap-1.5 shrink-0">
                   {p.docs_url && (
                     <a
@@ -186,10 +216,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                     </a>
                   )}
                   {!p.status.logged_in && p.flow !== "external" && (
-                    <Button
-                      onClick={() => setLoginFor(p)}
-                      prefix={<LogIn />}
-                    >
+                    <Button onClick={() => setLoginFor(p)} prefix={<LogIn />}>
                       {t.oauth.login}
                     </Button>
                   )}

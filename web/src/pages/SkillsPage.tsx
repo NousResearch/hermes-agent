@@ -221,15 +221,7 @@ export default function SkillsPage() {
       setAfterTitle(null);
       setEnd(null);
     };
-  }, [
-    enabledCount,
-    loading,
-    search,
-    setAfterTitle,
-    setEnd,
-    skills.length,
-    t,
-  ]);
+  }, [enabledCount, loading, search, setAfterTitle, setEnd, skills.length, t]);
 
   const filteredToolsets = useMemo(() => {
     return toolsets.filter(
@@ -255,13 +247,8 @@ export default function SkillsPage() {
       <PluginSlot name="skills:top" />
       <Toast toast={toast} />
 
-      {/* ═══════════════ Filter panel + Content ═══════════════ */}
       <div className="flex flex-col sm:flex-row sm:items-start gap-4">
-        {/* ---- Filter panel ---- */}
-        <aside
-          aria-label={t.skills.title}
-          className="sm:w-56 sm:shrink-0"
-        >
+        <aside aria-label={t.skills.title} className="sm:w-56 sm:shrink-0">
           <div className="sm:sticky sm:top-0">
             <div
               className={`
@@ -269,7 +256,6 @@ export default function SkillsPage() {
                 border border-border bg-muted/20
               `}
             >
-              {/* Filter heading */}
               <div className="hidden sm:flex items-center gap-2 px-3 py-2 border-b border-border">
                 <Filter className="h-3 w-3 text-muted-foreground" />
                 <span className="font-mondwest text-[0.65rem] tracking-[0.12em] uppercase text-muted-foreground">
@@ -277,7 +263,6 @@ export default function SkillsPage() {
                 </span>
               </div>
 
-              {/* View switch (Skills / Toolsets) */}
               <div className="flex sm:flex-col gap-1 overflow-x-auto sm:overflow-x-visible scrollbar-none p-2">
                 <PanelItem
                   icon={Package}
@@ -300,24 +285,25 @@ export default function SkillsPage() {
                 />
               </div>
 
-              {/* Category sub-filters (only for Skills view) */}
-              {view === "skills" && !isSearching && allCategories.length > 0 && (
-                <div className="hidden sm:flex flex-col border-t border-border">
-                  <div className="px-3 pt-2 pb-1 font-mondwest text-[0.6rem] tracking-[0.12em] uppercase text-muted-foreground/70">
-                    {t.skills.categories}
-                  </div>
-                  <div className="flex flex-col p-2 pt-1 gap-px max-h-[calc(100vh-340px)] overflow-y-auto">
-                    {allCategories.map(({ key, name, count }) => {
-                      const isActive = activeCategory === key;
+              {view === "skills" &&
+                !isSearching &&
+                allCategories.length > 0 && (
+                  <div className="hidden sm:flex flex-col border-t border-border">
+                    <div className="px-3 pt-2 pb-1 font-mondwest text-[0.6rem] tracking-[0.12em] uppercase text-muted-foreground/70">
+                      {t.skills.categories}
+                    </div>
+                    <div className="flex flex-col p-2 pt-1 gap-px max-h-[calc(100vh-340px)] overflow-y-auto">
+                      {allCategories.map(({ key, name, count }) => {
+                        const isActive = activeCategory === key;
 
-                      return (
-                        <button
-                          key={key}
-                          type="button"
-                          onClick={() =>
-                            setActiveCategory(isActive ? null : key)
-                          }
-                          className={`
+                        return (
+                          <button
+                            key={key}
+                            type="button"
+                            onClick={() =>
+                              setActiveCategory(isActive ? null : key)
+                            }
+                            className={`
                             group flex items-center gap-2 px-2 py-1
                             rounded-sm text-left text-[11px] cursor-pointer
                             transition-colors
@@ -327,31 +313,29 @@ export default function SkillsPage() {
                                 : "text-muted-foreground hover:text-foreground hover:bg-foreground/5"
                             }
                           `}
-                        >
-                          <span className="flex-1 truncate">{name}</span>
-                          <span
-                            className={`text-[10px] tabular-nums ${
-                              isActive
-                                ? "text-foreground/60"
-                                : "text-muted-foreground/50"
-                            }`}
                           >
-                            {count}
-                          </span>
-                        </button>
-                      );
-                    })}
+                            <span className="flex-1 truncate">{name}</span>
+                            <span
+                              className={`text-[10px] tabular-nums ${
+                                isActive
+                                  ? "text-foreground/60"
+                                  : "text-muted-foreground/50"
+                              }`}
+                            >
+                              {count}
+                            </span>
+                          </button>
+                        );
+                      })}
+                    </div>
                   </div>
-                </div>
-              )}
+                )}
             </div>
           </div>
         </aside>
 
-        {/* ---- Content ---- */}
         <div className="flex-1 min-w-0">
           {isSearching ? (
-            /* Search results */
             <Card>
               <CardHeader className="py-3 px-4">
                 <div className="flex items-center justify-between">

@@ -31,6 +31,12 @@ from pathlib import Path
 from datetime import datetime
 from typing import Dict, Optional, Any, List
 
+# account_usage imports the OpenAI SDK chain (~230 ms). Only needed by
+# /usage; we still import it at module top in the gateway because test
+# patches (tests/gateway/test_usage_command.py) target
+# `gateway.run.fetch_account_usage` as a module-level attribute. The
+# gateway is a long-running daemon, so its boot cost matters less than
+# preserving the established test-patch surface.
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
 
 # --- Agent cache tuning ---------------------------------------------------

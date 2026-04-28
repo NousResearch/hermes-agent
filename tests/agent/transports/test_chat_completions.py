@@ -191,6 +191,21 @@ class TestChatCompletionsBuildKwargs:
         )
         assert kw["extra_body"]["thinking_config"]["thinkingLevel"] == "high"
 
+    def test_gemini_flash_minimal_clamps_to_low(self, transport):
+        # Gemini 3 Flash documents low/medium/high; "minimal" isn't accepted,
+        # so clamp it down to "low" rather than forwarding it verbatim.
+        msgs = [{"role": "user", "content": "Hi"}]
+        kw = transport.build_kwargs(
+            model="gemini-3-flash-preview",
+            messages=msgs,
+            provider_name="gemini",
+            reasoning_config={"enabled": True, "effort": "minimal"},
+        )
+        assert kw["extra_body"]["thinking_config"] == {
+            "includeThoughts": True,
+            "thinkingLevel": "low",
+        }
+
     def test_max_tokens_with_fn(self, transport):
         msgs = [{"role": "user", "content": "Hi"}]
         kw = transport.build_kwargs(

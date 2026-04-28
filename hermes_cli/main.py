@@ -5257,19 +5257,32 @@ def _warn_stale_dashboard_processes() -> None:
                         except ValueError:
                             pass
         else:
-            # Linux / macOS: scan /proc or fall back to ps.
+            # Linux / macOS: scan the process table via ps and match against
+            # the same explicit patterns list used on Windows.  Using ps
+            # (rather than `pgrep -f "hermes.*dashboard"`) keeps us consistent
+            # with `hermes_cli.gateway._scan_gateway_pids` and avoids the
+            # greedy regex matching unrelated cmdlines that merely contain
+            # both words (e.g. a chat session discussing "dashboard").
             result = subprocess.run(
-                ["pgrep", "-f", "hermes.*dashboard"],
-                capture_output=True, text=True, timeout=5,
+                ["ps", "-A", "-o", "pid=,command="],
+                capture_output=True, text=True, timeout=10,
             )
             if result.returncode == 0:
-                for line in result.stdout.strip().splitlines():
+                for line in result.stdout.split("\n"):
+                    stripped = line.strip()
+                    if not stripped or "grep" in stripped:
+                        continue
+                    parts = stripped.split(None, 1)
+                    if len(parts) != 2:
+                        continue
                     try:
-                        pid = int(line.strip())
-                        if pid != self_pid:
-                            dashboard_pids.append(pid)
+                        pid = int(parts[0])
                     except ValueError:
-                        pass
+                        continue
+                    command = parts[1]
+                    if (any(p in command for p in patterns)
+                            and pid != self_pid):
+                        dashboard_pids.append(pid)
     except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
         return
 

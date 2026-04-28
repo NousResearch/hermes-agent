@@ -25,6 +25,7 @@ import hashlib
 import logging
 import os
 import shutil
+import stat
 from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, List, Tuple
@@ -35,6 +36,16 @@ logger = logging.getLogger(__name__)
 HERMES_HOME = get_hermes_home()
 SKILLS_DIR = HERMES_HOME / "skills"
 MANIFEST_FILE = SKILLS_DIR / ".bundled_manifest"
+
+
+def _replacement_file_mode(file_path: Path) -> int:
+    """Return the mode an atomic replacement should leave on disk."""
+    try:
+        return stat.S_IMODE(file_path.stat().st_mode)
+    except OSError:
+        current_umask = os.umask(0)
+        os.umask(current_umask)
+        return 0o666 & ~current_umask
 
 
 def _get_bundled_dir() -> Path:
@@ -86,6 +97,7 @@ def _write_manifest(entries: Dict[str, str]):
 
     MANIFEST_FILE.parent.mkdir(parents=True, exist_ok=True)
     data = "\n".join(f"{name}:{hash_val}" for name, hash_val in sorted(entries.items())) + "\n"
+    replacement_mode = _replacement_file_mode(MANIFEST_FILE)
 
     try:
         fd, tmp_path = tempfile.mkstemp(
@@ -98,6 +110,7 @@ def _write_manifest(entries: Dict[str, str]):
                 f.write(data)
                 f.flush()
                 os.fsync(f.fileno())
+            os.chmod(tmp_path, replacement_mode)
             os.replace(tmp_path, MANIFEST_FILE)
         except BaseException:
             try:

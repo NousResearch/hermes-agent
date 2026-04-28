@@ -1,6 +1,8 @@
 """Tests for tools/skill_manager_tool.py — skill creation, editing, and deletion."""
 
 import json
+import os
+import stat
 from contextlib import contextmanager
 from pathlib import Path
 from unittest.mock import patch
@@ -12,6 +14,7 @@ from tools.skill_manager_tool import (
     _validate_category,
     _validate_frontmatter,
     _validate_file_path,
+    _atomic_write_text,
     _find_skill,
     _resolve_skill_dir,
     _create_skill,
@@ -57,6 +60,25 @@ description: Updated description.
 
 Step 1: Do the new thing.
 """
+
+
+# ---------------------------------------------------------------------------
+# Atomic writes
+# ---------------------------------------------------------------------------
+
+
+class TestAtomicWriteText:
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are platform-specific")
+    def test_preserves_existing_file_mode(self, tmp_path):
+        skill_md = tmp_path / "shared-skill" / "SKILL.md"
+        skill_md.parent.mkdir()
+        skill_md.write_text("old", encoding="utf-8")
+        os.chmod(skill_md, 0o660)
+
+        _atomic_write_text(skill_md, "new")
+
+        assert skill_md.read_text(encoding="utf-8") == "new"
+        assert stat.S_IMODE(skill_md.stat().st_mode) == 0o660
 
 
 # ---------------------------------------------------------------------------

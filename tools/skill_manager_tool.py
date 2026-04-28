@@ -37,6 +37,7 @@ import logging
 import os
 import re
 import shutil
+import stat
 import tempfile
 from pathlib import Path
 from hermes_constants import get_hermes_home, display_hermes_home
@@ -287,6 +288,16 @@ def _resolve_skill_target(skill_dir: Path, file_path: str) -> Tuple[Optional[Pat
     return target, None
 
 
+def _replacement_file_mode(file_path: Path) -> int:
+    """Return the mode an atomic replacement should leave on disk."""
+    try:
+        return stat.S_IMODE(file_path.stat().st_mode)
+    except OSError:
+        current_umask = os.umask(0)
+        os.umask(current_umask)
+        return 0o666 & ~current_umask
+
+
 def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -> None:
     """
     Atomically write text content to a file.
@@ -301,6 +312,7 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
         encoding: Text encoding (default: utf-8)
     """
     file_path.parent.mkdir(parents=True, exist_ok=True)
+    replacement_mode = _replacement_file_mode(file_path)
     fd, temp_path = tempfile.mkstemp(
         dir=str(file_path.parent),
         prefix=f".{file_path.name}.tmp.",
@@ -309,6 +321,7 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
     try:
         with os.fdopen(fd, "w", encoding=encoding) as f:
             f.write(content)
+        os.chmod(temp_path, replacement_mode)
         os.replace(temp_path, file_path)
     except Exception:
         # Clean up temp file on error

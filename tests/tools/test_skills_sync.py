@@ -1,7 +1,11 @@
 """Tests for tools/skills_sync.py — manifest-based skill seeding and updating."""
 
+import os
+import stat
 from pathlib import Path
 from unittest.mock import patch
+
+import pytest
 
 from tools.skills_sync import (
     _get_bundled_dir,
@@ -47,6 +51,18 @@ class TestReadWriteManifest:
         lines = manifest_file.read_text().strip().splitlines()
         names = [line.split(":")[0] for line in lines]
         assert names == ["alpha", "middle", "zebra"]
+
+    @pytest.mark.skipif(os.name == "nt", reason="POSIX permission bits are platform-specific")
+    def test_write_manifest_preserves_existing_file_mode(self, tmp_path):
+        manifest_file = tmp_path / ".bundled_manifest"
+        manifest_file.write_text("old-skill:oldhash\n", encoding="utf-8")
+        os.chmod(manifest_file, 0o660)
+
+        with patch("tools.skills_sync.MANIFEST_FILE", manifest_file):
+            _write_manifest({"new-skill": "newhash"})
+
+        assert manifest_file.read_text(encoding="utf-8") == "new-skill:newhash\n"
+        assert stat.S_IMODE(manifest_file.stat().st_mode) == 0o660
 
     def test_read_v1_manifest_migration(self, tmp_path):
         """v1 format (plain names, no hashes) should be read with empty hashes."""

@@ -227,6 +227,10 @@ _API_KEY_PROVIDER_AUX_MODELS: Dict[str, str] = {
 _PROVIDER_VISION_MODELS: Dict[str, str] = {
     "xiaomi": "mimo-v2.5",
     "zai": "glm-5v-turbo",
+    # Kimi Coding Plan models (kimi-k2.6, kimi-k2.5, etc.) are multimodal —
+    # use the latest supported model as the default vision model.
+    "kimi-coding": "kimi-k2.6",
+    "kimi-coding-cn": "kimi-k2.6",
 }
 
 # OpenRouter app attribution headers

@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  check:
+  nix-lockfile-check:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:

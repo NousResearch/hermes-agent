@@ -131,6 +131,22 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `WANDB_API_KEY` | RL training metrics ([wandb.ai](https://wandb.ai/)) |
 | `DAYTONA_API_KEY` | Daytona cloud sandboxes ([daytona.io](https://daytona.io/)) |
 
+### Langfuse Observability
+
+Environment variables for the bundled [`observability/langfuse`](/docs/user-guide/features/built-in-plugins#observabilitylangfuse) plugin. Set these with `hermes tools → Langfuse Observability` or manually in `~/.hermes/.env`. The plugin must also be enabled (`hermes plugins enable observability/langfuse`) before any of these take effect.
+
+| Variable | Description |
+|----------|-------------|
+| `HERMES_LANGFUSE_PUBLIC_KEY` | Langfuse project public key (`pk-lf-...`). Required. |
+| `HERMES_LANGFUSE_SECRET_KEY` | Langfuse project secret key (`sk-lf-...`). Required. |
+| `HERMES_LANGFUSE_BASE_URL` | Langfuse server URL (default: `https://cloud.langfuse.com`). Set for self-hosted. |
+| `HERMES_LANGFUSE_ENV` | Environment tag on traces (`production`, `staging`, …) |
+| `HERMES_LANGFUSE_RELEASE` | Release/version tag on traces |
+| `HERMES_LANGFUSE_SAMPLE_RATE` | SDK sampling rate 0.0–1.0 (default: `1.0`) |
+| `HERMES_LANGFUSE_MAX_CHARS` | Per-field truncation for serialized payloads (default: `12000`) |
+| `HERMES_LANGFUSE_DEBUG` | `true` enables verbose plugin logging to `agent.log` |
+| `LANGFUSE_PUBLIC_KEY` / `LANGFUSE_SECRET_KEY` / `LANGFUSE_BASE_URL` | Standard Langfuse SDK names. Accepted as fallbacks when the `HERMES_LANGFUSE_*` equivalents are unset. |
+
 ### Nous Tool Gateway
 
 These variables configure the [Tool Gateway](/docs/user-guide/features/tool-gateway) for paid Nous subscribers or self-hosted gateway deployments. Most users don't need to set these — the gateway is configured automatically via `hermes model` or `hermes tools`.

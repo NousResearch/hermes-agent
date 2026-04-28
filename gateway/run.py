@@ -7486,7 +7486,6 @@ class GatewayRunner:
                 for m in history
                 if m.get("role") in ("user", "assistant") and m.get("content")
             ]
-            original_count = len(msgs)
             approx_tokens = estimate_messages_tokens_rough(msgs)
 
             tmp_agent = AIAgent(

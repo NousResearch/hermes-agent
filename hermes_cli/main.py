@@ -5236,15 +5236,26 @@ def _warn_stale_dashboard_processes() -> None:
 
     try:
         if sys.platform == "win32":
-            result = subprocess.run(
-                ["wmic", "process", "get", "ProcessId,CommandLine",
-                 "/FORMAT:LIST"],
-                capture_output=True, text=True, timeout=10,
-            )
-            if result.returncode != 0:
+            try:
+                raw_output = subprocess.run(
+                    ["wmic", "process", "get", "ProcessId,CommandLine",
+                     "/FORMAT:LIST"],
+                    capture_output=True, timeout=10,
+                )
+            except OSError:
+                return
+            # wmic output may contain non-UTF-8 encoded characters.
+            # Decode with latin-1 as a lossless fallback.
+            try:
+                stdout = raw_output.stdout.decode("utf-8")
+            except UnicodeDecodeError:
+                stdout = raw_output.stdout.decode("latin-1")
+            if stdout is None:
+                return
+            if raw_output.returncode != 0:
                 return
             current_cmd = ""
-            for line in result.stdout.split("\n"):
+            for line in stdout.split("\n"):
                 line = line.strip()
                 if line.startswith("CommandLine="):
                     current_cmd = line[len("CommandLine="):]

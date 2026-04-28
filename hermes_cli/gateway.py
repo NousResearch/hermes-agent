@@ -275,16 +275,30 @@ def _scan_gateway_pids(exclude_pids: set[int], all_profiles: bool = False) -> li
 
     try:
         if is_windows():
-            result = subprocess.run(
-                ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
-                capture_output=True,
-                text=True,
-                timeout=10,
-            )
-            if result.returncode != 0:
+            try:
+                raw_output = subprocess.run(
+                    ["wmic", "process", "get", "ProcessId,CommandLine", "/FORMAT:LIST"],
+                    capture_output=True,
+                    timeout=10,
+                )
+            except OSError:
+                return []
+            # wmic output may contain non-UTF-8 encoded characters (e.g. process
+            # paths with international characters). Decode with latin-1 as a
+            # lossless fallback so we don't crash the scan.
+            try:
+                stdout = raw_output.stdout.decode("utf-8")
+            except UnicodeDecodeError:
+                stdout = raw_output.stdout.decode("latin-1")
+            # On Python ≤3.11, subprocess.run with capture_output=True can return
+            # None for stdout on decode errors instead of raising. Guard against
+            # AttributeError on result.stdout being None.
+            if stdout is None:
+                return []
+            if raw_output.returncode != 0:
                 return []
             current_cmd = ""
-            for line in result.stdout.split("\n"):
+            for line in stdout.split("\n"):
                 line = line.strip()
                 if line.startswith("CommandLine="):
                     current_cmd = line[len("CommandLine="):]

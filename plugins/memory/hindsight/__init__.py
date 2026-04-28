@@ -440,6 +440,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._client = None
         self._timeout = _DEFAULT_TIMEOUT
         self._idle_timeout = _DEFAULT_IDLE_TIMEOUT
+        self._prefetch_timeout = 120
         self._prefetch_result = ""
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread = None
@@ -751,6 +752,7 @@ class HindsightMemoryProvider(MemoryProvider):
             {"key": "recall_prompt_preamble", "description": "Custom preamble for recalled memories in context"},
             {"key": "timeout", "description": "API request timeout in seconds", "default": _DEFAULT_TIMEOUT},
             {"key": "idle_timeout", "description": "Embedded daemon idle timeout in seconds (0 disables auto-shutdown)", "default": _DEFAULT_IDLE_TIMEOUT, "when": {"mode": "local_embedded"}},
+            {"key": "prefetch_timeout", "description": "Max seconds to wait for prefetch to complete (-1 = wait forever; recommended: 120 for reflect mode)", "default": 120},
         ]
 
     def _get_client(self):
@@ -968,6 +970,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._recall_prompt_preamble = self._config.get("recall_prompt_preamble", "")
         self._recall_max_input_chars = int(self._config.get("recall_max_input_chars", 800))
         self._retain_async = self._config.get("retain_async", True)
+        self._prefetch_timeout = int(self._config.get("prefetch_timeout", 120))
 
         _client_version = "unknown"
         try:
@@ -1058,7 +1061,8 @@ class HindsightMemoryProvider(MemoryProvider):
     def prefetch(self, query: str, *, session_id: str = "") -> str:
         if self._prefetch_thread and self._prefetch_thread.is_alive():
             logger.debug("Prefetch: waiting for background thread to complete")
-            self._prefetch_thread.join(timeout=3.0)
+            timeout = self._prefetch_timeout if self._prefetch_timeout != -1 else None
+            self._prefetch_thread.join(timeout=timeout)
         with self._prefetch_lock:
             result = self._prefetch_result
             self._prefetch_result = ""

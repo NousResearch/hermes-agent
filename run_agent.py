@@ -394,90 +394,6 @@ _SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
 
 
 
-def _is_multimodal_tool_result(value: Any) -> bool:
-    """True if the value is a multimodal tool result envelope.
-
-    Multimodal handlers (e.g. tools/computer_use) return a dict with
-    `_multimodal=True`, a `content` key holding OpenAI-style content
-    parts, and an optional `text_summary` for string-only fallbacks.
-    """
-    return (
-        isinstance(value, dict)
-        and value.get("_multimodal") is True
-        and isinstance(value.get("content"), list)
-    )
-
-
-def _multimodal_text_summary(value: Any) -> str:
-    """Extract a plain text view of a multimodal tool result.
-
-    Used wherever downstream code needs a string — logging, previews,
-    persistence size heuristics, fall-back content for providers that
-    don't support multipart tool messages.
-    """
-    if _is_multimodal_tool_result(value):
-        if value.get("text_summary"):
-            return str(value["text_summary"])
-        parts = []
-        for p in value.get("content") or []:
-            if isinstance(p, dict) and p.get("type") == "text":
-                parts.append(str(p.get("text", "")))
-        if parts:
-            return "\n".join(parts)
-        return "[multimodal tool result]"
-    if isinstance(value, str):
-        return value
-    try:
-        import json as _json
-        return _json.dumps(value, default=str)
-    except Exception:
-        return str(value)
-
-
-def _append_subdir_hint_to_multimodal(value: Dict[str, Any], hint: str) -> None:
-    """Mutate a multimodal tool-result envelope to append a subdir hint.
-
-    The hint is added to the first text part so the model sees it; image
-    parts are left untouched. `text_summary` is also updated for
-    string-fallback callers.
-    """
-    if not _is_multimodal_tool_result(value):
-        return
-    parts = value.get("content") or []
-    for p in parts:
-        if isinstance(p, dict) and p.get("type") == "text":
-            p["text"] = str(p.get("text", "")) + hint
-            break
-    else:
-        parts.insert(0, {"type": "text", "text": hint})
-        value["content"] = parts
-    if isinstance(value.get("text_summary"), str):
-        value["text_summary"] = value["text_summary"] + hint
-
-
-def _trajectory_normalize_msg(msg: Dict[str, Any]) -> Dict[str, Any]:
-    """Strip image blobs from a message for trajectory saving.
-
-    Returns a shallow copy with multimodal tool results replaced by their
-    text_summary, and image parts in content lists replaced by
-    `[screenshot]` placeholders. Keeps the message schema otherwise intact.
-    """
-    if not isinstance(msg, dict):
-        return msg
-    content = msg.get("content")
-    if _is_multimodal_tool_result(content):
-        return {**msg, "content": _multimodal_text_summary(content)}
-    if isinstance(content, list):
-        cleaned = []
-        for p in content:
-            if isinstance(p, dict) and p.get("type") in ("image", "image_url", "input_image"):
-                cleaned.append({"type": "text", "text": "[screenshot]"})
-            else:
-                cleaned.append(p)
-        return {**msg, "content": cleaned}
-    return msg
-
-
 def _sanitize_surrogates(text: str) -> str:
     """Replace lone surrogate code points with U+FFFD (replacement character).
 
@@ -804,54 +720,6 @@ def _sanitize_messages_non_ascii(messages: list) -> bool:
 def _sanitize_tools_non_ascii(tools: list) -> bool:
     """Strip non-ASCII characters from tool payloads in-place."""
     return _sanitize_structure_non_ascii(tools)
-
-
-def _strip_images_from_messages(messages: list) -> bool:
-    """Remove image_url content parts from all messages in-place.
-
-    Called when a server signals it does not support images (e.g.
-    "Only 'text' content type is supported.").  Mutates messages so the
-    next API call sends text only.
-
-    Preserves message alternation invariants:
-      * ``tool``-role messages whose content was entirely images are replaced
-        with a plaintext placeholder, NOT deleted — deleting them would leave
-        the paired ``tool_call_id`` on the prior assistant message unmatched,
-        which providers reject with HTTP 400.
-      * Non-tool messages whose content becomes empty are dropped.  In
-        practice this only hits synthetic image-only user messages appended
-        for attachment delivery; real user turns always include text.
-
-    Returns True if any image parts were removed.
-    """
-    found = False
-    to_delete = []
-    for i, msg in enumerate(messages):
-        if not isinstance(msg, dict):
-            continue
-        content = msg.get("content")
-        if not isinstance(content, list):
-            continue
-        new_parts = []
-        for part in content:
-            if isinstance(part, dict) and part.get("type") in ("image_url", "image", "input_image"):
-                found = True
-            else:
-                new_parts.append(part)
-        if len(new_parts) < len(content):
-            if new_parts:
-                msg["content"] = new_parts
-            elif msg.get("role") == "tool":
-                # Preserve tool_call_id linkage — providers require every
-                # assistant tool_call to have a matching tool response.
-                msg["content"] = "[image content removed — server does not support images]"
-            else:
-                # Synthetic image-only user/assistant message with no text;
-                # safe to drop.
-                to_delete.append(i)
-    for i in reversed(to_delete):
-        del messages[i]
-    return found
 
 
 def _sanitize_structure_non_ascii(payload: Any) -> bool:
@@ -3606,20 +3474,6 @@ class AIAgent:
             for msg in messages[flush_from:]:
                 role = msg.get("role", "unknown")
                 content = msg.get("content")
-                # Persist multimodal tool results as their text summary only —
-                # base64 images would bloat the session DB and aren't useful
-                # for cross-session replay.
-                if _is_multimodal_tool_result(content):
-                    content = _multimodal_text_summary(content)
-                elif isinstance(content, list):
-                    # List of OpenAI-style content parts: strip images, keep text.
-                    _txt = []
-                    for p in content:
-                        if isinstance(p, dict) and p.get("type") == "text":
-                            _txt.append(str(p.get("text", "")))
-                        elif isinstance(p, dict) and p.get("type") in ("image", "image_url", "input_image"):
-                            _txt.append("[screenshot]")
-                    content = "\n".join(_txt) if _txt else None
                 tool_calls_data = None
                 if hasattr(msg, "tool_calls") and isinstance(msg.tool_calls, list) and msg.tool_calls:
                     tool_calls_data = [
@@ -3713,10 +3567,6 @@ class AIAgent:
         Returns:
             List[Dict]: Messages in trajectory format
         """
-        # Normalize multimodal tool results — trajectories are text-only, so
-        # replace image-bearing tool messages with their text_summary to avoid
-        # embedding ~1MB base64 blobs into every saved trajectory.
-        messages = [_trajectory_normalize_msg(m) for m in messages]
         trajectory = []
         
         # Add system message with tool definitions
@@ -4732,12 +4582,6 @@ class AIAgent:
             tool_guidance.append(SKILLS_GUIDANCE)
         if tool_guidance:
             prompt_parts.append(" ".join(tool_guidance))
-
-        # Computer-use (macOS) — goes in as its own block rather than being
-        # merged into tool_guidance because the content is multi-paragraph.
-        if "computer_use" in self.valid_tool_names:
-            from agent.prompt_builder import COMPUTER_USE_GUIDANCE
-            prompt_parts.append(COMPUTER_USE_GUIDANCE)
 
         nous_subscription_prompt = build_nous_subscription_prompt(self.valid_tool_names)
         if nous_subscription_prompt:
@@ -9154,8 +8998,7 @@ class AIAgent:
                 function_name, function_args, function_result, tool_duration, is_error = r
 
                 if is_error:
-                    _err_text = _multimodal_text_summary(function_result)
-                    result_preview = _err_text[:200] if len(_err_text) > 200 else _err_text
+                    result_preview = function_result[:200] if len(function_result) > 200 else function_result
                     logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
 
                 if self.tool_progress_callback:
@@ -9176,12 +9019,11 @@ class AIAgent:
                 cute_msg = _get_cute_tool_message_impl(name, args, tool_duration, result=function_result)
                 self._safe_print(f"  {cute_msg}")
             elif not self.quiet_mode:
-                _preview_str = _multimodal_text_summary(function_result)
                 if self.verbose_logging:
                     print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s")
-                    print(self._wrap_verbose("Result: ", _preview_str))
+                    print(self._wrap_verbose("Result: ", function_result))
                 else:
-                    response_preview = _preview_str[:self.log_prefix_chars] + "..." if len(_preview_str) > self.log_prefix_chars else _preview_str
+                    response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
                     print(f"  ✅ Tool {i+1} completed in {tool_duration:.2f}s - {response_preview}")
 
             self._current_tool = None
@@ -9198,33 +9040,15 @@ class AIAgent:
                 tool_name=name,
                 tool_use_id=tc.id,
                 env=get_active_env(effective_task_id),
-            ) if not _is_multimodal_tool_result(function_result) else function_result
+            )
 
             subdir_hints = self._subdirectory_hints.check_tool_call(name, args)
             if subdir_hints:
-                if _is_multimodal_tool_result(function_result):
-                    # Append the hint to the text summary part so the model
-                    # still sees it; don't touch the image blocks.
-                    _append_subdir_hint_to_multimodal(function_result, subdir_hints)
-                else:
-                    function_result += subdir_hints
+                function_result += subdir_hints
 
-            # Unwrap _multimodal dicts to an OpenAI-style content list so any
-            # vision-capable provider receives [{type:text},{type:image_url}]
-            # rather than a raw Python dict.  The Anthropic adapter already
-            # accepts content lists; vision-capable OpenAI-compatible servers
-            # (mlx-vlm, GPT-4o, …) accept image_url in tool messages natively.
-            # Text-only servers that reject images are handled by the adaptive
-            # _vision_supported recovery in the API retry loop.
-            # String results pass through unchanged.
-            _tool_content = (
-                function_result["content"]
-                if _is_multimodal_tool_result(function_result)
-                else function_result
-            )
             tool_msg = {
                 "role": "tool",
-                "content": _tool_content,
+                "content": function_result,
                 "tool_call_id": tc.id,
             }
             messages.append(tool_msg)
@@ -9540,15 +9364,9 @@ class AIAgent:
                     logger.error("handle_function_call raised for %s: %s", function_name, tool_error, exc_info=True)
                 tool_duration = time.time() - tool_start_time
 
-            if isinstance(function_result, str):
-                result_preview = function_result if self.verbose_logging else (
-                    function_result[:200] if len(function_result) > 200 else function_result
-                )
-                _result_len = len(function_result)
-            else:
-                # Multimodal dict result (_multimodal=True) — not sliceable as string
-                result_preview = function_result
-                _result_len = len(str(function_result))
+            result_preview = function_result if self.verbose_logging else (
+                function_result[:200] if len(function_result) > 200 else function_result
+            )
 
             # Log tool errors to the persistent error log so [error] tags
             # in the UI always have a corresponding detailed entry on disk.
@@ -9556,7 +9374,7 @@ class AIAgent:
             if _is_error_result:
                 logger.warning("Tool %s returned error (%.2fs): %s", function_name, tool_duration, result_preview)
             else:
-                logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, _result_len)
+                logger.info("tool %s completed (%.2fs, %d chars)", function_name, tool_duration, len(function_result))
 
             if self.tool_progress_callback:
                 try:
@@ -9572,8 +9390,7 @@ class AIAgent:
 
             if self.verbose_logging:
                 logging.debug(f"Tool {function_name} completed in {tool_duration:.2f}s")
-                _log_result = _multimodal_text_summary(function_result)
-                logging.debug(f"Tool result ({len(_log_result)} chars): {_log_result}")
+                logging.debug(f"Tool result ({len(function_result)} chars): {function_result}")
 
             if self.tool_complete_callback:
                 try:
@@ -9586,26 +9403,16 @@ class AIAgent:
                 tool_name=function_name,
                 tool_use_id=tool_call.id,
                 env=get_active_env(effective_task_id),
-            ) if not _is_multimodal_tool_result(function_result) else function_result
+            )
 
             # Discover subdirectory context files from tool arguments
             subdir_hints = self._subdirectory_hints.check_tool_call(function_name, function_args)
             if subdir_hints:
-                if _is_multimodal_tool_result(function_result):
-                    _append_subdir_hint_to_multimodal(function_result, subdir_hints)
-                else:
-                    function_result += subdir_hints
+                function_result += subdir_hints
 
-            # Unwrap _multimodal dicts to an OpenAI-style content list
-            # (see parallel path for rationale). String results pass through.
-            _tool_content = (
-                function_result["content"]
-                if _is_multimodal_tool_result(function_result)
-                else function_result
-            )
             tool_msg = {
                 "role": "tool",
-                "content": _tool_content,
+                "content": function_result,
                 "tool_call_id": tool_call.id
             }
             messages.append(tool_msg)
@@ -9621,8 +9428,7 @@ class AIAgent:
                     print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s")
                     print(self._wrap_verbose("Result: ", function_result))
                 else:
-                    _fr_str = function_result if isinstance(function_result, str) else str(function_result)
-                    response_preview = _fr_str[:self.log_prefix_chars] + "..." if len(_fr_str) > self.log_prefix_chars else _fr_str
+                    response_preview = function_result[:self.log_prefix_chars] + "..." if len(function_result) > self.log_prefix_chars else function_result
                     print(f"  ✅ Tool {i} completed in {tool_duration:.2f}s - {response_preview}")
 
             if self._interrupt_requested and i < len(assistant_message.tool_calls):
@@ -9651,6 +9457,7 @@ class AIAgent:
         # applied to sequential execution as well.
         if num_tools_seq > 0:
             self._apply_pending_steer_to_tool_results(messages, num_tools_seq)
+
 
 
     def _handle_max_iterations(self, messages: list, api_call_count: int) -> str:
@@ -9892,11 +9699,6 @@ class AIAgent:
         self._last_content_tools_all_housekeeping = False
         self._mute_post_response = False
         self._unicode_sanitization_passes = 0
-        # True until the server rejects an image_url content part with an error
-        # like "Only 'text' content type is supported."  Set to False on first
-        # rejection and kept False for the rest of the session so we never re-send
-        # images to a text-only endpoint.  Scoped per `_run()` call, not per instance.
-        self._vision_supported = True
 
         # Pre-turn connection health check: detect and clean up dead TCP
         # connections left over from provider outages or dropped streams.
@@ -11376,68 +11178,6 @@ class AIAgent:
                                     force=True,
                                 )
                             continue
-
-                    # ── Image-rejection recovery ──────────────────────────────
-                    # Some providers (mlx-lm, text-only endpoints, text-only
-                    # fallbacks on multimodal models) reject any message that
-                    # contains image_url content with a 4xx error like
-                    # "Only 'text' content type is supported."  On first hit,
-                    # strip all images from the message list, mark the session
-                    # as vision-unsupported, and retry with text only.
-                    #
-                    # Detection is best-effort English phrase matching — a
-                    # locale-translated or heavily-reworded upstream error
-                    # will bypass this guard and fall through to the normal
-                    # error handler.  Expand the phrase list when new
-                    # provider wordings are observed in the wild.
-                    _err_body = ""
-                    try:
-                        _err_body = str(getattr(api_error, "body", None) or
-                                        getattr(api_error, "message", None) or
-                                        str(api_error))
-                    except Exception:
-                        pass
-                    _err_status = getattr(api_error, "status_code", None)
-                    _IMAGE_REJECTION_PHRASES = (
-                        "only 'text' content type is supported",
-                        "only text content type is supported",
-                        "image_url is not supported",
-                        "image content is not supported",
-                        "multimodal is not supported",
-                        "multimodal content is not supported",
-                        "multimodal input is not supported",
-                        "vision is not supported",
-                        "vision input is not supported",
-                        "does not support images",
-                        "does not support image input",
-                        "does not support multimodal",
-                        "does not support vision",
-                        "model does not support image",
-                    )
-                    _err_lower = _err_body.lower()
-                    _looks_like_image_rejection = any(
-                        p in _err_lower for p in _IMAGE_REJECTION_PHRASES
-                    )
-                    # 4xx-only gate: never interpret 5xx/timeout as "server
-                    # said no to images" — those are transient and must
-                    # route to the normal retry path.
-                    _status_ok = _err_status is None or (400 <= int(_err_status) < 500)
-                    if (
-                        getattr(self, "_vision_supported", True)
-                        and _looks_like_image_rejection
-                        and _status_ok
-                    ):
-                        self._vision_supported = False
-                        _imgs_removed = _strip_images_from_messages(messages)
-                        if isinstance(api_messages, list):
-                            _strip_images_from_messages(api_messages)
-                        self._vprint(
-                            f"{self.log_prefix}⚠️  Server rejected image content — "
-                            f"switching to text-only mode for this session"
-                            + (". Stripped images from history and retrying." if _imgs_removed else "."),
-                            force=True,
-                        )
-                        continue
 
                     status_code = getattr(api_error, "status_code", None)
                     error_context = self._extract_api_error_context(api_error)

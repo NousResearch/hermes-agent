@@ -181,3 +181,65 @@ async def test_compress_command_appends_warning_when_summary_generation_fails():
     assert "historical message(s) were removed" in result
     agent_instance.shutdown_memory_provider.assert_called_once()
     agent_instance.close.assert_called_once()
+
+
+@pytest.mark.asyncio
+async def test_compress_command_surfaces_aux_model_failure_even_when_recovered():
+    """When the user's configured ``auxiliary.compression.model`` errors out
+    but compression recovers by retrying on the main model, /compress must
+    STILL inform the user.  Silent recovery hides broken config the user
+    needs to fix."""
+    history = _make_history()
+    # Compressed transcript — normal successful compression, no placeholder.
+    compressed = [
+        history[0],
+        {"role": "assistant", "content": "summary via main model"},
+        history[-1],
+    ]
+    runner = _make_runner(history)
+    agent_instance = MagicMock()
+    agent_instance.shutdown_memory_provider = MagicMock()
+    agent_instance.close = MagicMock()
+    agent_instance.context_compressor.has_content_to_compress.return_value = True
+    # Fallback placeholder was NOT used — recovery succeeded.
+    agent_instance.context_compressor._last_summary_fallback_used = False
+    agent_instance.context_compressor._last_summary_dropped_count = 0
+    agent_instance.context_compressor._last_summary_error = None
+    # But the configured aux model DID fail before the retry succeeded.
+    agent_instance.context_compressor._last_aux_model_failure_model = (
+        "gemini-3-flash-preview"
+    )
+    agent_instance.context_compressor._last_aux_model_failure_error = (
+        "404 model not found: gemini-3-flash-preview"
+    )
+    agent_instance.session_id = "sess-1"
+    agent_instance._compress_context.return_value = (compressed, "")
+
+    def _estimate(messages):
+        if messages == history:
+            return 100
+        if messages == compressed:
+            return 60
+        raise AssertionError(f"unexpected transcript: {messages!r}")
+
+    with (
+        patch("gateway.run._resolve_runtime_agent_kwargs", return_value={"api_key": "***"}),
+        patch("gateway.run._resolve_gateway_model", return_value="test-model"),
+        patch("run_agent.AIAgent", return_value=agent_instance),
+        patch("agent.model_metadata.estimate_messages_tokens_rough", side_effect=_estimate),
+    ):
+        result = await runner._handle_compress_command(_make_event())
+
+    # Compression succeeded
+    assert "Compressed:" in result
+    # No ⚠️ warning (that's reserved for dropped-turns case)
+    assert "⚠️" not in result
+    # But there IS an info note about the broken aux model
+    assert "ℹ️" in result
+    assert "gemini-3-flash-preview" in result
+    assert "404" in result
+    assert "auxiliary.compression.model" in result
+    # The user's context is explicitly called out as intact
+    assert "intact" in result
+    agent_instance.shutdown_memory_provider.assert_called_once()
+    agent_instance.close.assert_called_once()

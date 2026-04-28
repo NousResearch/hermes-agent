@@ -285,6 +285,12 @@ class TestSummaryFallbackToMainModel:
         assert "model" not in mock_call.call_args_list[1].kwargs
         assert result is not None
         assert "summary via main model" in result
+        # Aux-model failure is recorded even though retry succeeded — this is
+        # how callers (gateway /compress, CLI warning) know to tell the user
+        # their auxiliary.compression.model setting is broken.
+        assert c._last_aux_model_failure_model == "broken-aux-model"
+        assert c._last_aux_model_failure_error is not None
+        assert "404" in c._last_aux_model_failure_error
 
     def test_unknown_error_falls_back_to_main_and_succeeds(self):
         """Errors that don't match the 404/503/model_not_found fast-path
@@ -317,6 +323,10 @@ class TestSummaryFallbackToMainModel:
         assert "model" not in mock_call.call_args_list[1].kwargs
         assert result is not None
         assert "summary via main model" in result
+        # Aux-model failure recorded despite successful recovery
+        assert c._last_aux_model_failure_model == "broken-aux-model"
+        assert c._last_aux_model_failure_error is not None
+        assert "400" in c._last_aux_model_failure_error
 
     def test_no_fallback_when_summary_model_equals_main_model(self):
         """If the aux model IS the main model, there's nowhere to fall back
@@ -365,6 +375,97 @@ class TestSummaryFallbackToMainModel:
         assert mock_call.call_count == 2
         assert result is None
         assert c._summary_model_fallen_back is True
+
+
+class TestAuxModelFallbackSurfacedToCallers:
+    """When summary_model fails but retry-on-main succeeds, compress() must
+    expose the aux-model failure via _last_aux_model_failure_{model,error}
+    so gateway /compress and CLI callers can warn the user about their
+    broken auxiliary.compression.model config — silent recovery would hide
+    a misconfiguration only the user can fix."""
+
+    def _make_msgs(self):
+        return [
+            {"role": "system", "content": "sys"},
+            {"role": "user", "content": "msg 1"},
+            {"role": "assistant", "content": "msg 2"},
+            {"role": "user", "content": "msg 3"},
+            {"role": "assistant", "content": "msg 4"},
+            {"role": "user", "content": "msg 5"},
+            {"role": "assistant", "content": "msg 6"},
+            {"role": "user", "content": "msg 7"},
+        ]
+
+    def test_compress_exposes_aux_failure_fields_after_successful_fallback(self):
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary via main"
+        err_400 = Exception("400 provider rejected configured model")
+        err_400.status_code = 400
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="broken-aux-model",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[err_400, mock_ok],
+        ):
+            result = c.compress(self._make_msgs())
+
+        # Recovery succeeded → no fallback placeholder
+        assert c._last_summary_fallback_used is False
+        # But aux-model failure IS recorded for the gateway/CLI warning
+        assert c._last_aux_model_failure_model == "broken-aux-model"
+        assert c._last_aux_model_failure_error is not None
+        assert "400" in c._last_aux_model_failure_error
+        # Result is well-formed with a real summary, not a placeholder
+        assert any(
+            isinstance(m.get("content"), str) and "summary via main" in m["content"]
+            for m in result
+        )
+
+    def test_compress_clears_aux_failure_fields_at_start_of_next_call(self):
+        """A subsequent successful compression must clear the aux-failure
+        fields so the warning doesn't persist forever."""
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary via main"
+        err_400 = Exception("400 aux model busted")
+        err_400.status_code = 400
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="broken-aux-model",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+            )
+
+        # Call 1: aux fails, retry-on-main succeeds
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[err_400, mock_ok],
+        ):
+            c.compress(self._make_msgs())
+        assert c._last_aux_model_failure_model == "broken-aux-model"
+
+        # Call 2: clean run on main (summary_model was cleared to "" after
+        # first fallback).  Aux-failure fields MUST reset at compress() start
+        # so the old warning state doesn't leak into this call.
+        with patch(
+            "agent.context_compressor.call_llm",
+            return_value=mock_ok,
+        ):
+            c.compress(self._make_msgs())
+        assert c._last_aux_model_failure_model is None
+        assert c._last_aux_model_failure_error is None
 
 
 class TestSummaryFailureTrackingForGatewayWarning:

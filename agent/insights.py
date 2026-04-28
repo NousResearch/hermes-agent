@@ -110,7 +110,7 @@ class InsightsEngine:
         " WHERE s.started_at >= ?"
     )
     _GET_TOOL_CALLS_ALL, _GET_TOOL_CALLS_WITH_SOURCE = _scoped(
-        "SELECT m.tool_calls" + _ASSISTANT_CALLS,
+        "SELECT m.session_id, m.tool_calls" + _ASSISTANT_CALLS,
         " AND m.role = 'assistant' AND m.tool_calls IS NOT NULL",
     )
     _GET_SKILL_CALLS_ALL, _GET_SKILL_CALLS_WITH_SOURCE = _scoped(
@@ -120,14 +120,13 @@ class InsightsEngine:
         " OR instr(m.tool_calls, 'skill_manage') > 0)",
     )
     _GET_TOOL_NAMES_ALL, _GET_TOOL_NAMES_WITH_SOURCE = _scoped(
-        """SELECT m.tool_name, COUNT(*) as count
+        """SELECT m.session_id, m.tool_name, COUNT(*) as count
                    FROM messages m
                    JOIN sessions s ON s.id = m.session_id
                    WHERE s.started_at >= ?""",
         """
                      AND m.role = 'tool' AND m.tool_name IS NOT NULL
-                   GROUP BY m.tool_name
-                   ORDER BY count DESC""",
+                   GROUP BY m.session_id, m.tool_name""",
     )
     _GET_MESSAGE_STATS_ALL, _GET_MESSAGE_STATS_WITH_SOURCE = _scoped(
         """SELECT
@@ -218,21 +217,23 @@ class InsightsEngine:
     def _get_tool_usage(self, cutoff: float, source: str = None) -> List[Dict]:
         """Tool call counts from two sources: ``tool_name`` on 'tool' rows (set
         by the gateway) and ``tool_calls`` JSON on assistant rows (covers CLI,
-        where tool_name is not populated). Overlapping tools take the max."""
-        tool_counts = Counter()
+        where tool_name is not populated). The two views are reconciled PER
+        SESSION (max — they describe the same calls), then summed across
+        sessions: a global max dropped every call from a session that only
+        carried the other representation (#9814)."""
+        by_session_tool = Counter()
         for row in self._query("_GET_TOOL_NAMES", cutoff, source):
-            tool_counts[row["tool_name"]] += row["count"]
-        tool_calls_counts = Counter()
+            by_session_tool[(row["session_id"], row["tool_name"])] += row["count"]
+        calls_by_session_tool = Counter()
         for row in self._query("_GET_TOOL_CALLS", cutoff, source):
             try:
-                tool_calls_counts.update(filter(None, (fn.get("name") for fn in _iter_functions(row["tool_calls"]))))
+                names = filter(None, (fn.get("name") for fn in _iter_functions(row["tool_calls"])))
+                calls_by_session_tool.update((row["session_id"], name) for name in names)
             except (TypeError, AttributeError):
                 continue
-        if tool_calls_counts and tool_counts:
-            tool_counts = Counter({tool: max(tool_counts.get(tool, 0), tool_calls_counts.get(tool, 0))
-                                   for tool in set(tool_counts) | set(tool_calls_counts)})
-        elif tool_calls_counts:
-            tool_counts = tool_calls_counts
+        tool_counts = Counter()
+        for key in set(by_session_tool) | set(calls_by_session_tool):
+            tool_counts[key[1]] += max(by_session_tool.get(key, 0), calls_by_session_tool.get(key, 0))
         return [{"tool_name": name, "count": count} for name, count in tool_counts.most_common()]
 
     def _get_skill_usage(self, cutoff: float, source: str = None) -> List[Dict]:

@@ -3862,47 +3862,50 @@ class FeishuAdapter(BasePlatformAdapter):
         and self-sent bot event filtering.
 
         Populates ``_bot_open_id`` and ``_bot_name`` from /open-apis/bot/v3/info
-        (no extra scopes required beyond the tenant access token). Falls back to
-        the application info endpoint for ``_bot_name`` only when the first probe
-        doesn't return it. Each field is hydrated independently — a value already
-        supplied via env vars (FEISHU_BOT_OPEN_ID / FEISHU_BOT_USER_ID /
-        FEISHU_BOT_NAME) is preserved and skips its probe.
+        (no extra scopes required beyond the tenant access token). The probe
+        always runs when a client is available so stale env vars from app/bot
+        migrations do not break group @mention gating. Falls back to the
+        application info endpoint for ``_bot_name`` only when the first probe
+        doesn't return it. If the probe fails, env-provided values are preserved.
         """
         if not self._client:
-            return
-        if self._bot_open_id and self._bot_name:
-            # Everything the self-send filter and precise mention gate need is
-            # already in place; nothing to probe.
             return
 
         # Primary probe: /open-apis/bot/v3/info — returns bot_name + open_id, no
         # extra scopes required. This is the same endpoint the onboarding wizard
         # uses via probe_bot().
-        if not self._bot_open_id or not self._bot_name:
-            try:
-                req = (
-                    BaseRequest.builder()
-                    .http_method(HttpMethod.GET)
-                    .uri("/open-apis/bot/v3/info")
-                    .token_types({AccessTokenType.TENANT})
-                    .build()
-                )
-                resp = await asyncio.to_thread(self._client.request, req)
-                content = getattr(getattr(resp, "raw", None), "content", None)
-                if content:
-                    payload = json.loads(content)
-                    parsed = _parse_bot_response(payload) or {}
-                    open_id = (parsed.get("bot_open_id") or "").strip()
-                    bot_name = (parsed.get("bot_name") or "").strip()
-                    if open_id and not self._bot_open_id:
-                        self._bot_open_id = open_id
-                    if bot_name and not self._bot_name:
-                        self._bot_name = bot_name
-            except Exception:
-                logger.debug(
-                    "[Feishu] /bot/v3/info probe failed during hydration",
-                    exc_info=True,
-                )
+        try:
+            req = (
+                BaseRequest.builder()
+                .http_method(HttpMethod.GET)
+                .uri("/open-apis/bot/v3/info")
+                .token_types({AccessTokenType.TENANT})
+                .build()
+            )
+            resp = await asyncio.to_thread(self._client.request, req)
+            content = getattr(getattr(resp, "raw", None), "content", None)
+            if content:
+                payload = json.loads(content)
+                parsed = _parse_bot_response(payload) or {}
+                open_id = (parsed.get("bot_open_id") or "").strip()
+                bot_name = (parsed.get("bot_name") or "").strip()
+                if open_id:
+                    if self._bot_open_id and self._bot_open_id != open_id:
+                        logger.warning(
+                            "[Feishu] FEISHU_BOT_OPEN_ID is stale; using /bot/v3/info open_id for group @mention gating."
+                        )
+                    self._bot_open_id = open_id
+                if bot_name:
+                    if self._bot_name and self._bot_name != bot_name:
+                        logger.info(
+                            "[Feishu] FEISHU_BOT_NAME differs from /bot/v3/info; using hydrated bot name for group @mention gating."
+                        )
+                    self._bot_name = bot_name
+        except Exception:
+            logger.debug(
+                "[Feishu] /bot/v3/info probe failed during hydration",
+                exc_info=True,
+            )
 
         # Fallback probe for _bot_name only: application info endpoint. Needs
         # admin:app.info:readonly or application:application:self_manage scope,

@@ -37,6 +37,8 @@ class TestMatrixExecApprovalReactions:
         from gateway.platforms.matrix import MatrixAdapter, _MatrixApprovalPrompt
 
         adapter = MatrixAdapter(PlatformConfig(enabled=True, token="tok", extra={"homeserver": "https://matrix.example.org"}))
+        # Resolve user_id so _is_self_sender doesn't defensively drop all traffic (#15763).
+        adapter._user_id = "@bot:example.org"
         adapter._approval_prompts_by_event["$target"] = _MatrixApprovalPrompt(
             session_key="sess-1", chat_id="!room:example.org", message_id="$target"
         )

@@ -5274,12 +5274,13 @@ def _warn_stale_dashboard_processes() -> None:
 
     try:
         if sys.platform == "win32":
-            # wmic emits text in the system code page (e.g. cp936 on zh-CN
-            # locales), not UTF-8. Without an explicit encoding, Python's
-            # default UTF-8 decoder crashes the subprocess reader thread
-            # with UnicodeDecodeError, leaving result.stdout=None and the
-            # subsequent .split() call crashing `hermes update` with an
-            # AttributeError on Windows non-UTF-8 locales (#17049).
+            # wmic may emit text in the system code page (for example cp936
+            # on zh-CN systems), not UTF-8. In text mode, subprocess output
+            # decoding depends on Python's configuration (locale-dependent
+            # by default, or UTF-8 in UTF-8 mode). The important protection
+            # here is errors="ignore": it prevents a reader-thread
+            # UnicodeDecodeError from leaving result.stdout=None and turning
+            # the later .split() into an AttributeError (#17049).
             result = subprocess.run(
                 ["wmic", "process", "get", "ProcessId,CommandLine",
                  "/FORMAT:LIST"],

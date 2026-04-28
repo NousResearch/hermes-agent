@@ -864,6 +864,9 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
         slack_name = _sanitize_slack_name(name)
         if not slack_name or slack_name in seen:
             return
+        # Reject names starting with underscore — Slack manifest rejects them.
+        if slack_name.startswith("_"):
+            return
         if len(entries) >= _SLACK_MAX_SLASH_COMMANDS:
             return
         # Slack description cap is 2000 chars; keep it short.

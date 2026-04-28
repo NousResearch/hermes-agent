@@ -1171,6 +1171,61 @@ def test_config_set_model_syncs_inference_provider_env(monkeypatch):
     assert os.environ["HERMES_INFERENCE_PROVIDER"] == "anthropic"
 
 
+def test_config_set_model_syncs_tui_provider_unconditionally(monkeypatch):
+    """Regression for #16857: /model must set HERMES_TUI_PROVIDER even when
+    it wasn't pre-set on launch, so a later /new (which re-runs
+    _resolve_startup_runtime) honours the user's explicit provider choice
+    instead of falling through to static-catalog detection and picking a
+    coincidentally-matching native provider.
+    """
+
+    class _Agent:
+        provider = "openrouter"
+        model = "old/model"
+        base_url = ""
+        api_key = "sk-or"
+
+        def switch_model(self, **_kwargs):
+            return None
+
+    result = types.SimpleNamespace(
+        success=True,
+        new_model="deepseek-v4-pro",
+        target_provider="custom:xuanji",
+        api_key="sk-xuanji",
+        base_url="https://xuanji.example/v1",
+        api_mode="chat_completions",
+        warning_message="",
+    )
+
+    server._sessions["sid"] = _session(agent=_Agent())
+    monkeypatch.delenv("HERMES_TUI_PROVIDER", raising=False)
+    monkeypatch.delenv("HERMES_INFERENCE_PROVIDER", raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.model_switch.switch_model", lambda **_kwargs: result
+    )
+    monkeypatch.setattr(server, "_restart_slash_worker", lambda session: None)
+    monkeypatch.setattr(server, "_emit", lambda *args, **kwargs: None)
+
+    server.handle_request(
+        {
+            "id": "1",
+            "method": "config.set",
+            "params": {
+                "session_id": "sid",
+                "key": "model",
+                "value": "deepseek-v4-pro --provider custom:xuanji",
+            },
+        }
+    )
+
+    # Both env vars must reflect the user's choice. HERMES_TUI_PROVIDER is
+    # the canonical explicit-this-process carrier consumed by
+    # _resolve_startup_runtime() on /new.
+    assert os.environ["HERMES_TUI_PROVIDER"] == "custom:xuanji"
+    assert os.environ["HERMES_INFERENCE_PROVIDER"] == "custom:xuanji"
+
+
 def test_config_set_model_syncs_tui_provider_env(monkeypatch):
     class Agent:
         model = "gpt-5.3-codex"

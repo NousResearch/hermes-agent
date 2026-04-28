@@ -4674,12 +4674,36 @@ def _(rid, params: dict) -> dict:
 # ── Methods: browser / plugins / cron / skills ───────────────────────
 
 
+def _resolve_browser_cdp_url() -> str:
+    """Return what the agent's browser tools will actually use right now.
+
+    Mirrors ``tools.browser_tool._get_cdp_override`` so ``/browser status``
+    reports the same answer the next ``browser_navigate`` call sees.  In
+    particular, when only ``browser.cdp_url`` in config.yaml is set (no
+    env), the env-only check used to silently report "not connected".
+    """
+    env_url = os.environ.get("BROWSER_CDP_URL", "").strip()
+    if env_url:
+        return env_url
+    try:
+        from tools.browser_tool import _get_cdp_override
+
+        return _get_cdp_override() or ""
+    except Exception:
+        return ""
+
+
 @method("browser.manage")
 def _(rid, params: dict) -> dict:
     action = params.get("action", "status")
     if action == "status":
-        url = os.environ.get("BROWSER_CDP_URL", "")
-        return _ok(rid, {"connected": bool(url), "url": url})
+        return _ok(
+            rid,
+            {
+                "connected": bool(_resolve_browser_cdp_url()),
+                "url": _resolve_browser_cdp_url(),
+            },
+        )
     if action == "connect":
         url = params.get("url", "http://localhost:9222")
         try:
@@ -4707,17 +4731,34 @@ def _(rid, params: dict) -> dict:
             if not ok:
                 return _err(rid, 5031, f"could not reach browser CDP at {url}")
 
+            # Order matters: clear any cached browser sessions BEFORE
+            # publishing the new env var so an in-flight tool call
+            # observing the old supervisor is reaped first, and the
+            # next call freshly resolves the new URL.  The previous
+            # ordering left a brief window where ``_ensure_cdp_supervisor``
+            # could re-attach to the *old* supervisor.
+            cleanup_all_browsers()
             os.environ["BROWSER_CDP_URL"] = url
+            # Drain any further cached state that could outlive the
+            # cleanup pass (CDP supervisor for the default task,
+            # cached agent-browser timeouts, etc.) so the next
+            # ``browser_navigate`` definitively reaches ``url``.
             cleanup_all_browsers()
         except Exception as e:
             return _err(rid, 5031, str(e))
         return _ok(rid, {"connected": True, "url": url})
     if action == "disconnect":
-        os.environ.pop("BROWSER_CDP_URL", None)
         try:
             from tools.browser_tool import cleanup_all_browsers
 
             cleanup_all_browsers()
+        except Exception:
+            pass
+        os.environ.pop("BROWSER_CDP_URL", None)
+        try:
+            from tools.browser_tool import cleanup_all_browsers as _again
+
+            _again()
         except Exception:
             pass
         return _ok(rid, {"connected": False})

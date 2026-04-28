@@ -2721,3 +2721,114 @@ def test_session_most_recent_handles_db_unavailable(monkeypatch):
     )
 
     assert resp["result"]["session_id"] is None
+# ── browser.manage ───────────────────────────────────────────────────
+
+
+def _stub_urlopen(monkeypatch, *, ok: bool):
+    """Patch urllib.request.urlopen used by browser.manage to short-circuit probes."""
+
+    class _Resp:
+        status = 200 if ok else 503
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_):
+            return False
+
+    def _opener(_url, timeout=2.0):  # noqa: ARG001 — match urllib signature
+        if not ok:
+            raise OSError("probe failed")
+        return _Resp()
+
+    import urllib.request
+
+    monkeypatch.setattr(urllib.request, "urlopen", _opener)
+
+
+def test_browser_manage_status_uses_resolved_cdp_url(monkeypatch):
+    """`/browser status` reflects the URL the agent will actually use,
+    not just the env var (covers `browser.cdp_url` in config.yaml)."""
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+
+    fake = types.SimpleNamespace(_get_cdp_override=lambda: "ws://lan:9222/devtools/browser/abc")
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        resp = server.handle_request(
+            {"id": "1", "method": "browser.manage", "params": {"action": "status"}}
+        )
+
+    assert resp["result"]["connected"] is True
+    assert resp["result"]["url"] == "ws://lan:9222/devtools/browser/abc"
+
+
+def test_browser_manage_connect_sets_env_and_cleans_twice(monkeypatch):
+    """`/browser connect` must reach the live process: set env, reap browser
+    sessions before AND after publishing the new URL.  The double-cleanup
+    closes the supervisor swap window where ``_ensure_cdp_supervisor``
+    could re-attach to the *old* CDP endpoint between steps."""
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    cleanup_calls: list[str] = []
+
+    def _cleanup_all():
+        cleanup_calls.append(os.environ.get("BROWSER_CDP_URL", ""))
+
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=_cleanup_all,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        _stub_urlopen(monkeypatch, ok=True)
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "browser.manage",
+                "params": {"action": "connect", "url": "http://127.0.0.1:9222"},
+            }
+        )
+
+    assert resp["result"] == {"connected": True, "url": "http://127.0.0.1:9222"}
+    assert os.environ.get("BROWSER_CDP_URL") == "http://127.0.0.1:9222"
+    # First cleanup runs against the OLD env (none here), second against the NEW.
+    assert cleanup_calls == ["", "http://127.0.0.1:9222"]
+
+
+def test_browser_manage_connect_rejects_unreachable_endpoint(monkeypatch):
+    """An unreachable endpoint must NOT mutate the env or reap sessions."""
+    monkeypatch.setenv("BROWSER_CDP_URL", "http://existing:9222")
+    cleanup_calls: list[str] = []
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: cleanup_calls.append(os.environ.get("BROWSER_CDP_URL", "")),
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        _stub_urlopen(monkeypatch, ok=False)
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "browser.manage",
+                "params": {"action": "connect", "url": "http://unreachable:9222"},
+            }
+        )
+
+    assert "error" in resp
+    # Env preserved; nothing reaped.
+    assert os.environ["BROWSER_CDP_URL"] == "http://existing:9222"
+    assert cleanup_calls == []
+
+
+def test_browser_manage_disconnect_drops_env_and_cleans(monkeypatch):
+    monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9222")
+    cleanup_count = {"n": 0}
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: cleanup_count.__setitem__("n", cleanup_count["n"] + 1),
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        resp = server.handle_request(
+            {"id": "1", "method": "browser.manage", "params": {"action": "disconnect"}}
+        )
+
+    assert resp["result"] == {"connected": False}
+    assert "BROWSER_CDP_URL" not in os.environ
+    # Two cleanups: once before env removal, once after, matching connect.
+    assert cleanup_count["n"] == 2

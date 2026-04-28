@@ -260,6 +260,7 @@ AUTHOR_MAP = {
     "camilo@tekelala.com": "tekelala",
     "vincentcharlebois@gmail.com": "vincentcharlebois",
     "aryan@synvoid.com": "aryansingh",
+    "1569339843@qq.com": "kuishou68",
     "johnsonblake1@gmail.com": "blakejohnson",
     "hcn518@gmail.com": "pedh",
     "haileymarshall005@gmail.com": "haileymarshall",

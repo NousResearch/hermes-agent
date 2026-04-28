@@ -1084,6 +1084,52 @@ class TestRunJobSkillBacked:
         assert error is None
         assert final_response == "ok"
 
+    def test_run_job_inherits_codex_cli_reasoning_and_fast_when_unset(self, tmp_path):
+        config_yaml = tmp_path / "config.yaml"
+        config_yaml.write_text(
+            "model:\n"
+            "  default: gpt-5.4\n"
+            "  provider: openai-codex\n"
+            "  base_url: https://chatgpt.com/backend-api/codex\n"
+            "agent:\n"
+            "  reasoning_effort: \"\"\n"
+            "  service_tier: \"\"\n"
+        )
+
+        job = {
+            "id": "codex-job",
+            "name": "codex defaults",
+            "prompt": "hello",
+        }
+
+        fake_db = MagicMock()
+        fake_runtime = {
+            "provider": "openai-codex",
+            "api_mode": "codex_responses",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "***",
+        }
+
+        with patch("cron.scheduler._hermes_home", tmp_path), \
+             patch("cron.scheduler._resolve_origin", return_value=None), \
+             patch("dotenv.load_dotenv"), \
+             patch("hermes_state.SessionDB", return_value=fake_db), \
+             patch("hermes_cli.runtime_provider.resolve_runtime_provider", return_value=fake_runtime), \
+             patch("hermes_cli.codex_models.get_codex_cli_preferences", return_value={"reasoning_effort": "xhigh", "service_tier": "fast"}), \
+             patch("run_agent.AIAgent") as mock_agent_cls:
+            mock_agent = MagicMock()
+            mock_agent.run_conversation.return_value = {"final_response": "ok"}
+            mock_agent_cls.return_value = mock_agent
+
+            success, output, final_response, error = run_job(job)
+
+        assert success is True
+        assert error is None
+        assert final_response == "ok"
+        assert "ok" in output
+        assert mock_agent_cls.call_args.kwargs["reasoning_config"] == {"enabled": True, "effort": "xhigh"}
+        assert mock_agent_cls.call_args.kwargs["service_tier"] == "priority"
+
     def test_run_job_preserves_credential_file_passthrough_into_worker_thread(self, tmp_path):
         """copy_context() also propagates credential_files ContextVar."""
         job = {

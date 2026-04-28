@@ -1404,6 +1404,7 @@ class GatewayRunner:
         """
         from hermes_constants import parse_reasoning_effort
         effort = ""
+        model_provider = ""
         try:
             import yaml as _y
             cfg_path = _hermes_home / "config.yaml"
@@ -1411,8 +1412,16 @@ class GatewayRunner:
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
                 effort = str(cfg.get("agent", {}).get("reasoning_effort", "") or "").strip()
+                model_provider = str(cfg.get("model", {}).get("provider", "") or "").strip().lower()
         except Exception:
             pass
+        if not effort and model_provider == "openai-codex":
+            try:
+                from hermes_cli.codex_models import get_codex_cli_preferences
+
+                effort = str(get_codex_cli_preferences().get("reasoning_effort", "") or "").strip()
+            except Exception:
+                pass
         result = parse_reasoning_effort(effort)
         if effort and effort.strip() and result is None:
             logger.warning("Unknown reasoning_effort '%s', using default (medium)", effort)
@@ -1487,6 +1496,7 @@ class GatewayRunner:
         Returns None when unset or unsupported.
         """
         raw = ""
+        model_provider = ""
         try:
             import yaml as _y
             cfg_path = _hermes_home / "config.yaml"
@@ -1494,8 +1504,16 @@ class GatewayRunner:
                 with open(cfg_path, encoding="utf-8") as _f:
                     cfg = _y.safe_load(_f) or {}
                 raw = str(cfg.get("agent", {}).get("service_tier", "") or "").strip()
+                model_provider = str(cfg.get("model", {}).get("provider", "") or "").strip().lower()
         except Exception:
             pass
+        if not raw and model_provider == "openai-codex":
+            try:
+                from hermes_cli.codex_models import get_codex_cli_preferences
+
+                raw = str(get_codex_cli_preferences().get("service_tier", "") or "").strip()
+            except Exception:
+                pass
 
         value = raw.lower()
         if not value or value in {"normal", "default", "standard", "off", "none"}:

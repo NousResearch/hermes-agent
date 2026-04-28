@@ -910,7 +910,24 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
         # Reasoning config from config.yaml
         from hermes_constants import parse_reasoning_effort
         effort = str(_cfg.get("agent", {}).get("reasoning_effort", "")).strip()
+        service_tier_raw = str(_cfg.get("agent", {}).get("service_tier", "")).strip()
+        model_provider = str(_cfg.get("model", {}).get("provider", "") or "").strip().lower()
+        if model_provider == "openai-codex":
+            try:
+                from hermes_cli.codex_models import get_codex_cli_preferences
+
+                codex_prefs = get_codex_cli_preferences()
+            except Exception:
+                codex_prefs = {}
+            if not effort:
+                effort = str(codex_prefs.get("reasoning_effort", "") or "").strip()
+            if not service_tier_raw:
+                service_tier_raw = str(codex_prefs.get("service_tier", "") or "").strip()
         reasoning_config = parse_reasoning_effort(effort)
+        service_tier = None
+        _service_value = service_tier_raw.lower()
+        if _service_value in {"fast", "priority", "on"}:
+            service_tier = "priority"
 
         # Prefill messages from env or config.yaml
         prefill_messages = None
@@ -1001,6 +1018,7 @@ def run_job(job: dict) -> tuple[bool, str, str, Optional[str]]:
             acp_args=runtime.get("args"),
             max_iterations=max_iterations,
             reasoning_config=reasoning_config,
+            service_tier=service_tier,
             prefill_messages=prefill_messages,
             fallback_model=fallback_model,
             credential_pool=credential_pool,

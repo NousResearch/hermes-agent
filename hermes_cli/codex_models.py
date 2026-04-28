@@ -2,12 +2,11 @@
 
 from __future__ import annotations
 
+import os
 import json
 import logging
 from pathlib import Path
-from typing import List, Optional
-
-import os
+from typing import Any, Dict, List, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -27,6 +26,53 @@ _FORWARD_COMPAT_TEMPLATE_MODELS: List[tuple[str, tuple[str, ...]]] = [
     ("gpt-5.4", ("gpt-5.3-codex", "gpt-5.2-codex")),
     ("gpt-5.3-codex", ("gpt-5.2-codex",)),
 ]
+
+
+def _get_codex_home() -> Path:
+    codex_home_str = os.getenv("CODEX_HOME", "").strip() or str(Path.home() / ".codex")
+    return Path(codex_home_str).expanduser()
+
+
+def _read_codex_config(codex_home: Path) -> Dict[str, Any]:
+    config_path = codex_home / "config.toml"
+    if not config_path.exists():
+        return {}
+    try:
+        import tomllib
+    except Exception:
+        return {}
+    try:
+        payload = tomllib.loads(config_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def get_codex_cli_preferences() -> Dict[str, str]:
+    """Return normalized preferences from Codex CLI config.toml.
+
+    Hermes uses these as compatibility fallbacks when the active provider is
+    ``openai-codex`` and the equivalent Hermes config value is unset.
+    """
+    payload = _read_codex_config(_get_codex_home())
+    if not payload:
+        return {}
+
+    prefs: Dict[str, str] = {}
+
+    model = payload.get("model")
+    if isinstance(model, str) and model.strip():
+        prefs["model"] = model.strip()
+
+    reasoning_effort = payload.get("model_reasoning_effort")
+    if isinstance(reasoning_effort, str) and reasoning_effort.strip():
+        prefs["reasoning_effort"] = reasoning_effort.strip().lower()
+
+    service_tier = payload.get("service_tier")
+    if isinstance(service_tier, str) and service_tier.strip():
+        prefs["service_tier"] = service_tier.strip().lower()
+
+    return prefs
 
 
 def _add_forward_compat_models(model_ids: List[str]) -> List[str]:
@@ -92,17 +138,7 @@ def _fetch_models_from_api(access_token: str) -> List[str]:
 
 
 def _read_default_model(codex_home: Path) -> Optional[str]:
-    config_path = codex_home / "config.toml"
-    if not config_path.exists():
-        return None
-    try:
-        import tomllib
-    except Exception:
-        return None
-    try:
-        payload = tomllib.loads(config_path.read_text(encoding="utf-8"))
-    except Exception:
-        return None
+    payload = _read_codex_config(codex_home)
     model = payload.get("model") if isinstance(payload, dict) else None
     if isinstance(model, str) and model.strip():
         return model.strip()
@@ -151,8 +187,7 @@ def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
     Resolution order: API (live, if token provided) > config.toml default >
     local cache > hardcoded defaults.
     """
-    codex_home_str = os.getenv("CODEX_HOME", "").strip() or str(Path.home() / ".codex")
-    codex_home = Path(codex_home_str).expanduser()
+    codex_home = _get_codex_home()
     ordered: List[str] = []
 
     # Try live API if we have a token

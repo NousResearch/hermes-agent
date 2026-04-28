@@ -176,3 +176,41 @@ async def test_run_agent_passes_priority_processing_to_gateway_agent(monkeypatch
     assert result["final_response"] == "ok"
     assert _CapturingAgent.last_init["service_tier"] == "priority"
     assert _CapturingAgent.last_init["request_overrides"] == {"service_tier": "priority"}
+
+
+def test_load_reasoning_config_falls_back_to_codex_cli(monkeypatch, tmp_path):
+    (tmp_path / "config.yaml").write_text(
+        "model:\n"
+        "  provider: openai-codex\n"
+        "agent:\n"
+        "  reasoning_effort: \"\"\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        "hermes_cli.codex_models.get_codex_cli_preferences",
+        lambda: {"reasoning_effort": "xhigh"},
+    )
+
+    result = gateway_run.GatewayRunner._load_reasoning_config()
+
+    assert result == {"enabled": True, "effort": "xhigh"}
+
+
+def test_load_service_tier_falls_back_to_codex_cli(monkeypatch, tmp_path):
+    (tmp_path / "config.yaml").write_text(
+        "model:\n"
+        "  provider: openai-codex\n"
+        "agent:\n"
+        "  service_tier: \"\"\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setattr(
+        "hermes_cli.codex_models.get_codex_cli_preferences",
+        lambda: {"service_tier": "fast"},
+    )
+
+    result = gateway_run.GatewayRunner._load_service_tier()
+
+    assert result == "priority"

@@ -567,7 +567,12 @@ class _CodexCompletionsAdapter:
                     # API allows it.
                     pass
                 else:
-                    effort = reasoning_cfg.get("effort", "medium")
+                    # Truthy-only check mirrors agent/transports/codex.py
+                    # build_kwargs(): falsy values (None, "", 0) fall back
+                    # to the default rather than being forwarded to the
+                    # Codex backend, which rejects e.g. {"effort": null}
+                    # with a 400.
+                    effort = reasoning_cfg.get("effort") or "medium"
                     # Codex backend rejects "minimal"; clamp to "low" to
                     # match the main-agent Codex transport behavior.
                     if effort == "minimal":

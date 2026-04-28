@@ -47,7 +47,10 @@ import re
 import asyncio
 from typing import List, Dict, Any, Optional
 import httpx
-from firecrawl import Firecrawl
+# NOTE: `from firecrawl import Firecrawl` is deliberately NOT at module top —
+# the SDK pulls ~200 ms of imports (httpcore, firecrawl.v1/v2 type trees) and
+# we only need it when the backend is actually "firecrawl". See
+# _get_firecrawl_client() below for the lazy import.
 from agent.auxiliary_client import (
     async_call_llm,
     extract_content_or_reasoning,
@@ -236,6 +239,8 @@ def _get_firecrawl_client():
     if _firecrawl_client is not None and _firecrawl_client_config == client_config:
         return _firecrawl_client
 
+    # Lazy import — ~200 ms of SDK init, only paid when firecrawl is actually used.
+    from firecrawl import Firecrawl  # noqa: E402
     _firecrawl_client = Firecrawl(**kwargs)
     _firecrawl_client_config = client_config
     return _firecrawl_client

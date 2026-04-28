@@ -5641,6 +5641,14 @@ class GatewayRunner:
         # Reset the session
         new_entry = self.session_store.reset_session(session_key)
 
+        # Mark as auto-reset so that the next message in this session triggers
+        # skill auto-loading (group_topics / channel_skill_bindings).  Without
+        # this flag, `_is_new_session` in `_run_agent` evaluates to False for
+        # manually-reset sessions, causing topic-bound skills to be skipped.
+        if new_entry:
+            new_entry.was_auto_reset = True
+            new_entry.auto_reset_reason = "manual_reset"
+
         # Clear any session-scoped model/reasoning overrides so the next agent
         # picks up configured defaults instead of previous session switches.
         self._session_model_overrides.pop(session_key, None)

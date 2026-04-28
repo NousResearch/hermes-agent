@@ -224,6 +224,24 @@ MIGRATION_PRESETS: Dict[str, set[str]] = {
 }
 
 
+# ───────────────────────────────────────────────────────────────────────
+# Item shape constants — kept stable for downstream consumers of report.json.
+# Inspired by OpenClaw's src/plugin-sdk/migration.ts so both sides speak the
+# same vocabulary.  Values intentionally match the strings already produced
+# by this script (migrated/archived/skipped/conflict/error) so the addition
+# is backward-compatible.
+# ───────────────────────────────────────────────────────────────────────
+STATUS_MIGRATED = "migrated"
+STATUS_ARCHIVED = "archived"
+STATUS_SKIPPED = "skipped"
+STATUS_CONFLICT = "conflict"
+STATUS_ERROR = "error"
+STATUS_PLANNED = "planned"
+
+REASON_TARGET_EXISTS = "Target exists and overwrite is disabled"
+REASON_BLOCKED_BY_APPLY_CONFLICT = "blocked by earlier apply conflict"
+
+
 @dataclass
 class ItemResult:
     kind: str
@@ -232,6 +250,7 @@ class ItemResult:
     status: str
     reason: str = ""
     details: Dict[str, Any] = field(default_factory=dict)
+    sensitive: bool = False
 
 
 def parse_selection_values(values: Optional[Sequence[str]]) -> List[str]:
@@ -547,31 +566,127 @@ def relative_label(path: Path, root: Path) -> str:
         return str(path)
 
 
+# ───────────────────────────────────────────────────────────────────────
+# Secret redaction for migration reports.
+#
+# The report JSON persists to disk inside the migration output directory and
+# frequently ends up in bug reports or support channels.  Anything that looks
+# like a credential — by key name or by value shape — is replaced with
+# "[redacted]" before the report is written.
+#
+# Modelled on OpenClaw's src/plugin-sdk/migration.ts so both migration tools
+# redact consistently.  Pure function — safe to call on any plain-data dict.
+# ───────────────────────────────────────────────────────────────────────
+REDACTED_MIGRATION_VALUE = "[redacted]"
+
+_SECRET_KEY_MARKERS = (
+    "accesstoken",
+    "apikey",
+    "authorization",
+    "bearertoken",
+    "clientsecret",
+    "cookie",
+    "credential",
+    "password",
+    "privatekey",
+    "refreshtoken",
+    "secret",
+)
+
+_SECRET_VALUE_PATTERNS = (
+    re.compile(r"\bBearer\s+[A-Za-z0-9._~+/=\-]+"),
+    re.compile(r"\bsk-[A-Za-z0-9_\-]{8,}\b"),
+    re.compile(r"\bgh[pousr]_[A-Za-z0-9_]{16,}\b"),
+    re.compile(r"\bxox[abprs]-[A-Za-z0-9\-]{8,}\b"),
+    re.compile(r"\bAIza[0-9A-Za-z_\-]{12,}\b"),
+)
+
+
+def _normalize_secret_key(key: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", key.lower())
+
+
+def _is_secret_key(key: str) -> bool:
+    normalized = _normalize_secret_key(key)
+    if normalized == "token" or normalized.endswith("token"):
+        return True
+    if normalized in ("auth", "authorization"):
+        return True
+    return any(marker in normalized for marker in _SECRET_KEY_MARKERS)
+
+
+def _redact_string(value: str) -> str:
+    for pattern in _SECRET_VALUE_PATTERNS:
+        value = pattern.sub(REDACTED_MIGRATION_VALUE, value)
+    return value
+
+
+def redact_migration_value(value: Any) -> Any:
+    """Return a deep copy of ``value`` with secret-looking content replaced.
+
+    Applied to every report written to disk.  Keys whose normalized form
+    matches a credential marker get their value replaced wholesale.  Strings
+    anywhere in the tree are scanned for common token patterns (sk-..., ghp_...,
+    xox*-, AIza*, Bearer ...) and those substrings are replaced inline.
+    """
+    return _redact_internal(value, set())
+
+
+def _redact_internal(value: Any, seen: set) -> Any:
+    if isinstance(value, str):
+        return _redact_string(value)
+    if isinstance(value, (list, tuple)):
+        return [_redact_internal(entry, seen) for entry in value]
+    if isinstance(value, dict):
+        obj_id = id(value)
+        if obj_id in seen:
+            return REDACTED_MIGRATION_VALUE
+        seen.add(obj_id)
+        out: Dict[str, Any] = {}
+        for key, entry in value.items():
+            if isinstance(key, str) and _is_secret_key(key):
+                out[key] = REDACTED_MIGRATION_VALUE
+            else:
+                out[key] = _redact_internal(entry, seen)
+        return out
+    return value
+
+
 def write_report(output_dir: Path, report: Dict[str, Any]) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
+    # Always redact before persisting.  Callers who need the raw object
+    # (in-process) still get it back from build_report(); only the on-disk
+    # copy is redacted.
+    redacted = redact_migration_value(report)
     (output_dir / "report.json").write_text(
-        json.dumps(report, indent=2, ensure_ascii=False) + "\n",
+        json.dumps(redacted, indent=2, ensure_ascii=False) + "\n",
         encoding="utf-8",
     )
 
     grouped: Dict[str, List[Dict[str, Any]]] = {}
-    for item in report["items"]:
+    for item in redacted["items"]:
         grouped.setdefault(item["status"], []).append(item)
 
     lines = [
         "# OpenClaw -> Hermes Migration Report",
         "",
-        f"- Timestamp: {report['timestamp']}",
-        f"- Mode: {report['mode']}",
-        f"- Source: `{report['source_root']}`",
-        f"- Target: `{report['target_root']}`",
+        f"- Timestamp: {redacted['timestamp']}",
+        f"- Mode: {redacted['mode']}",
+        f"- Source: `{redacted['source_root']}`",
+        f"- Target: `{redacted['target_root']}`",
         "",
         "## Summary",
         "",
     ]
 
-    for key, value in report["summary"].items():
+    for key, value in redacted["summary"].items():
         lines.append(f"- {key}: {value}")
+
+    warnings = redacted.get("warnings") or []
+    if warnings:
+        lines.extend(["", "## Warnings", ""])
+        for warning in warnings:
+            lines.append(f"- {warning}")
 
     lines.extend(["", "## What Was Not Fully Brought Over", ""])
     skipped = grouped.get("skipped", []) + grouped.get("conflict", []) + grouped.get("error", [])
@@ -583,6 +698,12 @@ def write_report(output_dir: Path, report: Dict[str, Any]) -> None:
             dest = item["destination"] or "(n/a)"
             reason = item["reason"] or item["status"]
             lines.append(f"- `{source}` -> `{dest}`: {reason}")
+
+    next_steps = redacted.get("next_steps") or []
+    if next_steps:
+        lines.extend(["", "## Next Steps", ""])
+        for step in next_steps:
+            lines.append(f"- {step}")
 
     (output_dir / "summary.md").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
@@ -618,6 +739,12 @@ class Migrator:
         self.backup_dir = self.output_dir / "backups" if self.output_dir else None
         self.overflow_dir = self.output_dir / "overflow" if self.output_dir else None
         self.items: List[ItemResult] = []
+        # Once a config.yaml write hits conflict/error mid-run, later
+        # config.yaml writes are deliberately short-circuited to avoid
+        # leaving config in a partially-written state.  Modelled on
+        # OpenClaw's extensions/migrate-hermes/apply.ts "blocked by earlier
+        # apply conflict" sequencing.
+        self._config_apply_blocked: bool = False
 
         # Resolve the configured workspace directory from openclaw.json.
         # Many users (especially those who started before the OpenClaw rebrand)
@@ -654,6 +781,32 @@ class Migrator:
     def is_selected(self, option_id: str) -> bool:
         return option_id in self.selected_options
 
+    # Option ids that mutate the Hermes config.yaml file.  Once any one of
+    # them records a conflict/error on config.yaml, subsequent ones are
+    # short-circuited to avoid partial writes.  Keep in sync with methods
+    # that call load_yaml_file(target_root / "config.yaml") + dump_yaml_file.
+    _CONFIG_MUTATING_OPTIONS = frozenset({
+        "model-config",
+        "tts-config",
+        "mcp-servers",
+        "plugins-config",
+        "cron-jobs",
+        "hooks-config",
+        "agent-config",
+        "gateway-config",
+        "session-config",
+        "full-providers",
+        "deep-channels",
+        "browser-config",
+        "tools-config",
+        "approvals-config",
+        "memory-backend",
+        "skills-config",
+        "ui-identity",
+        "logging-config",
+        "command-allowlist",
+    })
+
     def record(
         self,
         kind: str,
@@ -663,6 +816,7 @@ class Migrator:
         reason: str = "",
         **details: Any,
     ) -> None:
+        sensitive = bool(details.pop("sensitive", False))
         self.items.append(
             ItemResult(
                 kind=kind,
@@ -671,8 +825,16 @@ class Migrator:
                 status=status,
                 reason=reason,
                 details=details,
+                sensitive=sensitive,
             )
         )
+        # Flip the config-block flag when a conflict/error occurs on a
+        # config.yaml write.  Later config-mutating options will skip rather
+        # than attempting a partial write.
+        if status in (STATUS_CONFLICT, STATUS_ERROR) and destination is not None:
+            dest_str = str(destination)
+            if dest_str.endswith("config.yaml") or dest_str.endswith("config.yml"):
+                self._config_apply_blocked = True
 
     def source_candidate(self, *relative_paths: str) -> Optional[Path]:
         for rel in relative_paths:
@@ -798,11 +960,30 @@ class Migrator:
         return self.build_report()
 
     def run_if_selected(self, option_id: str, func) -> None:
-        if self.is_selected(option_id):
-            func()
+        if not self.is_selected(option_id):
+            meta = MIGRATION_OPTION_METADATA[option_id]
+            self.record(option_id, None, None, "skipped", "Not selected for this run", option_label=meta["label"])
             return
-        meta = MIGRATION_OPTION_METADATA[option_id]
-        self.record(option_id, None, None, "skipped", "Not selected for this run", option_label=meta["label"])
+        # If a previous config.yaml write hit a conflict/error during apply,
+        # skip remaining config-mutating options rather than risk a partial
+        # write.  Dry-run mode never blocks — the user needs the full preview
+        # to decide how to proceed (re-run with --overwrite, etc.).
+        if (
+            self.execute
+            and self._config_apply_blocked
+            and option_id in self._CONFIG_MUTATING_OPTIONS
+        ):
+            meta = MIGRATION_OPTION_METADATA[option_id]
+            self.record(
+                option_id,
+                None,
+                None,
+                STATUS_SKIPPED,
+                REASON_BLOCKED_BY_APPLY_CONFLICT,
+                option_label=meta["label"],
+            )
+            return
+        func()
 
     def build_report(self) -> Dict[str, Any]:
         summary: Dict[str, int] = {
@@ -840,12 +1021,75 @@ class Migrator:
             },
             "summary": summary,
             "items": [asdict(item) for item in self.items],
+            "warnings": self._build_warnings(summary),
+            "next_steps": self._build_next_steps(summary),
         }
 
         if self.output_dir:
             write_report(self.output_dir, report)
 
         return report
+
+    def _build_warnings(self, summary: Dict[str, int]) -> List[str]:
+        """Structured warnings surfaced on the report for downstream consumers.
+
+        Modelled on OpenClaw's extensions/migrate-hermes/plan.ts warnings[].
+        Keep the messages actionable — they show up in summary.md and the
+        JSON report.
+        """
+        warnings: List[str] = []
+        if summary.get("conflict", 0) > 0:
+            warnings.append(
+                "Conflicts were found. Re-run with --overwrite to replace conflicting "
+                "targets after item-level backups."
+            )
+        if summary.get("error", 0) > 0:
+            warnings.append(
+                "One or more items failed. Inspect the report and re-run after fixing "
+                "the underlying cause."
+            )
+        if self._config_apply_blocked and self.execute:
+            warnings.append(
+                "A config.yaml write hit a conflict or error mid-apply; later config "
+                "items were skipped to avoid a partial write."
+            )
+        # Detect whether secrets were detected but not migrated.
+        provider_keys_skipped = any(
+            item.kind == "provider-keys" and item.status == STATUS_SKIPPED
+            for item in self.items
+        )
+        if provider_keys_skipped and not self.migrate_secrets:
+            warnings.append(
+                "API keys and other credentials were detected but not imported. "
+                "Re-run with --migrate-secrets to copy supported keys into the "
+                "Hermes env file."
+            )
+        return warnings
+
+    def _build_next_steps(self, summary: Dict[str, int]) -> List[str]:
+        """Human-readable next-step guidance baked into the report."""
+        if not self.execute:
+            return [
+                "Re-run without --dry-run to apply the migration.",
+                "Pass --overwrite to resolve conflicts, or --migrate-secrets to "
+                "include API keys.",
+            ]
+        steps: List[str] = []
+        if summary.get("migrated", 0) > 0:
+            steps.append(
+                "Review the migration report at "
+                f"{self.output_dir}/summary.md"
+                if self.output_dir
+                else "Review the migration report."
+            )
+            steps.append(
+                "Start a new Hermes session (or /reset) to pick up the imported config."
+            )
+        if summary.get("conflict", 0) > 0:
+            steps.append(
+                "Re-run with --overwrite to apply items that were blocked by conflicts."
+            )
+        return steps
 
     def maybe_backup(self, path: Path) -> Optional[Path]:
         if not self.execute or not self.backup_dir or not path.exists():
@@ -2731,6 +2975,13 @@ def parse_args() -> argparse.Namespace:
              f"Valid ids: {', '.join(sorted(MIGRATION_OPTION_METADATA))}",
     )
     parser.add_argument("--output-dir", help="Where to write report, backups, and archived docs")
+    parser.add_argument(
+        "--json",
+        action="store_true",
+        dest="json_output",
+        help="Print the migration report as JSON on stdout (redacted). "
+             "Combine with no --execute for a safe plan-only machine-readable preview.",
+    )
     return parser.parse_args()
 
 
@@ -2754,6 +3005,13 @@ def main() -> int:
         skill_conflict_mode=args.skill_conflict,
     )
     report = migrator.migrate()
+
+    # ── Machine-readable JSON mode ────────────────────────────
+    # When --json is set, print the redacted report to stdout and skip the
+    # human-readable terminal recap.  Useful for CI and scripted wrappers.
+    if getattr(args, "json_output", False):
+        print(json.dumps(redact_migration_value(report), indent=2, ensure_ascii=False))
+        return 0
 
     # ── Human-readable terminal recap ─────────────────────────
     s = report["summary"]

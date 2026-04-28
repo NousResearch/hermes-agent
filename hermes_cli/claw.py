@@ -4,7 +4,8 @@ Usage:
     hermes claw migrate              # Preview then migrate (always shows preview first)
     hermes claw migrate --dry-run    # Preview only, no changes
     hermes claw migrate --yes        # Skip confirmation prompt
-    hermes claw migrate --preset full --overwrite  # Full migration, overwrite conflicts
+    hermes claw migrate --preset full --overwrite --migrate-secrets  # Full run w/ secrets
+    hermes claw migrate --no-backup  # Skip pre-migration snapshot
     hermes claw cleanup              # Archive leftover OpenClaw directories
     hermes claw cleanup --dry-run    # Preview what would be archived
 """
@@ -15,6 +16,7 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
+from typing import Optional
 
 from hermes_cli.config import get_hermes_home, get_config_path, load_config, save_config
 from hermes_constants import get_optional_skills_dir
@@ -321,10 +323,13 @@ def _cmd_migrate(args):
     migrate_secrets = getattr(args, "migrate_secrets", False)
     workspace_target = getattr(args, "workspace_target", None)
     skill_conflict = getattr(args, "skill_conflict", "skip")
+    no_backup = getattr(args, "no_backup", False)
 
-    # If using the "full" preset, secrets are included by default
-    if preset == "full":
-        migrate_secrets = True
+    # Secrets are never included implicitly — they must be explicitly requested
+    # via --migrate-secrets, even under --preset full.  This mirrors OpenClaw's
+    # migrate-hermes posture (two-phase: run once without secrets, rerun with
+    # --include-secrets) and prevents a --preset full invocation from silently
+    # importing API keys that the user may not have intended to copy.
 
     print()
     print(
@@ -431,20 +436,47 @@ def _cmd_migrate(args):
 
     preview_summary = preview_report.get("summary", {})
     preview_count = preview_summary.get("migrated", 0)
+    preview_conflicts = preview_summary.get("conflict", 0)
 
-    if preview_count == 0:
+    # "Nothing to migrate" means nothing migrated AND nothing blocked by
+    # conflicts.  If there are conflicts, we still want to show the plan and
+    # surface the refusal/--overwrite guidance instead of silently bailing.
+    if preview_count == 0 and preview_conflicts == 0:
         print()
         print_info("Nothing to migrate from OpenClaw.")
         _print_migration_report(preview_report, dry_run=True)
         return
 
     print()
-    print_header(f"Migration Preview — {preview_count} item(s) would be imported")
+    if preview_count > 0:
+        print_header(f"Migration Preview — {preview_count} item(s) would be imported")
+    else:
+        print_header(
+            f"Migration Preview — {preview_conflicts} conflict(s), nothing would be imported"
+        )
     print_info("No changes have been made yet. Review the list below:")
     _print_migration_report(preview_report, dry_run=True)
 
     # If --dry-run, stop here
     if dry_run:
+        return
+
+    # ── Phase 1b: Refuse if the plan has conflicts and --overwrite is not set ─
+    # Modelled on OpenClaw's assertConflictFreePlan() — apply is a safe no-op
+    # on conflicts unless the user explicitly opts in to overwriting.  Without
+    # this guard, the user would answer "yes, proceed" and silently end up
+    # with a migration that skipped every conflicting item.
+    if preview_conflicts > 0 and not overwrite:
+        print()
+        print_error(
+            f"Plan has {preview_conflicts} conflict(s). Refusing to apply."
+        )
+        print_info(
+            "Each conflict is an item whose target already exists in ~/.hermes/. "
+            "Re-run with --overwrite to replace conflicting targets (item-level "
+            "backups are written to the migration report directory)."
+        )
+        print_info("Or re-run with --dry-run to review the full plan.")
         return
 
     # ── Phase 2: Confirm and execute ───────────────────────────
@@ -456,6 +488,30 @@ def _cmd_migrate(args):
             return
         if not prompt_yes_no("Proceed with migration?", default=True):
             print_info("Migration cancelled.")
+            return
+
+    # ── Phase 2b: Pre-apply backup of the Hermes home ─────────
+    # Every "apply" creates a single tarball snapshot of ~/.hermes/ (minus
+    # session/log directories that are regenerated and would bloat the
+    # archive) before any mutation.  Mirrors OpenClaw's createPreMigrationBackup
+    # — one atomic restore point, not per-item backups.  Item-level backups
+    # from maybe_backup() still go into the migration output dir for granular
+    # rollback.
+    backup_archive: Optional[Path] = None
+    if not no_backup:
+        try:
+            backup_archive = _create_pre_migration_backup(hermes_home)
+            if backup_archive:
+                print()
+                print_success(f"Pre-migration backup: {backup_archive}")
+                print_info("Restore with: tar -xzf <archive> -C ~/")
+        except Exception as e:
+            print()
+            print_error(f"Could not create pre-migration backup: {e}")
+            print_info(
+                "Re-run with --no-backup to skip, or free up disk space in ~/.hermes/"
+            )
+            logger.debug("Pre-migration backup error", exc_info=True)
             return
 
     try:
@@ -476,14 +532,64 @@ def _cmd_migrate(args):
         print()
         print_error(f"Migration failed: {e}")
         logger.debug("OpenClaw migration error", exc_info=True)
+        if backup_archive:
+            print_info(f"A pre-migration backup is available at: {backup_archive}")
+            print_info("Restore with: tar -xzf <archive> -C ~/")
         return
 
     # Print results
     _print_migration_report(report, dry_run=False)
+    if backup_archive:
+        print()
+        print_info(f"Pre-migration backup saved: {backup_archive}")
 
     # Source directory is left untouched — archiving is not the migration
     # tool's responsibility.  Users who want to clean up can run
     # 'hermes claw cleanup' separately.
+
+
+def _create_pre_migration_backup(hermes_home: Path) -> Optional[Path]:
+    """Tar up ~/.hermes/ into a single timestamped archive.
+
+    Excludes directories that are regenerated on demand (sessions, logs, cache)
+    to keep the archive small.  Returns the archive path, or None if the
+    Hermes home is missing (fresh install — nothing to back up).
+    """
+    import tarfile
+
+    if not hermes_home.is_dir():
+        return None
+
+    backup_root = hermes_home / "migration" / "pre-migration-backups"
+    backup_root.mkdir(parents=True, exist_ok=True)
+    timestamp = datetime.now().strftime("%Y%m%dT%H%M%S")
+    archive_path = backup_root / f"hermes-home-{timestamp}.tar.gz"
+
+    # Skip the backup root itself and heavy regenerable directories.
+    skip_names = {
+        "migration",  # our own backup + migration output lives here
+        "sessions",
+        "logs",
+        "cache",
+        "__pycache__",
+        ".venv",
+        "venv",
+        "node_modules",
+    }
+
+    def _filter(tarinfo: "tarfile.TarInfo") -> Optional["tarfile.TarInfo"]:
+        parts = Path(tarinfo.name).parts
+        # The first element is the arcname ("hermes-home"); after that any
+        # component in skip_names means the subtree is excluded.
+        for part in parts[1:]:
+            if part in skip_names:
+                return None
+        return tarinfo
+
+    with tarfile.open(archive_path, "w:gz") as tar:
+        tar.add(str(hermes_home), arcname="hermes-home", filter=_filter)
+
+    return archive_path
 
 
 def _cmd_cleanup(args):

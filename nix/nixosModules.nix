@@ -456,14 +456,13 @@
         type = types.listOf types.package;
         default = [ ];
         description = ''
-          **Deprecated.** Extra packages on the systemd service PATH.
+          Extra packages available to the agent — terminal commands, skills,
+          cron jobs, and the service process all see them.
 
-          This option does NOT make packages available to terminal commands
-          or skills — the terminal backend's login shell rebuilds PATH from
-          NixOS system profiles, discarding the service PATH.
-
-          Use `environment.systemPackages` instead, which works everywhere:
-          service process, terminal commands, skills, cron jobs.
+          Implemented via the hermes user's per-user profile
+          (`/etc/profiles/per-user/${cfg.user}/bin`), which NixOS includes
+          in PATH for login shells.  The packages are also added to the
+          systemd service PATH for direct process access.
         '';
       };
 
@@ -649,21 +648,15 @@
       }
 
       # ── Warnings ──────────────────────────────────────────────────────
+      # ── Per-user profile for extraPackages ───────────────────────────
+      # Wire extraPackages into the hermes user's per-user profile so the
+      # login-shell snapshot (which rebuilds PATH from NixOS profiles) sees
+      # them.  The systemd service PATH also includes them for direct access.
       (lib.mkIf (cfg.extraPackages != []) {
-        warnings = [
-          ''
-            services.hermes-agent: `extraPackages` is deprecated and will be removed in a future release.
-
-            Packages added via `extraPackages` are only visible to the systemd
-            service process itself. Terminal commands, skills, and cron jobs do
-            NOT see them because the terminal backend starts a login shell whose
-            PATH is rebuilt from NixOS system profiles, discarding the service PATH.
-
-            Migrate to `environment.systemPackages`, which works everywhere:
-
-              environment.systemPackages = [ ${lib.concatMapStringsSep " " (p: "pkgs.${p.pname or (lib.getName p)}") cfg.extraPackages} ];
-          ''
-        ];
+        # listOf options are merged by the NixOS module system — this appends to
+        # any packages the operator assigned to this user externally (e.g. when
+        # createUser = false and the user definition lives elsewhere in the config).
+        users.users.${cfg.user}.packages = cfg.extraPackages;
       })
 
       (lib.mkIf (cfg.container.enable && !cfg.addToSystemPackages && cfg.container.hostUsers != []) {

@@ -1500,12 +1500,33 @@ class BasePlatformAdapter(ABC):
         
         Override in subclasses to send audio as voice bubbles (Telegram)
         or file attachments (Discord). Default falls back to sending the
-        file path as text.
+        audio file as a document link or noting the path.
         """
-        text = f"🔊 Audio: {audio_path}"
+        # Fallback: just send a note with the file path.
+        text = f"[Voice message: {audio_path}]"
         if caption:
             text = f"{caption}\n{text}"
         return await self.send(chat_id=chat_id, content=text, reply_to=reply_to)
+
+    def _should_auto_tts_voice_input(
+        self,
+        *,
+        event: MessageEvent,
+        text_content: str,
+        media_files: list,
+    ) -> bool:
+        """Return True when base auto-TTS should synthesize voice input replies.
+
+        Platforms with stricter modality/billing rules (notably LINE) can
+        override this to disable the generic voice+text fallback and let the
+        gateway runner enforce a platform-specific single-reply policy.
+        """
+        return (
+            event.message_type == MessageType.VOICE
+            and bool(text_content)
+            and not media_files
+            and event.source.chat_id not in self._auto_tts_disabled_chats
+        )
 
     async def play_tts(
         self,
@@ -2396,10 +2417,11 @@ class BasePlatformAdapter(ABC):
                 # an explicit ``/voice on|tts`` opt-in OR when ``voice.auto_tts`` is
                 # True globally and no ``/voice off`` has been issued.
                 _tts_path = None
-                if (self._should_auto_tts_for_chat(event.source.chat_id)
-                        and event.message_type == MessageType.VOICE
-                        and text_content
-                        and not media_files):
+                if self._should_auto_tts_voice_input(
+                    event=event,
+                    text_content=text_content,
+                    media_files=media_files,
+                ):
                     try:
                         from tools.tts_tool import text_to_speech_tool, check_tts_requirements
                         if check_tts_requirements():

@@ -6721,12 +6721,15 @@ class GatewayRunner:
         if has_agent_tts:
             return False
 
-        # Dedup: base adapter auto-TTS already handles voice input
-        # (play_tts plays in VC when connected, so runner can skip).
-        # When streaming already delivered the text (already_sent=True),
-        # the base adapter will receive None and can't run auto-TTS,
-        # so the runner must take over.
-        if event.message_type == MessageType.VOICE and not already_sent:
+        # Dedup: base adapter auto-TTS already handles voice input on most
+        # platforms. LINE is a special case: the adapter disables the generic
+        # voice+text fallback so the runner can enforce a single reply in the
+        # user's last-used modality.
+        if (
+            event.message_type == MessageType.VOICE
+            and not already_sent
+            and event.source.platform != Platform.LINE
+        ):
             return False
 
         return True

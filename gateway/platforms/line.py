@@ -93,6 +93,19 @@ class LineAdapter(BasePlatformAdapter):
 
     MAX_MESSAGE_LENGTH = MAX_MESSAGE_LENGTH
 
+    def _should_auto_tts_voice_input(
+        self,
+        *,
+        event: MessageEvent,
+        text_content: str,
+        media_files: list,
+    ) -> bool:
+        del event, text_content, media_files
+        # LINE reply billing is quota-sensitive and runner-level modality rules
+        # should decide whether a voice reply replaces text. Disable the base
+        # adapter's generic voice+text auto-TTS fallback here.
+        return False
+
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.LINE)
 

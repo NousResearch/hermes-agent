@@ -396,6 +396,11 @@ class TestAutoVoiceReply:
         }]
         assert self._call(runner, "all", MessageType.TEXT, agent_messages=messages) is False
 
+    def test_line_voice_input_runner_handles_voice_reply_without_streaming(self, runner):
+        runner._voice_mode["line:123"] = "voice_only"
+        event = _make_event(message_type=MessageType.VOICE, platform=Platform.LINE)
+        assert runner._should_send_voice_reply(event, "Hello!", [], already_sent=False) is True
+
     def test_line_voice_input_streamed_runner_can_handle_voice_reply(self, runner):
         runner._voice_mode["line:123"] = "voice_only"
         event = _make_event(message_type=MessageType.VOICE, platform=Platform.LINE)

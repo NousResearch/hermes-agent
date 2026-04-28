@@ -42,13 +42,15 @@ env:
   OPS_OVERLAY_BRANCH: ops-overlay
   INTEGRATION_BRANCH: main
   # Space-separated list of feature branches to rebase and cherry-pick into main.
-  # Order matters: commits from earlier branches are applied first. Empty
-  # is the steady-state when no patches are open upstream.
-  # Order matters when one branch stacks on another: cherry-picking the
-  # later branch's range against upstream/main re-applies any earlier
-  # commits already in its history, which would either duplicate or
-  # conflict. We list only the *tip* branch, which contains all earlier
-  # patches as ancestors.
+  # Order matters: listed branches are applied in order after ops-overlay.
+  # Empty is the steady-state when no patches are open upstream.
+  #
+  # Stacked PRs: list only the *tip* branch — cherry-picking its range onto
+  # upstream/main brings in ancestor commits once. Do not list older stack
+  # branches or commits duplicate/conflict.
+  #
+  # Independent PRs: add each branch in dependency order (later commits may
+  # assume earlier cherry-picks are already on integration main).
   #
   # Currently:
   # - fix/busy-path-pre-gateway-dispatch-upstream is stacked on

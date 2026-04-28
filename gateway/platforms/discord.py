@@ -813,17 +813,36 @@ class DiscordAdapter(BasePlatformAdapter):
                 logger.info("[%s] Synced %d slash command(s) via bulk tree sync", self.name, len(synced))
                 return
 
-            summary = await asyncio.wait_for(self._safe_sync_slash_commands(), timeout=30)
+            # Fix #16713: Use fast_only to sync critical commands first, then
+            # defer orphan cleanup to a background task. This avoids the 30s
+            # timeout when Discord's rate limit (~5 writes/20s) is under pressure
+            # after a mass prune of orphaned commands.
+            summary = await asyncio.wait_for(
+                self._safe_sync_slash_commands(fast_only=True), timeout=30
+            )
             logger.info(
-                "[%s] Safely reconciled %d slash command(s): unchanged=%d updated=%d recreated=%d created=%d deleted=%d",
+                "[%s] Safely reconciled %d slash command(s): unchanged=%d updated=%d recreated=%d created=%d",
                 self.name,
                 summary["total"],
                 summary["unchanged"],
                 summary["updated"],
                 summary["recreated"],
                 summary["created"],
-                summary["deleted"],
             )
+            # Spawn background task to finish non-critical sync
+            orphans = summary.get("_orphans", [])
+            slow_keys = summary.get("_slow_keys", [])
+            if orphans or slow_keys:
+                logger.info(
+                    "[%s] Spawning background sync for %d orphans and %d non-critical commands",
+                    self.name,
+                    len(orphans),
+                    len(slow_keys),
+                )
+                asyncio.create_task(
+                    self._deferred_sync_slash_commands(orphans, slow_keys),
+                    name="discord-deferred-command-sync",
+                )
         except asyncio.TimeoutError:
             logger.warning("[%s] Slash command sync timed out after 30s", self.name)
         except asyncio.CancelledError:
@@ -934,8 +953,16 @@ class DiscordAdapter(BasePlatformAdapter):
             "options": canonical["options"],
         }
 
-    async def _safe_sync_slash_commands(self) -> Dict[str, int]:
-        """Diff existing global commands and only mutate the commands that changed."""
+    async def _safe_sync_slash_commands(
+        self, *, fast_only: bool = False
+    ) -> Dict[str, int]:
+        """Diff existing global commands and only mutate the commands that changed.
+
+        Args:
+            fast_only: If True, only sync critical commands (COMMAND_REGISTRY + /skill)
+                and defer orphan cleanup to a background task. Used to avoid hitting
+                Discord's rate limit (~5 writes/20s) during post-prune bursts.
+        """
         if not self._client:
             return {
                 "total": 0,
@@ -972,7 +999,30 @@ class DiscordAdapter(BasePlatformAdapter):
         deleted = 0
         http = self._client.http
 
-        for key, desired in desired_by_key.items():
+        # Fast path: sync critical commands within the 30s budget.
+        # Critical commands are those in COMMAND_REGISTRY plus the /skill autocomplete
+        # dispatcher -- the commands users actually interact with.
+        try:
+            from hermes_cli.commands import COMMAND_REGISTRY
+            _critical_names = {"skill"}
+            for cmd in COMMAND_REGISTRY:
+                _critical_names.add(cmd.name)
+                for alias in cmd.aliases:
+                    _critical_names.add(alias)
+        except Exception:
+            _critical_names = {"skill"}
+
+        fast_keys = {
+            k: v for k, v in desired_by_key.items()
+            if k[1] in _critical_names
+        }
+        slow_keys = {
+            k: v for k, v in desired_by_key.items()
+            if k[0] not in fast_keys
+        }
+
+        # Process fast keys first (critical user-facing commands)
+        for key, desired in fast_keys.items():
             current = existing_by_key.pop(key, None)
             if current is None:
                 await http.upsert_global_command(app_id, desired)
@@ -995,9 +1045,51 @@ class DiscordAdapter(BasePlatformAdapter):
             await http.edit_global_command(app_id, current.id, desired)
             updated += 1
 
+        # If fast_only mode, defer remaining work (orphans + non-critical) to caller
+        if fast_only:
+            return {
+                "total": len(desired_payloads),
+                "unchanged": unchanged,
+                "updated": updated,
+                "recreated": recreated,
+                "created": created,
+                "deleted": 0,  # Deferred
+                "_orphans": list(existing_by_key.keys()),
+                "_slow_keys": list(slow_keys.keys()),
+            }
+
+        # Process non-critical commands
+        for key, desired in slow_keys.items():
+            current = existing_by_key.pop(key, None)
+            if current is None:
+                await http.upsert_global_command(app_id, desired)
+                created += 1
+                continue
+
+            current_existing_payload = self._existing_command_to_payload(current)
+            current_payload = self._canonicalize_app_command_payload(current_existing_payload)
+            desired_payload = self._canonicalize_app_command_payload(desired)
+            if current_payload == desired_payload:
+                unchanged += 1
+                continue
+
+            if self._patchable_app_command_payload(current_existing_payload) == self._patchable_app_command_payload(desired):
+                await http.delete_global_command(app_id, current.id)
+                await http.upsert_global_command(app_id, desired)
+                recreated += 1
+                continue
+
+            await http.edit_global_command(app_id, current.id, desired)
+            updated += 1
+
+        # Delete orphans with rate-limit-aware pacing
+        # Discord rate limit: ~5 writes / 20s per app
         for current in existing_by_key.values():
             await http.delete_global_command(app_id, current.id)
             deleted += 1
+            # Small delay to avoid hitting rate limit during bulk deletes
+            if deleted % 4 == 0:
+                await asyncio.sleep(0.1)
 
         return {
             "total": len(desired_payloads),
@@ -1007,6 +1099,54 @@ class DiscordAdapter(BasePlatformAdapter):
             "created": created,
             "deleted": deleted,
         }
+
+    async def _deferred_sync_slash_commands(
+        self, orphans: list, slow_keys: list
+    ) -> None:
+        """Background task to complete non-critical command sync and orphan cleanup.
+
+        Runs after _run_post_connect_initialization completes, without the 30s
+        timeout constraint. Discord's rate limit bucket (~5 writes/20s) recovers
+        naturally so the deferred deletes/updates land without timeouts.
+        """
+        if not self._client or not orphans:
+            return
+
+        tree = self._client.tree
+        app_id = getattr(self._client, "application_id", None) or getattr(getattr(self._client, "user", None), "id", None)
+        if not app_id:
+            return
+
+        http = self._client.http
+        deleted = 0
+        updated = 0
+
+        try:
+            existing_commands = await tree.fetch_commands()
+            existing_by_key = {
+                (
+                    int(getattr(getattr(command, "type", None), "value", getattr(command, "type", 1)) or 1),
+                    str(command.name or "").lower(),
+                ): command
+                for command in existing_commands
+            }
+
+            # Delete orphans with rate-limit-aware pacing
+            for key in orphans:
+                current = existing_by_key.get(key)
+                if current is not None:
+                    await http.delete_global_command(app_id, current.id)
+                    deleted += 1
+                    if deleted % 4 == 0:
+                        await asyncio.sleep(5)  # Pace to avoid rate limit
+
+            logger.info(
+                "[%s] Deferred sync completed: deleted=%d",
+                self.name,
+                deleted,
+            )
+        except Exception as e:
+            logger.warning("[%s] Deferred slash command sync failed: %s", self.name, e)
 
     async def _add_reaction(self, message: Any, emoji: str) -> bool:
         """Add an emoji reaction to a Discord message."""
@@ -2714,6 +2854,20 @@ class DiscordAdapter(BasePlatformAdapter):
             return bool(configured)
         return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no", "off")
 
+    def _discord_strict_mention(self) -> bool:
+        """Return whether strict mention mode is enabled.
+
+        When True, mention gating is enforced even in known bot threads.
+        This prevents bots from responding to messages in threads where they
+        previously participated when the user is trying to talk to another bot.
+        """
+        configured = self.config.extra.get("strict_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() not in ("false", "0", "no", "off")
+            return bool(configured)
+        return os.getenv("DISCORD_STRICT_MENTION", "false").lower() in ("true", "1", "yes")
+
     def _discord_free_response_channels(self) -> set:
         """Return Discord channel IDs where no bot mention is required.
 
@@ -3242,7 +3396,12 @@ class DiscordAdapter(BasePlatformAdapter):
 
             # Skip the mention check if the message is in a thread where
             # the bot has previously participated (auto-created or replied in).
+            # However, if strict_mention mode is enabled, still require mention.
             in_bot_thread = is_thread and thread_id in self._threads
+            strict_mention = self._discord_strict_mention()
+            # Override in_bot_thread bypass when strict_mention is True
+            if strict_mention:
+                in_bot_thread = False
 
             if require_mention and not is_free_channel and not in_bot_thread:
                 if self._client.user not in message.mentions and not mention_prefix:

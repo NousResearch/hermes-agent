@@ -2810,11 +2810,17 @@ class GatewayRunner:
                     continue  # not time yet
 
                 if info["attempts"] >= _MAX_ATTEMPTS:
-                    logger.warning(
-                        "Giving up reconnecting %s after %d attempts",
-                        platform.value, info["attempts"],
+                    # After 20 failed attempts, stop counting attempts and retry
+                    # at a fixed long interval (10 min) instead of exponentially
+                    # backing off further. This prevents transient network/proxy
+                    # outages that last hours from permanently disabling a
+                    # platform until gateway restart (issue #17063).
+                    backoff = 600  # 10 minutes
+                    info["next_retry"] = time.monotonic() + backoff
+                    logger.info(
+                        "Reconnect %s: %d attempts exhausted, retrying every %ds",
+                        platform.value, info["attempts"], backoff // 60,
                     )
-                    del self._failed_platforms[platform]
                     continue
 
                 platform_config = info["config"]

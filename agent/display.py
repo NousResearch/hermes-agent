@@ -6,12 +6,15 @@ Used by AIAgent._execute_tool_calls for CLI feedback.
 
 import logging
 import os
+import re
 import sys
 import threading
 import time
 from dataclasses import dataclass, field
 from difflib import unified_diff
+from io import StringIO
 from pathlib import Path
+import shutil
 
 from utils import safe_json_loads
 
@@ -85,6 +88,165 @@ def _diff_minus(): return _diff_ansi()["minus"]
 def _diff_plus():  return _diff_ansi()["plus"]
 _MAX_INLINE_DIFF_FILES = 6
 _MAX_INLINE_DIFF_LINES = 80
+
+
+def _skin_markdown_option(key: str, fallback):
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+
+        return get_active_skin().get_markdown(key, fallback)
+    except Exception:
+        return fallback
+
+
+def _skin_markdown_code_theme() -> str:
+    return str(_skin_markdown_option("code_theme", "monokai") or "monokai").strip()
+
+
+def _skin_markdown_code_background() -> str:
+    return str(_skin_markdown_option("code_background", "") or "").strip()
+
+
+def _skin_markdown_code_line_numbers() -> bool:
+    return bool(_skin_markdown_option("code_line_numbers", False))
+
+
+def _accent_hex() -> str:
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+
+        skin = get_active_skin()
+        return skin.get_color("ui_accent", skin.get_color("banner_accent", "#7eb8f6"))
+    except Exception:
+        return "#7eb8f6"
+
+
+_DIFF_HUNK_RE = re.compile(r"^@@ -(?P<old>\d+)(?:,(?P<old_count>\d+))? \+(?P<new>\d+)(?:,(?P<new_count>\d+))? @@")
+
+
+def _diff_rows_with_real_line_numbers(lines: list[str]) -> list[tuple[str, str, str]]:
+    rows: list[tuple[str, str, str]] = []
+    old_line: int | None = None
+    new_line: int | None = None
+
+    for line in lines:
+        if line.startswith("@@"):
+            match = _DIFF_HUNK_RE.match(line)
+            if match:
+                old_line = int(match.group("old"))
+                new_line = int(match.group("new"))
+            rows.append(("", line, "hunk"))
+            continue
+
+        if old_line is None or new_line is None:
+            rows.append(("", line, "file"))
+            continue
+
+        if line.startswith("+") and not line.startswith("+++"):
+            rows.append((str(new_line), line, "add"))
+            new_line += 1
+            continue
+
+        if line.startswith("-") and not line.startswith("---"):
+            rows.append((str(old_line), line, "delete"))
+            old_line += 1
+            continue
+
+        if line.startswith(" "):
+            rows.append((str(new_line), line, "context"))
+            old_line += 1
+            new_line += 1
+            continue
+
+        rows.append(("", line, "meta"))
+
+    return rows
+
+
+def _diff_with_real_line_numbers(diff_text: str) -> str:
+    rows = _diff_rows_with_real_line_numbers(diff_text.splitlines())
+    number_width = max(3, *(len(number) for number, _, _ in rows))
+    return "\n".join(
+        f"{number.rjust(number_width) if number else ' ' * number_width} │ {content}"
+        for number, content, _ in rows
+    )
+
+
+def _guess_diff_lexer_from_path(path: str) -> str:
+    cleaned = path.strip()
+    if cleaned.startswith(("a/", "b/")):
+        cleaned = cleaned[2:]
+    if cleaned == "/dev/null":
+        return "text"
+    try:
+        from pygments.lexers import get_lexer_for_filename
+
+        aliases = getattr(get_lexer_for_filename(cleaned), "aliases", ())
+        if aliases:
+            return str(aliases[0])
+    except Exception:
+        pass
+
+    suffix = cleaned.rsplit(".", 1)[-1].lower() if "." in cleaned else ""
+    return {
+        "js": "javascript",
+        "jsx": "jsx",
+        "ts": "typescript",
+        "tsx": "tsx",
+        "py": "python",
+        "rb": "ruby",
+        "go": "go",
+        "rs": "rust",
+        "java": "java",
+        "kt": "kotlin",
+        "kts": "kotlin",
+        "sh": "bash",
+        "bash": "bash",
+        "zsh": "bash",
+        "yaml": "yaml",
+        "yml": "yaml",
+        "json": "json",
+        "toml": "toml",
+        "md": "markdown",
+        "css": "css",
+        "scss": "scss",
+        "html": "html",
+        "xml": "xml",
+    }.get(suffix, "text")
+
+
+def _diff_lexer_from_header_line(line: str) -> str | None:
+    if not line.startswith("+++ "):
+        return None
+    path = line[4:].split("\t", 1)[0].strip()
+    return _guess_diff_lexer_from_path(path)
+
+
+def _highlight_diff_code_text(code: str, lexer: str, background: str | None):
+    from rich.syntax import Syntax
+    from rich.text import Text
+
+    if not code:
+        return Text("")
+    try:
+        highlighted = Syntax(
+            "",
+            lexer or "text",
+            theme=_skin_markdown_code_theme(),
+            background_color=background,
+        ).highlight(code)
+    except Exception:
+        highlighted = Syntax(
+            "",
+            "text",
+            theme=_skin_markdown_code_theme(),
+            background_color=background,
+        ).highlight(code)
+    if highlighted.plain.endswith("\n"):
+        highlighted = highlighted[:-1]
+    if highlighted:
+        highlighted.stylize("on default", 0, len(highlighted))
+    return highlighted
 
 
 @dataclass
@@ -432,13 +594,101 @@ def extract_edit_diff(
     return _diff_from_snapshot(snapshot)
 
 
+def _render_inline_diff_code_block(diff_text: str) -> str:
+    """Render a unified diff as the same skin-aware code block used for Markdown."""
+
+    from rich import box as rich_box
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.text import Text
+
+    rows = _diff_rows_with_real_line_numbers((diff_text.rstrip("\n") or "").splitlines())
+    number_width = max(3, *(len(number) for number, _, _ in rows))
+    base_style = "#E5E7EB"
+    number_style = "#94A3B8"
+    divider_style = f"{_accent_hex()} dim"
+    add_bg = "#1F6B3A"
+    delete_bg = "#8A3A45"
+    styles = {
+        "file": _accent_hex(),
+        "hunk": "#A7B6D8",
+        "add": f"#4ADE80 on {add_bg}",
+        "delete": f"#F87171 on {delete_bg}",
+        "context": base_style,
+        "meta": base_style,
+    }
+
+    current_lexer = "text"
+    rendered_rows: list[Text] = []
+    for number, content, kind in rows:
+        header_lexer = _diff_lexer_from_header_line(content)
+        if header_lexer:
+            current_lexer = header_lexer
+
+        row_style = styles.get(kind, base_style)
+        gutter_style = row_style if kind in {"add", "delete"} else number_style
+        rule_style = row_style if kind in {"add", "delete"} else divider_style
+        row = Text()
+        row.append(number.rjust(number_width) if number else " " * number_width, style=gutter_style)
+        row.append(" │ ", style=rule_style)
+
+        if kind in {"add", "delete", "context"} and content[:1] in {"+", "-", " "}:
+            marker = content[:1]
+            body = content[1:]
+            row_bg = add_bg if kind == "add" else delete_bg if kind == "delete" else None
+            marker_style = row_style if kind in {"add", "delete"} else base_style
+            row.append(marker, style=marker_style)
+            highlighted = _highlight_diff_code_text(body, current_lexer, None)
+            if kind in {"add", "delete"} and row_bg:
+                highlighted.stylize(f"on {row_bg}", 0, len(highlighted))
+            row.append_text(highlighted)
+        else:
+            row.append(content, style=row_style)
+        rendered_rows.append(row)
+
+    content_width = max((len(row.plain) for row in rendered_rows), default=0)
+    text = Text()
+    for idx, row in enumerate(rendered_rows):
+        if idx:
+            text.append("\n")
+        text.append_text(row)
+        kind = rows[idx][2]
+        if len(row.plain) < content_width:
+            pad_bg = add_bg if kind == "add" else delete_bg if kind == "delete" else None
+            if not pad_bg:
+                continue
+            text.append(" " * (content_width - len(row.plain)), style=f"on {pad_bg}")
+    terminal_width = shutil.get_terminal_size((80, 24)).columns
+    rendered = StringIO()
+    console = Console(
+        file=rendered,
+        force_terminal=True,
+        color_system="truecolor",
+        no_color=False,
+        width=terminal_width,
+        legacy_windows=False,
+    )
+    console.print(
+        Panel(
+            text,
+            title="diff",
+            title_align="left",
+            border_style=f"{_accent_hex()} dim",
+            box=rich_box.ROUNDED,
+            expand=False,
+        )
+    )
+    return rendered.getvalue().rstrip("\n")
+
+
 def _emit_inline_diff(diff_text: str, print_fn) -> bool:
     """Emit rendered diff text through the CLI's prompt_toolkit-safe printer."""
     if print_fn is None or not diff_text:
         return False
     try:
         print_fn("  ┊ review diff")
-        for line in diff_text.rstrip("\n").splitlines():
+        rendered = _render_inline_diff_code_block(diff_text)
+        for line in rendered.splitlines():
             print_fn(line)
         return True
     except Exception:
@@ -541,6 +791,52 @@ def _summarize_rendered_diff_sections(
     return rendered
 
 
+def _summarize_unified_diff_sections(
+    diff: str,
+    *,
+    max_files: int = _MAX_INLINE_DIFF_FILES,
+    max_lines: int = _MAX_INLINE_DIFF_LINES,
+) -> str:
+    """Return a bounded raw unified diff suitable for syntax highlighting."""
+
+    sections = _split_unified_diff_sections(diff)
+    lines: list[str] = []
+    omitted_files = 0
+    omitted_lines = 0
+
+    for idx, section in enumerate(sections):
+        section_lines = section.splitlines()
+        if idx >= max_files:
+            omitted_files += 1
+            omitted_lines += len(section_lines)
+            continue
+
+        remaining_budget = max_lines - len(lines)
+        if remaining_budget <= 0:
+            omitted_lines += len(section_lines)
+            omitted_files += 1
+            continue
+
+        if len(section_lines) <= remaining_budget:
+            lines.extend(section_lines)
+            continue
+
+        lines.extend(section_lines[:remaining_budget])
+        omitted_lines += len(section_lines) - remaining_budget
+        omitted_files += 1 + max(0, len(sections) - idx - 1)
+        for leftover in sections[idx + 1:]:
+            omitted_lines += len(leftover.splitlines())
+        break
+
+    if omitted_files or omitted_lines:
+        summary = f"# ... omitted {omitted_lines} diff line(s)"
+        if omitted_files:
+            summary += f" across {omitted_files} additional file(s)/section(s)"
+        lines.append(summary)
+
+    return "\n".join(lines)
+
+
 def render_edit_diff_with_delta(
     tool_name: str,
     result: str | None,
@@ -559,11 +855,11 @@ def render_edit_diff_with_delta(
     if not diff:
         return False
     try:
-        rendered_lines = _summarize_rendered_diff_sections(diff)
+        summarized_diff = _summarize_unified_diff_sections(diff)
     except Exception as exc:
         logger.debug("Could not render inline diff: %s", exc)
         return False
-    return _emit_inline_diff("\n".join(rendered_lines), print_fn)
+    return _emit_inline_diff(summarized_diff, print_fn)
 
 
 # =========================================================================

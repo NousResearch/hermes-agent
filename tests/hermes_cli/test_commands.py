@@ -203,7 +203,7 @@ class TestGatewayHelpLines:
 
     def test_includes_alias_note_for_bg(self):
         lines = gateway_help_lines()
-        bg_line = [l for l in lines if "/background" in l]
+        bg_line = [line for line in lines if "/background" in line]
         assert len(bg_line) == 1
         assert "/bg" in bg_line[0]
 
@@ -523,8 +523,8 @@ class TestSlashCommandCompleter:
         texts = {item.text for item in completions}
         assert "help" in texts
 
-    def test_skill_description_truncated_at_50_chars(self):
-        long_desc = "A" * 80
+    def test_skill_description_is_not_truncated(self):
+        long_desc = "Use this skill when a long, specific explanation is needed for a complex workflow."
         completer = SlashCommandCompleter(
             skill_commands_provider=lambda: {
                 "/long-skill": {"description": long_desc},
@@ -533,8 +533,22 @@ class TestSlashCommandCompleter:
         completions = _completions(completer, "/long")
         assert len(completions) == 1
         meta = completions[0].display_meta_text
-        # "⚡ " prefix + 50 chars + "..."
-        assert meta == f"⚡ {'A' * 50}..."
+        assert meta == f"⚡ {long_desc}"
+        assert "..." not in meta
+
+    def test_plugin_description_is_not_truncated(self, monkeypatch):
+        long_desc = "Use this plugin command when a long, specific explanation is needed for a complex workflow."
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_plugin_commands",
+            lambda: {"long-plugin": {"description": long_desc}},
+        )
+
+        completions = _completions(SlashCommandCompleter(), "/long")
+
+        assert len(completions) == 1
+        meta = completions[0].display_meta_text
+        assert meta == f"🔌 {long_desc}"
+        assert "..." not in meta
 
     def test_skill_missing_description_uses_fallback(self):
         completer = SlashCommandCompleter(
@@ -830,7 +844,7 @@ class TestTelegramMenuCommands:
 
     def test_excludes_telegram_disabled_skills(self, tmp_path, monkeypatch):
         """Skills disabled for telegram should not appear in the menu."""
-        from unittest.mock import patch, MagicMock
+        from unittest.mock import patch
 
         # Set up a config with a telegram-specific disabled list
         config_file = tmp_path / "config.yaml"

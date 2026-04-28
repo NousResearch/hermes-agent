@@ -1,8 +1,7 @@
 """Tests for agent/display.py — build_tool_preview() and inline diff previews."""
 
-import os
-import pytest
-from unittest.mock import MagicMock, patch
+import re
+from unittest.mock import MagicMock
 
 from agent.display import (
     build_tool_preview,
@@ -160,9 +159,32 @@ class TestEditDiffPreview:
         assert rendered is True
         assert printer.call_count >= 2
         calls = [call.args[0] for call in printer.call_args_list]
-        assert any("a/x" in line and "b/x" in line for line in calls)
+        assert any("review diff" in line for line in calls)
+        assert any("╭" in line for line in calls)
+        assert any("diff" in line for line in calls)
+        assert any("--- a/x" in line for line in calls)
+        assert any("+++ b/x" in line for line in calls)
+        plain_calls = [re.sub(r"\x1b\[[0-9;]*m", "", line) for line in calls]
+        assert any("  1 │ -old" in line for line in plain_calls)
+        assert any("  1 │ +new" in line for line in plain_calls)
+        assert any("48;2;" in line and "old" in line for line in calls)
+        assert any("48;2;" in line and "new" in line for line in calls)
         assert any("old" in line for line in calls)
         assert any("new" in line for line in calls)
+
+    def test_render_edit_diff_with_delta_preserves_syntax_colors(self):
+        printer = MagicMock()
+
+        rendered = render_edit_diff_with_delta(
+            "patch",
+            '{"diff": "--- a/app.py\\n+++ b/app.py\\n@@ -1 +1 @@\\n-def old():\\n+def new():\\n"}',
+            print_fn=printer,
+        )
+
+        assert rendered is True
+        calls = [call.args[0] for call in printer.call_args_list]
+        assert any("38;2;102;217;239;48;2;138;58;69mdef" in line for line in calls)
+        assert any("38;2;102;217;239;48;2;31;107;58mdef" in line for line in calls)
 
     def test_render_edit_diff_with_delta_skips_without_diff(self):
         rendered = render_edit_diff_with_delta(
@@ -175,7 +197,7 @@ class TestEditDiffPreview:
     def test_render_edit_diff_with_delta_handles_renderer_errors(self, monkeypatch):
         printer = MagicMock()
 
-        monkeypatch.setattr("agent.display._summarize_rendered_diff_sections", MagicMock(side_effect=RuntimeError("boom")))
+        monkeypatch.setattr("agent.display._summarize_unified_diff_sections", MagicMock(side_effect=RuntimeError("boom")))
 
         rendered = render_edit_diff_with_delta(
             "patch",

@@ -1,10 +1,6 @@
 """Tests for hermes_cli.skin_engine — the data-driven skin/theme system."""
 
-import json
-import os
 import pytest
-from pathlib import Path
-from unittest.mock import patch
 
 
 @pytest.fixture(autouse=True)
@@ -77,6 +73,19 @@ class TestBuiltinSkins:
         skin = load_skin("slate")
         assert skin.name == "slate"
         assert skin.get_color("banner_title") == "#7eb8f6"
+        assert skin.get_markdown("code_block_style") == "compact"
+        assert skin.get_markdown("code_theme") == "monokai"
+        assert skin.get_markdown("code_line_numbers") is True
+        assert skin.get_markdown("code_background") == "#1E293B"
+        assert skin.get_markdown("blockquote_foreground") == "#A7B6D8"
+
+    def test_default_skin_uses_rich_markdown_code_blocks(self):
+        from hermes_cli.skin_engine import load_skin
+        skin = load_skin("default")
+        assert skin.get_markdown("code_block_style") == "rich"
+        assert skin.get_markdown("code_theme") == "default"
+        assert skin.get_markdown("code_line_numbers") is False
+        assert skin.get_markdown("blockquote_foreground") == ""
 
     def test_daylight_skin_loads(self):
         from hermes_cli.skin_engine import load_skin
@@ -173,7 +182,7 @@ class TestSkinManagement:
 
 class TestUserSkins:
     def test_load_user_skin_from_yaml(self, tmp_path, monkeypatch):
-        from hermes_cli.skin_engine import load_skin, _skins_dir
+        from hermes_cli.skin_engine import load_skin
         # Create a user skin YAML
         skins_dir = tmp_path / "skins"
         skins_dir.mkdir()
@@ -183,6 +192,7 @@ class TestUserSkins:
             "description": "A custom test skin",
             "colors": {"banner_title": "#FF0000"},
             "branding": {"agent_name": "Custom Agent"},
+            "markdown": {"code_block_style": "compact"},
             "tool_prefix": "▸",
         }
         import yaml
@@ -195,6 +205,7 @@ class TestUserSkins:
         assert skin.name == "custom"
         assert skin.get_color("banner_title") == "#FF0000"
         assert skin.get_branding("agent_name") == "Custom Agent"
+        assert skin.get_markdown("code_block_style") == "compact"
         assert skin.tool_prefix == "▸"
         # Should inherit defaults for unspecified colors
         assert skin.get_color("banner_border") == "#CD7F32"  # from default
@@ -330,6 +341,7 @@ class TestCliBrandingHelpers:
         skin = get_active_skin()
         overrides = get_prompt_toolkit_style_overrides()
         assert overrides["prompt"] == skin.get_color("prompt")
+        assert overrides["input-area"] == skin.get_color("prompt")
         assert overrides["input-rule"] == skin.get_color("input_rule")
         assert overrides["status-bar"] == (
             f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('status_bar_text')}"
@@ -349,3 +361,11 @@ class TestCliBrandingHelpers:
         overrides = get_prompt_toolkit_style_overrides()
         assert overrides["status-bar"] == f"bg:{skin.get_color('status_bar_bg')} {skin.get_color('banner_text')}"
         assert overrides["voice-status"] == f"bg:{skin.get_color('voice_status_bg')} {skin.get_color('ui_label')}"
+
+        set_active_skin("slate")
+        skin = get_active_skin()
+        overrides = get_prompt_toolkit_style_overrides()
+        assert overrides["input-area"] == (
+            f"bg:{skin.get_color('input_area_bg')} {skin.get_color('input_area_text')}"
+        )
+        assert overrides["prompt"] == f"bg:{skin.get_color('input_area_bg')} {skin.get_color('prompt')}"

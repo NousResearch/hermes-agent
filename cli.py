@@ -19,7 +19,6 @@ import re
 import shutil
 import sys
 import json
-import re
 import concurrent.futures
 import base64
 import atexit
@@ -1251,6 +1250,14 @@ def _rich_text_from_ansi(text: str) -> _RichText:
     return _RichText.from_ansi(text or "")
 
 
+_OSC_SEQUENCE_RE = re.compile(r"\x1b\][^\x1b\x07]*(?:\x1b\\|\x07)")
+
+
+def _strip_unsupported_terminal_sequences(text: str) -> str:
+    """Remove ANSI/OSC sequences prompt_toolkit's ANSI parser renders as text."""
+    return _OSC_SEQUENCE_RE.sub("", text or "")
+
+
 def _strip_markdown_syntax(text: str) -> str:
     """Best-effort markdown marker removal for plain-text display."""
     plain = _rich_text_from_ansi(text or "").plain
@@ -1272,6 +1279,725 @@ def _strip_markdown_syntax(text: str) -> str:
     return plain.strip("\n")
 
 
+_INDENTED_LIST_MARKER_RE = re.compile(r"^(?:[-+*]\s+|\d+[.)]\s+|\[[ xX]\]\s+)")
+
+
+def _is_indented_code_line(line: str) -> bool:
+    if line.startswith("\t"):
+        stripped = line[1:].lstrip()
+    elif line.startswith("    "):
+        stripped = line[4:].lstrip()
+    else:
+        return False
+    return bool(stripped) and not _INDENTED_LIST_MARKER_RE.match(stripped)
+
+
+def _dedent_code_line(line: str) -> str:
+    if line.startswith("\t"):
+        return line[1:]
+    if line.startswith("    "):
+        return line[4:]
+    return line
+
+
+def _skin_markdown_code_block_style() -> str:
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        value = get_active_skin().get_markdown("code_block_style", "rich")
+    except Exception:
+        value = "rich"
+    return str(value or "rich").strip().lower()
+
+
+def _skin_markdown_code_background() -> str:
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        return str(get_active_skin().get_markdown("code_background", "") or "").strip()
+    except Exception:
+        return ""
+
+
+def _skin_markdown_code_theme() -> str:
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        return str(get_active_skin().get_markdown("code_theme", "monokai") or "monokai").strip()
+    except Exception:
+        return "monokai"
+
+
+def _skin_markdown_code_line_numbers() -> bool:
+    try:
+        from hermes_cli.skin_engine import get_active_skin
+        return bool(get_active_skin().get_markdown("code_line_numbers", False))
+    except Exception:
+        return False
+
+
+_DIFF_HUNK_RE = re.compile(r"^@@ -(?P<old>\d+)(?:,(?P<old_count>\d+))? \+(?P<new>\d+)(?:,(?P<new_count>\d+))? @@")
+
+
+def _diff_rows_with_real_line_numbers(lines: list[str]) -> list[tuple[str, str, str]]:
+    rows: list[tuple[str, str, str]] = []
+    old_line: int | None = None
+    new_line: int | None = None
+
+    for line in lines:
+        if line.startswith("@@"):
+            match = _DIFF_HUNK_RE.match(line)
+            if match:
+                old_line = int(match.group("old"))
+                new_line = int(match.group("new"))
+            rows.append(("", line, "hunk"))
+            continue
+
+        if old_line is None or new_line is None:
+            rows.append(("", line, "file"))
+            continue
+
+        if line.startswith("+") and not line.startswith("+++"):
+            rows.append((str(new_line), line, "add"))
+            new_line += 1
+            continue
+
+        if line.startswith("-") and not line.startswith("---"):
+            rows.append((str(old_line), line, "delete"))
+            old_line += 1
+            continue
+
+        if line.startswith(" "):
+            rows.append((str(new_line), line, "context"))
+            old_line += 1
+            new_line += 1
+            continue
+
+        rows.append(("", line, "meta"))
+
+    return rows
+
+
+def _guess_diff_lexer_from_path(path: str) -> str:
+    cleaned = path.strip()
+    if cleaned.startswith(("a/", "b/")):
+        cleaned = cleaned[2:]
+    if cleaned == "/dev/null":
+        return "text"
+    try:
+        from pygments.lexers import get_lexer_for_filename
+
+        aliases = getattr(get_lexer_for_filename(cleaned), "aliases", ())
+        if aliases:
+            return str(aliases[0])
+    except Exception:
+        pass
+
+    suffix = cleaned.rsplit(".", 1)[-1].lower() if "." in cleaned else ""
+    return {
+        "js": "javascript",
+        "jsx": "jsx",
+        "ts": "typescript",
+        "tsx": "tsx",
+        "py": "python",
+        "rb": "ruby",
+        "go": "go",
+        "rs": "rust",
+        "java": "java",
+        "kt": "kotlin",
+        "kts": "kotlin",
+        "sh": "bash",
+        "bash": "bash",
+        "zsh": "bash",
+        "yaml": "yaml",
+        "yml": "yaml",
+        "json": "json",
+        "toml": "toml",
+        "md": "markdown",
+        "css": "css",
+        "scss": "scss",
+        "html": "html",
+        "xml": "xml",
+    }.get(suffix, "text")
+
+
+def _diff_lexer_from_header_line(line: str) -> str | None:
+    if not line.startswith("+++ "):
+        return None
+    path = line[4:].split("\t", 1)[0].strip()
+    return _guess_diff_lexer_from_path(path)
+
+
+def _highlight_diff_code_text(code: str, lexer: str, background: str | None):
+    from rich.syntax import Syntax
+    from rich.text import Text
+
+    if not code:
+        return Text("")
+    try:
+        highlighted = Syntax(
+            "",
+            lexer or "text",
+            theme=_skin_markdown_code_theme(),
+            background_color=background,
+        ).highlight(code)
+    except Exception:
+        highlighted = Syntax(
+            "",
+            "text",
+            theme=_skin_markdown_code_theme(),
+            background_color=background,
+        ).highlight(code)
+    if highlighted.plain.endswith("\n"):
+        highlighted = highlighted[:-1]
+    if highlighted:
+        highlighted.stylize("on default", 0, len(highlighted))
+    return highlighted
+
+
+def _compact_diff_renderable(lines: list[str]):
+    from rich.panel import Panel
+    from rich.text import Text
+
+    rows = _diff_rows_with_real_line_numbers(lines or [""])
+    number_width = max(3, *(len(number) for number, _, _ in rows))
+    base_style = "#E5E7EB"
+    number_style = "#94A3B8"
+    divider_style = f"{_accent_hex()} dim"
+    add_bg = "#1F6B3A"
+    delete_bg = "#8A3A45"
+    styles = {
+        "file": _accent_hex(),
+        "hunk": "#A7B6D8",
+        "add": f"#4ADE80 on {add_bg}",
+        "delete": f"#F87171 on {delete_bg}",
+        "context": base_style,
+        "meta": base_style,
+    }
+
+    current_lexer = "text"
+    rendered_rows: list[Text] = []
+    for number, content, kind in rows:
+        header_lexer = _diff_lexer_from_header_line(content)
+        if header_lexer:
+            current_lexer = header_lexer
+
+        row_style = styles.get(kind, base_style)
+        gutter_style = row_style if kind in {"add", "delete"} else number_style
+        rule_style = row_style if kind in {"add", "delete"} else divider_style
+        row = Text()
+        row.append(number.rjust(number_width) if number else " " * number_width, style=gutter_style)
+        row.append(" │ ", style=rule_style)
+
+        if kind in {"add", "delete", "context"} and content[:1] in {"+", "-", " "}:
+            marker = content[:1]
+            body = content[1:]
+            row_bg = add_bg if kind == "add" else delete_bg if kind == "delete" else None
+            marker_style = row_style if kind in {"add", "delete"} else base_style
+            row.append(marker, style=marker_style)
+            highlighted = _highlight_diff_code_text(body, current_lexer, None)
+            if kind in {"add", "delete"} and row_bg:
+                highlighted.stylize(f"on {row_bg}", 0, len(highlighted))
+            row.append_text(highlighted)
+        else:
+            row.append(content, style=row_style)
+        rendered_rows.append(row)
+
+    content_width = max((len(row.plain) for row in rendered_rows), default=0)
+    text = Text()
+    for idx, row in enumerate(rendered_rows):
+        if idx:
+            text.append("\n")
+        text.append_text(row)
+        kind = rows[idx][2]
+        if len(row.plain) < content_width:
+            pad_bg = add_bg if kind == "add" else delete_bg if kind == "delete" else None
+            if not pad_bg:
+                continue
+            text.append(" " * (content_width - len(row.plain)), style=f"on {pad_bg}")
+
+    return Panel(
+        text,
+        title="diff",
+        title_align="left",
+        border_style=f"{_accent_hex()} dim",
+        box=rich_box.ROUNDED,
+        expand=False,
+    )
+
+
+def _compact_code_renderable(language: str, lines: list[str]):
+    from rich.panel import Panel
+    from rich.text import Text
+
+    code = "\n".join(lines or [""])
+    lexer = (language or "text").strip() or "text"
+    if lexer in {"diff", "patch", "udiff"}:
+        return _compact_diff_renderable(lines)
+    line_numbers = _skin_markdown_code_line_numbers()
+    if lexer in {"code", "raw"}:
+        lexer = "text"
+        line_numbers = False
+    elif lexer == "text":
+        line_numbers = False
+
+    code_lines = code.splitlines() or [""]
+    number_width = max(2, len(str(len(code_lines))))
+    number_style = "#94A3B8"
+    divider_style = f"{_accent_hex()} dim"
+    text = Text()
+    for idx, line in enumerate(code_lines, start=1):
+        if idx > 1:
+            text.append("\n")
+        if line_numbers:
+            text.append(str(idx).rjust(number_width), style=number_style)
+            text.append(" │ ", style=divider_style)
+        text.append_text(_highlight_diff_code_text(line, lexer, None))
+
+    return Panel(
+        text,
+        title=language or "code",
+        title_align="left",
+        border_style=f"{_accent_hex()} dim",
+        box=rich_box.ROUNDED,
+        expand=False,
+    )
+
+
+_TABLE_SEPARATOR_CELL_RE = re.compile(r"^:?-{3,}:?$")
+_EMOJI_SHORTCODES = {
+    "fire": "🔥",
+    "rocket": "🚀",
+    "rotating_light": "🚨",
+    "smile": "😄",
+    "tada": "🎉",
+    "warning": "⚠️",
+    "white_check_mark": "✅",
+}
+_SUBSCRIPT_TRANS = str.maketrans("0123456789+-=()", "₀₁₂₃₄₅₆₇₈₉₊₋₌₍₎")
+_SUPERSCRIPT_TRANS = str.maketrans("0123456789+-=()abcdefghijklmnopqrstuvwxyz", "⁰¹²³⁴⁵⁶⁷⁸⁹⁺⁻⁼⁽⁾ᵃᵇᶜᵈᵉᶠᵍʰⁱʲᵏˡᵐⁿᵒᵖᑫʳˢᵗᵘᵛʷˣʸᶻ")
+
+
+def _translate_script_text(text: str, table: dict[int, str]) -> str:
+    return text.lower().translate(table)
+
+
+def _normalize_terminal_markdown_segment(segment: str) -> str:
+    segment = re.sub(
+        r"!\[([^\]]*)\]\(([^)\s]+)(?:\s+\"[^\"]*\")?\)",
+        lambda match: f"🖼 {match.group(1) or 'image'} — {match.group(2)}",
+        segment,
+    )
+    segment = re.sub(
+        r":([a-z][a-z0-9_+-]*):",
+        lambda match: _EMOJI_SHORTCODES.get(match.group(1), match.group(0)),
+        segment,
+    )
+    segment = re.sub(r"<kbd>(.*?)</kbd>", r"`\1`", segment, flags=re.IGNORECASE | re.DOTALL)
+    segment = re.sub(r"<mark>(.*?)</mark>", r"\1", segment, flags=re.IGNORECASE | re.DOTALL)
+    segment = re.sub(r"<ins>(.*?)</ins>", r"\1", segment, flags=re.IGNORECASE | re.DOTALL)
+    segment = re.sub(
+        r"<sub>(.*?)</sub>",
+        lambda match: _translate_script_text(match.group(1), _SUBSCRIPT_TRANS),
+        segment,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    segment = re.sub(
+        r"<sup>(.*?)</sup>",
+        lambda match: _translate_script_text(match.group(1), _SUPERSCRIPT_TRANS),
+        segment,
+        flags=re.IGNORECASE | re.DOTALL,
+    )
+    segment = re.sub(r"<small>(.*?)</small>", r"\1", segment, flags=re.IGNORECASE | re.DOTALL)
+    segment = re.sub(r"<abbr\b[^>]*>(.*?)</abbr>", r"\1", segment, flags=re.IGNORECASE | re.DOTALL)
+    segment = re.sub(r"<details>", "\n**Details:**\n", segment, flags=re.IGNORECASE)
+    segment = re.sub(r"</details>", "", segment, flags=re.IGNORECASE)
+    segment = re.sub(r"<summary>(.*?)</summary>", r"**Summary:** \1\n", segment, flags=re.IGNORECASE | re.DOTALL)
+    segment = re.sub(r"==([^=\n]+)==", r"\1", segment)
+    segment = re.sub(
+        r"(?<=\w)~([0-9A-Za-z+\-=()]+)~",
+        lambda match: _translate_script_text(match.group(1), _SUBSCRIPT_TRANS),
+        segment,
+    )
+    segment = re.sub(
+        r"\^([0-9A-Za-z+\-=()]+)\^",
+        lambda match: _translate_script_text(match.group(1), _SUPERSCRIPT_TRANS),
+        segment,
+    )
+    return segment
+
+
+def _normalize_terminal_markdown_text(text: str) -> str:
+    """Normalize terminal-only Markdown extensions while preserving code spans."""
+
+    parts = re.split(r"(`+[^`]*`+)", text)
+    return "".join(
+        part if part.startswith("`") and part.endswith("`") else _normalize_terminal_markdown_segment(part)
+        for part in parts
+    )
+
+
+def _normalize_terminal_markdown_block(text: str) -> str:
+    def nested_order_marker(number: int, level: int) -> str:
+        if level <= 1:
+            return f"{chr(ord('a') + max(number - 1, 0) % 26)}."
+        roman = ["i", "ii", "iii", "iv", "v", "vi", "vii", "viii", "ix", "x"]
+        return f"{roman[min(max(number, 1), len(roman)) - 1]}."
+
+    lines: list[str] = []
+    for line in _normalize_terminal_markdown_text(text).split("\n"):
+        task = re.match(r"^(\s*)[-+*]\s+\[([ xX])\]\s+(.*)$", line)
+        if task:
+            box = "☑" if task.group(2).lower() == "x" else "☐"
+            lines.append(f"{task.group(1)}{box} {task.group(3)}  ")
+            continue
+        nested_order = re.match(r"^(\s+)(\d+)[.)]\s+(.*)$", line)
+        if nested_order:
+            indent = nested_order.group(1)
+            level = max(1, len(indent.expandtabs(2)) // 3)
+            marker = nested_order_marker(int(nested_order.group(2)), level)
+            lines.append(f"{indent}{marker} {nested_order.group(3)}  ")
+            continue
+        alt_unordered = re.match(r"^(\s*)([*+])\s+(.*)$", line)
+        if alt_unordered:
+            marker = "◦" if alt_unordered.group(2) == "*" else "▪"
+            lines.append(f"{alt_unordered.group(1)}{marker} {alt_unordered.group(3)}  ")
+            continue
+        heading = re.match(r"^# (?!#)(.+)$", line)
+        if heading:
+            lines.append(f"## {heading.group(1)}")
+            continue
+        lines.append(line)
+    return "\n".join(lines)
+
+
+def _split_markdown_table_row(line: str) -> list[str]:
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|") and (len(stripped) == 1 or stripped[-2] != "\\"):
+        stripped = stripped[:-1]
+    cells: list[str] = []
+    current: list[str] = []
+    escaped = False
+    in_code = False
+    for char in stripped:
+        if char == "\\" and not escaped:
+            current.append(char)
+            escaped = True
+            continue
+        if char == "`" and not escaped:
+            in_code = not in_code
+            current.append(char)
+            continue
+        if char == "|" and not escaped and not in_code:
+            cells.append("".join(current).strip())
+            current = []
+            continue
+        current.append(char)
+        escaped = False
+    cells.append("".join(current).strip())
+    return cells
+
+
+def _is_markdown_table_separator(line: str) -> bool:
+    cells = _split_markdown_table_row(line)
+    return bool(cells) and all(_TABLE_SEPARATOR_CELL_RE.match(cell.replace(" ", "")) for cell in cells)
+
+
+def _is_markdown_table_start(lines: list[str], index: int) -> bool:
+    if index + 1 >= len(lines):
+        return False
+    if "|" not in lines[index] or "|" not in lines[index + 1]:
+        return False
+    headers = _split_markdown_table_row(lines[index])
+    separators = _split_markdown_table_row(lines[index + 1])
+    return bool(headers) and len(headers) == len(separators) and _is_markdown_table_separator(lines[index + 1])
+
+
+def _markdown_table_code_style() -> str:
+    bg = _skin_markdown_code_background()
+    if bg:
+        return f"bold #E5E7EB on {bg}"
+    return "bold"
+
+
+def _combine_text_style(base: str, extra: str) -> str:
+    return " ".join(part for part in (base, extra) if part).strip()
+
+
+def _find_unescaped(text: str, marker: str, start: int) -> int:
+    idx = start
+    while True:
+        idx = text.find(marker, idx)
+        if idx < 0:
+            return -1
+        backslashes = 0
+        pos = idx - 1
+        while pos >= 0 and text[pos] == "\\":
+            backslashes += 1
+            pos -= 1
+        if backslashes % 2 == 0:
+            return idx
+        idx += len(marker)
+
+
+def _append_inline_markdown_text(out, text: str, style: str = "") -> None:
+    i = 0
+    while i < len(text):
+        if text[i] == "\\" and i + 1 < len(text):
+            out.append(text[i + 1], style=style or None)
+            i += 2
+            continue
+
+        if text[i] == "`":
+            end = _find_unescaped(text, "`", i + 1)
+            if end > i:
+                out.append(text[i + 1:end], style=_markdown_table_code_style())
+                i = end + 1
+                continue
+
+        for marker, marker_style in (("**", "bold"), ("__", "bold"), ("~~", "strike")):
+            if text.startswith(marker, i):
+                end = _find_unescaped(text, marker, i + len(marker))
+                if end > i:
+                    _append_inline_markdown_text(
+                        out,
+                        text[i + len(marker):end],
+                        _combine_text_style(style, marker_style),
+                    )
+                    i = end + len(marker)
+                    break
+        else:
+            if text[i] == "*":
+                end = _find_unescaped(text, "*", i + 1)
+                if end > i:
+                    _append_inline_markdown_text(out, text[i + 1:end], _combine_text_style(style, "italic"))
+                    i = end + 1
+                    continue
+
+            if text[i] == "[":
+                close_label = _find_unescaped(text, "]", i + 1)
+                if close_label > i and close_label + 1 < len(text) and text[close_label + 1] == "(":
+                    close_url = _find_unescaped(text, ")", close_label + 2)
+                    if close_url > close_label:
+                        _append_inline_markdown_text(
+                            out,
+                            text[i + 1:close_label],
+                            _combine_text_style(style, f"underline {_accent_hex()}"),
+                        )
+                        i = close_url + 1
+                        continue
+
+            out.append(text[i], style=style or None)
+            i += 1
+            continue
+        continue
+
+
+def _markdown_table_cell_renderable(cell: str):
+    from rich.text import Text
+
+    text = Text()
+    _append_inline_markdown_text(text, _normalize_terminal_markdown_text(cell))
+    return text
+
+
+def _quote_renderable(renderable):
+    from rich.table import Table
+    from rich.text import Text
+
+    grid = Table.grid(padding=(0, 1))
+    grid.add_column(width=2)
+    grid.add_column()
+    grid.add_row(Text("│", style=f"{_accent_hex()} bold"), renderable)
+    return grid
+
+
+def _markdown_table_renderable(table_lines: list[str], *, quoted: bool = False):
+    from rich.table import Table
+
+    headers = _split_markdown_table_row(table_lines[0])
+    separators = _split_markdown_table_row(table_lines[1])
+    rows = [_split_markdown_table_row(line) for line in table_lines[2:] if "|" in line]
+    table = Table(
+        box=rich_box.MARKDOWN,
+        border_style=f"{_accent_hex()} dim",
+        header_style=f"bold {_accent_hex()}",
+        expand=False,
+        show_edge=True,
+        pad_edge=False,
+    )
+    for header, separator in zip(headers, separators):
+        clean = separator.replace(" ", "")
+        if clean.startswith(":") and clean.endswith(":"):
+            justify = "center"
+        elif clean.endswith(":"):
+            justify = "right"
+        else:
+            justify = "left"
+        table.add_column(header, justify=justify, overflow="fold")
+    for row in rows:
+        padded = row + [""] * (len(headers) - len(row))
+        table.add_row(
+            *[_markdown_table_cell_renderable(cell) for cell in padded[: len(headers)]]
+        )
+    return _quote_renderable(table) if quoted else table
+
+
+def _strip_blockquote_prefix_with_depth(line: str) -> tuple[int, str]:
+    depth = 0
+    remaining = line
+    while True:
+        match = re.match(r"^[ \t]{0,3}>[ \t]?", remaining)
+        if not match:
+            return depth, remaining
+        depth += 1
+        remaining = remaining[match.end():]
+
+
+def _table_start_at(lines: list[str], index: int) -> tuple[int, list[str]] | None:
+    if index + 1 >= len(lines):
+        return None
+    depth, header = _strip_blockquote_prefix_with_depth(lines[index])
+    next_depth, separator = _strip_blockquote_prefix_with_depth(lines[index + 1])
+    if depth != next_depth:
+        return None
+    if "|" not in header or "|" not in separator:
+        return None
+    headers = _split_markdown_table_row(header)
+    separators = _split_markdown_table_row(separator)
+    if not (headers and len(headers) == len(separators) and _is_markdown_table_separator(separator)):
+        return None
+    return depth, [header, separator]
+
+
+def _append_markdown_or_tables(renderables: list, text: str) -> None:
+    from rich.markdown import Markdown
+
+    lines = text.split("\n")
+    pending: list[str] = []
+    i = 0
+
+    def flush_pending() -> None:
+        nonlocal pending
+        if pending and "\n".join(pending).strip():
+            renderables.append(
+                Markdown(
+                    _normalize_terminal_markdown_block("\n".join(pending)),
+                    code_theme="default",
+                    inline_code_theme="default",
+                )
+            )
+        pending = []
+
+    while i < len(lines):
+        table_start = _table_start_at(lines, i)
+        if table_start:
+            quote_depth, table_lines = table_start
+            flush_pending()
+            i += 2
+            while i < len(lines) and lines[i].strip():
+                row_depth, row = _strip_blockquote_prefix_with_depth(lines[i])
+                if row_depth != quote_depth or "|" not in row:
+                    break
+                table_lines.append(row)
+                i += 1
+            renderables.append(_markdown_table_renderable(table_lines, quoted=quote_depth > 0))
+            continue
+        pending.append(lines[i])
+        i += 1
+    flush_pending()
+
+
+def _append_markdown_or_indented_code(renderables: list, text: str) -> None:
+    lines = text.split("\n")
+    pending: list[str] = []
+    i = 0
+    while i < len(lines):
+        line = lines[i]
+        if not _is_indented_code_line(line):
+            pending.append(line)
+            i += 1
+            continue
+
+        if pending and "\n".join(pending).strip():
+            _append_markdown_or_tables(renderables, "\n".join(pending))
+        pending = []
+
+        block: list[str] = []
+        while i < len(lines) and (_is_indented_code_line(lines[i]) or not lines[i].strip()):
+            if lines[i].strip():
+                block.append(_dedent_code_line(lines[i]))
+            i += 1
+        renderables.append(_compact_code_renderable("code", block))
+
+    if pending and "\n".join(pending).strip():
+        _append_markdown_or_tables(renderables, "\n".join(pending))
+
+
+_FENCE_OPEN_RE = re.compile(r"^(?P<indent>[ \t]{0,3})(?P<fence>`{3,}|~{3,})(?P<info>.*)$")
+_BLOCKQUOTE_PREFIX_RE = re.compile(r"^(?:[ \t]{0,3}>[ \t]?)+(.*)$")
+
+
+def _strip_blockquote_prefix(line: str) -> str:
+    match = _BLOCKQUOTE_PREFIX_RE.match(line)
+    return match.group(1) if match else line
+
+
+def _compact_fence_match(line: str):
+    match = _FENCE_OPEN_RE.match(line)
+    if match:
+        return match, 0
+    depth, quoted = _strip_blockquote_prefix_with_depth(line)
+    if depth:
+        match = _FENCE_OPEN_RE.match(quoted)
+        if match:
+            return match, depth
+    return None, 0
+
+
+def _render_compact_markdown_content(text: str):
+    from rich.console import Group
+    from rich.markdown import Markdown
+
+    renderables: list = []
+    pending: list[str] = []
+    lines = text.split("\n")
+    i = 0
+
+    def flush_pending() -> None:
+        nonlocal pending
+        if pending and "\n".join(pending).strip():
+            _append_markdown_or_indented_code(renderables, "\n".join(pending))
+        pending = []
+
+    while i < len(lines):
+        line = lines[i]
+        match, quote_depth = _compact_fence_match(line)
+        if match:
+            flush_pending()
+            fence = match.group("fence")
+            indent = match.group("indent") or ""
+            info = (match.group("info") or "").strip()
+            language = info.split()[0] if info else "code"
+            i += 1
+            block: list[str] = []
+            close_re = re.compile(rf"^{re.escape(indent)}{re.escape(fence)}[ \t]*$")
+            while i < len(lines):
+                code_line = _strip_blockquote_prefix(lines[i]) if quote_depth else lines[i]
+                if close_re.match(code_line):
+                    i += 1
+                    break
+                block.append(code_line)
+                i += 1
+            code_renderable = _compact_code_renderable(language, block or [""])
+            renderables.append(_quote_renderable(code_renderable) if quote_depth else code_renderable)
+            continue
+        pending.append(line)
+        i += 1
+
+    flush_pending()
+    return Group(*renderables) if renderables else Markdown(text, code_theme="default", inline_code_theme="default")
+
+
 def _render_final_assistant_content(text: str, mode: str = "render"):
     """Render final assistant content as markdown, stripped text, or raw text."""
     from rich.markdown import Markdown
@@ -1283,7 +2009,76 @@ def _render_final_assistant_content(text: str, mode: str = "render"):
         return _rich_text_from_ansi(text or "")
 
     plain = _rich_text_from_ansi(text or "").plain
-    return Markdown(plain)
+    if _skin_markdown_code_block_style() == "compact":
+        return _render_compact_markdown_content(plain)
+    return Markdown(plain, code_theme="default", inline_code_theme="default")
+
+
+# ---------------------------------------------------------------------------
+# Streaming Markdown→ANSI renderer (line-at-a-time, for _emit_stream_text)
+# ---------------------------------------------------------------------------
+
+# Cached Rich Console for line-by-line markdown→ANSI conversion.
+_md_console: "Console | None" = None
+
+# Pre-filter: lines without any of these chars cannot contain markdown syntax,
+# so we skip the Rich render entirely.  ~microsecond check saves ~100x per line.
+_MD_TRIGGER_RE = re.compile(r"[#*_`~>\[\]!|]")
+
+
+def _get_md_console() -> "Console":
+    """Lazy-init a Rich Console tuned for line-at-a-time markdown→ANSI."""
+    global _md_console
+    if _md_console is None:
+        _md_console = Console(
+            force_terminal=True,
+            color_system="truecolor",
+            width=200,
+            no_color=False,
+        )
+    return _md_console
+
+
+def _render_line_to_ansi(line: str) -> str:
+    r"""Render a single line of markdown to ANSI text via Rich.
+
+    Fast-path: if the line contains no markdown-trigger characters
+    (``#*_\`~>[]!|``) the line is returned unchanged — zero Rich overhead.
+
+    Returns the original line unchanged when:
+    - The line is blank.
+    - No markdown trigger chars detected (fast path).
+    - Rich produces an empty result (fallback to raw).
+    - Any exception occurs (graceful degradation).
+
+    Limitations (inherent to line-at-a-time streaming):
+    - Tables render as individual rows (column widths aren't computed).
+    - Fenced code blocks don't get syntax highlighting until fully buffered.
+    - Nested list indentation may not render correctly mid-stream.
+    For full-fidelity rendering, the non-streaming Panel path handles all of these.
+    """
+    stripped = line.strip()
+    if not stripped:
+        return line
+    if stripped.startswith(("```", "~~~")):
+        return ""
+
+    # Fast path: plain prose lines skip the Rich round-trip entirely
+    if not _MD_TRIGGER_RE.search(line):
+        return line
+
+    try:
+        from rich.markdown import Markdown
+
+        console = _get_md_console()
+        with console.capture() as capture:
+            console.print(Markdown(line))
+        rendered = _strip_unsupported_terminal_sequences(capture.get().rstrip("\n"))
+        if rendered and rendered.strip():
+            return rendered
+        return line
+    except Exception:
+        return line
 
 
 def _cprint(text: str):
@@ -1653,12 +2448,33 @@ class ChatConsole:
 
     def __init__(self):
         from io import StringIO
+        from rich.theme import Theme
         self._buffer = StringIO()
+        theme = None
+        try:
+            from hermes_cli.skin_engine import get_active_skin
+            skin = get_active_skin()
+            code_background = str(skin.get_markdown("code_background", "") or "").strip()
+            code_foreground = skin.get_color("banner_text", "#c9d1d9")
+            blockquote_foreground = str(
+                skin.get_markdown("blockquote_foreground", "")
+                or skin.get_color("banner_text", "#c9d1d9")
+            ).strip()
+            theme_styles = {
+                "markdown.block_quote": f"{blockquote_foreground} italic",
+            }
+            if code_background:
+                theme_styles["markdown.code"] = f"{code_foreground} on {code_background}"
+            theme = Theme(theme_styles)
+        except Exception:
+            theme = None
         self._inner = Console(
             file=self._buffer,
             force_terminal=True,
             color_system="truecolor",
+            no_color=False,
             highlight=False,
+            theme=theme,
         )
 
     def print(self, *args, **kwargs):
@@ -1667,9 +2483,9 @@ class ChatConsole:
         # Read terminal width at render time so panels adapt to current size
         self._inner.width = shutil.get_terminal_size((80, 24)).columns
         self._inner.print(*args, **kwargs)
-        output = self._buffer.getvalue()
-        for line in output.rstrip("\n").split("\n"):
-            _cprint(line)
+        output = _strip_unsupported_terminal_sequences(self._buffer.getvalue())
+        if output:
+            _cprint(output.rstrip("\n"))
 
     @contextmanager
     def status(self, *_args, **_kwargs):
@@ -3068,6 +3884,19 @@ class HermesCLI:
         # Close the live reasoning box before opening the response box
         self._close_reasoning_box()
 
+        # Rich Markdown needs the full document for fences, tables, and nested
+        # lists. Buffer streamed deltas and render once in _flush_stream().
+        if self.final_response_markdown == "render":
+            if not self._stream_box_opened:
+                text = text.lstrip("\n")
+                if not text:
+                    return
+                # Marks response content as streamed so the final non-streaming
+                # Panel path does not print a duplicate after _flush_stream().
+                self._stream_box_opened = True
+            self._stream_buf += text
+            return
+
         # Open the response box header on the very first visible text
         if not self._stream_box_opened:
             # Strip leading whitespace/newlines before first visible content
@@ -3104,6 +3933,8 @@ class HermesCLI:
             line, self._stream_buf = self._stream_buf.split("\n", 1)
             if self.final_response_markdown == "strip":
                 line = _strip_markdown_syntax(line)
+            elif self.final_response_markdown == "render":
+                line = _render_line_to_ansi(line)
             _cprint(f"{_STREAM_PAD}{_tc}{line}{_RST}" if _tc else f"{_STREAM_PAD}{line}")
 
     def _flush_stream(self) -> None:
@@ -3119,9 +3950,35 @@ class HermesCLI:
         # Close reasoning box if still open (in case no content tokens arrived)
         self._close_reasoning_box()
 
+        if self.final_response_markdown == "render":
+            if self._stream_buf:
+                try:
+                    from hermes_cli.skin_engine import get_active_skin
+                    _skin = get_active_skin()
+                    label = _skin.get_branding("response_label", "⚕ Hermes")
+                    _resp_color = _skin.get_color("response_border", "#CD7F32")
+                except Exception:
+                    label = "⚕ Hermes"
+                    _resp_color = "#CD7F32"
+                ChatConsole().print(Panel(
+                    _render_final_assistant_content(self._stream_buf, mode="render"),
+                    title=f"[{_resp_color} bold]{label}[/]",
+                    title_align="left",
+                    border_style=_resp_color,
+                    box=rich_box.HORIZONTALS,
+                    padding=(1, 4),
+                ))
+                self._stream_buf = ""
+            return
+
         if self._stream_buf:
             _tc = getattr(self, "_stream_text_ansi", "")
-            line = _strip_markdown_syntax(self._stream_buf) if self.final_response_markdown == "strip" else self._stream_buf
+            if self.final_response_markdown == "strip":
+                line = _strip_markdown_syntax(self._stream_buf)
+            elif self.final_response_markdown == "render":
+                line = _render_line_to_ansi(self._stream_buf)
+            else:
+                line = self._stream_buf
             _cprint(f"{_STREAM_PAD}{_tc}{line}{_RST}" if _tc else f"{_STREAM_PAD}{line}")
             self._stream_buf = ""
 
@@ -6548,11 +7405,9 @@ class HermesCLI:
                         _skin = get_active_skin()
                         label = _skin.get_branding("response_label", "⚕ Hermes")
                         _resp_color = _skin.get_color("response_border", "#CD7F32")
-                        _resp_text = _skin.get_color("banner_text", "#FFF8DC")
                     except Exception:
                         label = "⚕ Hermes"
                         _resp_color = "#CD7F32"
-                        _resp_text = "#FFF8DC"
 
                     _chat_console = ChatConsole()
                     _chat_console.print(Panel(
@@ -6560,7 +7415,6 @@ class HermesCLI:
                         title=f"[{_resp_color} bold]{label} (background #{task_num})[/]",
                         title_align="left",
                         border_style=_resp_color,
-                        style=_resp_text,
                         box=rich_box.HORIZONTALS,
                         padding=(1, 4),
                     ))
@@ -6725,7 +7579,7 @@ class HermesCLI:
                             f' --user-data-dir="{_data_dir}"'
                             f" --no-first-run --no-default-browser-check"
                         )
-                    print(f"     Launch Chrome manually:")
+                    print("     Launch Chrome manually:")
                     print(f"     {chrome_cmd}")
             else:
                 print(f"   ⚠ Port {_port} is not reachable at {cdp_url}")
@@ -8944,11 +9798,9 @@ class HermesCLI:
                     _skin = get_active_skin()
                     label = _skin.get_branding("response_label", "⚕ Hermes")
                     _resp_color = _skin.get_color("response_border", "#CD7F32")
-                    _resp_text = _skin.get_color("banner_text", "#FFF8DC")
                 except Exception:
                     label = "⚕ Hermes"
                     _resp_color = "#CD7F32"
-                    _resp_text = "#FFF8DC"
 
                 is_error_response = result and (result.get("failed") or result.get("partial"))
                 already_streamed = self._stream_started and self._stream_box_opened and not is_error_response
@@ -8967,7 +9819,6 @@ class HermesCLI:
                         title=f"[{_resp_color} bold]{label}[/]",
                         title_align="left",
                         border_style=_resp_color,
-                        style=_resp_text,
                         box=rich_box.HORIZONTALS,
                         padding=(1, 4),
                     ))
@@ -10108,6 +10959,9 @@ class HermesCLI:
                 completer=_completer,
             ),
         )
+        # TextArea.style colors the text control; the window style fills the
+        # full editable row so skins can render a subtle input background.
+        input_area.window.style = 'class:input-area'
         # Keep prompt_toolkit on its simple tempfile path. Setting
         # buffer.tempfile = "prompt.md" triggers its complex-tempfile branch,
         # which tries to mkdir() the mkdtemp() directory again and raises

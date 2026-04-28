@@ -1481,12 +1481,11 @@ class SlashCommandCompleter(Completer):
             cmd_name = cmd[1:]
             if cmd_name.startswith(word):
                 description = str(info.get("description", "Skill command"))
-                short_desc = description[:50] + ("..." if len(description) > 50 else "")
                 yield Completion(
                     self._completion_text(cmd_name, word),
                     start_position=-len(word),
                     display=cmd,
-                    display_meta=f"⚡ {short_desc}",
+                    display_meta=f"⚡ {description}",
                 )
 
         # Plugin-registered slash commands
@@ -1495,12 +1494,11 @@ class SlashCommandCompleter(Completer):
             for cmd_name, cmd_info in get_plugin_commands().items():
                 if cmd_name.startswith(word):
                     desc = str(cmd_info.get("description", "Plugin command"))
-                    short_desc = desc[:50] + ("..." if len(desc) > 50 else "")
                     yield Completion(
                         self._completion_text(cmd_name, word),
                         start_position=-len(word),
                         display=f"/{cmd_name}",
-                        display_meta=f"🔌 {short_desc}",
+                        display_meta=f"🔌 {desc}",
                     )
         except Exception:
             pass

@@ -28,6 +28,8 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       ui_error: "#ef5350"                # Error indicators
       ui_warn: "#ffa726"                 # Warning indicators
       prompt: "#FFF8DC"                  # Prompt text color
+      input_area_bg: "#111827"           # Optional TUI input area background
+      input_area_text: "#E5E7EB"         # Optional TUI input area text color
       input_rule: "#CD7F32"              # Input area horizontal rule
       response_border: "#FFD700"         # Response box border (ANSI)
       status_bar_bg: "#1a1a2e"           # Status bar background
@@ -79,6 +81,14 @@ All fields are optional. Missing values inherit from the ``default`` skin.
       terminal: "⚔"           # Override terminal tool emoji
       web_search: "🔮"        # Override web_search tool emoji
       # Any tool not listed here uses its registry default
+
+    # Markdown rendering: tune final assistant Markdown for the terminal skin
+    markdown:
+      code_block_style: rich              # rich | compact
+      code_theme: default                 # Rich syntax theme for compact blocks
+      code_line_numbers: false            # Show line-number gutter for compact blocks
+      code_background: ""                 # Optional hex background for inline/compact code
+      blockquote_foreground: ""           # Optional quote text/rule color
 
 USAGE
 =====
@@ -135,6 +145,7 @@ class SkinConfig:
     branding: Dict[str, str] = field(default_factory=dict)
     tool_prefix: str = "┊"
     tool_emojis: Dict[str, str] = field(default_factory=dict)  # per-tool emoji overrides
+    markdown: Dict[str, Any] = field(default_factory=dict)
     banner_logo: str = ""    # Rich-markup ASCII art logo (replaces HERMES_AGENT_LOGO)
     banner_hero: str = ""    # Rich-markup hero art (replaces HERMES_CADUCEUS)
 
@@ -154,6 +165,10 @@ class SkinConfig:
     def get_branding(self, key: str, fallback: str = "") -> str:
         """Get a branding value with fallback."""
         return self.branding.get(key, fallback)
+
+    def get_markdown(self, key: str, fallback: Any = None) -> Any:
+        """Get a Markdown-rendering option with fallback."""
+        return self.markdown.get(key, fallback)
 
 
 # =============================================================================
@@ -192,6 +207,13 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "response_label": " ⚕ Hermes ",
             "prompt_symbol": "❯ ",
             "help_header": "(^_^)? Available Commands",
+        },
+        "markdown": {
+            "code_block_style": "rich",
+            "code_theme": "default",
+            "code_line_numbers": False,
+            "code_background": "",
+            "blockquote_foreground": "",
         },
         "tool_prefix": "┊",
     },
@@ -321,6 +343,8 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "ui_error": "#F7A072",
             "ui_warn": "#e6a855",
             "prompt": "#c9d1d9",
+            "input_area_bg": "#111827",
+            "input_area_text": "#E5E7EB",
             "input_rule": "#4169e1",
             "response_border": "#7eb8f6",
             "status_bar_bg": "#151C2F",
@@ -342,6 +366,13 @@ _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
             "response_label": " ⚕ Hermes ",
             "prompt_symbol": "❯ ",
             "help_header": "(^_^)? Available Commands",
+        },
+        "markdown": {
+            "code_block_style": "compact",
+            "code_theme": "monokai",
+            "code_line_numbers": True,
+            "code_background": "#1E293B",
+            "blockquote_foreground": "#A7B6D8",
         },
         "tool_prefix": "┊",
     },
@@ -675,6 +706,8 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
     spinner.update(data.get("spinner", {}))
     branding = dict(default.get("branding", {}))
     branding.update(data.get("branding", {}))
+    markdown = dict(default.get("markdown", {}))
+    markdown.update(data.get("markdown", {}))
 
     return SkinConfig(
         name=data.get("name", "unknown"),
@@ -684,6 +717,7 @@ def _build_skin_config(data: Dict[str, Any]) -> SkinConfig:
         branding=branding,
         tool_prefix=data.get("tool_prefix", default.get("tool_prefix", "┊")),
         tool_emojis=data.get("tool_emojis", {}),
+        markdown=markdown,
         banner_logo=data.get("banner_logo", ""),
         banner_hero=data.get("banner_hero", ""),
     )
@@ -819,6 +853,8 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
         return {}
 
     prompt = skin.get_color("prompt", "#FFF8DC")
+    input_area_bg = skin.get_color("input_area_bg", "")
+    input_area_text = skin.get_color("input_area_text", prompt)
     input_rule = skin.get_color("input_rule", "#CD7F32")
     title = skin.get_color("banner_title", "#FFD700")
     text = skin.get_color("banner_text", prompt)
@@ -840,11 +876,15 @@ def get_prompt_toolkit_style_overrides() -> Dict[str, str]:
     menu_meta_bg = skin.get_color("completion_menu_meta_bg", menu_bg)
     menu_meta_current_bg = skin.get_color("completion_menu_meta_current_bg", menu_current_bg)
 
+    input_area_style = f"bg:{input_area_bg} {input_area_text}" if input_area_bg else input_area_text
+    prompt_style = f"bg:{input_area_bg} {prompt}" if input_area_bg else prompt
+    prompt_working_style = f"bg:{input_area_bg} {dim} italic" if input_area_bg else f"{dim} italic"
+
     return {
-        "input-area": prompt,
+        "input-area": input_area_style,
         "placeholder": f"{dim} italic",
-        "prompt": prompt,
-        "prompt-working": f"{dim} italic",
+        "prompt": prompt_style,
+        "prompt-working": prompt_working_style,
         "hint": f"{dim} italic",
         "status-bar": f"bg:{status_bg} {status_text}",
         "status-bar-strong": f"bg:{status_bg} {status_strong} bold",

@@ -5,6 +5,7 @@ conversion pipeline), and edge cases that could produce invalid MarkdownV2
 or corrupt user-visible content.
 """
 
+import asyncio
 import re
 import sys
 from unittest.mock import AsyncMock, MagicMock
@@ -37,6 +38,7 @@ _ensure_telegram_mock()
 from gateway.platforms.telegram import (  # noqa: E402
     TelegramAdapter,
     _escape_mdv2,
+    _markdown_table_separator_count,
     _strip_mdv2,
     _wrap_markdown_tables,
 )
@@ -541,6 +543,52 @@ class TestStripMdv2:
 
 
 # =========================================================================
+# Multi-table fallback (MarkdownV2-safe fenced delivery)
+# =========================================================================
+
+
+class TestMultiTableTelegramFallback:
+    def test_counts_two_separator_rows_outside_code(self):
+        text = (
+            "| a | b |\n|---|---|\n| 1 | 2 |\n\n"
+            "| x | y |\n|---|---|\n| 3 | 4 |\n"
+        )
+        assert _markdown_table_separator_count(text) == 2
+
+    def test_two_tables_wraps_in_fenced_block(self, adapter):
+        text = (
+            "| a | b |\n|---|---|\n| 1 | 2 |\n\n"
+            "| x | y |\n|---|---|\n| 3 | 4 |\n"
+        )
+        out = adapter.format_message(text)
+        assert out.startswith("```")
+        assert "| a | b |" in out
+        assert "| x | y |" in out
+
+    def test_single_table_uses_per_table_wrap_not_full_message_fallback(
+        self, adapter,
+    ):
+        text = "| a | b |\n|---|---|\n| z | w |\n"
+        assert _markdown_table_separator_count(text) == 1
+        out = adapter.format_message(text)
+        # One table: per-table fence from _wrap_markdown_tables (not the
+        # multi-separator full-message block used when count >= 2).
+        assert out.startswith("```")
+        assert out.count("```") == 2
+        assert "| a | b |" in out
+
+    def test_separators_inside_fenced_code_ignored(self, adapter):
+        inner = (
+            "| a | b |\n|---|---|\n| 1 | 2 |\n\n"
+            "| x | y |\n|---|---|\n| 3 | 4 |\n"
+        )
+        text = f"Intro\n```{inner}```\nAfter"
+        assert _markdown_table_separator_count(text) == 0
+        out = adapter.format_message(text)
+        assert "After" in out
+
+
+# =========================================================================
 # Markdown table auto-wrap
 # =========================================================================
 
@@ -682,8 +730,13 @@ class TestFormatMessageTables:
             "| 9 | 8 |\n"
         )
         out = adapter.format_message(text)
-        # Two separate fenced blocks in the output
-        assert out.count("```") == 4
+        # With two separator rows, format_message uses the full-message
+        # multitable fallback (single outer fence) rather than per-table wraps.
+        assert out.count("```") == 2
+        assert "First:" in out
+        assert "Second:" in out
+        assert "| A | B |" in out
+        assert "| X | Y |" in out
 
 
 @pytest.mark.asyncio
@@ -708,3 +761,31 @@ async def test_send_escapes_chunk_indicator_for_markdownv2(adapter):
     assert len(sent_texts) > 1
     assert re.search(r" \\\([0-9]+/[0-9]+\\\)$", sent_texts[0])
     assert re.search(r" \\\([0-9]+/[0-9]+\\\)$", sent_texts[-1])
+
+
+@pytest.mark.asyncio
+async def test_send_serializes_concurrent_multi_chunk_sends(adapter):
+    """Outbound lock prevents chunk interleaving from two overlapping sends."""
+    adapter.MAX_MESSAGE_LENGTH = 64
+    adapter._bot = MagicMock()
+    sent: list[str] = []
+
+    async def _record_send(**kwargs):
+        sent.append(kwargs["text"])
+        msg = MagicMock()
+        msg.message_id = len(sent)
+        await asyncio.sleep(0.01)
+        return msg
+
+    adapter._bot.send_message = AsyncMock(side_effect=_record_send)
+    await asyncio.gather(
+        adapter.send("1", ("A" * 200) + "\nend-a"),
+        adapter.send("1", ("B" * 200) + "\nend-b"),
+    )
+    i_a = next((i for i, t in enumerate(sent) if "A" in t), None)
+    i_b = next((i for i, t in enumerate(sent) if "B" in t), None)
+    assert i_a is not None and i_b is not None
+    if i_a < i_b:
+        assert all("B" not in t for t in sent[:i_b])
+    else:
+        assert all("A" not in t for t in sent[:i_a])

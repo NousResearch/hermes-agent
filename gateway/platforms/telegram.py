@@ -123,7 +123,7 @@ def _strip_mdv2(text: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Markdown table → code block conversion
+# Markdown table → code block conversion (per-table, upstream)
 # ---------------------------------------------------------------------------
 # Telegram's MarkdownV2 has no table syntax — '|' is just an escaped literal,
 # so pipe tables render as noisy backslash-pipe text with no alignment.
@@ -200,6 +200,90 @@ def _wrap_markdown_tables(text: str) -> str:
     return '\n'.join(out)
 
 
+# GFM-style table separator row (one per table). Used to detect multi-table
+# assistant output that Telegram MarkdownV2 cannot render reliably.
+_TABLE_SEP_LINE_RE = re.compile(
+    r"^\s*\|?(?:\s*:?-+:?\s*\|)+\s*:?-+:?\s*\|?\s*$",
+    re.MULTILINE,
+)
+_FENCE_OPEN_RE = re.compile(r"(?m)^(?P<fence>`{3,})(?P<lang>[^\n]*)\n")
+
+
+def _next_closed_fenced_block(text: str, pos: int = 0) -> tuple[int, int] | None:
+    """Return [start, end) span of a fenced code block, or None if none from *pos*."""
+    m = _FENCE_OPEN_RE.search(text, pos)
+    if not m:
+        return None
+    start = m.start()
+    fence = m.group("fence")
+    inner_start = m.end()
+    # Note: re.search(pattern, s, pos) uses *pos* as the third arg only on
+    # Pattern.search; re.search's third positional is *flags* — never pass an
+    # index position positionally or Python may set bogus flags (e.g. LOCALE).
+    tail = text[inner_start:]
+    close_m = re.search(rf"(?m)^{re.escape(fence)}\s*$", tail)
+    if not close_m:
+        return None
+    return start, inner_start + close_m.end()
+
+
+def _strip_code_regions_for_table_scan(text: str) -> str:
+    """Remove fenced + inline code so pipe tables inside code do not count."""
+    out: List[str] = []
+    pos = 0
+    while pos < len(text):
+        span = _next_closed_fenced_block(text, pos)
+        if not span:
+            out.append(text[pos:])
+            break
+        s, e = span
+        out.append(text[pos:s])
+        out.append("\n")
+        pos = e
+    scrubbed = "".join(out)
+    return re.sub(r"`[^`]+`", " ", scrubbed)
+
+
+def _markdown_table_separator_count(text: str) -> int:
+    """Count GFM table separator rows outside code regions."""
+    return len(_TABLE_SEP_LINE_RE.findall(_strip_code_regions_for_table_scan(text)))
+
+
+def _longest_backtick_run(text: str) -> int:
+    return max((len(m.group(0)) for m in re.finditer(r"`+", text)), default=0)
+
+
+def _wrap_multitable_fallback_block(content: str) -> str:
+    """Wrap the entire message in a fenced block so pipes/tables stay literal."""
+    n = max(3, _longest_backtick_run(content) + 1)
+    fence = "`" * n
+    return f"{fence}\n{content}\n{fence}"
+
+
+def _append_inline_split_segments(chunk: str, acc: List[tuple[bool, str]]) -> None:
+    for i, part in enumerate(re.split(r"(`[^`]+`)", chunk)):
+        if not part:
+            continue
+        acc.append((i % 2 == 1, part))
+
+
+def _mdv2_code_segment_split(text: str) -> List[tuple[bool, str]]:
+    """Split *text* into (is_code, segment) for fenced (3+ backticks) and inline spans."""
+    out: List[tuple[bool, str]] = []
+    pos = 0
+    while pos < len(text):
+        span = _next_closed_fenced_block(text, pos)
+        if not span:
+            _append_inline_split_segments(text[pos:], out)
+            return out
+        s, e = span
+        if s > pos:
+            _append_inline_split_segments(text[pos:s], out)
+        out.append((True, text[s:e]))
+        pos = e
+    return out
+
+
 class TelegramAdapter(BasePlatformAdapter):
     """
     Telegram bot adapter.
@@ -252,6 +336,9 @@ class TelegramAdapter(BasePlatformAdapter):
         self._model_picker_state: Dict[str, dict] = {}
         # Approval button state: message_id → session_key
         self._approval_state: Dict[int, str] = {}
+        # Serialize outbound Telegram sends so chunked replies are not interleaved
+        # when multiple coroutines deliver to the same bot connection.
+        self._send_message_lock = asyncio.Lock()
 
     @staticmethod
     def _is_callback_user_authorized(user_id: str) -> bool:
@@ -982,7 +1069,18 @@ class TelegramAdapter(BasePlatformAdapter):
         # Skip whitespace-only text to prevent Telegram 400 empty-text errors.
         if not content or not content.strip():
             return SendResult(success=True, message_id=None)
-        
+
+        async with self._send_message_lock:
+            return await self._send_unlocked(chat_id, content, reply_to, metadata)
+
+    async def _send_unlocked(
+        self,
+        chat_id: str,
+        content: str,
+        reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Send path guarded by ``_send_message_lock`` (see ``send``)."""
         try:
             # Format and split message if needed
             formatted = self.format_message(content)
@@ -2079,31 +2177,44 @@ class TelegramAdapter(BasePlatformAdapter):
             placeholders[key] = value
             return key
 
-        text = content
+        if _markdown_table_separator_count(content) >= 2:
+            text = _wrap_multitable_fallback_block(content)
+        else:
+            text = _wrap_markdown_tables(content)
 
-        # 0) Pre-wrap GFM-style pipe tables in ``` fences.  Telegram can't
-        #    render tables natively, but fenced code blocks render as
-        #    monospace preformatted text with columns intact.  The wrapped
-        #    tables then flow through step (1) below as protected regions.
-        text = _wrap_markdown_tables(text)
-
-        # 1) Protect fenced code blocks (``` ... ```)
+        # 1) Protect fenced code blocks (``` ... ``` or longer closing fences)
         #    Per MarkdownV2 spec, \ and ` inside pre/code must be escaped.
-        def _protect_fenced(m):
-            raw = m.group(0)
-            # Split off opening ``` (with optional language) and closing ```
-            open_end = raw.index('\n') + 1 if '\n' in raw[3:] else 3
-            opening = raw[:open_end]
-            body_and_close = raw[open_end:]
-            body = body_and_close[:-3]
-            body = body.replace('\\', '\\\\').replace('`', '\\`')
-            return _ph(opening + body + '```')
-
-        text = re.sub(
-            r'(```(?:[^\n]*\n)?[\s\S]*?```)',
-            _protect_fenced,
-            text,
-        )
+        pos = 0
+        _fenced_parts: List[str] = []
+        while pos < len(text):
+            span = _next_closed_fenced_block(text, pos)
+            if not span:
+                _fenced_parts.append(text[pos:])
+                break
+            s, e = span
+            _fenced_parts.append(text[pos:s])
+            raw = text[s:e]
+            mopen = re.match(r"^(?P<fence>`{3,})(?P<lang>[^\n]*)\n", raw)
+            if not mopen:
+                _fenced_parts.append(raw)
+                pos = e
+                continue
+            fence = mopen.group("fence")
+            open_part = mopen.group(0)
+            rest = raw[len(open_part) :]
+            # Strip closing fence from *rest* only.  Use ``fence + "\n"`` when the
+            # fence line is followed by another line — never ``"\n" + fence``,
+            # which would eat the newline that ends the last body line.
+            if rest.endswith(fence + "\n"):
+                body = rest[: -len(fence) - 1]
+            elif rest.endswith(fence):
+                body = rest[: -len(fence)]
+            else:
+                body = rest
+            body = body.replace("\\", "\\\\").replace("`", "\\`")
+            _fenced_parts.append(_ph(open_part + body + fence))
+            pos = e
+        text = "".join(_fenced_parts)
 
         # 2) Protect inline code (`...`)
         #    Escape \ inside inline code per MarkdownV2 spec.
@@ -2192,15 +2303,12 @@ class TelegramAdapter(BasePlatformAdapter):
 
         # 12) Safety net: escape unescaped ( ) { } that slipped through
         #     placeholder processing.  Split the text into code/non-code
-        #     segments so we never touch content inside ``` or ` spans.
-        _code_split = re.split(r'(```[\s\S]*?```|`[^`]+`)', text)
-        _safe_parts = []
-        for _idx, _seg in enumerate(_code_split):
-            if _idx % 2 == 1:
-                # Inside code span/block — leave untouched
+        #     segments so we never touch content inside fenced or ` spans.
+        _safe_parts: List[str] = []
+        for _is_code, _seg in _mdv2_code_segment_split(text):
+            if _is_code:
                 _safe_parts.append(_seg)
             else:
-                # Outside code — escape bare ( ) { }
                 def _esc_bare(m, _seg=_seg):
                     s = m.start()
                     ch = m.group(0)
@@ -2227,7 +2335,7 @@ class TelegramAdapter(BasePlatformAdapter):
                                     depth += 1
                     return '\\' + ch
                 _safe_parts.append(re.sub(r'[(){}]', _esc_bare, _seg))
-        text = ''.join(_safe_parts)
+        text = "".join(_safe_parts)
 
         return text
     

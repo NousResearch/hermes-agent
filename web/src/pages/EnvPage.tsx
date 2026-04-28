@@ -151,6 +151,7 @@ function EnvVarRow({
             </a>
           )}
           <Button
+            size="sm"
             outlined
             prefix={<Pencil />}
             onClick={() => setEdits((prev) => ({ ...prev, [varKey]: "" }))}
@@ -186,6 +187,7 @@ function EnvVarRow({
             </a>
           )}
           <Button
+            size="sm"
             outlined
             prefix={<Pencil />}
             onClick={() => setEdits((prev) => ({ ...prev, [varKey]: "" }))}
@@ -260,6 +262,7 @@ function EnvVarRow({
           )}
 
           <Button
+            size="sm"
             outlined
             prefix={<Pencil />}
             onClick={() => setEdits((prev) => ({ ...prev, [varKey]: "" }))}
@@ -269,6 +272,7 @@ function EnvVarRow({
 
           {info.is_set && (
             <Button
+              size="sm"
               outlined
               destructive
               prefix={<Trash2 />}
@@ -301,13 +305,19 @@ function EnvVarRow({
             className="flex-1 font-mono-ui text-xs"
           />
           <Button
+            size="sm"
             onClick={() => onSave(varKey)}
             prefix={<Save />}
             disabled={saving === varKey || !edits[varKey]}
           >
             {saving === varKey ? "..." : t.common.save}
           </Button>
-          <Button outlined prefix={<X />} onClick={() => onCancelEdit(varKey)}>
+          <Button
+            size="sm"
+            outlined
+            prefix={<X />}
+            onClick={() => onCancelEdit(varKey)}
+          >
             {t.common.cancel}
           </Button>
         </div>
@@ -680,7 +690,11 @@ export default function EnvPage() {
             {t.env.changesNote}
           </p>
         </div>
-        <Button outlined onClick={() => setShowAdvanced(!showAdvanced)}>
+        <Button
+          size="sm"
+          outlined
+          onClick={() => setShowAdvanced(!showAdvanced)}
+        >
           {showAdvanced ? t.env.hideAdvanced : t.env.showAdvanced}
         </Button>
       </div>

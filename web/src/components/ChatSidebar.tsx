@@ -342,6 +342,7 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
 
             {error && (
               <Button
+                size="sm"
                 outlined
                 className="mt-1"
                 onClick={reconnect}

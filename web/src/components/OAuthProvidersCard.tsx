@@ -102,6 +102,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
             </CardTitle>
           </div>
           <Button
+            size="sm"
             outlined
             onClick={refresh}
             disabled={loading}
@@ -216,7 +217,11 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                     </a>
                   )}
                   {!p.status.logged_in && p.flow !== "external" && (
-                    <Button onClick={() => setLoginFor(p)} prefix={<LogIn />}>
+                    <Button
+                      size="sm"
+                      onClick={() => setLoginFor(p)}
+                      prefix={<LogIn />}
+                    >
                       {t.oauth.login}
                     </Button>
                   )}
@@ -229,6 +234,7 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                   )}
                   {p.status.logged_in && p.flow !== "external" && (
                     <Button
+                      size="sm"
                       outlined
                       onClick={() => handleDisconnect(p)}
                       disabled={isBusy}

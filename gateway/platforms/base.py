@@ -1702,13 +1702,41 @@ class BasePlatformAdapter(ABC):
         the agent is waiting for dangerous-command approval).  This is critical
         for Slack's Assistant API where ``assistant_threads_setStatus`` disables
         the compose box — pausing lets the user type ``/approve`` or ``/deny``.
+
+        Each ``send_typing`` call is bounded by a ~1.5s timeout so a slow
+        network round-trip can't stall the refresh cadence.  Telegram- and
+        Discord-side typing expire after ~5s; if any individual send_typing
+        takes longer than the refresh interval, the bubble would die and
+        stay dead until that call returns.  Abandoning the slow call lets
+        the next tick fire a fresh send_typing on schedule — as long as
+        one of them succeeds within the 5s platform-side window, the bubble
+        stays visible across provider stalls / upstream API timeouts.
         """
+        # Bound each send_typing round-trip so the refresh cadence isn't
+        # gated on network health.  Must stay below ``interval`` so a slow
+        # call gets abandoned before the next scheduled tick.
+        _send_typing_timeout = max(0.25, min(1.5, interval - 0.25))
         try:
             while True:
                 if stop_event is not None and stop_event.is_set():
                     return
                 if chat_id not in self._typing_paused:
-                    await self.send_typing(chat_id, metadata=metadata)
+                    try:
+                        await asyncio.wait_for(
+                            self.send_typing(chat_id, metadata=metadata),
+                            timeout=_send_typing_timeout,
+                        )
+                    except asyncio.TimeoutError:
+                        # Slow network — abandon this tick, keep the loop
+                        # on schedule so the next send_typing fires fresh.
+                        pass
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as typing_err:
+                        logger.debug(
+                            "[%s] send_typing error (non-fatal): %s",
+                            self.name, typing_err,
+                        )
                 if stop_event is None:
                     await asyncio.sleep(interval)
                     continue

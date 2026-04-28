@@ -114,16 +114,15 @@ DINGTALK_TYPE_MAPPING = {
 }
 
 _DINGTALK_HTTP_HOSTS = {"api.dingtalk.com", "oapi.dingtalk.com"}
-_DINGTALK_SEED_FALLBACK_IPS = ["120.77.134.54"]
 
 
 class DingTalkFallbackTransport(httpx.AsyncBaseTransport):
     """Retry DingTalk HTTP API requests via fallback IPv4s preserving TLS/SNI.
 
-    On this host, curl can reach api.dingtalk.com while httpx/httpcore sometimes
-    fails with a bare ConnectError on the hostname path. Rewriting the TCP
-    target to a known-good IPv4 while preserving Host and SNI works around that
-    without changing the logical request URL.
+    This transport is opt-in. It exists for environments where hostname-based
+    httpx/httpcore connections are flaky but direct IPv4 connections to the same
+    endpoint succeed. Rewriting only the TCP target while preserving Host and
+    SNI keeps the logical request URL unchanged.
     """
 
     def __init__(self, fallback_ips: List[str], **transport_kwargs):
@@ -193,7 +192,18 @@ def _normalize_dingtalk_fallback_ips(values: List[str]) -> List[str]:
     return normalized
 
 
+def _env_truthy(name: str) -> bool:
+    return str(os.getenv(name, "") or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
 def _resolve_dingtalk_ipv4_hosts() -> List[str]:
+    configured = os.getenv("DINGTALK_FALLBACK_IPS", "")
+    if configured.strip():
+        return _normalize_dingtalk_fallback_ips(configured.split(","))
+
+    if not _env_truthy("DINGTALK_FORCE_IPV4"):
+        return []
+
     resolved: List[str] = []
     for host in _DINGTALK_HTTP_HOSTS:
         try:
@@ -207,7 +217,6 @@ def _resolve_dingtalk_ipv4_hosts() -> List[str]:
                     resolved.append(ip)
         except Exception as exc:
             logger.debug("[Dingtalk] IPv4 resolution failed for %s: %s", host, exc)
-    resolved.extend(_DINGTALK_SEED_FALLBACK_IPS)
     return _normalize_dingtalk_fallback_ips(resolved)
 
 
@@ -365,7 +374,7 @@ class DingTalkAdapter(BasePlatformAdapter):
                 fallback_ips = _resolve_dingtalk_ipv4_hosts()
                 if fallback_ips:
                     logger.info(
-                        "[%s] DingTalk fallback IPv4 transport active: %s",
+                        "[%s] DingTalk fallback IPv4 transport active via env/config: %s",
                         self.name,
                         ", ".join(fallback_ips),
                     )

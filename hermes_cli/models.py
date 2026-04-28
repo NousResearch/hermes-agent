@@ -1700,14 +1700,50 @@ def resolve_fast_mode_overrides(model_id: Optional[str]) -> dict[str, Any] | Non
 
 
 def _resolve_copilot_catalog_api_key() -> str:
-    """Best-effort GitHub token for fetching the Copilot model catalog."""
+    """Best-effort GitHub token for fetching the Copilot model catalog.
+
+    Resolution order:
+      1. ``resolve_api_key_provider_credentials("copilot")`` — env vars
+         (``COPILOT_GITHUB_TOKEN`` / ``GH_TOKEN`` / ``GITHUB_TOKEN``) plus
+         the ``gh auth token`` CLI fallback.
+      2. ``read_credential_pool("copilot")`` — OAuth ``access_token`` saved
+         in ``auth.json`` by ``hermes auth add copilot`` (device-code flow).
+
+    Without (2), users whose only Copilot credential is the OAuth token
+    Hermes itself stores see the ``/model`` picker fall back to a stale
+    hardcoded list because the live catalog fetch silently 401s.
+    """
     try:
         from hermes_cli.auth import resolve_api_key_provider_credentials
 
         creds = resolve_api_key_provider_credentials("copilot")
-        return str(creds.get("api_key") or "").strip()
+        api_key = str(creds.get("api_key") or "").strip()
+        if api_key:
+            return api_key
     except Exception:
-        return ""
+        pass
+
+    try:
+        from hermes_cli.auth import read_credential_pool
+        from hermes_cli.copilot_auth import (
+            get_copilot_api_token,
+            validate_copilot_token,
+        )
+
+        for entry in read_credential_pool("copilot"):
+            if not isinstance(entry, dict):
+                continue
+            raw = str(entry.get("access_token") or "").strip()
+            if not raw:
+                continue
+            valid, _ = validate_copilot_token(raw)
+            if not valid:
+                continue
+            return get_copilot_api_token(raw)
+    except Exception:
+        pass
+
+    return ""
 
 
 # Providers where models.dev is treated as authoritative: curated static

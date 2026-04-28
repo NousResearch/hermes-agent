@@ -544,6 +544,36 @@ class TestConvertTools:
         assert convert_tools_to_anthropic([]) == []
         assert convert_tools_to_anthropic(None) == []
 
+    def test_strips_nullable_union_from_input_schema(self):
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "run",
+                    "description": "Run command",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "command": {"type": "string"},
+                            "timeout": {
+                                "anyOf": [{"type": "integer"}, {"type": "null"}],
+                                "default": None,
+                            },
+                        },
+                        "required": ["command"],
+                    },
+                },
+            }
+        ]
+
+        result = convert_tools_to_anthropic(tools)
+
+        assert result[0]["input_schema"]["properties"]["timeout"] == {
+            "type": "integer",
+            "default": None,
+        }
+        assert result[0]["input_schema"]["required"] == ["command"]
+
 
 # ---------------------------------------------------------------------------
 # Message conversion

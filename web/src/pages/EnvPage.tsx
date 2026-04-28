@@ -21,7 +21,7 @@ import { Toast } from "@/components/Toast";
 import { useConfirmDelete } from "@/hooks/useConfirmDelete";
 import { useToast } from "@/hooks/useToast";
 import { OAuthProvidersCard } from "@/components/OAuthProvidersCard";
-import { Button } from "@nous-research/ui";
+import { Button, ListItem } from "@nous-research/ui";
 import {
   Card,
   CardContent,
@@ -368,10 +368,10 @@ function ProviderGroupCard({
   return (
     <div className="border border-border">
       {/* Header — always visible */}
-      <button
-        type="button"
+      <ListItem
         onClick={() => setExpanded(!expanded)}
-        className="flex w-full items-center justify-between gap-3 px-4 py-3 cursor-pointer hover:bg-primary/5 transition-colors"
+        aria-expanded={expanded}
+        className="justify-between gap-3 px-4 py-3 hover:bg-primary/5"
       >
         <div className="flex items-center gap-3 min-w-0">
           {expanded ? (
@@ -406,7 +406,7 @@ function ProviderGroupCard({
               .replace("{s}", group.entries.length !== 1 ? "s" : "")}
           </span>
         </div>
-      </button>
+      </ListItem>
 
       {expanded && (
         <div className="border-t border-border px-4 py-3 grid gap-2">
@@ -823,20 +823,16 @@ function CollapsibleUnset({
 
   return (
     <>
-      <button
-        type="button"
-        className="flex items-center gap-2 text-xs text-muted-foreground hover:text-foreground transition-colors cursor-pointer pt-1"
+      <Button
+        ghost
+        size="sm"
+        prefix={collapsed ? <ChevronRight /> : <ChevronDown />}
         onClick={() => setCollapsed(!collapsed)}
+        aria-expanded={!collapsed}
+        className="self-start mt-1 normal-case tracking-normal text-xs text-muted-foreground hover:text-foreground"
       >
-        {collapsed ? (
-          <ChevronRight className="h-3 w-3" />
-        ) : (
-          <ChevronDown className="h-3 w-3" />
-        )}
-        <span>
-          {t.env.notConfigured.replace("{count}", String(unsetEntries.length))}
-        </span>
-      </button>
+        {t.env.notConfigured.replace("{count}", String(unsetEntries.length))}
+      </Button>
 
       {!collapsed &&
         unsetEntries.map(([key, info]) => (

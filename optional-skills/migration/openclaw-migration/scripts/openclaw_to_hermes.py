@@ -1391,6 +1391,22 @@ class Migrator:
 
         model_str = model_str.strip()
 
+        # Resolve model alias against the catalog.
+        # OpenClaw can store a display name (e.g. "Claude Opus 4.6") in
+        # agents.defaults.model.  The actual API ID lives in
+        # agents.defaults.models (plural) under the "id" field.
+        model_catalog = config.get("agents", {}).get("defaults", {}).get("models", {})
+        if isinstance(model_catalog, dict) and model_str in model_catalog:
+            entry = model_catalog[model_str]
+            if isinstance(entry, dict) and entry.get("id"):
+                resolved = entry["id"]
+                provider = entry.get("provider", "")
+                if provider and "/" not in resolved:
+                    resolved = f"{provider}/{resolved}"
+                model_str = resolved
+            elif isinstance(entry, str):
+                model_str = entry
+
         if yaml is None:
             self.record("model-config", source_path, destination, "error", "PyYAML is not available")
             return

@@ -25,6 +25,7 @@ logger = logging.getLogger(__name__)
 
 BUSY_INPUT_FLAG = "busy_input_prompt"
 TOOL_PROGRESS_FLAG = "tool_progress_prompt"
+OPENCLAW_RESIDUE_FLAG = "openclaw_residue_cleanup"
 
 
 # -------------------------------------------------------------------------
@@ -43,10 +44,18 @@ def busy_input_hint_gateway(mode: str) -> str:
             "Send `/busy interrupt` to make new messages stop the current task "
             "immediately, or `/busy status` to check. This notice won't appear again."
         )
+    if mode == "steer":
+        return (
+            "💡 First-time tip — I steered your message into the current run; "
+            "it will arrive after the next tool call instead of interrupting. "
+            "Send `/busy interrupt` or `/busy queue` to change this, or "
+            "`/busy status` to check. This notice won't appear again."
+        )
     return (
         "💡 First-time tip — I just interrupted my current task to answer you. "
         "Send `/busy queue` to queue follow-ups for after the current task instead, "
-        "or `/busy status` to check. This notice won't appear again."
+        "`/busy steer` to inject them mid-run without interrupting, or "
+        "`/busy status` to check. This notice won't appear again."
     )
 
 
@@ -55,13 +64,19 @@ def busy_input_hint_cli(mode: str) -> str:
     if mode == "queue":
         return (
             "(tip) Your message was queued for the next turn. "
-            "Use /busy interrupt to make Enter stop the current run instead. "
-            "This tip only shows once."
+            "Use /busy interrupt to make Enter stop the current run instead, "
+            "or /busy steer to inject mid-run. This tip only shows once."
+        )
+    if mode == "steer":
+        return (
+            "(tip) Your message was steered into the current run; it arrives "
+            "after the next tool call. Use /busy interrupt or /busy queue to "
+            "change this. This tip only shows once."
         )
     return (
         "(tip) Your message interrupted the current run. "
-        "Use /busy queue to queue messages for the next turn instead. "
-        "This tip only shows once."
+        "Use /busy queue to queue messages for the next turn instead, "
+        "or /busy steer to inject mid-run. This tip only shows once."
     )
 
 
@@ -78,6 +93,35 @@ def tool_progress_hint_cli() -> str:
         "(tip) That tool ran for a while. Use /verbose to cycle tool-progress "
         "display modes (all -> new -> off -> verbose). This tip only shows once."
     )
+
+
+def openclaw_residue_hint_cli() -> str:
+    """Banner shown the first time Hermes starts and finds ``~/.openclaw/``.
+
+    OpenClaw-era config, memory, and skill paths in ``~/.openclaw/`` will
+    otherwise attract the agent (memory entries like ``~/.openclaw/config.yaml``
+    get carried forward and the agent dutifully reads them). ``hermes claw
+    cleanup`` renames the directory so the agent stops finding it.
+    """
+    return (
+        "Heads up — an OpenClaw workspace was detected at ~/.openclaw/.\n"
+        "After migrating, the agent can still get confused and read that "
+        "directory's config/memory instead of Hermes's.\n"
+        "Run `hermes claw cleanup` to archive it (rename → .openclaw.pre-migration). "
+        "This tip only shows once; rerun it any time with `hermes claw cleanup`."
+    )
+
+
+def detect_openclaw_residue(home: Optional[Path] = None) -> bool:
+    """Return True if an OpenClaw workspace directory is present in ``$HOME``.
+
+    Pure filesystem check — no side effects. ``home`` override exists for tests.
+    """
+    base = home or Path.home()
+    try:
+        return (base / ".openclaw").is_dir()
+    except OSError:
+        return False
 
 
 # -------------------------------------------------------------------------
@@ -135,10 +179,13 @@ def mark_seen(config_path: Path, flag: str) -> bool:
 __all__ = [
     "BUSY_INPUT_FLAG",
     "TOOL_PROGRESS_FLAG",
+    "OPENCLAW_RESIDUE_FLAG",
     "busy_input_hint_gateway",
     "busy_input_hint_cli",
     "tool_progress_hint_gateway",
     "tool_progress_hint_cli",
+    "openclaw_residue_hint_cli",
+    "detect_openclaw_residue",
     "is_seen",
     "mark_seen",
 ]

@@ -67,6 +67,7 @@ class Platform(Enum):
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
+    YUANBAO = "yuanbao"
 
 
 @dataclass
@@ -326,6 +327,9 @@ class GatewayConfig:
             # QQBot uses extra dict for app credentials
             elif platform == Platform.QQBOT and config.extra.get("app_id") and config.extra.get("client_secret"):
                 connected.append(platform)
+            # Yuanbao uses extra dict for app credentials
+            elif platform == Platform.YUANBAO and config.extra.get("app_id") and config.extra.get("app_secret"):
+                connected.append(platform)
             # DingTalk uses client_id/client_secret from config.extra or env vars
             elif platform == Platform.DINGTALK and (
                 config.extra.get("client_id") or os.getenv("DINGTALK_CLIENT_ID")
@@ -562,6 +566,8 @@ def load_gateway_config() -> GatewayConfig:
                         existing = {}
                     # Deep-merge extra dicts so gateway.json defaults survive
                     merged_extra = {**existing.get("extra", {}), **plat_block.get("extra", {})}
+                    if plat_name == Platform.SLACK.value and "enabled" in plat_block:
+                        merged_extra["_enabled_explicit"] = True
                     merged = {**existing, **plat_block}
                     if merged_extra:
                         merged["extra"] = merged_extra
@@ -598,7 +604,7 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["group_policy"] = platform_cfg["group_policy"]
                 if "group_allow_from" in platform_cfg:
                     bridged["group_allow_from"] = platform_cfg["group_allow_from"]
-                if plat == Platform.DISCORD and "channel_skill_bindings" in platform_cfg:
+                if plat in (Platform.DISCORD, Platform.SLACK) and "channel_skill_bindings" in platform_cfg:
                     bridged["channel_skill_bindings"] = platform_cfg["channel_skill_bindings"]
                 if "channel_prompts" in platform_cfg:
                     channel_prompts = platform_cfg["channel_prompts"]
@@ -606,16 +612,21 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = {str(k): v for k, v in channel_prompts.items()}
                     else:
                         bridged["channel_prompts"] = channel_prompts
-                if not bridged:
+                enabled_was_explicit = "enabled" in platform_cfg
+                if not bridged and not enabled_was_explicit:
                     continue
                 plat_data = platforms_data.setdefault(plat.value, {})
                 if not isinstance(plat_data, dict):
                     plat_data = {}
                     platforms_data[plat.value] = plat_data
+                if enabled_was_explicit:
+                    plat_data["enabled"] = platform_cfg["enabled"]
                 extra = plat_data.setdefault("extra", {})
                 if not isinstance(extra, dict):
                     extra = {}
                     plat_data["extra"] = extra
+                if plat == Platform.SLACK and enabled_was_explicit:
+                    extra["_enabled_explicit"] = True
                 extra.update(bridged)
 
             # Slack settings → env vars (env vars take precedence)
@@ -934,8 +945,20 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     slack_token = os.getenv("SLACK_BOT_TOKEN")
     if slack_token:
         if Platform.SLACK not in config.platforms:
+            # No yaml config for Slack — env-only setup, enable it
             config.platforms[Platform.SLACK] = PlatformConfig()
-        config.platforms[Platform.SLACK].enabled = True
+            config.platforms[Platform.SLACK].enabled = True
+        else:
+            slack_config = config.platforms[Platform.SLACK]
+            enabled_was_explicit = bool(slack_config.extra.pop("_enabled_explicit", False))
+            if not slack_config.enabled and not enabled_was_explicit:
+                # Top-level Slack settings such as channel prompts should not
+                # turn an env-token setup into a disabled platform. Only an
+                # explicit slack.enabled/platforms.slack.enabled false should.
+                slack_config.enabled = True
+        # If yaml config exists, respect its enabled flag (don't override
+        # explicit enabled: false). Token is still stored so skills that
+        # send Slack messages can use it without activating the gateway adapter.
         config.platforms[Platform.SLACK].token = slack_token
     slack_home = os.getenv("SLACK_HOME_CHANNEL")
     if slack_home and Platform.SLACK in config.platforms:
@@ -1291,6 +1314,48 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 chat_id=qq_home,
                 name=os.getenv("QQBOT_HOME_CHANNEL_NAME") or os.getenv(qq_home_name_env, "Home"),
             )
+
+    # Yuanbao — YUANBAO_APP_ID preferred
+    yuanbao_app_id = os.getenv("YUANBAO_APP_ID") or os.getenv("YUANBAO_APP_KEY")
+    yuanbao_app_secret = os.getenv("YUANBAO_APP_SECRET")
+    if yuanbao_app_id and yuanbao_app_secret:
+        if Platform.YUANBAO not in config.platforms:
+            config.platforms[Platform.YUANBAO] = PlatformConfig()
+        config.platforms[Platform.YUANBAO].enabled = True
+        extra = config.platforms[Platform.YUANBAO].extra
+        extra["app_id"] = yuanbao_app_id
+        extra["app_secret"] = yuanbao_app_secret
+        yuanbao_bot_id = os.getenv("YUANBAO_BOT_ID")
+        if yuanbao_bot_id:
+            extra["bot_id"] = yuanbao_bot_id
+        yuanbao_ws_url = os.getenv("YUANBAO_WS_URL")
+        if yuanbao_ws_url:
+            extra["ws_url"] = yuanbao_ws_url
+        yuanbao_api_domain = os.getenv("YUANBAO_API_DOMAIN")
+        if yuanbao_api_domain:
+            extra["api_domain"] = yuanbao_api_domain
+        yuanbao_route_env = os.getenv("YUANBAO_ROUTE_ENV")
+        if yuanbao_route_env:
+            extra["route_env"] = yuanbao_route_env
+        yuanbao_home = os.getenv("YUANBAO_HOME_CHANNEL")
+        if yuanbao_home:
+            config.platforms[Platform.YUANBAO].home_channel = HomeChannel(
+                platform=Platform.YUANBAO,
+                chat_id=yuanbao_home,
+                name=os.getenv("YUANBAO_HOME_CHANNEL_NAME", "Home"),
+            )
+        yuanbao_dm_policy = os.getenv("YUANBAO_DM_POLICY")
+        if yuanbao_dm_policy:
+            extra["dm_policy"] = yuanbao_dm_policy.strip().lower()
+        yuanbao_dm_allow_from = os.getenv("YUANBAO_DM_ALLOW_FROM")
+        if yuanbao_dm_allow_from:
+            extra["dm_allow_from"] = yuanbao_dm_allow_from
+        yuanbao_group_policy = os.getenv("YUANBAO_GROUP_POLICY")
+        if yuanbao_group_policy:
+            extra["group_policy"] = yuanbao_group_policy.strip().lower()
+        yuanbao_group_allow_from = os.getenv("YUANBAO_GROUP_ALLOW_FROM")
+        if yuanbao_group_allow_from:
+            extra["group_allow_from"] = yuanbao_group_allow_from
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

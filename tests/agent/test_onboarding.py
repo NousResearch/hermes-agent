@@ -7,11 +7,14 @@ import pytest
 
 from agent.onboarding import (
     BUSY_INPUT_FLAG,
+    OPENCLAW_RESIDUE_FLAG,
     TOOL_PROGRESS_FLAG,
     busy_input_hint_cli,
     busy_input_hint_gateway,
+    detect_openclaw_residue,
     is_seen,
     mark_seen,
+    openclaw_residue_hint_cli,
     tool_progress_hint_cli,
     tool_progress_hint_gateway,
 )
@@ -117,6 +120,12 @@ class TestHintMessages:
         assert "/busy interrupt" in msg
         assert "queued" in msg.lower()
 
+    def test_busy_input_hint_gateway_steer(self):
+        msg = busy_input_hint_gateway("steer")
+        assert "/busy interrupt" in msg
+        assert "/busy queue" in msg
+        assert "steer" in msg.lower()
+
     def test_busy_input_hint_cli_interrupt(self):
         msg = busy_input_hint_cli("interrupt")
         assert "/busy queue" in msg
@@ -124,6 +133,12 @@ class TestHintMessages:
     def test_busy_input_hint_cli_queue(self):
         msg = busy_input_hint_cli("queue")
         assert "/busy interrupt" in msg
+
+    def test_busy_input_hint_cli_steer(self):
+        msg = busy_input_hint_cli("steer")
+        assert "/busy interrupt" in msg
+        assert "/busy queue" in msg
+        assert "steer" in msg.lower()
 
     def test_tool_progress_hints_mention_verbose(self):
         assert "/verbose" in tool_progress_hint_gateway()
@@ -133,8 +148,10 @@ class TestHintMessages:
         for hint in (
             busy_input_hint_gateway("queue"),
             busy_input_hint_gateway("interrupt"),
+            busy_input_hint_gateway("steer"),
             busy_input_hint_cli("queue"),
             busy_input_hint_cli("interrupt"),
+            busy_input_hint_cli("steer"),
             tool_progress_hint_gateway(),
             tool_progress_hint_cli(),
         ):
@@ -162,3 +179,50 @@ class TestRoundTrip:
 
         assert is_seen(loaded, BUSY_INPUT_FLAG) is True
         assert is_seen(loaded, TOOL_PROGRESS_FLAG) is True
+
+
+# ---------------------------------------------------------------------------
+# OpenClaw residue banner
+# ---------------------------------------------------------------------------
+
+
+class TestDetectOpenclawResidue:
+    def test_returns_true_when_openclaw_dir_present(self, tmp_path):
+        (tmp_path / ".openclaw").mkdir()
+        assert detect_openclaw_residue(home=tmp_path) is True
+
+    def test_returns_false_when_absent(self, tmp_path):
+        assert detect_openclaw_residue(home=tmp_path) is False
+
+    def test_returns_false_when_path_is_a_file(self, tmp_path):
+        # A stray file named ``.openclaw`` is NOT a workspace — skip the banner.
+        (tmp_path / ".openclaw").write_text("oops")
+        assert detect_openclaw_residue(home=tmp_path) is False
+
+    def test_default_home_does_not_crash(self):
+        # Smoke: real $HOME lookup must not raise regardless of state.
+        assert isinstance(detect_openclaw_residue(), bool)
+
+
+class TestOpenclawResidueHint:
+    def test_hint_mentions_cleanup_command(self):
+        msg = openclaw_residue_hint_cli()
+        assert "hermes claw cleanup" in msg
+        assert "~/.openclaw" in msg
+
+    def test_hint_not_empty(self):
+        assert openclaw_residue_hint_cli().strip()
+
+
+class TestOpenclawResidueSeenFlag:
+    def test_flag_independent_of_other_flags(self, tmp_path):
+        cfg_path = tmp_path / "config.yaml"
+        mark_seen(cfg_path, BUSY_INPUT_FLAG)
+        loaded = yaml.safe_load(cfg_path.read_text())
+        assert is_seen(loaded, OPENCLAW_RESIDUE_FLAG) is False
+
+    def test_flag_round_trips(self, tmp_path):
+        cfg_path = tmp_path / "config.yaml"
+        assert mark_seen(cfg_path, OPENCLAW_RESIDUE_FLAG) is True
+        loaded = yaml.safe_load(cfg_path.read_text())
+        assert is_seen(loaded, OPENCLAW_RESIDUE_FLAG) is True

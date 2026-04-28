@@ -354,6 +354,14 @@ def build_session_context_prompt(
             "If the user needs a detailed answer, give the short version first "
             "and offer to elaborate."
         )
+    elif context.source.platform == Platform.YUANBAO:
+        lines.append("")
+        lines.append(
+            "**Platform notes:** You are running inside Yuanbao. "
+            "You CAN send private (DM) messages via the send_message tool. "
+            "Use target='yuanbao:direct:<account_id>' for DM "
+            "and target='yuanbao:group:<group_code>' for group chat."
+        )
 
     # Connected platforms
     platforms_list = ["local (files on this machine)"]

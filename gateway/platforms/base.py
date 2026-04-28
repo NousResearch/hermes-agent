@@ -307,9 +307,14 @@ def proxy_kwargs_for_aiohttp(proxy_url: str | None) -> tuple[dict, dict]:
     """Build kwargs for standalone ``aiohttp.ClientSession`` with proxy.
 
     Returns ``(session_kwargs, request_kwargs)`` where:
-      - SOCKS → ``({"connector": ProxyConnector(...)}, {})``
-      - HTTP  → ``({}, {"proxy": url})``
-      - None  → ``({}, {})``
+      - With aiohttp-socks → ``({"connector": ProxyConnector(...)}, {})``
+        for *all* proxy schemes (SOCKS **and** HTTP/HTTPS).
+      - HTTP without aiohttp-socks → ``({}, {"proxy": url})``.
+      - None → ``({}, {})``.
+
+    Prefer the connector path: it works transparently with libraries
+    (like mautrix) that call ``session.request()`` without forwarding
+    per-request ``proxy=`` kwargs.
 
     Usage::
 
@@ -320,20 +325,53 @@ def proxy_kwargs_for_aiohttp(proxy_url: str | None) -> tuple[dict, dict]:
     """
     if not proxy_url:
         return {}, {}
-    if proxy_url.lower().startswith("socks"):
-        try:
-            from aiohttp_socks import ProxyConnector
+    try:
+        from aiohttp_socks import ProxyConnector
 
-            connector = ProxyConnector.from_url(proxy_url, rdns=True)
-            return {"connector": connector}, {}
-        except ImportError:
+        connector = ProxyConnector.from_url(proxy_url, rdns=True)
+        return {"connector": connector}, {}
+    except ImportError:
+        if proxy_url.lower().startswith("socks"):
             logger.warning(
                 "aiohttp_socks not installed — SOCKS proxy %s ignored. "
                 "Run: pip install aiohttp-socks",
                 proxy_url,
             )
             return {}, {}
-    return {}, {"proxy": proxy_url}
+        return {}, {"proxy": proxy_url}
+
+
+def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = None) -> bool:
+    """Return True when ``hostname`` matches a ``NO_PROXY`` entry.
+
+    Supports comma- or whitespace-separated entries with optional leading dots
+    and ``*.`` wildcards, which match both the apex domain and subdomains.
+    """
+    raw = no_proxy_value
+    if raw is None:
+        raw = os.environ.get("NO_PROXY") or os.environ.get("no_proxy") or ""
+
+    raw = raw.strip()
+    if not raw:
+        return False
+
+    lower_hostname = hostname.lower()
+    for entry in re.split(r"[\s,]+", raw):
+        normalized = entry.strip().lower()
+        if not normalized:
+            continue
+        if normalized == "*":
+            return True
+
+        if normalized.startswith("*."):
+            normalized = normalized[2:]
+        elif normalized.startswith("."):
+            normalized = normalized[1:]
+
+        if lower_hostname == normalized or lower_hostname.endswith(f".{normalized}"):
+            return True
+
+    return False
 
 
 from dataclasses import dataclass, field
@@ -693,7 +731,15 @@ SUPPORTED_DOCUMENT_TYPES = {
     ".pdf": "application/pdf",
     ".md": "text/markdown",
     ".txt": "text/plain",
+    ".csv": "text/csv",
     ".log": "text/plain",
+    ".json": "application/json",
+    ".xml": "application/xml",
+    ".yaml": "application/yaml",
+    ".yml": "application/yaml",
+    ".toml": "application/toml",
+    ".ini": "text/plain",
+    ".cfg": "text/plain",
     ".zip": "application/zip",
     ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
     ".xlsx": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
@@ -979,6 +1025,61 @@ def resolve_channel_prompt(
         prompt = str(prompt).strip()
         if prompt:
             return prompt
+    return None
+
+
+def resolve_channel_skills(
+    config_extra: dict,
+    channel_id: str,
+    parent_id: str | None = None,
+) -> list[str] | None:
+    """Resolve auto-loaded skill(s) for a channel/thread from platform config.
+
+    Looks up ``channel_skill_bindings`` in the adapter's ``config.extra`` dict.
+
+    Config format::
+
+        channel_skill_bindings:
+          - id: "C0123"          # Slack channel ID or Discord channel/forum ID
+            skills: ["skill-a", "skill-b"]
+          - id: "D0ABCDE"
+            skill: "solo-skill"  # single string also accepted
+
+    Prefers an exact match on *channel_id*; falls back to *parent_id*
+    (useful for forum threads / Slack threads inheriting the parent channel's
+    binding).
+
+    Returns a deduplicated list of skill names (order preserved), or None if
+    no match is found.
+    """
+    bindings = config_extra.get("channel_skill_bindings") or []
+    if not isinstance(bindings, list) or not bindings:
+        return None
+    ids_to_check: set[str] = set()
+    if channel_id:
+        ids_to_check.add(str(channel_id))
+    if parent_id:
+        ids_to_check.add(str(parent_id))
+    if not ids_to_check:
+        return None
+    for entry in bindings:
+        if not isinstance(entry, dict):
+            continue
+        entry_id = str(entry.get("id", ""))
+        if entry_id in ids_to_check:
+            skills = entry.get("skills") or entry.get("skill")
+            if isinstance(skills, str):
+                s = skills.strip()
+                return [s] if s else None
+            if isinstance(skills, list) and skills:
+                seen: list[str] = []
+                for name in skills:
+                    if not isinstance(name, str):
+                        continue
+                    nm = name.strip()
+                    if nm and nm not in seen:
+                        seen.append(nm)
+                return seen or None
     return None
 
 
@@ -1606,13 +1707,41 @@ class BasePlatformAdapter(ABC):
         the agent is waiting for dangerous-command approval).  This is critical
         for Slack's Assistant API where ``assistant_threads_setStatus`` disables
         the compose box — pausing lets the user type ``/approve`` or ``/deny``.
+
+        Each ``send_typing`` call is bounded by a ~1.5s timeout so a slow
+        network round-trip can't stall the refresh cadence.  Telegram- and
+        Discord-side typing expire after ~5s; if any individual send_typing
+        takes longer than the refresh interval, the bubble would die and
+        stay dead until that call returns.  Abandoning the slow call lets
+        the next tick fire a fresh send_typing on schedule — as long as
+        one of them succeeds within the 5s platform-side window, the bubble
+        stays visible across provider stalls / upstream API timeouts.
         """
+        # Bound each send_typing round-trip so the refresh cadence isn't
+        # gated on network health.  Must stay below ``interval`` so a slow
+        # call gets abandoned before the next scheduled tick.
+        _send_typing_timeout = max(0.25, min(1.5, interval - 0.25))
         try:
             while True:
                 if stop_event is not None and stop_event.is_set():
                     return
                 if chat_id not in self._typing_paused:
-                    await self.send_typing(chat_id, metadata=metadata)
+                    try:
+                        await asyncio.wait_for(
+                            self.send_typing(chat_id, metadata=metadata),
+                            timeout=_send_typing_timeout,
+                        )
+                    except asyncio.TimeoutError:
+                        # Slow network — abandon this tick, keep the loop
+                        # on schedule so the next send_typing fires fresh.
+                        pass
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as typing_err:
+                        logger.debug(
+                            "[%s] send_typing error (non-fatal): %s",
+                            self.name, typing_err,
+                        )
                 if stop_event is None:
                     await asyncio.sleep(interval)
                     continue
@@ -2303,11 +2432,15 @@ class BasePlatformAdapter(ABC):
                 # Send the text portion
                 if text_content:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
+                    # Build send metadata: thread_id + mention target for platforms that need it
+                    send_metadata = dict(_thread_metadata) if _thread_metadata else {}
+                    if event.source.user_id:
+                        send_metadata["mention_user_id"] = event.source.user_id
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,
                         reply_to=event.message_id,
-                        metadata=_thread_metadata,
+                        metadata=send_metadata,
                     )
                     _record_delivery(result)
 

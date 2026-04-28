@@ -222,12 +222,59 @@ class TestMessageStorage:
         assert conv[0] == {"role": "user", "content": "Hello"}
         assert conv[1] == {"role": "assistant", "content": "Hi!"}
 
+    def test_get_messages_as_conversation_includes_ancestor_chain(self, db):
+        db.create_session("root", "tui")
+        db.append_message("root", role="user", content="first prompt")
+        db.append_message("root", role="assistant", content="first answer")
+        db.create_session("child", "tui", parent_session_id="root")
+        db.append_message("child", role="user", content="second prompt")
+        db.append_message("child", role="assistant", content="second answer")
+
+        conv = db.get_messages_as_conversation("child", include_ancestors=True)
+
+        assert [m["content"] for m in conv] == [
+            "first prompt",
+            "first answer",
+            "second prompt",
+            "second answer",
+        ]
+
+    def test_get_messages_as_conversation_avoids_repeated_resume_prompts_from_ancestors(self, db):
+        db.create_session("root", "tui")
+        db.append_message("root", role="user", content="same prompt")
+        db.append_message("root", role="user", content="same prompt")
+        db.append_message("root", role="assistant", content="answer")
+        db.create_session("child", "tui", parent_session_id="root")
+        db.append_message("child", role="user", content="next prompt")
+
+        conv = db.get_messages_as_conversation("child", include_ancestors=True)
+
+        assert [m["content"] for m in conv if m["role"] == "user"] == ["same prompt", "next prompt"]
+
     def test_finish_reason_stored(self, db):
         db.create_session(session_id="s1", source="cli")
         db.append_message("s1", role="assistant", content="Done", finish_reason="stop")
 
         messages = db.get_messages("s1")
         assert messages[0]["finish_reason"] == "stop"
+
+    def test_get_messages_as_conversation_strips_leaked_memory_context(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1",
+            role="assistant",
+            content=(
+                "<memory-context>\n"
+                "[System note: The following is recalled memory context, NOT new user input. Treat as informational background data.]\n\n"
+                "## Honcho Context\n"
+                "stale memory\n"
+                "</memory-context>\n\n"
+                "Visible answer"
+            ),
+        )
+
+        conv = db.get_messages_as_conversation("s1")
+        assert conv == [{"role": "assistant", "content": "Visible answer"}]
 
     def test_reasoning_persisted_and_restored(self, db):
         """Reasoning text is stored for assistant messages and restored by
@@ -743,6 +790,51 @@ class TestCJKSearchFallback:
         results = db.search_messages("Agent通信")
         assert len(results) == 1
 
+    def test_cjk_partial_fts5_results_supplemented_by_like(self, db):
+        """When FTS5 returns *some* CJK results, LIKE must still find all matches.
+
+        Regression test for #15500 / #14829: FTS5 unicode61 tokenizer drops
+        certain CJK characters, so multi-character queries may return partial
+        results.  The LIKE path must always run for CJK queries.
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="telegram")
+        db.append_message("s1", role="user", content="昨晚讨论了记忆系统")
+        db.append_message("s2", role="user", content="昨晚的会议纪要已发送")
+        results = db.search_messages("昨晚")
+        assert len(results) == 2
+        session_ids = {r["session_id"] for r in results}
+        assert session_ids == {"s1", "s2"}
+
+    def test_cjk_like_dedup_no_duplicates(self, db):
+        """When FTS5 and LIKE both find the same message, no duplicates."""
+        db.create_session(session_id="s1", source="cli")
+        db.append_message("s1", role="user", content="测试去重逻辑")
+        results = db.search_messages("测试")
+        assert len(results) == 1
+
+    def test_cjk_like_escapes_wildcards(self, db):
+        """Special characters (%, _) in CJK queries are treated as literals."""
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="cli")
+        db.append_message("s1", role="user", content="达成100%完成率")
+        db.append_message("s2", role="user", content="达成100完成率是目标")
+        # The % in the query must be literal — should only match s1
+        results = db.search_messages("100%完成")
+        assert len(results) == 1
+        assert results[0]["session_id"] == "s1"
+
+    def test_cjk_trigram_preserves_boolean_operators(self, db):
+        """Boolean operators (OR, AND, NOT) work in CJK trigram queries."""
+        db.create_session(session_id="s1", source="cli")
+        db.create_session(session_id="s2", source="cli")
+        db.append_message("s1", role="user", content="记忆系统很好用")
+        db.append_message("s2", role="user", content="断裂连接需要修复")
+        results = db.search_messages("记忆系统 OR 断裂连接")
+        assert len(results) == 2
+        session_ids = {r["session_id"] for r in results}
+        assert session_ids == {"s1", "s2"}
+
 
 # =========================================================================
 # Session search and listing
@@ -1200,7 +1292,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 9
+        assert version == 10
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""
@@ -1261,7 +1353,7 @@ class TestSchemaInit:
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 9
+        assert cursor.fetchone()[0] == 10
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
@@ -1280,6 +1372,144 @@ class TestSchemaInit:
         assert session["title"] == "Migrated Title"
 
         migrated_db.close()
+
+    def test_reconciliation_adds_missing_columns(self, tmp_path):
+        """Columns present in SCHEMA_SQL but missing from the live table
+        are added by _reconcile_columns regardless of schema_version.
+
+        Regression test: commit a7d78d3b inserted a new v7 migration
+        (reasoning_content) and renumbered the old v7 (api_call_count)
+        to v8.  Users already at the old v7 had schema_version >= 7,
+        so the new v7 block was skipped and reasoning_content was never
+        created — causing 'no such column' on /continue.
+        """
+        import sqlite3
+
+        db_path = tmp_path / "gap_test.db"
+        conn = sqlite3.connect(str(db_path))
+        # Simulate the old v7 state: api_call_count exists, reasoning_content does NOT
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (7);
+
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                user_id TEXT,
+                model TEXT,
+                model_config TEXT,
+                system_prompt TEXT,
+                parent_session_id TEXT,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                end_reason TEXT,
+                message_count INTEGER DEFAULT 0,
+                tool_call_count INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_write_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                billing_provider TEXT,
+                billing_base_url TEXT,
+                billing_mode TEXT,
+                estimated_cost_usd REAL,
+                actual_cost_usd REAL,
+                cost_status TEXT,
+                cost_source TEXT,
+                pricing_version TEXT,
+                title TEXT,
+                api_call_count INTEGER DEFAULT 0
+            );
+
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_call_id TEXT,
+                tool_calls TEXT,
+                tool_name TEXT,
+                timestamp REAL NOT NULL,
+                token_count INTEGER,
+                finish_reason TEXT,
+                reasoning TEXT,
+                reasoning_details TEXT,
+                codex_reasoning_items TEXT
+            );
+        """)
+        conn.execute(
+            "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+            ("s1", "cli", 1000.0),
+        )
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp) "
+            "VALUES (?, ?, ?, ?)",
+            ("s1", "assistant", "hello", 1001.0),
+        )
+        conn.commit()
+        # Verify reasoning_content is absent
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()}
+        assert "reasoning_content" not in cols
+        conn.close()
+
+        # Open with SessionDB — reconciliation should add the missing column
+        migrated_db = SessionDB(db_path=db_path)
+
+        msg_cols = {
+            r[1]
+            for r in migrated_db._conn.execute("PRAGMA table_info(messages)").fetchall()
+        }
+        assert "reasoning_content" in msg_cols
+
+        # The query that used to crash must now work
+        cursor = migrated_db._conn.execute(
+            "SELECT role, content, reasoning, reasoning_content, "
+            "reasoning_details, codex_reasoning_items "
+            "FROM messages WHERE session_id = ?",
+            ("s1",),
+        )
+        row = cursor.fetchone()
+        assert row is not None
+        assert row[0] == "assistant"
+        assert row[3] is None  # reasoning_content NULL for old rows
+
+        migrated_db.close()
+
+    def test_reconciliation_is_idempotent(self, tmp_path):
+        """Opening the same database twice doesn't error or duplicate columns."""
+        db_path = tmp_path / "idempotent.db"
+        db1 = SessionDB(db_path=db_path)
+        cols1 = {r[1] for r in db1._conn.execute("PRAGMA table_info(messages)").fetchall()}
+        db1.close()
+
+        db2 = SessionDB(db_path=db_path)
+        cols2 = {r[1] for r in db2._conn.execute("PRAGMA table_info(messages)").fetchall()}
+        db2.close()
+
+        assert cols1 == cols2
+
+    def test_schema_sql_is_source_of_truth(self, db):
+        """Every column in SCHEMA_SQL exists in the live database.
+
+        This is the architectural invariant: SCHEMA_SQL declares the
+        desired schema, _reconcile_columns ensures it matches reality.
+        """
+        from hermes_state import SCHEMA_SQL
+
+        expected = SessionDB._parse_schema_columns(SCHEMA_SQL)
+        for table_name, declared_cols in expected.items():
+            live_cols = {
+                r[1]
+                for r in db._conn.execute(
+                    f'PRAGMA table_info("{table_name}")'
+                ).fetchall()
+            }
+            for col_name in declared_cols:
+                assert col_name in live_cols, (
+                    f"Column {col_name} declared in SCHEMA_SQL for {table_name} "
+                    f"but missing from live DB. Live columns: {live_cols}"
+                )
 
 
 class TestTitleUniqueness:
@@ -1980,4 +2210,59 @@ class TestAutoMaintenance:
         assert marker is not None
         # Should parse as a float timestamp close to now.
         assert abs(float(marker) - time.time()) < 60
+
+    def test_auto_prune_deletes_transcript_files(self, db, tmp_path):
+        """Issue #3015: auto-prune must also delete on-disk transcript files."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+
+        self._make_old_ended(db, "old1", days_old=100)
+        self._make_old_ended(db, "old2", days_old=100)
+        db.create_session(session_id="new", source="cli")  # active
+
+        # Transcript files mimicking real gateway/CLI layout
+        (sessions_dir / "old1.json").write_text("{}")
+        (sessions_dir / "old1.jsonl").write_text("{}\n")
+        (sessions_dir / "old2.jsonl").write_text("{}\n")
+        (sessions_dir / "request_dump_old1_001.json").write_text("{}")
+        (sessions_dir / "new.jsonl").write_text("{}\n")  # active, must survive
+
+        result = db.maybe_auto_prune_and_vacuum(
+            retention_days=90, sessions_dir=sessions_dir
+        )
+        assert result["pruned"] == 2
+
+        # Pruned transcript files are gone
+        assert not (sessions_dir / "old1.json").exists()
+        assert not (sessions_dir / "old1.jsonl").exists()
+        assert not (sessions_dir / "old2.jsonl").exists()
+        assert not (sessions_dir / "request_dump_old1_001.json").exists()
+        # Active session's transcript is untouched
+        assert (sessions_dir / "new.jsonl").exists()
+
+    def test_auto_prune_without_sessions_dir_preserves_files(self, db, tmp_path):
+        """Backward-compat: no sessions_dir = DB-only cleanup (legacy behavior)."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        self._make_old_ended(db, "old", days_old=100)
+        (sessions_dir / "old.jsonl").write_text("{}\n")
+
+        result = db.maybe_auto_prune_and_vacuum(retention_days=90)
+        assert result["pruned"] == 1
+        # File stays — caller didn't opt in
+        assert (sessions_dir / "old.jsonl").exists()
+
+    def test_prune_sessions_deletes_files_for_pruned_only(self, db, tmp_path):
+        """Active-session transcripts must never be deleted by prune."""
+        sessions_dir = tmp_path / "sessions"
+        sessions_dir.mkdir()
+        self._make_old_ended(db, "old", days_old=100)
+        db.create_session(session_id="active", source="cli")  # not ended
+        (sessions_dir / "old.jsonl").write_text("{}\n")
+        (sessions_dir / "active.jsonl").write_text("{}\n")
+
+        count = db.prune_sessions(older_than_days=90, sessions_dir=sessions_dir)
+        assert count == 1
+        assert not (sessions_dir / "old.jsonl").exists()
+        assert (sessions_dir / "active.jsonl").exists()
 

@@ -510,6 +510,34 @@ slack:
 
 Keys are Slack channel IDs (find them via channel details → "About" → scroll to bottom). All messages in the matching channel get the prompt injected as an ephemeral system instruction.
 
+## Per-Channel Skill Bindings
+
+Auto-load a skill whenever a new session starts in a specific channel or DM. Unlike per-channel prompts (which are injected on every turn), skill bindings inject the skill content as a user message at **session start** — it becomes part of the conversation history and does not need to be reloaded on subsequent turns.
+
+This is ideal for DMs or channels with a dedicated purpose (flashcards, a domain-specific Q&A bot, a support triage channel, etc.) where you don't want the model's own skill selector to decide whether to load on every short reply.
+
+```yaml
+slack:
+  channel_skill_bindings:
+    # DM channel — always runs in "german-flashcards" mode
+    - id: "D0ATH9TQ0G6"
+      skills:
+        - german-flashcards
+    # Research channel — preload multiple skills in order
+    - id: "C01RESEARCH"
+      skills:
+        - arxiv
+        - writing-plans
+    # Short form: single skill as a string
+    - id: "C02SUPPORT"
+      skill: hubspot-on-demand
+```
+
+Notes:
+- The binding matches by channel ID. For threaded messages in a bound channel, the thread inherits the parent channel's binding.
+- The skill is loaded only at session start (new session or after auto-reset). If you change the binding, run `/new` or wait for the session to auto-reset for it to take effect.
+- Combine with `channel_prompts` for per-channel tone/constraints on top of the skill's instructions.
+
 ## Troubleshooting
 
 | Problem | Solution |

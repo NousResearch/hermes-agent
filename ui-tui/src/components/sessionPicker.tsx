@@ -38,7 +38,7 @@ export function SessionPicker({ gw, onCancel, onSelect, t }: SessionPickerProps)
   useOverlayKeys({ onClose: onCancel })
 
   useEffect(() => {
-    gw.request<SessionListResponse>('session.list', { limit: 20 })
+    gw.request<SessionListResponse>('session.list', { limit: 200 })
       .then(raw => {
         const r = asRpcResult<SessionListResponse>(raw)
 

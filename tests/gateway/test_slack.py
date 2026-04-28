@@ -11,7 +11,7 @@ We mock the slack modules at import time to avoid collection errors.
 import asyncio
 import os
 import sys
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch, call
 
 import pytest
 
@@ -21,6 +21,7 @@ from gateway.platforms.base import (
     MessageType,
     SendResult,
     SUPPORTED_DOCUMENT_TYPES,
+    is_host_excluded_by_no_proxy,
 )
 
 
@@ -189,6 +190,198 @@ class TestSlackConnectCleanup:
 
 
 # ---------------------------------------------------------------------------
+# TestSlackProxyBehavior
+# ---------------------------------------------------------------------------
+
+class TestSlackProxyBehavior:
+    def test_no_proxy_helper_matches_slack_hosts(self):
+        assert is_host_excluded_by_no_proxy("slack.com", "localhost,.slack.com")
+        assert is_host_excluded_by_no_proxy("files.slack.com", "localhost slack.com")
+        assert is_host_excluded_by_no_proxy("wss-primary.slack.com", "*")
+        assert not is_host_excluded_by_no_proxy("slack.com", "localhost,.internal.corp")
+
+    def test_resolve_slack_proxy_url_ignores_unsupported_proxy_schemes(self):
+        with patch.object(_slack_mod, "resolve_proxy_url", return_value="socks5://proxy.example.com:1080"):
+            assert _slack_mod._resolve_slack_proxy_url() is None
+
+    def test_resolve_slack_proxy_url_checks_all_slack_hosts(self):
+        with patch.object(_slack_mod, "resolve_proxy_url", return_value="http://proxy.example.com:3128"), \
+             patch.object(_slack_mod, "is_host_excluded_by_no_proxy", side_effect=lambda host: host == "wss-primary.slack.com") as excluded:
+            assert _slack_mod._resolve_slack_proxy_url() is None
+            excluded.assert_has_calls([
+                call("slack.com"),
+                call("files.slack.com"),
+                call("wss-primary.slack.com"),
+            ])
+
+    @pytest.mark.asyncio
+    async def test_connect_uses_proxy_when_not_bypassed(self):
+        created_apps = []
+        created_clients = []
+
+        class FakeWebClient:
+            def __init__(self, token):
+                self.token = token
+                self.proxy = "constructor-default"
+                suffix = token.split("-")[-1]
+                self.auth_test = AsyncMock(return_value={
+                    "team_id": f"T_{suffix}",
+                    "user_id": f"U_{suffix}",
+                    "user": f"bot-{suffix}",
+                    "team": f"Team {suffix}",
+                })
+                created_clients.append(self)
+
+        class FakeApp:
+            def __init__(self, token):
+                self.token = token
+                self.client = FakeWebClient(token)
+                self.registered_events = []
+                self.registered_commands = []
+                self.registered_actions = []
+                created_apps.append(self)
+
+            def event(self, event_type):
+                self.registered_events.append(event_type)
+
+                def decorator(fn):
+                    return fn
+
+                return decorator
+
+            def command(self, command_name):
+                self.registered_commands.append(command_name)
+
+                def decorator(fn):
+                    return fn
+
+                return decorator
+
+            def action(self, action_id):
+                self.registered_actions.append(action_id)
+
+                def decorator(fn):
+                    return fn
+
+                return decorator
+
+        class FakeSocketModeHandler:
+            def __init__(self, app, app_token, proxy=None):
+                self.app = app
+                self.app_token = app_token
+                self.proxy = proxy
+                self.client = MagicMock(proxy="constructor-default")
+
+            def start_async(self):
+                return None
+
+            async def close_async(self):
+                return None
+
+        config = PlatformConfig(enabled=True, token="xoxb-primary,xoxb-secondary")
+        adapter = SlackAdapter(config)
+
+        with patch.object(_slack_mod, "AsyncApp", side_effect=FakeApp), \
+             patch.object(_slack_mod, "AsyncWebClient", side_effect=FakeWebClient), \
+             patch.object(_slack_mod, "AsyncSocketModeHandler", FakeSocketModeHandler), \
+             patch.object(_slack_mod, "_resolve_slack_proxy_url", return_value="http://proxy.example.com:3128"), \
+             patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}, clear=False), \
+             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
+             patch("asyncio.create_task", return_value=MagicMock(name="socket-mode-task")):
+            result = await adapter.connect()
+
+        assert result is True
+        assert created_apps[0].client.proxy == "http://proxy.example.com:3128"
+        assert all(client.proxy == "http://proxy.example.com:3128" for client in created_clients)
+        assert adapter._handler is not None
+        assert adapter._handler.proxy == "http://proxy.example.com:3128"
+        assert adapter._handler.client.proxy == "http://proxy.example.com:3128"
+
+    @pytest.mark.asyncio
+    async def test_connect_clears_proxy_when_no_proxy_matches_slack(self):
+        created_apps = []
+        created_clients = []
+
+        class FakeWebClient:
+            def __init__(self, token):
+                self.token = token
+                self.proxy = "constructor-default"
+                suffix = token.split("-")[-1]
+                self.auth_test = AsyncMock(return_value={
+                    "team_id": f"T_{suffix}",
+                    "user_id": f"U_{suffix}",
+                    "user": f"bot-{suffix}",
+                    "team": f"Team {suffix}",
+                })
+                created_clients.append(self)
+
+        class FakeApp:
+            def __init__(self, token):
+                self.token = token
+                self.client = FakeWebClient(token)
+                self.registered_events = []
+                self.registered_commands = []
+                self.registered_actions = []
+                created_apps.append(self)
+
+            def event(self, event_type):
+                self.registered_events.append(event_type)
+
+                def decorator(fn):
+                    return fn
+
+                return decorator
+
+            def command(self, command_name):
+                self.registered_commands.append(command_name)
+
+                def decorator(fn):
+                    return fn
+
+                return decorator
+
+            def action(self, action_id):
+                self.registered_actions.append(action_id)
+
+                def decorator(fn):
+                    return fn
+
+                return decorator
+
+        class FakeSocketModeHandler:
+            def __init__(self, app, app_token, proxy=None):
+                self.app = app
+                self.app_token = app_token
+                self.proxy = proxy
+                self.client = MagicMock(proxy="constructor-default")
+
+            def start_async(self):
+                return None
+
+            async def close_async(self):
+                return None
+
+        config = PlatformConfig(enabled=True, token="xoxb-primary")
+        adapter = SlackAdapter(config)
+
+        with patch.object(_slack_mod, "AsyncApp", side_effect=FakeApp), \
+             patch.object(_slack_mod, "AsyncWebClient", side_effect=FakeWebClient), \
+             patch.object(_slack_mod, "AsyncSocketModeHandler", FakeSocketModeHandler), \
+             patch.object(_slack_mod, "_resolve_slack_proxy_url", return_value=None), \
+             patch.dict(os.environ, {"SLACK_APP_TOKEN": "xapp-fake"}, clear=False), \
+             patch("gateway.status.acquire_scoped_lock", return_value=(True, None)), \
+             patch("asyncio.create_task", return_value=MagicMock(name="socket-mode-task")):
+            result = await adapter.connect()
+
+        assert result is True
+        assert created_apps[0].client.proxy is None
+        assert all(client.proxy is None for client in created_clients)
+        assert adapter._handler is not None
+        assert adapter._handler.proxy is None
+        assert adapter._handler.client.proxy is None
+
+
+# ---------------------------------------------------------------------------
 # TestSendDocument
 # ---------------------------------------------------------------------------
 
@@ -286,6 +479,40 @@ class TestSendDocument:
         assert result.success
         call_kwargs = adapter._app.client.files_upload_v2.call_args[1]
         assert call_kwargs["thread_ts"] == "1234567890.123456"
+
+    @pytest.mark.asyncio
+    async def test_send_document_thread_upload_marks_bot_participation(self, adapter, tmp_path):
+        test_file = tmp_path / "notes.txt"
+        test_file.write_bytes(b"some notes")
+
+        adapter._app.client.files_upload_v2 = AsyncMock(return_value={"ok": True})
+
+        await adapter.send_document(
+            chat_id="C123",
+            file_path=str(test_file),
+            metadata={"thread_id": "1234567890.123456"},
+        )
+
+        assert "1234567890.123456" in adapter._bot_message_ts
+
+    @pytest.mark.asyncio
+    async def test_send_document_retries_transient_upload_error(self, adapter, tmp_path):
+        test_file = tmp_path / "notes.txt"
+        test_file.write_bytes(b"some notes")
+
+        adapter._app.client.files_upload_v2 = AsyncMock(
+            side_effect=[RuntimeError("Connection reset by peer"), {"ok": True}]
+        )
+
+        with patch("asyncio.sleep", new_callable=AsyncMock) as sleep_mock:
+            result = await adapter.send_document(
+                chat_id="C123",
+                file_path=str(test_file),
+            )
+
+        assert result.success
+        assert adapter._app.client.files_upload_v2.await_count == 2
+        sleep_mock.assert_awaited_once()
 
 
 # ---------------------------------------------------------------------------
@@ -429,6 +656,36 @@ class TestIncomingDocumentHandling:
 
         msg_event = adapter.handle_message.call_args[0][0]
         assert "# Title" in msg_event.text
+
+    @pytest.mark.asyncio
+    async def test_json_snippet_injects_content(self, adapter):
+        """A .json snippet should be treated as a text document and injected."""
+        content = b'{"hello": "world", "count": 2}'
+
+        with patch.object(adapter, "_download_slack_file_bytes", new_callable=AsyncMock) as dl:
+            dl.return_value = content
+            event = self._make_event(
+                text="can you parse this",
+                files=[{
+                    "mimetype": "text/plain",
+                    "name": "zapfile.json",
+                    "filetype": "json",
+                    "pretty_type": "JSON",
+                    "mode": "snippet",
+                    "editable": True,
+                    "url_private_download": "https://files.slack.com/zapfile.json",
+                    "size": len(content),
+                }],
+            )
+            await adapter._handle_slack_message(event)
+
+        msg_event = adapter.handle_message.call_args[0][0]
+        assert msg_event.message_type == MessageType.DOCUMENT
+        assert len(msg_event.media_urls) == 1
+        assert msg_event.media_types == ["application/json"]
+        assert '[Content of zapfile.json]' in msg_event.text
+        assert '"hello": "world"' in msg_event.text
+        assert 'can you parse this' in msg_event.text
 
     @pytest.mark.asyncio
     async def test_large_txt_not_injected(self, adapter):
@@ -2089,6 +2346,48 @@ class TestSendImageSSRFGuards:
         call_kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
         assert "see this" in call_kwargs["text"]
         assert "https://public.example/image.png" in call_kwargs["text"]
+
+    @pytest.mark.asyncio
+    async def test_send_image_fallback_preserves_thread_metadata(self, adapter):
+        redirect_response = MagicMock()
+        redirect_response.is_redirect = True
+        redirect_response.next_request = MagicMock(
+            url="http://169.254.169.254/latest/meta-data"
+        )
+
+        client_kwargs = {}
+        mock_client = AsyncMock()
+        mock_client.__aenter__ = AsyncMock(return_value=mock_client)
+        mock_client.__aexit__ = AsyncMock(return_value=False)
+
+        async def fake_get(_url):
+            for hook in client_kwargs["event_hooks"]["response"]:
+                await hook(redirect_response)
+
+        mock_client.get = AsyncMock(side_effect=fake_get)
+        adapter._app.client.files_upload_v2 = AsyncMock(return_value={"ok": True})
+        adapter._app.client.chat_postMessage = AsyncMock(return_value={"ts": "reply_ts"})
+
+        def fake_async_client(*args, **kwargs):
+            client_kwargs.update(kwargs)
+            return mock_client
+
+        def fake_is_safe_url(url):
+            return url == "https://public.example/image.png"
+
+        with (
+            patch("tools.url_safety.is_safe_url", side_effect=fake_is_safe_url),
+            patch("httpx.AsyncClient", side_effect=fake_async_client),
+        ):
+            await adapter.send_image(
+                chat_id="C123",
+                image_url="https://public.example/image.png",
+                caption="see this",
+                metadata={"thread_id": "parent_ts_789"},
+            )
+
+        call_kwargs = adapter._app.client.chat_postMessage.call_args.kwargs
+        assert call_kwargs.get("thread_ts") == "parent_ts_789"
 
 
 # ---------------------------------------------------------------------------

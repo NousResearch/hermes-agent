@@ -278,6 +278,14 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "trinity-large-preview",
         "trinity-mini",
     ],
+    "gmi": [
+        "zai-org/GLM-5.1-FP8",
+        "deepseek-ai/DeepSeek-V3.2",
+        "moonshotai/Kimi-K2.5",
+        "google/gemini-3.1-flash-lite-preview",
+        "anthropic/claude-sonnet-4.6",
+        "openai/gpt-5.4",
+    ],
     "opencode-zen": [
         "kimi-k2.5",
         "gpt-5.4-pro",
@@ -709,7 +717,6 @@ class ProviderEntry(NamedTuple):
     label: str
     tui_desc: str   # detailed description for `hermes model` TUI
 
-
 CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("nous",           "Nous Portal",              "Nous Portal (Nous Research subscription)"),
     ProviderEntry("openrouter",     "OpenRouter",               "OpenRouter (100+ models, pay-per-use)"),
@@ -735,6 +742,7 @@ CANONICAL_PROVIDERS: list[ProviderEntry] = [
     ProviderEntry("alibaba",        "Alibaba Cloud (DashScope)","Alibaba Cloud / DashScope Coding (Qwen + multi-provider)"),
     ProviderEntry("ollama-cloud",   "Ollama Cloud",             "Ollama Cloud (cloud-hosted open models — ollama.com)"),
     ProviderEntry("arcee",          "Arcee AI",                 "Arcee AI (Trinity models — direct API)"),
+    ProviderEntry("gmi",            "GMI Cloud",                "GMI Cloud (multi-model direct API)"),
     ProviderEntry("kilocode",       "Kilo Code",                "Kilo Code (Kilo Gateway API)"),
     ProviderEntry("opencode-zen",   "OpenCode Zen",             "OpenCode Zen (35+ curated models, pay-as-you-go)"),
     ProviderEntry("opencode-go",    "OpenCode Go",              "OpenCode Go (open models, $10/month subscription)"),
@@ -769,6 +777,8 @@ _PROVIDER_ALIASES = {
     "stepfun-coding-plan": "stepfun",
     "arcee-ai": "arcee",
     "arceeai": "arcee",
+    "gmi-cloud": "gmi",
+    "gmicloud": "gmi",
     "minimax-china": "minimax-cn",
     "minimax_cn": "minimax-cn",
     "claude": "anthropic",
@@ -1849,6 +1859,19 @@ def provider_model_ids(provider: Optional[str], *, force_refresh: bool = False) 
                     return live
             except Exception:
                 pass
+    if normalized == "gmi":
+        try:
+            from hermes_cli.auth import resolve_api_key_provider_credentials
+
+            creds = resolve_api_key_provider_credentials("gmi")
+            api_key = str(creds.get("api_key") or "").strip()
+            base_url = str(creds.get("base_url") or "").strip()
+            if api_key and base_url:
+                live = fetch_api_models(api_key, base_url)
+                if live:
+                    return live
+        except Exception:
+            pass
     if normalized == "custom":
         base_url = _get_custom_base_url()
         if base_url:
@@ -2224,6 +2247,52 @@ def copilot_model_api_mode(
                 return "anthropic_messages"
 
     return "chat_completions"
+
+
+# Azure Foundry model families that require the Responses API.  Azure
+# rejects /chat/completions against these deployments with
+# ``400 "The requested operation is unsupported."`` — the same payload Bob
+# Dobolina hit in April 2026 on ``gpt-5.3-codex`` while ``gpt-4o-pure`` on
+# the same endpoint worked fine.  Keep the patterns broad enough to cover
+# vendor-renamed deployments (e.g. ``gpt-5.3-codex``, ``gpt-5-codex``,
+# ``gpt-5.4``, ``o1-preview``) but tight enough to leave GPT-4 / 3.5 / Llama /
+# Mistral / Grok deployments on chat completions.
+_AZURE_FOUNDRY_RESPONSES_PREFIXES = (
+    "codex",       # codex-*, codex-mini
+    "gpt-5",       # gpt-5, gpt-5.x, gpt-5-codex, gpt-5.x-codex
+    "o1",          # o1, o1-preview, o1-mini
+    "o3",          # o3, o3-mini
+    "o4",          # o4, o4-mini
+)
+
+
+def azure_foundry_model_api_mode(model_name: Optional[str]) -> Optional[str]:
+    """Infer Azure Foundry api_mode from a deployment/model name.
+
+    Returns ``"codex_responses"`` when the model name matches a family that
+    only accepts the Responses API on Azure Foundry (GPT-5.x, codex, o1/o3/o4
+    reasoning models).  Returns ``None`` otherwise — the caller should fall
+    back to the configured/default api_mode (typically ``chat_completions``)
+    so GPT-4o, GPT-4 Turbo, Llama, Mistral, etc. keep working.
+
+    Intentionally does NOT return ``anthropic_messages``; Anthropic-style
+    Azure endpoints are disambiguated by URL (``/anthropic`` suffix) in
+    ``runtime_provider._detect_api_mode_for_url`` and by the user setting
+    ``model.api_mode: anthropic_messages`` explicitly.
+    """
+    raw = str(model_name or "").strip().lower()
+    if not raw:
+        return None
+    # Strip any vendor/ prefix a user may have copied from OpenRouter / Copilot.
+    if "/" in raw:
+        raw = raw.rsplit("/", 1)[-1]
+    # gpt-5-mini speaks chat completions on Copilot but Azure Foundry deploys
+    # the full gpt-5 family uniformly on Responses API — don't carve an
+    # exception here.
+    for prefix in _AZURE_FOUNDRY_RESPONSES_PREFIXES:
+        if raw.startswith(prefix):
+            return "codex_responses"
+    return None
 
 
 def normalize_opencode_model_id(provider_id: Optional[str], model_id: Optional[str]) -> str:

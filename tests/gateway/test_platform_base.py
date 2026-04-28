@@ -3,6 +3,8 @@
 import os
 from unittest.mock import patch
 
+import pytest
+
 from gateway.platforms.base import (
     BasePlatformAdapter,
     GATEWAY_SECRET_CAPTURE_UNSUPPORTED_MESSAGE,
@@ -581,4 +583,48 @@ class TestTruncateMessageUtf16:
             assert fence_count % 2 == 0, (
                 f"Chunk {i} has unbalanced fences ({fence_count})"
             )
+
+
+class TestProxyKwargsForAiohttp:
+    """Verify proxy_kwargs_for_aiohttp routes all schemes through ProxyConnector."""
+
+    def test_none_returns_empty(self):
+        from gateway.platforms.base import proxy_kwargs_for_aiohttp
+
+        sess_kw, req_kw = proxy_kwargs_for_aiohttp(None)
+        assert sess_kw == {}
+        assert req_kw == {}
+
+    def test_http_proxy_uses_connector_when_aiohttp_socks_available(self):
+        pytest.importorskip("aiohttp_socks")
+        from unittest.mock import MagicMock
+        from gateway.platforms.base import proxy_kwargs_for_aiohttp
+
+        sentinel = MagicMock(name="ProxyConnector")
+        with patch("aiohttp_socks.ProxyConnector.from_url", return_value=sentinel):
+            sess_kw, req_kw = proxy_kwargs_for_aiohttp("http://proxy:8080")
+        assert sess_kw.get("connector") is sentinel, (
+            "HTTP proxy must use ProxyConnector so libraries that don't "
+            "forward per-request proxy= kwargs still route through the proxy"
+        )
+        assert req_kw == {}
+
+    def test_socks_proxy_uses_connector(self):
+        pytest.importorskip("aiohttp_socks")
+        from unittest.mock import MagicMock
+        from gateway.platforms.base import proxy_kwargs_for_aiohttp
+
+        sentinel = MagicMock(name="ProxyConnector")
+        with patch("aiohttp_socks.ProxyConnector.from_url", return_value=sentinel):
+            sess_kw, req_kw = proxy_kwargs_for_aiohttp("socks5://proxy:1080")
+        assert sess_kw.get("connector") is sentinel
+        assert req_kw == {}
+
+    def test_http_proxy_falls_back_without_aiohttp_socks(self):
+        from gateway.platforms.base import proxy_kwargs_for_aiohttp
+
+        with patch.dict("sys.modules", {"aiohttp_socks": None}):
+            sess_kw, req_kw = proxy_kwargs_for_aiohttp("http://proxy:8080")
+            assert sess_kw == {}
+            assert req_kw == {"proxy": "http://proxy:8080"}
 

@@ -143,20 +143,20 @@ Creating nodes with the same names you just destroyed in the SAME script causes 
 ```python
 # td_execute_python:
 for c in list(root.children):
-    if c.valid and c.name.startswith('promo_'):
+    if c.valid and c.name.startswith('my_'):
         c.destroy()
-# ... then create promo_audio, promo_shader etc. in same script → CRASHES
+# ... then create my_audio, my_shader etc. in same script → CRASHES
 ```
 
 **CORRECT (two separate calls):**
 ```python
 # Call 1: td_execute_python — clean only
 for c in list(root.children):
-    if c.valid and c.name.startswith('promo_'):
+    if c.valid and c.name.startswith('my_'):
         c.destroy()
 
 # Call 2: td_execute_python — build (separate MCP call)
-audio = root.create(audiofileinCHOP, 'promo_audio')
+audio = root.create(audiofileinCHOP, 'my_audio')
 # ... rest of build
 ```
 
@@ -361,21 +361,13 @@ win.par.winopen.pulse()
 
 `out.sample(x, y)` returns pixels from a single cook snapshot. Compare samples with 2+ second delays, or use screencapture on the display window.
 
-### 32. Audio-reactive GLSL: dual-layer sync pipeline
+### 32. Audio-reactive GLSL: TD-side pipeline
 
-For audio-synced visuals, use BOTH layers for maximum effect:
-
-**Layer 1 (TD-side, real-time):** AudioFileIn → AudioSpectrum(timeslice=True, fftsize='256') → Math(gain=5) → choptoTOP(par.chop=math, layout='rowscropped') → GLSL input. The shader samples `sTD2DInputs[1]` at different x positions for bass/mid/hi. Record the TD output with MovieFileOut.
-
-**Layer 2 (Python-side, post-hoc):** scipy FFT on the SAME audio file → per-frame features (rms, bass, mid, hi, beat detection) → drive ASCII brightness, chromatic aberration, beat flashes during the render pass.
-
-Both layers locked to the same audio file = visuals genuinely sync to the beat at two independent stages.
+For audio-synced visuals: AudioFileIn → AudioSpectrum(timeslice=True, fftsize='256') → Math(gain=5) → choptoTOP(par.chop=math, layout='rowscropped') → GLSL input. The shader samples `sTD2DInputs[1]` at different x positions for bass/mid/hi. Record the TD output with MovieFileOut.
 
 **Key gotcha:** AudioFileIn must be cued (`par.cue=True` → `par.cuepulse.pulse()`) then uncued (`par.cue=False`, `par.play=True`) before recording starts. Otherwise the spectrum is silent for the first few seconds.
 
-### 33. twozero MCP: benchmark and prefer native tools
-
-Benchmarked April 2026: twozero MCP with 36 native tools. The old curl/REST method (port 9981) had zero native tools.
+### 33. twozero MCP: prefer native tools
 
 **Always prefer native MCP tools over td_execute_python:**
 - `td_create_operator` over `root.create()` scripts (handles viewport positioning)
@@ -425,13 +417,16 @@ TD can show `fps:0` in `td_get_perf` while ops still cook and `TOP.save()` still
 
 **a) Project is paused (playbar stopped).** TD's playbar can be toggled with spacebar. The `root` at `/` has no `.playbar` attribute (it's on the perform COMP). The easiest fix is sending a spacebar keypress via `td_input_execute`, though this tool can sometimes error. As a workaround, `TOP.save()` always works regardless of play state — use it to verify rendering is actually happening before spending time debugging FPS.
 
-**b) Audio device CHOP blocking the main thread.** An `audiooutCHOP` with an active audio device can consume 300-400ms/s (2000%+ of frame budget), stalling the cook loop at FPS=0. Fix: keep the CHOP active but set `volume=0` to prevent the audio driver from blocking. Disabling it entirely (`active=False`) may also work but can prevent downstream audio processing CHOPs from cooking.
+**b) Audio device CHOP blocking the main thread (MOST COMMON).** An `audiodeviceoutCHOP` with `active=True` can consume 300-400ms/s (2000%+ of frame budget), stalling the cook loop at FPS=0. **`volume=0` is NOT sufficient** — the audio driver still blocks. Fix: `par.active = False`. This completely stops the CHOP from interacting with the audio driver. If you need audio monitoring, enable it only during short playback checks, then disable before recording.
+
+Verified April 2026: disabling `audiodeviceoutCHOP` (`active=False`) restored FPS from 0 to 60 instantly, recovering from 2348% budget usage to 0.1%.
 
 Diagnostic sequence when FPS=0:
-1. `td_get_perf` — check if any op has extreme CPU/s
-2. `TOP.save()` on the output — if it produces a valid image, the pipeline works, just not at real-time rate
-3. Check for blocking CHOPs (audioout, audiodevin, etc.)
-4. Toggle play state (spacebar, or check if absTime.seconds is advancing)
+1. `td_get_perf` — check if any op has extreme CPU/s (audiodeviceoutCHOP is the usual suspect)
+2. If audiodeviceoutCHOP shows >100ms/s: set `par.active = False` immediately
+3. `TOP.save()` on the output — if it produces a valid image, the pipeline works, just not at real-time rate
+4. Check for other blocking CHOPs (audiodevin, etc.)
+5. Toggle play state (spacebar, or check if absTime.seconds is advancing)
 
 ### 39. Recording while FPS=0 produces empty or near-empty files
 
@@ -484,9 +479,20 @@ If `td_write_dat` fails, fall back to `td_execute_python`:
 op("/project1/shader_code").text = shader_string
 ```
 
-### 42. td_execute_python does NOT return stdout or print() output
+### 42. td_execute_python DOES return print() output — use it for debugging
 
-Despite what earlier versions of pitfall #33 stated, `print()` and `debug()` output from `td_execute_python` scripts does NOT appear in the MCP response. The response is always just `(ok)` + FPS/error summary. To read values back, use dedicated inspection tools (`td_get_operator_info`, `td_read_dat`, `td_read_chop`) instead of trying to print from within a script.
+`print()` statements in `td_execute_python` scripts appear in the MCP response text. This is the correct way to read values back from scripts. The response format is: printed output first, then `[fps X.X/X] [N err/N warn]` on a separate line.
+
+However, the `result` variable (if you set one) does NOT appear verbatim — use `print()` for anything you need to read back:
+```python
+# CORRECT — appears in response:
+print('value:', some_value)
+
+# WRONG — not reliably in response:
+result = some_value
+```
+
+For structured data, use dedicated inspection tools (`td_get_operator_info`, `td_read_chop`) which return clean JSON.
 
 ### 43. td_get_operator_info JSON is appended with `[fps X.X/X]` — breaks json.loads()
 
@@ -496,13 +502,203 @@ clean = response_text.rsplit('[fps', 1)[0]
 data = json.loads(clean)
 ```
 
-### 44. td_get_screenshot is asynchronous — returns `{"status": "pending"}`
+### 44. td_get_screenshot is unreliable — returns `{"status": "pending"}` and may never deliver
 
-Screenshots don't complete instantly. The tool returns `{"status": "pending", "requestId": "..."}` and the actual file appears later. Wait a few seconds before checking for the file. There is no callback or completion notification — poll the filesystem.
+Screenshots don't complete instantly. The tool returns `{"status": "pending", "requestId": "..."}` and the actual file may appear later — or may NEVER appear at all. In testing (April 2026), screenshots stayed "pending" indefinitely with no file written to disk, even though the shader was cooking at 8-30fps.
 
-### 45. Recording duration is manual — no auto-stop at audio end
+**Do NOT rely on `td_get_screenshot` for frame capture.** For reliable frame capture, use MovieFileOut recording + ffmpeg frame extraction:
+```bash
+# Record in TD first, then extract frames:
+ffmpeg -y -i /tmp/td_output.mov -t 25 -vf 'fps=24' /tmp/td_frames/frame_%06d.png
+```
+
+If you need a quick visual check, `td_get_screenshot` is worth trying (it sometimes works), but always have the recording fallback. There is no callback or completion notification — if the file doesn't appear after 5-10 seconds, it's not coming.
+
+### 45. Heavy shaders cook below record FPS — many duplicate frames in output
+
+A raymarched GLSL shader may only cook at 8-15fps even though MovieFileOut records at 60fps. The recording still works (TD writes the last-cooked frame each time), but the resulting file has many duplicate frames. When extracting frames for post-processing, use a lower fps filter to avoid redundant frames:
+```bash
+# Extract at 24fps from a 60fps recording of an 8fps shader:
+ffmpeg -y -i /tmp/td_output.mov -t 25 -vf 'fps=24' /tmp/td_frames/frame_%06d.png
+```
+Check actual cook FPS with `td_get_perf` before committing to a long recording. If FPS < 15, the output will be a slideshow regardless of the recording codec.
+
+### 46. Recording duration is manual — no auto-stop at audio end
 
 MovieFileOut records until `par.record = False` is set. If audio ends before you stop recording, the file keeps growing with repeated frames. Always stop recording promptly after the audio duration. For precision: set a timer on the agent side matching the audio length, then send `par.record = False`. Trim excess with ffmpeg as a safety net:
 ```bash
 ffmpeg -i raw.mov -t 25 -c copy trimmed.mov
+```
+
+### 47. AudioFileIn par.index stays at 0 in sequential mode — not a reliable progress indicator
+
+When `audiofileinCHOP` is in `playmode=2` (sequential), `par.index.eval()` returns 0.0 even while audio IS actively playing and the spectrum IS receiving data. Do NOT use `par.index` to check playback progress in sequential mode.
+
+**How to verify audio is actually playing:**
+- Read the spectrum CHOP values via `td_read_chop` — if values are non-zero and CHANGE between reads 1-2s apart, audio is flowing
+- Read the audio CHOP itself: non-zero waveform samples confirm the file is loaded and playing
+- `par.play.eval()` returning True is necessary but NOT sufficient — it can be True with no audio flowing if cue is stuck
+
+### 48. GLSL shader whiteout — clamp audio spectrum values in the shader
+
+Raw spectrum values multiplied by Math CHOP gain can produce very large numbers (5-20+) that blow out the shader's lighting, producing flat white/grey. The shader MUST clamp audio inputs:
+
+```glsl
+float bass = texture(sTD2DInputs[1], vec2(0.05, 0.25)).r;
+bass = clamp(bass, 0.0, 3.0);   // prevent whiteout
+mids = clamp(mids, 0.0, 3.0);
+hi = clamp(hi, 0.0, 3.0);
+```
+
+Discovered when gain=10 produced ~0.13 (too dark) during quiet passages but gain=50 produced ~9.4 (total whiteout). Fix: keep gain=10, use `highfreqboost=3.0` on AudioSpectrum, clamp in shader.
+
+### 49. Non-Commercial TD records at 1280x1280 (square) — always crop in post
+
+Even with `resolutionw=1280, resolutionh=720` on the GLSL TOP, Non-Commercial TD may output 1280x1280 to MovieFileOut. Always check dimensions with ffprobe and crop during extraction:
+
+```bash
+# Center-crop from 1280x1280 to 1280x720:
+ffmpeg -y -i /tmp/td_output.mov -t 25 -r 24 -vf "crop=1280:720:0:280" /tmp/frames/frame_%06d.png
+```
+
+Large ProRes files (1-2GB) at 1280x1280 decode at ~3fps, so 25s of footage takes ~3 minutes to extract.
+
+## Advanced Patterns (pitfalls 51+)
+
+### 51. Connection syntax: use `outputConnectors`/`inputConnectors`, NOT `outputs`/`inputs`
+
+```python
+# CORRECT
+src.outputConnectors[0].connect(dst.inputConnectors[0])
+# WRONG — raises IndexError or AttributeError
+src.outputs[0].connect(dst.inputs[0])
+```
+
+For feedback TOP, BOTH are required:
+```python
+fb.par.top = target.path
+target.outputConnectors[0].connect(fb.inputConnectors[0])
+```
+
+### 52. moviefileoutTOP `par.input` doesn't resolve via Python in TD 2025.32460
+
+Setting `moviefileoutTOP.par.input` programmatically does NOT work. All forms fail silently with "Not enough sources specified."
+
+**Workaround — frame capture + ffmpeg:**
+```python
+out = op('/project1/out')
+for i in range(300):
+    delay = i * 5
+    run(f"op('/project1/out').save('/tmp/frames/f_{i:04d}.png')", delayFrames=delay)
+# Then: ffmpeg -y -framerate 30 -i /tmp/frames/f_%04d.png -c:v prores -pix_fmt yuv420p /tmp/output.mov
+```
+
+### 53. Batch frame capture — use `me.fetch`/`me.store` for state across calls
+
+```python
+start = me.fetch('cap_frame', 0)
+for i in range(60):
+    frame = start + i
+    op('/project1/out').save(f'/tmp/frames/frame_{str(frame).zfill(4)}.png')
+me.store('cap_frame', start + 60)
+```
+Call 5 times for 300 frames. Each picks up where the last left off.
+
+### 54. GLSL TOP pixel shader requirements in TD 2025
+
+```glsl
+// REQUIRED — declare output
+layout(location = 0) out vec4 fragColor;
+
+void main() {
+    vec3 col = vec3(1.0, 0.0, 0.0);
+    fragColor = TDOutputSwizzle(vec4(col, 1.0));
+}
+```
+**Built-in uniforms available:** `uTDOutputInfo.res` (vec4), `uTDTimeInfo.seconds`, `sTD2DInputs[N]`.
+**Auto-created DATs:** `name_pixel`, `name_vertex`, `name_compute` textDATs with example code.
+
+### 55. TOP.save() doesn't advance time — identical frames in tight loops
+
+`.save()` captures the current cooked frame without advancing TD's timeline:
+```python
+# WRONG — all frames identical
+for i in range(300):
+    op('/project1/out').save(f'frames/f_{i:04d}.png')
+
+# CORRECT — use run() with delayFrames
+for i in range(300):
+    delay = i * 5
+    run(f"op('/project1/out').save('frames/f_{i:04d}.png')", delayFrames=delay)
+```
+**NEVER use `time.sleep()` in TD** — it blocks the main thread and freezes the UI.
+
+### 56. Feedback loop masks input changes — force switch during capture
+
+With feedback TOP opacity 0.7+, the buffer dominates output. Switching input produces nearly identical frames.
+
+**Fix — force switch index per capture:**
+```python
+for i in range(300):
+    idx = (i // 8) % num_inputs
+    delay = i * 5
+    run(f"op('/project1/vswitch').par.index={idx}; op('/project1/out').save('f_{i:04d}.png')", delayFrames=delay)
+```
+
+### 57. Large td_execute_python scripts fail — split into incremental calls
+
+10+ operator creations in one script cause timing issues. Split into 2-4 calls of 2-4 operators each. Within one call, `create()` handles work immediately. Across calls, `op('name')` may return `None` if the previous call hasn't committed.
+
+### 58. MCP instance reconnection after project.load()
+
+`project.load(path)` changes the PID. After loading, call `td_list_instances()` and use the new `target_instance`. For TOX files: import as child comp instead (doesn't disconnect).
+
+### 59. TOX reverse-engineering workflow
+
+```python
+comp = root.loadTox(r'/path/to/file.tox')
+comp.name = '_study_comp'
+for child in comp.children:
+    print(f'{child.name} ({child.OPType})')
+# Use td_get_operators_info, td_read_dat, check custom params
+```
+
+### 60. sliderCOMP naming — TD appends suffix
+
+TD auto-renames: `slider_brightness` → `slider_brightness1`. Always check names after creation.
+
+### 61. create() requires full operator type suffix
+
+```python
+# CORRECT
+proj.create('audiofileinCHOP', 'audio_in')
+proj.create('glslTOP', 'render')
+
+# WRONG — raises "Unknown operator type"
+proj.create('audiofilein', 'audio_in')
+proj.create('glsl', 'render')
+```
+
+### 62. Reparenting COMPs — use copyOPs, not connect()
+
+Moving COMPs with `inputCOMPConnectors[0].connect()` fails. Use copy + destroy:
+```python
+copied = target.copyOPs([source])  # preserves internal wiring
+source.destroy()
+# Re-wire external connections manually after the move
+```
+
+### 63. Slider wiring — expressionCHOP with op() expressions crashes TD
+
+```python
+# CRASHES TD — don't do this
+echop = root.create(expressionCHOP, 'slider_ctrl')
+echop.par.chan0expr = 'op("/project1/controls/slider_brightness1").par.value0'
+
+# WORKING — parameterCHOP as bridge
+pchop = root.create(parameterCHOP, 'slider_vals')
+pchop.par.ops = '/project1/controls'
+pchop.par.parameters = 'value0'
+pchop.par.custom = True
+pchop.par.builtin = False
 ```

@@ -36,27 +36,22 @@ End-to-end pipeline for producing publication-ready ML/AI research papers target
 
 This is **not a linear pipeline** — it is an iterative loop. Results trigger new experiments. Reviews trigger new analysis. The agent must handle these feedback loops.
 
-<!-- ascii-guard-ignore -->
+```text
+Research Paper Pipeline
+
+Phase 0: Project Setup
+  -> Phase 1: Literature Review
+  -> Phase 2: Experiment Design
+  -> Phase 3: Execution and Monitoring
+  -> Phase 4: Analysis
+  -> Phase 5: Paper Drafting
+  -> Phase 6: Self-Review and Revision
+  -> Phase 7: Submission
+
+Feedback loops:
+- Phase 4 can feed back to Phase 2 when analysis exposes experiment gaps.
+- Phase 6 can feed back to Phase 5 for rewrite and narrative repair.
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    RESEARCH PAPER PIPELINE                  │
-│                                                             │
-│  Phase 0: Project Setup ──► Phase 1: Literature Review      │
-│       │                          │                          │
-│       ▼                          ▼                          │
-│  Phase 2: Experiment     Phase 5: Paper Drafting ◄──┐      │
-│       Design                     │                   │      │
-│       │                          ▼                   │      │
-│       ▼                    Phase 6: Self-Review      │      │
-│  Phase 3: Execution &           & Revision ──────────┘      │
-│       Monitoring                 │                          │
-│       │                          ▼                          │
-│       ▼                    Phase 7: Submission               │
-│  Phase 4: Analysis ─────► (feeds back to Phase 2 or 5)     │
-│                                                             │
-└─────────────────────────────────────────────────────────────┘
-```
-<!-- ascii-guard-ignore-end -->
 
 ---
 

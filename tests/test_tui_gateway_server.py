@@ -2841,6 +2841,55 @@ def test_browser_manage_connect_normalizes_bare_host_port(monkeypatch):
     assert os.environ["BROWSER_CDP_URL"].startswith("http://")
 
 
+def test_browser_manage_connect_strips_discovery_path(monkeypatch):
+    """User-supplied discovery paths like `/json` or `/json/version`
+    must collapse to bare `scheme://host:port`; otherwise
+    ``_resolve_cdp_override`` will append ``/json/version`` again and
+    produce a duplicate path (Copilot review round-2 on #17120)."""
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: None,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        _stub_urlopen(monkeypatch, ok=True)
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "browser.manage",
+                "params": {"action": "connect", "url": "http://127.0.0.1:9222/json"},
+            }
+        )
+
+    assert resp["result"]["connected"] is True
+    assert resp["result"]["url"] == "http://127.0.0.1:9222"
+    assert os.environ["BROWSER_CDP_URL"] == "http://127.0.0.1:9222"
+
+
+def test_browser_manage_connect_preserves_devtools_browser_endpoint(monkeypatch):
+    """Concrete devtools websocket endpoints (e.g. Browserbase) must
+    survive verbatim — we only collapse discovery-style paths."""
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: None,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+    concrete = "ws://browserbase.example/devtools/browser/abc123"
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        _stub_urlopen(monkeypatch, ok=True)
+        resp = server.handle_request(
+            {
+                "id": "1",
+                "method": "browser.manage",
+                "params": {"action": "connect", "url": concrete},
+            }
+        )
+
+    assert resp["result"]["connected"] is True
+    assert resp["result"]["url"] == concrete
+    assert os.environ["BROWSER_CDP_URL"] == concrete
+
+
 def test_browser_manage_disconnect_drops_env_and_cleans(monkeypatch):
     monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9222")
     cleanup_count = {"n": 0}

@@ -4733,12 +4733,24 @@ def _(rid, params: dict) -> dict:
             if not ok:
                 return _err(rid, 5031, f"could not reach browser CDP at {url}")
 
-            # Persist the parsed URL (always a valid scheme://host:port
-            # round-trip via ``parsed.geturl()``) so a user-supplied
-            # bare ``host:port`` gets normalized before it reaches
-            # ``_get_cdp_override`` — the latter requires a full URL to
-            # resolve into a concrete CDP endpoint.
-            normalized = parsed.geturl()
+            # Persist a normalized URL for downstream CDP resolution.
+            # Discovery-style inputs (`http://host:port` or
+            # `http://host:port/json[/version]`) collapse to bare
+            # ``scheme://host:port`` so ``_resolve_cdp_override`` can
+            # safely append ``/json/version`` without producing a
+            # double-discovery path like ``.../json/json/version``.
+            # Concrete websocket endpoints (``/devtools/browser/<id>``
+            # — what Browserbase and other cloud providers return)
+            # are preserved verbatim.
+            if parsed.path.startswith("/devtools/browser/"):
+                normalized = parsed.geturl()
+            else:
+                normalized = parsed._replace(
+                    path="",
+                    params="",
+                    query="",
+                    fragment="",
+                ).geturl()
 
             # Order matters: clear any cached browser sessions BEFORE
             # publishing the new env var so an in-flight tool call

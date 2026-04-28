@@ -9783,25 +9783,18 @@ def _cmd_update_impl(args, gateway_mode: bool):
             )
             if pull_result.returncode != 0:
                 # ff-only failed — local and remote have diverged (e.g. upstream
-                # force-pushed or rebase).  Since local changes are already
-                # stashed, reset to match the remote exactly.
-                print(
-                    "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
-                )
-                reset_result = subprocess.run(
-                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
-                    cwd=PROJECT_ROOT,
-                    capture_output=True,
-                    text=True,
-                )
-                if reset_result.returncode != 0:
-                    print(f"✗ Failed to reset to origin/{branch}.")
-                    if reset_result.stderr.strip():
-                        print(f"  {reset_result.stderr.strip()}")
-                    print(
-                        f"  Try manually: git fetch origin && git reset --hard origin/{branch}"
-                    )
-                    sys.exit(1)
+                # force-pushed or this checkout has local commits).  Do NOT
+                # auto-run `git reset --hard`: that can discard committed local
+                # work, not just stashed working-tree changes.  Leave the repo
+                # untouched after the failed fast-forward and ask the user to
+                # choose the right recovery strategy explicitly.
+                print("  ⚠ Fast-forward not possible (history diverged).")
+                if pull_result.stderr.strip():
+                    print(f"  {pull_result.stderr.strip()}")
+                print("  No destructive reset was performed.")
+                print("  Inspect with: git status && git log --oneline --graph --decorate --all -20")
+                print(f"  If you intentionally want upstream exactly, run: git reset --hard origin/{branch}")
+                sys.exit(1)
 
             # Post-pull syntax guard: validate critical-path files actually
             # parse before declaring the update successful. If a bad commit

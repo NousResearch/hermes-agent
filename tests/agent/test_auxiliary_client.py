@@ -1509,3 +1509,129 @@ class TestAuxiliaryAuthRefreshRetry:
         mock_refresh.assert_called_once_with("anthropic")
         assert stale_client.chat.completions.create.await_count == 1
         assert fresh_client.chat.completions.create.await_count == 1
+
+
+class TestCodexAdapterReasoningTranslation:
+    """Verify _CodexCompletionsAdapter translates extra_body.reasoning
+    into the Responses API's top-level reasoning + include fields, matching
+    agent/transports/codex.py::build_kwargs() behavior.
+
+    Regression for user feedback (Apr 26): auxiliary callers that configure
+    reasoning via auxiliary.<task>.extra_body.reasoning had that config
+    silently dropped because the adapter only forwarded messages/model/tools.
+    """
+
+    @staticmethod
+    def _build_adapter():
+        """Build a _CodexCompletionsAdapter with a mocked responses.stream()."""
+        from agent.auxiliary_client import _CodexCompletionsAdapter
+        from types import SimpleNamespace
+
+        # Mock the stream context manager: yields no events, get_final_response
+        # returns a minimal empty-output response.
+        fake_final = SimpleNamespace(
+            output=[SimpleNamespace(
+                type="message",
+                content=[SimpleNamespace(type="output_text", text="hi")],
+            )],
+            usage=SimpleNamespace(input_tokens=1, output_tokens=1, total_tokens=2),
+        )
+
+        class _FakeStream:
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def __iter__(self): return iter([])
+            def get_final_response(self): return fake_final
+
+        captured_kwargs = {}
+
+        def _stream(**kwargs):
+            captured_kwargs.update(kwargs)
+            return _FakeStream()
+
+        real_client = MagicMock()
+        real_client.responses.stream = _stream
+        adapter = _CodexCompletionsAdapter(real_client, "gpt-5.3-codex")
+        return adapter, captured_kwargs
+
+    def test_reasoning_effort_medium_translated_to_top_level(self):
+        adapter, captured = self._build_adapter()
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"effort": "medium"}},
+        )
+        assert captured.get("reasoning") == {"effort": "medium", "summary": "auto"}
+        assert captured.get("include") == ["reasoning.encrypted_content"]
+
+    def test_reasoning_effort_minimal_clamped_to_low(self):
+        """Codex backend rejects 'minimal'; adapter clamps to 'low' per main transport."""
+        adapter, captured = self._build_adapter()
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"effort": "minimal"}},
+        )
+        assert captured.get("reasoning") == {"effort": "low", "summary": "auto"}
+        assert captured.get("include") == ["reasoning.encrypted_content"]
+
+    def test_reasoning_effort_low_passed_through(self):
+        adapter, captured = self._build_adapter()
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"effort": "low"}},
+        )
+        assert captured.get("reasoning") == {"effort": "low", "summary": "auto"}
+
+    def test_reasoning_effort_high_passed_through(self):
+        adapter, captured = self._build_adapter()
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"effort": "high"}},
+        )
+        assert captured.get("reasoning") == {"effort": "high", "summary": "auto"}
+
+    def test_reasoning_disabled_omits_reasoning_and_include(self):
+        adapter, captured = self._build_adapter()
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"enabled": False}},
+        )
+        assert "reasoning" not in captured
+        assert "include" not in captured
+
+    def test_reasoning_default_effort_when_only_enabled_flag(self):
+        """extra_body={"reasoning": {}} (truthy enabled by omission) → default 'medium'."""
+        adapter, captured = self._build_adapter()
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {}},
+        )
+        assert captured.get("reasoning") == {"effort": "medium", "summary": "auto"}
+        assert captured.get("include") == ["reasoning.encrypted_content"]
+
+    def test_no_extra_body_means_no_reasoning_keys(self):
+        """Baseline: without extra_body, no reasoning/include is sent (preserves
+        current behavior for callers that don't opt in)."""
+        adapter, captured = self._build_adapter()
+        adapter.create(messages=[{"role": "user", "content": "hi"}])
+        assert "reasoning" not in captured
+        assert "include" not in captured
+
+    def test_extra_body_without_reasoning_key_is_noop(self):
+        adapter, captured = self._build_adapter()
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"metadata": {"source": "test"}},
+        )
+        assert "reasoning" not in captured
+        assert "include" not in captured
+
+    def test_non_dict_reasoning_value_is_ignored_gracefully(self):
+        """Defensive: if a caller accidentally passes a string/None, we
+        silently skip instead of crashing inside the adapter."""
+        adapter, captured = self._build_adapter()
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": "medium"},  # wrong shape — must not crash
+        )
+        assert "reasoning" not in captured
+

@@ -410,6 +410,33 @@ class _CodexCompletionsAdapter:
         # Note: the Codex endpoint (chatgpt.com/backend-api/codex) does NOT
         # support max_output_tokens or temperature — omit to avoid 400 errors.
 
+        # Translate extra_body.reasoning (chat.completions shape) into the
+        # Responses API's top-level reasoning + include fields.  Mirrors
+        # agent/transports/codex.py::build_kwargs() so auxiliary callers
+        # that configure reasoning via auxiliary.<task>.extra_body get the
+        # same behavior as the main agent's Codex transport.
+        extra_body = kwargs.get("extra_body") or {}
+        if isinstance(extra_body, dict):
+            reasoning_cfg = extra_body.get("reasoning")
+            if isinstance(reasoning_cfg, dict):
+                if reasoning_cfg.get("enabled") is False:
+                    # Reasoning explicitly disabled — do not set reasoning
+                    # or include.  The Codex backend still thinks by
+                    # default, but we honor the caller's intent where the
+                    # API allows it.
+                    pass
+                else:
+                    effort = reasoning_cfg.get("effort", "medium")
+                    # Codex backend rejects "minimal"; clamp to "low" to
+                    # match the main-agent Codex transport behavior.
+                    if effort == "minimal":
+                        effort = "low"
+                    resp_kwargs["reasoning"] = {
+                        "effort": effort,
+                        "summary": "auto",
+                    }
+                    resp_kwargs["include"] = ["reasoning.encrypted_content"]
+
         # Tools support for auxiliary callers (e.g. skills_hub) that pass function schemas
         tools = kwargs.get("tools")
         if tools:

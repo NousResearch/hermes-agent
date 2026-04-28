@@ -207,6 +207,27 @@ def _ensure_docker_available() -> None:
         raise RuntimeError(
             "Docker executable could not be executed. Check your Docker installation."
         )
+    except PermissionError:
+        # This specifically catches the DooD (Docker-out-of-Docker) case where
+        # the container user lacks permission to connect to the host Docker socket.
+        # The socket exists and is accessible to root/root group, but the hermes
+        # user is not in that group. See issue #16703.
+        logger.error(
+            "Docker backend selected but '%s version' raised PermissionError. "
+            "This usually means Hermes is running inside a container with a mounted "
+            "Docker socket (DoD) but the container user does not have permission to "
+            "connect. Fix: ensure the container is started with the host Docker GID, e.g. "
+            "--group-add=$(getent group docker | cut -d: -f3), or run the container as "
+            "root, or ensure the hermes user is added to the docker group.",
+            docker_exe,
+            exc_info=True,
+        )
+        raise RuntimeError(
+            "Docker command is available but permission denied when trying to connect "
+            "to the Docker daemon. If running inside a container with a mounted Docker "
+            "socket (DoD/rootless), ensure the container is started with "
+            "--group-add=$(getent group docker | cut -d: -f3) or run as root."
+        )
     except subprocess.TimeoutExpired:
         logger.error(
             "Docker backend selected but '%s version' timed out. "

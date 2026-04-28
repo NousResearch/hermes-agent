@@ -6232,6 +6232,8 @@ class HermesCLI:
             self._console_print(f"  Status bar {state}")
         elif canonical == "verbose":
             self._toggle_verbose()
+        elif canonical == "footer":
+            self._handle_footer_command(cmd_original)
         elif canonical == "yolo":
             self._toggle_yolo()
         elif canonical == "reasoning":
@@ -6858,6 +6860,58 @@ class HermesCLI:
         print("  Note: banner colors will update on next session start.")
         if self._apply_tui_skin_style():
             print("  Prompt + TUI colors updated.")
+
+    def _handle_footer_command(self, cmd_original: str) -> None:
+        """Toggle or inspect ``display.runtime_footer.enabled`` from the CLI.
+
+        Usage:
+            /footer           → toggle
+            /footer on|off    → explicit
+            /footer status    → show current state
+        """
+        from hermes_cli.config import load_config
+        from hermes_cli.colors import Colors as _Colors
+
+        # Parse arg
+        arg = ""
+        try:
+            parts = (cmd_original or "").strip().split(None, 1)
+            if len(parts) > 1:
+                arg = parts[1].strip().lower()
+        except Exception:
+            arg = ""
+
+        cfg = load_config() or {}
+        footer_cfg = ((cfg.get("display") or {}).get("runtime_footer") or {})
+        current = bool(footer_cfg.get("enabled", False))
+        fields = footer_cfg.get("fields") or ["model", "context_pct", "cwd"]
+
+        if arg in ("status", "?"):
+            state = "ON" if current else "OFF"
+            _cprint(
+                f"  {_Colors.BOLD}Runtime footer:{_Colors.RESET} {state}\n"
+                f"  Fields: {', '.join(fields)}"
+            )
+            return
+
+        if arg in ("on", "enable", "true", "1"):
+            new_state = True
+        elif arg in ("off", "disable", "false", "0"):
+            new_state = False
+        elif arg == "":
+            new_state = not current
+        else:
+            _cprint("  Usage: /footer [on|off|status]")
+            return
+
+        if save_config_value("display.runtime_footer.enabled", new_state):
+            state = (
+                f"{_Colors.GREEN}ON{_Colors.RESET}" if new_state
+                else f"{_Colors.DIM}OFF{_Colors.RESET}"
+            )
+            _cprint(f"  Runtime footer: {state}")
+        else:
+            _cprint("  Failed to save runtime_footer setting to config.yaml")
 
     def _toggle_verbose(self):
         """Cycle tool progress mode: off → new → all → verbose → off."""

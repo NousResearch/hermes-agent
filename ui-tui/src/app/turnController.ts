@@ -431,7 +431,13 @@ class TurnController {
   recordMessageComplete(payload: { rendered?: string; reasoning?: string; text?: string }) {
     this.closeReasoningSegment()
 
-    const rawText = (payload.rendered ?? payload.text ?? this.bufRef).trimStart()
+    // Ink renders markdown via <Md>; the gateway's Rich-rendered ANSI
+    // (`payload.rendered`) is for terminals that can't.  Prioritising
+    // `rendered` here garbles output whenever a user opts into
+    // `display.final_response_markdown: render` because raw ANSI escapes
+    // pass through into the React tree.  Prefer raw text and fall back
+    // only when the gateway elected not to send any (#16391).
+    const rawText = (payload.text ?? payload.rendered ?? this.bufRef).trimStart()
     const split = splitReasoning(rawText)
     const finalText = finalTail(split.text, this.segmentMessages)
     const existingReasoning = this.reasoningText.trim() || String(payload.reasoning ?? '').trim()
@@ -516,7 +522,7 @@ class TurnController {
     return { finalMessages, finalText, wasInterrupted }
   }
 
-  recordMessageDelta({ rendered, text }: { rendered?: string; text?: string }) {
+  recordMessageDelta({ text }: { rendered?: string; text?: string }) {
     if (this.interrupted || !text) {
       return
     }
@@ -524,7 +530,12 @@ class TurnController {
     this.pruneTransient()
     this.endReasoningPhase()
 
-    this.bufRef = rendered ?? this.bufRef + text
+    // Always accumulate the raw text delta.  The pre-#16391 path replaced
+    // the entire buffer with `rendered` (an *incremental* Rich ANSI
+    // fragment), which on every tick discarded everything streamed so far
+    // — visible as overlapping coloured text and lost prose under
+    // `display.final_response_markdown: render`.
+    this.bufRef += text
 
     if (getUiState().streaming) {
       this.scheduleStreaming()

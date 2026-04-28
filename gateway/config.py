@@ -65,6 +65,7 @@ class Platform(Enum):
     WECOM = "wecom"
     WECOM_CALLBACK = "wecom_callback"
     WEIXIN = "weixin"
+    LINE = "line"
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
     YUANBAO = "yuanbao"
@@ -1128,6 +1129,53 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 pass
         if webhook_secret:
             config.platforms[Platform.WEBHOOK].extra["secret"] = webhook_secret
+
+    line_token = os.getenv("LINE_CHANNEL_ACCESS_TOKEN", "").strip()
+    line_secret = os.getenv("LINE_CHANNEL_SECRET", "").strip()
+    if line_token and line_secret:
+        if Platform.LINE not in config.platforms:
+            config.platforms[Platform.LINE] = PlatformConfig()
+        config.platforms[Platform.LINE].enabled = True
+        config.platforms[Platform.LINE].token = line_token
+        config.platforms[Platform.LINE].extra["channel_secret"] = line_secret
+
+        line_host = os.getenv("LINE_WEBHOOK_HOST", "").strip()
+        if line_host:
+            config.platforms[Platform.LINE].extra["host"] = line_host
+
+        line_port = os.getenv("LINE_WEBHOOK_PORT", "").strip()
+        if line_port:
+            try:
+                config.platforms[Platform.LINE].extra["port"] = int(line_port)
+            except ValueError:
+                pass
+
+        line_webhook_path = os.getenv("LINE_WEBHOOK_PATH", "").strip()
+        if line_webhook_path:
+            config.platforms[Platform.LINE].extra["webhook_path"] = line_webhook_path
+
+        line_media_path = os.getenv("LINE_MEDIA_PATH", "").strip()
+        if line_media_path:
+            config.platforms[Platform.LINE].extra["media_path"] = line_media_path
+
+        line_public_base_url = os.getenv("LINE_PUBLIC_BASE_URL", "").strip()
+        if line_public_base_url:
+            config.platforms[Platform.LINE].extra["public_base_url"] = line_public_base_url
+
+        line_grace = os.getenv("LINE_MULTIMODAL_GRACE_PERIOD_SECONDS", "").strip()
+        if line_grace:
+            try:
+                config.platforms[Platform.LINE].extra["multimodal_grace_period_seconds"] = float(line_grace)
+            except ValueError:
+                pass
+
+        line_home = os.getenv("LINE_HOME_CHANNEL", "").strip()
+        if line_home:
+            config.platforms[Platform.LINE].home_channel = HomeChannel(
+                platform=Platform.LINE,
+                chat_id=line_home,
+                name=os.getenv("LINE_HOME_CHANNEL_NAME", "Home"),
+            )
 
     # DingTalk
     dingtalk_client_id = os.getenv("DINGTALK_CLIENT_ID")

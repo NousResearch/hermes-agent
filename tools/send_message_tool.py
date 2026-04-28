@@ -221,6 +221,7 @@ def _handle_send(args):
         "wecom": Platform.WECOM,
         "wecom_callback": Platform.WECOM_CALLBACK,
         "weixin": Platform.WEIXIN,
+        "line": Platform.LINE,
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
         "yuanbao": Platform.YUANBAO,
@@ -448,6 +449,13 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     except ImportError:
         _telegram_available = False
 
+    # LINE adapter import is optional (requires line-bot-sdk)
+    try:
+        from gateway.platforms.line import LineAdapter
+        _line_available = True
+    except ImportError:
+        _line_available = False
+
     # Feishu adapter import is optional (requires lark-oapi)
     try:
         from gateway.platforms.feishu import FeishuAdapter
@@ -472,6 +480,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
     }
     if _feishu_available:
         _MAX_LENGTHS[Platform.FEISHU] = FeishuAdapter.MAX_MESSAGE_LENGTH
+    if _line_available:
+        _MAX_LENGTHS[Platform.LINE] = LineAdapter.MAX_MESSAGE_LENGTH
 
     # Smart-chunk the message to fit within platform limits.
     # For short messages or platforms without a known limit this is a no-op.
@@ -595,6 +605,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_feishu(pconfig, chat_id, chunk, thread_id=thread_id)
         elif platform == Platform.WECOM:
             result = await _send_wecom(pconfig.extra, chat_id, chunk)
+        elif platform == Platform.LINE:
+            result = await _send_line(pconfig, chat_id, chunk)
         elif platform == Platform.BLUEBUBBLES:
             result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
         elif platform == Platform.QQBOT:
@@ -1416,6 +1428,25 @@ async def _send_bluebubbles(extra, chat_id, message):
             await adapter.disconnect()
     except Exception as e:
         return _error(f"BlueBubbles send failed: {e}")
+
+
+async def _send_line(pconfig, chat_id, message):
+    """Send via LINE using the adapter's direct send path."""
+    try:
+        from gateway.platforms.line import LineAdapter, check_line_requirements
+        if not check_line_requirements():
+            return {"error": "LINE dependencies not installed (requires line-bot-sdk and aiohttp)"}
+    except ImportError:
+        return {"error": "LINE adapter not available."}
+
+    try:
+        adapter = LineAdapter(pconfig)
+        result = await adapter.send(chat_id=str(chat_id), content=message)
+        if not result.success:
+            return _error(f"LINE send failed: {result.error}")
+        return {"success": True, "platform": "line", "chat_id": str(chat_id), "message_id": result.message_id}
+    except Exception as e:
+        return _error(f"LINE send failed: {e}")
 
 
 async def _send_feishu(pconfig, chat_id, message, media_files=None, thread_id=None):

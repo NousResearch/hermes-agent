@@ -1045,8 +1045,11 @@ async def _send_qqbot(pconfig, chat_id, message):
     """Send via QQBot using the REST API directly (no WebSocket needed).
 
     Uses the QQ Bot Open Platform REST endpoints to get an access token
-    and post a message. Works for guild channels without requiring
-    a running gateway adapter.
+    and post a message.  Supports three target types:
+
+    * **C2C (DM)** — ``chat_id`` is a 32-char hex open_id → ``/v2/users/…/messages``
+    * **Group**    — ``chat_id`` is a 32-char hex group_open_id → ``/v2/groups/…/messages``
+    * **Guild**    — ``chat_id`` is a shorter numeric channel_id → ``/channels/…/messages``
     """
     try:
         import httpx
@@ -1059,6 +1062,38 @@ async def _send_qqbot(pconfig, chat_id, message):
               or os.getenv("QQ_CLIENT_SECRET", ""))
     if not appid or not secret:
         return _error("QQBot: QQ_APP_ID / QQ_CLIENT_SECRET not configured.")
+    # Determine target type from chat_id format:
+    #   - 32-char hex string → QQ open_id (C2C user or group)
+    #   - shorter numeric    → guild channel_id
+    import re as _re
+    is_openid = bool(_re.fullmatch(r'[0-9a-fA-F]{32}', chat_id))
+
+    # Check channel_directory for explicit type hint
+    chat_type_hint = None
+    try:
+        from gateway.channel_directory import get_directory
+        dir_entry = get_directory().get("qqbot", {}).get(chat_id, {})
+        chat_type_hint = dir_entry.get("chat_type")
+    except Exception:
+        pass
+
+    if chat_type_hint == "group" or (is_openid and chat_type_hint != "dm"):
+        # Group open_id — use /v2/groups endpoint
+        # If we only have an open_id hint without certainty, default to C2C
+        # (safer for DMs).  Explicit "group" hint is needed for groups.
+        if chat_type_hint == "group":
+            api_path = f"/v2/groups/{chat_id}/messages"
+        else:
+            api_path = f"/v2/users/{chat_id}/messages"
+    elif is_openid:
+        # C2C (DM) — 32-char hex, not explicitly group
+        api_path = f"/v2/users/{chat_id}/messages"
+    else:
+        # Guild channel — numeric ID
+        api_path = f"/channels/{chat_id}/messages"
+
+    api_base = "https://api.sgroup.qq.com"
+
 
     try:
         async with httpx.AsyncClient(timeout=15) as client:
@@ -1079,7 +1114,7 @@ async def _send_qqbot(pconfig, chat_id, message):
                 "Authorization": f"QQBotAccessToken {access_token}",
                 "Content-Type": "application/json",
             }
-            url = f"https://api.sgroup.qq.com/channels/{chat_id}/messages"
+            url = f"{api_base}{api_path}"
             payload = {"content": message[:4000], "msg_type": 0}
 
             resp = await client.post(url, json=payload, headers=headers)

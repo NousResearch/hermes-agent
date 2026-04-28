@@ -193,6 +193,21 @@ delegate_task(
 
 **Cost warning:** With `max_spawn_depth: 3` and `max_concurrent_children: 3`, the tree can reach 3×3×3 = 27 concurrent leaf agents. Each extra level multiplies spend — raise `max_spawn_depth` intentionally.
 
+## Lifetime and Durability
+
+:::warning delegate_task is synchronous — not durable
+`delegate_task` runs **inside the parent's current turn**. It blocks the parent until every child finishes (or is cancelled). It is **not** a background job queue:
+
+- If the parent is interrupted (user sends a new message, `/stop`, `/new`), all active children are cancelled and return `status="interrupted"`. Their in-progress work is discarded.
+- Children do **not** continue running after the parent turn ends.
+- Cancelled children return a structured result (`status="interrupted"`, `exit_reason="interrupted"`), but because the parent was interrupted too, that result often never makes it into a user-visible reply.
+
+For **durable long-running work** that must survive interrupts or outlive the current turn, use:
+
+- `cronjob` (action=`create`) — schedules a separate agent run; immune to parent-turn interrupts.
+- `terminal(background=True, notify_on_complete=True)` — long-running shell commands that keep running while the agent does other things.
+:::
+
 ## Key Properties
 
 - Each subagent gets its **own terminal session** (separate from the parent)

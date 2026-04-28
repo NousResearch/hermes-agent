@@ -114,6 +114,7 @@ from gateway.platforms.base import (
     cache_image_from_url,
     cache_audio_from_url,
 )
+from gateway.session import build_session_key
 
 
 def check_whatsapp_requirements() -> bool:
@@ -162,7 +163,9 @@ class WhatsAppAdapter(BasePlatformAdapter):
     # WhatsApp message limits — practical UX limit, not protocol max.
     # WhatsApp allows ~65K but long messages are unreadable on mobile.
     MAX_MESSAGE_LENGTH = 4096
-    
+    # Near-limit chunks likely get a quick follow-up; use split delay (Telegram pattern).
+    _SPLIT_THRESHOLD = 4000
+
     # Default bridge location relative to the hermes-agent install
     _DEFAULT_BRIDGE_DIR = Path(__file__).resolve().parents[2] / "scripts" / "whatsapp-bridge"
 
@@ -184,6 +187,15 @@ class WhatsAppAdapter(BasePlatformAdapter):
         self._group_policy = str(config.extra.get("group_policy") or os.getenv("WHATSAPP_GROUP_POLICY", "open")).strip().lower()
         self._group_allow_from = self._coerce_allow_list(config.extra.get("group_allow_from") or config.extra.get("groupAllowFrom"))
         self._mention_patterns = self._compile_mention_patterns()
+        # Plain-text batching before dispatch (`HERMES_WHATSAPP_TEXT_BATCH_*`).
+        self._text_batch_delay_seconds = float(
+            os.getenv("HERMES_WHATSAPP_TEXT_BATCH_DELAY_SECONDS", "0.6")
+        )
+        self._text_batch_split_delay_seconds = float(
+            os.getenv("HERMES_WHATSAPP_TEXT_BATCH_SPLIT_DELAY_SECONDS", "2.0")
+        )
+        self._pending_text_batches: Dict[str, MessageEvent] = {}
+        self._pending_text_batch_tasks: Dict[str, asyncio.Task] = {}
         self._message_queue: asyncio.Queue = asyncio.Queue()
         self._bridge_log_fh = None
         self._bridge_log: Optional[Path] = None
@@ -622,6 +634,8 @@ class WhatsAppAdapter(BasePlatformAdapter):
                 pass
         self._poll_task = None
 
+        self._cancel_pending_text_batches()
+
         # Close the persistent HTTP session
         if self._http_session and not self._http_session.closed:
             await self._http_session.close()
@@ -943,7 +957,71 @@ class WhatsAppAdapter(BasePlatformAdapter):
             logger.debug("Could not get WhatsApp chat info for %s: %s", chat_id, e)
         
         return {"name": chat_id, "type": "dm"}
-    
+
+    # ------------------------------------------------------------------
+    # Text batching
+    # ------------------------------------------------------------------
+
+    def _cancel_pending_text_batches(self) -> None:
+        """Cancel flush timers and drop buffered text (disconnect)."""
+        for task in self._pending_text_batch_tasks.values():
+            if not task.done():
+                task.cancel()
+        self._pending_text_batch_tasks.clear()
+        self._pending_text_batches.clear()
+
+    def _text_batch_key(self, event: MessageEvent) -> str:
+        """Session-scoped key for text message batching."""
+        return build_session_key(
+            event.source,
+            group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
+            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False),
+        )
+
+    def _enqueue_text_event(self, event: MessageEvent) -> None:
+        """Buffer a text event and reset the flush timer."""
+        key = self._text_batch_key(event)
+        existing = self._pending_text_batches.get(key)
+        chunk_len = len(event.text or "")
+        if existing is None:
+            event._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+            self._pending_text_batches[key] = event
+        else:
+            if event.text:
+                existing.text = f"{existing.text}\n{event.text}" if existing.text else event.text
+            existing._last_chunk_len = chunk_len  # type: ignore[attr-defined]
+
+        prior_task = self._pending_text_batch_tasks.get(key)
+        if prior_task and not prior_task.done():
+            prior_task.cancel()
+        self._pending_text_batch_tasks[key] = asyncio.create_task(
+            self._flush_text_batch(key)
+        )
+
+    async def _flush_text_batch(self, key: str) -> None:
+        """Wait for quiet period, then dispatch aggregated text."""
+        current_task = asyncio.current_task()
+        try:
+            pending = self._pending_text_batches.get(key)
+            last_len = getattr(pending, "_last_chunk_len", 0) if pending else 0
+            if last_len >= self._SPLIT_THRESHOLD:
+                delay = self._text_batch_split_delay_seconds
+            else:
+                delay = self._text_batch_delay_seconds
+            await asyncio.sleep(delay)
+            event = self._pending_text_batches.pop(key, None)
+            if not event:
+                return
+            logger.info(
+                "[WhatsApp] Flushing text batch %s (%d chars)",
+                key,
+                len(event.text or ""),
+            )
+            await self.handle_message(event)
+        finally:
+            if self._pending_text_batch_tasks.get(key) is current_task:
+                self._pending_text_batch_tasks.pop(key, None)
+
     async def _poll_messages(self) -> None:
         """Poll the bridge for incoming messages."""
         import aiohttp
@@ -964,7 +1042,15 @@ class WhatsAppAdapter(BasePlatformAdapter):
                         messages = await resp.json()
                         for msg_data in messages:
                             event = await self._build_message_event(msg_data)
-                            if event:
+                            if not event:
+                                continue
+                            if (
+                                self._text_batch_delay_seconds > 0
+                                and event.message_type == MessageType.TEXT
+                                and not event.media_urls
+                            ):
+                                self._enqueue_text_event(event)
+                            else:
                                 await self.handle_message(event)
             except asyncio.CancelledError:
                 break

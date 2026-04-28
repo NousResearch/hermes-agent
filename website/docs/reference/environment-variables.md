@@ -271,6 +271,8 @@ For cloud sandbox backends, persistence is filesystem-oriented. `TERMINAL_LIFETI
 | `WHATSAPP_ALLOWED_USERS` | Comma-separated phone numbers (with country code, no `+`), or `*` to allow all senders |
 | `WHATSAPP_ALLOW_ALL_USERS` | Allow all WhatsApp senders without an allowlist (`true`/`false`) |
 | `WHATSAPP_DEBUG` | Log raw message events in the bridge for troubleshooting (`true`/`false`) |
+| `HERMES_WHATSAPP_TEXT_BATCH_DELAY_SECONDS` | Quiet period (seconds) before flushing merged **plain-text** inbound bubbles to the agent (default `0.6`). Set to `0` to disable batching. Same behavior pattern as Telegram/Discord gateway batching. |
+| `HERMES_WHATSAPP_TEXT_BATCH_SPLIT_DELAY_SECONDS` | Longer quiet period when the latest text chunk is near the split threshold — continuation likely (default `2.0`). |
 | `SIGNAL_HTTP_URL` | signal-cli daemon HTTP endpoint (for example `http://127.0.0.1:8080`) |
 | `SIGNAL_ACCOUNT` | Bot phone number in E.164 format |
 | `SIGNAL_ALLOWED_USERS` | Comma-separated E.164 phone numbers or UUIDs |

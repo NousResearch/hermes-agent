@@ -4,7 +4,7 @@ When a user sends a long message, the messaging client splits it at the
 platform's character limit.  Each adapter should buffer rapid successive
 text messages from the same session and aggregate them before dispatching.
 
-Covers: Discord, Matrix, WeCom, and the adaptive delay logic for
+Covers: Discord, Matrix, WeCom, WhatsApp, and the adaptive delay logic for
 Telegram and Feishu.
 """
 
@@ -381,6 +381,74 @@ class TestWeComTextBatching:
         adapter._enqueue_text_event(_make_event("test", Platform.WECOM))
         await asyncio.sleep(0.2)
         assert len(adapter._pending_text_batches) == 0
+
+
+# =====================================================================
+# WhatsApp text batching
+# =====================================================================
+
+def _make_whatsapp_adapter():
+    """Minimal WhatsAppAdapter for testing text batching.
+
+    Uses ``object.__new__`` (skips ``__init__``). Must set ``platform`` like
+    ``BasePlatformAdapter.__init__`` — adapters rely on ``self.platform``, not ``_platform``.
+    """
+    from gateway.platforms.whatsapp import WhatsAppAdapter
+
+    config = PlatformConfig(enabled=True)
+    config.extra = {}
+    adapter = object.__new__(WhatsAppAdapter)
+    adapter.platform = Platform.WHATSAPP
+    adapter.config = config
+    adapter._pending_text_batches = {}
+    adapter._pending_text_batch_tasks = {}
+    adapter._text_batch_delay_seconds = 0.1
+    adapter._text_batch_split_delay_seconds = 0.3
+    adapter.handle_message = AsyncMock()
+    return adapter
+
+
+class TestWhatsAppTextBatching:
+    @pytest.mark.asyncio
+    async def test_single_message_dispatched_after_delay(self):
+        adapter = _make_whatsapp_adapter()
+        event = _make_event("hello", Platform.WHATSAPP)
+
+        adapter._enqueue_text_event(event)
+
+        adapter.handle_message.assert_not_called()
+        await asyncio.sleep(0.2)
+
+        adapter.handle_message.assert_called_once()
+        assert adapter.handle_message.call_args[0][0].text == "hello"
+
+    @pytest.mark.asyncio
+    async def test_rapid_messages_merged(self):
+        adapter = _make_whatsapp_adapter()
+
+        adapter._enqueue_text_event(_make_event("Part one", Platform.WHATSAPP))
+        await asyncio.sleep(0.02)
+        adapter._enqueue_text_event(_make_event("Part two", Platform.WHATSAPP))
+
+        await asyncio.sleep(0.2)
+
+        adapter.handle_message.assert_called_once()
+        text = adapter.handle_message.call_args[0][0].text
+        assert "Part one" in text
+        assert "Part two" in text
+
+    @pytest.mark.asyncio
+    async def test_near_limit_chunk_uses_split_delay(self):
+        """Long chunk uses longer quiet window (continuation likely)."""
+        adapter = _make_whatsapp_adapter()
+        long_text = "x" * 4050
+        adapter._enqueue_text_event(_make_event(long_text, Platform.WHATSAPP))
+
+        await asyncio.sleep(0.15)
+        adapter.handle_message.assert_not_called()
+
+        await asyncio.sleep(0.25)
+        adapter.handle_message.assert_called_once()
 
 
 # =====================================================================

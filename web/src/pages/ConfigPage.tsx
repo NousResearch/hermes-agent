@@ -442,6 +442,7 @@ export default function ConfigPage() {
           <div className="w-px h-5 bg-border mx-1" />
 
           <Button
+            size="sm"
             outlined={!yamlMode}
             onClick={() => setYamlMode(!yamlMode)}
             prefix={yamlMode ? <FormInput /> : <Code />}
@@ -451,6 +452,7 @@ export default function ConfigPage() {
 
           {yamlMode ? (
             <Button
+              size="sm"
               onClick={handleYamlSave}
               disabled={yamlSaving}
               prefix={<Save />}
@@ -458,7 +460,12 @@ export default function ConfigPage() {
               {yamlSaving ? t.common.saving : t.common.save}
             </Button>
           ) : (
-            <Button onClick={handleSave} disabled={saving} prefix={<Save />}>
+            <Button
+              size="sm"
+              onClick={handleSave}
+              disabled={saving}
+              prefix={<Save />}
+            >
               {saving ? t.common.saving : t.common.save}
             </Button>
           )}

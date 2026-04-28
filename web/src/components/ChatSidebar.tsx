@@ -24,7 +24,7 @@
  */
 
 import { Button } from "@nous-research/ui";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from "@nous-research/ui";
 import { Card } from "@/components/ui/card";
 
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
@@ -57,12 +57,15 @@ const STATE_LABEL: Record<ConnectionState, string> = {
   error: "error",
 };
 
-const STATE_TONE: Record<ConnectionState, string> = {
-  idle: "bg-muted text-muted-foreground",
-  connecting: "bg-primary/10 text-primary",
-  open: "bg-emerald-500/10 text-emerald-500 dark:text-emerald-400",
-  closed: "bg-muted text-muted-foreground",
-  error: "bg-destructive/10 text-destructive",
+const STATE_TONE: Record<
+  ConnectionState,
+  "secondary" | "warning" | "success" | "destructive"
+> = {
+  idle: "secondary",
+  connecting: "warning",
+  open: "success",
+  closed: "secondary",
+  error: "destructive",
 };
 
 interface ChatSidebarProps {
@@ -325,7 +328,7 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
           </button>
         </div>
 
-        <Badge className={STATE_TONE[state]}>{STATE_LABEL[state]}</Badge>
+        <Badge tone={STATE_TONE[state]}>{STATE_LABEL[state]}</Badge>
       </Card>
 
       {banner && (

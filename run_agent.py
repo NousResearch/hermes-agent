@@ -2401,30 +2401,20 @@ class AIAgent:
                 config_context_length=getattr(self, "_aux_compression_context_length_config", None),
             )
 
-            # Hard floor: the auxiliary compression model must have at least
-            # MINIMUM_CONTEXT_LENGTH (64K) tokens of context.  The main model
-            # is already required to meet this floor (checked earlier in
-            # __init__), so the compression model must too — otherwise it
-            # cannot summarise a full threshold-sized window of main-model
-            # content.  Mirrors the main-model rejection pattern.
-            if aux_context and aux_context < MINIMUM_CONTEXT_LENGTH:
-                raise ValueError(
-                    f"Auxiliary compression model {aux_model} has a context "
-                    f"window of {aux_context:,} tokens, which is below the "
-                    f"minimum {MINIMUM_CONTEXT_LENGTH:,} required by Hermes "
-                    f"Agent.  Choose a compression model with at least "
-                    f"{MINIMUM_CONTEXT_LENGTH // 1000}K context (set "
-                    f"auxiliary.compression.model in config.yaml), or set "
-                    f"auxiliary.compression.context_length to override the "
-                    f"detected value if it is wrong."
-                )
+            # The auxiliary compression model does not need to match the main
+            # model's minimum context window.  If it is smaller, compress in
+            # smaller pieces by lowering this session's live compression
+            # threshold to the auxiliary model's real window instead of
+            # refusing startup.  This lets 32K local models handle long
+            # sessions incrementally without pretending they support 64K+.
 
             threshold = self.context_compressor.threshold_tokens
-            if aux_context < threshold:
+            if aux_context and aux_context < threshold:
                 # Auto-correct: lower the live session threshold so
-                # compression actually works this session.  The hard floor
-                # above guarantees aux_context >= MINIMUM_CONTEXT_LENGTH,
-                # so the new threshold is always >= 64K.
+                # compression actually works this session.  The new threshold
+                # may be below MINIMUM_CONTEXT_LENGTH for auxiliary-only
+                # compression; the main model floor remains enforced by the
+                # main model startup checks.
                 old_threshold = threshold
                 new_threshold = aux_context
                 self.context_compressor.threshold_tokens = new_threshold
@@ -2442,15 +2432,17 @@ class AIAgent:
                     f"{aux_context:,} tokens, but the main model's "
                     f"compression threshold was {old_threshold:,} tokens. "
                     f"Auto-lowered this session's threshold to "
-                    f"{new_threshold:,} tokens so compression can run.\n"
+                    f"{new_threshold:,} tokens so compression can run in "
+                    f"smaller chunks.\n"
                     f"  To make this permanent, edit config.yaml — either:\n"
-                    f"  1. Use a larger compression model:\n"
+                    f"  1. Keep this smaller auxiliary model and lower the "
+                    f"compression threshold:\n"
+                    f"       compression:\n"
+                    f"         threshold: 0.{safe_pct:02d}\n"
+                    f"  2. Or use a larger compression model:\n"
                     f"       auxiliary:\n"
                     f"         compression:\n"
-                    f"           model: <model-with-{old_threshold:,}+-context>\n"
-                    f"  2. Lower the compression threshold:\n"
-                    f"       compression:\n"
-                    f"         threshold: 0.{safe_pct:02d}"
+                    f"           model: <model-with-{old_threshold:,}+-context>"
                 )
                 self._compression_warning = msg
                 self._emit_status(msg)

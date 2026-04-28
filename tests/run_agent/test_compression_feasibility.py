@@ -56,8 +56,8 @@ def _make_agent(
 @patch("agent.model_metadata.get_model_context_length", return_value=80_000)
 @patch("agent.auxiliary_client.get_text_auxiliary_client")
 def test_auto_corrects_threshold_when_aux_context_below_threshold(mock_get_client, mock_ctx_len):
-    """Auto-correction: aux >= 64K floor but < threshold → lower threshold
-    to aux_context so compression still works this session."""
+    """Auto-correction: aux < threshold → lower threshold to aux_context
+    so compression still works this session."""
     agent = _make_agent(main_context=200_000, threshold_percent=0.50)
     # threshold = 100,000 — aux has 80,000 (above 64K floor, below threshold)
     mock_client = MagicMock()
@@ -88,25 +88,28 @@ def test_auto_corrects_threshold_when_aux_context_below_threshold(mock_get_clien
 
 @patch("agent.model_metadata.get_model_context_length", return_value=32_768)
 @patch("agent.auxiliary_client.get_text_auxiliary_client")
-def test_rejects_aux_below_minimum_context(mock_get_client, mock_ctx_len):
-    """Hard floor: aux context < MINIMUM_CONTEXT_LENGTH (64K) → session
-    refuses to start (ValueError), mirroring the main-model rejection."""
+def test_aux_below_minimum_context_lowers_threshold_for_chunking(mock_get_client, mock_ctx_len):
+    """Aux context < MINIMUM_CONTEXT_LENGTH should not block startup.
+
+    Hermes can compress in smaller chunks by lowering the live compression
+    threshold to the auxiliary model's actual window.
+    """
     agent = _make_agent(main_context=200_000, threshold_percent=0.50)
     mock_client = MagicMock()
     mock_client.base_url = "https://openrouter.ai/api/v1"
     mock_client.api_key = "sk-aux"
     mock_get_client.return_value = (mock_client, "tiny-aux-model")
 
-    agent._emit_status = lambda msg: None
+    messages = []
+    agent._emit_status = lambda msg: messages.append(msg)
 
-    with pytest.raises(ValueError) as exc_info:
-        agent._check_compression_model_feasibility()
+    agent._check_compression_model_feasibility()
 
-    err = str(exc_info.value)
-    assert "tiny-aux-model" in err
-    assert "32,768" in err
-    assert "64,000" in err
-    assert "below the minimum" in err
+    assert len(messages) == 1
+    assert "tiny-aux-model" in messages[0]
+    assert "32,768" in messages[0]
+    assert "smaller chunks" in messages[0]
+    assert agent.context_compressor.threshold_tokens == 32_768
 
 
 @patch("agent.model_metadata.get_model_context_length", return_value=200_000)

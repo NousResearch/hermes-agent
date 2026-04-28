@@ -320,6 +320,30 @@ def _get_active_memory_provider() -> Optional[str]:
         return None
 
 
+def get_active_memory_providers() -> list:
+    """Return list of active memory provider names from config.
+
+    Supports both old format (memory.provider: 'honcho') and
+    new format (memory.providers: ['honcho', 'mem0']).
+    New format takes precedence when non-empty.
+    """
+    try:
+        from hermes_cli.config import get_config
+        config = get_config()
+        memory_config = config.get('memory', {})
+
+        # New list format takes precedence
+        providers = memory_config.get('providers', [])
+        if providers:
+            return [p for p in providers if p]
+
+        # Fall back to legacy single-string format
+        single = memory_config.get('provider', '')
+        return [single] if single else []
+    except Exception:
+        return []
+
+
 def discover_plugin_cli_commands() -> List[dict]:
     """Return CLI commands for the **active** memory plugin only.
 

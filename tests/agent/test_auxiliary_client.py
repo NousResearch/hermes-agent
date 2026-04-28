@@ -21,6 +21,7 @@ from agent.auxiliary_client import (
     _is_payment_error,
     _try_payment_fallback,
     _resolve_auto,
+    _resolve_task_provider_model,
 )
 
 
@@ -1633,3 +1634,67 @@ class TestAnthropicCompatImageConversion:
         }]
         result = _convert_openai_images_to_anthropic(messages)
         assert result[0]["content"][0]["source"]["media_type"] == "image/jpeg"
+
+
+
+class TestResolveTaskProviderModel:
+    """Tests for _resolve_task_provider_model config-driven path selection."""
+
+    def test_base_url_and_api_key_set_returns_custom(self):
+        """When both base_url and api_key are configured, return custom provider."""
+        with patch("hermes_cli.config.load_config", return_value={
+            "auxiliary": {
+                "mytask": {
+                    "base_url": "http://localhost:11434/v1",
+                    "api_key": "secret-key",
+                }
+            }
+        }):
+            provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task="mytask")
+            assert provider == "custom"
+            assert base_url == "http://localhost:11434/v1"
+            assert api_key == "secret-key"
+
+    def test_base_url_set_without_api_key_skips_custom(self):
+        """When base_url is set but api_key is empty, do NOT return custom; fall through to auto."""
+        with patch("hermes_cli.config.load_config", return_value={
+            "auxiliary": {
+                "mytask": {
+                    "base_url": "http://localhost:11434/v1",
+                    "api_key": "",
+                }
+            }
+        }):
+            provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task="mytask")
+            assert provider == "auto"
+            assert base_url is None
+            assert api_key is None
+
+    def test_base_url_set_with_none_api_key_skips_custom(self):
+        """When base_url is set but api_key is missing entirely, do NOT return custom."""
+        with patch("hermes_cli.config.load_config", return_value={
+            "auxiliary": {
+                "mytask": {
+                    "base_url": "http://localhost:11434/v1",
+                }
+            }
+        }):
+            provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task="mytask")
+            assert provider == "auto"
+            assert base_url is None
+            assert api_key is None
+
+    def test_explicit_provider_with_base_url_and_no_api_key(self):
+        """When provider is explicitly set alongside base_url without api_key, return explicit provider."""
+        with patch("hermes_cli.config.load_config", return_value={
+            "auxiliary": {
+                "mytask": {
+                    "provider": "ollama",
+                    "base_url": "http://localhost:11434/v1",
+                }
+            }
+        }):
+            provider, model, base_url, api_key, api_mode = _resolve_task_provider_model(task="mytask")
+            assert provider == "ollama"
+            assert base_url is None
+            assert api_key is None

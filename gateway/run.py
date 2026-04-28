@@ -28,7 +28,7 @@ import time
 from collections import OrderedDict
 from contextvars import copy_context
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Dict, Optional, Any, List
 
 from agent.account_usage import fetch_account_usage, render_account_usage_lines
@@ -290,6 +290,7 @@ from gateway.platforms.base import (
     MessageEvent,
     MessageType,
     merge_pending_message_event,
+    read_media_sidecar,
 )
 from gateway.restart import (
     DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT,
@@ -535,6 +536,88 @@ def _build_progress_header(
     if topic:
         return f"⏳ {name}：{topic}"
     return f"⏳ {name}"
+
+
+def _format_sidecar_time(raw: Any) -> str:
+    """Format a sidecar ``date`` value as ``HH:MM`` (local clock) or "".
+
+    Accepts ISO-8601 strings (with or without timezone), unix timestamps
+    (int / float), or ``datetime`` instances. Returns an empty string when
+    the value is missing or cannot be parsed.
+    """
+    if raw in (None, "", 0):
+        return ""
+    try:
+        if isinstance(raw, datetime):
+            dt = raw
+        elif isinstance(raw, (int, float)):
+            dt = datetime.fromtimestamp(float(raw), tz=timezone.utc)
+        elif isinstance(raw, str):
+            # Accept "...Z" suffix.
+            iso = raw.replace("Z", "+00:00") if raw.endswith("Z") else raw
+            try:
+                dt = datetime.fromisoformat(iso)
+            except ValueError:
+                # Try unix-timestamp-encoded-as-string.
+                dt = datetime.fromtimestamp(float(raw), tz=timezone.utc)
+        else:
+            return ""
+    except Exception:
+        return ""
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    # Convert to local for display.
+    try:
+        dt_local = dt.astimezone()
+    except Exception:
+        dt_local = dt
+    return dt_local.strftime("%H:%M")
+
+
+def _describe_media_origin(media_path: Optional[str]) -> str:
+    """Read the JSON sidecar next to ``media_path`` and return a short tag
+    describing who sent it and when, or an empty string when no sidecar
+    exists / it lacks attribution data.
+
+    Formats:
+      "(from 子家 at 14:04)"                    — both name and time
+      "(from 玉青)"                              — name only
+      "(at 14:04)"                              — time only
+      "(originally from 子家 at 14:04)"          — when is_quoted_reply=True
+      ""                                        — no sidecar / no data
+
+    Used by ``_enrich_message_with_vision`` and
+    ``_enrich_message_with_transcription`` to surface attribution into the
+    prompt the agent sees, so it can answer "who sent that image?" without
+    a separate tool call. The sidecar itself is written by Telegram's
+    ``_record_media_sender`` at cache time.
+    """
+    if not media_path:
+        return ""
+    try:
+        sc = read_media_sidecar(media_path)
+    except Exception:
+        return ""
+    if not sc:
+        return ""
+    name = (sc.get("from_name") or "").strip()
+    time_str = _format_sidecar_time(sc.get("date"))
+    is_quoted = bool(sc.get("is_quoted_reply"))
+    if not name and not time_str:
+        return ""
+    parts = []
+    if is_quoted:
+        parts.append("originally from")
+    else:
+        parts.append("from")
+    if name:
+        parts.append(name)
+    if time_str:
+        if name:
+            parts.append(f"at {time_str}")
+        else:
+            parts = ["at", time_str]
+    return "(" + " ".join(parts) + ")"
 
 
 def _check_unavailable_skill(command_name: str) -> str | None:
@@ -8729,6 +8812,8 @@ class GatewayRunner:
         for path in image_paths:
             try:
                 logger.debug("Auto-analyzing user image: %s", path)
+                origin_tag = _describe_media_origin(path)
+                origin_suffix = f" {origin_tag}" if origin_tag else ""
                 result_json = await vision_analyze_tool(
                     image_url=path,
                     user_prompt=analysis_prompt,
@@ -8738,20 +8823,22 @@ class GatewayRunner:
                     description = result.get("analysis", "")
                     description = sanitize_context(description)
                     enriched_parts.append(
-                        f"[The user sent an image~ Here's what I can see:\n{description}]\n"
+                        f"[The user sent an image{origin_suffix}~ Here's what I can see:\n{description}]\n"
                         f"[If you need a closer look, use vision_analyze with "
                         f"image_url: {path} ~]"
                     )
                 else:
                     enriched_parts.append(
-                        "[The user sent an image but I couldn't quite see it "
+                        f"[The user sent an image{origin_suffix} but I couldn't quite see it "
                         "this time (>_<) You can try looking at it yourself "
                         f"with vision_analyze using image_url: {path}]"
                     )
             except Exception as e:
                 logger.error("Vision auto-analysis error: %s", e)
+                origin_tag = _describe_media_origin(path)
+                origin_suffix = f" {origin_tag}" if origin_tag else ""
                 enriched_parts.append(
-                    f"[The user sent an image but something went wrong when I "
+                    f"[The user sent an image{origin_suffix} but something went wrong when I "
                     f"tried to look at it~ You can try examining it yourself "
                     f"with vision_analyze using image_url: {path}]"
                 )
@@ -8796,13 +8883,15 @@ class GatewayRunner:
 
         enriched_parts = []
         for path in audio_paths:
+            origin_tag = _describe_media_origin(path)
+            origin_suffix = f" {origin_tag}" if origin_tag else ""
             try:
                 logger.debug("Transcribing user voice: %s", path)
                 result = await asyncio.to_thread(transcribe_audio, path)
                 if result["success"]:
                     transcript = result["transcript"]
                     enriched_parts.append(
-                        f'[The user sent a voice message~ '
+                        f'[The user sent a voice message{origin_suffix}~ '
                         f'Here\'s what they said: "{transcript}"]'
                     )
                 else:

@@ -194,8 +194,12 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "glm-4.5-flash",
     ],
     "xai": [
-        "grok-4.20-reasoning",
-        "grok-4-1-fast-reasoning",
+        "grok-4.20",
+        "grok-4.20-multi-agent",
+        "grok-4.1-fast",
+        "grok-4-fast",
+        "grok-4",
+        "grok-code-fast-1",
     ],
     "nvidia": [
         # NVIDIA flagship reasoning models

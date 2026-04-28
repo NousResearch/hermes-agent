@@ -538,7 +538,7 @@ class ContextCompressor(ContextEngine):
             # Token-budget approach: walk backward accumulating tokens
             accumulated = 0
             boundary = len(result)
-            min_protect = min(protect_tail_count, len(result) - 1)
+            min_protect = min(protect_tail_count, len(result))
             for i in range(len(result) - 1, -1, -1):
                 msg = result[i]
                 raw_content = msg.get("content") or ""

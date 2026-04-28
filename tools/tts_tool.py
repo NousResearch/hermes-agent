@@ -167,6 +167,7 @@ DEFAULT_XAI_VOICE_ID = "eve"
 DEFAULT_XAI_LANGUAGE = "en"
 DEFAULT_XAI_SAMPLE_RATE = 24000
 DEFAULT_XAI_BIT_RATE = 128000
+DEFAULT_XAI_AUTO_SPEECH_TAGS = False
 DEFAULT_XAI_BASE_URL = "https://api.x.ai/v1"
 DEFAULT_GEMINI_TTS_MODEL = "gemini-2.5-flash-preview-tts"
 DEFAULT_GEMINI_TTS_VOICE = "Kore"
@@ -892,6 +893,79 @@ def _generate_openai_tts(text: str, output_path: str, tts_config: Dict[str, Any]
 # ===========================================================================
 # Provider: xAI TTS
 # ===========================================================================
+_XAI_INLINE_SPEECH_TAGS = (
+    "pause",
+    "long-pause",
+    "hum-tune",
+    "laugh",
+    "chuckle",
+    "giggle",
+    "cry",
+    "tsk",
+    "tongue-click",
+    "lip-smack",
+    "breath",
+    "inhale",
+    "exhale",
+    "sigh",
+)
+_XAI_WRAPPING_SPEECH_TAGS = (
+    "soft",
+    "whisper",
+    "loud",
+    "build-intensity",
+    "decrease-intensity",
+    "higher-pitch",
+    "lower-pitch",
+    "slow",
+    "fast",
+    "sing-song",
+    "singing",
+    "laugh-speak",
+    "emphasis",
+)
+_XAI_SPEECH_TAG_RE = re.compile(
+    r"(\[(?:" + "|".join(_XAI_INLINE_SPEECH_TAGS) + r")\]|</?(?:" + "|".join(_XAI_WRAPPING_SPEECH_TAGS) + r")>)",
+    flags=re.IGNORECASE,
+)
+_XAI_FIRST_SENTENCE_RE = re.compile(r"^(.{12,120}?[.!?…])\s+(?=\S)", flags=re.DOTALL)
+
+
+def _xai_bool_config(value: Any, default: bool = False) -> bool:
+    """Coerce common YAML/env bool spellings without treating random strings as true."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on", "enabled"}:
+            return True
+        if normalized in {"0", "false", "no", "off", "disabled"}:
+            return False
+    return default
+
+
+def _apply_xai_auto_speech_tags(text: str) -> str:
+    """Add light xAI speech tags for more natural voice-mode replies.
+
+    The transform is intentionally conservative: it only inserts pauses. It
+    never fabricates laughter or whispering, and it leaves explicit user/model
+    speech tags untouched.
+    """
+    clean = text.strip()
+    if not clean or _XAI_SPEECH_TAG_RE.search(clean):
+        return text
+
+    clean = re.sub(r"\n\s*\n+", " [pause] ", clean)
+    clean = re.sub(r"\s*\n\s*", " ", clean)
+    clean = _XAI_FIRST_SENTENCE_RE.sub(r"\1 [pause] ", clean, count=1)
+    clean = re.sub(r"\s{2,}", " ", clean).strip()
+    return clean
+
+
 def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -> str:
     """
     Generate audio using xAI TTS.
@@ -913,6 +987,12 @@ def _generate_xai_tts(text: str, output_path: str, tts_config: Dict[str, Any]) -
     language = str(xai_config.get("language", DEFAULT_XAI_LANGUAGE)).strip() or DEFAULT_XAI_LANGUAGE
     sample_rate = int(xai_config.get("sample_rate", DEFAULT_XAI_SAMPLE_RATE))
     bit_rate = int(xai_config.get("bit_rate", DEFAULT_XAI_BIT_RATE))
+    auto_speech_tags = _xai_bool_config(
+        xai_config.get("auto_speech_tags", xai_config.get("speech_tags")),
+        DEFAULT_XAI_AUTO_SPEECH_TAGS,
+    )
+    if auto_speech_tags:
+        text = _apply_xai_auto_speech_tags(text)
     base_url = str(
         xai_config.get("base_url")
         or creds.get("base_url")

@@ -134,26 +134,44 @@ def test_write_json_non_serializable_payload_re_raises(server):
         server.write_json({"obj": object()})
 
 
-def test_write_json_oserror_on_flush_returns_false(server):
-    """A flush that raises OSError must not strand the lock or crash."""
+def test_write_json_peer_gone_oserror_on_flush_returns_false(server):
+    """A flush that raises a peer-gone OSError (EPIPE) must not strand
+    the lock or crash; it returns False so the dispatcher exits cleanly."""
+    import errno
+
     written = []
 
-    class _FlushFails:
+    class _FlushPeerGone:
         def write(self, line): written.append(line)
-        def flush(self): raise OSError("EIO")
+        def flush(self): raise OSError(errno.EPIPE, "broken pipe")
 
-    server._real_stdout = _FlushFails()
+    server._real_stdout = _FlushPeerGone()
     assert server.write_json({"x": 1}) is False
     assert written and json.loads(written[0]) == {"x": 1}
 
 
-def test_write_json_no_flush_env_skips_flush(monkeypatch):
-    """HERMES_TUI_GATEWAY_NO_FLUSH=1 skips flush so a hung peer doesn't block.
+def test_write_json_non_peer_gone_oserror_re_raises(server):
+    """Host I/O failures (ENOSPC, EACCES, EIO …) are NOT peer-gone — they
+    must re-raise so the crash log records them instead of looking like
+    a clean disconnect via the False path."""
+    import errno
 
-    Avoids reloading ``tui_gateway.server`` on purpose — that would
-    re-register module-level atexit hooks and recreate the worker
-    pool.  We only need ``_DISABLE_FLUSH`` reapplied, which is owned
-    by ``tui_gateway.transport`` alone.
+    class _DiskFull:
+        def write(self, _): raise OSError(errno.ENOSPC, "no space left")
+        def flush(self): pass
+
+    server._real_stdout = _DiskFull()
+    with pytest.raises(OSError, match="no space"):
+        server.write_json({"x": 1})
+
+
+def test_write_json_skips_flush_when_disable_flush_true(monkeypatch):
+    """`StdioTransport` skips flush when `_DISABLE_FLUSH` is true.
+
+    Tests the runtime *behaviour* via direct module-attr patch.  The env
+    var → module constant wiring is covered by the dedicated env test
+    below; reloading server.py here would re-register atexit hooks and
+    recreate the worker pool.
     """
     import importlib
 
@@ -172,9 +190,25 @@ def test_write_json_no_flush_env_skips_flush(monkeypatch):
 
     assert transport.write({"x": 1}) is True
     assert flushed["count"] == 0
-    assert written and json.loads(written[0]) == {"x": 1}
-    # `monkeypatch.setattr` automatically restores the original value
-    # at teardown — no try/finally needed.
+
+
+def test_disable_flush_env_var_actually_wires_to_module_constant(monkeypatch):
+    """End-to-end: setting `HERMES_TUI_GATEWAY_NO_FLUSH=1` and importing
+    `tui_gateway.transport` fresh actually flips `_DISABLE_FLUSH` true.
+
+    Reloads only the transport module — server.py is untouched so its
+    atexit hooks/worker pool stay intact."""
+    import importlib
+
+    monkeypatch.setenv("HERMES_TUI_GATEWAY_NO_FLUSH", "1")
+    transport_mod = importlib.reload(importlib.import_module("tui_gateway.transport"))
+
+    try:
+        assert transport_mod._DISABLE_FLUSH is True
+    finally:
+        # Restore the env-disabled state so other tests see the default.
+        monkeypatch.delenv("HERMES_TUI_GATEWAY_NO_FLUSH", raising=False)
+        importlib.reload(transport_mod)
 
 
 # ── _emit ────────────────────────────────────────────────────────────

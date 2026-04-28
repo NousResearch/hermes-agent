@@ -23,11 +23,24 @@ the stream lazily through a callback.
 from __future__ import annotations
 
 import contextvars
+import errno
 import json
 import logging
 import os
 import threading
 from typing import Any, Callable, Optional, Protocol, runtime_checkable
+
+# Errno values that mean "the peer is gone" rather than "the host has a
+# real I/O problem".  Anything outside this set re-raises so it surfaces
+# in the crash log instead of looking like a clean disconnect.
+_PEER_GONE_ERRNOS = frozenset({
+    errno.EPIPE,        # write to closed pipe (POSIX)
+    errno.ECONNRESET,   # peer reset the connection
+    errno.EBADF,        # fd closed under us
+    errno.ESHUTDOWN,    # transport endpoint shut down
+    getattr(errno, "WSAECONNRESET", -1),  # win32 mapping (no-op on POSIX)
+    getattr(errno, "WSAESHUTDOWN", -1),
+} - {-1})
 
 logger = logging.getLogger(__name__)
 
@@ -104,12 +117,18 @@ class StdioTransport:
         Returning ``False`` is the dispatcher's "broken stdout pipe" signal
         — ``entry.py`` calls ``sys.exit(0)`` when ``write_json`` reports
         ``False``.  So programming errors (non-JSON-safe payloads, encoding
-        misconfig, unexpected ValueErrors) MUST NOT return ``False``,
-        otherwise a real bug looks like a clean disconnect and is harder
-        to diagnose.  Those re-raise so the existing crash-log infrastructure
-        records the traceback.
+        misconfig, unexpected ValueErrors, host I/O bugs like ENOSPC) MUST
+        NOT return ``False``, otherwise a real bug looks like a clean
+        disconnect and is harder to diagnose.  Those re-raise so the
+        existing crash-log infrastructure records the traceback.
 
-        Peer-gone branches: ``BrokenPipeError`` and ``ValueError("...closed file...")``.
+        Peer-gone branches:
+          * ``BrokenPipeError``
+          * ``ValueError("...closed file...")``
+          * ``OSError`` whose errno is in :data:`_PEER_GONE_ERRNOS`
+            (EPIPE / ECONNRESET / EBADF / ESHUTDOWN; plus WSA mappings
+            on Windows).  Other OSError errnos (ENOSPC, EACCES, ...) are
+            real host problems and re-raise.
         """
         # Serialization is OUTSIDE the lock so a large payload can't
         # block other threads emitting their own frames.  A non-JSON-safe
@@ -133,14 +152,16 @@ class StdioTransport:
                     raise
                 return False
             except OSError as e:
-                logger.debug("StdioTransport write failed: %s", e)
+                if e.errno not in _PEER_GONE_ERRNOS:
+                    raise
+                logger.debug("StdioTransport write peer gone: %s", e)
                 return False
 
-            # A flush that *raises* indicates the same peer-gone
-            # condition; we still return False so the dispatcher exits
-            # cleanly.  A flush that *hangs* on a half-closed pipe
-            # holds the lock until it returns — see ``_DISABLE_FLUSH``
-            # for the "skip flush entirely" escape hatch.
+            # A flush that *raises* with a peer-gone errno means the
+            # dispatcher should exit cleanly.  A flush that *hangs* on
+            # a half-closed pipe holds the lock until it returns — see
+            # ``_DISABLE_FLUSH`` for the "skip flush entirely" escape
+            # hatch.
             if not _DISABLE_FLUSH:
                 try:
                     stream.flush()
@@ -151,7 +172,9 @@ class StdioTransport:
                         raise
                     return False
                 except OSError as e:
-                    logger.debug("StdioTransport flush failed: %s", e)
+                    if e.errno not in _PEER_GONE_ERRNOS:
+                        raise
+                    logger.debug("StdioTransport flush peer gone: %s", e)
                     return False
 
         return True

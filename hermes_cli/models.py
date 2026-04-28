@@ -1623,31 +1623,41 @@ def provider_label(provider: Optional[str]) -> str:
 
 # Models that support OpenAI Priority Processing (service_tier="priority").
 # See https://openai.com/api-priority-processing/ for the canonical list.
-# Only the bare model slug is stored (no vendor prefix).
-_PRIORITY_PROCESSING_MODELS: frozenset[str] = frozenset({
-    "gpt-5.4",
-    "gpt-5.4-mini",
-    "gpt-5.2",
-    "gpt-5.1",
-    "gpt-5",
-    "gpt-5-mini",
-    "gpt-4.1",
-    "gpt-4.1-mini",
-    "gpt-4.1-nano",
-    "gpt-4o",
-    "gpt-4o-mini",
+#
+# Pattern-based matching — any OpenAI flagship model (gpt-*, o1*, o3*, o4*)
+# is assumed to support Priority Processing. service_tier=priority is silently
+# ignored by non-OpenAI endpoints (OpenRouter/Copilot/opencode-zen proxies
+# strip the field), so false positives are harmless. Codex-series models
+# (gpt-5-codex, gpt-5.3-codex, etc.) are excluded — they don't expose the
+# service_tier parameter through the Codex Responses API.
+_OPENAI_FAST_MODE_PREFIXES: tuple[str, ...] = (
+    "gpt-",
+    "o1",
     "o3",
-    "o4-mini",
-})
+    "o4",
+)
+
+
+def _is_openai_fast_model(model_id: Optional[str]) -> bool:
+    """Return True if the model is an OpenAI flagship eligible for Priority Processing."""
+    raw = _strip_vendor_prefix(str(model_id or ""))
+    base = raw.split(":")[0]
+    if not base:
+        return False
+    # Exclude Codex-series — they route through the Codex Responses API
+    # which doesn't accept service_tier.
+    if "codex" in base:
+        return False
+    return any(base.startswith(prefix) for prefix in _OPENAI_FAST_MODE_PREFIXES)
+
 
 # Models that support Anthropic Fast Mode (speed="fast").
 # See https://platform.claude.com/docs/en/build-with-claude/fast-mode
-# Currently only Claude Opus 4.6.  Both hyphen and dot variants are stored
-# to handle native Anthropic (claude-opus-4-6) and OpenRouter (claude-opus-4.6).
-_ANTHROPIC_FAST_MODE_MODELS: frozenset[str] = frozenset({
-    "claude-opus-4-6",
-    "claude-opus-4.6",
-})
+#
+# Pattern-based matching — any claude-* model is eligible. The anthropic
+# adapter gates speed=fast on native Anthropic endpoints only (see
+# _is_third_party_anthropic_endpoint in agent/anthropic_adapter.py), so
+# third-party proxies that would reject the beta header are protected.
 
 
 def _strip_vendor_prefix(model_id: str) -> str:
@@ -1660,20 +1670,14 @@ def _strip_vendor_prefix(model_id: str) -> str:
 
 def model_supports_fast_mode(model_id: Optional[str]) -> bool:
     """Return whether Hermes should expose the /fast toggle for this model."""
-    raw = _strip_vendor_prefix(str(model_id or ""))
-    if raw in _PRIORITY_PROCESSING_MODELS:
-        return True
-    # Anthropic fast mode — strip date suffixes (e.g. claude-opus-4-6-20260401)
-    # and OpenRouter variant tags (:fast, :beta) for matching.
-    base = raw.split(":")[0]
-    return base in _ANTHROPIC_FAST_MODE_MODELS
+    return _is_anthropic_fast_model(model_id) or _is_openai_fast_model(model_id)
 
 
 def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
-    """Return True if the model supports Anthropic's fast mode (speed='fast')."""
+    """Return True if the model is a Claude model eligible for Anthropic Fast Mode."""
     raw = _strip_vendor_prefix(str(model_id or ""))
     base = raw.split(":")[0]
-    return base in _ANTHROPIC_FAST_MODE_MODELS
+    return base.startswith("claude-")
 
 
 def resolve_fast_mode_overrides(model_id: Optional[str]) -> dict[str, Any] | None:

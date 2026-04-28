@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Clock, Pause, Play, Plus, Trash2, Zap } from "lucide-react";
-import { H2 } from "@nous-research/ui";
+import { Button, H2 } from "@nous-research/ui";
 import { api } from "@/lib/api";
 import type { CronJob } from "@/lib/api";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
@@ -9,7 +9,6 @@ import { useConfirmDelete } from "@/hooks/useConfirmDelete";
 import { Toast } from "@/components/Toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectOption } from "@/components/ui/select";
@@ -166,7 +165,6 @@ export default function CronPage() {
         loading={jobDelete.isDeleting}
       />
 
-      {/* Create new job form */}
       <Card>
         <CardHeader>
           <CardTitle className="flex items-center gap-2 text-base">
@@ -237,9 +235,9 @@ export default function CronPage() {
                 <Button
                   onClick={handleCreate}
                   disabled={creating}
+                  prefix={<Plus />}
                   className="w-full"
                 >
-                  <Plus className="h-3 w-3" />
                   {creating ? t.common.creating : t.common.create}
                 </Button>
               </div>
@@ -248,7 +246,6 @@ export default function CronPage() {
         </CardContent>
       </Card>
 
-      {/* Jobs list */}
       <div className="flex flex-col gap-3">
         <H2
           variant="sm"
@@ -269,7 +266,6 @@ export default function CronPage() {
         {jobs.map((job) => (
           <Card key={job.id}>
             <CardContent className="flex items-center gap-4 py-4">
-              {/* Info */}
               <div className="flex-1 min-w-0">
                 <div className="flex items-center gap-2 mb-1">
                   <span className="font-medium text-sm truncate">
@@ -306,16 +302,15 @@ export default function CronPage() {
                 )}
               </div>
 
-              {/* Actions */}
               <div className="flex items-center gap-1 shrink-0">
                 <Button
-                  variant="ghost"
-                  size="icon"
+                  outlined
                   title={job.state === "paused" ? t.cron.resume : t.cron.pause}
                   aria-label={
                     job.state === "paused" ? t.cron.resume : t.cron.pause
                   }
                   onClick={() => handlePauseResume(job)}
+                  className="!p-2 aspect-square"
                 >
                   {job.state === "paused" ? (
                     <Play className="h-4 w-4 text-success" />
@@ -325,21 +320,21 @@ export default function CronPage() {
                 </Button>
 
                 <Button
-                  variant="ghost"
-                  size="icon"
+                  outlined
                   title={t.cron.triggerNow}
                   aria-label={t.cron.triggerNow}
                   onClick={() => handleTrigger(job)}
+                  className="!p-2 aspect-square"
                 >
                   <Zap className="h-4 w-4" />
                 </Button>
 
                 <Button
-                  variant="ghost"
-                  size="icon"
+                  outlined
                   title={t.common.delete}
                   aria-label={t.common.delete}
                   onClick={() => jobDelete.requestDelete(job.id)}
+                  className="!p-2 aspect-square"
                 >
                   <Trash2 className="h-4 w-4 text-destructive" />
                 </Button>
@@ -348,6 +343,7 @@ export default function CronPage() {
           </Card>
         ))}
       </div>
+
       <PluginSlot name="cron:bottom" />
     </div>
   );

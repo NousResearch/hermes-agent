@@ -1,8 +1,8 @@
 import { useEffect, useLayoutEffect, useState, useCallback, useRef } from "react";
 import { FileText, RefreshCw } from "lucide-react";
 import { api } from "@/lib/api";
+import { Button } from "@nous-research/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Switch } from "@/components/ui/switch";
 import { Label } from "@/components/ui/label";
@@ -101,13 +101,11 @@ export default function LogsPage() {
         </div>
         <Button
           type="button"
-          variant="outline"
-          size="sm"
+          outlined
           onClick={fetchLogs}
           disabled={loading}
-          className="h-7 text-xs"
+          prefix={<RefreshCw />}
         >
-          <RefreshCw className="mr-1 h-3 w-3" />
           {t.common.refresh}
         </Button>
       </div>,

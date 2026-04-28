@@ -33,8 +33,8 @@ import { getNestedValue, setNestedValue } from "@/lib/nested";
 import { useToast } from "@/hooks/useToast";
 import { Toast } from "@/components/Toast";
 import { AutoField } from "@/components/AutoField";
+import { Button } from "@nous-research/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@/components/ui/badge";
 import { useI18n } from "@/i18n";
@@ -345,10 +345,10 @@ export default function ConfigPage() {
           </code>
         </div>
         <div className="flex items-center gap-1.5">
-          <Button variant="ghost" size="sm" onClick={handleExport} title={t.config.exportConfig} aria-label={t.config.exportConfig}>
+          <Button outlined onClick={handleExport} title={t.config.exportConfig} aria-label={t.config.exportConfig} className="!p-2 aspect-square">
             <Download className="h-3.5 w-3.5" />
           </Button>
-          <Button variant="ghost" size="sm" onClick={() => fileInputRef.current?.click()} title={t.config.importConfig} aria-label={t.config.importConfig}>
+          <Button outlined onClick={() => fileInputRef.current?.click()} title={t.config.importConfig} aria-label={t.config.importConfig} className="!p-2 aspect-square">
             <Upload className="h-3.5 w-3.5" />
           </Button>
           <input ref={fileInputRef} type="file" accept=".json" className="hidden" onChange={handleImport} />
@@ -358,7 +358,7 @@ export default function ConfigPage() {
               : prettyCategoryName(activeCategory);
             const resetTitle = t.config.resetScopeTooltip.replace("{scope}", resetScopeLabel);
             return (
-              <Button variant="ghost" size="sm" onClick={handleReset} title={resetTitle} aria-label={resetTitle}>
+              <Button outlined onClick={handleReset} title={resetTitle} aria-label={resetTitle} className="!p-2 aspect-square">
                 <RotateCcw className="h-3.5 w-3.5" />
               </Button>
             );
@@ -367,32 +367,19 @@ export default function ConfigPage() {
           <div className="w-px h-5 bg-border mx-1" />
 
           <Button
-            variant={yamlMode ? "default" : "outline"}
-            size="sm"
+            outlined={!yamlMode}
             onClick={() => setYamlMode(!yamlMode)}
-            className="gap-1.5"
+            prefix={yamlMode ? <FormInput /> : <Code />}
           >
-            {yamlMode ? (
-              <>
-                <FormInput className="h-3.5 w-3.5" />
-                {t.common.form}
-              </>
-            ) : (
-              <>
-                <Code className="h-3.5 w-3.5" />
-                YAML
-              </>
-            )}
+            {yamlMode ? t.common.form : "YAML"}
           </Button>
 
           {yamlMode ? (
-            <Button size="sm" onClick={handleYamlSave} disabled={yamlSaving} className="gap-1.5">
-              <Save className="h-3.5 w-3.5" />
+            <Button onClick={handleYamlSave} disabled={yamlSaving} prefix={<Save />}>
               {yamlSaving ? t.common.saving : t.common.save}
             </Button>
           ) : (
-            <Button size="sm" onClick={handleSave} disabled={saving} className="gap-1.5">
-              <Save className="h-3.5 w-3.5" />
+            <Button onClick={handleSave} disabled={saving} prefix={<Save />}>
               {saving ? t.common.saving : t.common.save}
             </Button>
           )}

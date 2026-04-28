@@ -1,8 +1,8 @@
 import { useEffect, useState, useCallback, useRef } from "react";
 import { ShieldCheck, ShieldOff, Copy, ExternalLink, RefreshCw, LogOut, Terminal, LogIn } from "lucide-react";
 import { api, type OAuthProvider } from "@/lib/api";
+import { Button } from "@nous-research/ui";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { OAuthLoginModal } from "@/components/OAuthLoginModal";
 import { useI18n } from "@/i18n";
@@ -94,13 +94,11 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
             <CardTitle className="text-base">{t.oauth.providerLogins}</CardTitle>
           </div>
           <Button
-            variant="ghost"
-            size="sm"
+            outlined
             onClick={refresh}
             disabled={loading}
-            className="text-xs"
+            prefix={<RefreshCw className={loading ? "animate-spin" : undefined} />}
           >
-            <RefreshCw className={`h-3 w-3 mr-1 ${loading ? "animate-spin" : ""}`} />
             {t.common.refresh}
           </Button>
         </div>
@@ -194,53 +192,42 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                       className="inline-flex"
                       title={`Open ${p.name} docs`}
                     >
-                      <Button variant="ghost" size="sm" className="h-7 w-7 p-0">
+                      <Button outlined className="!p-1.5 aspect-square">
                         <ExternalLink className="h-3.5 w-3.5" />
                       </Button>
                     </a>
                   )}
                   {!p.status.logged_in && p.flow !== "external" && (
                     <Button
-                      variant="default"
-                      size="sm"
                       onClick={() => setLoginFor(p)}
-                      className="text-xs h-7"
+                      prefix={<LogIn />}
                     >
-                      <LogIn className="h-3 w-3 mr-1" />
                       {t.oauth.login}
                     </Button>
                   )}
                   {!p.status.logged_in && (
                     <Button
-                      variant="outline"
-                      size="sm"
+                      outlined
                       onClick={() => handleCopy(p)}
-                      className="text-xs h-7"
                       title={t.oauth.copyCliCommand}
+                      prefix={copiedId === p.id ? undefined : <Copy />}
                     >
-                      {copiedId === p.id ? (
-                        <>{t.oauth.copied}</>
-                      ) : (
-                        <>
-                          <Copy className="h-3 w-3 mr-1" />
-                          {t.oauth.cli}
-                        </>
-                      )}
+                      {copiedId === p.id ? t.oauth.copied : t.oauth.cli}
                     </Button>
                   )}
                   {p.status.logged_in && p.flow !== "external" && (
                     <Button
-                      variant="outline"
-                      size="sm"
+                      outlined
                       onClick={() => handleDisconnect(p)}
                       disabled={isBusy}
-                      className="text-xs h-7"
+                      prefix={
+                        isBusy ? (
+                          <RefreshCw className="animate-spin" />
+                        ) : (
+                          <LogOut />
+                        )
+                      }
                     >
-                      {isBusy ? (
-                        <RefreshCw className="h-3 w-3 mr-1 animate-spin" />
-                      ) : (
-                        <LogOut className="h-3 w-3 mr-1" />
-                      )}
                       {t.oauth.disconnect}
                     </Button>
                   )}

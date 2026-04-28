@@ -23,8 +23,8 @@
  * terminal pane keeps working unimpaired.
  */
 
+import { Button } from "@nous-research/ui";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 
 import { ModelPickerDialog } from "@/components/ModelPickerDialog";
@@ -337,12 +337,11 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
 
             {error && (
               <Button
-                variant="ghost"
-                size="sm"
-                className="mt-1 h-6 px-1.5 text-xs"
+                outlined
+                className="mt-1"
                 onClick={reconnect}
+                prefix={<RefreshCw />}
               >
-                <RefreshCw className="mr-1 h-3 w-3" />
                 reconnect
               </Button>
             )}

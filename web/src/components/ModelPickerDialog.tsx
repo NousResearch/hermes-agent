@@ -1,4 +1,4 @@
-import { Button } from "@/components/ui/button";
+import { Button } from "@nous-research/ui";
 import { Input } from "@/components/ui/input";
 import type { GatewayClient } from "@/lib/gatewayClient";
 import { Check, Loader2, Search, X } from "lucide-react";
@@ -222,10 +222,10 @@ export function ModelPickerDialog({ gw, sessionId, onClose, onSubmit }: Props) {
           </label>
 
           <div className="flex items-center gap-2 ml-auto">
-            <Button variant="ghost" size="sm" onClick={onClose}>
+            <Button outlined onClick={onClose}>
               Cancel
             </Button>
-            <Button size="sm" onClick={confirm} disabled={!canConfirm}>
+            <Button onClick={confirm} disabled={!canConfirm}>
               Switch
             </Button>
           </div>

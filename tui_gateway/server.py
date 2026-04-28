@@ -4729,22 +4729,47 @@ def _(rid, params: dict) -> dict:
             parsed = urlparse(url if "://" in url else f"http://{url}")
             if parsed.scheme not in {"http", "https", "ws", "wss"}:
                 return _err(rid, 4015, f"unsupported browser url: {url}")
-            probe_root = f"{'https' if parsed.scheme == 'wss' else 'http' if parsed.scheme == 'ws' else parsed.scheme}://{parsed.netloc}"
-            probe_urls = [
-                f"{probe_root.rstrip('/')}/json/version",
-                f"{probe_root.rstrip('/')}/json",
-            ]
-            ok = False
-            for probe in probe_urls:
+
+            # A concrete ``ws[s]://.../devtools/browser/<id>`` endpoint is
+            # already directly connectable — those are the URLs Browserbase
+            # / browserless / hosted CDP providers return, and they
+            # generally DON'T serve the discovery-style ``/json/version``
+            # path.  Probing it would just reject valid endpoints.  Skip
+            # the HTTP probe and do a TCP-level reachability check instead;
+            # the actual CDP handshake happens on the next ``browser_navigate``.
+            is_concrete_ws = (
+                parsed.scheme in {"ws", "wss"}
+                and parsed.path.startswith("/devtools/browser/")
+            )
+            if is_concrete_ws:
+                import socket
+
+                host = parsed.hostname
+                port = parsed.port or (443 if parsed.scheme == "wss" else 80)
+                if not host:
+                    return _err(rid, 4015, f"missing host in browser url: {url}")
                 try:
-                    with urllib.request.urlopen(probe, timeout=2.0) as resp:
-                        if 200 <= getattr(resp, "status", 200) < 300:
-                            ok = True
-                            break
-                except Exception:
-                    continue
-            if not ok:
-                return _err(rid, 5031, f"could not reach browser CDP at {url}")
+                    with socket.create_connection((host, port), timeout=2.0):
+                        pass
+                except OSError as e:
+                    return _err(rid, 5031, f"could not reach browser CDP at {url}: {e}")
+            else:
+                probe_root = f"{'https' if parsed.scheme == 'wss' else 'http' if parsed.scheme == 'ws' else parsed.scheme}://{parsed.netloc}"
+                probe_urls = [
+                    f"{probe_root.rstrip('/')}/json/version",
+                    f"{probe_root.rstrip('/')}/json",
+                ]
+                ok = False
+                for probe in probe_urls:
+                    try:
+                        with urllib.request.urlopen(probe, timeout=2.0) as resp:
+                            if 200 <= getattr(resp, "status", 200) < 300:
+                                ok = True
+                                break
+                    except Exception:
+                        continue
+                if not ok:
+                    return _err(rid, 5031, f"could not reach browser CDP at {url}")
 
             # Persist a normalized URL for downstream CDP resolution.
             # Discovery-style inputs (`http://host:port` or

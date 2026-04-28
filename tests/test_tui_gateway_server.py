@@ -2906,19 +2906,92 @@ def test_browser_manage_connect_preserves_devtools_browser_endpoint(monkeypatch)
         _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
     )
     concrete = "ws://browserbase.example/devtools/browser/abc123"
+
+    class _OkSocket:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
-        _stub_urlopen(monkeypatch, ok=True)
-        resp = server.handle_request(
-            {
-                "id": "1",
-                "method": "browser.manage",
-                "params": {"action": "connect", "url": concrete},
-            }
-        )
+        # If urlopen is reached for a concrete ws endpoint, the test
+        # would still pass because _stub_urlopen returned ok=True before;
+        # patch it to assert-fail so we prove the HTTP probe is skipped.
+        with patch("urllib.request.urlopen", side_effect=AssertionError("urlopen called")):
+            with patch("socket.create_connection", return_value=_OkSocket()):
+                resp = server.handle_request(
+                    {
+                        "id": "1",
+                        "method": "browser.manage",
+                        "params": {"action": "connect", "url": concrete},
+                    }
+                )
 
     assert resp["result"]["connected"] is True
     assert resp["result"]["url"] == concrete
     assert os.environ["BROWSER_CDP_URL"] == concrete
+
+
+def test_browser_manage_connect_concrete_ws_skips_http_probe(monkeypatch):
+    """Regression for round-2 Copilot review: a hosted CDP endpoint
+    (no HTTP discovery) must connect via TCP-only reachability check.
+    The HTTP probe used to reject these even though they're valid."""
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: None,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+    concrete = "wss://chrome.browserless.io/devtools/browser/sess-1"
+
+    seen_targets: list[tuple[str, int]] = []
+
+    class _OkSocket:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+
+    def _fake_create_connection(addr, timeout=None):
+        seen_targets.append(addr)
+        return _OkSocket()
+
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        # urlopen would 404/ECONNREFUSED on a real hosted CDP endpoint;
+        # asserting it's never called proves the probe was skipped.
+        with patch("urllib.request.urlopen", side_effect=AssertionError("urlopen called")):
+            with patch("socket.create_connection", side_effect=_fake_create_connection):
+                resp = server.handle_request(
+                    {
+                        "id": "1",
+                        "method": "browser.manage",
+                        "params": {"action": "connect", "url": concrete},
+                    }
+                )
+
+    assert resp["result"] == {"connected": True, "url": concrete}
+    # wss → port 443, host preserved verbatim.
+    assert seen_targets == [("chrome.browserless.io", 443)]
+
+
+def test_browser_manage_connect_concrete_ws_tcp_unreachable(monkeypatch):
+    """If the TCP reachability check fails for a concrete ws endpoint,
+    return a clear 5031 error — no fallback to the HTTP probe (which
+    can never succeed for these URLs anyway)."""
+    monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
+    fake = types.SimpleNamespace(
+        cleanup_all_browsers=lambda: None,
+        _get_cdp_override=lambda: os.environ.get("BROWSER_CDP_URL", ""),
+    )
+    concrete = "ws://offline.example/devtools/browser/missing"
+
+    with patch.dict(sys.modules, {"tools.browser_tool": fake}):
+        with patch("socket.create_connection", side_effect=OSError("ECONNREFUSED")):
+            resp = server.handle_request(
+                {
+                    "id": "1",
+                    "method": "browser.manage",
+                    "params": {"action": "connect", "url": concrete},
+                }
+            )
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 5031
 
 
 def test_browser_manage_disconnect_drops_env_and_cleans(monkeypatch):

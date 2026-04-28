@@ -293,6 +293,27 @@ describe('createGatewayEventHandler', () => {
     expect(appended[1]).toMatchObject({ role: 'assistant', text: 'final answer' })
   })
 
+  it('annotates gateway.start_timeout with stderr tail lines so users can diagnose without /logs', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    onEvent({
+      payload: {
+        cwd: '/repo',
+        python: '/opt/venv/bin/python',
+        stderr_tail:
+          '[startup] timed out\nModuleNotFoundError: No module named openai\nFileNotFoundError: ~/.hermes/config.yaml'
+      },
+      type: 'gateway.start_timeout'
+    } as any)
+
+    const messages = getTurnState().activity.map(a => a.text)
+
+    expect(messages.some(m => m.includes('gateway startup timed out'))).toBe(true)
+    expect(messages.some(m => m.includes('ModuleNotFoundError'))).toBe(true)
+    expect(messages.some(m => m.includes('FileNotFoundError'))).toBe(true)
+  })
+
   it('anchors inline_diff as its own segment where the edit happened', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))

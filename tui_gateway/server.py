@@ -3192,11 +3192,14 @@ def _(rid, params: dict) -> dict:
         return _ok(rid, {"key": key, "value": "on" if nv else "off"})
 
     if key == "indicator":
-        raw = str(value or "").strip().lower()
+        # Use an explicit None check rather than `value or ""` so falsy
+        # non-string inputs (0, False, []) still surface as themselves
+        # in the error message instead of looking like a blank value.
+        raw = ("" if value is None else str(value)).strip().lower()
         if raw not in _INDICATOR_STYLES:
             return _err(
                 rid, 4002,
-                f"unknown indicator: {raw}; pick one of {'|'.join(_INDICATOR_STYLES)}",
+                f"unknown indicator: {raw!r}; pick one of {'|'.join(_INDICATOR_STYLES)}",
             )
         _write_config_key("display.tui_status_indicator", raw)
         return _ok(rid, {"key": key, "value": raw})

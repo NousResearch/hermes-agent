@@ -4675,23 +4675,36 @@ def _(rid, params: dict) -> dict:
 
 
 def _resolve_browser_cdp_url() -> str:
-    """Return what the agent's browser tools will actually use right now.
+    """Return the configured browser CDP override without network I/O.
 
-    Always defers to ``tools.browser_tool._get_cdp_override`` so the
-    same env-vs-config precedence AND the same WebSocket normalization
-    (``http://host:port`` → ``ws://.../devtools/browser/...``) are
-    applied here as in ``browser_navigate``; otherwise ``/browser
-    status`` could report a different URL than the next tool call
-    actually opens.
+    ``/browser status`` must be fast — calling
+    ``tools.browser_tool._get_cdp_override`` would invoke
+    ``_resolve_cdp_override``, which performs an HTTP probe to
+    ``.../json/version`` for discovery-style URLs.  That probe has
+    a multi-second timeout and would block the TUI on a slow or
+    unreachable host even though status only needs to report whether
+    an override is set.
+
+    Mirrors the env/config precedence of ``_get_cdp_override`` (env
+    var first, then ``browser.cdp_url`` from config.yaml) without the
+    websocket-resolution step, so the answer reflects user intent
+    even when the configured host is not currently reachable.  The
+    actual WS normalization happens in ``browser_navigate`` on the
+    next tool call.
     """
+    env_url = os.environ.get("BROWSER_CDP_URL", "").strip()
+    if env_url:
+        return env_url
     try:
-        from tools.browser_tool import _get_cdp_override
+        from hermes_cli.config import read_raw_config
 
-        return _get_cdp_override() or ""
+        cfg = read_raw_config()
+        browser_cfg = cfg.get("browser", {}) if isinstance(cfg, dict) else {}
+        if isinstance(browser_cfg, dict):
+            return str(browser_cfg.get("cdp_url", "") or "").strip()
     except Exception:
-        # Fall back to the raw env var if browser_tool can't import
-        # (e.g. optional dep missing) so we still report *something*.
-        return os.environ.get("BROWSER_CDP_URL", "").strip()
+        pass
+    return ""
 
 
 @method("browser.manage")

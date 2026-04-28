@@ -2746,19 +2746,50 @@ def _stub_urlopen(monkeypatch, *, ok: bool):
     monkeypatch.setattr(urllib.request, "urlopen", _opener)
 
 
-def test_browser_manage_status_uses_resolved_cdp_url(monkeypatch):
-    """`/browser status` reflects the URL the agent will actually use,
-    not just the env var (covers `browser.cdp_url` in config.yaml)."""
+def test_browser_manage_status_reads_env_var(monkeypatch):
+    """Status returns the env var verbatim (no network I/O)."""
+    monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9222")
+
+    resp = server.handle_request(
+        {"id": "1", "method": "browser.manage", "params": {"action": "status"}}
+    )
+
+    assert resp["result"] == {"connected": True, "url": "http://127.0.0.1:9222"}
+
+
+def test_browser_manage_status_falls_back_to_config_cdp_url(monkeypatch):
+    """When env is unset, status surfaces ``browser.cdp_url`` from
+    config.yaml so users see what the next tool call will read."""
     monkeypatch.delenv("BROWSER_CDP_URL", raising=False)
 
-    fake = types.SimpleNamespace(_get_cdp_override=lambda: "ws://lan:9222/devtools/browser/abc")
+    fake_cfg = types.SimpleNamespace(
+        read_raw_config=lambda: {"browser": {"cdp_url": "http://lan:9222"}}
+    )
+    with patch.dict(sys.modules, {"hermes_cli.config": fake_cfg}):
+        resp = server.handle_request(
+            {"id": "1", "method": "browser.manage", "params": {"action": "status"}}
+        )
+
+    assert resp["result"] == {"connected": True, "url": "http://lan:9222"}
+
+
+def test_browser_manage_status_does_not_call_get_cdp_override(monkeypatch):
+    """Regression guard for Copilot's "status must not block" review:
+    status must NOT route through `_get_cdp_override`, which performs a
+    `/json/version` HTTP probe with a multi-second timeout."""
+    monkeypatch.setenv("BROWSER_CDP_URL", "http://127.0.0.1:9222")
+
+    fake = types.SimpleNamespace(
+        _get_cdp_override=lambda: pytest.fail(  # noqa: PT015 — fail loudly if called
+            "_get_cdp_override must not run on /browser status (network I/O)"
+        )
+    )
     with patch.dict(sys.modules, {"tools.browser_tool": fake}):
         resp = server.handle_request(
             {"id": "1", "method": "browser.manage", "params": {"action": "status"}}
         )
 
     assert resp["result"]["connected"] is True
-    assert resp["result"]["url"] == "ws://lan:9222/devtools/browser/abc"
 
 
 def test_browser_manage_connect_sets_env_and_cleans_twice(monkeypatch):

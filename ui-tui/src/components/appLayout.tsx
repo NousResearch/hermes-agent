@@ -292,6 +292,7 @@ const StatusRulePane = memo(function StatusRulePane({
       <StatusRule
         bgCount={ui.bgTasks.size}
         busy={ui.busy}
+        clipboardNotice={status.clipboardNotice}
         cols={composer.cols}
         cwdLabel={status.cwdLabel}
         model={ui.info?.model ?? ''}

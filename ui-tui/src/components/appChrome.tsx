@@ -187,6 +187,7 @@ export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
 
 export function StatusRule({
   cwdLabel,
+  clipboardNotice,
   cols,
   busy,
   status,
@@ -250,6 +251,7 @@ export function StatusRule({
             </Text>
           ) : null}
           {bgCount > 0 ? <Text color={t.color.dim}> │ {bgCount} bg</Text> : null}
+          {clipboardNotice ? <Text color={t.color.dim}> │ {clipboardNotice}</Text> : null}
           {showCost && typeof usage.cost_usd === 'number' ? (
             <Text color={t.color.dim}> │ ${usage.cost_usd.toFixed(4)}</Text>
           ) : null}
@@ -357,6 +359,7 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
 interface StatusRuleProps {
   bgCount: number
   busy: boolean
+  clipboardNotice: string
   cols: number
   cwdLabel: string
   model: string

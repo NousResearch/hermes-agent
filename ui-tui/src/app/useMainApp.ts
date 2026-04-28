@@ -106,6 +106,7 @@ export function useMainApp(gw: GatewayClient) {
   const [turnStartedAt, setTurnStartedAt] = useState<null | number>(null)
   const [goodVibesTick, setGoodVibesTick] = useState(0)
   const [bellOnComplete, setBellOnComplete] = useState(false)
+  const [clipboardNotice, setClipboardNotice] = useState('')
 
   const ui = useStore($uiState)
   const overlay = useStore($overlayState)
@@ -485,6 +486,7 @@ export function useMainApp(gw: GatewayClient) {
       dispatchSubmission,
       guardBusySessionSwitch: session.guardBusySessionSwitch,
       newSession: session.newSession,
+      setClipboardNotice,
       sys
     },
     composer: { actions: composerActions, refs: composerRefs, state: composerState },
@@ -734,6 +736,7 @@ export function useMainApp(gw: GatewayClient) {
 
   const appStatus = useMemo(
     () => ({
+      clipboardNotice,
       cwdLabel: fmtCwdBranch(cwd, gitBranch),
       goodVibesTick,
       sessionStartedAt: ui.sid ? sessionStartedAt : null,
@@ -746,6 +749,7 @@ export function useMainApp(gw: GatewayClient) {
       voiceLabel: voiceRecording ? '● REC' : voiceProcessing ? '◉ STT' : `voice ${voiceEnabled ? 'on' : 'off'}`
     }),
     [
+      clipboardNotice,
       cwd,
       gitBranch,
       goodVibesTick,

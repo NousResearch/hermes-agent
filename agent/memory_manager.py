@@ -3,9 +3,10 @@
 Single integration point in run_agent.py. Replaces scattered per-backend
 code with one manager that delegates to registered providers.
 
-Only ONE external plugin provider is allowed at a time — attempting to
-register a second external provider is rejected with a warning.  This
-prevents tool schema bloat and conflicting memory backends.
+The BuiltinMemoryProvider is always registered first and cannot be removed.
+Multiple external providers can be active simultaneously via the
+``memory.providers`` list in config.yaml.  Results are merged across
+all active providers at runtime.
 
 Usage in run_agent.py:
     self._memory_manager = MemoryManager()

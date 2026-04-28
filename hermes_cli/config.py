@@ -963,7 +963,8 @@ DEFAULT_CONFIG = {
         # External memory provider plugin (empty = built-in only).
         # Set to a provider name to activate: "openviking", "mem0",
         # "hindsight", "holographic", "retaindb", "byterover".
-        # Only ONE external provider is allowed at a time.
+        # Multiple external providers can be active simultaneously.
+        # Use the "providers" list below for multi-provider setups.
         "provider": "",
         # Multi-provider list (takes precedence over "provider" when non-empty).
         # Each entry is a provider name string; results are merged across all

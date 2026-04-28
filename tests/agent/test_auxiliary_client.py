@@ -1650,6 +1650,30 @@ class TestCodexAdapterReasoningTranslation:
         )
         assert "reasoning" not in captured
 
+    def test_reasoning_effort_null_falls_back_to_medium(self):
+        """Parity with agent/transports/codex.py::build_kwargs() — falsy
+        ``effort`` (None / empty / 0) keeps the default ``medium`` instead
+        of being forwarded to Codex.  Codex rejects ``{"effort": null}``
+        with HTTP 400 (Invalid value for parameter `reasoning.effort`)."""
+        adapter, captured = self._build_adapter()
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"effort": None}},
+        )
+        assert captured.get("reasoning") == {"effort": "medium", "summary": "auto"}
+        assert captured.get("include") == ["reasoning.encrypted_content"]
+
+    def test_reasoning_effort_empty_string_falls_back_to_medium(self):
+        """Empty-string effort (e.g. ``effort: ""`` in YAML) is falsy in
+        the main-agent path's truthy check; mirror that here so the same
+        config produces the same result."""
+        adapter, captured = self._build_adapter()
+        adapter.create(
+            messages=[{"role": "user", "content": "hi"}],
+            extra_body={"reasoning": {"effort": ""}},
+        )
+        assert captured.get("reasoning") == {"effort": "medium", "summary": "auto"}
+        assert captured.get("include") == ["reasoning.encrypted_content"]
 
 
 class TestVisionAutoSkipsKimiCoding:

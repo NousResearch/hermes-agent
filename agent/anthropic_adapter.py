@@ -336,6 +336,19 @@ def _is_kimi_coding_endpoint(base_url: str | None) -> bool:
     return normalized.rstrip("/").lower().startswith("https://api.kimi.com/coding")
 
 
+def _is_deepseek_anthropic_endpoint(base_url: str | None) -> bool:
+    """Return True for DeepSeek's Anthropic-compatible endpoint.
+
+    DeepSeek's /anthropic endpoint requires thinking blocks to be replayed
+    for reasoning continuity, unlike other third-party endpoints that reject
+    them outright.
+    """
+    normalized = _normalize_base_url_text(base_url)
+    if not normalized:
+        return False
+    return "api.deepseek.com" in normalized.rstrip("/").lower()
+
+
 def _requires_bearer_auth(base_url: str | None) -> bool:
     """Return True for Anthropic-compatible providers that require Bearer auth.
 
@@ -1435,6 +1448,7 @@ def convert_messages_to_anthropic(
     _THINKING_TYPES = frozenset(("thinking", "redacted_thinking"))
     _is_third_party = _is_third_party_anthropic_endpoint(base_url)
     _is_kimi = _is_kimi_coding_endpoint(base_url)
+    _is_deepseek = _is_deepseek_anthropic_endpoint(base_url)
 
     last_assistant_idx = None
     for i in range(len(result) - 1, -1, -1):
@@ -1463,6 +1477,21 @@ def convert_messages_to_anthropic(
                 # Unsigned thinking (synthesised from reasoning_content) —
                 # keep it: Kimi needs it for message-history validation.
                 new_content.append(b)
+            m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
+        elif _is_deepseek:
+            # DeepSeek's /anthropic endpoint requires thinking blocks to be
+            # replayed for reasoning continuity (HTTP 400 if stripped).
+            # Strip signed Anthropic blocks (DeepSeek can't validate
+            # signatures) but preserve unsigned ones synthesised from
+            # reasoning_content — same pattern as Kimi.
+            new_content = []
+            for b in m["content"]:
+                if not isinstance(b, dict) or b.get("type") not in _THINKING_TYPES:
+                    new_content.append(b)
+                    continue
+                if b.get("signature") or b.get("data"):
+                    continue  # Anthropic-signed — DeepSeek can't validate
+                new_content.append(b)  # Unsigned — keep for replay
             m["content"] = new_content or [{"type": "text", "text": "(empty)"}]
         elif _is_third_party or idx != last_assistant_idx:
             # Third-party endpoint: strip ALL thinking blocks from every

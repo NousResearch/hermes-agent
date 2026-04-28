@@ -2214,6 +2214,13 @@ async def create_profile_endpoint(body: ProfileCreate):
             clone_from="default" if body.clone_from_default else None,
             clone_config=body.clone_from_default,
         )
+        # Match the CLI's profile-create flow: fresh named profiles get the
+        # bundled skills installed. When cloning from default, create_profile()
+        # has already copied the source profile's skills, including any
+        # user-installed skills.
+        if not body.clone_from_default:
+            profiles_mod.seed_profile_skills(path, quiet=True)
+
         # Match the CLI's profile-create flow: named profiles should get a
         # wrapper in ~/.local/bin when the alias is safe to create.
         collision = profiles_mod.check_alias_collision(body.name)

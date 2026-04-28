@@ -684,6 +684,51 @@ class TestNewEndpoints:
         assert wrapper_path.exists()
         assert wrapper_path.read_text() == '#!/bin/sh\nexec hermes -p writer "$@"\n'
 
+    def test_profiles_create_with_clone_from_default_copies_default_skills(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        import hermes_cli.profiles as profiles_mod
+
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+        default_skill = get_hermes_home() / "skills" / "custom" / "new-skill"
+        default_skill.mkdir(parents=True)
+        (default_skill / "SKILL.md").write_text("---\nname: new-skill\n---\n", encoding="utf-8")
+
+        resp = self.client.post(
+            "/api/profiles",
+            json={"name": "cloned", "clone_from_default": True},
+        )
+
+        assert resp.status_code == 200
+        cloned_skill = get_hermes_home() / "profiles" / "cloned" / "skills" / "custom" / "new-skill" / "SKILL.md"
+        assert cloned_skill.exists()
+        profiles = {p["name"]: p for p in self.client.get("/api/profiles").json()["profiles"]}
+        assert profiles["cloned"]["skill_count"] == 1
+
+    def test_profiles_create_without_clone_seeds_bundled_skills(self, monkeypatch):
+        from hermes_constants import get_hermes_home
+        import hermes_cli.profiles as profiles_mod
+
+        monkeypatch.setattr(profiles_mod, "create_wrapper_script", lambda name: None)
+
+        def fake_seed(profile_dir, quiet=False):
+            skill_dir = profile_dir / "skills" / "software-development" / "plan"
+            skill_dir.mkdir(parents=True)
+            (skill_dir / "SKILL.md").write_text("---\nname: plan\n---\n", encoding="utf-8")
+            return {"copied": ["plan"]}
+
+        monkeypatch.setattr(profiles_mod, "seed_profile_skills", fake_seed)
+
+        resp = self.client.post(
+            "/api/profiles",
+            json={"name": "fresh", "clone_from_default": False},
+        )
+
+        assert resp.status_code == 200
+        seeded_skill = get_hermes_home() / "profiles" / "fresh" / "skills" / "software-development" / "plan" / "SKILL.md"
+        assert seeded_skill.exists()
+        profiles = {p["name"]: p for p in self.client.get("/api/profiles").json()["profiles"]}
+        assert profiles["fresh"]["skill_count"] == 1
+
     def test_profile_open_terminal_uses_macos_terminal(self, monkeypatch):
         from hermes_constants import get_hermes_home
         import hermes_cli.web_server as web_server

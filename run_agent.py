@@ -8582,6 +8582,7 @@ class AIAgent:
             "google/gemini-2",
             "qwen/qwen3",
             "tencent/hy3-preview",
+            "xiaomi/",
         )
         return any(model.startswith(prefix) for prefix in reasoning_model_prefixes)
 

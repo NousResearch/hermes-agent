@@ -23,6 +23,8 @@ Refs #15250 / #15353.
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from run_agent import AIAgent
@@ -33,6 +35,10 @@ def _make_agent(provider: str = "", model: str = "", base_url: str = "") -> AIAg
     agent.provider = provider
     agent.model = model
     agent.base_url = base_url
+    agent.verbose_logging = False
+    agent.reasoning_callback = None
+    agent.stream_delta_callback = None
+    agent._stream_callback = None
     return agent
 
 
@@ -109,16 +115,7 @@ class TestCopyReasoningContentForApi:
         assert api_msg["reasoning_content"] == "<think>real chain of thought</think>"
 
     def test_deepseek_reasoning_field_promoted(self) -> None:
-        """When only 'reasoning' is set (no tool_calls), it gets promoted to reasoning_content.
-
-        On DeepSeek/Kimi, tool-call turns with 'reasoning' but no
-        'reasoning_content' are treated as cross-provider poisoned history
-        (#15748) and padded with "" instead of promoted. Same-provider
-        DeepSeek tool-call turns always have reasoning_content pinned at
-        creation time by _build_assistant_message, so the (reasoning-set,
-        reasoning_content-absent, tool_calls-present) shape is unreachable
-        from same-provider history.
-        """
+        """When only 'reasoning' is set, it gets promoted to reasoning_content."""
         agent = _make_agent(provider="deepseek", model="deepseek-v4-flash")
         source = {
             "role": "assistant",
@@ -135,8 +132,8 @@ class TestCopyReasoningContentForApi:
 
         If the source turn has tool_calls AND a 'reasoning' field but NO
         'reasoning_content' key, it's from a prior provider (the DeepSeek
-        build path always pins reasoning_content="" at creation). Inject
-        "" instead of forwarding the prior provider's chain of thought.
+        build path pins reasoning_content at creation). Inject "" instead
+        of forwarding the prior provider's chain of thought.
         """
         agent = _make_agent(provider="deepseek", model="deepseek-v4-flash")
         source = {
@@ -226,6 +223,86 @@ class TestCopyReasoningContentForApi:
         api_msg: dict = {}
         agent._copy_reasoning_content_for_api(source, api_msg)
         assert "reasoning_content" not in api_msg
+
+
+class TestBuildAssistantMessageDeepSeekReasoningContent:
+    """_build_assistant_message pins replay-safe DeepSeek tool-call state."""
+
+    def test_deepseek_tool_call_reasoning_is_backfilled_into_reasoning_content(self) -> None:
+        agent = _make_agent(provider="deepseek", model="deepseek-v4-flash")
+        assistant_message = SimpleNamespace(
+            content=None,
+            reasoning="DeepSeek tool-call reasoning",
+            reasoning_content=None,
+            reasoning_details=None,
+            codex_reasoning_items=None,
+            codex_message_items=None,
+            tool_calls=[
+                SimpleNamespace(
+                    id="call_1",
+                    call_id=None,
+                    response_item_id=None,
+                    type="function",
+                    function=SimpleNamespace(name="terminal", arguments="{}"),
+                )
+            ],
+        )
+
+        msg = agent._build_assistant_message(assistant_message, "tool_calls")
+
+        assert msg["reasoning_content"] == "DeepSeek tool-call reasoning"
+        assert msg["tool_calls"][0]["id"] == "call_1"
+
+    def test_deepseek_model_extra_reasoning_content_is_preserved(self) -> None:
+        """OpenAI SDK stores unknown provider fields in model_extra."""
+        agent = _make_agent(provider="deepseek", model="deepseek-v4-flash")
+        assistant_message = SimpleNamespace(
+            content=None,
+            reasoning=None,
+            reasoning_content=None,
+            model_extra={"reasoning_content": "DeepSeek model_extra reasoning"},
+            reasoning_details=None,
+            codex_reasoning_items=None,
+            codex_message_items=None,
+            tool_calls=[
+                SimpleNamespace(
+                    id="call_1",
+                    call_id=None,
+                    response_item_id=None,
+                    type="function",
+                    function=SimpleNamespace(name="terminal", arguments="{}"),
+                )
+            ],
+        )
+
+        msg = agent._build_assistant_message(assistant_message, "tool_calls")
+
+        assert msg["reasoning_content"] == "DeepSeek model_extra reasoning"
+
+    def test_deepseek_tool_call_without_raw_reasoning_content_gets_empty_string(self) -> None:
+        agent = _make_agent(provider="deepseek", model="deepseek-v4-flash")
+        assistant_message = SimpleNamespace(
+            content=None,
+            reasoning=None,
+            reasoning_content=None,
+            reasoning_details=None,
+            codex_reasoning_items=None,
+            codex_message_items=None,
+            tool_calls=[
+                SimpleNamespace(
+                    id="call_1",
+                    call_id=None,
+                    response_item_id=None,
+                    type="function",
+                    function=SimpleNamespace(name="terminal", arguments="{}"),
+                )
+            ],
+        )
+
+        msg = agent._build_assistant_message(assistant_message, "tool_calls")
+
+        assert msg["reasoning_content"] == ""
+        assert msg["tool_calls"][0]["id"] == "call_1"
 
 
 class TestNeedsKimiToolReasoning:

@@ -620,6 +620,41 @@ class TestChatCompletionsNormalize:
         assert nr.reasoning == "summary text"
         assert nr.provider_data == {"reasoning_content": "detailed scratchpad"}
 
+    def test_empty_reasoning_content_preserved(self, transport):
+        """DeepSeek can require an explicit empty reasoning_content replay field."""
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=None,
+                    tool_calls=None,
+                    reasoning=None,
+                    reasoning_content="",
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert nr.provider_data == {"reasoning_content": ""}
+        assert nr.reasoning_content == ""
+
+    def test_reasoning_content_preserved_from_model_extra(self, transport):
+        """OpenAI SDK can expose provider-specific DeepSeek fields via model_extra."""
+        r = SimpleNamespace(
+            choices=[SimpleNamespace(
+                message=SimpleNamespace(
+                    content=None,
+                    tool_calls=None,
+                    reasoning=None,
+                    model_extra={"reasoning_content": "model-extra scratchpad"},
+                ),
+                finish_reason="stop",
+            )],
+            usage=None,
+        )
+        nr = transport.normalize_response(r)
+        assert nr.provider_data == {"reasoning_content": "model-extra scratchpad"}
+
 
 class TestChatCompletionsCacheStats:
 

@@ -500,11 +500,12 @@ def _cmd_migrate(args):
     backup_archive: Optional[Path] = None
     if not no_backup:
         try:
-            from hermes_cli.backup import create_pre_migration_backup
+            from hermes_cli.backup import create_pre_migration_backup, _format_size
             backup_archive = create_pre_migration_backup(hermes_home=hermes_home)
             if backup_archive:
+                size_str = _format_size(backup_archive.stat().st_size)
                 print()
-                print_success(f"Pre-migration backup: {backup_archive}")
+                print_success(f"Pre-migration backup: {backup_archive} ({size_str})")
                 print_info(f"Restore with: hermes import {backup_archive.name}")
         except Exception as e:
             print()
@@ -540,9 +541,6 @@ def _cmd_migrate(args):
 
     # Print results
     _print_migration_report(report, dry_run=False)
-    if backup_archive:
-        print()
-        print_info(f"Pre-migration backup saved: {backup_archive}")
 
     # Source directory is left untouched — archiving is not the migration
     # tool's responsibility.  Users who want to clean up can run

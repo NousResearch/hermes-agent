@@ -3138,7 +3138,9 @@ class HermesCLI:
             # doesn't reject the request and local servers just ignore it.
             _source = runtime.get("source", "")
             _has_custom_base = isinstance(base_url, str) and base_url and "openrouter.ai" not in base_url
-            if _has_custom_base:
+            # Fix #16730: Also allow ollama provider without requiring API key
+            _is_ollama_provider = resolved_provider and resolved_provider.lower() == "ollama"
+            if _has_custom_base or _is_ollama_provider:
                 api_key = "no-key-required"
                 logger.debug(
                     "No API key for custom endpoint %s (source=%s), "
@@ -4495,7 +4497,9 @@ class HermesCLI:
         # Get terminal config from environment (which was set from cli-config.yaml)
         terminal_env = os.getenv("TERMINAL_ENV", "local")
         terminal_cwd = os.getenv("TERMINAL_CWD", os.getcwd())
-        terminal_timeout = os.getenv("TERMINAL_TIMEOUT", "60")
+        # Fix #16723: read timeout from environment (which bridges from config.yaml)
+        # but use a fallback that matches the actual default in terminal_tool (180s)
+        terminal_timeout = os.getenv("TERMINAL_TIMEOUT", "180")
         
         user_config_path = _hermes_home / 'config.yaml'
         project_config_path = Path(__file__).parent / 'cli-config.yaml'

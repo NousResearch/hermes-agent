@@ -46,6 +46,25 @@ def _run_boot_agent(content: str) -> None:
     """Spawn a one-shot agent session to execute the boot instructions."""
     try:
         from run_agent import AIAgent
+        from hermes_cli.config import load_config
+
+        # Inherit model/provider/api_mode from config.yaml so the boot
+        # agent hits the user's configured endpoint. Without these,
+        # AIAgent falls back to defaults (model="", api_mode=None)
+        # and the init chain selects api_mode="chat_completions" — on
+        # an openai-codex setup that POSTs to
+        # chatgpt.com/backend-api/codex/chat/completions, a route the
+        # Codex backend doesn't expose (only /responses exists) → 404.
+        cfg = load_config()
+        model_cfg = cfg.get("model")
+        if isinstance(model_cfg, dict):
+            agent_kwargs = {
+                "model": model_cfg.get("default") or "",
+                "provider": model_cfg.get("provider") or None,
+                "api_mode": model_cfg.get("api_mode") or None,
+            }
+        else:
+            agent_kwargs = {"model": str(model_cfg or "")}
 
         prompt = _build_boot_prompt(content)
         agent = AIAgent(
@@ -53,6 +72,7 @@ def _run_boot_agent(content: str) -> None:
             skip_context_files=True,
             skip_memory=True,
             max_iterations=20,
+            **agent_kwargs,
         )
         result = agent.run_conversation(prompt)
         response = result.get("final_response", "")

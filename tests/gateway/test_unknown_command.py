@@ -147,6 +147,30 @@ async def test_known_slash_command_not_flagged_as_unknown(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_externally_handled_command_silenced(monkeypatch):
+    """Slash commands handled by an external service (e.g. /fixiq is owned by
+    FIXiq's Telegram webhook) must NOT trigger the unknown-command notice —
+    Hermes should silently absorb them so shared chats don't get noise."""
+    import gateway.run as gateway_run
+
+    runner = _make_runner()
+    runner._run_agent = AsyncMock(
+        side_effect=AssertionError(
+            "externally-handled command leaked through to the agent"
+        )
+    )
+
+    monkeypatch.setattr(
+        gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"}
+    )
+
+    result = await runner._handle_message(_make_event("/fixiq Unit 350 leak"))
+
+    assert result is None
+    runner._run_agent.assert_not_called()
+
+
+@pytest.mark.asyncio
 async def test_underscored_alias_for_hyphenated_builtin_not_flagged(monkeypatch):
     """Telegram autocomplete sends /reload_mcp for the /reload-mcp built-in.
     That must NOT be flagged as unknown."""

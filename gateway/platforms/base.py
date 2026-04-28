@@ -307,9 +307,14 @@ def proxy_kwargs_for_aiohttp(proxy_url: str | None) -> tuple[dict, dict]:
     """Build kwargs for standalone ``aiohttp.ClientSession`` with proxy.
 
     Returns ``(session_kwargs, request_kwargs)`` where:
-      - SOCKS → ``({"connector": ProxyConnector(...)}, {})``
-      - HTTP  → ``({}, {"proxy": url})``
-      - None  → ``({}, {})``
+      - With aiohttp-socks → ``({"connector": ProxyConnector(...)}, {})``
+        for *all* proxy schemes (SOCKS **and** HTTP/HTTPS).
+      - HTTP without aiohttp-socks → ``({}, {"proxy": url})``.
+      - None → ``({}, {})``.
+
+    Prefer the connector path: it works transparently with libraries
+    (like mautrix) that call ``session.request()`` without forwarding
+    per-request ``proxy=`` kwargs.
 
     Usage::
 
@@ -320,20 +325,20 @@ def proxy_kwargs_for_aiohttp(proxy_url: str | None) -> tuple[dict, dict]:
     """
     if not proxy_url:
         return {}, {}
-    if proxy_url.lower().startswith("socks"):
-        try:
-            from aiohttp_socks import ProxyConnector
+    try:
+        from aiohttp_socks import ProxyConnector
 
-            connector = ProxyConnector.from_url(proxy_url, rdns=True)
-            return {"connector": connector}, {}
-        except ImportError:
+        connector = ProxyConnector.from_url(proxy_url, rdns=True)
+        return {"connector": connector}, {}
+    except ImportError:
+        if proxy_url.lower().startswith("socks"):
             logger.warning(
                 "aiohttp_socks not installed — SOCKS proxy %s ignored. "
                 "Run: pip install aiohttp-socks",
                 proxy_url,
             )
             return {}, {}
-    return {}, {"proxy": proxy_url}
+        return {}, {"proxy": proxy_url}
 
 
 def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = None) -> bool:
@@ -900,6 +905,41 @@ class MessageEvent:
         # iOS auto-corrects -- to — (em dash) and - to – (en dash)
         args = args.replace("\u2014\u2014", "--").replace("\u2014", "--").replace("\u2013", "-")
         return args
+
+
+_PLAINTEXT_GATEWAY_RESTART_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"^(?:please\s+)?restart\s+(?:the\s+)?gateway[.!?\s]*$", re.IGNORECASE),
+    re.compile(r"^(?:please\s+)?restart\s+(?:the\s+)?hermes\s+gateway[.!?\s]*$", re.IGNORECASE),
+    re.compile(r"^(?:please\s+)?restart\s+hermes[.!?\s]*$", re.IGNORECASE),
+)
+
+
+def coerce_plaintext_gateway_command(event: "MessageEvent") -> None:
+    """Rewrite a tiny set of DM plaintext admin phrases into slash commands.
+
+    This keeps high-impact operational phrases like ``restart gateway`` out of
+    the LLM/tool path, where they can trigger a self-restart from inside the
+    currently running agent and leave the gateway stuck in ``draining`` while it
+    waits for that same agent to finish.
+
+    Scope is intentionally narrow: DM text messages only, exact restart-style
+    phrases only. Group chats keep natural-language semantics.
+    """
+    try:
+        if event is None or event.message_type != MessageType.TEXT:
+            return
+        text = (event.text or "").strip()
+        if not text or text.startswith("/"):
+            return
+        source = getattr(event, "source", None)
+        if getattr(source, "chat_type", None) != "dm":
+            return
+        for pattern in _PLAINTEXT_GATEWAY_RESTART_PATTERNS:
+            if pattern.match(text):
+                event.text = "/restart"
+                return
+    except Exception:
+        return
 
 
 @dataclass 
@@ -2188,6 +2228,8 @@ class BasePlatformAdapter(ABC):
         """
         if not self._message_handler:
             return
+
+        coerce_plaintext_gateway_command(event)
         
         session_key = build_session_key(
             event.source,

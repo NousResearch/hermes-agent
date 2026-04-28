@@ -106,6 +106,51 @@ def _codex_curated_models() -> list[str]:
     return _add_forward_compat_models(list(DEFAULT_CODEX_MODELS))
 
 
+# Static fallback for xAI when the models.dev disk cache is empty (fresh
+# install, offline first run, etc.). Mirrors the xAI-direct model IDs from
+# $HERMES_HOME/models_dev_cache.json as of 2026-04-28. Whenever xAI renames
+# or retires a model, the disk cache picks it up on the next refresh and the
+# fallback here only matters until that refresh lands.
+_XAI_STATIC_FALLBACK: list[str] = [
+    "grok-4.20-0309-reasoning",
+    "grok-4.20-0309-non-reasoning",
+    "grok-4.20-multi-agent-0309",
+    "grok-4-1-fast",
+    "grok-4-1-fast-non-reasoning",
+    "grok-4-fast",
+    "grok-4-fast-non-reasoning",
+    "grok-4",
+    "grok-code-fast-1",
+]
+
+
+def _xai_curated_models() -> list[str]:
+    """Derive the xAI-direct curated list from models.dev disk cache.
+
+    Reads $HERMES_HOME/models_dev_cache.json directly (no network) so this
+    runs at import time without blocking. Falls back to ``_XAI_STATIC_FALLBACK``
+    when the cache is empty or unreadable. Hermes refreshes the cache from
+    https://models.dev/api.json on normal use, so this list self-heals as
+    xAI renames models.
+
+    Mirrors ``_codex_curated_models()``'s role for openai-codex.
+    """
+    try:
+        from agent.models_dev import _load_disk_cache
+        data = _load_disk_cache()
+        xai = data.get("xai") if isinstance(data, dict) else None
+        models = xai.get("models") if isinstance(xai, dict) else None
+        if isinstance(models, dict) and models:
+            ids = [mid for mid in models.keys() if isinstance(mid, str)]
+            if ids:
+                return sorted(ids)
+    except Exception:
+        # Any failure (missing file, malformed JSON, import error)
+        # falls through to the static list.
+        pass
+    return list(_XAI_STATIC_FALLBACK)
+
+
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "nous": [
         "moonshotai/kimi-k2.6",
@@ -193,10 +238,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "glm-4.5",
         "glm-4.5-flash",
     ],
-    "xai": [
-        "grok-4.20-reasoning",
-        "grok-4-1-fast-reasoning",
-    ],
+    "xai": _xai_curated_models(),
     "nvidia": [
         # NVIDIA flagship reasoning models
         "nvidia/nemotron-3-super-120b-a12b",
@@ -350,6 +392,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
     # to https://dashscope-intl.aliyuncs.com/compatible-mode/v1 (OpenAI-compat)
     # or https://dashscope-intl.aliyuncs.com/apps/anthropic (Anthropic-compat).
     "alibaba": [
+        "qwen3.6-plus",
         "kimi-k2.5",
         "qwen3.5-plus",
         "qwen3-coder-plus",
@@ -1623,31 +1666,41 @@ def provider_label(provider: Optional[str]) -> str:
 
 # Models that support OpenAI Priority Processing (service_tier="priority").
 # See https://openai.com/api-priority-processing/ for the canonical list.
-# Only the bare model slug is stored (no vendor prefix).
-_PRIORITY_PROCESSING_MODELS: frozenset[str] = frozenset({
-    "gpt-5.4",
-    "gpt-5.4-mini",
-    "gpt-5.2",
-    "gpt-5.1",
-    "gpt-5",
-    "gpt-5-mini",
-    "gpt-4.1",
-    "gpt-4.1-mini",
-    "gpt-4.1-nano",
-    "gpt-4o",
-    "gpt-4o-mini",
+#
+# Pattern-based matching — any OpenAI flagship model (gpt-*, o1*, o3*, o4*)
+# is assumed to support Priority Processing. service_tier=priority is silently
+# ignored by non-OpenAI endpoints (OpenRouter/Copilot/opencode-zen proxies
+# strip the field), so false positives are harmless. Codex-series models
+# (gpt-5-codex, gpt-5.3-codex, etc.) are excluded — they don't expose the
+# service_tier parameter through the Codex Responses API.
+_OPENAI_FAST_MODE_PREFIXES: tuple[str, ...] = (
+    "gpt-",
+    "o1",
     "o3",
-    "o4-mini",
-})
+    "o4",
+)
+
+
+def _is_openai_fast_model(model_id: Optional[str]) -> bool:
+    """Return True if the model is an OpenAI flagship eligible for Priority Processing."""
+    raw = _strip_vendor_prefix(str(model_id or ""))
+    base = raw.split(":")[0]
+    if not base:
+        return False
+    # Exclude Codex-series — they route through the Codex Responses API
+    # which doesn't accept service_tier.
+    if "codex" in base:
+        return False
+    return any(base.startswith(prefix) for prefix in _OPENAI_FAST_MODE_PREFIXES)
+
 
 # Models that support Anthropic Fast Mode (speed="fast").
 # See https://platform.claude.com/docs/en/build-with-claude/fast-mode
-# Currently only Claude Opus 4.6.  Both hyphen and dot variants are stored
-# to handle native Anthropic (claude-opus-4-6) and OpenRouter (claude-opus-4.6).
-_ANTHROPIC_FAST_MODE_MODELS: frozenset[str] = frozenset({
-    "claude-opus-4-6",
-    "claude-opus-4.6",
-})
+#
+# Pattern-based matching — any claude-* model is eligible. The anthropic
+# adapter gates speed=fast on native Anthropic endpoints only (see
+# _is_third_party_anthropic_endpoint in agent/anthropic_adapter.py), so
+# third-party proxies that would reject the beta header are protected.
 
 
 def _strip_vendor_prefix(model_id: str) -> str:
@@ -1660,20 +1713,14 @@ def _strip_vendor_prefix(model_id: str) -> str:
 
 def model_supports_fast_mode(model_id: Optional[str]) -> bool:
     """Return whether Hermes should expose the /fast toggle for this model."""
-    raw = _strip_vendor_prefix(str(model_id or ""))
-    if raw in _PRIORITY_PROCESSING_MODELS:
-        return True
-    # Anthropic fast mode — strip date suffixes (e.g. claude-opus-4-6-20260401)
-    # and OpenRouter variant tags (:fast, :beta) for matching.
-    base = raw.split(":")[0]
-    return base in _ANTHROPIC_FAST_MODE_MODELS
+    return _is_anthropic_fast_model(model_id) or _is_openai_fast_model(model_id)
 
 
 def _is_anthropic_fast_model(model_id: Optional[str]) -> bool:
-    """Return True if the model supports Anthropic's fast mode (speed='fast')."""
+    """Return True if the model is a Claude model eligible for Anthropic Fast Mode."""
     raw = _strip_vendor_prefix(str(model_id or ""))
     base = raw.split(":")[0]
-    return base in _ANTHROPIC_FAST_MODE_MODELS
+    return base.startswith("claude-")
 
 
 def resolve_fast_mode_overrides(model_id: Optional[str]) -> dict[str, Any] | None:
@@ -1695,14 +1742,61 @@ def resolve_fast_mode_overrides(model_id: Optional[str]) -> dict[str, Any] | Non
 
 
 def _resolve_copilot_catalog_api_key() -> str:
-    """Best-effort GitHub token for fetching the Copilot model catalog."""
+    """Best-effort GitHub token for fetching the Copilot model catalog.
+
+    Resolution order:
+      1. ``resolve_api_key_provider_credentials("copilot")`` — env vars
+         (``COPILOT_GITHUB_TOKEN`` / ``GH_TOKEN`` / ``GITHUB_TOKEN``) plus
+         the ``gh auth token`` CLI fallback.
+      2. ``read_credential_pool("copilot")`` — a token (typically a
+         ``gho_*`` from device-code login, or a fine-grained PAT) stored in
+         ``auth.json`` under ``credential_pool.copilot[]``. The pool is
+         populated by ``hermes auth add copilot`` and by ``_seed_from_env``
+         when the env var is set in ``~/.hermes/.env``.
+
+    Without (2), users whose only Copilot credential is in the pool see
+    the ``/model`` picker fall back to a stale hardcoded list because the
+    live catalog fetch silently 401s. To avoid wedging on a malformed pool
+    entry, each candidate is exchanged via ``exchange_copilot_token`` —
+    only entries that actually exchange successfully are returned, so a
+    later valid entry is reachable when an earlier one is unsupported.
+    """
     try:
         from hermes_cli.auth import resolve_api_key_provider_credentials
 
         creds = resolve_api_key_provider_credentials("copilot")
-        return str(creds.get("api_key") or "").strip()
+        api_key = str(creds.get("api_key") or "").strip()
+        if api_key:
+            return api_key
     except Exception:
-        return ""
+        pass
+
+    try:
+        from hermes_cli.auth import read_credential_pool
+        from hermes_cli.copilot_auth import (
+            exchange_copilot_token,
+            validate_copilot_token,
+        )
+
+        for entry in read_credential_pool("copilot"):
+            if not isinstance(entry, dict):
+                continue
+            raw = str(entry.get("access_token") or "").strip()
+            if not raw:
+                continue
+            valid, _ = validate_copilot_token(raw)
+            if not valid:
+                continue
+            try:
+                api_token, _expires_at = exchange_copilot_token(raw)
+            except Exception:
+                continue
+            if api_token:
+                return api_token
+    except Exception:
+        pass
+
+    return ""
 
 
 # Providers where models.dev is treated as authoritative: curated static

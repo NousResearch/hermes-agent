@@ -5213,6 +5213,93 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     return True
 
 
+def _warn_stale_dashboard_processes() -> None:
+    """Warn about running dashboard processes that still hold pre-update code.
+
+    ``hermes dashboard`` is a long-lived server process commonly started and
+    forgotten.  When ``hermes update`` replaces files on disk, the running
+    process keeps the old Python backend in memory while the JS bundle on
+    disk is updated, causing a silent frontend/backend mismatch (e.g. new
+    auth headers the old backend doesn't recognise → every API call 401s).
+
+    Unlike the gateway, the dashboard has no service manager (systemd /
+    launchd), so we can only warn — we don't auto-kill user-managed
+    background processes.
+    """
+    patterns = [
+        "hermes dashboard",
+        "hermes_cli.main dashboard",
+        "hermes_cli/main.py dashboard",
+    ]
+    self_pid = os.getpid()
+    dashboard_pids: list[int] = []
+
+    try:
+        if sys.platform == "win32":
+            result = subprocess.run(
+                ["wmic", "process", "get", "ProcessId,CommandLine",
+                 "/FORMAT:LIST"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode != 0:
+                return
+            current_cmd = ""
+            for line in result.stdout.split("\n"):
+                line = line.strip()
+                if line.startswith("CommandLine="):
+                    current_cmd = line[len("CommandLine="):]
+                elif line.startswith("ProcessId="):
+                    pid_str = line[len("ProcessId="):]
+                    if (any(p in current_cmd for p in patterns)
+                            and int(pid_str) != self_pid):
+                        try:
+                            dashboard_pids.append(int(pid_str))
+                        except ValueError:
+                            pass
+        else:
+            # Linux / macOS: scan the process table via ps and match against
+            # the same explicit patterns list used on Windows.  Using ps
+            # (rather than `pgrep -f "hermes.*dashboard"`) keeps us consistent
+            # with `hermes_cli.gateway._scan_gateway_pids` and avoids the
+            # greedy regex matching unrelated cmdlines that merely contain
+            # both words (e.g. a chat session discussing "dashboard").
+            result = subprocess.run(
+                ["ps", "-A", "-o", "pid=,command="],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.split("\n"):
+                    stripped = line.strip()
+                    if not stripped or "grep" in stripped:
+                        continue
+                    parts = stripped.split(None, 1)
+                    if len(parts) != 2:
+                        continue
+                    try:
+                        pid = int(parts[0])
+                    except ValueError:
+                        continue
+                    command = parts[1]
+                    if (any(p in command for p in patterns)
+                            and pid != self_pid):
+                        dashboard_pids.append(pid)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return
+
+    if not dashboard_pids:
+        return
+
+    print()
+    print(f"⚠ {len(dashboard_pids)} dashboard process(es) still running "
+          f"with the previous version:")
+    for pid in dashboard_pids:
+        print(f"    PID {pid}")
+    print("  The running backend may not match the updated frontend,")
+    print("  causing silent auth failures or empty data.")
+    print("  Restart them to pick up the changes:")
+    print("    kill <pid> && hermes dashboard --port <port> ...")
+
+
 def _update_via_zip(args):
     """Update Hermes Agent by downloading a ZIP archive.
 
@@ -5347,6 +5434,7 @@ def _update_via_zip(args):
 
     print()
     print("✓ Update complete!")
+    _warn_stale_dashboard_processes()
 
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
@@ -7163,6 +7251,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
         except Exception as e:
             logger.debug("Legacy unit check during update failed: %s", e)
 
+        # Warn about stale dashboard processes — the dashboard has no
+        # service manager, so we can only tell the user to restart them.
+        _warn_stale_dashboard_processes()
+
         print()
         print("Tip: You can now select a provider and model:")
         print("  hermes model              # Select provider and model")
@@ -7811,32 +7903,12 @@ For more help on a command:
     )
     chat_parser.add_argument(
         "--provider",
-        choices=[
-            "auto",
-            "openrouter",
-            "nous",
-            "openai-codex",
-            "copilot-acp",
-            "copilot",
-            "anthropic",
-            "gemini",
-            "xai",
-            "ollama-cloud",
-            "huggingface",
-            "zai",
-            "kimi-coding",
-            "kimi-coding-cn",
-            "stepfun",
-            "minimax",
-            "minimax-cn",
-            "kilocode",
-            "xiaomi",
-            "arcee",
-            "gmi",
-            "nvidia",
-        ],
+        # No `choices=` here: user-defined providers from config.yaml `providers:`
+        # are also valid values, and runtime resolution (resolve_runtime_provider)
+        # handles validation/error reporting consistently with the top-level
+        # `--provider` flag.
         default=None,
-        help="Inference provider (default: auto)",
+        help="Inference provider (default: auto). Built-in or a user-defined name from `providers:` in config.yaml.",
     )
     chat_parser.add_argument(
         "-v", "--verbose", action="store_true", help="Verbose output"
@@ -9676,17 +9748,26 @@ Examples:
         "--preset",
         choices=["user-data", "full"],
         default="full",
-        help="Migration preset (default: full). 'user-data' excludes secrets",
+        help="Migration preset (default: full). Neither preset imports secrets — "
+        "pass --migrate-secrets to include API keys.",
     )
     claw_migrate.add_argument(
         "--overwrite",
         action="store_true",
-        help="Overwrite existing files (default: skip conflicts)",
+        help="Overwrite existing files (default: refuse to apply when the plan has conflicts)",
     )
     claw_migrate.add_argument(
         "--migrate-secrets",
         action="store_true",
-        help="Include allowlisted secrets (TELEGRAM_BOT_TOKEN, API keys, etc.)",
+        help="Include allowlisted secrets (TELEGRAM_BOT_TOKEN, API keys, etc.). "
+        "Required even under --preset full.",
+    )
+    claw_migrate.add_argument(
+        "--no-backup",
+        action="store_true",
+        help="Skip the pre-migration zip snapshot of ~/.hermes/ (by default a "
+        "single restore-point archive is written to ~/.hermes/backups/ "
+        "before apply; restorable with 'hermes import').",
     )
     claw_migrate.add_argument(
         "--workspace-target", help="Absolute path to copy workspace instructions into"
@@ -10100,6 +10181,17 @@ Examples:
         except Exception:
             logger.debug(
                 "plugin discovery failed at CLI startup", exc_info=True,
+            )
+        try:
+            # MCP tool discovery — no event loop running in CLI/TUI startup,
+            # so inline is safe.  Moved here from model_tools.py module scope
+            # to avoid freezing the gateway's event loop on its first message
+            # via the same lazy import path (#16856).
+            from tools.mcp_tool import discover_mcp_tools
+            discover_mcp_tools()
+        except Exception:
+            logger.debug(
+                "MCP tool discovery failed at CLI startup", exc_info=True,
             )
         try:
             from hermes_cli.config import load_config

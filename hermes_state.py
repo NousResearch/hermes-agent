@@ -33,7 +33,7 @@ T = TypeVar("T")
 
 DEFAULT_DB_PATH = get_hermes_home() / "state.db"
 
-SCHEMA_VERSION = 10
+SCHEMA_VERSION = 11
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -102,22 +102,26 @@ CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, timestam
 
 FTS_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts USING fts5(
-    content,
-    content=messages,
-    content_rowid=id
+    content
 );
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_insert AFTER INSERT ON messages BEGIN
-    INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+    INSERT INTO messages_fts(rowid, content) VALUES (
+        new.id,
+        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+    );
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_delete AFTER DELETE ON messages BEGIN
-    INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.id, old.content);
+    DELETE FROM messages_fts WHERE rowid = old.id;
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_update AFTER UPDATE ON messages BEGIN
-    INSERT INTO messages_fts(messages_fts, rowid, content) VALUES('delete', old.id, old.content);
-    INSERT INTO messages_fts(rowid, content) VALUES (new.id, new.content);
+    DELETE FROM messages_fts WHERE rowid = old.id;
+    INSERT INTO messages_fts(rowid, content) VALUES (
+        new.id,
+        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+    );
 END;
 """
 
@@ -128,22 +132,26 @@ END;
 FTS_TRIGRAM_SQL = """
 CREATE VIRTUAL TABLE IF NOT EXISTS messages_fts_trigram USING fts5(
     content,
-    content=messages,
-    content_rowid=id,
     tokenize='trigram'
 );
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_insert AFTER INSERT ON messages BEGIN
-    INSERT INTO messages_fts_trigram(rowid, content) VALUES (new.id, new.content);
+    INSERT INTO messages_fts_trigram(rowid, content) VALUES (
+        new.id,
+        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+    );
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_delete AFTER DELETE ON messages BEGIN
-    INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content) VALUES('delete', old.id, old.content);
+    DELETE FROM messages_fts_trigram WHERE rowid = old.id;
 END;
 
 CREATE TRIGGER IF NOT EXISTS messages_fts_trigram_update AFTER UPDATE ON messages BEGIN
-    INSERT INTO messages_fts_trigram(messages_fts_trigram, rowid, content) VALUES('delete', old.id, old.content);
-    INSERT INTO messages_fts_trigram(rowid, content) VALUES (new.id, new.content);
+    DELETE FROM messages_fts_trigram WHERE rowid = old.id;
+    INSERT INTO messages_fts_trigram(rowid, content) VALUES (
+        new.id,
+        COALESCE(new.content, '') || ' ' || COALESCE(new.tool_name, '') || ' ' || COALESCE(new.tool_calls, '')
+    );
 END;
 """
 
@@ -285,130 +293,201 @@ class SessionDB:
                 self._conn.close()
                 self._conn = None
 
+    @staticmethod
+    def _parse_schema_columns(schema_sql: str) -> Dict[str, Dict[str, str]]:
+        """Extract expected columns per table from SCHEMA_SQL.
+
+        Uses an in-memory SQLite database to parse the SQL — SQLite itself
+        handles all syntax (DEFAULT expressions with commas, inline
+        REFERENCES, CHECK constraints, etc.) so there are zero regex
+        edge cases.  The in-memory DB is opened, the schema DDL is
+        executed, and PRAGMA table_info extracts the column metadata.
+
+        Adding a column to SCHEMA_SQL is all that's needed; the
+        reconciliation loop picks it up automatically.
+        """
+        ref = sqlite3.connect(":memory:")
+        try:
+            ref.executescript(schema_sql)
+            table_columns: Dict[str, Dict[str, str]] = {}
+            for (tbl,) in ref.execute(
+                "SELECT name FROM sqlite_master "
+                "WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+            ).fetchall():
+                cols: Dict[str, str] = {}
+                for row in ref.execute(
+                    f'PRAGMA table_info("{tbl}")'
+                ).fetchall():
+                    # row: (cid, name, type, notnull, dflt_value, pk)
+                    col_name = row[1]
+                    col_type = row[2] or ""
+                    notnull = row[3]
+                    default = row[4]
+                    pk = row[5]
+                    # Reconstruct the type expression for ALTER TABLE ADD COLUMN
+                    parts = [col_type] if col_type else []
+                    if notnull and not pk:
+                        parts.append("NOT NULL")
+                    if default is not None:
+                        parts.append(f"DEFAULT {default}")
+                    cols[col_name] = " ".join(parts)
+                table_columns[tbl] = cols
+            return table_columns
+        finally:
+            ref.close()
+
+    def _reconcile_columns(self, cursor: sqlite3.Cursor) -> None:
+        """Ensure live tables have every column declared in SCHEMA_SQL.
+
+        Follows the Beets/sqlite-utils pattern: the CREATE TABLE definition
+        in SCHEMA_SQL is the single source of truth for the desired schema.
+        On every startup this method diffs the live columns (via PRAGMA
+        table_info) against the declared columns, and ADDs any that are
+        missing.
+
+        This makes column additions a declarative operation — just add
+        the column to SCHEMA_SQL and it appears on the next startup.
+        Version-gated migration blocks are no longer needed for ADD COLUMN.
+        """
+        expected = self._parse_schema_columns(SCHEMA_SQL)
+        for table_name, declared_cols in expected.items():
+            # Get current columns from the live table
+            try:
+                rows = cursor.execute(
+                    f'PRAGMA table_info("{table_name}")'
+                ).fetchall()
+            except sqlite3.OperationalError:
+                continue  # Table doesn't exist yet (shouldn't happen after executescript)
+            live_cols = set()
+            for row in rows:
+                # PRAGMA table_info returns (cid, name, type, notnull, dflt_value, pk)
+                name = row[1] if isinstance(row, (tuple, list)) else row["name"]
+                live_cols.add(name)
+
+            for col_name, col_type in declared_cols.items():
+                if col_name not in live_cols:
+                    safe_name = col_name.replace('"', '""')
+                    try:
+                        cursor.execute(
+                            f'ALTER TABLE "{table_name}" ADD COLUMN "{safe_name}" {col_type}'
+                        )
+                    except sqlite3.OperationalError as exc:
+                        # Expected: "duplicate column name" from a race or
+                        # re-run.  Unexpected: "Cannot add a NOT NULL column
+                        # with default value NULL" from a schema mistake.
+                        # Log at DEBUG so it's visible in agent.log.
+                        logger.debug(
+                            "reconcile %s.%s: %s", table_name, col_name, exc,
+                        )
+
     def _init_schema(self):
-        """Create tables and FTS if they don't exist, run migrations."""
+        """Create tables and FTS if they don't exist, reconcile columns.
+
+        Schema management follows the declarative reconciliation pattern
+        (Beets, sqlite-utils): SCHEMA_SQL is the single source of truth.
+        On existing databases, _reconcile_columns() diffs live columns
+        against SCHEMA_SQL and ADDs any missing ones.  This eliminates
+        the version-gated migration chain for column additions, making
+        it impossible for reordered or inserted migrations to skip columns.
+
+        The schema_version table is retained for future data migrations
+        (transforming existing rows) which cannot be handled declaratively.
+        """
         cursor = self._conn.cursor()
 
         cursor.executescript(SCHEMA_SQL)
 
-        # Check schema version and run migrations
+        # ── Declarative column reconciliation ──────────────────────────
+        # Diff live tables against SCHEMA_SQL and ADD any missing columns.
+        # This is idempotent and self-healing: even if a version-gated
+        # migration was skipped (e.g. due to version renumbering), the
+        # column gets created here.
+        self._reconcile_columns(cursor)
+
+        # ── Schema version bookkeeping ─────────────────────────────────
+        # Bump to current so future data migrations (if any) can gate on
+        # version.  No version-gated column additions remain.
         cursor.execute("SELECT version FROM schema_version LIMIT 1")
         row = cursor.fetchone()
         if row is None:
-            cursor.execute("INSERT INTO schema_version (version) VALUES (?)", (SCHEMA_VERSION,))
+            cursor.execute(
+                "INSERT INTO schema_version (version) VALUES (?)",
+                (SCHEMA_VERSION,),
+            )
         else:
             current_version = row["version"] if isinstance(row, sqlite3.Row) else row[0]
-            if current_version < 2:
-                # v2: add finish_reason column to messages
-                try:
-                    cursor.execute("ALTER TABLE messages ADD COLUMN finish_reason TEXT")
-                except sqlite3.OperationalError:
-                    pass  # Column already exists
-                cursor.execute("UPDATE schema_version SET version = 2")
-            if current_version < 3:
-                # v3: add title column to sessions
-                try:
-                    cursor.execute("ALTER TABLE sessions ADD COLUMN title TEXT")
-                except sqlite3.OperationalError:
-                    pass  # Column already exists
-                cursor.execute("UPDATE schema_version SET version = 3")
-            if current_version < 4:
-                # v4: add unique index on title (NULLs allowed, only non-NULL must be unique)
-                try:
-                    cursor.execute(
-                        "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique "
-                        "ON sessions(title) WHERE title IS NOT NULL"
-                    )
-                except sqlite3.OperationalError:
-                    pass  # Index already exists
-                cursor.execute("UPDATE schema_version SET version = 4")
-            if current_version < 5:
-                new_columns = [
-                    ("cache_read_tokens", "INTEGER DEFAULT 0"),
-                    ("cache_write_tokens", "INTEGER DEFAULT 0"),
-                    ("reasoning_tokens", "INTEGER DEFAULT 0"),
-                    ("billing_provider", "TEXT"),
-                    ("billing_base_url", "TEXT"),
-                    ("billing_mode", "TEXT"),
-                    ("estimated_cost_usd", "REAL"),
-                    ("actual_cost_usd", "REAL"),
-                    ("cost_status", "TEXT"),
-                    ("cost_source", "TEXT"),
-                    ("pricing_version", "TEXT"),
-                ]
-                for name, column_type in new_columns:
-                    try:
-                        # name and column_type come from the hardcoded tuple above,
-                        # not user input. Double-quote identifier escaping is applied
-                        # as defense-in-depth; SQLite DDL cannot be parameterized.
-                        safe_name = name.replace('"', '""')
-                        cursor.execute(f'ALTER TABLE sessions ADD COLUMN "{safe_name}" {column_type}')
-                    except sqlite3.OperationalError:
-                        pass
-                cursor.execute("UPDATE schema_version SET version = 5")
-            if current_version < 6:
-                # v6: add reasoning columns to messages table — preserves assistant
-                # reasoning text and structured reasoning_details across gateway
-                # session turns.  Without these, reasoning chains are lost on
-                # session reload, breaking multi-turn reasoning continuity for
-                # providers that replay reasoning (OpenRouter, OpenAI, Nous).
-                for col_name, col_type in [
-                    ("reasoning", "TEXT"),
-                    ("reasoning_details", "TEXT"),
-                    ("codex_reasoning_items", "TEXT"),
-                ]:
-                    try:
-                        safe = col_name.replace('"', '""')
-                        cursor.execute(
-                            f'ALTER TABLE messages ADD COLUMN "{safe}" {col_type}'
-                        )
-                    except sqlite3.OperationalError:
-                        pass  # Column already exists
-                cursor.execute("UPDATE schema_version SET version = 6")
-            if current_version < 7:
-                # v7: preserve provider-native reasoning_content separately from
-                # normalized reasoning text. Kimi/Moonshot replay can require
-                # this field on assistant tool-call messages when thinking is on.
-                try:
-                    cursor.execute('ALTER TABLE messages ADD COLUMN "reasoning_content" TEXT')
-                except sqlite3.OperationalError:
-                    pass  # Column already exists
-                cursor.execute("UPDATE schema_version SET version = 7")
-            if current_version < 8:
-                # v8: add api_call_count column to sessions — tracks the number
-                # of individual LLM API calls made within a session (as opposed
-                # to the session count itself).
-                try:
-                    cursor.execute(
-                        'ALTER TABLE sessions ADD COLUMN "api_call_count" INTEGER DEFAULT 0'
-                    )
-                except sqlite3.OperationalError:
-                    pass  # Column already exists
-                cursor.execute("UPDATE schema_version SET version = 8")
-            if current_version < 9:
-                # v9: preserve replayable Codex assistant message ids/phases so
-                # follow-up turns can rebuild Responses API message items instead
-                # of flattening everything to plain assistant text.
-                try:
-                    cursor.execute('ALTER TABLE messages ADD COLUMN "codex_message_items" TEXT')
-                except sqlite3.OperationalError:
-                    pass  # Column already exists
-                cursor.execute("UPDATE schema_version SET version = 9")
+            # Data migrations that can't be expressed declaratively (row
+            # backfills, index changes tied to a specific version step) stay
+            # in a version-gated chain. Column additions are handled by
+            # _reconcile_columns() above and no longer need entries here.
             if current_version < 10:
-                # v10: trigram FTS5 table for CJK/substring search.
-                # Created via FTS_TRIGRAM_SQL below; backfill existing messages.
+                # v10: trigram FTS5 table for CJK/substring search. The
+                # virtual table + triggers are created unconditionally via
+                # FTS_TRIGRAM_SQL below, but existing rows need a one-time
+                # backfill into the FTS index.
                 try:
                     cursor.execute("SELECT * FROM messages_fts_trigram LIMIT 0")
+                    _fts_trigram_exists = True
                 except sqlite3.OperationalError:
+                    _fts_trigram_exists = False
+                if not _fts_trigram_exists:
                     cursor.executescript(FTS_TRIGRAM_SQL)
                     cursor.execute(
                         "INSERT INTO messages_fts_trigram(rowid, content) "
                         "SELECT id, content FROM messages WHERE content IS NOT NULL"
                     )
-                cursor.execute("UPDATE schema_version SET version = 10")
+            if current_version < 11:
+                # v11: re-index FTS5 tables to cover tool_name + tool_calls and
+                # switch from external-content to inline mode. Existing DBs have
+                # old-schema FTS tables and triggers that IF NOT EXISTS won't
+                # overwrite, so we drop them explicitly and let the post-migration
+                # existence checks (below) recreate them from FTS_SQL /
+                # FTS_TRIGRAM_SQL, then backfill every message row. Fixes #16751.
+                for _trig in (
+                    "messages_fts_insert",
+                    "messages_fts_delete",
+                    "messages_fts_update",
+                    "messages_fts_trigram_insert",
+                    "messages_fts_trigram_delete",
+                    "messages_fts_trigram_update",
+                ):
+                    try:
+                        cursor.execute(f"DROP TRIGGER IF EXISTS {_trig}")
+                    except sqlite3.OperationalError:
+                        pass
+                for _tbl in ("messages_fts", "messages_fts_trigram"):
+                    try:
+                        cursor.execute(f"DROP TABLE IF EXISTS {_tbl}")
+                    except sqlite3.OperationalError:
+                        pass
+                # Recreate virtual tables + triggers with the new inline-mode
+                # schema that indexes content || tool_name || tool_calls.
+                cursor.executescript(FTS_SQL)
+                cursor.executescript(FTS_TRIGRAM_SQL)
+                # Backfill both indexes from every existing messages row.
+                cursor.execute(
+                    "INSERT INTO messages_fts(rowid, content) "
+                    "SELECT id, "
+                    "COALESCE(content, '') || ' ' || "
+                    "COALESCE(tool_name, '') || ' ' || "
+                    "COALESCE(tool_calls, '') "
+                    "FROM messages"
+                )
+                cursor.execute(
+                    "INSERT INTO messages_fts_trigram(rowid, content) "
+                    "SELECT id, "
+                    "COALESCE(content, '') || ' ' || "
+                    "COALESCE(tool_name, '') || ' ' || "
+                    "COALESCE(tool_calls, '') "
+                    "FROM messages"
+                )
+            if current_version < SCHEMA_VERSION:
+                cursor.execute(
+                    "UPDATE schema_version SET version = ?",
+                    (SCHEMA_VERSION,),
+                )
 
-        # Unique title index — always ensure it exists (safe to run after migrations
-        # since the title column is guaranteed to exist at this point)
+        # Unique title index — always ensure it exists
         try:
             cursor.execute(
                 "CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique "
@@ -1093,6 +1172,85 @@ class SessionDB:
 
         return self._execute_write(_do)
 
+    def replace_messages(self, session_id: str, messages: List[Dict[str, Any]]) -> None:
+        """Atomically replace every message for a session.
+
+        Used by transcript-rewrite flows such as /retry, /undo, and /compress.
+        The delete + reinsert sequence must commit as one transaction so a
+        mid-rewrite failure does not leave SQLite with a partial transcript.
+        """
+
+        def _do(conn):
+            conn.execute(
+                "DELETE FROM messages WHERE session_id = ?", (session_id,)
+            )
+            conn.execute(
+                "UPDATE sessions SET message_count = 0, tool_call_count = 0 WHERE id = ?",
+                (session_id,),
+            )
+
+            now_ts = time.time()
+            total_messages = 0
+            total_tool_calls = 0
+            for msg in messages:
+                role = msg.get("role", "unknown")
+                tool_calls = msg.get("tool_calls")
+                reasoning_details = msg.get("reasoning_details") if role == "assistant" else None
+                codex_reasoning_items = (
+                    msg.get("codex_reasoning_items") if role == "assistant" else None
+                )
+                codex_message_items = (
+                    msg.get("codex_message_items") if role == "assistant" else None
+                )
+
+                reasoning_details_json = (
+                    json.dumps(reasoning_details) if reasoning_details else None
+                )
+                codex_items_json = (
+                    json.dumps(codex_reasoning_items) if codex_reasoning_items else None
+                )
+                codex_message_items_json = (
+                    json.dumps(codex_message_items) if codex_message_items else None
+                )
+                tool_calls_json = json.dumps(tool_calls) if tool_calls else None
+
+                conn.execute(
+                    """INSERT INTO messages (session_id, role, content, tool_call_id,
+                       tool_calls, tool_name, timestamp, token_count, finish_reason,
+                       reasoning, reasoning_content, reasoning_details, codex_reasoning_items,
+                       codex_message_items)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        session_id,
+                        role,
+                        msg.get("content"),
+                        msg.get("tool_call_id"),
+                        tool_calls_json,
+                        msg.get("tool_name"),
+                        now_ts,
+                        msg.get("token_count"),
+                        msg.get("finish_reason"),
+                        msg.get("reasoning") if role == "assistant" else None,
+                        msg.get("reasoning_content") if role == "assistant" else None,
+                        reasoning_details_json,
+                        codex_items_json,
+                        codex_message_items_json,
+                    ),
+                )
+                total_messages += 1
+                if tool_calls is not None:
+                    total_tool_calls += (
+                        len(tool_calls) if isinstance(tool_calls, list) else 1
+                    )
+                now_ts += 1e-6
+
+            conn.execute(
+                "UPDATE sessions SET message_count = ?, tool_call_count = ? WHERE id = ?",
+                (total_messages, total_tool_calls, session_id),
+            )
+
+        self._execute_write(_do)
+
     def get_messages(self, session_id: str) -> List[Dict[str, Any]]:
         """Load all messages for a session, ordered by timestamp."""
         with self._lock:
@@ -1329,9 +1487,9 @@ class SessionDB:
         # quotes.  FTS5's tokenizer splits on dots and hyphens, turning
         # ``chat-send`` into ``chat AND send`` and ``P2.2`` into ``p2 AND 2``.
         # Quoting preserves phrase semantics.  A single pass avoids the
-        # double-quoting bug that would occur if dotted and hyphenated
+        # double-quoting bug that would occur if dotted, hyphenated and underscored
         # patterns were applied sequentially (e.g. ``my-app.config``).
-        sanitized = re.sub(r"\b(\w+(?:[.-]\w+)+)\b", r'"\1"', sanitized)
+        sanitized = re.sub(r"\b(\w+(?:[._-]\w+)+)\b", r'"\1"', sanitized)
 
         # Step 6: Restore preserved quoted phrases
         for i, quoted in enumerate(_quoted_parts):
@@ -1508,8 +1666,8 @@ class SessionDB:
                 # Short CJK query (1-2 chars) — trigram needs ≥3 CJK chars.
                 # Fall back to LIKE substring search.
                 escaped = raw_query.replace("\\", "\\\\").replace("%", "\\%").replace("_", "\\_")
-                like_where = ["m.content LIKE ? ESCAPE '\\'"]
-                like_params: list = [f"%{escaped}%"]
+                like_where = ["(m.content LIKE ? ESCAPE '\\' OR m.tool_name LIKE ? ESCAPE '\\' OR m.tool_calls LIKE ? ESCAPE '\\')"]
+                like_params: list = [f"%{escaped}%", f"%{escaped}%", f"%{escaped}%"]
                 if source_filter is not None:
                     like_where.append(f"s.source IN ({','.join('?' for _ in source_filter)})")
                     like_params.extend(source_filter)

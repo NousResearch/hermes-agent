@@ -7,7 +7,6 @@ import logging
 import os
 import threading
 from pathlib import Path
-from typing import Optional
 
 from agent.file_safety import get_read_block_error
 from tools.binary_extensions import has_binary_extension

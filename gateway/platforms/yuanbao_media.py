@@ -21,12 +21,10 @@ import hashlib
 import hmac
 import logging
 import os
-import re
 import secrets
 import struct
 import time
 import urllib.parse
-from datetime import datetime, timezone, timedelta
 from typing import Optional, Any
 
 import httpx

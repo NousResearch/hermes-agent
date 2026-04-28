@@ -94,7 +94,11 @@ Persisted in `code_events` with normalized envelope:
 - `github.write.rejected`
 - `github.write.failed`
 
-Realtime fanout is deferred; persistence is authoritative in P2.
+Realtime fanout is available in P3 through:
+
+- `WS /api/code/events/ws`
+- filtered replay/catch-up with `since_id`
+- REST views under `/api/code/events`, `/recent`, and `/summary`
 
 ## Security / Redaction
 

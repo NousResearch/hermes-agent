@@ -1295,6 +1295,11 @@ class TestSanitizeTitle:
 
 
 class TestSchemaInit:
+    def test_schema_constant_is_v17(self):
+        import hermes_state
+
+        assert hermes_state.SCHEMA_VERSION == 17
+
     def test_wal_mode(self, db):
         cursor = db._conn.execute("PRAGMA journal_mode")
         mode = cursor.fetchone()[0]
@@ -1332,7 +1337,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 15
+        assert version == 17
 
     def test_schema_migration_idempotent(self, tmp_path):
         db_path = tmp_path / "idempotent.db"
@@ -1342,7 +1347,7 @@ class TestSchemaInit:
         second = SessionDB(db_path=db_path)
         try:
             version = second._conn.execute("SELECT version FROM schema_version LIMIT 1").fetchone()[0]
-            assert version == 15
+            assert version == 17
             table = second._conn.execute(
                 "SELECT name FROM sqlite_master WHERE type='table' AND name='code_approval_requests'"
             ).fetchone()
@@ -1353,7 +1358,7 @@ class TestSchemaInit:
     def test_code_mode_status(self, db):
         status = db.code_mode_status()
         assert status["mode"] == "enabled"
-        assert status["schema_version"] == 15
+        assert status["schema_version"] == 17
         assert status["workspace_count"] == 0
         assert status["session_count"] == 0
         assert status["event_count"] == 0
@@ -1418,7 +1423,7 @@ class TestSchemaInit:
 
         # Verify migration
         cursor = migrated_db._conn.execute("SELECT version FROM schema_version")
-        assert cursor.fetchone()[0] == 15
+        assert cursor.fetchone()[0] == 17
 
         # Verify title column exists and is NULL for existing sessions
         session = migrated_db.get_session("existing")
@@ -2577,6 +2582,6 @@ class TestFTS5ToolCallMigration:
                 "SELECT version FROM schema_version LIMIT 1"
             ).fetchone()
             version = row["version"] if hasattr(row, "keys") else row[0]
-            assert version == 15
+            assert version == 17
         finally:
             session_db.close()

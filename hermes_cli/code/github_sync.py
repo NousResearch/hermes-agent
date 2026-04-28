@@ -6,8 +6,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any, Optional
 
+from hermes_cli.code.event_bus import get_code_event_bus
 from hermes_cli.code.github_integration import GitHubIntegrationService, GitHubIntegrationStore
-from hermes_state import SessionDB
 
 
 class GitHubSyncService:
@@ -29,19 +29,14 @@ class GitHubSyncService:
         return GitHubIntegrationService(db_path=self._db_path).api_client(installation_id)
 
     def _emit(self, event_type: str, payload: dict[str, Any]) -> None:
-        db = SessionDB(db_path=self._db_path) if self._db_path else SessionDB()
-        try:
-            db.append_code_event(
-                event_type=event_type,
-                payload={
-                    "type": event_type,
-                    "version": 1,
-                    "payload": payload,
-                },
-                source="github_sync",
-            )
-        finally:
-            db.close()
+        bus = get_code_event_bus(self._db_path)
+        bus.publish(
+            event_type,
+            payload=payload,
+            github_repo_full_name=(payload or {}).get("repo_full_name"),
+            metadata={"source": "github_sync"},
+            source="github_sync",
+        )
 
     def sync_repositories(
         self,

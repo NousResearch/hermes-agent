@@ -12,6 +12,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+from hermes_cli.code.event_bus import get_code_event_bus
 from hermes_cli.code.execution_policy import RiskClass, redact_secrets
 from hermes_cli.code.github_integration import redact_github_secrets
 from hermes_state import SessionDB
@@ -222,24 +223,19 @@ class ApprovalGovernanceService:
         }
         if extra_payload:
             payload.update(extra_payload)
-        envelope = self._with_event_envelope(
+        bus = get_code_event_bus(self._db_path)
+        bus.publish(
             event_type,
-            payload,
+            payload=payload,
             workspace_id=approval.get("workspace_id"),
             code_session_id=approval.get("code_session_id"),
+            orchestrated_run_id=approval.get("orchestrated_run_id"),
+            approval_id=approval.get("id"),
+            github_repo_full_name=approval.get("github_repo_full_name"),
+            metadata={"source": "approval_governance"},
+            source="approval_governance",
+            level=level,
         )
-        db = self._db()
-        try:
-            db.append_code_event(
-                event_type=event_type,
-                payload=envelope,
-                workspace_id=approval.get("workspace_id"),
-                code_session_id=approval.get("code_session_id"),
-                source="approval_governance",
-                level=level,
-            )
-        finally:
-            db.close()
 
     def _serialize(self, approval: dict[str, Any]) -> dict[str, Any]:
         return redact_for_api(approval) if approval else {}

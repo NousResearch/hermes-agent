@@ -291,3 +291,47 @@ def test_github_pull_request_prepare_endpoint(clients):
     assert payload["requires_approval"] is False
     assert payload["prepared"]["auto_push"] is False
     assert payload["prepared"]["auto_merge"] is False
+
+
+def test_github_write_events_are_emitted_and_redacted(monkeypatch, clients):
+    auth, _unauth = clients
+    from hermes_cli.code.github_integration import GitHubIntegrationService
+
+    monkeypatch.setattr(
+        GitHubIntegrationService,
+        "post_issue_comment",
+        lambda self, repo_full_name, issue_number, body, installation_id=None: {"id": 99, "body": body},
+    )
+
+    pending = auth.post(
+        "/api/code/github/comments",
+        json={
+            "repo_full_name": "acme/repo",
+            "issue_number": 77,
+            "body": "token=very-secret-value",
+        },
+    )
+    assert pending.status_code == 200
+    approval_id = pending.json()["approval_id"]
+
+    approve = auth.post(f"/api/code/approvals/{approval_id}/approve", json={"actor": "local"})
+    assert approve.status_code == 200
+
+    execute = auth.post(
+        "/api/code/github/comments",
+        json={
+            "repo_full_name": "acme/repo",
+            "issue_number": 77,
+            "body": "token=very-secret-value",
+            "approval_id": approval_id,
+        },
+    )
+    assert execute.status_code == 200
+
+    events = auth.get("/api/code/events?limit=200")
+    assert events.status_code == 200
+    rows = events.json()["events"]
+    types = {item.get("type") for item in rows}
+    assert "github.write.approval_required" in types
+    assert "github.write.executed" in types
+    assert "very-secret-value" not in str(rows)

@@ -96,6 +96,9 @@ GitHub write endpoints now follow a two-step flow:
 Replay protection verifies action kind + resource + payload binding; executed
 approvals cannot be reused.
 
+P3 adds realtime fanout for GitHub-related Code Mode events through
+`WS /api/code/events/ws` and REST event filters in `/api/code/events*`.
+
 `/api/code/github/webhooks` is public only for GitHub delivery. It is protected
 by webhook HMAC validation, not by dashboard session token.
 
@@ -109,7 +112,9 @@ Minimal CLI support:
 
 ## Schema
 
-P2 extends schema to `v15` with:
+P3 keeps schema at `v17` and reuses `code_events` for realtime replay/fanout.
+
+P2/P3 related tables include:
 
 - `github_app_installations`
 - `github_repositories`

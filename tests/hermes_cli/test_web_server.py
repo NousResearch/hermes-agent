@@ -339,7 +339,7 @@ class TestWebServerEndpoints:
         assert resp.status_code == 200
         data = resp.json()
         assert data["mode"] == "code_mode"
-        assert data["schema_version"] == 15
+        assert data["schema_version"] == 17
         assert "state" in data
 
     def test_code_workspaces_requires_auth(self):
@@ -574,6 +574,84 @@ class TestWebServerEndpoints:
         fetched = self.client.get(f"/api/code/approvals/{approval_id}")
         assert fetched.status_code == 200
         assert fetched.json()["approval"]["status"] == "expired"
+
+    def test_code_events_filters_recent_summary_and_subscriptions(self):
+        create = self.client.post(
+            "/api/code/approvals",
+            json={
+                "kind": "github_comment",
+                "risk_class": "git_write",
+                "title": "Realtime",
+                "requested_action": "github.comment.post",
+                "requested_payload": {"body": "hello"},
+                "github_repo_full_name": "acme/repo",
+            },
+        )
+        assert create.status_code == 200
+        approval_id = create.json()["approval"]["id"]
+
+        events = self.client.get(
+            "/api/code/events",
+            params={
+                "type": "code.approval.created",
+                "approval_id": approval_id,
+                "github_repo_full_name": "acme/repo",
+                "limit": 50,
+            },
+        )
+        assert events.status_code == 200
+        payload = events.json()["events"]
+        assert any(e.get("type") == "code.approval.created" for e in payload)
+
+        recent = self.client.get("/api/code/events/recent?type=code.approval.created&limit=10")
+        assert recent.status_code == 200
+        assert "events" in recent.json()
+
+        summary = self.client.get("/api/code/events/summary?limit=100")
+        assert summary.status_code == 200
+        assert "summary" in summary.json()
+        assert "by_type" in summary.json()["summary"]
+
+        subs = self.client.get("/api/code/events/subscriptions")
+        assert subs.status_code == 200
+        assert "subscriptions" in subs.json()
+        assert "active_subscribers" in subs.json()["subscriptions"]
+
+    def test_code_events_ws_replay_and_live_stream(self):
+        from hermes_cli.web_server import _SESSION_TOKEN
+
+        created = self.client.post(
+            "/api/code/approvals",
+            json={
+                "kind": "generic",
+                "risk_class": "git_write",
+                "title": "WS Replay",
+                "requested_action": "generic.action",
+                "requested_payload": {"arg": "x"},
+            },
+        )
+        assert created.status_code == 200
+
+        ws_url = f"/api/code/events/ws?token={_SESSION_TOKEN}&type=code.approval.created&replay=true&limit=20"
+        with self.client.websocket_connect(ws_url) as conn:
+            first = conn.receive_json()
+            assert first["type"] == "code.approval.created"
+
+            live = self.client.post(
+                "/api/code/approvals",
+                json={
+                    "kind": "generic",
+                    "risk_class": "git_write",
+                    "title": "WS Live",
+                    "requested_action": "generic.action",
+                    "requested_payload": {"token": "secret", "arg": "y"},
+                },
+            )
+            assert live.status_code == 200
+
+            second = conn.receive_json()
+            assert second["type"] == "code.approval.created"
+            assert "secret" not in str(second)
 
     def test_path_traversal_blocked(self):
         """Verify URL-encoded path traversal is blocked."""
@@ -2005,6 +2083,14 @@ class TestPtyWebSocket:
 
         q = {"token": tok, **params}
         return f"/api/pty?{urlencode(q)}"
+
+    def test_existing_api_ws_endpoint_still_rejects_bad_token(self):
+        from starlette.websockets import WebSocketDisconnect
+
+        with pytest.raises(WebSocketDisconnect) as exc:
+            with self.client.websocket_connect("/api/ws?token=wrong"):
+                pass
+        assert exc.value.code == 4401
 
     def test_rejects_when_embedded_chat_disabled(self, monkeypatch):
         monkeypatch.setattr(self.ws_module, "_DASHBOARD_EMBEDDED_CHAT_ENABLED", False)

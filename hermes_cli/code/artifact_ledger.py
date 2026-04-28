@@ -7,6 +7,7 @@ import time
 import uuid
 from typing import Any
 
+from hermes_cli.code.event_bus import get_code_event_bus
 from hermes_state import SessionDB
 
 
@@ -33,6 +34,23 @@ class ArtifactLedger:
 
     def _db(self) -> SessionDB:
         return SessionDB(db_path=self._db_path) if self._db_path else SessionDB()
+
+    def _emit(self, event_type: str, artifact: dict[str, Any]) -> None:
+        bus = get_code_event_bus(self._db_path)
+        payload = {
+            "artifact_id": artifact.get("id"),
+            "artifact_type": artifact.get("artifact_type"),
+            "title": artifact.get("title"),
+        }
+        bus.publish(
+            event_type,
+            payload=payload,
+            workspace_id=artifact.get("workspace_id"),
+            code_session_id=artifact.get("code_session_id"),
+            orchestrated_run_id=artifact.get("orchestrated_run_id"),
+            metadata={"source": "artifact_ledger"},
+            source="artifact_ledger",
+        )
 
     def create_artifact(
         self,
@@ -66,9 +84,12 @@ class ArtifactLedger:
         db = self._db()
         try:
             db.create_code_artifact(artifact)
-            return artifact
+            created = artifact
         finally:
             db.close()
+        self._emit("code.artifact.created", created)
+        self._emit("artifact.created", created)
+        return created
 
     def list_artifacts(
         self,

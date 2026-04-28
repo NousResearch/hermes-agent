@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 
 import pytest
@@ -156,3 +157,25 @@ def test_validate_for_execution_replay_and_kind_binding(service):
             expected_github_issue_number=7,
             expected_requested_payload={"arg": "value", "token": "secret-token"},
         )
+
+
+def test_approval_events_persist_with_approval_id(service):
+    created = _create(service, kind=ApprovalKind.GITHUB_COMMENT)
+    service.approve_request(created["id"], approved_by="alice")
+    service.reject_request(_create(service, title="Reject Me")["id"], rejected_by="alice")
+
+    db = service._db()
+    try:
+        rows = db.list_code_events(limit=200)
+    finally:
+        db.close()
+
+    event_types = {row["event_type"] for row in rows}
+    assert "code.approval.created" in event_types
+    assert "code.approval.approved" in event_types
+    assert "code.approval.rejected" in event_types
+
+    matching = [row for row in rows if row["event_type"] == "code.approval.approved"]
+    assert matching, "Expected code.approval.approved event"
+    payload = json.loads(matching[0]["payload_json"])
+    assert payload.get("approval_id") == created["id"]

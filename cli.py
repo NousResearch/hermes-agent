@@ -4486,6 +4486,7 @@ class HermesCLI:
             "",
             "Commands: /workspace, /session, /web, /approvals, /skills-code, /github",
             "Approval Governance: /api/code/approvals/*",
+            "Realtime Events: /api/code/events/ws (token-required)",
         ]
         if state_status.get("error"):
             lines.insert(-2, f"State Note: {state_status['error']}")
@@ -4601,13 +4602,14 @@ class HermesCLI:
                                     "",
                                     f"Backend: {backend_status}",
                                     f"Pending approvals: {pending}",
-                                    f"Pending GitHub write approvals: {github_pending}",
-                                    f"Approved: {int(by_status.get('approved', 0) or 0)}",
-                                    f"Executed: {int(by_status.get('executed', 0) or 0)}",
-                                    "",
-                                    "Use /code for backend status and /github for integration status.",
-                                ]
-                            ),
+                    f"Pending GitHub write approvals: {github_pending}",
+                    f"Approved: {int(by_status.get('approved', 0) or 0)}",
+                    f"Executed: {int(by_status.get('executed', 0) or 0)}",
+                    "",
+                    "Realtime approval updates: /api/code/events/ws (filter by approval_id).",
+                    "Use /code for backend status and /github for integration status.",
+                ]
+            ),
                             highlight=False,
                             markup=False,
                         )

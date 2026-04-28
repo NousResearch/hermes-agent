@@ -15,6 +15,7 @@ import importlib.util
 import json
 import logging
 import os
+import queue
 import secrets
 import subprocess
 import sys
@@ -46,6 +47,11 @@ from hermes_cli.config import (
     remove_env_value,
     check_config_version,
     redact_key,
+)
+from hermes_cli.code.event_bus import (
+    build_event_filters_from_query,
+    get_code_event_bus,
+    _parse_bool,
 )
 from gateway.status import get_running_pid, read_runtime_status
 
@@ -692,26 +698,6 @@ def _code_offset(value: int) -> int:
     return max(0, value)
 
 
-def _make_code_event(
-    event_type: str,
-    *,
-    payload: dict[str, Any] | None = None,
-    workspace_id: str | None = None,
-    code_session_id: str | None = None,
-) -> dict[str, Any]:
-    event = {
-        "type": event_type,
-        "version": 1,
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "payload": payload or {},
-    }
-    if workspace_id:
-        event["workspace_id"] = workspace_id
-    if code_session_id:
-        event["code_session_id"] = code_session_id
-    return event
-
-
 def _record_code_event(
     event_type: str,
     *,
@@ -721,31 +707,25 @@ def _record_code_event(
     level: str = "info",
     source: str = "control_plane",
 ) -> dict[str, Any]:
-    event = _make_code_event(
-        event_type,
-        payload=payload,
-        workspace_id=workspace_id,
-        code_session_id=code_session_id,
-    )
     try:
-        from hermes_state import SessionDB
-
-        db = SessionDB()
-        try:
-            event_id = db.append_code_event(
-                event_type=event_type,
-                payload=event,
-                workspace_id=workspace_id,
-                code_session_id=code_session_id,
-                source=source,
-                level=level,
-            )
-            event["id"] = event_id
-        finally:
-            db.close()
+        payload_value = payload or {}
+        bus = get_code_event_bus()
+        event = bus.publish(
+            event_type,
+            payload=payload_value,
+            workspace_id=workspace_id,
+            code_session_id=code_session_id,
+            orchestrated_run_id=payload_value.get("orchestrated_run_id") or payload_value.get("run_id"),
+            approval_id=payload_value.get("approval_id"),
+            github_repo_full_name=payload_value.get("github_repo_full_name") or payload_value.get("repo_full_name"),
+            metadata={"source": source},
+            source=source,
+            level=level,
+        )
+        return event
     except Exception:
         _log.exception("Failed to persist code event %s", event_type)
-    return event
+    return {"type": event_type, "version": 1, "timestamp": datetime.now(timezone.utc).isoformat(), "payload": payload or {}}
 
 
 @app.get("/api/code/status")
@@ -826,28 +806,166 @@ async def get_code_sessions(workspace_id: str | None = None, limit: int = 50, of
 
 @app.get("/api/code/events")
 async def get_code_events(
+    type: str | None = None,
     workspace_id: str | None = None,
+    code_session_id: str | None = None,
     session_id: str | None = None,
+    orchestrated_run_id: str | None = None,
+    approval_id: str | None = None,
+    github_repo_full_name: str | None = None,
+    since_id: str | None = None,
     limit: int = 50,
     offset: int = 0,
 ):
     try:
-        from hermes_state import SessionDB
-
-        db = SessionDB()
-        try:
-            events = db.list_code_events(
-                workspace_id=workspace_id,
-                session_id=session_id,
-                limit=_code_limit(limit),
-                offset=_code_offset(offset),
-            )
-            return {"events": events, "limit": _code_limit(limit), "offset": _code_offset(offset)}
-        finally:
-            db.close()
+        bus = get_code_event_bus()
+        filters = build_event_filters_from_query(
+            event_type=type,
+            workspace_id=workspace_id,
+            code_session_id=code_session_id or session_id,
+            orchestrated_run_id=orchestrated_run_id,
+            approval_id=approval_id,
+            github_repo_full_name=github_repo_full_name,
+        )
+        events = bus.fetch_events(
+            filters=filters,
+            since_id=since_id,
+            limit=_code_limit(limit),
+            offset=_code_offset(offset),
+            newest_first=True,
+        )
+        return {"events": events, "limit": _code_limit(limit), "offset": _code_offset(offset)}
     except Exception:
         _log.exception("GET /api/code/events failed")
         raise HTTPException(status_code=500, detail="Code Mode events unavailable")
+
+
+@app.get("/api/code/events/recent")
+async def get_code_events_recent(
+    type: str | None = None,
+    workspace_id: str | None = None,
+    code_session_id: str | None = None,
+    orchestrated_run_id: str | None = None,
+    approval_id: str | None = None,
+    github_repo_full_name: str | None = None,
+    since_id: str | None = None,
+    limit: int = 50,
+):
+    try:
+        bus = get_code_event_bus()
+        filters = build_event_filters_from_query(
+            event_type=type,
+            workspace_id=workspace_id,
+            code_session_id=code_session_id,
+            orchestrated_run_id=orchestrated_run_id,
+            approval_id=approval_id,
+            github_repo_full_name=github_repo_full_name,
+        )
+        events = bus.fetch_events(
+            filters=filters,
+            since_id=since_id,
+            limit=_code_limit(limit),
+            offset=0,
+            newest_first=True,
+        )
+        return {"events": events, "limit": _code_limit(limit)}
+    except Exception:
+        _log.exception("GET /api/code/events/recent failed")
+        raise HTTPException(status_code=500, detail="Recent Code Mode events unavailable")
+
+
+@app.get("/api/code/events/summary")
+async def get_code_events_summary(
+    type: str | None = None,
+    workspace_id: str | None = None,
+    code_session_id: str | None = None,
+    orchestrated_run_id: str | None = None,
+    approval_id: str | None = None,
+    github_repo_full_name: str | None = None,
+    limit: int = 200,
+):
+    try:
+        bus = get_code_event_bus()
+        filters = build_event_filters_from_query(
+            event_type=type,
+            workspace_id=workspace_id,
+            code_session_id=code_session_id,
+            orchestrated_run_id=orchestrated_run_id,
+            approval_id=approval_id,
+            github_repo_full_name=github_repo_full_name,
+        )
+        summary = bus.summary(filters=filters, recent_limit=_code_limit(limit, default=200, maximum=2000))
+        return {"summary": summary}
+    except Exception:
+        _log.exception("GET /api/code/events/summary failed")
+        raise HTTPException(status_code=500, detail="Code Mode event summary unavailable")
+
+
+@app.get("/api/code/events/subscriptions")
+async def get_code_event_subscriptions():
+    try:
+        bus = get_code_event_bus()
+        return {"subscriptions": bus.subscription_stats()}
+    except Exception:
+        _log.exception("GET /api/code/events/subscriptions failed")
+        raise HTTPException(status_code=500, detail="Code Mode event subscriptions unavailable")
+
+
+@app.websocket("/api/code/events/ws")
+async def code_events_ws(ws: WebSocket) -> None:
+    token = ws.query_params.get("token", "")
+    if not hmac.compare_digest(token.encode(), _SESSION_TOKEN.encode()):
+        await ws.close(code=4401)
+        return
+
+    client_host = ws.client.host if ws.client else ""
+    if client_host and client_host not in _LOOPBACK_HOSTS:
+        await ws.close(code=4403)
+        return
+
+    filters = build_event_filters_from_query(
+        event_type=ws.query_params.get("type") or None,
+        workspace_id=ws.query_params.get("workspace_id") or None,
+        code_session_id=ws.query_params.get("code_session_id") or None,
+        orchestrated_run_id=ws.query_params.get("orchestrated_run_id") or None,
+        approval_id=ws.query_params.get("approval_id") or None,
+        github_repo_full_name=ws.query_params.get("github_repo_full_name") or None,
+    )
+    since_id = ws.query_params.get("since_id") or None
+    replay = _parse_bool(ws.query_params.get("replay"), default=bool(since_id))
+    limit = _code_limit(ws.query_params.get("limit", 200), default=200, maximum=2000)
+
+    await ws.accept()
+    bus = get_code_event_bus()
+    if replay or since_id:
+        try:
+            replay_events = bus.replay(filters=filters, since_id=since_id, limit=limit)
+            for item in replay_events:
+                await ws.send_json(item)
+        except Exception:
+            _log.exception("Code event replay failed for websocket subscriber")
+
+    sub_id, sub_queue = bus.subscribe(filters=filters, max_queue_size=512)
+    try:
+        while True:
+            try:
+                event = await asyncio.to_thread(sub_queue.get, True, 20.0)
+                await ws.send_json(event)
+            except queue.Empty:
+                await ws.send_json(
+                    {
+                        "type": "code.events.heartbeat",
+                        "version": 1,
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                        "payload": {},
+                    }
+                )
+    except WebSocketDisconnect:
+        pass
+    except Exception:
+        _log.exception("Code events websocket failed")
+    finally:
+        bus.unsubscribe(sub_id)
 
 
 @app.get("/api/code/artifacts")

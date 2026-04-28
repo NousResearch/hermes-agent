@@ -8,6 +8,7 @@ import uuid
 from typing import Any
 
 from hermes_cli.code.artifact_ledger import ArtifactLedger
+from hermes_cli.code.event_bus import get_code_event_bus
 from hermes_state import SessionDB
 
 
@@ -85,6 +86,18 @@ class AgentOrchestrator:
     def _ledger(self) -> ArtifactLedger:
         return ArtifactLedger(db_path=self._db_path)
 
+    def _emit(self, event_type: str, payload: dict[str, Any], *, workspace_id: str | None = None, code_session_id: str | None = None, orchestrated_run_id: str | None = None) -> None:
+        bus = get_code_event_bus(self._db_path)
+        bus.publish(
+            event_type,
+            payload=payload,
+            workspace_id=workspace_id,
+            code_session_id=code_session_id,
+            orchestrated_run_id=orchestrated_run_id,
+            metadata={"source": "orchestrator"},
+            source="orchestrator",
+        )
+
     def create_run(
         self,
         *,
@@ -112,15 +125,22 @@ class AgentOrchestrator:
         db = self._db()
         try:
             db.create_code_orchestrated_run(run)
-            db.append_code_event(
-                event_type="orchestrator.run.created",
-                workspace_id=workspace_id,
-                code_session_id=code_session_id,
-                payload={"run_id": run["id"], "state": run["state"], "title": run["title"]},
-                source="orchestrator",
-            )
         finally:
             db.close()
+        self._emit(
+            "code.orchestrator.run_created",
+            payload={"run_id": run["id"], "state": run["state"], "title": run["title"]},
+            workspace_id=workspace_id,
+            code_session_id=code_session_id,
+            orchestrated_run_id=run["id"],
+        )
+        self._emit(
+            "orchestrator.run.created",
+            payload={"run_id": run["id"], "state": run["state"], "title": run["title"]},
+            workspace_id=workspace_id,
+            code_session_id=code_session_id,
+            orchestrated_run_id=run["id"],
+        )
 
         if create_intake_artifact and goal:
             self._ledger().create_artifact(
@@ -203,22 +223,51 @@ class AgentOrchestrator:
                     "created_at": now,
                 }
             )
-            db.append_code_event(
-                event_type="orchestrator.run.transitioned",
-                workspace_id=run.get("workspace_id"),
-                code_session_id=run.get("code_session_id"),
-                payload={
-                    "run_id": run_id,
-                    "from_state": from_state,
-                    "to_state": to_state,
-                    "reason": reason,
-                },
-                source="orchestrator",
-            )
             updated = db.get_code_orchestrated_run(run_id)
-            return updated or run
+            out = updated or run
         finally:
             db.close()
+        self._emit(
+            "code.orchestrator.transitioned",
+            payload={
+                "run_id": run_id,
+                "from_state": from_state,
+                "to_state": to_state,
+                "reason": reason,
+            },
+            workspace_id=out.get("workspace_id"),
+            code_session_id=out.get("code_session_id"),
+            orchestrated_run_id=run_id,
+        )
+        self._emit(
+            "orchestrator.run.transitioned",
+            payload={
+                "run_id": run_id,
+                "from_state": from_state,
+                "to_state": to_state,
+                "reason": reason,
+            },
+            workspace_id=out.get("workspace_id"),
+            code_session_id=out.get("code_session_id"),
+            orchestrated_run_id=run_id,
+        )
+        if to_state == OrchestratorState.COMPLETED:
+            self._emit(
+                "code.orchestrator.completed",
+                payload={"run_id": run_id, "state": to_state, "reason": reason},
+                workspace_id=out.get("workspace_id"),
+                code_session_id=out.get("code_session_id"),
+                orchestrated_run_id=run_id,
+            )
+        if to_state == OrchestratorState.FAILED:
+            self._emit(
+                "code.orchestrator.failed",
+                payload={"run_id": run_id, "state": to_state, "reason": reason},
+                workspace_id=out.get("workspace_id"),
+                code_session_id=out.get("code_session_id"),
+                orchestrated_run_id=run_id,
+            )
+        return out
 
     def list_transitions(self, run_id: str) -> list[dict[str, Any]]:
         db = self._db()

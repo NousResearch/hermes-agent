@@ -9,9 +9,9 @@ import json
 from pathlib import Path
 from typing import Any, Optional
 
+from hermes_cli.code.event_bus import get_code_event_bus
 from hermes_cli.code.github_chatops import GitHubChatOpsService
 from hermes_cli.code.github_integration import GitHubIntegrationStore, _env_value, redact_github_secrets
-from hermes_state import SessionDB
 
 SUPPORTED_EVENTS = frozenset(
     {
@@ -83,15 +83,14 @@ class GitHubWebhookService:
         return GitHubIntegrationStore(db_path=self._db_path)
 
     def _emit(self, event_type: str, payload: dict[str, Any]) -> None:
-        db = SessionDB(db_path=self._db_path) if self._db_path else SessionDB()
-        try:
-            db.append_code_event(
-                event_type=event_type,
-                payload={"type": event_type, "version": 1, "payload": payload},
-                source="github_webhook",
-            )
-        finally:
-            db.close()
+        bus = get_code_event_bus(self._db_path)
+        bus.publish(
+            event_type,
+            payload=payload,
+            github_repo_full_name=(payload or {}).get("repo_full_name"),
+            metadata={"source": "github_webhook"},
+            source="github_webhook",
+        )
 
     def process(
         self,

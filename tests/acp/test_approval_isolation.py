@@ -141,6 +141,59 @@ class TestThreadLocalApprovalCallback:
         assert worker_saw == [""]
         assert _get_cached_sudo_password() == "main-thread-password"
 
+    def test_sudo_password_cache_isolated_across_acp_sessions_on_same_pool_thread(self):
+        """ACP's ThreadPoolExecutor reuses threads. Two ACP sessions that land
+        on the same reused thread must not share the interactive sudo password
+        cache. The fix wraps each session in contextvars.copy_context() and
+        binds HERMES_SESSION_KEY per session, so the cache scope key differs
+        across sessions even when the underlying thread is identical.
+        """
+        import contextvars
+        from concurrent.futures import ThreadPoolExecutor
+
+        from gateway.session_context import (
+            clear_session_vars,
+            set_session_vars,
+        )
+        from tools.terminal_tool import (
+            _get_cached_sudo_password,
+            _reset_cached_sudo_passwords,
+            _set_cached_sudo_password,
+        )
+
+        _reset_cached_sudo_passwords()
+        executor = ThreadPoolExecutor(max_workers=1)  # force thread reuse
+
+        runs: list[tuple[str, str, str]] = []  # (session_id, before, after)
+
+        def _simulate_acp_session(session_id: str, write_password: str) -> None:
+            tokens = set_session_vars(session_key=session_id)
+            try:
+                observed_before = _get_cached_sudo_password()
+                _set_cached_sudo_password(write_password)
+                observed_after = _get_cached_sudo_password()
+                runs.append((session_id, observed_before, observed_after))
+            finally:
+                clear_session_vars(tokens)
+
+        def _run_in_fresh_context(session_id: str, pw: str) -> str:
+            ctx = contextvars.copy_context()
+            ctx.run(_simulate_acp_session, session_id, pw)
+            return session_id
+
+        try:
+            executor.submit(_run_in_fresh_context, "acp-session-A", "alpha-secret").result()
+            # Same thread. Without the fix B would see "alpha-secret".
+            executor.submit(_run_in_fresh_context, "acp-session-B", "bravo-secret").result()
+        finally:
+            executor.shutdown(wait=True)
+            _reset_cached_sudo_passwords()
+
+        assert runs[0] == ("acp-session-A", "", "alpha-secret")
+        # Core regression guard: B on the same reused thread must see an empty
+        # cache, not A's password.
+        assert runs[1] == ("acp-session-B", "", "bravo-secret")
+
 
 class TestAcpExecAskGate:
     """GHSA-96vc-wcxf-jjff: ACP's _run_agent must set HERMES_INTERACTIVE so

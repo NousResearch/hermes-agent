@@ -67,7 +67,7 @@ class TestCoerceNumber:
     def test_inf_stays_string_for_integer_only(self):
         """Infinity should not be converted to int."""
         result = _coerce_number("inf")
-        assert result == float("inf")
+        assert result == "inf"
 
     def test_negative_float(self):
         assert _coerce_number("-2.5") == -2.5
@@ -254,6 +254,35 @@ class TestCoerceToolArgs:
             args = {"config": '{"max": 50}'}
             result = coerce_tool_args("test_tool", args)
             assert result["config"] == {"max": 50}
+
+    def test_coerces_string_null_for_nullable_object_arg(self):
+        """Models often emit literal "null" for optional MCP object args."""
+        schema = self._mock_schema({
+            "setting": {
+                "type": "object",
+                "additionalProperties": True,
+                "nullable": True,
+                "default": None,
+            },
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"setting": "null"}
+            result = coerce_tool_args("test_tool", args)
+            assert result["setting"] is None
+
+    def test_coerces_string_null_for_nullable_array_arg(self):
+        schema = self._mock_schema({
+            "stages": {
+                "type": "array",
+                "items": {"type": "object"},
+                "nullable": True,
+                "default": None,
+            },
+        })
+        with patch("model_tools.registry.get_schema", return_value=schema):
+            args = {"stages": "null"}
+            result = coerce_tool_args("test_tool", args)
+            assert result["stages"] is None
 
     def test_invalid_json_array_preserved_as_string(self):
         """If the string isn't valid JSON, pass it through — let the tool decide."""

@@ -285,6 +285,7 @@ class TestSchemaConversion:
 
         assert schema["properties"]["workdir"] == {
             "type": "string",
+            "nullable": True,
             "default": None,
             "description": "Optional working directory",
         }
@@ -314,6 +315,7 @@ class TestSchemaConversion:
         assert schema["properties"]["filters"]["items"] == {
             "type": "object",
             "properties": {"field": {"type": "string"}},
+            "nullable": True,
         }
 
     def test_convert_mcp_schema_survives_missing_inputschema_attribute(self):

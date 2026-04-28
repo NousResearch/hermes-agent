@@ -415,24 +415,27 @@ def coerce_tool_args(tool_name: str, args: Dict[str, Any]) -> Dict[str, Any]:
         if not prop_schema:
             continue
         expected = prop_schema.get("type")
-        if not expected:
+        if not expected and not _schema_allows_null(prop_schema):
             continue
-        coerced = _coerce_value(value, expected)
+        coerced = _coerce_value(value, expected, schema=prop_schema)
         if coerced is not value:
             args[key] = coerced
 
     return args
 
 
-def _coerce_value(value: str, expected_type):
+def _coerce_value(value: str, expected_type, schema: dict | None = None):
     """Attempt to coerce a string *value* to *expected_type*.
 
     Returns the original string when coercion is not applicable or fails.
     """
+    if _schema_allows_null(schema) and value.strip().lower() == "null":
+        return None
+
     if isinstance(expected_type, list):
         # Union type — try each in order, return first successful coercion
         for t in expected_type:
-            result = _coerce_value(value, t)
+            result = _coerce_value(value, t, schema=schema)
             if result is not value:
                 return result
         return value
@@ -445,7 +448,33 @@ def _coerce_value(value: str, expected_type):
         return _coerce_json(value, list)
     if expected_type == "object":
         return _coerce_json(value, dict)
+    if expected_type == "null" and value.strip().lower() == "null":
+        return None
     return value
+
+
+def _schema_allows_null(schema: dict | None) -> bool:
+    """Return True when a JSON Schema fragment explicitly permits null."""
+    if not isinstance(schema, dict):
+        return False
+
+    schema_type = schema.get("type")
+    if schema_type == "null":
+        return True
+    if isinstance(schema_type, list) and "null" in schema_type:
+        return True
+    if schema.get("nullable") is True:
+        return True
+
+    for union_key in ("anyOf", "oneOf"):
+        variants = schema.get(union_key)
+        if not isinstance(variants, list):
+            continue
+        for variant in variants:
+            if isinstance(variant, dict) and variant.get("type") == "null":
+                return True
+
+    return False
 
 
 def _coerce_json(value: str, expected_python_type: type):

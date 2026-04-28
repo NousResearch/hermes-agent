@@ -108,20 +108,18 @@ _endpoint_model_metadata_cache_time: Dict[str, float] = {}
 _ENDPOINT_MODEL_CACHE_TTL = 300
 
 # Descending tiers for context length probing when the model is unknown.
-# We start at 256K (covers GPT-5.x, many current large-context models) and
-# step down on context-length errors until one works.  Tier[0] is also the
-# default fallback when no detection method succeeds.
+# We start at 200K (MiniMax M2.7) and step down on context-length errors.
 CONTEXT_PROBE_TIERS = [
-    256_000,
-    128_000,
-    64_000,
-    32_000,
-    16_000,
+    204800,  # 200K — MiniMax M2.7 native context
+    128000,  # 128K — GPT-4 / common fallback
+    64000,
+    32000,
+    16000,
     8_000,
 ]
 
 # Default context length when no detection method succeeds.
-DEFAULT_FALLBACK_CONTEXT = CONTEXT_PROBE_TIERS[0]
+DEFAULT_FALLBACK_CONTEXT = 204800
 
 # Minimum context length required to run Hermes Agent.  Models with fewer
 # tokens cannot maintain enough working memory for tool-calling workflows.
@@ -808,8 +806,16 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
       - "context_length_exceeded: 131072"
       - "Maximum context size 32768 exceeded"
       - "model's max context length is 65536"
+
+    Pitfall: MiniMax API errors include a request_id in the format "(XXXXXXX...)" or
+    "(2013)" — the number inside parentheses is NOT a context limit. The regex must
+    skip numbers that are clearly request IDs (parenthesized at the end of the message).
     """
     error_lower = error_msg.lower()
+    # Strip request_id suffix like "(0633795139aa885078dfdf794ee6ca23)" or "(2013)"
+    # These are clearly NOT context limits — they appear at the end of MiniMax errors.
+    error_stripped = re.sub(r'\s*\([0-9a-f]{4,}\)\s*$', '', error_msg, flags=re.IGNORECASE).lower()
+
     # Pattern: look for numbers near context-related keywords
     patterns = [
         r'(?:max(?:imum)?|limit)\s*(?:context\s*)?(?:length|size|window)?\s*(?:is|of|:)?\s*(\d{4,})',
@@ -819,7 +825,7 @@ def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
         r'(\d{4,})\s*(?:max(?:imum)?)\b',  # "200000 maximum"
     ]
     for pattern in patterns:
-        match = re.search(pattern, error_lower)
+        match = re.search(pattern, error_stripped)
         if match:
             limit = int(match.group(1))
             # Sanity check: must be a reasonable context length

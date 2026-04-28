@@ -1602,6 +1602,12 @@ class AIAgent:
         # broad pseudo-public config object on the agent instance.
         self._aux_compression_context_length_config = None
 
+        # Retry config from extensions.api_retry (reads config.yaml directly)
+        _retry_cfg = _agent_cfg.get("extensions", {}).get("api_retry", {})
+        self._retry_max_retries = _retry_cfg.get("max_retries", 3)
+        self._retry_base_delay = float(_retry_cfg.get("base_delay", 2.0))
+        self._retry_max_delay = float(_retry_cfg.get("max_delay", 60.0))
+
         # Persistent memory (MEMORY.md + USER.md) -- loaded from disk
         self._memory_store = None
         self._memory_enabled = False
@@ -10236,7 +10242,7 @@ class AIAgent:
             
             api_start_time = time.time()
             retry_count = 0
-            max_retries = self._api_max_retries
+            max_retries = self._retry_max_retries
             primary_recovery_attempted = False
             max_compression_attempts = 3
             codex_auth_retry_attempted=False
@@ -11923,7 +11929,7 @@ class AIAgent:
                                     _retry_after = min(int(_ra_raw), 120)  # Cap at 2 minutes
                                 except (TypeError, ValueError):
                                     pass
-                    wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=2.0, max_delay=60.0)
+                    wait_time = _retry_after if _retry_after else jittered_backoff(retry_count, base_delay=self._retry_base_delay, max_delay=self._retry_max_delay)
                     if is_rate_limited:
                         self._emit_status(f"⏱️ Rate limited. Waiting {wait_time:.1f}s (attempt {retry_count + 1}/{max_retries})...")
                     else:

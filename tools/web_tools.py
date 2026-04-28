@@ -88,7 +88,7 @@ def _get_backend() -> str:
     keys manually without running setup.
     """
     configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa"):
+    if configured in ("parallel", "firecrawl", "tavily", "exa", "searxng"):
         return configured
 
     # Fallback for manual / legacy config — pick the highest-priority
@@ -117,6 +117,8 @@ def _is_backend_available(backend: str) -> bool:
         return check_firecrawl_api_key()
     if backend == "tavily":
         return _has_env("TAVILY_API_KEY")
+    if backend == "searxng":
+        return True
     return False
 
 # ─── Firecrawl Client ────────────────────────────────────────────────────────
@@ -303,6 +305,25 @@ def _tavily_request(endpoint: str, payload: dict) -> dict:
     response = httpx.post(url, json=payload, timeout=60)
     response.raise_for_status()
     return response.json()
+
+
+def _searxng_search(query: str, limit: int) -> Dict[str, Any]:
+    """Search via local Searxng instance at http://localhost:8888."""
+    url = "http://localhost:8888/search"
+    params = {"q": query, "format": "json", "limit": limit}
+    with httpx.Client(timeout=10.0) as client:
+        resp = client.get(url, params=params)
+        resp.raise_for_status()
+        raw = resp.json()
+    results = []
+    for r in raw.get("results", [])[:limit]:
+        results.append({
+            "title": r.get("title", ""),
+            "url": r.get("url", ""),
+            "description": r.get("content", ""),
+            "position": len(results) + 1,
+        })
+    return {"success": True, "data": {"web": results}}
 
 
 def _normalize_tavily_search_results(response: dict) -> dict:
@@ -1111,6 +1132,16 @@ def web_search_tool(query: str, limit: int = 5) -> str:
                 "include_images": False,
             })
             response_data = _normalize_tavily_search_results(raw)
+            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+            debug_call_data["final_response_size"] = len(result_json)
+            _debug.log_call("web_search_tool", debug_call_data)
+            _debug.save()
+            return result_json
+
+        if backend == "searxng":
+            logger.info("Searxng search: '%s' (limit: %d)", query, limit)
+            response_data = _searxng_search(query, limit)
             debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
             result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
             debug_call_data["final_response_size"] = len(result_json)

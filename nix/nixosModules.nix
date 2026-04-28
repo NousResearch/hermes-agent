@@ -455,7 +455,16 @@
       extraPackages = mkOption {
         type = types.listOf types.package;
         default = [ ];
-        description = "Extra packages available on PATH.";
+        description = ''
+          **Deprecated.** Extra packages on the systemd service PATH.
+
+          This option does NOT make packages available to terminal commands
+          or skills — the terminal backend's login shell rebuilds PATH from
+          NixOS system profiles, discarding the service PATH.
+
+          Use `environment.systemPackages` instead, which works everywhere:
+          service process, terminal commands, skills, cron jobs.
+        '';
       };
 
       extraPlugins = mkOption {
@@ -640,6 +649,23 @@
       }
 
       # ── Warnings ──────────────────────────────────────────────────────
+      (lib.mkIf (cfg.extraPackages != []) {
+        warnings = [
+          ''
+            services.hermes-agent: `extraPackages` is deprecated and will be removed in a future release.
+
+            Packages added via `extraPackages` are only visible to the systemd
+            service process itself. Terminal commands, skills, and cron jobs do
+            NOT see them because the terminal backend starts a login shell whose
+            PATH is rebuilt from NixOS system profiles, discarding the service PATH.
+
+            Migrate to `environment.systemPackages`, which works everywhere:
+
+              environment.systemPackages = [ ${lib.concatMapStringsSep " " (p: "pkgs.${p.pname or (lib.getName p)}") cfg.extraPackages} ];
+          ''
+        ];
+      })
+
       (lib.mkIf (cfg.container.enable && !cfg.addToSystemPackages && cfg.container.hostUsers != []) {
         warnings = [
           ''

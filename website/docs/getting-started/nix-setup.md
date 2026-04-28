@@ -321,7 +321,7 @@ Quick reference for the most common things Nix users want to customize:
 | Pass GPU access to container | `container.extraOptions` | `[ "--gpus" "all" ]` |
 | Use Podman instead of Docker | `container.backend` | `"podman"` |
 | Share state between host CLI and container | `container.hostUsers` | `[ "sidbin" ]` |
-| Add tools to the service PATH (native only) | `extraPackages` | `[ pkgs.pandoc pkgs.imagemagick ]` |
+| Make extra tools available to the agent | `environment.systemPackages` (top-level NixOS) | `[ pkgs.pandoc pkgs.imagemagick ]` |
 | Use a custom base image | `container.image` | `"ubuntu:24.04"` |
 | Override the hermes package | `package` | `inputs.hermes-agent.packages.${system}.default.override { ... }` |
 | Change state directory | `stateDir` | `"/opt/hermes"` |
@@ -648,11 +648,14 @@ The package's `site-packages` is added to PYTHONPATH in the hermes wrapper. `imp
 A directory plugin with third-party Python dependencies needs both options:
 
 ```nix
+# Plugin config
 services.hermes-agent = {
   extraPlugins = [ my-plugin-src ];          # plugin source
   extraPythonPackages = [ pkgs.python312Packages.redis ];  # its Python dep
-  extraPackages = [ pkgs.redis ];            # system binary it needs
 };
+
+# System binaries the plugin needs — available to terminal, skills, cron
+environment.systemPackages = [ pkgs.redis ];
 ```
 
 ### Using the Overlay
@@ -807,7 +810,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `extraArgs` | `listOf str` | `[]` | Extra args for `hermes gateway` |
-| `extraPackages` | `listOf package` | `[]` | Extra packages on service PATH (native mode only) |
+| `extraPackages` | `listOf package` | `[]` | **Deprecated.** Use `environment.systemPackages` instead. Only affects the systemd service process — terminal commands, skills, and cron jobs do not see these packages |
 | `extraPlugins` | `listOf package` | `[]` | Directory plugin packages to symlink into `$HERMES_HOME/plugins/`. Each must contain `plugin.yaml` |
 | `extraPythonPackages` | `listOf package` | `[]` | Python packages added to PYTHONPATH for entry-point plugin discovery. Build with `python312Packages` |
 | `restart` | `str` | `"always"` | systemd `Restart=` policy |
@@ -945,3 +948,4 @@ nix-store --query --roots $(docker exec hermes-agent readlink /data/current-pack
 | `nix-collect-garbage` removed hermes | GC root missing | Restart the service (preStart recreates the GC root) |
 | `no container with name or ID "hermes-agent"` (Podman) | Podman rootful container not visible to regular user | Add passwordless sudo for podman (see [Container-aware CLI](#container-aware-cli) section) |
 | `unable to find user hermes` | Container still starting (entrypoint hasn't created user yet) | Wait a few seconds and retry — the CLI retries automatically |
+| Tool added via `extraPackages` not found in terminal | `extraPackages` only sets the systemd service PATH, not the terminal backend's | Move to `environment.systemPackages` — see deprecation warning at build time |

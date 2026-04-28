@@ -64,6 +64,7 @@ from .whatsapp_identity import (
     canonical_whatsapp_identifier,
     normalize_whatsapp_identifier,
 )
+from utils import atomic_replace
 
 
 @dataclass
@@ -705,7 +706,7 @@ class SessionStore:
                 json.dump(data, f, indent=2)
                 f.flush()
                 os.fsync(f.fileno())
-            os.replace(tmp_path, sessions_file)
+            atomic_replace(tmp_path, sessions_file)
         except BaseException:
             try:
                 os.unlink(tmp_path)

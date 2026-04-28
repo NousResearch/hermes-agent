@@ -54,6 +54,7 @@ from pathlib import Path
 from typing import Any
 
 from hermes_cli import __version__ as _HERMES_VERSION
+from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
 
@@ -190,7 +191,7 @@ def _write_disk_cache(data: dict[str, Any]) -> None:
         with open(tmp, "w") as fh:
             json.dump(data, fh, indent=2)
             fh.write("\n")
-        os.replace(tmp, path)
+        atomic_replace(tmp, path)
     except OSError as exc:
         logger.info("model catalog cache write failed: %s", exc)
 

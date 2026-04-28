@@ -33,6 +33,8 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 from typing import Dict, Any, List, Optional
 
+from utils import atomic_replace
+
 # fcntl is Unix-only; on Windows use msvcrt for file locking
 msvcrt = None
 try:
@@ -448,10 +450,7 @@ class MemoryStore:
                     f.write(content)
                     f.flush()
                     os.fsync(f.fileno())
-                # Resolve symlinks so os.replace writes to the real file (GitHub #16743).
-                path_str = str(path)
-                real_path = os.path.realpath(path_str) if os.path.islink(path_str) else path_str
-                os.replace(tmp_path, real_path)
+                atomic_replace(tmp_path, path)
             except BaseException:
                 # Clean up temp file on any failure
                 try:

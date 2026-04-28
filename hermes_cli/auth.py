@@ -43,6 +43,7 @@ import yaml
 
 from hermes_cli.config import get_hermes_home, get_config_path, read_raw_config
 from hermes_constants import OPENROUTER_BASE_URL
+from utils import atomic_replace
 
 logger = logging.getLogger(__name__)
 
@@ -828,7 +829,7 @@ def _save_auth_store(auth_store: Dict[str, Any]) -> Path:
             handle.write(payload)
             handle.flush()
             os.fsync(handle.fileno())
-        os.replace(tmp_path, auth_file)
+        atomic_replace(tmp_path, auth_file)
         try:
             dir_fd = os.open(str(auth_file.parent), os.O_RDONLY)
         except OSError:

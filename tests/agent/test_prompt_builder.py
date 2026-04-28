@@ -23,6 +23,14 @@ from agent.prompt_builder import (
     DEFAULT_AGENT_IDENTITY,
     TOOL_USE_ENFORCEMENT_GUIDANCE,
     TOOL_USE_ENFORCEMENT_MODELS,
+    BASE_ROLE_GUIDANCE,
+    PERSONALITY_AND_COLLABORATION_GUIDANCE,
+    SUCCESS_CRITERIA_GUIDANCE,
+    CONSTRAINTS_GUIDANCE,
+    TOOL_USE_GUIDANCE,
+    RETRIEVAL_BUDGET_GUIDANCE,
+    EXECUTION_DISCIPLINE_GUIDANCE,
+    VERIFICATION_AND_STOP_RULES_GUIDANCE,
     OPENAI_MODEL_EXECUTION_GUIDANCE,
     MEMORY_GUIDANCE,
     SESSION_SEARCH_GUIDANCE,
@@ -1129,11 +1137,13 @@ class TestToolUseEnforcementGuidance:
         assert "tool call" in TOOL_USE_ENFORCEMENT_GUIDANCE.lower()
 
     def test_guidance_forbids_description_only(self):
-        assert "describe" in TOOL_USE_ENFORCEMENT_GUIDANCE.lower()
-        assert "promise" in TOOL_USE_ENFORCEMENT_GUIDANCE.lower()
+        text = TOOL_USE_ENFORCEMENT_GUIDANCE.lower()
+        assert "describe" in text
+        assert "intentions without acting" in text
 
     def test_guidance_requires_action(self):
-        assert "MUST" in TOOL_USE_ENFORCEMENT_GUIDANCE
+        assert "corresponding tool call" in TOOL_USE_ENFORCEMENT_GUIDANCE
+        assert "Stop only when" in TOOL_USE_ENFORCEMENT_GUIDANCE
 
     def test_enforcement_models_includes_gpt(self):
         assert "gpt" in TOOL_USE_ENFORCEMENT_MODELS
@@ -1151,11 +1161,66 @@ class TestToolUseEnforcementGuidance:
 class TestOpenAIModelExecutionGuidance:
     """Tests for GPT/Codex-specific execution discipline guidance."""
 
+    def test_guidance_covers_gpt55_baseline_sections(self):
+        text = OPENAI_MODEL_EXECUTION_GUIDANCE
+        required_sections = [
+            "# Role",
+            "# Personality and collaboration style",
+            "# Success criteria",
+            "# Constraints",
+            "# Tool use",
+            "# Retrieval budget",
+            "# Execution discipline",
+            "# Verification and stop rules",
+        ]
+        for section in required_sections:
+            assert section in text
+
+    def test_guidance_constants_are_composed_into_openai_guidance(self):
+        for block in [
+            BASE_ROLE_GUIDANCE,
+            PERSONALITY_AND_COLLABORATION_GUIDANCE,
+            SUCCESS_CRITERIA_GUIDANCE,
+            CONSTRAINTS_GUIDANCE,
+            TOOL_USE_GUIDANCE,
+            RETRIEVAL_BUDGET_GUIDANCE,
+            EXECUTION_DISCIPLINE_GUIDANCE,
+            VERIFICATION_AND_STOP_RULES_GUIDANCE,
+        ]:
+            assert block in OPENAI_MODEL_EXECUTION_GUIDANCE
+
+    def test_guidance_covers_personality_and_collaboration_style(self):
+        text = PERSONALITY_AND_COLLABORATION_GUIDANCE.lower()
+        assert "preferred language" in text
+        assert "reversible or low-risk" in text
+        assert "preamble" in text
+
+    def test_guidance_covers_success_criteria_and_constraints(self):
+        success = SUCCESS_CRITERIA_GUIDANCE.lower()
+        constraints = CONSTRAINTS_GUIDANCE.lower()
+        assert "core request" in success
+        assert "blockers" in success
+        assert "secrets" in constraints
+        assert "production-impacting" in constraints
+
     def test_guidance_covers_tool_persistence(self):
         text = OPENAI_MODEL_EXECUTION_GUIDANCE.lower()
         assert "tool_persistence" in text
-        assert "retry" in text
+        assert "fallback" in text
         assert "empty" in text or "partial" in text
+
+    def test_guidance_covers_mandatory_tool_use_hard_invariants(self):
+        text = TOOL_USE_GUIDANCE
+        assert "NEVER answer these from memory" in text
+        assert "ALWAYS use a tool" in text
+        assert "Current time" in text
+        assert "Git history" in text
+
+    def test_guidance_covers_retrieval_budget(self):
+        text = RETRIEVAL_BUDGET_GUIDANCE.lower()
+        assert "minimum evidence" in text
+        assert "search again only if" in text
+        assert "improve phrasing" in text
 
     def test_guidance_covers_prerequisite_checks(self):
         text = OPENAI_MODEL_EXECUTION_GUIDANCE.lower()
@@ -1172,11 +1237,18 @@ class TestOpenAIModelExecutionGuidance:
         assert "missing_context" in text or "missing context" in text
         assert "hallucinate" in text or "guess" in text
 
+    def test_guidance_covers_stop_rules(self):
+        text = VERIFICATION_AND_STOP_RULES_GUIDANCE.lower()
+        assert "stop_rules" in text
+        assert "core request" in text
+        assert "blocked" in text
+
     def test_guidance_uses_xml_tags(self):
         assert "<tool_persistence>" in OPENAI_MODEL_EXECUTION_GUIDANCE
         assert "</tool_persistence>" in OPENAI_MODEL_EXECUTION_GUIDANCE
         assert "<verification>" in OPENAI_MODEL_EXECUTION_GUIDANCE
         assert "</verification>" in OPENAI_MODEL_EXECUTION_GUIDANCE
+        assert "<stop_rules>" in OPENAI_MODEL_EXECUTION_GUIDANCE
 
     def test_guidance_is_string(self):
         assert isinstance(OPENAI_MODEL_EXECUTION_GUIDANCE, str)

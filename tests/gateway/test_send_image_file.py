@@ -167,6 +167,30 @@ class TestTelegramSendImageFile:
         call_kwargs = adapter._bot.send_photo.call_args.kwargs
         assert call_kwargs["message_thread_id"] == 789
 
+    def test_photo_failure_retries_as_document(self, adapter, tmp_path):
+        """When Telegram rejects photo dimensions, retry the original file as a document."""
+        img = tmp_path / "very-tall.jpg"
+        img.write_bytes(b"\xff\xd8\xff" + b"\x00" * 50)
+
+        adapter._bot.send_photo = AsyncMock(side_effect=Exception("Photo_invalid_dimensions"))
+        mock_msg = MagicMock()
+        mock_msg.message_id = 44
+        adapter._bot.send_document = AsyncMock(return_value=mock_msg)
+
+        result = _run(
+            adapter.send_image_file(chat_id="12345", image_path=str(img), caption="cap")
+        )
+
+        assert result.success
+        assert result.message_id == "44"
+        adapter._bot.send_photo.assert_awaited_once()
+        adapter._bot.send_document.assert_awaited_once()
+
+        call_kwargs = adapter._bot.send_document.call_args.kwargs
+        assert call_kwargs["chat_id"] == 12345
+        assert call_kwargs["filename"] == "very-tall.jpg"
+        assert call_kwargs["caption"] == "cap"
+
 
 # ---------------------------------------------------------------------------
 # Discord send_image_file tests

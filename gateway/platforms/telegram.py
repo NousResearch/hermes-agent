@@ -2193,7 +2193,12 @@ class TelegramAdapter(BasePlatformAdapter):
         metadata: Optional[Dict[str, Any]] = None,
         **kwargs,
     ) -> SendResult:
-        """Send a local image file natively as a Telegram photo."""
+        """Send a local image file natively as a Telegram photo.
+
+        If Telegram rejects the image as a photo (for example, invalid
+        dimensions on very tall screenshots), retry as a document so the
+        original file still reaches the user unchanged.
+        """
         if not self._bot:
             return SendResult(success=False, error="Not connected")
 
@@ -2212,13 +2217,30 @@ class TelegramAdapter(BasePlatformAdapter):
                 )
             return SendResult(success=True, message_id=str(msg.message_id))
         except Exception as e:
-            logger.error(
-                "[%s] Failed to send Telegram local image, falling back to base adapter: %s",
+            logger.warning(
+                "[%s] Failed to send Telegram local image as photo, retrying as document: %s",
                 self.name,
                 e,
                 exc_info=True,
             )
-            return await super().send_image_file(chat_id, image_path, caption, reply_to)
+            try:
+                return await self.send_document(
+                    chat_id=chat_id,
+                    file_path=image_path,
+                    caption=caption,
+                    file_name=os.path.basename(image_path),
+                    reply_to=reply_to,
+                    metadata=metadata,
+                )
+            except Exception:
+                logger.error(
+                    "[%s] Failed to send Telegram local image as both photo and document, falling back to base adapter",
+                    self.name,
+                    exc_info=True,
+                )
+                return await super().send_image_file(
+                    chat_id, image_path, caption, reply_to, metadata=metadata
+                )
 
     async def send_document(
         self,

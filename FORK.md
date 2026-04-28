@@ -2,7 +2,7 @@
 
 Fork of [NousResearch/hermes-agent](https://github.com/NousResearch/hermes-agent) used as the deploy target for [pebble-tech/nudge-hermes-agents](https://github.com/pebble-tech/nudge-hermes-agents) customer VPSes. `main` is a runtime-ready integration branch — clone it and it works.
 
-> **As of 2026-04-27:** one open upstream PR — [NousResearch/hermes-agent#16445](https://github.com/NousResearch/hermes-agent/pull/16445) — carried via `feat/whatsapp-forward-owner-messages-upstream`. Once merged, drop it from `FEATURE_BRANCHES` and from the fork. Otherwise `main = upstream/main + ops-overlay + open feature branches`. The fork stays alive as a stable deploy target so customer VPSes pull from a known SHA on our schedule rather than racing upstream.
+> **As of 2026-04-29:** open upstream PRs — WhatsApp owner-forward stack ([#16445](https://github.com/NousResearch/hermes-agent/pull/16445) → … → busy-path PR) via `fix/busy-path-pre-gateway-dispatch-upstream`, plus [#17165](https://github.com/NousResearch/hermes-agent/pull/17165) (WhatsApp inbound text batching) via `feature/whatsapp-inbound-text-batch`. Drop each branch from `FEATURE_BRANCHES` once merged. Otherwise `main = upstream/main + ops-overlay + cherry-picked feature branches`.
 
 ## Branches
 
@@ -19,7 +19,7 @@ A scheduled GitHub Actions workflow ([`.github/workflows/sync-upstream.yml`](.gi
 
 1. Fetches `NousResearch/hermes-agent:main`.
 2. Rebases `ops-overlay` onto `upstream/main`.
-3. Rebases each branch in `FEATURE_BRANCHES` onto `upstream/main`. (Currently empty — see history below.)
+3. Rebases each branch in `FEATURE_BRANCHES` onto `upstream/main`.
 4. Rebuilds `main` from scratch: checks out `upstream/main`, then cherry-picks `ops-overlay` followed by each feature branch's commits.
 5. Installs `hermes-agent` from the rebuilt `main` via `uv`.
 6. Runs focused tests:
@@ -86,3 +86,4 @@ Use `NousResearch/hermes-agent` directly. This fork is purely a stable deploy ta
 | [NousResearch/hermes-agent#13445](https://github.com/NousResearch/hermes-agent/pull/13445) | `feature/pre-gateway-dispatch` (deleted) | Merged via [#15050](https://github.com/NousResearch/hermes-agent/pull/15050) on 2026-04-24 |
 | [NousResearch/hermes-agent#14904](https://github.com/NousResearch/hermes-agent/pull/14904) | `feature/whatsapp-dm-canonical-session-key` (deleted) | Merged via [#15191](https://github.com/NousResearch/hermes-agent/pull/15191) on 2026-04-24, plus an upstream follow-up that extracted the JID/LID helpers into `gateway/whatsapp_identity.py`. |
 | [NousResearch/hermes-agent#16445](https://github.com/NousResearch/hermes-agent/pull/16445) | `feat/whatsapp-forward-owner-messages-upstream` | **Open.** Opt-in `WHATSAPP_FORWARD_OWNER_MESSAGES` flag + `MessageEvent.metadata["whatsapp_from_owner"]` propagation. Default off, no behavior change. |
+| [NousResearch/hermes-agent#17165](https://github.com/NousResearch/hermes-agent/pull/17165) | `feature/whatsapp-inbound-text-batch` | **Open.** WhatsApp adapter inbound plain-text batching (`HERMES_WHATSAPP_TEXT_BATCH_*`). |

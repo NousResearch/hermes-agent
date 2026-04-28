@@ -5,13 +5,13 @@ name: Sync upstream
 # and check out `main` to get a runtime-ready fork.
 #
 # `FEATURE_BRANCHES` carries fork patches that have an open upstream PR.
-# As of 2026-04-27 we carry one stack (only the tip is listed; earlier
-# branches are ancestors and get folded in automatically):
+# As of 2026-04-29 we carry the WhatsApp stack tip plus one independent branch:
 #
-#   fix/busy-path-pre-gateway-dispatch-upstream  (tip, tracked)
-#     ← fix/whatsapp-forward-owner-allowlist-upstream
-#         ← feat/whatsapp-forward-owner-messages-upstream
-#   → NousResearch/hermes-agent#16445, #16485, and the busy-path PR (open)
+#   fix/busy-path-pre-gateway-dispatch-upstream  (stack tip)
+#     ← … ← feat/whatsapp-forward-owner-messages-upstream
+#   → NousResearch/hermes-agent#16445, #16485, busy-path PR (open)
+#
+#   feature/whatsapp-inbound-text-batch → #17165 WhatsApp text batching (open)
 #
 # Drop a branch from FEATURE_BRANCHES (and delete it from the fork) once
 # its upstream PR merges — the cherry-pick becomes a no-op.
@@ -50,13 +50,14 @@ env:
   # conflict. We list only the *tip* branch, which contains all earlier
   # patches as ancestors.
   #
-  # Currently: fix/busy-path-pre-gateway-dispatch-upstream is stacked on
-  # fix/whatsapp-forward-owner-allowlist-upstream (PR #16485), which is
-  # itself stacked on feat/whatsapp-forward-owner-messages-upstream
-  # (PR #16445). Listing the tip cherry-picks all three in one range.
-  # The earlier branches stay in the fork to keep PR head refs alive
-  # but are not tracked here to avoid double-applying their commits.
-  FEATURE_BRANCHES: "fix/busy-path-pre-gateway-dispatch-upstream"
+  # Currently:
+  # - fix/busy-path-pre-gateway-dispatch-upstream is stacked on
+  #   fix/whatsapp-forward-owner-allowlist-upstream (PR #16485), which is
+  #   stacked on feat/whatsapp-forward-owner-messages-upstream (PR #16445).
+  #   Listing the tip cherry-picks all three in one range.
+  # - feature/whatsapp-inbound-text-batch is independent (PR #17165); listed
+  #   second so it cherry-picks after the busy-path stack.
+  FEATURE_BRANCHES: "fix/busy-path-pre-gateway-dispatch-upstream feature/whatsapp-inbound-text-batch"
   PLUGIN_REPO: pebble-tech/hermes-plugin-gateway-policy
 
 jobs:

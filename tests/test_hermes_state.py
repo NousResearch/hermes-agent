@@ -1373,6 +1373,144 @@ class TestSchemaInit:
 
         migrated_db.close()
 
+    def test_reconciliation_adds_missing_columns(self, tmp_path):
+        """Columns present in SCHEMA_SQL but missing from the live table
+        are added by _reconcile_columns regardless of schema_version.
+
+        Regression test: commit a7d78d3b inserted a new v7 migration
+        (reasoning_content) and renumbered the old v7 (api_call_count)
+        to v8.  Users already at the old v7 had schema_version >= 7,
+        so the new v7 block was skipped and reasoning_content was never
+        created — causing 'no such column' on /continue.
+        """
+        import sqlite3
+
+        db_path = tmp_path / "gap_test.db"
+        conn = sqlite3.connect(str(db_path))
+        # Simulate the old v7 state: api_call_count exists, reasoning_content does NOT
+        conn.executescript("""
+            CREATE TABLE schema_version (version INTEGER NOT NULL);
+            INSERT INTO schema_version (version) VALUES (7);
+
+            CREATE TABLE sessions (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                user_id TEXT,
+                model TEXT,
+                model_config TEXT,
+                system_prompt TEXT,
+                parent_session_id TEXT,
+                started_at REAL NOT NULL,
+                ended_at REAL,
+                end_reason TEXT,
+                message_count INTEGER DEFAULT 0,
+                tool_call_count INTEGER DEFAULT 0,
+                input_tokens INTEGER DEFAULT 0,
+                output_tokens INTEGER DEFAULT 0,
+                cache_read_tokens INTEGER DEFAULT 0,
+                cache_write_tokens INTEGER DEFAULT 0,
+                reasoning_tokens INTEGER DEFAULT 0,
+                billing_provider TEXT,
+                billing_base_url TEXT,
+                billing_mode TEXT,
+                estimated_cost_usd REAL,
+                actual_cost_usd REAL,
+                cost_status TEXT,
+                cost_source TEXT,
+                pricing_version TEXT,
+                title TEXT,
+                api_call_count INTEGER DEFAULT 0
+            );
+
+            CREATE TABLE messages (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                session_id TEXT NOT NULL,
+                role TEXT NOT NULL,
+                content TEXT,
+                tool_call_id TEXT,
+                tool_calls TEXT,
+                tool_name TEXT,
+                timestamp REAL NOT NULL,
+                token_count INTEGER,
+                finish_reason TEXT,
+                reasoning TEXT,
+                reasoning_details TEXT,
+                codex_reasoning_items TEXT
+            );
+        """)
+        conn.execute(
+            "INSERT INTO sessions (id, source, started_at) VALUES (?, ?, ?)",
+            ("s1", "cli", 1000.0),
+        )
+        conn.execute(
+            "INSERT INTO messages (session_id, role, content, timestamp) "
+            "VALUES (?, ?, ?, ?)",
+            ("s1", "assistant", "hello", 1001.0),
+        )
+        conn.commit()
+        # Verify reasoning_content is absent
+        cols = {r[1] for r in conn.execute("PRAGMA table_info(messages)").fetchall()}
+        assert "reasoning_content" not in cols
+        conn.close()
+
+        # Open with SessionDB — reconciliation should add the missing column
+        migrated_db = SessionDB(db_path=db_path)
+
+        msg_cols = {
+            r[1]
+            for r in migrated_db._conn.execute("PRAGMA table_info(messages)").fetchall()
+        }
+        assert "reasoning_content" in msg_cols
+
+        # The query that used to crash must now work
+        cursor = migrated_db._conn.execute(
+            "SELECT role, content, reasoning, reasoning_content, "
+            "reasoning_details, codex_reasoning_items "
+            "FROM messages WHERE session_id = ?",
+            ("s1",),
+        )
+        row = cursor.fetchone()
+        assert row is not None
+        assert row[0] == "assistant"
+        assert row[3] is None  # reasoning_content NULL for old rows
+
+        migrated_db.close()
+
+    def test_reconciliation_is_idempotent(self, tmp_path):
+        """Opening the same database twice doesn't error or duplicate columns."""
+        db_path = tmp_path / "idempotent.db"
+        db1 = SessionDB(db_path=db_path)
+        cols1 = {r[1] for r in db1._conn.execute("PRAGMA table_info(messages)").fetchall()}
+        db1.close()
+
+        db2 = SessionDB(db_path=db_path)
+        cols2 = {r[1] for r in db2._conn.execute("PRAGMA table_info(messages)").fetchall()}
+        db2.close()
+
+        assert cols1 == cols2
+
+    def test_schema_sql_is_source_of_truth(self, db):
+        """Every column in SCHEMA_SQL exists in the live database.
+
+        This is the architectural invariant: SCHEMA_SQL declares the
+        desired schema, _reconcile_columns ensures it matches reality.
+        """
+        from hermes_state import SCHEMA_SQL
+
+        expected = SessionDB._parse_schema_columns(SCHEMA_SQL)
+        for table_name, declared_cols in expected.items():
+            live_cols = {
+                r[1]
+                for r in db._conn.execute(
+                    f'PRAGMA table_info("{table_name}")'
+                ).fetchall()
+            }
+            for col_name in declared_cols:
+                assert col_name in live_cols, (
+                    f"Column {col_name} declared in SCHEMA_SQL for {table_name} "
+                    f"but missing from live DB. Live columns: {live_cols}"
+                )
+
 
 class TestTitleUniqueness:
     """Tests for unique title enforcement and title-based lookups."""

@@ -965,6 +965,10 @@ DEFAULT_CONFIG = {
         # "hindsight", "holographic", "retaindb", "byterover".
         # Only ONE external provider is allowed at a time.
         "provider": "",
+        # Multi-provider list (takes precedence over "provider" when non-empty).
+        # Each entry is a provider name string; results are merged across all
+        # active providers at runtime.
+        "providers": [],
     },
 
     # Subagent delegation — override the provider:model used by delegate_task

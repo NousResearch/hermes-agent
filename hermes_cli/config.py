@@ -30,6 +30,18 @@ logger = logging.getLogger(__name__)
 _IS_WINDOWS = platform.system() == "Windows"
 _ENV_VAR_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
+# (path, mtime_ns, size) -> cached expanded config dict.
+# load_config() returns a deepcopy of the cached value when the file
+# hasn't changed since the last load, skipping yaml.safe_load +
+# _deep_merge + _normalize_* + _expand_env_vars (~13 ms/call).
+# save_config() + migrate_config() write via atomic_yaml_write which
+# produces a fresh inode, so stat() sees a new mtime_ns and the next
+# load repopulates automatically — no explicit invalidation hook.
+_LOAD_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
+# (path, mtime_ns, size) -> cached raw yaml dict. Same pattern as
+# _LOAD_CONFIG_CACHE but for read_raw_config() — used when callers want
+# the user's on-disk values without defaults merged in.
+_RAW_CONFIG_CACHE: Dict[str, Tuple[int, int, Dict[str, Any]]] = {}
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS
 # (managed by setup/provider flows directly).
 _EXTRA_ENV_KEYS = frozenset({
@@ -3420,25 +3432,62 @@ def read_raw_config() -> Dict[str, Any]:
     be parsed.  Use this for lightweight config reads where you just need a
     single value and don't want the overhead of ``load_config()``'s deep-merge
     + migration pipeline.
+
+    Cached on the config file's (mtime_ns, size) — same strategy as
+    ``load_config()``. Returns a deepcopy on every call since some callers
+    mutate the result before passing to ``save_config()``.
     """
     try:
         config_path = get_config_path()
-        if config_path.exists():
-            with open(config_path, encoding="utf-8") as f:
-                return yaml.safe_load(f) or {}
+        st = config_path.stat()
+        cache_key = (st.st_mtime_ns, st.st_size)
+    except (FileNotFoundError, OSError):
+        return {}
+
+    path_key = str(config_path)
+    cached = _RAW_CONFIG_CACHE.get(path_key)
+    if cached is not None and cached[:2] == cache_key:
+        return copy.deepcopy(cached[2])
+
+    try:
+        with open(config_path, encoding="utf-8") as f:
+            data = yaml.safe_load(f) or {}
     except Exception:
-        pass
-    return {}
+        return {}
+
+    if not isinstance(data, dict):
+        data = {}
+    _RAW_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], copy.deepcopy(data))
+    return data
 
 
 def load_config() -> Dict[str, Any]:
-    """Load configuration from ~/.hermes/config.yaml."""
+    """Load configuration from ~/.hermes/config.yaml.
+
+    Cached on the config file's (mtime_ns, size). Returns a deepcopy of
+    the cached value when unchanged, since most call sites mutate the
+    result (e.g. ``cfg["model"]["default"] = ...`` before ``save_config``).
+    The cache is keyed on ``str(config_path)`` so profile switches
+    (which change ``HERMES_HOME`` and therefore ``get_config_path()``)
+    don't collide.
+    """
     ensure_hermes_home()
     config_path = get_config_path()
-    
+    path_key = str(config_path)
+
+    try:
+        st = config_path.stat()
+        cache_key: Optional[Tuple[int, int]] = (st.st_mtime_ns, st.st_size)
+    except FileNotFoundError:
+        cache_key = None
+
+    cached = _LOAD_CONFIG_CACHE.get(path_key)
+    if cached is not None and cache_key is not None and cached[:2] == cache_key:
+        return copy.deepcopy(cached[2])
+
     config = copy.deepcopy(DEFAULT_CONFIG)
-    
-    if config_path.exists():
+
+    if cache_key is not None:
         try:
             with open(config_path, encoding="utf-8") as f:
                 user_config = yaml.safe_load(f) or {}
@@ -3456,7 +3505,11 @@ def load_config() -> Dict[str, Any]:
 
     normalized = _normalize_root_model_keys(_normalize_max_turns_config(config))
     expanded = _expand_env_vars(normalized)
-    _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(expanded)
+    _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
+    if cache_key is not None:
+        _LOAD_CONFIG_CACHE[path_key] = (cache_key[0], cache_key[1], copy.deepcopy(expanded))
+    else:
+        _LOAD_CONFIG_CACHE.pop(path_key, None)
     return expanded
 
 

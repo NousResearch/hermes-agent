@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { ExternalLink, Copy, X, Check, Loader2 } from "lucide-react";
-import { Button, H2 } from "@nous-research/ui";
+import { ExternalLink, X, Check, Loader2 } from "lucide-react";
+import { Button, CopyButton, H2 } from "@nous-research/ui";
 import { api, type OAuthProvider, type OAuthStartResponse } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { useI18n } from "@/i18n";
@@ -25,14 +25,12 @@ export function OAuthLoginModal({
   provider,
   onClose,
   onSuccess,
-  onError,
 }: Props) {
   const [phase, setPhase] = useState<Phase>("starting");
   const [start, setStart] = useState<OAuthStartResponse | null>(null);
   const [pkceCode, setPkceCode] = useState("");
   const [errorMsg, setErrorMsg] = useState<string | null>(null);
   const [secondsLeft, setSecondsLeft] = useState<number | null>(null);
-  const [codeCopied, setCodeCopied] = useState(false);
   const isMounted = useRef(true);
   const pollTimer = useRef<number | null>(null);
   const { t } = useI18n();
@@ -151,16 +149,6 @@ export function OAuthLoginModal({
       }
     }
     onClose();
-  };
-
-  const handleCopyUserCode = async (code: string) => {
-    try {
-      await navigator.clipboard.writeText(code);
-      setCodeCopied(true);
-      window.setTimeout(() => isMounted.current && setCodeCopied(false), 1500);
-    } catch {
-      onError("Clipboard write failed");
-    }
   };
 
   const handleBackdrop = (e: React.MouseEvent) => {
@@ -286,26 +274,16 @@ export function OAuthLoginModal({
                     ).user_code
                   }
                 </code>
-                <Button
-                  outlined
-                  onClick={() =>
-                    handleCopyUserCode(
-                      (
-                        start as Extract<
-                          OAuthStartResponse,
-                          { flow: "device_code" }
-                        >
-                      ).user_code,
-                    )
+                <CopyButton
+                  text={
+                    (
+                      start as Extract<
+                        OAuthStartResponse,
+                        { flow: "device_code" }
+                      >
+                    ).user_code
                   }
-                  className="!p-2 aspect-square"
-                >
-                  {codeCopied ? (
-                    <Check className="h-3.5 w-3.5" />
-                  ) : (
-                    <Copy className="h-3.5 w-3.5" />
-                  )}
-                </Button>
+                />
               </div>
               <a
                 href={

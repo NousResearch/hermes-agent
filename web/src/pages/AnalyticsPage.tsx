@@ -3,14 +3,13 @@ import {
   BarChart3,
   Brain,
   Cpu,
-  Hash,
   RefreshCw,
   TrendingUp,
 } from "lucide-react";
 import { api } from "@/lib/api";
 import type { AnalyticsResponse, AnalyticsDailyEntry, AnalyticsModelEntry, AnalyticsSkillEntry } from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
-import { Button } from "@nous-research/ui";
+import { Button, Stats } from "@nous-research/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { usePageHeader } from "@/contexts/usePageHeader";
@@ -38,31 +37,6 @@ function formatDate(day: string): string {
   } catch {
     return day;
   }
-}
-
-function SummaryCard({
-  icon: Icon,
-  label,
-  value,
-  sub,
-}: {
-  icon: React.ComponentType<{ className?: string }>;
-  label: string;
-  value: string;
-  sub?: string;
-}) {
-  return (
-    <Card>
-      <CardHeader className="flex flex-row items-center justify-between pb-2">
-        <CardTitle className="text-sm font-medium">{label}</CardTitle>
-        <Icon className="h-4 w-4 text-muted-foreground" />
-      </CardHeader>
-      <CardContent>
-        <div className="text-2xl font-bold">{value}</div>
-        {sub && <p className="text-xs text-muted-foreground mt-1">{sub}</p>}
-      </CardContent>
-    </Card>
-  );
 }
 
 function TokenBarChart({ daily }: { daily: AnalyticsDailyEntry[] }) {
@@ -364,30 +338,44 @@ export default function AnalyticsPage() {
 
       {data && (
         <>
-          {/* Summary cards */}
-          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
-            <SummaryCard
-              icon={Hash}
-              label={t.analytics.totalTokens}
-              value={formatTokens(data.totals.total_input + data.totals.total_output)}
-              sub={t.analytics.inOut.replace("{input}", formatTokens(data.totals.total_input)).replace("{output}", formatTokens(data.totals.total_output))}
-            />
-            <SummaryCard
-              icon={BarChart3}
-              label={t.analytics.totalSessions}
-              value={String(data.totals.total_sessions)}
-              sub={`~${(data.totals.total_sessions / days).toFixed(1)}${t.analytics.perDayAvg}`}
-            />
-            <SummaryCard
-              icon={TrendingUp}
-              label={t.analytics.apiCalls}
-              value={String(data.totals.total_api_calls ?? data.daily.reduce((sum, d) => sum + d.sessions, 0))}
-              sub={t.analytics.acrossModels.replace("{count}", String(data.by_model.length))}
-            />
-          </div>
+          {/* Summary stats + bar chart side-by-side on lg+ */}
+          <div className="grid gap-6 lg:grid-cols-2">
+            <Card>
+              <CardContent className="py-6">
+                <Stats
+                  items={[
+                    {
+                      label: t.analytics.totalTokens,
+                      value: formatTokens(
+                        data.totals.total_input + data.totals.total_output,
+                      ),
+                    },
+                    {
+                      label: t.analytics.input,
+                      value: formatTokens(data.totals.total_input),
+                    },
+                    {
+                      label: t.analytics.output,
+                      value: formatTokens(data.totals.total_output),
+                    },
+                    {
+                      label: t.analytics.totalSessions,
+                      value: `${data.totals.total_sessions} (~${(data.totals.total_sessions / days).toFixed(1)}${t.analytics.perDayAvg})`,
+                    },
+                    {
+                      label: t.analytics.apiCalls,
+                      value: String(
+                        data.totals.total_api_calls ??
+                          data.daily.reduce((sum, d) => sum + d.sessions, 0),
+                      ),
+                    },
+                  ]}
+                />
+              </CardContent>
+            </Card>
 
-          {/* Bar chart */}
-          <TokenBarChart daily={data.daily} />
+            <TokenBarChart daily={data.daily} />
+          </div>
 
           {/* Tables */}
           <DailyTable daily={data.daily} />

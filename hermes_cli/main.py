@@ -5929,6 +5929,15 @@ def _install_python_dependencies_with_optional_fallback(
     env: dict[str, str] | None = None,
 ) -> None:
     """Install base deps plus as many optional extras as the environment supports."""
+    import os as _os
+    # Termux/Android: maturin (native extension build) needs ANDROID_API_LEVEL.
+    # Set a safe default (API 29) if getprop is unavailable, so the build
+    # does not fail with "Failed to determine Android API level".  See #17009.
+    if not _os.environ.get("ANDROID_API_LEVEL") and (
+        _os.environ.get("TERMUX_VERSION") or "com.termux/files/usr" in str(getattr(_os, "prefix", ""))
+    ):
+        env = dict(env) if env else dict(_os.environ)
+        env["ANDROID_API_LEVEL"] = "29"
     try:
         subprocess.run(
             install_cmd_prefix + ["install", "-e", ".[all]", "--quiet"],

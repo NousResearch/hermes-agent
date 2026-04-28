@@ -281,6 +281,16 @@ TOOL_CATEGORIES = {
                 ],
             },
             {
+                "name": "SearXNG (self-hosted)",
+                "badge": "free · self-hosted",
+                "tag": "Use your own SearXNG instance for web search",
+                "web_backend": "searxng",
+                "env_vars": [],
+                "config_prompts": [
+                    {"config_path": "web.searxng.base_url", "prompt": "SearXNG base URL", "default": "http://localhost:8888"},
+                ],
+            },
+            {
                 "name": "Firecrawl Self-Hosted",
                 "badge": "free · self-hosted",
                 "tag": "Run your own Firecrawl instance (Docker)",
@@ -860,10 +870,7 @@ def _toolset_has_keys(ts_key: str, config: dict = None) -> bool:
     cat = TOOL_CATEGORIES.get(ts_key)
     if cat:
         for provider in _visible_providers(cat, config):
-            env_vars = provider.get("env_vars", [])
-            if not env_vars:
-                return True  # No-key provider (e.g. Local Browser, Edge TTS)
-            if all(get_env_value(e["key"]) for e in env_vars):
+            if _provider_is_configured(provider, config):
                 return True
         return False
 
@@ -872,6 +879,45 @@ def _toolset_has_keys(ts_key: str, config: dict = None) -> bool:
     if not requirements:
         return True
     return all(get_env_value(var) for var, _ in requirements)
+
+
+def _get_config_path_value(config: dict, config_path: str):
+    current = config
+    for part in config_path.split("."):
+        if not isinstance(current, dict):
+            return None
+        current = current.get(part)
+    return current
+
+
+def _set_config_path_value(config: dict, config_path: str, value) -> None:
+    current = config
+    parts = config_path.split(".")
+    for part in parts[:-1]:
+        next_value = current.get(part)
+        if not isinstance(next_value, dict):
+            next_value = {}
+            current[part] = next_value
+        current = next_value
+    current[parts[-1]] = value
+
+
+def _provider_has_required_config(provider: dict, config: dict) -> bool:
+    config_prompts = provider.get("config_prompts", [])
+    if not config_prompts:
+        return True
+    for prompt in config_prompts:
+        value = _get_config_path_value(config, prompt["config_path"])
+        if value in (None, ""):
+            return False
+    return True
+
+
+def _provider_is_configured(provider: dict, config: dict) -> bool:
+    env_vars = provider.get("env_vars", [])
+    if env_vars and not all(get_env_value(v["key"]) for v in env_vars):
+        return False
+    return _provider_has_required_config(provider, config)
 
 
 # ─── Menu Helpers ─────────────────────────────────────────────────────────────
@@ -1074,7 +1120,10 @@ def _toolset_needs_configuration_prompt(ts_key: str, config: dict) -> bool:
         return not isinstance(tts_cfg, dict) or "provider" not in tts_cfg
     if ts_key == "web":
         web_cfg = config.get("web", {})
-        return not isinstance(web_cfg, dict) or "backend" not in web_cfg
+        if not isinstance(web_cfg, dict):
+            return True
+        selected_backend = str(web_cfg.get("search_backend") or web_cfg.get("backend") or "").strip()
+        return not selected_backend
     if ts_key == "browser":
         browser_cfg = config.get("browser", {})
         return not isinstance(browser_cfg, dict) or "cloud_provider" not in browser_cfg
@@ -1143,13 +1192,10 @@ def _configure_tool_category(ts_key: str, cat: dict, config: dict):
             badge = f" [{p['badge']}]" if p.get("badge") else ""
             tag = f" — {p['tag']}" if p.get("tag") else ""
             configured = ""
-            env_vars = p.get("env_vars", [])
-            if not env_vars or all(get_env_value(v["key"]) for v in env_vars):
+            if _provider_is_configured(p, config):
                 if _is_provider_active(p, config):
                     configured = " [active]"
-                elif not env_vars:
-                    configured = ""
-                else:
+                elif p.get("env_vars") or p.get("config_prompts"):
                     configured = " [configured]"
             provider_choices.append(f"{p['name']}{badge}{tag}{configured}")
 
@@ -1200,7 +1246,8 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
             current = config.get("browser", {}).get("cloud_provider")
             return feature.managed_by_nous and provider["browser_provider"] == current
         if provider.get("web_backend"):
-            current = config.get("web", {}).get("backend")
+            web_cfg = config.get("web", {}) if isinstance(config.get("web"), dict) else {}
+            current = web_cfg.get("search_backend") or web_cfg.get("backend")
             return feature.managed_by_nous and current == provider["web_backend"]
         return feature.managed_by_nous
 
@@ -1210,7 +1257,8 @@ def _is_provider_active(provider: dict, config: dict) -> bool:
         current = config.get("browser", {}).get("cloud_provider")
         return provider["browser_provider"] == current
     if provider.get("web_backend"):
-        current = config.get("web", {}).get("backend")
+        web_cfg = config.get("web", {}) if isinstance(config.get("web"), dict) else {}
+        current = web_cfg.get("search_backend") or web_cfg.get("backend")
         return current == provider["web_backend"]
     if provider.get("imagegen_backend"):
         image_cfg = config.get("image_gen", {})
@@ -1463,7 +1511,20 @@ def _configure_provider(provider: dict, config: dict):
     # Set web search backend in config if applicable
     if provider.get("web_backend"):
         web_cfg = config.setdefault("web", {})
-        web_cfg["backend"] = provider["web_backend"]
+        web_backend = provider["web_backend"]
+        web_cfg["backend"] = web_backend
+        if web_backend == "searxng":
+            web_cfg["search_backend"] = "searxng"
+            for prompt_cfg in provider.get("config_prompts", []):
+                prompt_label = prompt_cfg.get("prompt", prompt_cfg["config_path"])
+                existing_value = _get_config_path_value(config, prompt_cfg["config_path"])
+                default_val = existing_value or prompt_cfg.get("default", "")
+                if default_val:
+                    value = _prompt(f"    {prompt_label}", default_val)
+                else:
+                    value = _prompt(f"    {prompt_label}")
+                if value:
+                    _set_config_path_value(config, prompt_cfg["config_path"], value)
         web_cfg["use_gateway"] = bool(managed_feature)
         _print_success(f"  Web backend set to: {provider['web_backend']}")
 
@@ -1710,7 +1771,18 @@ def _reconfigure_provider(provider: dict, config: dict):
 
     # Set web search backend in config if applicable
     if provider.get("web_backend"):
-        config.setdefault("web", {})["backend"] = provider["web_backend"]
+        web_cfg = config.setdefault("web", {})
+        web_backend = provider["web_backend"]
+        web_cfg["backend"] = web_backend
+        if web_backend == "searxng":
+            web_cfg["search_backend"] = "searxng"
+            for prompt_cfg in provider.get("config_prompts", []):
+                prompt_label = prompt_cfg.get("prompt", prompt_cfg["config_path"])
+                current_value = _get_config_path_value(config, prompt_cfg["config_path"])
+                default_val = current_value or prompt_cfg.get("default", "")
+                value = _prompt(f"    {prompt_label} (Enter to keep current)", default_val) if default_val else _prompt(f"    {prompt_label} (Enter to keep current)")
+                if value and value.strip():
+                    _set_config_path_value(config, prompt_cfg["config_path"], value.strip())
         _print_success(f"  Web backend set to: {provider['web_backend']}")
 
     if managed_feature and managed_feature not in ("web", "tts", "browser"):

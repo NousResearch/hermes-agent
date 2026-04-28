@@ -11,8 +11,9 @@ Usage:
     python test_web_tools.py --verbose    # Show detailed output
 
 Requirements:
-    - PARALLEL_API_KEY or FIRECRAWL_API_KEY environment variable must be set
-    - An auxiliary LLM provider (OPENROUTER_API_KEY or Nous Portal auth) (optional, for LLM tests)
+    - A search-capable web backend must be configured
+    - Extraction and crawl tests run only when extract/crawl-capable backends are configured
+    - An auxiliary LLM provider (OPENROUTER_API_KEY or Nous Portal auth) is optional for LLM extraction tests
 """
 
 import pytest
@@ -33,6 +34,8 @@ from tools.web_tools import (
     web_crawl_tool,
     check_firecrawl_api_key,
     check_web_api_key,
+    check_web_extract_api_key,
+    check_web_crawl_api_key,
     check_auxiliary_model,
     _get_backend,
 )
@@ -91,6 +94,8 @@ class WebToolsTester:
     def __init__(self, verbose: bool = False, test_llm: bool = True):
         self.verbose = verbose
         self.test_llm = test_llm
+        self.test_extract = True
+        self.test_crawl = True
         self.test_results = {
             "passed": [],
             "failed": [],
@@ -119,24 +124,53 @@ class WebToolsTester:
             print_warning(f"{test_name} skipped: {details}" if details else f"{test_name} skipped")
     
     def test_environment(self) -> bool:
-        """Test environment setup and API keys"""
+        """Test environment setup and backend capabilities"""
         print_section("Environment Check")
-        
-        # Check web backend API key (Parallel or Firecrawl)
+
         if not check_web_api_key():
-            self.log_result("Web Backend API Key", "failed", "PARALLEL_API_KEY or FIRECRAWL_API_KEY not set")
+            self.log_result("Web Search Backend", "failed", "No search-capable web backend is configured")
             return False
+
+        backend = _get_backend()
+        self.log_result("Web Search Backend", "passed", f"Using {backend} backend")
+
+        if not check_web_extract_api_key():
+            self.test_extract = False
+            self.test_llm = False
+            self.log_result(
+                "Web Extract Backend",
+                "skipped",
+                f"No extract-capable backend configured for {backend}; extraction tests will be skipped",
+            )
         else:
-            backend = _get_backend()
-            self.log_result("Web Backend API Key", "passed", f"Using {backend} backend")
-        
-        # Check auxiliary LLM provider (optional)
-        if not check_auxiliary_model():
-            self.log_result("Auxiliary LLM", "skipped", "No auxiliary LLM provider available (LLM tests will be skipped)")
+            self.log_result("Web Extract Backend", "passed", "Found extract-capable backend")
+
+        if not check_web_crawl_api_key():
+            self.test_crawl = False
+            self.log_result(
+                "Web Crawl Backend",
+                "skipped",
+                f"No crawl-capable backend configured for {backend}; crawl tests will be skipped",
+            )
+        else:
+            self.log_result("Web Crawl Backend", "passed", "Found crawl-capable backend")
+
+        if not self.test_extract:
+            self.log_result(
+                "Auxiliary LLM",
+                "skipped",
+                "LLM extraction tests disabled because no extract-capable backend is configured",
+            )
+        elif not check_auxiliary_model():
+            self.log_result(
+                "Auxiliary LLM",
+                "skipped",
+                "No auxiliary LLM provider available (LLM tests will be skipped)",
+            )
             self.test_llm = False
         else:
             self.log_result("Auxiliary LLM", "passed", "Found")
-        
+
         return True
     
     def test_web_search(self) -> List[str]:
@@ -527,14 +561,20 @@ class WebToolsTester:
         urls = self.test_web_search()
         
         # Test extraction
-        await self.test_web_extract(urls if urls else None)
-        
+        if self.test_extract:
+            await self.test_web_extract(urls if urls else None)
+        else:
+            print_info("Skipping extract tests; no extract-capable backend configured")
+
         # Test extraction with LLM
         if self.test_llm:
             await self.test_web_extract_with_llm(urls if urls else None)
-        
+
         # Test crawling
-        await self.test_web_crawl()
+        if self.test_crawl:
+            await self.test_web_crawl()
+        else:
+            print_info("Skipping crawl tests; no crawl-capable backend configured")
         
         # Print summary
         self.end_time = datetime.now()
@@ -574,8 +614,10 @@ class WebToolsTester:
             },
             "results": self.test_results,
             "environment": {
-                "web_backend": _get_backend() if check_web_api_key() else None,
+                "search_backend": _get_backend() if check_web_api_key() else None,
                 "firecrawl_api_key": check_firecrawl_api_key(),
+                "extract_backend_available": check_web_extract_api_key(),
+                "crawl_backend_available": check_web_crawl_api_key(),
                 "parallel_api_key": bool(os.getenv("PARALLEL_API_KEY")),
                 "auxiliary_model": check_auxiliary_model(),
             }

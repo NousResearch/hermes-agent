@@ -254,7 +254,9 @@ def get_nous_subscription_features(
     browser_cfg = config.get("browser") if isinstance(config.get("browser"), dict) else {}
     terminal_cfg = config.get("terminal") if isinstance(config.get("terminal"), dict) else {}
 
-    web_backend = str(web_cfg.get("backend") or "").strip().lower()
+    web_backend = str(
+        web_cfg.get("search_backend") or web_cfg.get("backend") or ""
+    ).strip().lower()
     tts_provider = str(tts_cfg.get("provider") or "edge").strip().lower()
     browser_provider_explicit = "cloud_provider" in browser_cfg
     browser_provider = normalize_browser_cloud_provider(
@@ -314,6 +316,12 @@ def get_nous_subscription_features(
         managed_ready=managed_modal_available,
     )
 
+    searxng_cfg = web_cfg.get("searxng") if isinstance(web_cfg.get("searxng"), dict) else {}
+    searxng_configured = bool(
+        web_backend == "searxng"
+        and (get_env_value("SEARXNG_BASE_URL") or searxng_cfg.get("base_url"))
+    )
+
     web_managed = web_backend == "firecrawl" and managed_web_available and not direct_firecrawl
     web_active = bool(
         web_tool_enabled
@@ -323,10 +331,16 @@ def get_nous_subscription_features(
             or (web_backend == "firecrawl" and direct_firecrawl)
             or (web_backend == "parallel" and direct_parallel)
             or (web_backend == "tavily" and direct_tavily)
+            or (web_backend == "searxng" and searxng_configured)
         )
     )
     web_available = bool(
-        managed_web_available or direct_exa or direct_firecrawl or direct_parallel or direct_tavily
+        managed_web_available
+        or direct_exa
+        or direct_firecrawl
+        or direct_parallel
+        or direct_tavily
+        or (web_backend == "searxng" and searxng_configured)
     )
 
     image_managed = image_tool_enabled and managed_image_available and not direct_fal

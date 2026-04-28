@@ -68,9 +68,20 @@ logger = logging.getLogger(__name__)
 
 # ─── Backend Selection ────────────────────────────────────────────────────────
 
+_SEARCH_BACKENDS = ("searxng", "firecrawl", "parallel", "tavily", "exa")
+_EXTRACT_BACKENDS = ("firecrawl", "parallel", "tavily", "exa")
+_CRAWL_BACKENDS = ("firecrawl", "tavily")
+_LEGACY_BACKEND_PRIORITY = ("firecrawl", "parallel", "tavily", "exa")
+
+
 def _has_env(name: str) -> bool:
     val = os.getenv(name)
     return bool(val and val.strip())
+
+
+def _normalize_backend_name(value: Any) -> str:
+    return str(value or "").strip().lower()
+
 
 def _load_web_config() -> dict:
     """Load the ``web:`` section from ~/.hermes/config.yaml."""
@@ -80,20 +91,59 @@ def _load_web_config() -> dict:
     except (ImportError, Exception):
         return {}
 
-def _get_backend() -> str:
-    """Determine which web backend to use.
 
-    Reads ``web.backend`` from config.yaml (set by ``hermes tools``).
-    Falls back to whichever API key is present for users who configured
-    keys manually without running setup.
+def _get_explicit_web_backend(key: str) -> str:
+    web_cfg = _load_web_config()
+    if not isinstance(web_cfg, dict):
+        return ""
+    return _normalize_backend_name(web_cfg.get(key))
+
+
+def _get_explicit_web_backend_list(key: str) -> list[str]:
+    web_cfg = _load_web_config()
+    if not isinstance(web_cfg, dict):
+        return []
+
+    raw_value = web_cfg.get(key)
+    if isinstance(raw_value, str):
+        raw_items = raw_value.split(",")
+    elif isinstance(raw_value, list):
+        raw_items = raw_value
+    else:
+        return []
+
+    normalized: list[str] = []
+    seen: set[str] = set()
+    for item in raw_items:
+        backend = _normalize_backend_name(item)
+        if backend in _SEARCH_BACKENDS and backend not in seen:
+            normalized.append(backend)
+            seen.add(backend)
+    return normalized
+
+
+def _get_legacy_web_backend() -> str:
+    return _get_explicit_web_backend("backend")
+
+
+def _searxng_is_explicitly_configured() -> bool:
+    return bool(
+        _has_env("SEARXNG_BASE_URL")
+        or _get_explicit_web_backend("search_backend") == "searxng"
+        or _get_legacy_web_backend() == "searxng"
+    )
+
+
+def _get_backend() -> str:
+    """Determine which search backend to use.
+
+    ``web.backend`` remains the legacy compatibility alias for the primary
+    search backend. ``web.search_backend`` takes precedence when present.
     """
-    configured = (_load_web_config().get("backend") or "").lower().strip()
-    if configured in ("parallel", "firecrawl", "tavily", "exa"):
+    configured = _get_explicit_web_backend("search_backend") or _get_legacy_web_backend()
+    if configured in _SEARCH_BACKENDS:
         return configured
 
-    # Fallback for manual / legacy config — pick the highest-priority
-    # available backend. Firecrawl also counts as available when the managed
-    # tool gateway is configured for Nous subscribers.
     backend_candidates = (
         ("firecrawl", _has_env("FIRECRAWL_API_KEY") or _has_env("FIRECRAWL_API_URL") or _is_tool_gateway_ready()),
         ("parallel", _has_env("PARALLEL_API_KEY")),
@@ -104,11 +154,78 @@ def _get_backend() -> str:
         if available:
             return backend
 
+    if _has_env("SEARXNG_BASE_URL") and _check_searxng_backend():
+        return "searxng"
+
     return "firecrawl"  # default (backward compat)
+
+
+def _get_search_backend() -> str:
+    return _get_backend()
+
+
+def _get_search_backend_chain() -> list[str]:
+    primary_backend = _get_search_backend()
+    explicit_fallbacks = _get_explicit_web_backend_list("search_fallback_backends")
+
+    backends: list[str] = []
+    seen: set[str] = set()
+
+    def add_backend(backend: str) -> None:
+        if backend in _SEARCH_BACKENDS and backend not in seen:
+            backends.append(backend)
+            seen.add(backend)
+
+    add_backend(primary_backend)
+    for backend in explicit_fallbacks:
+        add_backend(backend)
+    return backends
+
+
+def _get_extract_backend() -> str:
+    configured = _get_explicit_web_backend("extract_backend")
+    if configured in _EXTRACT_BACKENDS:
+        return configured
+
+    legacy = _get_legacy_web_backend()
+    if legacy in _EXTRACT_BACKENDS:
+        return legacy
+
+    primary_backend = _get_backend()
+    if primary_backend in _EXTRACT_BACKENDS:
+        return primary_backend
+
+    for backend in _LEGACY_BACKEND_PRIORITY:
+        if backend in _EXTRACT_BACKENDS and _is_backend_available(backend):
+            return backend
+
+    return ""
+
+
+def _get_crawl_backend() -> str:
+    configured = _get_explicit_web_backend("crawl_backend")
+    if configured in _CRAWL_BACKENDS:
+        return configured
+
+    legacy = _get_legacy_web_backend()
+    if legacy in _CRAWL_BACKENDS:
+        return legacy
+
+    primary_backend = _get_backend()
+    if primary_backend in _CRAWL_BACKENDS:
+        return primary_backend
+
+    for backend in _LEGACY_BACKEND_PRIORITY:
+        if backend in _CRAWL_BACKENDS and _is_backend_available(backend):
+            return backend
+
+    return ""
 
 
 def _is_backend_available(backend: str) -> bool:
     """Return True when the selected backend is currently usable."""
+    if backend == "searxng":
+        return _check_searxng_backend()
     if backend == "exa":
         return _has_env("EXA_API_KEY")
     if backend == "parallel":
@@ -202,11 +319,69 @@ def _web_requires_env() -> list[str]:
     return requires
 
 
+def _get_searxng_config() -> Dict[str, Any]:
+    web_cfg = _load_web_config()
+    if not isinstance(web_cfg, dict):
+        return {}
+    searxng_cfg = web_cfg.get("searxng")
+    return searxng_cfg if isinstance(searxng_cfg, dict) else {}
+
+
+def _searxng_base_url() -> str:
+    configured = os.getenv("SEARXNG_BASE_URL", "").strip() or str(_get_searxng_config().get("base_url") or "").strip()
+    return (configured or "http://localhost:8888").rstrip("/")
+
+
+def _searxng_timeout() -> float:
+    raw_timeout = _get_searxng_config().get("timeout")
+    try:
+        return float(raw_timeout) if raw_timeout else 20.0
+    except (TypeError, ValueError):
+        return 20.0
+
+
+def _check_searxng_backend() -> bool:
+    if not _searxng_is_explicitly_configured():
+        return False
+    try:
+        response = httpx.get(f"{_searxng_base_url()}/config", timeout=_searxng_timeout())
+        response.raise_for_status()
+        return True
+    except Exception:
+        return False
+
+
+def _searxng_search(query: str, limit: int = 5) -> dict:
+    response = httpx.get(
+        f"{_searxng_base_url()}/search",
+        params={"q": query, "format": "json"},
+        timeout=_searxng_timeout(),
+    )
+    response.raise_for_status()
+    payload = response.json()
+
+    web_results = []
+    for i, item in enumerate((payload.get("results") or [])[: max(limit, 0)]):
+        web_results.append(
+            {
+                "title": item.get("title", "") or "",
+                "url": item.get("url", "") or "",
+                "description": item.get("content", "") or item.get("description", "") or "",
+                "position": i + 1,
+            }
+        )
+
+    return {"success": True, "data": {"web": web_results}}
+
+
+# ─── Firecrawl Client ────────────────────────────────────────────────────────
+
+
 def _get_firecrawl_client():
     """Get or create Firecrawl client.
 
     When ``web.use_gateway`` is set in config, the Tool Gateway is preferred
-    even if direct Firecrawl credentials are present.  Otherwise direct
+    even if direct Firecrawl credentials are present. Otherwise direct
     Firecrawl takes precedence when explicitly configured.
     """
     global _firecrawl_client, _firecrawl_client_config
@@ -1032,6 +1207,35 @@ async def _parallel_extract(urls: List[str]) -> List[Dict[str, Any]]:
     return results
 
 
+def _search_with_backend(backend: str, query: str, limit: int) -> dict:
+    if backend == "searxng":
+        return _searxng_search(query, limit)
+    if backend == "parallel":
+        return _parallel_search(query, limit)
+    if backend == "exa":
+        return _exa_search(query, limit)
+    if backend == "tavily":
+        logger.info("Tavily search: '%s' (limit: %d)", query, limit)
+        raw = _tavily_request("search", {
+            "query": query,
+            "max_results": min(limit, 20),
+            "include_raw_content": False,
+            "include_images": False,
+        })
+        return _normalize_tavily_search_results(raw)
+
+    logger.info("Searching the web for: '%s' (limit: %d)", query, limit)
+    response = _get_firecrawl_client().search(query=query, limit=limit)
+    web_results = _extract_web_search_results(response)
+    logger.info("Found %d search results", len(web_results))
+    return {
+        "success": True,
+        "data": {
+            "web": web_results
+        }
+    }
+
+
 def web_search_tool(query: str, limit: int = 5) -> str:
     """
     Search the web for information using available search API backend.
@@ -1071,6 +1275,9 @@ def web_search_tool(query: str, limit: int = 5) -> str:
             "query": query,
             "limit": limit
         },
+        "search_backend": None,
+        "attempted_backends": [],
+        "backend_errors": [],
         "error": None,
         "results_count": 0,
         "original_response_size": 0,
@@ -1082,74 +1289,42 @@ def web_search_tool(query: str, limit: int = 5) -> str:
         if is_interrupted():
             return tool_error("Interrupted", success=False)
 
-        # Dispatch to the configured backend
-        backend = _get_backend()
-        if backend == "parallel":
-            response_data = _parallel_search(query, limit)
-            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
-            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
-            debug_call_data["final_response_size"] = len(result_json)
-            _debug.log_call("web_search_tool", debug_call_data)
-            _debug.save()
-            return result_json
+        for index, backend in enumerate(_get_search_backend_chain()):
+            debug_call_data["attempted_backends"].append(backend)
 
-        if backend == "exa":
-            response_data = _exa_search(query, limit)
-            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
-            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
-            debug_call_data["final_response_size"] = len(result_json)
-            _debug.log_call("web_search_tool", debug_call_data)
-            _debug.save()
-            return result_json
+            if index > 0 and not _is_backend_available(backend):
+                debug_call_data["backend_errors"].append(f"{backend}: unavailable")
+                continue
 
-        if backend == "tavily":
-            logger.info("Tavily search: '%s' (limit: %d)", query, limit)
-            raw = _tavily_request("search", {
-                "query": query,
-                "max_results": min(limit, 20),
-                "include_raw_content": False,
-                "include_images": False,
-            })
-            response_data = _normalize_tavily_search_results(raw)
-            debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
-            result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
-            debug_call_data["final_response_size"] = len(result_json)
-            _debug.log_call("web_search_tool", debug_call_data)
-            _debug.save()
-            return result_json
+            try:
+                response_data = _search_with_backend(backend, query, limit)
+                debug_call_data["search_backend"] = backend
+                debug_call_data["results_count"] = len(response_data.get("data", {}).get("web", []))
+                result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
+                debug_call_data["final_response_size"] = len(result_json)
+                _debug.log_call("web_search_tool", debug_call_data)
+                _debug.save()
+                return result_json
+            except Exception as backend_error:
+                logger.warning("Search backend '%s' failed: %s", backend, backend_error)
+                debug_call_data["backend_errors"].append(f"{backend}: {backend_error}")
 
-        logger.info("Searching the web for: '%s' (limit: %d)", query, limit)
+        attempted = debug_call_data["attempted_backends"]
+        if len(attempted) == 1 and debug_call_data["backend_errors"]:
+            _, _, detail = debug_call_data["backend_errors"][0].partition(": ")
+            error_msg = f"Error searching web: {detail or debug_call_data['backend_errors'][0]}"
+        else:
+            attempted_backends = ", ".join(attempted) or "none"
+            error_msg = f"Error searching web across backends [{attempted_backends}]"
+            if debug_call_data["backend_errors"]:
+                error_msg += f": {'; '.join(debug_call_data['backend_errors'])}"
+            else:
+                error_msg += ": no search backends are configured"
 
-        response = _get_firecrawl_client().search(
-            query=query,
-            limit=limit
-        )
-
-        web_results = _extract_web_search_results(response)
-        results_count = len(web_results)
-        logger.info("Found %d search results", results_count)
-        
-        # Build response with just search metadata (URLs, titles, descriptions)
-        response_data = {
-            "success": True,
-            "data": {
-                "web": web_results
-            }
-        }
-        
-        # Capture debug information
-        debug_call_data["results_count"] = results_count
-        
-        # Convert to JSON
-        result_json = json.dumps(response_data, indent=2, ensure_ascii=False)
-        
-        debug_call_data["final_response_size"] = len(result_json)
-        
-        # Log debug information
+        debug_call_data["error"] = error_msg
         _debug.log_call("web_search_tool", debug_call_data)
         _debug.save()
-        
-        return result_json
+        return tool_error(error_msg)
         
     except Exception as e:
         error_msg = f"Error searching web: {str(e)}"
@@ -1239,7 +1414,17 @@ async def web_extract_tool(
         if not safe_urls:
             results = []
         else:
-            backend = _get_backend()
+            backend = _get_extract_backend()
+            if not backend:
+                if _get_backend() == "searxng":
+                    return tool_error(
+                        "SearXNG supports search only. Configure web.extract_backend or set TAVILY_API_KEY, EXA_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL, or PARALLEL_API_KEY for web_extract.",
+                        success=False,
+                    )
+                return tool_error(
+                    "No web extraction backend is configured. Set TAVILY_API_KEY, EXA_API_KEY, FIRECRAWL_API_KEY, FIRECRAWL_API_URL, or PARALLEL_API_KEY.",
+                    success=False,
+                )
 
             if backend == "parallel":
                 results = await _parallel_extract(safe_urls)
@@ -1541,7 +1726,18 @@ async def web_crawl_tool(
     try:
         effective_model = model or _get_default_summarizer_model()
         auxiliary_available = check_auxiliary_model()
-        backend = _get_backend()
+        backend = _get_crawl_backend()
+
+        if not backend:
+            if _get_backend() == "searxng":
+                return json.dumps({
+                    "error": "SearXNG supports search only. Configure web.crawl_backend or set TAVILY_API_KEY, FIRECRAWL_API_KEY, or FIRECRAWL_API_URL for crawling.",
+                    "success": False,
+                }, ensure_ascii=False)
+            return json.dumps({
+                "error": "web_crawl requires Tavily or Firecrawl. Set TAVILY_API_KEY, FIRECRAWL_API_KEY, or FIRECRAWL_API_URL.",
+                "success": False,
+            }, ensure_ascii=False)
 
         # Tavily supports crawl via its /crawl endpoint
         if backend == "tavily":
@@ -1904,27 +2100,38 @@ async def web_crawl_tool(
 
 
 # Convenience function to check Firecrawl credentials
+
 def check_firecrawl_api_key() -> bool:
     """
     Check whether the Firecrawl backend is available.
 
     Availability is true when either:
-    1) direct Firecrawl config (`FIRECRAWL_API_KEY` or `FIRECRAWL_API_URL`), or
-    2) Firecrawl gateway origin + Nous Subscriber access token
-       (fallback when direct Firecrawl is not configured).
-
-    Returns:
-        bool: True if direct Firecrawl or the tool-gateway can be used.
+      - direct credentials are present (FIRECRAWL_API_KEY or FIRECRAWL_API_URL), or
+      - a managed Tool Gateway URL can be derived and a Nous access token exists.
     """
     return _has_direct_firecrawl_config() or _is_tool_gateway_ready()
 
 
+def check_web_search_api_key() -> bool:
+    """Check whether the primary search backend or any fallback is available."""
+    return any(_is_backend_available(backend) for backend in _get_search_backend_chain())
+
+
+def check_web_extract_api_key() -> bool:
+    """Check whether an extract-capable web backend is available."""
+    backend = _get_extract_backend()
+    return bool(backend and _is_backend_available(backend))
+
+
+def check_web_crawl_api_key() -> bool:
+    """Check whether a crawl-capable web backend is available."""
+    backend = _get_crawl_backend()
+    return bool(backend and _is_backend_available(backend))
+
+
 def check_web_api_key() -> bool:
-    """Check whether the configured web backend is available."""
-    configured = _load_web_config().get("backend", "").lower().strip()
-    if configured in ("exa", "parallel", "firecrawl", "tavily"):
-        return _is_backend_available(configured)
-    return any(_is_backend_available(backend) for backend in ("exa", "parallel", "firecrawl", "tavily"))
+    """Backward-compatible alias for search backend availability."""
+    return check_web_search_api_key()
 
 
 def check_auxiliary_model() -> bool:
@@ -2082,7 +2289,7 @@ registry.register(
     toolset="web",
     schema=WEB_SEARCH_SCHEMA,
     handler=lambda args, **kw: web_search_tool(args.get("query", ""), limit=5),
-    check_fn=check_web_api_key,
+    check_fn=check_web_search_api_key,
     requires_env=_web_requires_env(),
     emoji="🔍",
     max_result_size_chars=100_000,
@@ -2093,7 +2300,7 @@ registry.register(
     schema=WEB_EXTRACT_SCHEMA,
     handler=lambda args, **kw: web_extract_tool(
         args.get("urls", [])[:5] if isinstance(args.get("urls"), list) else [], "markdown"),
-    check_fn=check_web_api_key,
+    check_fn=check_web_extract_api_key,
     requires_env=_web_requires_env(),
     is_async=True,
     emoji="📄",

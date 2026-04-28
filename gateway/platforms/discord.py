@@ -643,7 +643,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 # IDs (otherwise on_message's author.id lookup can miss).
                 if not adapter_self._ready_event.is_set():
                     try:
-                        await asyncio.wait_for(adapter_self._ready_event.wait(), timeout=30.0)
+                        await asyncio.wait_for(adapter_self._ready_event.wait(), timeout=120.0)
                     except asyncio.TimeoutError:
                         pass
 
@@ -753,7 +753,7 @@ class DiscordAdapter(BasePlatformAdapter):
             self._bot_task = asyncio.create_task(self._client.start(self.config.token))
 
             # Wait for ready
-            await asyncio.wait_for(self._ready_event.wait(), timeout=30)
+            await asyncio.wait_for(self._ready_event.wait(), timeout=120)
 
             self._running = True
             return True
@@ -809,11 +809,11 @@ class DiscordAdapter(BasePlatformAdapter):
                 return
 
             if sync_policy == "bulk":
-                synced = await asyncio.wait_for(self._client.tree.sync(), timeout=30)
+                synced = await asyncio.wait_for(self._client.tree.sync(), timeout=120)
                 logger.info("[%s] Synced %d slash command(s) via bulk tree sync", self.name, len(synced))
                 return
 
-            summary = await asyncio.wait_for(self._safe_sync_slash_commands(), timeout=30)
+            summary = await asyncio.wait_for(self._safe_sync_slash_commands(), timeout=120)
             logger.info(
                 "[%s] Safely reconciled %d slash command(s): unchanged=%d updated=%d recreated=%d created=%d deleted=%d",
                 self.name,
@@ -3213,6 +3213,7 @@ class DiscordAdapter(BasePlatformAdapter):
                 channel_ids.add(parent_channel_id)
 
             require_mention = self._discord_require_mention()
+            strict_mention = self._discord_strict_mention()
             # Voice-linked text channels act as free-response while voice is active.
             # Only the exact bound channel gets the exemption, not sibling threads.
             voice_linked_ids = {str(ch_id) for ch_id in self._voice_text_channels.values()}
@@ -3228,7 +3229,7 @@ class DiscordAdapter(BasePlatformAdapter):
             # the bot has previously participated (auto-created or replied in).
             in_bot_thread = is_thread and thread_id in self._threads
 
-            if require_mention and not is_free_channel and not in_bot_thread:
+            if require_mention and not is_free_channel and not (in_bot_thread and not strict_mention):
                 if self._client.user not in message.mentions and not mention_prefix:
                     return
         # Auto-thread: when enabled, automatically create a thread for every
@@ -3530,6 +3531,16 @@ class DiscordAdapter(BasePlatformAdapter):
                 self._pending_text_batch_tasks.pop(key, None)
 
 
+
+    def _discord_strict_mention(self) -> bool:
+        """Return whether Discord channel messages require a bot mention even in known threads."""
+        configured = self.config.extra.get("strict_mention")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() not in ("false", "0", "no", "off")
+            return bool(configured)
+        return os.getenv("DISCORD_STRICT_MENTION", "false").lower() not in ("false", "0", "no", "off")
+
 # ---------------------------------------------------------------------------
 # Discord UI Components (outside the adapter class)
 # ---------------------------------------------------------------------------
@@ -3547,7 +3558,7 @@ if DISCORD_AVAILABLE:
         """
 
         def __init__(self, session_key: str, allowed_user_ids: set):
-            super().__init__(timeout=300)  # 5-minute timeout
+            super().__init__(timeout=1200)  # 5-minute timeout
             self.session_key = session_key
             self.allowed_user_ids = allowed_user_ids
             self.resolved = False
@@ -3640,7 +3651,7 @@ if DISCORD_AVAILABLE:
         """
 
         def __init__(self, session_key: str, allowed_user_ids: set):
-            super().__init__(timeout=300)
+            super().__init__(timeout=1200)
             self.session_key = session_key
             self.allowed_user_ids = allowed_user_ids
             self.resolved = False

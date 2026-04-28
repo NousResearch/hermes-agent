@@ -117,7 +117,7 @@ def _has_valid_session_token(request: Request) -> bool:
     accept the legacy Bearer path for backward compatibility with older
     dashboard bundles.
     """
-    session_header = request.headers.get(_SESSION_HEADER_NAME, "")
+    session_header = request.headers.get(_SESSION_HEADER_NAME.lower(), "")
     if session_header and hmac.compare_digest(
         session_header.encode(),
         _SESSION_TOKEN.encode(),

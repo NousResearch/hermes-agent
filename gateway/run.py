@@ -10601,23 +10601,39 @@ class GatewayRunner:
             # append any that aren't already present in the final response, so the
             # adapter's extract_media() can find and deliver the files exactly once.
             #
+            # Only consider tool results from tools that are known to produce media (allowlist).
             # Uses path-based deduplication against _history_media_paths (collected
             # before run_conversation) instead of index slicing. This is safe even
             # when context compression shrinks the message list. (Fixes #160)
             if "MEDIA:" not in final_response:
                 media_tags = []
                 has_voice_directive = False
+                # Build a map from tool_call_id to tool name for assistant's tool calls
+                tool_call_id_to_name = {}
+                for msg in result.get("messages", []):
+                    if msg.get("role") == "assistant":
+                        for tool_call in msg.get("tool_calls", []):
+                            tc_id = tool_call.get("id")
+                            if tc_id:
+                                tool_name = tool_call.get("function", {}).get("name")
+                                if tool_name:
+                                    tool_call_id_to_name[tc_id] = tool_name
+                # Allowlist of tools that can produce media attachments
+                _ALLOWED_MEDIA_TOOLS = {"text_to_speech_tool"}
                 for msg in result.get("messages", []):
                     if msg.get("role") in ("tool", "function"):
-                        content = msg.get("content", "")
-                        if "MEDIA:" in content:
-                            for match in re.finditer(r'MEDIA:(\S+)', content):
-                                path = match.group(1).strip().rstrip('",}')
-                                if path and path not in _history_media_paths:
-                                    media_tags.append(f"MEDIA:{path}")
+                        tool_call_id = msg.get("tool_call_id")
+                        # Only process if the tool is in the allowlist
+                        if tool_call_id and tool_call_id_to_name.get(tool_call_id) in _ALLOWED_MEDIA_TOOLS:
+                            content = msg.get("content", "")
+                            if "MEDIA:" in content:
+                                for match in re.finditer(r'MEDIA:(\S+)', content):
+                                    path = match.group(1).strip().rstrip('\",}')
+                                    if path and path not in _history_media_paths:
+                                        media_tags.append(f"MEDIA:{path}")
                             if "[[audio_as_voice]]" in content:
                                 has_voice_directive = True
-                
+
                 if media_tags:
                     seen = set()
                     unique_tags = []

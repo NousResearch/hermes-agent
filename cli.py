@@ -34,6 +34,17 @@ from pathlib import Path
 from datetime import datetime
 from typing import List, Dict, Any, Optional
 
+
+def _is_loopback_hostname(hostname: str) -> bool:
+    """Return True if hostname indicates a loopback interface."""
+    if not isinstance(hostname, str):
+        return False
+    loopbacks = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+    for lb in loopbacks:
+        if lb in hostname:
+            return True
+    return False
+
 logger = logging.getLogger(__name__)
 
 # Suppress startup messages for clean CLI experience
@@ -3278,7 +3289,7 @@ class HermesCLI:
             # no API key was found, use a placeholder so the OpenAI SDK
             # doesn't reject the request and local servers just ignore it.
             _source = runtime.get("source", "")
-            _has_custom_base = isinstance(base_url, str) and base_url and "openrouter.ai" not in base_url
+            _has_custom_base = isinstance(base_url, str) and base_url and ("openrouter.ai" not in base_url or _is_loopback_hostname(base_url))
             if _has_custom_base:
                 api_key = "no-key-required"
                 logger.debug(
@@ -4636,7 +4647,7 @@ class HermesCLI:
         # Get terminal config from environment (which was set from cli-config.yaml)
         terminal_env = os.getenv("TERMINAL_ENV", "local")
         terminal_cwd = os.getenv("TERMINAL_CWD", os.getcwd())
-        terminal_timeout = os.getenv("TERMINAL_TIMEOUT", "60")
+        terminal_timeout = self.config.get("terminal.timeout", os.getenv("TERMINAL_TIMEOUT", "60"))
         
         user_config_path = _hermes_home / 'config.yaml'
         project_config_path = Path(__file__).parent / 'cli-config.yaml'

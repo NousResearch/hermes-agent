@@ -508,6 +508,74 @@ implementation: `gateway/skill_resolver.py`. Discord wiring:
 `docs/migration/triggers-v1.md` for the full migration guide and Feishu BC
 fallback semantics.
 
+#### How to send button messages from a skill
+
+Skills can emit Discord button messages at runtime by calling the
+`discord_send_button_message` tool. The tool wraps `SkillButtonView`
+so you do not need to import discord.py directly:
+
+```json
+// LLM tool call
+{
+  "name": "discord_send_button_message",
+  "arguments": {
+    "channel_id": "1496609306995458048",
+    "content": "Approve this deployment?",
+    "skill_name": "deployer",
+    "buttons": [
+      {"label": "Approve", "action": "approve", "style": "success"},
+      {"label": "Reject",  "action": "reject",  "style": "danger"}
+    ],
+    "timeout_seconds": 300
+  }
+}
+```
+
+The tool builds `custom_id` values of the shape `skill_<skill_name>_<action>`
+(`skill_deployer_approve`, `skill_deployer_reject` in the example above) and
+returns:
+
+```json
+{
+  "message_id": "...",
+  "channel_id": "...",
+  "view_id": "...",
+  "custom_ids": ["skill_deployer_approve", "skill_deployer_reject"]
+}
+```
+
+#### Receiving button clicks
+
+Declare a `button` trigger in the skill's frontmatter so the resolver routes
+clicks back to the skill:
+
+```yaml
+metadata:
+  hermes:
+    triggers:
+      button:
+        custom_id_pattern: "skill_deployer_*"
+```
+
+When a user clicks a button, discord.py fires the `SkillButtonView` callback,
+which calls `DiscordInteractionsHandler.handle_skill_button_interaction`. The
+resolver matches the `custom_id` against `custom_id_pattern` (fnmatch) and
+dispatches a synthetic `MessageEvent` with `auto_skill=["deployer"]`. The
+skill is invoked automatically — no further polling required.
+
+Full flow:
+
+```
+skill calls discord_send_button_message
+  → tool builds SkillButtonView (custom_ids: skill_<name>_<action>)
+  → message sent to Discord channel with view attached
+  → user clicks button
+  → discord.py routes to View callback
+  → callback → DiscordInteractionsHandler.handle_skill_button_interaction
+  → resolver matches skill via triggers.button.custom_id_pattern
+  → skill invoked with auto_skill set
+```
+
 ### Skill setup metadata
 
 Skills can declare secure setup-on-load metadata via the `required_environment_variables` frontmatter field. Missing values do not hide the skill from discovery; they trigger a CLI-only secure prompt when the skill is actually loaded.

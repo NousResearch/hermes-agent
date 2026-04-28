@@ -322,6 +322,11 @@ if DISCORD_AVAILABLE:
                 ``custom_id`` strings via :func:`make_skill_custom_id`.
             actions: Mapping of button label → action key. The action key is
                 appended to the canonical custom_id.
+            button_styles: Optional mapping of button label → ``discord.ButtonStyle``
+                value. Labels not present here default to ``ButtonStyle.primary``.
+                Passed by :func:`tools.discord_button_tool` when the LLM specifies
+                per-button styles. Not needed for direct Python callers that accept
+                the primary default.
             timeout: Discord view timeout in seconds (default 180).
         """
 
@@ -331,6 +336,7 @@ if DISCORD_AVAILABLE:
             skill_name: str,
             actions: Dict[str, str],
             *,
+            button_styles: Optional[Dict[str, Any]] = None,
             timeout: float = 180.0,
         ) -> None:
             super().__init__(timeout=timeout)
@@ -338,10 +344,14 @@ if DISCORD_AVAILABLE:
             self._skill_name = skill_name
             for label, action in actions.items():
                 custom_id = make_skill_custom_id(skill_name, action)
+                style = (
+                    (button_styles or {}).get(label)
+                    or discord.ButtonStyle.primary  # type: ignore[attr-defined]
+                )
                 button = discord.ui.Button(  # type: ignore[attr-defined]
                     label=label,
                     custom_id=custom_id,
-                    style=discord.ButtonStyle.primary,  # type: ignore[attr-defined]
+                    style=style,
                 )
                 button.callback = self._make_callback()
                 self.add_item(button)

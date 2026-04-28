@@ -115,6 +115,49 @@ event, so a custom subclass owns its own dispatch. This is intentional:
 internal Hermes views (e.g., `ExecApprovalView`, `UpdatePromptView`) keep
 their existing in-process callbacks and are untouched by this PR.
 
+### LLM-callable variant — `discord_send_button_message` tool
+
+LLM-based skills that cannot import `gateway` modules directly use the
+`discord_send_button_message` tool instead. It wraps `SkillButtonView`
+and handles adapter resolution automatically:
+
+```json
+{
+  "name": "discord_send_button_message",
+  "arguments": {
+    "channel_id": "1496609306995458048",
+    "content": "Approve this deployment?",
+    "skill_name": "deployer",
+    "buttons": [
+      {"label": "Approve", "action": "approve", "style": "success"},
+      {"label": "Reject",  "action": "reject",  "style": "danger"}
+    ],
+    "timeout_seconds": 300
+  }
+}
+```
+
+The tool returns:
+
+```json
+{
+  "message_id": "...",
+  "channel_id": "...",
+  "view_id": "...",
+  "custom_ids": ["skill_deployer_approve", "skill_deployer_reject"]
+}
+```
+
+The `custom_ids` list confirms what was actually registered with discord.py,
+so the skill can store them for correlation if needed.
+
+**Per-button styles:** pass `"style": "primary" | "secondary" | "success" | "danger"`
+per button. Styles default to `primary` when omitted. The Python
+`SkillButtonView` also accepts an optional `button_styles` keyword
+(`Dict[label, discord.ButtonStyle]`) for callers that construct the view
+directly — existing callers that omit it get the previous all-primary
+behavior unchanged.
+
 ## Feishu — backward-compatibility fallback
 
 Feishu's existing reaction routing built a synthetic text event of the form

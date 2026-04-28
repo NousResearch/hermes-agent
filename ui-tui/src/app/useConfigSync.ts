@@ -10,7 +10,13 @@ import type {
 } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
 
-import type { BusyInputMode, StatusBarMode } from './interfaces.js'
+import {
+  DEFAULT_INDICATOR_STYLE,
+  INDICATOR_STYLES,
+  type BusyInputMode,
+  type IndicatorStyle,
+  type StatusBarMode,
+} from './interfaces.js'
 import { turnController } from './turnController.js'
 import { patchUiState } from './uiStore.js'
 
@@ -45,6 +51,18 @@ export const normalizeBusyInputMode = (raw: unknown): BusyInputMode => {
   return BUSY_MODES.has(v) ? v : TUI_BUSY_DEFAULT
 }
 
+const INDICATOR_STYLE_SET: ReadonlySet<IndicatorStyle> = new Set(INDICATOR_STYLES)
+
+export const normalizeIndicatorStyle = (raw: unknown): IndicatorStyle => {
+  if (typeof raw !== 'string') {
+    return DEFAULT_INDICATOR_STYLE
+  }
+
+  const v = raw.trim().toLowerCase() as IndicatorStyle
+
+  return INDICATOR_STYLE_SET.has(v) ? v : DEFAULT_INDICATOR_STYLE
+}
+
 const MTIME_POLL_MS = 5000
 
 const quietRpc = async <T extends Record<string, any> = Record<string, any>>(
@@ -68,6 +86,7 @@ export const applyDisplay = (cfg: ConfigFullResponse | null, setBell: (v: boolea
     compact: !!d.tui_compact,
     detailsMode: resolveDetailsMode(d),
     detailsModeCommandOverride: false,
+    indicatorStyle: normalizeIndicatorStyle(d.tui_status_indicator),
     inlineDiffs: d.inline_diffs !== false,
     mouseTracking: d.tui_mouse !== false,
     sections: resolveSections(d.sections),

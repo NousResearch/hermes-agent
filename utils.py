@@ -58,6 +58,56 @@ def _restore_file_mode(path: Path, mode: "int | None") -> None:
         pass
 
 
+def _atomic_write_with_writer(
+    path: Union[str, Path],
+    mode: str,
+    writer,
+    *,
+    encoding: str | None = "utf-8",
+) -> None:
+    """Write a file via temp file + fsync + os.replace.
+
+    This is the shared primitive for Hermes state-like files. It preserves the
+    previous target if writing or replacing fails, cleans temporary files on
+    BaseException, and restores an existing file's permission bits after the
+    replace.
+    """
+    path = Path(path)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    original_mode = _preserve_file_mode(path)
+    fd, tmp_path = tempfile.mkstemp(
+        dir=str(path.parent),
+        prefix=f".{path.stem}_",
+        suffix=".tmp",
+    )
+    open_kwargs = {} if "b" in mode else {"encoding": encoding or "utf-8"}
+    try:
+        with os.fdopen(fd, mode, **open_kwargs) as f:
+            writer(f)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+        _restore_file_mode(path, original_mode)
+    except BaseException:
+        # Intentionally catch BaseException so temp-file cleanup still runs for
+        # KeyboardInterrupt/SystemExit before re-raising the original signal.
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
+
+
+def atomic_text_write(path: Union[str, Path], text: str, *, encoding: str = "utf-8") -> None:
+    """Write text to a file atomically, preserving existing permissions."""
+    _atomic_write_with_writer(path, "w", lambda handle: handle.write(text), encoding=encoding)
+
+
+def atomic_bytes_write(path: Union[str, Path], data: bytes) -> None:
+    """Write bytes to a file atomically, preserving existing permissions."""
+    _atomic_write_with_writer(path, "wb", lambda handle: handle.write(data))
+
+
 def atomic_json_write(
     path: Union[str, Path],
     data: Any,
@@ -78,37 +128,17 @@ def atomic_json_write(
         **dump_kwargs: Additional keyword args forwarded to json.dump(), such
             as default=str for non-native types.
     """
-    path = Path(path)
-    path.parent.mkdir(parents=True, exist_ok=True)
 
-    original_mode = _preserve_file_mode(path)
+    def _write(handle) -> None:
+        json.dump(
+            data,
+            handle,
+            indent=indent,
+            ensure_ascii=False,
+            **dump_kwargs,
+        )
 
-    fd, tmp_path = tempfile.mkstemp(
-        dir=str(path.parent),
-        prefix=f".{path.stem}_",
-        suffix=".tmp",
-    )
-    try:
-        with os.fdopen(fd, "w", encoding="utf-8") as f:
-            json.dump(
-                data,
-                f,
-                indent=indent,
-                ensure_ascii=False,
-                **dump_kwargs,
-            )
-            f.flush()
-            os.fsync(f.fileno())
-        os.replace(tmp_path, path)
-        _restore_file_mode(path, original_mode)
-    except BaseException:
-        # Intentionally catch BaseException so temp-file cleanup still runs for
-        # KeyboardInterrupt/SystemExit before re-raising the original signal.
-        try:
-            os.unlink(tmp_path)
-        except OSError:
-            pass
-        raise
+    _atomic_write_with_writer(path, "w", _write)
 
 
 def atomic_yaml_write(

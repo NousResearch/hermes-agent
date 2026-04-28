@@ -8,7 +8,7 @@ import type {
   AnalyticsSkillEntry,
 } from "@/lib/api";
 import { timeAgo } from "@/lib/utils";
-import { Button, Stats } from "@nous-research/ui";
+import { Button, Spinner, Stats } from "@nous-research/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@nous-research/ui";
 import { usePageHeader } from "@/contexts/usePageHeader";
@@ -352,9 +352,7 @@ export default function AnalyticsPage() {
       PERIODS.find((p) => p.days === days)?.label ?? `${days}d`;
     setAfterTitle(
       <span className="flex items-center gap-2">
-        {loading && (
-          <div className="h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-primary border-t-transparent" />
-        )}
+        {loading && <Spinner className="shrink-0 text-base text-primary" />}
         <Badge tone="secondary" className="text-[10px]">
           {periodLabel}
         </Badge>
@@ -381,7 +379,7 @@ export default function AnalyticsPage() {
           outlined
           onClick={load}
           disabled={loading}
-          prefix={<RefreshCw />}
+          prefix={loading ? <Spinner /> : <RefreshCw />}
         >
           {t.common.refresh}
         </Button>
@@ -402,7 +400,7 @@ export default function AnalyticsPage() {
       <PluginSlot name="analytics:top" />
       {loading && !data && (
         <div className="flex items-center justify-center py-24">
-          <div className="h-6 w-6 animate-spin rounded-full border-2 border-primary border-t-transparent" />
+          <Spinner className="text-2xl text-primary" />
         </div>
       )}
 

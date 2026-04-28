@@ -895,6 +895,93 @@ def _check_espeak_ng() -> bool:
     return shutil.which("espeak-ng") is not None or shutil.which("espeak") is not None
 
 
+# Trusted container image registries — used to validate user-supplied image names.
+_TRUSTED_IMAGE_REGISTRIES = (
+    "docker.io",
+    "ghcr.io",
+    "gcr.io",
+    "registry.hub.docker.com",
+    "nikolaik/",
+    "python:",
+    "node:",
+)
+
+# Pinned package versions for supply-chain hardening.
+_PINNED_PACKAGES = {
+    "neutts": {"constraint": "neutts[all]>=1.2.0,<2.0"},
+    "modal": {"constraint": "modal>=1.4.0,<2.0"},
+    "daytona": {"constraint": "daytona>=0.160.0,<1.0"},
+    "mautrix": {"constraint": "mautrix>=0.21.0,<1.0"},
+}
+
+
+def _pip_install_cmd(package_key: str) -> list[str]:
+    """Return a hardened pip install command list for a known package key."""
+    spec = _PINNED_PACKAGES.get(package_key)
+    if spec:
+        return [sys.executable, "-m", "pip", "install", spec["constraint"], "--quiet"]
+    return [sys.executable, "-m", "pip", "install", package_key, "--quiet"]
+
+
+def _uv_pip_install_cmd(package_key: str, python_exe: str) -> list[str]:
+    """Return a hardened uv pip install command list for a known package key."""
+    spec = _PINNED_PACKAGES.get(package_key)
+    constraint = spec["constraint"] if spec else package_key
+    return [shutil.which("uv"), "pip", "install", "--python", python_exe, constraint]
+
+
+def _run_install_cmd(cmd: list[str]) -> tuple[bool, str]:
+    """Run a pip/uv install command and return (success, stderr_summary)."""
+    import subprocess
+    if not cmd or not cmd[0]:
+        return False, "no executable found"
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        return False, "installation timed out"
+    if result.returncode == 0:
+        return True, ""
+    stderr_lines = result.stderr.strip().splitlines()
+    return False, stderr_lines[-1] if stderr_lines else "unknown error"
+
+
+def _install_package(package_key: str) -> tuple[bool, str]:
+    """Install a package via uv (preferred) or pip fallback."""
+    import subprocess
+    uv_bin = shutil.which("uv")
+    if uv_bin:
+        cmd = _uv_pip_install_cmd(package_key, sys.executable)
+    else:
+        cmd = _pip_install_cmd(package_key)
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except subprocess.TimeoutExpired:
+        return False, "Installation timed out"
+    if result.returncode == 0:
+        return True, ""
+    stderr_lines = result.stderr.strip().splitlines()
+    return False, stderr_lines[-1] if stderr_lines else "unknown error"
+
+
+def _validate_container_image(image: str) -> bool:
+    """Return True if image looks like it comes from a trusted registry."""
+    if not image:
+        return False
+    if "/" not in image and ":" in image:
+        return True
+    if image.startswith("docker.io") or image.startswith("library/"):
+        return True
+    for prefix in ("ghcr.io/", "gcr.io/"):
+        if image.startswith(prefix):
+            return True
+    for prefix in _TRUSTED_IMAGE_REGISTRIES:
+        if prefix.endswith("/") and image.startswith(prefix):
+            return True
+        if not prefix.endswith("/") and image.startswith(prefix):
+            return True
+    return False
+
+
 def _install_neutts_deps() -> bool:
     """Install NeuTTS dependencies with user approval. Returns True on success."""
     import subprocess
@@ -927,21 +1014,18 @@ def _install_neutts_deps() -> bool:
         else:
             print_warning("espeak-ng is required for NeuTTS. Install it manually before using NeuTTS.")
 
-    # Install neutts Python package
+    # Install neutts Python package (hardened: version-pinned)
     print()
     print_info("Installing neutts Python package...")
     print_info("This will also download the TTS model (~300MB) on first use.")
     print()
-    try:
-        subprocess.run(
-            [sys.executable, "-m", "pip", "install", "-U", "neutts[all]", "--quiet"],
-            check=True, timeout=300,
-        )
+    ok, err = _install_package("neutts")
+    if ok:
         print_success("neutts installed successfully")
         return True
-    except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-        print_error(f"Failed to install neutts: {e}")
-        print_info("Try manually: python -m pip install -U neutts[all]")
+    else:
+        print_error(f"Failed to install neutts: {err}")
+        print_info("Try manually: python -m pip install 'neutts[all]>=1.2.0,<2.0'")
         return False
 
 
@@ -1264,7 +1348,17 @@ def setup_terminal_backend(config: dict):
         current_image = config.get("terminal", {}).get(
             "docker_image", "nikolaik/python-nodejs:python3.11-nodejs20"
         )
-        image = prompt("  Docker image", current_image)
+        while True:
+            image = prompt("  Docker image", current_image)
+            if not image:
+                break
+            if _validate_container_image(image):
+                break
+            print_warning(f"Unrecognized registry in image: {image}")
+            print_info("  Trusted registries: docker.io, ghcr.io, gcr.io")
+            if not prompt_yes_no("  Use this image anyway?", False):
+                continue
+            break
         config["terminal"]["docker_image"] = image
         save_env_value("TERMINAL_DOCKER_IMAGE", image)
 
@@ -1286,7 +1380,22 @@ def setup_terminal_backend(config: dict):
         current_image = config.get("terminal", {}).get(
             "singularity_image", "docker://nikolaik/python-nodejs:python3.11-nodejs20"
         )
-        image = prompt("  Container image", current_image)
+        while True:
+            image = prompt("  Container image", current_image)
+            if not image:
+                break
+            raw_image = image
+            for prefix in ("docker://", "oci://", "docker-archive://"):
+                if raw_image.startswith(prefix):
+                    raw_image = raw_image[len(prefix):]
+                    break
+            if _validate_container_image(raw_image):
+                break
+            print_warning(f"Unrecognized registry in image: {raw_image}")
+            print_info("  Trusted registries: docker.io, ghcr.io, gcr.io")
+            if not prompt_yes_no("  Use this image anyway?", False):
+                continue
+            break
         config["terminal"]["singularity_image"] = image
         save_env_value("TERMINAL_SINGULARITY_IMAGE", image)
 
@@ -1336,36 +1445,15 @@ def setup_terminal_backend(config: dict):
             print_info("Requires a Modal account: https://modal.com")
 
             # Check if modal SDK is installed
-            try:
-                __import__("modal")
-            except ImportError:
-                print_info("Installing modal SDK...")
-                import subprocess
-
-                uv_bin = shutil.which("uv")
-                if uv_bin:
-                    result = subprocess.run(
-                        [
-                            uv_bin,
-                            "pip",
-                            "install",
-                            "--python",
-                            sys.executable,
-                            "modal",
-                        ],
-                        capture_output=True,
-                        text=True,
-                    )
-                else:
-                    result = subprocess.run(
-                        [sys.executable, "-m", "pip", "install", "modal"],
-                        capture_output=True,
-                        text=True,
-                    )
-                if result.returncode == 0:
+            if importlib.util.find_spec("modal") is None:
+                print_info("Installing modal SDK (pinned >=1.4.0,<2.0)...")
+                ok, err = _install_package("modal")
+                if ok:
                     print_success("modal SDK installed")
                 else:
-                    print_warning("Install failed — run manually: pip install modal")
+                    print_warning(f"Install failed — run manually: pip install 'modal>=1.4.0,<2.0'")
+                    if err:
+                        print_info(f"  Error: {err}")
 
             # Modal token
             print()
@@ -1398,31 +1486,15 @@ def setup_terminal_backend(config: dict):
         print_info("Sign up at: https://daytona.io")
 
         # Check if daytona SDK is installed
-        try:
-            __import__("daytona")
-        except ImportError:
-            print_info("Installing daytona SDK...")
-            import subprocess
-
-            uv_bin = shutil.which("uv")
-            if uv_bin:
-                result = subprocess.run(
-                    [uv_bin, "pip", "install", "--python", sys.executable, "daytona"],
-                    capture_output=True,
-                    text=True,
-                )
-            else:
-                result = subprocess.run(
-                    [sys.executable, "-m", "pip", "install", "daytona"],
-                    capture_output=True,
-                    text=True,
-                )
-            if result.returncode == 0:
+        if importlib.util.find_spec("daytona") is None:
+            print_info("Installing daytona SDK (pinned >=0.160.0,<1.0)...")
+            ok, err = _install_package("daytona")
+            if ok:
                 print_success("daytona SDK installed")
             else:
-                print_warning("Install failed — run manually: pip install daytona")
-                if result.stderr:
-                    print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
+                print_warning(f"Install failed — run manually: pip install 'daytona>=0.160.0,<1.0'")
+                if err:
+                    print_info(f"  Error: {err}")
 
         # Daytona API key
         print()
@@ -1444,7 +1516,17 @@ def setup_terminal_backend(config: dict):
         current_image = config.get("terminal", {}).get(
             "daytona_image", "nikolaik/python-nodejs:python3.11-nodejs20"
         )
-        image = prompt("  Sandbox image", current_image)
+        while True:
+            image = prompt("  Sandbox image", current_image)
+            if not image:
+                break
+            if _validate_container_image(image):
+                break
+            print_warning(f"Unrecognized registry in image: {image}")
+            print_info("  Trusted registries: docker.io, ghcr.io, gcr.io")
+            if not prompt_yes_no("  Use this image anyway?", False):
+                continue
+            break
         config["terminal"]["daytona_image"] = image
         save_env_value("TERMINAL_DAYTONA_IMAGE", image)
 
@@ -1477,6 +1559,16 @@ def setup_terminal_backend(config: dict):
         default_key = str(Path.home() / ".ssh" / "id_rsa")
         ssh_key = prompt("  SSH private key path", current_key or default_key)
         if ssh_key:
+            # Sanitize: expand user, resolve symlinks, verify file exists
+            ssh_key = str(Path(ssh_key).expanduser().resolve())
+            if not Path(ssh_key).is_file():
+                print_warning(f"SSH key file not found: {ssh_key}")
+                print_info("  You can still configure it now and fix the path later.")
+            elif not Path(ssh_key).stat().st_mode & 0o77 == 0:
+                print_warning(
+                    f"SSH key is world-readable: {ssh_key}"
+                )
+                print_info(f"  Run: chmod 600 {ssh_key}")
             save_env_value("TERMINAL_SSH_KEY", ssh_key)
 
         # Test connection
@@ -1993,28 +2085,21 @@ def _setup_matrix():
             print_success("E2EE enabled")
 
         matrix_pkg = "mautrix[encryption]" if want_e2ee else "mautrix"
-        try:
-            __import__("mautrix")
-        except ImportError:
-            print_info(f"Installing {matrix_pkg}...")
-            import subprocess
+        if importlib.util.find_spec("mautrix") is None:
+            print_info(f"Installing {matrix_pkg} (pinned >=0.21.0,<1.0)...")
+            constraint = f"{matrix_pkg}>=0.21.0,<1.0"
             uv_bin = shutil.which("uv")
             if uv_bin:
-                result = subprocess.run(
-                    [uv_bin, "pip", "install", "--python", sys.executable, matrix_pkg],
-                    capture_output=True, text=True,
-                )
+                cmd = [uv_bin, "pip", "install", "--python", sys.executable, constraint]
             else:
-                result = subprocess.run(
-                    [sys.executable, "-m", "pip", "install", matrix_pkg],
-                    capture_output=True, text=True,
-                )
-            if result.returncode == 0:
+                cmd = [sys.executable, "-m", "pip", "install", constraint, "--quiet"]
+            ok, err = _run_install_cmd(cmd)
+            if ok:
                 print_success(f"{matrix_pkg} installed")
             else:
-                print_warning(f"Install failed — run manually: pip install '{matrix_pkg}'")
-                if result.stderr:
-                    print_info(f"  Error: {result.stderr.strip().splitlines()[-1]}")
+                print_warning(f"Install failed — run manually: pip install '{constraint}'")
+                if err:
+                    print_info(f"  Error: {err}")
 
         print()
         print_info("🔒 Security: Restrict who can use your bot")

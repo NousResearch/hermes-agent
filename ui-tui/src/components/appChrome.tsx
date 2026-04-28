@@ -116,7 +116,7 @@ function FaceTicker({ color, startedAt }: { color: string; startedAt?: null | nu
 
 function ctxBarColor(pct: number | undefined, t: Theme) {
   if (pct == null) {
-    return t.color.dim
+    return t.color.muted
   }
 
   if (pct >= 95) {
@@ -169,7 +169,7 @@ function SpawnHud({ t }: { t: Theme }) {
   const concRatio = maxConc ? widestLevel / maxConc : 0
   const ratio = Math.max(depthRatio, concRatio)
 
-  const color = delegation.paused || ratio >= 1 ? t.color.error : ratio >= 0.66 ? t.color.warn : t.color.dim
+  const color = delegation.paused || ratio >= 1 ? t.color.error : ratio >= 0.66 ? t.color.warn : t.color.muted
 
   const pieces: string[] = []
 
@@ -238,21 +238,21 @@ const modelLabel = (model: string, effort?: string, fast?: boolean) =>
 
 export function GoodVibesHeart({ tick, t }: { tick: number; t: Theme }) {
   const [active, setActive] = useState(false)
-  const [color, setColor] = useState(t.color.amber)
+  const [color, setColor] = useState(t.color.accent)
 
   useEffect(() => {
     if (tick <= 0) {
       return
     }
 
-    const palette = [...HEART_COLORS, t.color.amber]
+    const palette = [t.color.error, t.color.warn, t.color.accent]
     setColor(palette[Math.floor(Math.random() * palette.length)]!)
     setActive(true)
 
     const id = setTimeout(() => setActive(false), 650)
 
     return () => clearTimeout(id)
-  }, [t.color.amber, tick])
+  }, [t.color.accent, tick])
 
   if (!active) {
     return null
@@ -293,23 +293,23 @@ export function StatusRule({
   return (
     <Box height={1}>
       <Box flexShrink={1} width={leftWidth}>
-        <Text color={t.color.bronze} wrap="truncate-end">
+        <Text color={t.color.border} wrap="truncate-end">
           {'─ '}
           {busy ? (
             <FaceTicker color={statusColor} startedAt={turnStartedAt} />
           ) : (
             <Text color={statusColor}>{status}</Text>
           )}
-          <Text color={t.color.dim}> │ {modelLabel(model, modelReasoningEffort, modelFast)}</Text>
-          {ctxLabel ? <Text color={t.color.dim}> │ {ctxLabel}</Text> : null}
+          <Text color={t.color.muted}> │ {modelLabel(model, modelReasoningEffort, modelFast)}</Text>
+          {ctxLabel ? <Text color={t.color.muted}> │ {ctxLabel}</Text> : null}
           {bar ? (
-            <Text color={t.color.dim}>
+            <Text color={t.color.muted}>
               {' │ '}
               <Text color={barColor}>[{bar}]</Text> <Text color={barColor}>{pct != null ? `${pct}%` : ''}</Text>
             </Text>
           ) : null}
           {sessionStartedAt ? (
-            <Text color={t.color.dim}>
+            <Text color={t.color.muted}>
               {' │ '}
               <SessionDuration startedAt={sessionStartedAt} />
             </Text>
@@ -318,21 +318,21 @@ export function StatusRule({
           {voiceLabel ? (
             <Text
               color={
-                voiceLabel.startsWith('●') ? t.color.error : voiceLabel.startsWith('◉') ? t.color.warn : t.color.dim
+                voiceLabel.startsWith('●') ? t.color.error : voiceLabel.startsWith('◉') ? t.color.warn : t.color.muted
               }
             >
               {' │ '}
               {voiceLabel}
             </Text>
           ) : null}
-          {bgCount > 0 ? <Text color={t.color.dim}> │ {bgCount} bg</Text> : null}
+          {bgCount > 0 ? <Text color={t.color.muted}> │ {bgCount} bg</Text> : null}
           {showCost && typeof usage.cost_usd === 'number' ? (
-            <Text color={t.color.dim}> │ ${usage.cost_usd.toFixed(4)}</Text>
+            <Text color={t.color.muted}> │ ${usage.cost_usd.toFixed(4)}</Text>
           ) : null}
         </Text>
       </Box>
 
-      <Text color={t.color.bronze}> ─ </Text>
+      <Text color={t.color.border}> ─ </Text>
       <Text color={t.color.label}>{cwdLabel}</Text>
     </Box>
   )
@@ -377,8 +377,8 @@ export function TranscriptScrollbar({ scrollRef, t }: TranscriptScrollbarProps) 
   const thumb = scrollable ? Math.max(1, Math.round((vp * vp) / total)) : vp
   const travel = Math.max(1, vp - thumb)
   const thumbTop = scrollable ? Math.round((pos / Math.max(1, total - vp)) * travel) : 0
-  const thumbColor = grab !== null ? t.color.gold : hover ? t.color.amber : t.color.bronze
-  const trackColor = hover ? t.color.bronze : t.color.dim
+  const thumbColor = grab !== null ? t.color.primary : hover ? t.color.accent : t.color.border
+  const trackColor = hover ? t.color.border : t.color.muted
 
   const jump = (row: number, offset: number) => {
     if (!s || !scrollable) {

@@ -9092,6 +9092,18 @@ Examples:
         help="Skip confirmation prompt when using --restore",
     )
 
+    skills_diff = skills_subparsers.add_parser(
+        "diff",
+        help="Show changes between your installed copy and the bundled version",
+        description=(
+            "Compare your locally installed skill against the bundled version "
+            "that ships with Hermes. Shows a unified diff for each changed file."
+        ),
+    )
+    skills_diff.add_argument(
+        "name", help="Skill name to diff (e.g. google-workspace)"
+    )
+
     skills_publish = skills_subparsers.add_parser(
         "publish", help="Publish a skill to a registry"
     )

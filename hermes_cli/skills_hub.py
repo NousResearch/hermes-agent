@@ -1013,6 +1013,109 @@ def do_reset(name: str, restore: bool = False,
         c.print("[dim]Use /reset to start a new session now, or --now to apply immediately (invalidates prompt cache).[/]\n")
 
 
+def do_diff(name: str, console: Optional[Console] = None) -> None:
+    import difflib
+    import os
+
+    from tools.skills_sync import _get_bundled_dir, SKILLS_DIR
+
+    c = console or _console
+
+    if not name:
+        c.print("[bold red]Usage:[/] hermes skills diff <skill-name>\n")
+        return
+
+    user_dir = SKILLS_DIR / name
+    if not user_dir.exists():
+        c.print(f"[bold red]Error:[/] Skill '{name}' not installed at {user_dir}\n")
+        return
+
+    bundled_dir = _get_bundled_dir()
+    bundled_skill_dir = None
+    for cat in bundled_dir.iterdir():
+        if cat.is_dir() and (cat / name).is_dir():
+            bundled_skill_dir = cat / name
+            break
+
+    if not bundled_skill_dir:
+        c.print(f"[yellow]No bundled version of '{name}' found.[/]")
+        c.print("[dim]This skill was installed from a hub or manually — no baseline to diff against.[/]\n")
+        return
+
+    user_files = sorted(
+        f.relative_to(user_dir)
+        for f in user_dir.rglob("*")
+        if f.is_file() and not f.name.startswith(".")
+    )
+    bundled_files = sorted(
+        f.relative_to(bundled_skill_dir)
+        for f in bundled_skill_dir.rglob("*")
+        if f.is_file() and not f.name.startswith(".")
+    )
+
+    all_files = sorted(set(user_files) | set(bundled_files))
+
+    if not all_files:
+        c.print(f"[dim]No files in either version of '{name}'.[/]\n")
+        return
+
+    diff_shown = False
+    for rel_path in all_files:
+        user_file = user_dir / rel_path
+        bundled_file = bundled_skill_dir / rel_path
+
+        if not bundled_file.exists():
+            c.print(f"[green]+++ NEW: {rel_path}[/] (exists in your copy only)")
+            diff_shown = True
+            continue
+
+        if not user_file.exists():
+            c.print(f"[red]--- DELETED: {rel_path}[/] (exists in bundled only)")
+            diff_shown = True
+            continue
+
+        try:
+            user_text = user_file.read_text(encoding="utf-8").splitlines(keepends=True)
+            bundled_text = bundled_file.read_text(encoding="utf-8").splitlines(keepends=True)
+        except (UnicodeDecodeError, OSError):
+            if user_file.read_bytes() != bundled_file.read_bytes():
+                c.print(f"[yellow]~ CHANGED (binary): {rel_path}[/]")
+                diff_shown = True
+            continue
+
+        if user_text == bundled_text:
+            continue
+
+        diff = difflib.unified_diff(
+            bundled_text,
+            user_text,
+            fromfile=f"bundled/{rel_path}",
+            tofile=f"yours/{rel_path}",
+            n=3,
+        )
+        diff_lines = list(diff)
+        if diff_lines:
+            c.print(f"\n[bold]--- {rel_path} ---[/]")
+            for line in diff_lines:
+                line = line.rstrip("\n")
+                if line.startswith("+++") or line.startswith("---"):
+                    c.print(f"[dim]{line}[/]")
+                elif line.startswith("@@"):
+                    c.print(f"[cyan]{line}[/]")
+                elif line.startswith("+"):
+                    c.print(f"[green]{line}[/]")
+                elif line.startswith("-"):
+                    c.print(f"[red]{line}[/]")
+                else:
+                    c.print(f"  {line}")
+            diff_shown = True
+
+    if not diff_shown:
+        c.print(f"[bold green]No differences — your copy of '{name}' matches the bundled version.[/]\n")
+    else:
+        c.print(f"\n[dim]To restore bundled version: hermes skills reset {name} --restore[/]\n")
+
+
 def do_tap(action: str, repo: str = "", console: Optional[Console] = None) -> None:
     """Manage taps (custom GitHub repo sources)."""
     from tools.skills_hub import TapsManager
@@ -1343,6 +1446,8 @@ def skills_command(args) -> None:
     elif action == "reset":
         do_reset(args.name, restore=getattr(args, "restore", False),
                  skip_confirm=getattr(args, "yes", False))
+    elif action == "diff":
+        do_diff(getattr(args, "name", None))
     elif action == "publish":
         do_publish(
             args.skill_path,
@@ -1365,7 +1470,7 @@ def skills_command(args) -> None:
             return
         do_tap(tap_action, repo=repo)
     else:
-        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|reset|publish|snapshot|tap]\n")
+        _console.print("Usage: hermes skills [browse|search|install|inspect|list|check|update|audit|uninstall|reset|diff|publish|snapshot|tap]\n")
         _console.print("Run 'hermes skills <command> --help' for details.\n")
 
 
@@ -1529,6 +1634,13 @@ def handle_skills_slash(cmd: str, console: Optional[Console] = None) -> None:
         do_reset(name, restore=restore, console=c, skip_confirm=True,
                  invalidate_cache=invalidate_cache)
 
+    elif action == "diff":
+        if not args:
+            c.print("[bold red]Usage:[/] /skills diff <name>\n")
+            c.print("[dim]Shows a unified diff between your installed copy and the bundled version.[/]\n")
+            return
+        do_diff(args[0], console=c)
+
     elif action == "publish":
         if not args:
             c.print("[bold red]Usage:[/] /skills publish <skill-path> [--to github] [--repo owner/repo]\n")
@@ -1587,6 +1699,7 @@ def _print_skills_help(console: Console) -> None:
         "  [cyan]audit[/] [name]                Re-scan hub skills for security\n"
         "  [cyan]uninstall[/] <name>            Remove a hub-installed skill\n"
         "  [cyan]reset[/] <name> [--restore]    Reset bundled-skill tracking (fix 'user-modified' flag)\n"
+        "  [cyan]diff[/] <name>                Show changes between your copy and the bundled version\n"
         "  [cyan]publish[/] <path> --repo <r>   Publish a skill to GitHub via PR\n"
         "  [cyan]snapshot[/] export|import      Export/import skill configurations\n"
         "  [cyan]tap[/] list|add|remove         Manage skill sources\n",

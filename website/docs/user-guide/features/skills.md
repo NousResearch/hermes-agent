@@ -282,6 +282,7 @@ hermes skills audit                               # Re-scan all hub skills for s
 hermes skills uninstall k8s                       # Remove a hub skill
 hermes skills reset google-workspace              # Un-stick a bundled skill from "user-modified" (see below)
 hermes skills reset google-workspace --restore    # Also restore the bundled version, deleting your local edits
+hermes skills diff google-workspace               # See what you changed vs the bundled version
 hermes skills publish skills/my-skill --to github --repo owner/repo
 hermes skills snapshot export setup.json          # Export skill config
 hermes skills tap add myorg/skills-repo           # Add a custom GitHub source

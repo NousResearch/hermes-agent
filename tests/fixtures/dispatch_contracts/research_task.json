@@ -1,0 +1,64 @@
+{
+  "schema_version": "dispatch-contracts/v1",
+  "work_order_id": "lifeos-bus-12-slice1-research",
+  "attempt_id": "attempt-001",
+  "task_classification": {
+    "task_complexity": "moderate",
+    "stakes": "low",
+    "reversibility": "reversible",
+    "tool_reach": "browser",
+    "memory_dependency": "local_context",
+    "verification_need": "lightweight"
+  },
+  "budget_policy": {
+    "max_worker_sessions_per_issue": 3,
+    "max_parallel_workers_default": 2,
+    "max_worker_turns": 4,
+    "max_worker_runtime_minutes": 30,
+    "max_escalations_to_sota": 1,
+    "stop_after_failed_attempts": 2,
+    "require_ceo_approval_above_stakes": "high"
+  },
+  "worker_attempt": {
+    "work_order_id": "lifeos-bus-12-slice1-research",
+    "attempt_id": "attempt-001",
+    "worker_session_id": "research-worker-12",
+    "worker_role": "browser-research-worker",
+    "harness": "hermes-worker",
+    "provider_model": "openai-codex:gpt-5.4-mini",
+    "profile_or_toolset": "web,browser",
+    "branch": null,
+    "worktree": null,
+    "assigned_scope": "Collect source links for overlapping Hermes dispatch issues.",
+    "allowed_paths": [],
+    "allowed_tools": ["web", "browser"],
+    "budget": {
+      "max_turns": 4,
+      "max_runtime_minutes": 30
+    },
+    "status": "succeeded",
+    "touched_files": [],
+    "commands_run": [],
+    "evidence_packet_path": "/tmp/receipt-research.json",
+    "verification_status": "verified",
+    "escalation_or_failure_reason": null,
+    "external_approval_id": null
+  },
+  "evidence": {
+    "summary": "Worker collected source URLs and conductor spot-checked one source.",
+    "items": [
+      {
+        "kind": "source_url",
+        "reference": "https://github.com/NousResearch/hermes-agent/issues/16211",
+        "observed_at": "2026-04-28T10:32:00Z",
+        "status": "verified",
+        "excerpt": "smart_model_routing config accepted but not implemented"
+      }
+    ],
+    "conductor_verification": {
+      "status": "verified",
+      "commands": ["gh issue view 16211 -R NousResearch/hermes-agent --json state,title"],
+      "notes": "One representative URL was verified through GitHub API readback."
+    }
+  }
+}

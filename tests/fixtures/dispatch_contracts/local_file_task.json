@@ -1,0 +1,64 @@
+{
+  "schema_version": "dispatch-contracts/v1",
+  "work_order_id": "lifeos-bus-12-slice1-local-file",
+  "attempt_id": "attempt-001",
+  "task_classification": {
+    "task_complexity": "simple",
+    "stakes": "low",
+    "reversibility": "reversible",
+    "tool_reach": "local_files",
+    "memory_dependency": "local_context",
+    "verification_need": "deterministic"
+  },
+  "budget_policy": {
+    "max_worker_sessions_per_issue": 3,
+    "max_parallel_workers_default": 2,
+    "max_worker_turns": 4,
+    "max_worker_runtime_minutes": 30,
+    "max_escalations_to_sota": 1,
+    "stop_after_failed_attempts": 2,
+    "require_ceo_approval_above_stakes": "high"
+  },
+  "worker_attempt": {
+    "work_order_id": "lifeos-bus-12-slice1-local-file",
+    "attempt_id": "attempt-001",
+    "worker_session_id": "hermes-local-file-worker",
+    "worker_role": "local-file-worker",
+    "harness": "hermes-worker",
+    "provider_model": "openai-codex:gpt-5.4-mini",
+    "profile_or_toolset": "file,terminal",
+    "branch": null,
+    "worktree": null,
+    "assigned_scope": "Create a bounded local artifact under /tmp/output.md",
+    "allowed_paths": ["/tmp/output.md"],
+    "allowed_tools": ["file", "terminal"],
+    "budget": {
+      "max_turns": 4,
+      "max_runtime_minutes": 30
+    },
+    "status": "succeeded",
+    "touched_files": ["/tmp/output.md"],
+    "commands_run": ["python -m pytest tests/agent/test_dispatch_contracts.py -q"],
+    "evidence_packet_path": "/tmp/receipt-local-file.json",
+    "verification_status": "verified",
+    "escalation_or_failure_reason": null,
+    "external_approval_id": null
+  },
+  "evidence": {
+    "summary": "Worker created /tmp/output.md and conductor verified file readback.",
+    "items": [
+      {
+        "kind": "file_readback",
+        "reference": "/tmp/output.md",
+        "observed_at": "2026-04-28T10:30:00Z",
+        "status": "verified",
+        "excerpt": "bounded local artifact"
+      }
+    ],
+    "conductor_verification": {
+      "status": "verified",
+      "commands": ["test -s /tmp/output.md"],
+      "notes": "File exists and is non-empty."
+    }
+  }
+}

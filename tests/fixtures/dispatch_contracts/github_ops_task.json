@@ -1,0 +1,64 @@
+{
+  "schema_version": "dispatch-contracts/v1",
+  "work_order_id": "lifeos-bus-12-slice1-github-ops",
+  "attempt_id": "attempt-001",
+  "task_classification": {
+    "task_complexity": "simple",
+    "stakes": "medium",
+    "reversibility": "partially_reversible",
+    "tool_reach": "github",
+    "memory_dependency": "project_memory",
+    "verification_need": "deterministic"
+  },
+  "budget_policy": {
+    "max_worker_sessions_per_issue": 3,
+    "max_parallel_workers_default": 2,
+    "max_worker_turns": 4,
+    "max_worker_runtime_minutes": 30,
+    "max_escalations_to_sota": 1,
+    "stop_after_failed_attempts": 2,
+    "require_ceo_approval_above_stakes": "high"
+  },
+  "worker_attempt": {
+    "work_order_id": "lifeos-bus-12-slice1-github-ops",
+    "attempt_id": "attempt-001",
+    "worker_session_id": "github-ops-worker-12",
+    "worker_role": "github-ops-worker",
+    "harness": "github-cli",
+    "provider_model": "openai-codex:gpt-5.4-mini",
+    "profile_or_toolset": "github,terminal",
+    "branch": null,
+    "worktree": null,
+    "assigned_scope": "Read issue #12 and prepare a bounded status comment draft only.",
+    "allowed_paths": [],
+    "allowed_tools": ["gh", "terminal"],
+    "budget": {
+      "max_turns": 4,
+      "max_runtime_minutes": 30
+    },
+    "status": "succeeded",
+    "touched_files": [],
+    "commands_run": ["gh issue view 12 -R marcusglee11/lifeos-operational-bus --json number,title,state,url"],
+    "evidence_packet_path": "/tmp/receipt-github-ops.json",
+    "verification_status": "verified",
+    "escalation_or_failure_reason": null,
+    "external_approval_id": null
+  },
+  "evidence": {
+    "summary": "Worker read back issue #12 metadata without public writes.",
+    "items": [
+      {
+        "kind": "github_readback",
+        "reference": "https://github.com/marcusglee11/lifeos-operational-bus/issues/12",
+        "observed_at": "2026-04-28T10:31:00Z",
+        "status": "verified",
+        "excerpt": "OPEN: Build boss-harness dispatch for bounded cheap workers"
+      }
+    ],
+    "conductor_verification": {
+      "status": "verified",
+      "commands": ["gh issue view 12 -R marcusglee11/lifeos-operational-bus --json state"],
+      "notes": "GitHub API readback matched worker claim."
+    }
+  }
+}

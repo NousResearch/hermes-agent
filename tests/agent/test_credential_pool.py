@@ -1568,3 +1568,158 @@ def test_codex_exhausted_entry_stays_stuck_without_auth_store_update(tmp_path, m
     # still skips it.
     available = pool._available_entries(clear_expired=True, refresh=False)
     assert available == []
+
+
+
+def test_has_unexhausted_alternates_true_when_other_entry_ok(tmp_path, monkeypatch):
+    """Pool with two ok entries reports alternates available."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "***",
+                        "last_status": "ok",
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "secondary",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "***",
+                        "last_status": "ok",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("anthropic")
+    pool.select()  # bind cred-1 as current
+    assert pool.has_unexhausted_alternates() is True
+
+
+def test_has_unexhausted_alternates_false_for_single_credential_pool(tmp_path, monkeypatch):
+    """Pool with only one entry reports no alternates."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "cred-1",
+                        "label": "only",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "***",
+                        "last_status": "ok",
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("anthropic")
+    pool.select()
+    assert pool.has_unexhausted_alternates() is False
+
+
+def test_has_unexhausted_alternates_false_when_other_in_cooldown(tmp_path, monkeypatch):
+    """Recently-exhausted entry whose cooldown has not elapsed should not
+    count as an unexhausted alternate."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "***",
+                        "last_status": "ok",
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "secondary",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "***",
+                        "last_status": "exhausted",
+                        # Just exhausted, cooldown hasn't elapsed.
+                        "last_status_at": time.time(),
+                        "last_error_code": 429,
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("anthropic")
+    pool.select()  # cred-1 (only ok one) becomes current
+    assert pool.has_unexhausted_alternates() is False
+
+
+def test_has_unexhausted_alternates_true_when_other_cooldown_elapsed(tmp_path, monkeypatch):
+    """Entry whose exhaustion cooldown has elapsed counts as alternate again."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "credential_pool": {
+                "anthropic": [
+                    {
+                        "id": "cred-1",
+                        "label": "primary",
+                        "auth_type": "api_key",
+                        "priority": 0,
+                        "source": "manual",
+                        "access_token": "***",
+                        "last_status": "ok",
+                    },
+                    {
+                        "id": "cred-2",
+                        "label": "secondary",
+                        "auth_type": "api_key",
+                        "priority": 1,
+                        "source": "manual",
+                        "access_token": "***",
+                        "last_status": "exhausted",
+                        # 25 hours ago — well past any TTL.
+                        "last_status_at": time.time() - 90000,
+                        "last_error_code": 402,
+                    },
+                ]
+            },
+        },
+    )
+
+    from agent.credential_pool import load_pool
+
+    pool = load_pool("anthropic")
+    pool.select()  # cred-1 current
+    assert pool.has_unexhausted_alternates() is True

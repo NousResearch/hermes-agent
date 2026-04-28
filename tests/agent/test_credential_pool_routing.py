@@ -156,9 +156,14 @@ class TestPoolRotationCycle:
         pool = MagicMock()
         pool.has_credentials.return_value = True
 
-        # mark_exhausted_and_rotate returns next entry until exhausted
+        # Track how many credentials have been rotated through. The pool has
+        # alternates as long as we haven't reached the last entry.
         self._rotation_index = 0
+        pool.has_unexhausted_alternates = MagicMock(
+            side_effect=lambda: self._rotation_index < pool_entries - 1
+        )
 
+        # mark_exhausted_and_rotate returns next entry until exhausted
         def rotate(status_code=None, error_context=None):
             self._rotation_index += 1
             if self._rotation_index < pool_entries:
@@ -173,9 +178,26 @@ class TestPoolRotationCycle:
 
         return agent, pool, entries
 
-    def test_first_429_sets_retry_flag_no_rotation(self):
-        """First 429 should just set has_retried_429=True, no rotation."""
-        agent, pool, _ = self._make_agent_with_pool(3)
+    def test_first_429_with_alternates_rotates_immediately(self):
+        """When the pool has unexhausted alternates, the first 429 should
+        rotate immediately rather than burning a retry slot on the same key."""
+        agent, pool, entries = self._make_agent_with_pool(3)
+        recovered, has_retried = agent._recover_with_credential_pool(
+            status_code=429, has_retried_429=False
+        )
+        assert recovered is True
+        assert has_retried is False  # reset after rotation
+        pool.mark_exhausted_and_rotate.assert_called_once_with(
+            status_code=429, error_context=None
+        )
+        agent._swap_credential.assert_called_once_with(entries[1])
+
+    def test_first_429_no_alternates_retries_same_credential(self):
+        """Single-credential pool (no alternates) preserves the original
+        retry-same-then-rotate behavior so transient 429s don't waste the only
+        available key."""
+        agent, pool, _ = self._make_agent_with_pool(1)
+        # Single-entry pool: has_unexhausted_alternates returns False from the start.
         recovered, has_retried = agent._recover_with_credential_pool(
             status_code=429, has_retried_429=False
         )
@@ -197,7 +219,7 @@ class TestPoolRotationCycle:
     def test_pool_exhaustion_returns_false(self):
         """When all credentials exhausted, recovery should return False."""
         agent, pool, _ = self._make_agent_with_pool(1)
-        # First 429 sets flag
+        # First 429 sets flag (single-entry pool, no alternates)
         _, has_retried = agent._recover_with_credential_pool(
             status_code=429, has_retried_429=False
         )
@@ -232,3 +254,36 @@ class TestPoolRotationCycle:
         )
         assert recovered is False
         assert has_retried is False
+
+    def test_full_pool_walk_does_not_burn_retry_slots(self):
+        """Regression for #16830: a 10-credential pool should walk through every
+        key on consecutive 429s without ever returning ``recovered=False`` until
+        the pool is fully exhausted. A False return is what the outer retry
+        loop counts as a retry attempt — so as long as recovery returns True,
+        retry_count stays at zero."""
+        agent, pool, entries = self._make_agent_with_pool(10)
+
+        has_retried_429 = False
+        recovered_count = 0
+        unrecovered_count = 0
+        # Simulate up to 12 consecutive 429s. With a 10-key pool, the first 10
+        # iterations should each rotate (recovered=True). Only after the pool
+        # is fully exhausted should recovery start returning False.
+        for _ in range(12):
+            recovered, has_retried_429 = agent._recover_with_credential_pool(
+                status_code=429, has_retried_429=has_retried_429
+            )
+            if recovered:
+                recovered_count += 1
+            else:
+                unrecovered_count += 1
+
+        # Every credential in the pool should have been rotated through before
+        # we start failing recovery — proving retry_count would not be
+        # incremented during pool walking with default api_max_retries=3.
+        assert recovered_count >= 9, (
+            f"expected to rotate through ~all 10 credentials, "
+            f"only rotated {recovered_count} times before pool exhausted"
+        )
+        # Once the pool is exhausted, the remaining iterations cannot rotate.
+        assert unrecovered_count >= 1, "pool exhaustion should eventually surface"

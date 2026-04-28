@@ -931,6 +931,30 @@ class CredentialPool:
         available = self._available_entries()
         return available[0] if available else None
 
+    def has_unexhausted_alternates(self) -> bool:
+        """Return True if the pool has at least one entry besides the current
+        that is either unexhausted or whose exhaustion cooldown has elapsed.
+
+        Read-only; does not clear cooldown state or trigger refreshes.  Used by
+        retry logic to decide whether to rotate immediately on a transient
+        per-credential failure (e.g. 429) instead of burning a retry slot
+        retrying the same credential.
+        """
+        with self._lock:
+            if not self._entries:
+                return False
+            current_id = self._current_id
+            now = time.time()
+            for entry in self._entries:
+                if entry.id == current_id:
+                    continue
+                if entry.last_status != STATUS_EXHAUSTED:
+                    return True
+                exhausted_until = _exhausted_until(entry)
+                if exhausted_until is None or now >= exhausted_until:
+                    return True
+            return False
+
     def mark_exhausted_and_rotate(
         self,
         *,

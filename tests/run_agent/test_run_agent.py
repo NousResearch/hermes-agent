@@ -3493,11 +3493,16 @@ class TestCredentialPoolRecovery:
         agent._swap_credential.assert_called_once_with(next_entry)
 
     def test_recover_with_pool_retries_first_429_then_rotates(self, agent):
+        """Single-credential pool (no alternates) — original behavior:
+        first 429 retries same credential, second 429 attempts to rotate."""
         next_entry = SimpleNamespace(label="secondary")
 
         class _Pool:
             def current(self):
                 return SimpleNamespace(label="primary")
+
+            def has_unexhausted_alternates(self):
+                return False  # single credential — nothing else to try
 
             def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
                 assert status_code == 429
@@ -3518,6 +3523,34 @@ class TestCredentialPoolRecovery:
         recovered, retry_same = agent._recover_with_credential_pool(
             status_code=429,
             has_retried_429=True,
+        )
+        assert recovered is True
+        assert retry_same is False
+        agent._swap_credential.assert_called_once_with(next_entry)
+
+    def test_recover_with_pool_rotates_immediately_when_alternates_available(self, agent):
+        """Multi-credential pool — first 429 rotates immediately rather than
+        burning a retry slot on the same key. Regression for issue #16830."""
+        next_entry = SimpleNamespace(label="secondary")
+
+        class _Pool:
+            def current(self):
+                return SimpleNamespace(label="primary")
+
+            def has_unexhausted_alternates(self):
+                return True  # alternates available — rotate now
+
+            def mark_exhausted_and_rotate(self, *, status_code, error_context=None):
+                assert status_code == 429
+                return next_entry
+
+        agent._credential_pool = _Pool()
+        agent._swap_credential = MagicMock()
+
+        # First 429 should rotate immediately, not return (False, True).
+        recovered, retry_same = agent._recover_with_credential_pool(
+            status_code=429,
+            has_retried_429=False,
         )
         assert recovered is True
         assert retry_same is False

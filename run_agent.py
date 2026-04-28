@@ -6376,9 +6376,21 @@ class AIAgent:
             return False, has_retried_429
 
         if effective_reason == FailoverReason.rate_limit:
-            if not has_retried_429:
-                return False, True
             rotate_status = status_code if status_code is not None else 429
+            # If the pool has other unexhausted credentials, rotate immediately
+            # rather than burning a retry slot retrying the same key. The rate
+            # limit window won't clear in our backoff interval, but a different
+            # key in the pool likely has fresh quota. This makes pool walking
+            # transparent to api_max_retries — only once every credential is
+            # exhausted does retry_count start incrementing.
+            has_alternates = False
+            try:
+                has_alternates = bool(pool.has_unexhausted_alternates())
+            except AttributeError:
+                # Older / mock pools without the method: keep prior behavior.
+                has_alternates = False
+            if not has_retried_429 and not has_alternates:
+                return False, True
             next_entry = pool.mark_exhausted_and_rotate(status_code=rotate_status, error_context=error_context)
             if next_entry is not None:
                 logger.info(

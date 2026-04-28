@@ -1,11 +1,12 @@
-"""Tests for WhatsApp owner-message metadata propagation.
+"""Tests for WhatsApp owner-message metadata and source-level text tagging.
 
 The Node bridge sets ``fromOwner: true`` on inbound `fromMe` messages that
 look owner-typed (linked-device send, not echoed from /send) when the
 operator opts into ``WHATSAPP_FORWARD_OWNER_MESSAGES``.  These tests pin
 the adapter's responsibility: lift that flag onto
-``MessageEvent.metadata["whatsapp_from_owner"]`` and otherwise leave it
-absent.  The env-var gate itself lives in the bridge — the adapter just
+``MessageEvent.metadata["whatsapp_from_owner"]``, prefix ``MessageEvent.text``
+with ``[owner reply] ``, and otherwise leave metadata absent and text
+unchanged.  The env-var gate itself lives in the bridge — the adapter just
 trusts the payload.
 """
 
@@ -64,6 +65,36 @@ def test_metadata_flag_set_when_payload_has_from_owner():
 
     assert event is not None
     assert event.metadata.get("whatsapp_from_owner") is True
+    assert event.text.startswith("[owner reply] ")
+    assert event.text == "[owner reply] hi from the linked phone"
+
+
+def test_from_owner_does_not_double_prefix_when_already_tagged():
+    adapter = _make_adapter()
+    payload = _dm_payload(
+        fromOwner=True,
+        body="[owner reply] already tagged",
+    )
+
+    event = asyncio.run(adapter._build_message_event(payload))
+
+    assert event is not None
+    assert event.metadata.get("whatsapp_from_owner") is True
+    assert event.text == "[owner reply] already tagged"
+
+
+def test_from_owner_prefixes_empty_body_for_uniform_media_placeholders():
+    """Owner media with empty caption still gets the marker (bridge may
+    substitute placeholders like ``[image received]`` upstream; empty stays
+    tagged for consistency)."""
+    adapter = _make_adapter()
+    payload = _dm_payload(fromOwner=True, body="")
+
+    event = asyncio.run(adapter._build_message_event(payload))
+
+    assert event is not None
+    assert event.metadata.get("whatsapp_from_owner") is True
+    assert event.text == "[owner reply] "
 
 
 def test_metadata_flag_absent_by_default():

@@ -7,6 +7,8 @@ import types
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 from tui_gateway import server
 
 
@@ -1567,6 +1569,85 @@ def test_command_dispatch_exec_nonzero_surfaces_error(monkeypatch):
 
     assert "error" in resp
     assert "failed" in resp["error"]["message"]
+
+
+def test_shell_exec_blocks_dangerous_command(monkeypatch):
+    """shell.exec must refuse commands the dangerous-command detector flags."""
+    monkeypatch.setattr(
+        "tools.approval.detect_dangerous_command",
+        lambda cmd: (True, "RM_RF_ROOT", "rm -rf /"),
+    )
+    # If the detector reports dangerous, no subprocess.run call should happen.
+    monkeypatch.setattr(
+        server.subprocess,
+        "run",
+        lambda *a, **kw: pytest.fail("subprocess.run must not run for blocked commands"),
+    )
+
+    resp = server.handle_request(
+        {"id": "1", "method": "shell.exec", "params": {"command": "rm -rf /"}}
+    )
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 4005
+
+
+def test_shell_exec_fails_closed_when_safety_module_missing(monkeypatch):
+    """shell.exec must refuse to run when tools.approval is unimportable (#16560).
+
+    Previously the server caught ImportError and silently fell through to
+    ``subprocess.run(cmd, shell=True, ...)``, letting any caller bypass the
+    danger check by removing or shadowing the safety module. The fix surfaces
+    the failure as an error instead of executing the command unchecked.
+    """
+    real_import = __builtins__["__import__"] if isinstance(__builtins__, dict) else __builtins__.__import__
+
+    def _import_blocking_approval(name, *args, **kwargs):
+        if name == "tools.approval":
+            raise ImportError("tools.approval missing")
+        return real_import(name, *args, **kwargs)
+
+    monkeypatch.setattr(
+        server.subprocess,
+        "run",
+        lambda *a, **kw: pytest.fail("subprocess.run must not run when safety module is missing"),
+    )
+    if isinstance(__builtins__, dict):
+        monkeypatch.setitem(__builtins__, "__import__", _import_blocking_approval)
+    else:
+        monkeypatch.setattr(__builtins__, "__import__", _import_blocking_approval)
+
+    resp = server.handle_request(
+        {"id": "1", "method": "shell.exec", "params": {"command": "echo hello"}}
+    )
+
+    assert "error" in resp
+    assert "safety module unavailable" in resp["error"]["message"]
+
+
+def test_command_dispatch_blocks_dangerous_quick_command(monkeypatch):
+    """quick_commands matched by command.dispatch must clear the danger check too."""
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"quick_commands": {"wipe": {"type": "exec", "command": ":(){ :|:& };:"}}},
+    )
+    monkeypatch.setattr(
+        "tools.approval.detect_dangerous_command",
+        lambda cmd: (True, "FORK_BOMB", "fork bomb"),
+    )
+    monkeypatch.setattr(
+        server.subprocess,
+        "run",
+        lambda *a, **kw: pytest.fail("subprocess.run must not run for blocked quick commands"),
+    )
+
+    resp = server.handle_request(
+        {"id": "1", "method": "command.dispatch", "params": {"name": "wipe"}}
+    )
+
+    assert "error" in resp
+    assert resp["error"]["code"] == 4005
 
 
 def test_plugins_list_surfaces_loader_error(monkeypatch):

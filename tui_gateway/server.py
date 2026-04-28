@@ -3544,6 +3544,26 @@ def _resolve_name(name: str) -> str:
         return name
 
 
+def _check_dangerous_shell_command(cmd: str):
+    """Run the shared dangerous-command detector and surface any failure.
+
+    Returns ``None`` when the command is safe to execute. Returns a tuple
+    ``(error_code, error_message)`` when execution must be refused — either
+    because the command matched a dangerous pattern or because the safety
+    module itself failed to load. Failing the import path closed avoids the
+    earlier ``except ImportError: pass`` which let raw user input run
+    unchecked when ``tools.approval`` was missing (#16560).
+    """
+    try:
+        from tools.approval import detect_dangerous_command
+    except ImportError as exc:
+        return (5023, f"command safety module unavailable, refusing to execute: {exc}")
+    is_dangerous, _, desc = detect_dangerous_command(cmd)
+    if is_dangerous:
+        return (4005, f"blocked: {desc}. Use the agent for dangerous commands.")
+    return None
+
+
 @method("command.dispatch")
 def _(rid, params: dict) -> dict:
     name, arg = params.get("name", "").lstrip("/"), params.get("arg", "")
@@ -3556,8 +3576,12 @@ def _(rid, params: dict) -> dict:
     if name in qcmds:
         qc = qcmds[name]
         if qc.get("type") == "exec":
+            cmd_str = qc.get("command", "")
+            block = _check_dangerous_shell_command(cmd_str)
+            if block is not None:
+                return _err(rid, block[0], block[1])
             r = subprocess.run(
-                qc.get("command", ""),
+                cmd_str,
                 shell=True,
                 capture_output=True,
                 text=True,
@@ -5020,16 +5044,9 @@ def _(rid, params: dict) -> dict:
     cmd = params.get("command", "")
     if not cmd:
         return _err(rid, 4004, "empty command")
-    try:
-        from tools.approval import detect_dangerous_command
-
-        is_dangerous, _, desc = detect_dangerous_command(cmd)
-        if is_dangerous:
-            return _err(
-                rid, 4005, f"blocked: {desc}. Use the agent for dangerous commands."
-            )
-    except ImportError:
-        pass
+    block = _check_dangerous_shell_command(cmd)
+    if block is not None:
+        return _err(rid, block[0], block[1])
     try:
         r = subprocess.run(
             cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd()

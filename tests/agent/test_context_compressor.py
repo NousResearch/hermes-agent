@@ -242,6 +242,131 @@ class TestSummaryFailureCooldown:
         assert mock_call.call_count == 1
 
 
+class TestSummaryFallbackToMainModel:
+    """When ``summary_model`` differs from the main model and the summary LLM
+    call fails, the compressor should retry once on the main model before
+    giving up — losing N turns of context is almost always worse than one
+    extra summary attempt.  Covers both the fast-path (explicit
+    model-not-found errors) and the unknown-error best-effort retry."""
+
+    def _msgs(self):
+        return [
+            {"role": "user", "content": "do something"},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+    def test_model_not_found_404_falls_back_to_main_and_succeeds(self):
+        """Classic misconfiguration: ``auxiliary.compression.model`` points at
+        a model the main provider doesn't serve → 404 → retry on main."""
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary via main model"
+
+        err_404 = Exception("404 model_not_found: no such model")
+        err_404.status_code = 404
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="broken-aux-model",
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[err_404, mock_ok],
+        ) as mock_call:
+            result = c._generate_summary(self._msgs())
+
+        assert mock_call.call_count == 2
+        # First call used the misconfigured aux model
+        assert mock_call.call_args_list[0].kwargs.get("model") == "broken-aux-model"
+        # Second call used the main model (no model kwarg → call_llm uses main)
+        assert "model" not in mock_call.call_args_list[1].kwargs
+        assert result is not None
+        assert "summary via main model" in result
+
+    def test_unknown_error_falls_back_to_main_and_succeeds(self):
+        """Errors that don't match the 404/503/model_not_found fast-path
+        (400s, provider-specific 'no route', aggregator rejections) should
+        ALSO trigger a best-effort retry on main before entering cooldown."""
+        mock_ok = MagicMock()
+        mock_ok.choices = [MagicMock()]
+        mock_ok.choices[0].message.content = "summary via main model"
+
+        # A 400 from OpenRouter / Nous portal with an opaque message — does
+        # NOT match _is_model_not_found, but still an unrecoverable misconfig.
+        err_400 = Exception("400 Bad Request: provider rejected model")
+        err_400.status_code = 400
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="broken-aux-model",
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[err_400, mock_ok],
+        ) as mock_call:
+            result = c._generate_summary(self._msgs())
+
+        assert mock_call.call_count == 2
+        assert mock_call.call_args_list[0].kwargs.get("model") == "broken-aux-model"
+        assert "model" not in mock_call.call_args_list[1].kwargs
+        assert result is not None
+        assert "summary via main model" in result
+
+    def test_no_fallback_when_summary_model_equals_main_model(self):
+        """If the aux model IS the main model, there's nowhere to fall back
+        to — go straight to cooldown, don't loop retrying the same call."""
+        err = Exception("500 internal error")
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="main-model",  # same as main
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=err,
+        ) as mock_call:
+            result = c._generate_summary(self._msgs())
+
+        # Only one attempt — retry gate blocks fallback when models match
+        assert mock_call.call_count == 1
+        assert result is None
+        # Not flagged as fallen back — the retry condition was never met
+        assert getattr(c, "_summary_model_fallen_back", False) is False
+
+    def test_fallback_only_happens_once_per_compressor(self):
+        """If the retry-on-main ALSO fails, don't loop forever — enter
+        cooldown like the normal failure path."""
+        err1 = Exception("400 aux model rejected")
+        err2 = Exception("500 main model also exploded")
+
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="main-model",
+                summary_model_override="broken-aux-model",
+                quiet_mode=True,
+            )
+
+        with patch(
+            "agent.context_compressor.call_llm",
+            side_effect=[err1, err2],
+        ) as mock_call:
+            result = c._generate_summary(self._msgs())
+
+        # Exactly 2 calls: initial + one retry on main.  No further retries.
+        assert mock_call.call_count == 2
+        assert result is None
+        assert c._summary_model_fallen_back is True
+
+
 class TestSummaryFailureTrackingForGatewayWarning:
     """When summary generation fails, the compressor must record dropped count
     + fallback flag so gateway hygiene & /compress can surface a visible

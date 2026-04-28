@@ -27,7 +27,6 @@ import time
 from concurrent.futures import (
     ThreadPoolExecutor,
     TimeoutError as FuturesTimeoutError,
-    as_completed,
 )
 from typing import Any, Dict, List, Optional
 

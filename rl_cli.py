@@ -27,6 +27,8 @@ from pathlib import Path
 import fire
 import yaml
 
+from hermes_constants import OPENROUTER_BASE_URL, get_hermes_home
+
 # Load .env from ~/.hermes/.env first, then project root as dev fallback.
 # User-managed env files should override stale shell exports on restart.
 _hermes_home = get_hermes_home()
@@ -59,8 +61,6 @@ from tools.rl_training_tool import get_missing_keys
 # ============================================================================
 # Config Loading
 # ============================================================================
-
-from hermes_constants import get_hermes_home, OPENROUTER_BASE_URL
 
 DEFAULT_MODEL = "anthropic/claude-opus-4.5"
 DEFAULT_BASE_URL = OPENROUTER_BASE_URL
@@ -412,7 +412,7 @@ def main(
                 
                 # Run the agent
                 print("\n" + "=" * 60)
-                response = agent.run_conversation(user_input)
+                agent.run_conversation(user_input)
                 print("\n" + "=" * 60)
                 
             except KeyboardInterrupt:
@@ -429,7 +429,7 @@ def main(
         print("-" * 40)
         
         try:
-            response = agent.run_conversation(task)
+            agent.run_conversation(task)
             print("\n" + "=" * 60)
             print("✅ Task completed")
         except KeyboardInterrupt:

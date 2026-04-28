@@ -412,7 +412,6 @@ class MattermostAdapter(BasePlatformAdapter):
 
         import aiohttp
 
-        last_exc = None
         file_data = None
         ct = "application/octet-stream"
         fname = url.rsplit("/", 1)[-1].split("?")[0] or f"{kind}.png"

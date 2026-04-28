@@ -90,7 +90,7 @@ from gateway.platforms.yuanbao_proto import (
     encode_get_group_member_list,
     next_seq_no,
 )
-from gateway.session import SessionSource, build_session_key
+from gateway.session import build_session_key
 
 logger = logging.getLogger(__name__)
 
@@ -1897,7 +1897,7 @@ class OwnerCommandMiddleware(InboundMiddleware):
             return None, None, False
 
         # Sender identity check: bot owner <-> push.from_account == push.bot_owner_id
-        owner_id = (push or {}).get("bot_owner_id") or ""
+        # owner_id = (push or {}).get("bot_owner_id") or ""
         # is_owner = bool(owner_id) and owner_id == from_account
         is_owner = True
         return cmd, cmd_line, is_owner

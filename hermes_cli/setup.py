@@ -712,8 +712,6 @@ def setup_model_provider(config: dict, *, quick: bool = False):
     if isinstance(_m, dict):
         selected_provider = _m.get("provider")
 
-    nous_subscription_selected = selected_provider == "nous"
-
     # ── Same-provider fallback & rotation setup (full setup only) ──
     if not quick and _supports_same_provider_pool_setup(selected_provider):
         try:

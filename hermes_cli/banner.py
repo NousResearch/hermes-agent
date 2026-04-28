@@ -562,7 +562,6 @@ def build_welcome_banner(console: Console, model: str, cwd: str,
     right_content = "\n".join(right_lines)
     layout_table.add_row(left_content, right_content)
 
-    agent_name = _skin_branding("agent_name", "Hermes Agent")
     title_color = _skin_color("banner_title", "#FFD700")
     border_color = _skin_color("banner_border", "#CD7F32")
     version_label = format_banner_version_label()

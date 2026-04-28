@@ -523,9 +523,6 @@ def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
 
     Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
     """
-    import platform
-    import subprocess
-
     if platform.system() != "Darwin":
         return None
 

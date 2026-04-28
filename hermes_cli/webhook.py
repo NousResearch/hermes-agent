@@ -11,7 +11,6 @@ hot-reloaded by the webhook adapter without a gateway restart.
 """
 
 import json
-import os
 import re
 import secrets
 import time

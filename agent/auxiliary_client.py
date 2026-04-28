@@ -639,9 +639,7 @@ class _AnthropicCompletionsAdapter:
 
         response = self._client.messages.create(**anthropic_kwargs)
         _transport = get_transport("anthropic_messages")
-        _nr = _transport.normalize_response(
-            response, strip_tool_prefix=self._is_oauth
-        )
+        _nr = _transport.normalize_response(response)
 
         # ToolCall already duck-types as OpenAI shape (.type, .function.name,
         # .function.arguments) via properties, so no wrapping needed.

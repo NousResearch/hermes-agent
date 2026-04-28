@@ -9706,7 +9706,7 @@ class AIAgent:
                                    is_oauth=self._is_anthropic_oauth,
                                    preserve_dots=self._anthropic_preserve_dots())
                     summary_response = self._anthropic_messages_create(_ant_kw)
-                    _summary_result = _tsum.normalize_response(summary_response, strip_tool_prefix=self._is_anthropic_oauth)
+                    _summary_result = _tsum.normalize_response(summary_response)
                     final_response = (_summary_result.content or "").strip()
                 else:
                     summary_response = self._ensure_primary_openai_client(reason="iteration_limit_summary").chat.completions.create(**summary_kwargs)
@@ -9736,7 +9736,7 @@ class AIAgent:
                                     max_tokens=self.max_tokens, reasoning_config=self.reasoning_config,
                                     preserve_dots=self._anthropic_preserve_dots())
                     retry_response = self._anthropic_messages_create(_ant_kw2)
-                    _retry_result = _tretry.normalize_response(retry_response, strip_tool_prefix=self._is_anthropic_oauth)
+                    _retry_result = _tretry.normalize_response(retry_response)
                     final_response = (_retry_result.content or "").strip()
                 else:
                     summary_kwargs = {
@@ -10852,12 +10852,7 @@ class AIAgent:
                         # would have been appended in the non-truncated path.
                         _trunc_msg = None
                         _trunc_transport = self._get_transport()
-                        if self.api_mode == "anthropic_messages":
-                            _trunc_result = _trunc_transport.normalize_response(
-                                response, strip_tool_prefix=self._is_anthropic_oauth
-                            )
-                        else:
-                            _trunc_result = _trunc_transport.normalize_response(response)
+                        _trunc_result = _trunc_transport.normalize_response(response)
                         _trunc_msg = _trunc_result
 
                         _trunc_content = getattr(_trunc_msg, "content", None) if _trunc_msg else None
@@ -12195,10 +12190,7 @@ class AIAgent:
 
             try:
                 _transport = self._get_transport()
-                _normalize_kwargs = {}
-                if self.api_mode == "anthropic_messages":
-                    _normalize_kwargs["strip_tool_prefix"] = self._is_anthropic_oauth
-                normalized = _transport.normalize_response(response, **_normalize_kwargs)
+                normalized = _transport.normalize_response(response)
                 assistant_message = normalized
                 finish_reason = normalized.finish_reason
                 

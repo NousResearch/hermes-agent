@@ -139,9 +139,9 @@ def curses_checklist(
                 stdscr.refresh()
                 key = stdscr.getch()
 
-                if key in (curses.KEY_UP, ord("k")):
+                if key in (curses.KEY_UP, ord("k"), 16):  # 16 = Ctrl-P, curses doesn't define KEY_CTRL_P
                     cursor = (cursor - 1) % len(items)
-                elif key in (curses.KEY_DOWN, ord("j")):
+                elif key in (curses.KEY_DOWN, ord("j"), 14):  # 14 = Ctrl-N
                     cursor = (cursor + 1) % len(items)
                 elif key == ord(" "):
                     chosen.symmetric_difference_update({cursor})
@@ -263,9 +263,9 @@ def curses_radiolist(
                 stdscr.refresh()
                 key = stdscr.getch()
 
-                if key in (curses.KEY_UP, ord("k")):
+                if key in (curses.KEY_UP, ord("k"), 16):  # 16 = Ctrl-P
                     cursor = (cursor - 1) % len(items)
-                elif key in (curses.KEY_DOWN, ord("j")):
+                elif key in (curses.KEY_DOWN, ord("j"), 14):  # 14 = Ctrl-N
                     cursor = (cursor + 1) % len(items)
                 elif key in (ord(" "), curses.KEY_ENTER, 10, 13):
                     result_holder[0] = cursor
@@ -384,9 +384,9 @@ def curses_single_select(
                 stdscr.refresh()
                 key = stdscr.getch()
 
-                if key in (curses.KEY_UP, ord("k")):
+                if key in (curses.KEY_UP, ord("k"), 16):  # 16 = Ctrl-P
                     cursor = (cursor - 1) % len(all_items)
-                elif key in (curses.KEY_DOWN, ord("j")):
+                elif key in (curses.KEY_DOWN, ord("j"), 14):  # 14 = Ctrl-N
                     cursor = (cursor + 1) % len(all_items)
                 elif key in (curses.KEY_ENTER, 10, 13):
                     result_holder[0] = cursor

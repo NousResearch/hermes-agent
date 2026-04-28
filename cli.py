@@ -9702,12 +9702,14 @@ class HermesCLI:
 
         # --- /model picker: arrow-key navigation ---
         @kb.add('up', filter=Condition(lambda: bool(self._model_picker_state)))
+        @kb.add('c-p', filter=Condition(lambda: bool(self._model_picker_state)))
         def model_picker_up(event):
             if self._model_picker_state:
                 self._model_picker_state["selected"] = max(0, self._model_picker_state.get("selected", 0) - 1)
                 event.app.invalidate()
 
         @kb.add('down', filter=Condition(lambda: bool(self._model_picker_state)))
+        @kb.add('c-n', filter=Condition(lambda: bool(self._model_picker_state)))
         def model_picker_down(event):
             state = self._model_picker_state
             if not state:

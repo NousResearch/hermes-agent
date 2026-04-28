@@ -6538,6 +6538,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
 
     # Fetch and pull
     try:
+        def _cp_stdout(proc) -> str:
+            return str(getattr(proc, "stdout", "") or "")
+
+        def _cp_stderr(proc) -> str:
+            return str(getattr(proc, "stderr", "") or "")
 
         print("→ Fetching updates...")
         fetch_result = subprocess.run(
@@ -6547,7 +6552,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             text=True,
         )
         if fetch_result.returncode != 0:
-            stderr = fetch_result.stderr.strip()
+            stderr = _cp_stderr(fetch_result).strip()
             if "Could not resolve host" in stderr or "unable to access" in stderr:
                 print("✗ Network error — cannot reach the remote repository.")
                 print(f"  {stderr.splitlines()[0]}" if stderr else "")
@@ -6571,7 +6576,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             text=True,
             check=True,
         )
-        current_branch = result.stdout.strip()
+        current_branch = _cp_stdout(result).strip() or "main"
 
         # Always update against main
         branch = "main"
@@ -6608,7 +6613,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             text=True,
             check=True,
         )
-        commit_count = int(result.stdout.strip())
+        commit_count = int((_cp_stdout(result).strip() or "0"))
 
         if commit_count == 0:
             _invalidate_update_cache()

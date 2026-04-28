@@ -41,6 +41,26 @@ _EXCLUDED_DIRS = {
                         # session-hash-keyed so they don't port to another machine anyway
 }
 
+
+def _get_excluded_dirs() -> set[str]:
+    """Return the directory names skipped during backup.
+
+    Combines the built-in ``_EXCLUDED_DIRS`` with any extras supplied via the
+    ``HERMES_BACKUP_EXTRA_EXCLUDED_DIRS`` environment variable (comma- or
+    whitespace-separated). The env var lets users bolt their own
+    workflow-specific transient dirs onto the deny list (per-skill ``.venv``
+    folders, ``uv.lock`` build caches, etc.) without forking ``backup.py``.
+    Empty / unset env var preserves prior behaviour exactly. Requested in
+    issue #16988.
+    """
+    extra = os.environ.get("HERMES_BACKUP_EXTRA_EXCLUDED_DIRS", "")
+    if not extra:
+        return _EXCLUDED_DIRS
+    extras = {token for token in extra.replace(",", " ").split() if token}
+    if not extras:
+        return _EXCLUDED_DIRS
+    return _EXCLUDED_DIRS | extras
+
 # File-name suffixes to skip
 _EXCLUDED_SUFFIXES = (
     ".pyc",
@@ -67,8 +87,9 @@ def _should_exclude(rel_path: Path) -> bool:
     parts = rel_path.parts
 
     # Any path component matches an excluded dir name
+    excluded_dirs = _get_excluded_dirs()
     for part in parts:
-        if part in _EXCLUDED_DIRS:
+        if part in excluded_dirs:
             return True
 
     name = rel_path.name
@@ -153,6 +174,7 @@ def run_backup(args) -> None:
     files_to_add: list[tuple[Path, Path]] = []  # (absolute, relative)
     skipped_dirs = set()
 
+    excluded_dirs = _get_excluded_dirs()
     for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
         dp = Path(dirpath)
         rel_dir = dp.relative_to(hermes_root)
@@ -161,7 +183,7 @@ def run_backup(args) -> None:
         orig_dirnames = dirnames[:]
         dirnames[:] = [
             d for d in dirnames
-            if d not in _EXCLUDED_DIRS
+            if d not in excluded_dirs
         ]
         for removed in set(orig_dirnames) - set(dirnames):
             skipped_dirs.add(str(rel_dir / removed))
@@ -709,10 +731,11 @@ def _write_full_zip_backup(out_path: Path, hermes_root: Path) -> Optional[Path]:
     """
     files_to_add: list[tuple[Path, Path]] = []
     try:
+        excluded_dirs = _get_excluded_dirs()
         for dirpath, dirnames, filenames in os.walk(hermes_root, followlinks=False):
             dp = Path(dirpath)
             # Prune excluded directories in-place so os.walk doesn't descend
-            dirnames[:] = [d for d in dirnames if d not in _EXCLUDED_DIRS]
+            dirnames[:] = [d for d in dirnames if d not in excluded_dirs]
 
             for fname in filenames:
                 fpath = dp / fname

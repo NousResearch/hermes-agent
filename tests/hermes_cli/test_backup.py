@@ -140,6 +140,41 @@ class TestShouldExclude:
         assert not _should_exclude(Path("logs/agent.log"))
 
 
+class TestExtraExcludedDirsEnv:
+    """``HERMES_BACKUP_EXTRA_EXCLUDED_DIRS`` lets users add their own dirs (#16988)."""
+
+    def test_unset_env_preserves_default_set(self, monkeypatch):
+        from hermes_cli.backup import _EXCLUDED_DIRS, _get_excluded_dirs
+
+        monkeypatch.delenv("HERMES_BACKUP_EXTRA_EXCLUDED_DIRS", raising=False)
+        assert _get_excluded_dirs() == _EXCLUDED_DIRS
+
+    def test_empty_env_preserves_default_set(self, monkeypatch):
+        from hermes_cli.backup import _EXCLUDED_DIRS, _get_excluded_dirs
+
+        monkeypatch.setenv("HERMES_BACKUP_EXTRA_EXCLUDED_DIRS", "   ,  ")
+        assert _get_excluded_dirs() == _EXCLUDED_DIRS
+
+    def test_comma_separated_values_added(self, monkeypatch):
+        from hermes_cli.backup import _EXCLUDED_DIRS, _get_excluded_dirs
+
+        monkeypatch.setenv("HERMES_BACKUP_EXTRA_EXCLUDED_DIRS", ".venv, venv ,uv-build")
+        merged = _get_excluded_dirs()
+        assert {".venv", "venv", "uv-build"} <= merged
+        assert _EXCLUDED_DIRS <= merged
+        # Built-in defaults must not be lost when extras are added.
+        assert "hermes-agent" in merged
+
+    def test_should_exclude_honors_env_extras(self, monkeypatch):
+        from hermes_cli.backup import _should_exclude
+
+        monkeypatch.setenv("HERMES_BACKUP_EXTRA_EXCLUDED_DIRS", ".venv,uv-build")
+        assert _should_exclude(Path("skills/my-skill/.venv/bin/python"))
+        assert _should_exclude(Path("uv-build/some-cache.bin"))
+        # Names not in either set still pass through.
+        assert not _should_exclude(Path("skills/my-skill/SKILL.md"))
+
+
 # ---------------------------------------------------------------------------
 # Backup tests
 # ---------------------------------------------------------------------------

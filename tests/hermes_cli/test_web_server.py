@@ -2386,6 +2386,39 @@ class TestWebServerEndpoints:
         )
         assert resp.status_code == 401
 
+    def test_plugin_api_requires_session_token(self):
+        """Dashboard plugin backend APIs inherit the dashboard session-token gate."""
+        from starlette.testclient import TestClient
+        from hermes_cli.web_server import app
+
+        unauth_client = TestClient(app)
+        resp = unauth_client.get("/api/plugins/nonexistent/ping")
+        assert resp.status_code == 401
+
+    def test_plugin_api_path_traversal_rejected(self, tmp_path):
+        """A plugin manifest api path cannot escape the plugin dashboard directory."""
+        from hermes_cli.web_server import _resolve_plugin_api_path
+
+        dashboard_dir = tmp_path / "plugin" / "dashboard"
+        dashboard_dir.mkdir(parents=True)
+        outside = tmp_path / "plugin" / "evil.py"
+        outside.write_text("router = None\n", encoding="utf-8")
+        plugin = {"name": "bad", "_dir": str(dashboard_dir), "_api_file": "../evil.py"}
+
+        assert _resolve_plugin_api_path(plugin) is None
+
+    def test_plugin_api_path_inside_plugin_allowed(self, tmp_path):
+        """A plugin manifest api file inside the plugin dashboard directory is allowed."""
+        from hermes_cli.web_server import _resolve_plugin_api_path
+
+        dashboard_dir = tmp_path / "plugin" / "dashboard"
+        dashboard_dir.mkdir(parents=True)
+        api_file = dashboard_dir / "api.py"
+        api_file.write_text("router = None\n", encoding="utf-8")
+        plugin = {"name": "ok", "_dir": str(dashboard_dir), "_api_file": "api.py"}
+
+        assert _resolve_plugin_api_path(plugin) == api_file.resolve()
+
     def test_reveal_env_var_bad_token(self, tmp_path):
         """POST /api/env/reveal with wrong token should return 401."""
         from hermes_cli.config import save_env_value

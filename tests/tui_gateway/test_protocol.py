@@ -94,12 +94,11 @@ def test_write_json_closed_stream_returns_false(server):
     assert server.write_json({"x": 1}) is False
 
 
-def test_write_json_unicode_encode_error_does_not_masquerade_as_closed(server, caplog):
+def test_write_json_unicode_encode_error_re_raises(server):
     """A non-UTF-8 stdout encoding raises UnicodeEncodeError (a ValueError
-    subclass) — it must be logged with exc_info, not silently swallowed
-    as 'peer gone'.  Otherwise, a misconfigured PYTHONIOENCODING/locale
-    looks like a clean disconnect and the bug stays hidden."""
-    import logging
+    subclass).  It must NOT be swallowed as 'peer gone' — that would let
+    `entry.py` exit cleanly via the False path and hide the real config
+    bug.  We re-raise so the existing crash-log infrastructure records it."""
 
     class _AsciiOnly:
         def write(self, line):
@@ -107,24 +106,32 @@ def test_write_json_unicode_encode_error_does_not_masquerade_as_closed(server, c
         def flush(self): pass
 
     server._real_stdout = _AsciiOnly()
-    with caplog.at_level(logging.WARNING, logger="tui_gateway.transport"):
-        assert server.write_json({"msg": "héllo"}) is False
-    assert any("encoding" in r.message.lower() for r in caplog.records)
+    with pytest.raises(UnicodeEncodeError):
+        server.write_json({"msg": "héllo"})
 
 
-def test_write_json_unrelated_value_error_logs_loudly(server, caplog):
-    """Only ValueError("...closed file...") should be treated as peer gone.
-    Any other ValueError likely indicates a logic bug and must surface."""
-    import logging
+def test_write_json_unrelated_value_error_re_raises(server):
+    """Only ValueError('...closed file...') means peer gone.  Other
+    ValueErrors are programming errors and must surface."""
 
     class _BadValue:
         def write(self, _): raise ValueError("something else entirely")
         def flush(self): pass
 
     server._real_stdout = _BadValue()
-    with caplog.at_level(logging.WARNING, logger="tui_gateway.transport"):
-        assert server.write_json({"x": 1}) is False
-    assert any("unexpected ValueError" in r.message for r in caplog.records)
+    with pytest.raises(ValueError, match="something else entirely"):
+        server.write_json({"x": 1})
+
+
+def test_write_json_non_serializable_payload_re_raises(server):
+    """Non-JSON-safe payloads are programming errors — they must NOT be
+    silently dropped via the False path (which would trigger a clean exit
+    in entry.py and mask the real bug)."""
+    import io
+
+    server._real_stdout = io.StringIO()
+    with pytest.raises(TypeError):
+        server.write_json({"obj": object()})
 
 
 def test_write_json_oserror_on_flush_returns_false(server):

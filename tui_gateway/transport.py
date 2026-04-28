@@ -99,22 +99,23 @@ class StdioTransport:
         self._lock = lock
 
     def write(self, obj: dict) -> bool:
-        # Serialization first — kept OUTSIDE the lock so a large
-        # payload can't block other threads waiting to emit their own
-        # frames.  Catch the narrow set of exceptions that genuinely
-        # mean "this payload can't be sent" (TypeError/ValueError from
-        # non-JSON-safe values).  ANY other exception here is a real
-        # programming error and should surface; we surface it as a
-        # warning + return False so the dispatcher loop survives, but
-        # we log with ``exc_info`` so the crash log keeps the trace.
-        try:
-            line = json.dumps(obj, ensure_ascii=False) + "\n"
-        except (TypeError, ValueError) as e:
-            logger.warning("StdioTransport: non-JSON-safe payload dropped: %s", e)
-            return False
-        except Exception:  # noqa: BLE001 — surface programming errors loudly
-            logger.warning("StdioTransport: unexpected serialization error", exc_info=True)
-            return False
+        """Return ``True`` on success, ``False`` ONLY when the peer is gone.
+
+        Returning ``False`` is the dispatcher's "broken stdout pipe" signal
+        — ``entry.py`` calls ``sys.exit(0)`` when ``write_json`` reports
+        ``False``.  So programming errors (non-JSON-safe payloads, encoding
+        misconfig, unexpected ValueErrors) MUST NOT return ``False``,
+        otherwise a real bug looks like a clean disconnect and is harder
+        to diagnose.  Those re-raise so the existing crash-log infrastructure
+        records the traceback.
+
+        Peer-gone branches: ``BrokenPipeError`` and ``ValueError("...closed file...")``.
+        """
+        # Serialization is OUTSIDE the lock so a large payload can't
+        # block other threads emitting their own frames.  A non-JSON-safe
+        # payload is a programming error: re-raise so the crash log
+        # captures it instead of silently exiting via the False path.
+        line = json.dumps(obj, ensure_ascii=False) + "\n"
 
         with self._lock:
             stream = self._stream_getter()
@@ -122,45 +123,32 @@ class StdioTransport:
                 stream.write(line)
             except BrokenPipeError:
                 return False
-            except UnicodeEncodeError:
-                # Non-UTF-8 stdout encoding — this is a real bug in the
-                # host environment (pythonioencoding mismatch, locale,
-                # etc.), NOT a closed pipe.  Log loudly with exc_info
-                # so it doesn't masquerade as a disconnect, but drop
-                # the frame so the dispatcher loop survives.
-                logger.warning(
-                    "StdioTransport: stdout encoding cannot represent payload "
-                    "(check PYTHONIOENCODING/locale)", exc_info=True,
-                )
-                return False
             except ValueError as e:
-                # `ValueError` from a closed file genuinely means
-                # "peer gone" — narrow to that case so other ValueErrors
-                # (which would indicate logic bugs) still surface.
-                if "closed file" in str(e):
-                    return False
-                logger.warning("StdioTransport: unexpected ValueError on write", exc_info=True)
+                # ValueError("I/O operation on closed file") is the
+                # ONLY ValueError that means "peer gone".  Anything
+                # else — including UnicodeEncodeError, which is a
+                # ValueError subclass for misconfigured locales —
+                # is a real bug; re-raise so it surfaces in the crash log.
+                if isinstance(e, UnicodeEncodeError) or "closed file" not in str(e):
+                    raise
                 return False
             except OSError as e:
                 logger.debug("StdioTransport write failed: %s", e)
                 return False
 
-            # Separate try/except: any flush exception is reported
-            # as peer-gone instead of bubbling up.  Note this only
-            # protects against EXCEPTIONS — a flush that *hangs*
-            # on a half-closed pipe will still hold the lock until
-            # it returns.  See ``_DISABLE_FLUSH`` for the
-            # "skip flush entirely" escape hatch when you cannot
-            # afford the lock-starvation risk.
+            # A flush that *raises* indicates the same peer-gone
+            # condition; we still return False so the dispatcher exits
+            # cleanly.  A flush that *hangs* on a half-closed pipe
+            # holds the lock until it returns — see ``_DISABLE_FLUSH``
+            # for the "skip flush entirely" escape hatch.
             if not _DISABLE_FLUSH:
                 try:
                     stream.flush()
                 except BrokenPipeError:
                     return False
                 except ValueError as e:
-                    if "closed file" in str(e):
-                        return False
-                    logger.warning("StdioTransport: unexpected ValueError on flush", exc_info=True)
+                    if isinstance(e, UnicodeEncodeError) or "closed file" not in str(e):
+                        raise
                     return False
                 except OSError as e:
                     logger.debug("StdioTransport flush failed: %s", e)

@@ -37,7 +37,7 @@ import { Markdown } from "@/components/Markdown";
 import { PlatformsCard } from "@/components/PlatformsCard";
 import { Toast } from "@/components/Toast";
 import { Button } from "@nous-research/ui";
-import { Badge } from "@/components/ui/badge";
+import { Badge } from "@nous-research/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useConfirmDelete } from "@/hooks/useConfirmDelete";
@@ -190,7 +190,7 @@ function MessageBubble({
       <div className="flex items-center gap-2 mb-1">
         <span className={`text-xs font-semibold ${style.text}`}>{label}</span>
         {isHit && (
-          <Badge variant="warning" className="text-[9px] py-0 px-1.5">
+          <Badge tone="warning" className="text-[9px] py-0 px-1.5">
             {t.common.match}
           </Badge>
         )}
@@ -321,7 +321,7 @@ function SessionRow({
                     : t.sessions.untitledSession}
               </span>
               {session.is_active && (
-                <Badge variant="success" className="text-[10px] shrink-0">
+                <Badge tone="success" className="text-[10px] shrink-0">
                   <span className="mr-1 inline-block h-1.5 w-1.5 animate-pulse rounded-full bg-current" />
                   {t.common.live}
                 </Badge>
@@ -351,7 +351,7 @@ function SessionRow({
         </div>
 
         <div className="flex items-center gap-2 shrink-0">
-          <Badge variant="outline" className="text-[10px]">
+          <Badge tone="outline" className="text-[10px]">
             {session.source ?? "local"}
           </Badge>
           {resumeInChatEnabled && (
@@ -437,7 +437,7 @@ export default function SessionsPage() {
       return;
     }
     setAfterTitle(
-      <Badge variant="secondary" className="text-xs tabular-nums">
+      <Badge tone="secondary" className="text-xs tabular-nums">
         {total}
       </Badge>,
     );
@@ -672,7 +672,7 @@ export default function SessionsPage() {
               </span>
 
               <Badge
-                variant={
+                tone={
                   actionStatus?.running
                     ? "warning"
                     : actionStatus?.exit_code === 0
@@ -756,7 +756,7 @@ export default function SessionsPage() {
                 </div>
 
                 <Badge
-                  variant="outline"
+                  tone="outline"
                   className="text-[10px] shrink-0 self-start sm:self-center"
                 >
                   <Database className="mr-1 h-3 w-3" />

@@ -29,6 +29,7 @@ if _env_path.exists():
 load_dotenv(PROJECT_ROOT / ".env", override=False, encoding="utf-8")
 
 from hermes_cli.colors import Colors, color
+from hermes_cli.models import _HERMES_USER_AGENT
 from hermes_constants import OPENROUTER_MODELS_URL
 from utils import base_url_host_matches
 
@@ -45,6 +46,7 @@ _PROVIDER_ENV_HINTS = (
     "Z_AI_API_KEY",
     "KIMI_API_KEY",
     "KIMI_CN_API_KEY",
+    "GMI_API_KEY",
     "MINIMAX_API_KEY",
     "MINIMAX_CN_API_KEY",
     "KILOCODE_API_KEY",
@@ -295,16 +297,37 @@ def run_doctor(args):
             except Exception:
                 pass
             try:
-                from hermes_cli.auth import resolve_provider as _resolve_provider
+                from hermes_cli.config import get_compatible_custom_providers as _compatible_custom_providers
+                from hermes_cli.providers import resolve_provider_full as _resolve_provider_full
             except Exception:
-                _resolve_provider = None
+                _compatible_custom_providers = None
+                _resolve_provider_full = None
+
+            custom_providers = []
+            if _compatible_custom_providers is not None:
+                try:
+                    custom_providers = _compatible_custom_providers(cfg)
+                except Exception:
+                    custom_providers = []
+
+            user_providers = cfg.get("providers")
+            if isinstance(user_providers, dict):
+                known_providers.update(str(name).strip().lower() for name in user_providers if str(name).strip())
+            for entry in custom_providers:
+                if not isinstance(entry, dict):
+                    continue
+                name = str(entry.get("name") or "").strip()
+                if name:
+                    known_providers.add("custom:" + name.lower().replace(" ", "-"))
 
             canonical_provider = provider
-            if provider and _resolve_provider is not None and provider != "auto":
-                try:
-                    canonical_provider = _resolve_provider(provider)
-                except Exception:
-                    canonical_provider = None
+            if (
+                provider
+                and _resolve_provider_full is not None
+                and provider not in ("auto", "custom")
+            ):
+                provider_def = _resolve_provider_full(provider, user_providers, custom_providers)
+                canonical_provider = provider_def.id if provider_def is not None else None
 
             if provider and provider != "auto":
                 if canonical_provider is None or (known_providers and canonical_provider not in known_providers):
@@ -915,6 +938,7 @@ def run_doctor(args):
         ("StepFun Step Plan",   ("STEPFUN_API_KEY",),                           "https://api.stepfun.ai/step_plan/v1/models", "STEPFUN_BASE_URL", True),
         ("Kimi / Moonshot (China)", ("KIMI_CN_API_KEY",),                    "https://api.moonshot.cn/v1/models",   None, True),
         ("Arcee AI",         ("ARCEEAI_API_KEY",),                            "https://api.arcee.ai/api/v1/models",  "ARCEE_BASE_URL", True),
+        ("GMI Cloud",        ("GMI_API_KEY",),                                "https://api.gmi-serving.com/v1/models", "GMI_BASE_URL", True),
         ("DeepSeek",         ("DEEPSEEK_API_KEY",),                           "https://api.deepseek.com/v1/models",  "DEEPSEEK_BASE_URL", True),
         ("Hugging Face",     ("HF_TOKEN",),                                   "https://router.huggingface.co/v1/models", "HF_BASE_URL", True),
         ("NVIDIA NIM",       ("NVIDIA_API_KEY",),                             "https://integrate.api.nvidia.com/v1/models", "NVIDIA_BASE_URL", True),
@@ -957,7 +981,10 @@ def run_doctor(args):
                 if base_url_host_matches(_base, "api.kimi.com") and _base.rstrip("/").endswith("/coding"):
                     _base = _base.rstrip("/") + "/v1"
                 _url = (_base.rstrip("/") + "/models") if _base else _default_url
-                _headers = {"Authorization": f"Bearer {_key}"}
+                _headers = {
+                    "Authorization": f"Bearer {_key}",
+                    "User-Agent": _HERMES_USER_AGENT,
+                }
                 if base_url_host_matches(_base, "api.kimi.com"):
                     _headers["User-Agent"] = "claude-code/0.1.0"
                 _resp = httpx.get(

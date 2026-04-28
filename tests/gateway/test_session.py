@@ -11,6 +11,8 @@ from gateway.session import (
     build_session_context,
     build_session_context_prompt,
     build_session_key,
+    canonical_whatsapp_identifier,
+    normalize_whatsapp_identifier,
 )
 
 
@@ -183,6 +185,25 @@ class TestBuildSessionContextPrompt:
         assert "Telegram" in prompt
         assert "Home Chat" in prompt
 
+    def test_bluebubbles_prompt_mentions_short_conversational_i_message_format(self):
+        config = GatewayConfig(
+            platforms={
+                Platform.BLUEBUBBLES: PlatformConfig(enabled=True, extra={"server_url": "http://localhost:1234", "password": "secret"}),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.BLUEBUBBLES,
+            chat_id="iMessage;-;user@example.com",
+            chat_name="Ben",
+            chat_type="dm",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        assert "responding via iMessage" in prompt
+        assert "short and conversational" in prompt
+        assert "blank line" in prompt
+
     def test_discord_prompt(self):
         config = GatewayConfig(
             platforms={
@@ -224,6 +245,7 @@ class TestBuildSessionContextPrompt:
         assert "Slack" in prompt
         assert "cannot search" in prompt.lower()
         assert "pin" in prompt.lower()
+        assert "current message's slack block/attachment payload" in prompt.lower()
 
     def test_discord_prompt_with_channel_topic(self):
         """Channel topic should appear in the session context prompt."""
@@ -626,9 +648,9 @@ class TestSessionStoreSwitchSession:
         db.close()
 
 
-class TestWhatsAppDMSessionKeyConsistency:
-    """Regression: all session-key construction must go through build_session_key
-    so DMs are isolated by chat_id across platforms."""
+class TestWhatsAppSessionKeyConsistency:
+    """Regression: WhatsApp session keys must collapse JID/LID aliases to a
+    single stable identity for both DM chat_ids and group participant_ids."""
 
     @pytest.fixture()
     def store(self, tmp_path):
@@ -639,7 +661,7 @@ class TestWhatsAppDMSessionKeyConsistency:
         s._loaded = True
         return s
 
-    def test_whatsapp_dm_includes_chat_id(self):
+    def test_whatsapp_dm_uses_canonical_identifier(self):
         source = SessionSource(
             platform=Platform.WHATSAPP,
             chat_id="15551234567@s.whatsapp.net",
@@ -647,7 +669,80 @@ class TestWhatsAppDMSessionKeyConsistency:
             user_name="Phone User",
         )
         key = build_session_key(source)
-        assert key == "agent:main:whatsapp:dm:15551234567@s.whatsapp.net"
+        assert key == "agent:main:whatsapp:dm:15551234567"
+
+    def test_whatsapp_dm_aliases_share_one_session_key(self, tmp_path, monkeypatch):
+        tmp_home = tmp_path / "hermes-home"
+        mapping_dir = tmp_home / "whatsapp" / "session"
+        mapping_dir.mkdir(parents=True, exist_ok=True)
+        (mapping_dir / "lid-mapping-999999999999999.json").write_text(
+            json.dumps("15551234567@s.whatsapp.net"),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_home))
+
+        lid_source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="999999999999999@lid",
+            chat_type="dm",
+            user_name="Phone User",
+        )
+        phone_source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="15551234567@s.whatsapp.net",
+            chat_type="dm",
+            user_name="Phone User",
+        )
+
+        assert build_session_key(lid_source) == "agent:main:whatsapp:dm:15551234567"
+        assert build_session_key(phone_source) == "agent:main:whatsapp:dm:15551234567"
+
+    def test_whatsapp_group_participant_aliases_share_session_key(self, tmp_path, monkeypatch):
+        """With group_sessions_per_user, the same human flipping between
+        phone-JID and LID inside a group must not produce two isolated
+        per-user sessions."""
+        tmp_home = tmp_path / "hermes-home"
+        mapping_dir = tmp_home / "whatsapp" / "session"
+        mapping_dir.mkdir(parents=True, exist_ok=True)
+        (mapping_dir / "lid-mapping-999999999999999.json").write_text(
+            json.dumps("15551234567@s.whatsapp.net"),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_home))
+
+        lid_source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="120363000000000000@g.us",
+            chat_type="group",
+            user_id="999999999999999@lid",
+            user_name="Group Member",
+        )
+        phone_source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="120363000000000000@g.us",
+            chat_type="group",
+            user_id="15551234567@s.whatsapp.net",
+            user_name="Group Member",
+        )
+
+        expected = "agent:main:whatsapp:group:120363000000000000@g.us:15551234567"
+        assert build_session_key(lid_source, group_sessions_per_user=True) == expected
+        assert build_session_key(phone_source, group_sessions_per_user=True) == expected
+
+    def test_whatsapp_group_shared_sessions_untouched_by_canonicalisation(self):
+        """When group_sessions_per_user is False, participant_id is not in the
+        key at all, so canonicalisation is a no-op for this mode."""
+        source = SessionSource(
+            platform=Platform.WHATSAPP,
+            chat_id="120363000000000000@g.us",
+            chat_type="group",
+            user_id="999999999999999@lid",
+            user_name="Group Member",
+        )
+        assert (
+            build_session_key(source, group_sessions_per_user=False)
+            == "agent:main:whatsapp:group:120363000000000000@g.us"
+        )
 
     def test_store_delegates_to_build_session_key(self, store):
         """SessionStore._generate_session_key must produce the same result."""
@@ -864,6 +959,57 @@ class TestWhatsAppDMSessionKeyConsistency:
         key = build_session_key(source)
         # DM logic: chat_id + thread_id, user_id never included
         assert key == "agent:main:telegram:dm:99:topic-1"
+
+
+class TestWhatsAppIdentifierPublicHelpers:
+    """Contract tests for the public WhatsApp identifier helpers.
+
+    These helpers are part of the public API for plugins that need
+    WhatsApp identity awareness. Breaking these contracts is a
+    breaking change for downstream plugins.
+    """
+
+    def test_normalize_strips_jid_suffix(self):
+        assert normalize_whatsapp_identifier("60123456789@s.whatsapp.net") == "60123456789"
+
+    def test_normalize_strips_lid_suffix(self):
+        assert normalize_whatsapp_identifier("999999999999999@lid") == "999999999999999"
+
+    def test_normalize_strips_device_suffix(self):
+        assert normalize_whatsapp_identifier("60123456789:47@s.whatsapp.net") == "60123456789"
+
+    def test_normalize_strips_leading_plus(self):
+        assert normalize_whatsapp_identifier("+60123456789") == "60123456789"
+
+    def test_normalize_handles_bare_numeric(self):
+        assert normalize_whatsapp_identifier("60123456789") == "60123456789"
+
+    def test_normalize_handles_empty_and_none(self):
+        assert normalize_whatsapp_identifier("") == ""
+        assert normalize_whatsapp_identifier(None) == ""  # type: ignore[arg-type]
+
+    def test_canonical_without_mapping_returns_normalized(self, tmp_path, monkeypatch):
+        """With no bridge mapping files, the normalized input is returned."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        assert canonical_whatsapp_identifier("60123456789@lid") == "60123456789"
+
+    def test_canonical_walks_lid_mapping(self, tmp_path, monkeypatch):
+        """LID is resolved to its paired phone identity via lid-mapping files."""
+        mapping_dir = tmp_path / "whatsapp" / "session"
+        mapping_dir.mkdir(parents=True, exist_ok=True)
+        (mapping_dir / "lid-mapping-999999999999999.json").write_text(
+            json.dumps("15551234567@s.whatsapp.net"),
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+        canonical = canonical_whatsapp_identifier("999999999999999@lid")
+        assert canonical == "15551234567"
+        assert canonical_whatsapp_identifier("15551234567@s.whatsapp.net") == "15551234567"
+
+    def test_canonical_empty_input(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        assert canonical_whatsapp_identifier("") == ""
 
 
 class TestSessionStoreEntriesAttribute:

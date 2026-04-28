@@ -327,6 +327,16 @@ compression:
   # auxiliary section below (auxiliary.compression.provider / model).
 
 # =============================================================================
+# Anthropic prompt caching TTL
+# =============================================================================
+# When prompt caching is active (Claude via OpenRouter or native Anthropic),
+# Anthropic supports two TTL tiers for cached prefixes: "5m" (default) and
+# "1h". Other values are ignored and "5m" is used.
+#
+prompt_caching:
+  cache_ttl: "5m" # use "1h" for long sessions with pauses between turns
+
+# =============================================================================
 # Auxiliary Models (Advanced — Experimental)
 # =============================================================================
 # Hermes uses lightweight "auxiliary" models for side tasks: image analysis,
@@ -507,6 +517,13 @@ agent:
   # finish, then interrupts anything still running after this timeout.
   # 0 = no drain, interrupt immediately.
   # restart_drain_timeout: 60
+
+  # Max app-level retry attempts for API errors (connection drops, provider
+  # timeouts, 5xx, etc.) before the agent surfaces the failure. Lower this
+  # to 1 if you use fallback providers and want fast failover on flaky
+  # primaries (default 3). The OpenAI SDK does its own low-level retries
+  # underneath this wrapper — this is the Hermes-level loop.
+  # api_max_retries: 3
   
   # Enable verbose logging
   verbose: false
@@ -589,6 +606,7 @@ platform_toolsets:
   signal: [hermes-signal]
   homeassistant: [hermes-homeassistant]
   qqbot: [hermes-qqbot]
+  yuanbao: [hermes-yuanbao]
 
 # =============================================================================
 # Gateway Platform Settings
@@ -773,9 +791,16 @@ code_execution:
 # Supports single tasks and batch mode (default 3 parallel, configurable).
 delegation:
   max_iterations: 50                          # Max tool-calling turns per child (default: 50)
-  # max_concurrent_children: 3                # Max parallel child agents (default: 3)
-  # max_spawn_depth: 1                        # Tree depth cap (1-3, default: 1 = flat). Raise to 2 or 3 to allow orchestrator children to spawn their own workers.
+  # max_concurrent_children: 3                # Max parallel child agents per batch (default: 3, floor: 1, no ceiling).
+                                              # WARNING: values above 10 multiply API cost linearly.
+  # max_spawn_depth: 1                        # Delegation tree depth cap (range: 1-3, default: 1 = flat).
+                                              # Raise to 2 to allow workers to spawn their own subagents.
+                                              # Requires role="orchestrator" on intermediate agents.
   # orchestrator_enabled: true                # Kill switch for role="orchestrator" children (default: true).
+  # subagent_auto_approve: false              # When a subagent hits a dangerous-command approval prompt, auto-deny (default: false)
+                                              # or auto-approve "once" (true) instead of blocking on stdin.
+                                              # The parent TUI owns stdin, so blocking would deadlock; non-interactive resolution is required.
+                                              # Both choices emit a logger.warning audit line. Flip to true only for cron/batch pipelines.
   # inherit_mcp_toolsets: true                # When explicit child toolsets are narrowed, also keep the parent's MCP toolsets (default: true). Set false for strict intersection.
   # model: "google/gemini-3-flash-preview"    # Override model for subagents (empty = inherit parent)
   # provider: "openrouter"                    # Override provider for subagents (empty = inherit parent)
@@ -800,7 +825,9 @@ delegation:
 # Display
 # =============================================================================
 display:
-  # Use compact banner mode
+  # Use compact banner mode (hides the ASCII-art banner, shows a single line).
+  #   true:  Compact single-line banner
+  #   false: Full ASCII banner with tool/skill summary (default)
   compact: false
 
   # Tool progress display level (CLI and gateway)
@@ -814,12 +841,19 @@ display:
   # Gateway-only natural mid-turn assistant updates.
   # When true, completed assistant status messages are sent as separate chat
   # messages. This is independent of tool_progress and gateway streaming.
+  #   true:  Send mid-turn assistant updates as separate messages (default)
+  #   false: Only send the final response
   interim_assistant_messages: true
 
-  # What Enter does when Hermes is already busy in the CLI.
+  # What Enter does when Hermes is already busy (CLI and gateway platforms).
   #   interrupt: Interrupt the current run and redirect Hermes (default)
   #   queue:     Queue your message for the next turn
-  # Ctrl+C always interrupts regardless of this setting.
+  #   steer:     Inject your message mid-run via /steer, arriving at the agent
+  #              after the next tool call — no interrupt, no role violation.
+  #              Falls back to 'queue' if the agent isn't running yet or if
+  #              images are attached (steer only carries text).
+  # Ctrl+C (or /stop in gateway) always interrupts regardless of this setting.
+  # Toggle at runtime with /busy <interrupt|queue|steer>.
   busy_input_mode: interrupt
 
   # Background process notifications (gateway/messaging only).
@@ -835,17 +869,22 @@ display:
   # Play terminal bell when agent finishes a response.
   # Useful for long-running tasks — your terminal will ding when the agent is done.
   # Works over SSH. Most terminals can be configured to flash the taskbar or play a sound.
+  #   true:  Ring the terminal bell on each response
+  #   false: Silent (default)
   bell_on_complete: false
 
   # Show model reasoning/thinking before each response.
   # When enabled, a dim box shows the model's thought process above the response.
   # Toggle at runtime with /reasoning show or /reasoning hide.
+  #   true:  Show the reasoning box
+  #   false: Hide reasoning (default)
   show_reasoning: false
 
   # Stream tokens to the terminal as they arrive instead of waiting for the
   # full response. The response box opens on first token and text appears
   # line-by-line. Tool calls are still captured silently.
-  # Stream tokens to the terminal in real-time. Disable to wait for full responses.
+  #   true:  Stream tokens as they arrive (default)
+  #   false: Wait for the full response before rendering
   streaming: true
 
   # ───────────────────────────────────────────────────────────────────────────
@@ -855,10 +894,15 @@ display:
   # response box label, and branding text. Change at runtime with /skin <name>.
   #
   # Built-in skins:
-  #   default  — Classic Hermes gold/kawaii
-  #   ares     — Crimson/bronze war-god theme with spinner wings
-  #   mono     — Clean grayscale monochrome
-  #   slate    — Cool blue developer-focused
+  #   default        — Classic Hermes gold/kawaii
+  #   ares           — Crimson/bronze war-god theme with spinner wings
+  #   mono           — Clean grayscale monochrome
+  #   slate          — Cool blue developer-focused
+  #   daylight       — Bright light-mode theme
+  #   warm-lightmode — Warm paper-tone light-mode theme
+  #   poseidon       — Sea-green/teal Olympian theme
+  #   sisyphus       — Earthy stone-and-moss theme
+  #   charizard      — Fiery orange dragon theme
   #
   # Custom skins: drop a YAML file in ~/.hermes/skins/<name>.yaml
   # Schema (all fields optional, missing values inherit from default):

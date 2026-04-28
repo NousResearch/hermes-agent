@@ -46,7 +46,7 @@ The messaging gateway is the long-running process that connects Hermes to 14+ ex
 │                     ▼                           │
 │                 SessionStore                    │
 │              (SQLite persistence)               │
-└─────────────────────────────────────────────────┘
+└───────┴─────────────┴─────────────┴─────────────┘
 ```
 
 ## Message Flow

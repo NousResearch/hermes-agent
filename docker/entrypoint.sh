@@ -22,14 +22,32 @@ if [ "$(id -u)" = "0" ]; then
         groupmod -o -g "$HERMES_GID" hermes 2>/dev/null || true
     fi
 
+    # Fix ownership of the data volume. When HERMES_UID remaps the hermes user,
+    # files created by previous runs (under the old UID) become inaccessible.
+    # Always chown -R when UID was remapped; otherwise only if top-level is wrong.
     actual_hermes_uid=$(id -u hermes)
-    if [ "$(stat -c %u "$HERMES_HOME" 2>/dev/null)" != "$actual_hermes_uid" ]; then
-        echo "$HERMES_HOME is not owned by $actual_hermes_uid, fixing"
+    needs_chown=false
+    if [ -n "$HERMES_UID" ] && [ "$HERMES_UID" != "10000" ]; then
+        needs_chown=true
+    elif [ "$(stat -c %u "$HERMES_HOME" 2>/dev/null)" != "$actual_hermes_uid" ]; then
+        needs_chown=true
+    fi
+    if [ "$needs_chown" = true ]; then
+        echo "Fixing ownership of $HERMES_HOME to hermes ($actual_hermes_uid)"
         # In rootless Podman the container's "root" is mapped to an unprivileged
         # host UID — chown will fail.  That's fine: the volume is already owned
         # by the mapped user on the host side.
         chown -R hermes:hermes "$HERMES_HOME" 2>/dev/null || \
             echo "Warning: chown failed (rootless container?) — continuing anyway"
+    fi
+
+    # Ensure config.yaml is readable by the hermes runtime user even if it was
+    # edited on the host after initial ownership setup. Must run here (as root)
+    # rather than after the gosu drop, otherwise a non-root caller like
+    # `docker run -u $(id -u):$(id -g)` hits "Operation not permitted" (#15865).
+    if [ -f "$HERMES_HOME/config.yaml" ]; then
+        chown hermes:hermes "$HERMES_HOME/config.yaml" 2>/dev/null || true
+        chmod 640 "$HERMES_HOME/config.yaml" 2>/dev/null || true
     fi
 
     echo "Dropping root privileges"

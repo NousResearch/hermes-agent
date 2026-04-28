@@ -33,15 +33,18 @@ class TestChatCompletionsBasic:
     def test_convert_messages_strips_codex_fields(self, transport):
         msgs = [
             {"role": "assistant", "content": "ok", "codex_reasoning_items": [{"id": "rs_1"}],
+             "codex_message_items": [{"id": "msg_1", "type": "message"}],
              "tool_calls": [{"id": "call_1", "call_id": "call_1", "response_item_id": "fc_1",
                             "type": "function", "function": {"name": "t", "arguments": "{}"}}]},
         ]
         result = transport.convert_messages(msgs)
         assert "codex_reasoning_items" not in result[0]
+        assert "codex_message_items" not in result[0]
         assert "call_id" not in result[0]["tool_calls"][0]
         assert "response_item_id" not in result[0]["tool_calls"][0]
         # Original list untouched (deepcopy-on-demand)
         assert "codex_reasoning_items" in msgs[0]
+        assert "codex_message_items" in msgs[0]
 
 
 class TestChatCompletionsBuildKwargs:
@@ -237,6 +240,56 @@ class TestChatCompletionsKimi:
             max_tokens_param_fn=lambda n: {"max_tokens": n},
         )
         assert kw["extra_body"]["thinking"] == {"type": "disabled"}
+
+    def test_moonshot_tool_schemas_are_sanitized_by_model_name(self, transport):
+        """Aggregator routes (Nous, OpenRouter) hit Moonshot by model name, not base URL."""
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "search",
+                    "description": "Search",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "q": {"description": "query"},  # missing type
+                        },
+                    },
+                },
+            },
+        ]
+        kw = transport.build_kwargs(
+            model="moonshotai/kimi-k2.6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=tools,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        assert kw["tools"][0]["function"]["parameters"]["properties"]["q"]["type"] == "string"
+
+    def test_non_moonshot_tools_are_not_mutated(self, transport):
+        """Other models don't go through the Moonshot sanitizer."""
+        original_params = {
+            "type": "object",
+            "properties": {"q": {"description": "query"}},  # missing type
+        }
+        tools = [
+            {
+                "type": "function",
+                "function": {
+                    "name": "search",
+                    "description": "Search",
+                    "parameters": original_params,
+                },
+            },
+        ]
+        kw = transport.build_kwargs(
+            model="anthropic/claude-sonnet-4.6",
+            messages=[{"role": "user", "content": "Hi"}],
+            tools=tools,
+            max_tokens_param_fn=lambda n: {"max_tokens": n},
+        )
+        # The parameters dict is passed through untouched (no synthetic type)
+        assert "type" not in kw["tools"][0]["function"]["parameters"]["properties"]["q"]
 
 
 class TestChatCompletionsValidate:

@@ -149,3 +149,46 @@ def test_get_nous_subscription_features_requires_agent_browser_for_browserbase(m
     assert features.browser.active is False
     assert features.browser.managed_by_nous is False
     assert features.browser.current_provider == "Browserbase"
+
+
+def test_get_nous_subscription_features_does_not_treat_quoted_false_as_gateway_opt_in(monkeypatch):
+    env = {"EXA_API_KEY": "exa-test"}
+
+    monkeypatch.setattr(ns, "get_env_value", lambda name: env.get(name, ""))
+    monkeypatch.setattr(ns, "get_nous_auth_status", lambda: {"logged_in": True})
+    monkeypatch.setattr(ns, "managed_nous_tools_enabled", lambda: True)
+    monkeypatch.setattr(ns, "_toolset_enabled", lambda config, key: key == "web")
+    monkeypatch.setattr(ns, "_has_agent_browser", lambda: False)
+    monkeypatch.setattr(ns, "resolve_openai_audio_api_key", lambda: "")
+    monkeypatch.setattr(ns, "has_direct_modal_credentials", lambda: False)
+    monkeypatch.setattr(ns, "is_managed_tool_gateway_ready", lambda vendor: vendor == "firecrawl")
+
+    features = ns.get_nous_subscription_features(
+        {"web": {"backend": "exa", "use_gateway": "false"}}
+    )
+
+    assert features.web.available is True
+    assert features.web.active is True
+    assert features.web.managed_by_nous is False
+    assert features.web.direct_override is True
+    assert features.web.current_provider == "exa"
+
+
+def test_get_gateway_eligible_tools_ignores_quoted_false_opt_in(monkeypatch):
+    monkeypatch.setattr(ns, "managed_nous_tools_enabled", lambda: True)
+    monkeypatch.setattr(
+        ns,
+        "_get_gateway_direct_credentials",
+        lambda: {"web": True, "image_gen": False, "tts": False, "browser": False},
+    )
+
+    unconfigured, has_direct, already_managed = ns.get_gateway_eligible_tools(
+        {
+            "model": {"provider": "nous"},
+            "web": {"use_gateway": "false"},
+        }
+    )
+
+    assert "web" in has_direct
+    assert "web" not in already_managed
+    assert set(unconfigured) == {"image_gen", "tts", "browser"}

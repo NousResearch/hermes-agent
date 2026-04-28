@@ -1,12 +1,35 @@
 import { cn } from "@/lib/utils";
 
-export function Card({ className, ...props }: React.HTMLAttributes<HTMLDivElement>) {
+/**
+ * Themed card primitive. Themes can restyle every card without touching
+ * call sites by setting CSS vars under the `card` component-style bucket:
+ *
+ *   componentStyles:
+ *     card:
+ *       clipPath: "polygon(10px 0, 100% 0, 100% calc(100% - 10px), calc(100% - 10px) 100%, 0 100%, 0 10px)"
+ *       border: "1px solid var(--color-ring)"
+ *       background: "linear-gradient(180deg, var(--color-card) 0%, transparent 100%)"
+ *       boxShadow: "0 0 0 1px var(--color-ring) inset, 0 0 24px -8px var(--warm-glow)"
+ *
+ * All properties are optional — vars that aren't set compute to their
+ * CSS initial value, so the default shadcn-y card keeps looking normal
+ * for themes that don't override anything.
+ */
+const CARD_STYLE: React.CSSProperties = {
+  clipPath: "var(--component-card-clip-path)",
+  borderImage: "var(--component-card-border-image)",
+  background: "var(--component-card-background)",
+  boxShadow: "var(--component-card-box-shadow)",
+};
+
+export function Card({ className, style, ...props }: React.HTMLAttributes<HTMLDivElement>) {
   return (
     <div
       className={cn(
         "border border-border bg-card/80 text-card-foreground w-full",
         className,
       )}
+      style={{ ...CARD_STYLE, ...style }}
       {...props}
     />
   );

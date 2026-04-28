@@ -2,22 +2,17 @@ import { Box, Text, useInput, useStdout } from '@hermes/ink'
 import { useEffect, useMemo, useState } from 'react'
 
 import { providerDisplayNames } from '../domain/providers.js'
+import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { ModelOptionProvider, ModelOptionsResponse } from '../gatewayTypes.js'
 import { asRpcResult, rpcErrorMessage } from '../lib/rpc.js'
 import type { Theme } from '../theme.js'
 
+import { OverlayHint, useOverlayKeys, windowItems, windowOffset } from './overlayControls.js'
+
 const VISIBLE = 12
 const MIN_WIDTH = 40
 const MAX_WIDTH = 90
-
-const pageOffset = (count: number, sel: number) => Math.max(0, Math.min(sel - Math.floor(VISIBLE / 2), count - VISIBLE))
-
-const visibleItems = (items: string[], sel: number) => {
-  const off = pageOffset(items.length, sel)
-
-  return { items: items.slice(off, off + VISIBLE), off }
-}
 
 export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPickerProps) {
   const [providers, setProviders] = useState<ModelOptionProvider[]>([])
@@ -58,6 +53,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
           )
         )
         setModelIdx(0)
+        setStage('provider')
         setErr('')
         setLoading(false)
       })
@@ -71,20 +67,20 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
   const models = provider?.models ?? []
   const names = useMemo(() => providerDisplayNames(providers), [providers])
 
-  useInput((ch, key) => {
-    if (key.escape) {
-      if (stage === 'model') {
-        setStage('provider')
-        setModelIdx(0)
-
-        return
-      }
-
-      onCancel()
+  const back = () => {
+    if (stage === 'model') {
+      setStage('provider')
+      setModelIdx(0)
 
       return
     }
 
+    onCancel()
+  }
+
+  useOverlayKeys({ onBack: back, onClose: onCancel })
+
+  useInput((ch, key) => {
     const count = stage === 'provider' ? providers.length : models.length
     const sel = stage === 'provider' ? providerIdx : modelIdx
     const setSel = stage === 'provider' ? setProviderIdx : setModelIdx
@@ -116,7 +112,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
       const model = models[modelIdx]
 
       if (provider && model) {
-        onSelect(`${model} --provider ${provider.slug}${persistGlobal ? ' --global' : ''}`)
+        onSelect(`${model} --provider ${provider.slug}${persistGlobal ? ' --global' : ` ${TUI_SESSION_MODEL_FLAG}`}`)
       } else {
         setStage('provider')
       }
@@ -133,16 +129,18 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
     const n = ch === '0' ? 10 : parseInt(ch, 10)
 
     if (!Number.isNaN(n) && n >= 1 && n <= Math.min(10, count)) {
-      const off = pageOffset(count, sel)
+      const offset = windowOffset(count, sel, VISIBLE)
 
       if (stage === 'provider') {
-        const next = off + n - 1
+        const next = offset + n - 1
 
         if (providers[next]) {
           setProviderIdx(next)
         }
-      } else if (provider && models[off + n - 1]) {
-        onSelect(`${models[off + n - 1]} --provider ${provider.slug}${persistGlobal ? ' --global' : ''}`)
+      } else if (provider && models[offset + n - 1]) {
+        onSelect(
+          `${models[offset + n - 1]} --provider ${provider.slug}${persistGlobal ? ' --global' : ` ${TUI_SESSION_MODEL_FLAG}`}`
+        )
       }
     }
   })
@@ -155,7 +153,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
     return (
       <Box flexDirection="column">
         <Text color={t.color.label}>error: {err}</Text>
-        <Text color={t.color.dim}>Esc to cancel</Text>
+        <OverlayHint t={t}>Esc/q cancel</OverlayHint>
       </Box>
     )
   }
@@ -164,7 +162,7 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
     return (
       <Box flexDirection="column">
         <Text color={t.color.dim}>no authenticated providers</Text>
-        <Text color={t.color.dim}>Esc to cancel</Text>
+        <OverlayHint t={t}>Esc/q cancel</OverlayHint>
       </Box>
     )
   }
@@ -174,27 +172,31 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
       (p, i) => `${p.is_current ? '*' : ' '} ${names[i]} · ${p.total_models ?? p.models?.length ?? 0} models`
     )
 
-    const { items, off } = visibleItems(rows, providerIdx)
+    const { items, offset } = windowItems(rows, providerIdx, VISIBLE)
 
     return (
       <Box flexDirection="column" width={width}>
         <Text bold color={t.color.amber} wrap="truncate-end">
-          Select Provider
+          Select provider (step 1/2)
         </Text>
 
         <Text color={t.color.dim} wrap="truncate-end">
-          Current model: {currentModel || '(unknown)'}
+          Full model IDs on the next step · Enter to continue
+        </Text>
+
+        <Text color={t.color.dim} wrap="truncate-end">
+          Current: {currentModel || '(unknown)'}
         </Text>
         <Text color={t.color.label} wrap="truncate-end">
           {provider?.warning ? `warning: ${provider.warning}` : ' '}
         </Text>
         <Text color={t.color.dim} wrap="truncate-end">
-          {off > 0 ? ` ↑ ${off} more` : ' '}
+          {offset > 0 ? ` ↑ ${offset} more` : ' '}
         </Text>
 
         {Array.from({ length: VISIBLE }, (_, i) => {
           const row = items[i]
-          const idx = off + i
+          const idx = offset + i
 
           return row ? (
             <Text
@@ -215,40 +217,38 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
         })}
 
         <Text color={t.color.dim} wrap="truncate-end">
-          {off + VISIBLE < rows.length ? ` ↓ ${rows.length - off - VISIBLE} more` : ' '}
+          {offset + VISIBLE < rows.length ? ` ↓ ${rows.length - offset - VISIBLE} more` : ' '}
         </Text>
 
         <Text color={t.color.dim} wrap="truncate-end">
           persist: {persistGlobal ? 'global' : 'session'} · g toggle
         </Text>
-        <Text color={t.color.dim} wrap="truncate-end">
-          ↑/↓ select · Enter choose · 1-9,0 quick · Esc cancel
-        </Text>
+        <OverlayHint t={t}>↑/↓ select · Enter choose · 1-9,0 quick · Esc/q cancel</OverlayHint>
       </Box>
     )
   }
 
-  const { items, off } = visibleItems(models, modelIdx)
+  const { items, offset } = windowItems(models, modelIdx, VISIBLE)
 
   return (
     <Box flexDirection="column" width={width}>
       <Text bold color={t.color.amber} wrap="truncate-end">
-        Select Model
+        Select model (step 2/2)
       </Text>
 
       <Text color={t.color.dim} wrap="truncate-end">
-        {names[providerIdx] || '(unknown provider)'}
+        {names[providerIdx] || '(unknown provider)'} · Esc back
       </Text>
       <Text color={t.color.label} wrap="truncate-end">
         {provider?.warning ? `warning: ${provider.warning}` : ' '}
       </Text>
       <Text color={t.color.dim} wrap="truncate-end">
-        {off > 0 ? ` ↑ ${off} more` : ' '}
+        {offset > 0 ? ` ↑ ${offset} more` : ' '}
       </Text>
 
       {Array.from({ length: VISIBLE }, (_, i) => {
         const row = items[i]
-        const idx = off + i
+        const idx = offset + i
 
         if (!row) {
           return !models.length && i === 0 ? (
@@ -262,6 +262,8 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
           )
         }
 
+        const prefix = modelIdx === idx ? '▸ ' : row === currentModel ? '* ' : '  '
+
         return (
           <Text
             bold={modelIdx === idx}
@@ -270,22 +272,22 @@ export function ModelPicker({ gw, onCancel, onSelect, sessionId, t }: ModelPicke
             key={`${provider?.slug ?? 'prov'}:${idx}:${row}`}
             wrap="truncate-end"
           >
-            {modelIdx === idx ? '▸ ' : '  '}
+            {prefix}
             {i + 1}. {row}
           </Text>
         )
       })}
 
       <Text color={t.color.dim} wrap="truncate-end">
-        {off + VISIBLE < models.length ? ` ↓ ${models.length - off - VISIBLE} more` : ' '}
+        {offset + VISIBLE < models.length ? ` ↓ ${models.length - offset - VISIBLE} more` : ' '}
       </Text>
 
       <Text color={t.color.dim} wrap="truncate-end">
         persist: {persistGlobal ? 'global' : 'session'} · g toggle
       </Text>
-      <Text color={t.color.dim} wrap="truncate-end">
-        {models.length ? '↑/↓ select · Enter switch · 1-9,0 quick · Esc back' : 'Enter/Esc back'}
-      </Text>
+      <OverlayHint t={t}>
+        {models.length ? '↑/↓ select · Enter switch · 1-9,0 quick · Esc back · q close' : 'Enter/Esc back · q close'}
+      </OverlayHint>
     </Box>
   )
 }

@@ -137,10 +137,37 @@ class TestGetProxyUrl:
 class TestResolveProxyUrl:
     def test_normalizes_socks_alias_from_all_proxy(self, monkeypatch):
         for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
-                    "https_proxy", "http_proxy", "all_proxy"):
+                    "https_proxy", "http_proxy", "all_proxy", "NO_PROXY", "no_proxy"):
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("ALL_PROXY", "socks://127.0.0.1:1080/")
         assert resolve_proxy_url() == "socks5://127.0.0.1:1080/"
+
+    def test_no_proxy_bypasses_matching_host(self, monkeypatch):
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                    "https_proxy", "http_proxy", "all_proxy", "NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
+        monkeypatch.setenv("NO_PROXY", "api.telegram.org")
+
+        assert resolve_proxy_url(target_hosts="api.telegram.org") is None
+
+    def test_no_proxy_bypasses_cidr_target(self, monkeypatch):
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                    "https_proxy", "http_proxy", "all_proxy", "NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
+        monkeypatch.setenv("NO_PROXY", "149.154.160.0/20")
+
+        assert resolve_proxy_url(target_hosts=["149.154.167.220"]) is None
+
+    def test_no_proxy_ignored_without_target(self, monkeypatch):
+        for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY",
+                    "https_proxy", "http_proxy", "all_proxy", "NO_PROXY", "no_proxy"):
+            monkeypatch.delenv(key, raising=False)
+        monkeypatch.setenv("HTTPS_PROXY", "http://proxy.example:8080")
+        monkeypatch.setenv("NO_PROXY", "*")
+
+        assert resolve_proxy_url() == "http://proxy.example:8080"
 
 
 class TestRunAgentProxyDispatch:

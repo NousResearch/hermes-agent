@@ -51,6 +51,9 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   const { STARTUP_RESUME_ID, newSession, resumeById, setCatalog } = ctx.session
   const { bellOnComplete, stdout, sys } = ctx.system
   const { appendMessage, panel, setHistoryItems } = ctx.transcript
+  const { setInput } = ctx.composer
+  const { submitRef } = ctx.submission
+  const { setProcessing: setVoiceProcessing, setRecording: setVoiceRecording, setVoiceEnabled } = ctx.voice
 
   let pendingThinkingStatus = ''
   let thinkingStatusTimer: null | ReturnType<typeof setTimeout> = null
@@ -217,7 +220,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const text = ev.payload?.text
 
         if (text !== undefined) {
-          scheduleThinkingStatus(text ? String(text) : statusFromBusy())
+          const value = String(text)
+          scheduleThinkingStatus(value || statusFromBusy())
+
+          if (value) {
+            turnController.recordReasoningDelta(value)
+          }
         }
 
         return
@@ -257,6 +265,57 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const line = String(ev.payload.line).slice(0, 120)
 
         turnController.pushActivity(line, 'info')
+
+        return
+      }
+
+      case 'voice.status': {
+        // Continuous VAD loop reports its internal state so the status bar
+        // can show listening / transcribing / idle without polling.
+        const state = String(ev.payload?.state ?? '')
+
+        if (state === 'listening') {
+          setVoiceRecording(true)
+          setVoiceProcessing(false)
+        } else if (state === 'transcribing') {
+          setVoiceRecording(false)
+          setVoiceProcessing(true)
+        } else {
+          setVoiceRecording(false)
+          setVoiceProcessing(false)
+        }
+
+        return
+      }
+
+      case 'voice.transcript': {
+        // CLI parity: the 3-strikes silence detector flipped off automatically.
+        // Mirror that on the UI side and tell the user why the mode is off.
+        if (ev.payload?.no_speech_limit) {
+          setVoiceEnabled(false)
+          setVoiceRecording(false)
+          setVoiceProcessing(false)
+          sys('voice: no speech detected 3 times, continuous mode stopped')
+
+          return
+        }
+
+        const text = String(ev.payload?.text ?? '').trim()
+
+        if (!text) {
+          return
+        }
+
+        // CLI parity: _pending_input.put(transcript) unconditionally feeds
+        // the transcript to the agent as its next turn — draft handling
+        // doesn't apply because voice-mode users are speaking, not typing.
+        //
+        // We can't branch on composer input from inside a setInput updater
+        // (React strict mode double-invokes it, duplicating the submit).
+        // Just clear + defer submit so the cleared input is committed before
+        // submit reads it.
+        setInput('')
+        setTimeout(() => submitRef.current(text), 0)
 
         return
       }
@@ -313,6 +372,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
 
       case 'tool.start':
+        turnController.recordTodos(ev.payload.todos)
         turnController.recordToolStart(ev.payload.tool_id, ev.payload.name ?? 'tool', ev.payload.context ?? '')
 
         return
@@ -320,21 +380,24 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const inlineDiffText =
           ev.payload.inline_diff && getUiState().inlineDiffs ? stripAnsi(String(ev.payload.inline_diff)).trim() : ''
 
-        turnController.recordToolComplete(
-          ev.payload.tool_id,
-          ev.payload.name,
-          ev.payload.error,
-          inlineDiffText ? '' : ev.payload.summary
-        )
-
-        if (!inlineDiffText) {
-          return
+        if (inlineDiffText) {
+          turnController.recordInlineDiffToolComplete(
+            inlineDiffText,
+            ev.payload.tool_id,
+            ev.payload.name,
+            ev.payload.error,
+            ev.payload.duration_s
+          )
+        } else {
+          turnController.recordToolComplete(
+            ev.payload.tool_id,
+            ev.payload.name,
+            ev.payload.error,
+            ev.payload.summary,
+            ev.payload.duration_s,
+            ev.payload.todos
+          )
         }
-
-        // Keep inline diffs attached to the assistant completion body so
-        // they render in the same message flow, not as a standalone system
-        // artifact that can look out-of-place around tool rows.
-        turnController.queueInlineDiff(inlineDiffText)
 
         return
       }
@@ -372,12 +435,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       case 'background.complete':
         dropBgTask(ev.payload.task_id)
         sys(`[bg ${ev.payload.task_id}] ${ev.payload.text}`)
-
-        return
-
-      case 'btw.complete':
-        dropBgTask('btw:x')
-        sys(`[btw] ${ev.payload.text}`)
 
         return
 

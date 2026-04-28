@@ -3,6 +3,7 @@
 from unittest.mock import patch
 
 from hermes_cli.models import (
+    azure_foundry_model_api_mode,
     copilot_model_api_mode,
     fetch_github_model_catalog,
     curated_models_for_provider,
@@ -220,13 +221,30 @@ class TestProviderModelIds:
              patch("hermes_cli.models._fetch_github_models", return_value=["gpt-5.4", "claude-sonnet-4.6"]):
             assert provider_model_ids("copilot-acp") == ["gpt-5.4", "claude-sonnet-4.6"]
 
+    def test_copilot_falls_back_to_curated_defaults_without_stale_opus(self):
+        with patch("hermes_cli.models._resolve_copilot_catalog_api_key", return_value="gh-token"), \
+             patch("hermes_cli.models._fetch_github_models", return_value=None):
+            ids = provider_model_ids("copilot")
+
+        assert "gpt-5.4" in ids
+        assert "claude-sonnet-4.6" in ids
+        assert "claude-sonnet-4" in ids
+        assert "claude-sonnet-4.5" in ids
+        assert "claude-haiku-4.5" in ids
+        assert "gemini-3.1-pro-preview" in ids
+        assert "claude-opus-4.6" not in ids
+
     def test_copilot_acp_falls_back_to_copilot_defaults(self):
-        with patch("hermes_cli.auth.resolve_api_key_provider_credentials", side_effect=Exception("no token")), \
+        with patch("hermes_cli.models._resolve_copilot_catalog_api_key", return_value="gh-token"), \
              patch("hermes_cli.models._fetch_github_models", return_value=None):
             ids = provider_model_ids("copilot-acp")
 
         assert "gpt-5.4" in ids
+        assert "claude-sonnet-4.6" in ids
+        assert "claude-sonnet-4" in ids
+        assert "gemini-3.1-pro-preview" in ids
         assert "copilot-acp" not in ids
+        assert "claude-opus-4.6" not in ids
 
 
 # -- fetch_api_models --------------------------------------------------------
@@ -397,6 +415,69 @@ class TestCopilotNormalization:
         assert opencode_model_api_mode("opencode-go", "opencode-go/minimax-m2.5") == "anthropic_messages"
 
 
+class TestAzureFoundryModelApiMode:
+    """Azure Foundry deploys GPT-5.x / codex / o-series as Responses-API-only.
+
+    Azure returns ``400 "The requested operation is unsupported."`` when
+    /chat/completions is called against these deployments.  Verified in the
+    wild by a user debug bundle on 2026-04-26: gpt-5.3-codex failed with
+    that exact payload while gpt-4o-pure worked on the same endpoint.
+    """
+
+    def test_gpt5_family_uses_responses(self):
+        assert azure_foundry_model_api_mode("gpt-5") == "codex_responses"
+        assert azure_foundry_model_api_mode("gpt-5.3") == "codex_responses"
+        assert azure_foundry_model_api_mode("gpt-5.4") == "codex_responses"
+        assert azure_foundry_model_api_mode("gpt-5-codex") == "codex_responses"
+        assert azure_foundry_model_api_mode("gpt-5.3-codex") == "codex_responses"
+        # gpt-5-mini exceptions are Copilot-specific; Azure deploys the whole
+        # gpt-5 family on Responses API uniformly.
+        assert azure_foundry_model_api_mode("gpt-5-mini") == "codex_responses"
+
+    def test_codex_family_uses_responses(self):
+        assert azure_foundry_model_api_mode("codex") == "codex_responses"
+        assert azure_foundry_model_api_mode("codex-mini") == "codex_responses"
+
+    def test_o_series_reasoning_uses_responses(self):
+        assert azure_foundry_model_api_mode("o1") == "codex_responses"
+        assert azure_foundry_model_api_mode("o1-preview") == "codex_responses"
+        assert azure_foundry_model_api_mode("o1-mini") == "codex_responses"
+        assert azure_foundry_model_api_mode("o3") == "codex_responses"
+        assert azure_foundry_model_api_mode("o3-mini") == "codex_responses"
+        assert azure_foundry_model_api_mode("o4-mini") == "codex_responses"
+
+    def test_gpt4_family_returns_none(self):
+        """GPT-4, GPT-4o, etc. speak chat completions on Azure."""
+        assert azure_foundry_model_api_mode("gpt-4") is None
+        assert azure_foundry_model_api_mode("gpt-4o") is None
+        assert azure_foundry_model_api_mode("gpt-4o-pure") is None
+        assert azure_foundry_model_api_mode("gpt-4o-mini") is None
+        assert azure_foundry_model_api_mode("gpt-4-turbo") is None
+        assert azure_foundry_model_api_mode("gpt-4.1") is None
+        assert azure_foundry_model_api_mode("gpt-3.5-turbo") is None
+
+    def test_non_openai_deployments_return_none(self):
+        """Llama, Mistral, Grok, etc. keep the default chat completions."""
+        assert azure_foundry_model_api_mode("llama-3.1-70b") is None
+        assert azure_foundry_model_api_mode("mistral-large") is None
+        assert azure_foundry_model_api_mode("grok-4") is None
+        assert azure_foundry_model_api_mode("phi-3-medium") is None
+
+    def test_vendor_prefix_stripped(self):
+        """Users who copy-paste ``openai/gpt-5.3-codex`` should still match."""
+        assert azure_foundry_model_api_mode("openai/gpt-5.3-codex") == "codex_responses"
+        assert azure_foundry_model_api_mode("openai/gpt-4o") is None
+
+    def test_empty_and_none_return_none(self):
+        assert azure_foundry_model_api_mode(None) is None
+        assert azure_foundry_model_api_mode("") is None
+        assert azure_foundry_model_api_mode("   ") is None
+
+    def test_case_insensitive(self):
+        assert azure_foundry_model_api_mode("GPT-5.3-Codex") == "codex_responses"
+        assert azure_foundry_model_api_mode("Codex-Mini") == "codex_responses"
+
+
 # -- validate — format checks -----------------------------------------------
 
 class TestValidateFormatChecks:
@@ -549,8 +630,11 @@ class TestValidateApiFallback:
                 base_url="http://localhost:8000",
             )
 
+        # Unreachable /models on a custom endpoint no longer hard-rejects —
+        # the model is persisted with a warning so Cloudflare-protected /
+        # proxy endpoints that don't expose /models still work. See #12950.
         assert result["accepted"] is False
-        assert result["persist"] is False
+        assert result["persist"] is True
         assert "http://localhost:8000/v1/models" in result["message"]
         assert "http://localhost:8000/v1" in result["message"]
 

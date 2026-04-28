@@ -199,6 +199,7 @@ class TestResolveVisionMainFirst:
         mock_resolve.assert_called_once()
         assert mock_resolve.call_args.args[0] == "openrouter"
         assert mock_resolve.call_args.args[1] == "anthropic/claude-sonnet-4.6"
+        assert mock_resolve.call_args.kwargs.get("is_vision") is True
 
     def test_nous_main_vision_uses_paid_nous_vision_backend(self):
         """Paid Nous main → aux vision uses the dedicated Nous vision backend."""
@@ -245,7 +246,7 @@ class TestResolveVisionMainFirst:
         assert model == "xiaomi/mimo-v2-omni"
 
     def test_exotic_provider_with_vision_override_preserved(self):
-        """xiaomi → mimo-v2-omni override still wins over main_model."""
+        """xiaomi → mimo-v2.5 override still wins over main_model."""
         with patch(
             "agent.auxiliary_client._read_main_provider", return_value="xiaomi",
         ), patch(
@@ -257,15 +258,96 @@ class TestResolveVisionMainFirst:
             "agent.auxiliary_client._resolve_task_provider_model",
             return_value=("auto", None, None, None, None),
         ):
-            mock_resolve.return_value = (MagicMock(), "mimo-v2-omni")
+            mock_resolve.return_value = (MagicMock(), "mimo-v2.5")
 
             from agent.auxiliary_client import resolve_vision_provider_client
 
             provider, client, model = resolve_vision_provider_client()
 
         assert provider == "xiaomi"
-        # Should use mimo-v2-omni (vision override), not mimo-v2-pro (text main)
-        assert mock_resolve.call_args.args[1] == "mimo-v2-omni"
+        # Should use mimo-v2.5 (vision override), not mimo-v2-pro (text main)
+        assert mock_resolve.call_args.args[1] == "mimo-v2.5"
+        assert mock_resolve.call_args.kwargs.get("is_vision") is True
+
+    def test_copilot_vision_sets_vision_header(self, monkeypatch):
+        """Copilot vision requests include the header required for vision routing."""
+        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "ghu_test-token")
+
+        captured = {}
+
+        def fake_headers(*, is_agent_turn=False, is_vision=False):
+            captured["is_agent_turn"] = is_agent_turn
+            captured["is_vision"] = is_vision
+            return {"Copilot-Vision-Request": "true"} if is_vision else {}
+
+        with patch(
+            "agent.auxiliary_client._read_main_provider", return_value="copilot",
+        ), patch(
+            "agent.auxiliary_client._read_main_model", return_value="configured-copilot-model",
+        ), patch(
+            "agent.auxiliary_client._resolve_task_provider_model",
+            return_value=("auto", None, None, None, None),
+        ), patch(
+            "agent.auxiliary_client.OpenAI",
+        ) as mock_openai, patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            return_value={
+                "provider": "copilot",
+                "api_key": "copilot-api-token",
+                "base_url": "https://api.githubcopilot.com",
+            },
+        ), patch(
+            "hermes_cli.copilot_auth.copilot_request_headers",
+            side_effect=fake_headers,
+        ):
+            mock_client = MagicMock()
+            mock_openai.return_value = mock_client
+
+            from agent.auxiliary_client import resolve_vision_provider_client
+
+            provider, client, model = resolve_vision_provider_client()
+
+        assert provider == "copilot"
+        assert client is mock_client
+        assert model == "configured-copilot-model"
+        assert captured == {"is_agent_turn": True, "is_vision": True}
+        assert mock_openai.call_args.kwargs["default_headers"]["Copilot-Vision-Request"] == "true"
+
+    def test_text_copilot_does_not_set_vision_header(self, monkeypatch):
+        """Text Copilot requests keep the vision-only header off."""
+        monkeypatch.setenv("COPILOT_GITHUB_TOKEN", "ghu_test-token")
+
+        captured = {}
+
+        def fake_headers(*, is_agent_turn=False, is_vision=False):
+            captured["is_agent_turn"] = is_agent_turn
+            captured["is_vision"] = is_vision
+            return {"Copilot-Vision-Request": "true"} if is_vision else {}
+
+        with patch(
+            "agent.auxiliary_client.OpenAI",
+        ) as mock_openai, patch(
+            "hermes_cli.auth.resolve_api_key_provider_credentials",
+            return_value={
+                "provider": "copilot",
+                "api_key": "copilot-api-token",
+                "base_url": "https://api.githubcopilot.com",
+            },
+        ), patch(
+            "hermes_cli.copilot_auth.copilot_request_headers",
+            side_effect=fake_headers,
+        ):
+            mock_client = MagicMock()
+            mock_openai.return_value = mock_client
+
+            from agent.auxiliary_client import resolve_provider_client
+
+            client, model = resolve_provider_client("copilot", "gpt-5-mini")
+
+        assert client is mock_client
+        assert model == "gpt-5-mini"
+        assert captured == {"is_agent_turn": True, "is_vision": False}
+        assert "default_headers" not in mock_openai.call_args.kwargs
 
     def test_main_unavailable_vision_falls_through_to_aggregators(self):
         """Main provider fails → fall back to OpenRouter/Nous strict backends."""
@@ -312,7 +394,7 @@ class TestResolveVisionMainFirst:
 
         # Explicit "nous" override → uses strict backend, NOT main model path
         assert provider == "nous"
-        mock_strict.assert_called_once_with("nous")
+        mock_strict.assert_called_once_with("nous", None)
 
 
 # ── Constant cleanup ────────────────────────────────────────────────────────

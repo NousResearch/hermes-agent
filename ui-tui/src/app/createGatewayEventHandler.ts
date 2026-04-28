@@ -1,6 +1,13 @@
 import { STREAM_BATCH_MS } from '../config/timing.js'
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
-import type { CommandsCatalogResponse, DelegationStatusResponse, GatewayEvent, GatewaySkin } from '../gatewayTypes.js'
+import type {
+  CommandsCatalogResponse,
+  ConfigFullResponse,
+  DelegationStatusResponse,
+  GatewayEvent,
+  GatewaySkin,
+  SessionMostRecentResponse
+} from '../gatewayTypes.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { formatToolCall, stripAnsi } from '../lib/text.js'
@@ -171,15 +178,46 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       })
       .catch((e: unknown) => turnController.pushActivity(`command catalog unavailable: ${rpcErrorMessage(e)}`, 'info'))
 
-    if (!STARTUP_RESUME_ID) {
-      patchUiState({ status: 'forging session…' })
-      newSession()
+    if (STARTUP_RESUME_ID) {
+      patchUiState({ status: 'resuming…' })
+      resumeById(STARTUP_RESUME_ID)
 
       return
     }
 
-    patchUiState({ status: 'resuming…' })
-    resumeById(STARTUP_RESUME_ID)
+    // Opt-in: when `display.tui_auto_resume_recent` is true, look up
+    // the most recent human-facing session and resume it instead of
+    // forging a brand-new one.  Mirrors classic CLI's `hermes -c` /
+    // `hermes --tui` muscle memory and addresses the audit's "session
+    // unrecoverable after disconnection" gap.  Default off so existing
+    // users aren't surprised.
+    rpc<ConfigFullResponse>('config.get', { key: 'full' })
+      .then(cfg => {
+        if (!cfg?.config?.display?.tui_auto_resume_recent) {
+          patchUiState({ status: 'forging session…' })
+          newSession()
+
+          return
+        }
+
+        return rpc<SessionMostRecentResponse>('session.most_recent', {}).then(r => {
+          const target = r?.session_id
+
+          if (target) {
+            patchUiState({ status: 'resuming most recent…' })
+            resumeById(target)
+
+            return
+          }
+
+          patchUiState({ status: 'forging session…' })
+          newSession()
+        })
+      })
+      .catch(() => {
+        patchUiState({ status: 'forging session…' })
+        newSession()
+      })
   }
 
   return (ev: GatewayEvent) => {

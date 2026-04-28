@@ -703,6 +703,11 @@ DEFAULT_CONFIG = {
         "personality": "kawaii",
         "resume_display": "full",
         "busy_input_mode": "interrupt",  # interrupt | queue | steer
+        # When true, `hermes --tui` auto-resumes the most recent human-
+        # facing session on launch instead of forging a fresh one.
+        # Mirrors `hermes -c` muscle memory.  Default off so existing
+        # users aren't surprised.  HERMES_TUI_RESUME=<id> always wins.
+        "tui_auto_resume_recent": False,
         "bell_on_complete": False,
         "show_reasoning": False,
         "streaming": False,

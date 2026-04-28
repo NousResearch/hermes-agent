@@ -462,6 +462,26 @@ tool_output:
   max_lines: 500
 ```
 
+## Global Toolset Disable
+
+To suppress specific toolsets across the CLI and every gateway platform in one
+place, list their names under `agent.disabled_toolsets`:
+
+```yaml
+agent:
+  disabled_toolsets:
+    - memory       # hide memory tools + MEMORY_GUIDANCE injection
+    - web          # no web_search / web_extract anywhere
+```
+
+This applies **after** per-platform tool config (`platform_toolsets` written by
+`hermes tools`), so a toolset listed here is always removed — even if a
+platform's saved config still lists it. Use this when you want a single
+switch for "turn X off everywhere" rather than editing 15+ platform rows in
+the `hermes tools` UI.
+
+Leaving the list empty, or omitting the key, is a no-op.
+
 ## Git Worktree Isolation
 
 Enable isolated git worktrees for running multiple agents in parallel on the same repo:

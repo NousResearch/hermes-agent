@@ -99,10 +99,11 @@ const renderTable = (k: number, rows: string[][], t: Theme) => {
 
   // Thin divider under the header.  Without it tables look like prose
   // with extra spacing because the header is just amber-coloured text
-  // (#15534).  We avoid full borders on purpose — column widths are
-  // grapheme-approximate so a real outline often misaligns; one dim
-  // dashed rule under row 0 plus tab-style column gaps reads cleanly
-  // on every terminal we tested.
+  // (#15534).  We avoid full borders on purpose — column widths come
+  // from `stripInlineMarkup(...).length` (UTF-16 code units, not
+  // display width), so a real outline often misaligns on emoji and
+  // East-Asian wide characters; one dim dashed rule under row 0 plus
+  // tab-style column gaps reads cleanly on every terminal we tested.
   const sep = widths.map(w => '─'.repeat(Math.max(1, w))).join('  ')
 
   return (

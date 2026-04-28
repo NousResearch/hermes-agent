@@ -1209,7 +1209,9 @@ class APIServerAdapter(BasePlatformAdapter):
             },
         }
 
-        response_headers = {"X-Hermes-Session-Id": session_id}
+        response_headers = {
+            "X-Hermes-Session-Id": result.get("session_id", session_id),
+        }
         if gateway_session_key:
             response_headers["X-Hermes-Session-Key"] = gateway_session_key
         return web.json_response(response_data, headers=response_headers)
@@ -2483,6 +2485,10 @@ class APIServerAdapter(BasePlatformAdapter):
                 "output_tokens": getattr(agent, "session_completion_tokens", 0) or 0,
                 "total_tokens": getattr(agent, "session_total_tokens", 0) or 0,
             }
+            # Include the effective session ID in the result so callers
+            # (e.g. X-Hermes-Session-Id header) can track compression-
+            # triggered session rotations. (#16938)
+            result["session_id"] = getattr(agent, "session_id", session_id)
             return result, usage
 
         return await loop.run_in_executor(None, _run)

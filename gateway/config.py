@@ -68,6 +68,7 @@ class Platform(Enum):
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
     YUANBAO = "yuanbao"
+    PUSHOVER = "pushover"
 
 
 @dataclass
@@ -1113,6 +1114,31 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 pass
         if webhook_secret:
             config.platforms[Platform.WEBHOOK].extra["secret"] = webhook_secret
+
+    # Pushover (outbound-only notification platform)
+    pushover_enabled = os.getenv("PUSHOVER_ENABLED", "").lower() in ("true", "1", "yes")
+    pushover_token = os.getenv("PUSHOVER_TOKEN") or os.getenv("PUSHOVER_APP_TOKEN")
+    pushover_user = os.getenv("PUSHOVER_USER") or os.getenv("PUSHOVER_USER_KEY")
+    pushover_credentials_file = os.getenv("PUSHOVER_CREDENTIALS_FILE")
+    pushover_app = os.getenv("PUSHOVER_APP")
+    if pushover_enabled or pushover_token or pushover_credentials_file:
+        if Platform.PUSHOVER not in config.platforms:
+            config.platforms[Platform.PUSHOVER] = PlatformConfig()
+        config.platforms[Platform.PUSHOVER].enabled = True
+        if pushover_token:
+            config.platforms[Platform.PUSHOVER].token = pushover_token
+        if pushover_user:
+            config.platforms[Platform.PUSHOVER].extra["user"] = pushover_user
+        if pushover_credentials_file:
+            config.platforms[Platform.PUSHOVER].extra["credentials_file"] = pushover_credentials_file
+        if pushover_app:
+            config.platforms[Platform.PUSHOVER].extra["app"] = pushover_app
+        pushover_home = os.getenv("PUSHOVER_HOME_CHANNEL", "home")
+        config.platforms[Platform.PUSHOVER].home_channel = HomeChannel(
+            platform=Platform.PUSHOVER,
+            chat_id=pushover_home,
+            name=os.getenv("PUSHOVER_HOME_CHANNEL_NAME", "Pushover"),
+        )
 
     # DingTalk
     dingtalk_client_id = os.getenv("DINGTALK_CLIENT_ID")

@@ -3158,6 +3158,13 @@ class GatewayRunner:
             adapter.gateway_runner = self  # For cross-platform delivery
             return adapter
 
+        elif platform == Platform.PUSHOVER:
+            from gateway.platforms.pushover import PushoverAdapter, check_pushover_requirements
+            if not check_pushover_requirements():
+                logger.warning("Pushover: aiohttp not installed")
+                return None
+            return PushoverAdapter(config)
+
         elif platform == Platform.BLUEBUBBLES:
             from gateway.platforms.bluebubbles import BlueBubblesAdapter, check_bluebubbles_requirements
             if not check_bluebubbles_requirements():

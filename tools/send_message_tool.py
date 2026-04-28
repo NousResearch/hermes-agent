@@ -224,6 +224,7 @@ def _handle_send(args):
         "email": Platform.EMAIL,
         "sms": Platform.SMS,
         "yuanbao": Platform.YUANBAO,
+        "pushover": Platform.PUSHOVER,
     }
     platform = platform_map.get(platform_name)
     if not platform:
@@ -599,6 +600,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_bluebubbles(pconfig.extra, chat_id, chunk)
         elif platform == Platform.QQBOT:
             result = await _send_qqbot(pconfig, chat_id, chunk)
+        elif platform == Platform.PUSHOVER:
+            result = await _send_pushover(pconfig, chat_id, chunk)
         else:
             result = {"error": f"Direct sending not yet implemented for {platform.value}"}
 
@@ -1389,6 +1392,31 @@ async def _send_weixin(pconfig, chat_id, message, media_files=None):
         )
     except Exception as e:
         return _error(f"Weixin send failed: {e}")
+
+
+async def _send_pushover(pconfig, chat_id, message):
+    """Send via Pushover using the native adapter."""
+    try:
+        from gateway.platforms.pushover import PushoverAdapter, check_pushover_requirements
+        if not check_pushover_requirements():
+            return {"error": "Pushover requirements not met (need aiohttp)."}
+    except ImportError:
+        return {"error": "Pushover adapter not available."}
+
+    try:
+        adapter = PushoverAdapter(pconfig)
+        connected = await adapter.connect()
+        if not connected:
+            return _error(f"Pushover: failed to connect - {adapter.fatal_error_message or 'unknown error'}")
+        try:
+            result = await adapter.send(chat_id, message)
+            if not result.success:
+                return _error(f"Pushover send failed: {result.error}")
+            return {"success": True, "platform": "pushover", "chat_id": chat_id, "message_id": result.message_id}
+        finally:
+            await adapter.disconnect()
+    except Exception as e:
+        return _error(f"Pushover send failed: {e}")
 
 
 async def _send_bluebubbles(extra, chat_id, message):

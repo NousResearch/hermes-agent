@@ -548,6 +548,10 @@ describe('createGatewayEventHandler', () => {
         },
         type: 'tool.start'
       } as any)
+      // Late tool.generating must NOT push a 'drafting …' line into the trail.
+      const trailBefore = getTurnState().turnTrail.length
+      onEvent({ payload: { name: 'browser' }, type: 'tool.generating' } as any)
+      expect(getTurnState().turnTrail.length).toBe(trailBefore)
       onEvent({ payload: { name: 'browser', preview: 'loading' }, type: 'tool.progress' } as any)
       onEvent({ payload: { summary: 'done', tool_id: 't-2' }, type: 'tool.complete' } as any)
       onEvent({ payload: { text: 'late chunk' }, type: 'message.delta' } as any)
@@ -557,20 +561,20 @@ describe('createGatewayEventHandler', () => {
       expect(turnController.bufRef).toBe('')
       expect(getTurnState().streamPendingTools).toEqual([])
       expect(getTurnState().streamSegments).toEqual([])
-      // Stale todos must not have leaked through; pre-interrupt todos
-      // are also expected to be cleared by the interrupt cycle.
+      // Stale post-interrupt todos must not have leaked through.
+      // (This test does not assert that pre-interrupt todos are cleared —
+      // current interrupt path leaves them visible until the next message.)
       expect(getTurnState().todos.find(t => t.content === 'late ghost')).toBeUndefined()
 
       onEvent({ payload: {}, type: 'message.start' } as any)
       onEvent({ payload: { text: 'fresh' }, type: 'reasoning.delta' } as any)
 
       expect(turnController.reasoningText).toBe('fresh')
-
-      // Drain interrupt cooldown + any pending status timers before
-      // restoring real timers — otherwise vi complains about queued
-      // timers crossing the boundary.
-      vi.runAllTimers()
     } finally {
+      // Drain pending fake timers BEFORE restoring real timers so a mid-
+      // test assertion failure can't leak the interrupt-cooldown setTimeout
+      // across test files (the original Copilot concern).
+      vi.runAllTimers()
       vi.useRealTimers()
     }
   })

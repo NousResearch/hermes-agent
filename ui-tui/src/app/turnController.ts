@@ -401,6 +401,10 @@ class TurnController {
   }
 
   pushTrail(line: string) {
+    if (this.interrupted) {
+      return
+    }
+
     patchTurnState(state => {
       if (state.turnTrail.at(-1) === line) {
         return state

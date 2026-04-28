@@ -36,8 +36,8 @@ import { timeAgo } from "@/lib/utils";
 import { Markdown } from "@/components/Markdown";
 import { PlatformsCard } from "@/components/PlatformsCard";
 import { Toast } from "@/components/Toast";
+import { Button } from "@nous-research/ui";
 import { Badge } from "@/components/ui/badge";
-import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
 import { useConfirmDelete } from "@/hooks/useConfirmDelete";
@@ -356,9 +356,8 @@ function SessionRow({
           </Badge>
           {resumeInChatEnabled && (
             <Button
-              variant="ghost"
-              size="icon"
-              className="h-7 w-7 text-muted-foreground hover:text-success"
+              outlined
+              className="!p-1.5 aspect-square text-muted-foreground hover:text-success"
               aria-label={t.sessions.resumeInChat}
               title={t.sessions.resumeInChat}
               onClick={(e) => {
@@ -370,9 +369,8 @@ function SessionRow({
             </Button>
           )}
           <Button
-            variant="ghost"
-            size="icon"
-            className="h-7 w-7 text-muted-foreground hover:text-destructive"
+            outlined
+            className="!p-1.5 aspect-square text-muted-foreground hover:text-destructive"
             aria-label={t.sessions.deleteSession}
             onClick={(e) => {
               e.stopPropagation();
@@ -808,9 +806,8 @@ export default function SessionsPage() {
               </span>
               <div className="flex items-center gap-1">
                 <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 w-7 p-0"
+                  outlined
+                  className="!p-1.5 aspect-square"
                   disabled={page === 0}
                   onClick={() => setPage((p) => p - 1)}
                   aria-label={t.sessions.previousPage}
@@ -822,9 +819,8 @@ export default function SessionsPage() {
                   {Math.ceil(total / PAGE_SIZE)}
                 </span>
                 <Button
-                  variant="outline"
-                  size="sm"
-                  className="h-7 w-7 p-0"
+                  outlined
+                  className="!p-1.5 aspect-square"
                   disabled={(page + 1) * PAGE_SIZE >= total}
                   onClick={() => setPage((p) => p + 1)}
                   aria-label={t.sessions.nextPage}

@@ -41,6 +41,10 @@ class TestWriteDenyExactPaths:
         path = str(get_hermes_home() / ".env")
         assert _is_write_denied(path) is True
 
+    def test_global_hermes_env(self):
+        path = os.path.join(str(Path.home()), ".hermes", ".env")
+        assert _is_write_denied(path) is True
+
     def test_shell_profiles(self):
         home = str(Path.home())
         for name in [".bashrc", ".zshrc", ".profile", ".bash_profile", ".zprofile"]:

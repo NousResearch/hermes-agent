@@ -19,6 +19,10 @@ def _hermes_home_path() -> Path:
 def build_write_denied_paths(home: str) -> set[str]:
     """Return exact sensitive paths that must never be written."""
     hermes_home = _hermes_home_path()
+    # Protect both profile-local and global Hermes env files.
+    # In profile mode, get_hermes_home() can resolve to ~/.hermes/profiles/<name>,
+    # but the global ~/.hermes/.env still holds shared credentials.
+    global_hermes_env = Path(os.path.expanduser("~/.hermes/.env"))
     return {
         os.path.realpath(p)
         for p in [
@@ -27,6 +31,7 @@ def build_write_denied_paths(home: str) -> set[str]:
             os.path.join(home, ".ssh", "id_ed25519"),
             os.path.join(home, ".ssh", "config"),
             str(hermes_home / ".env"),
+            str(global_hermes_env),
             os.path.join(home, ".bashrc"),
             os.path.join(home, ".zshrc"),
             os.path.join(home, ".profile"),

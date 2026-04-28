@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState } from "react";
 import { Clock, Pause, Play, Plus, Trash2, Zap } from "lucide-react";
-import { Button, H2 } from "@nous-research/ui";
+import { Badge, Button, H2, Select, SelectOption } from "@nous-research/ui";
 import { api } from "@/lib/api";
 import type { CronJob } from "@/lib/api";
 import { DeleteConfirmDialog } from "@/components/DeleteConfirmDialog";
@@ -8,10 +8,8 @@ import { useToast } from "@/hooks/useToast";
 import { useConfirmDelete } from "@/hooks/useConfirmDelete";
 import { Toast } from "@/components/Toast";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
-import { Badge } from "@nous-research/ui";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Select, SelectOption } from "@/components/ui/select";
 import { useI18n } from "@/i18n";
 import { PluginSlot } from "@/plugins";
 

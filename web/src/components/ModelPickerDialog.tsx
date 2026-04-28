@@ -145,14 +145,15 @@ export function ModelPickerDialog({ gw, sessionId, onClose, onSubmit }: Props) {
       aria-labelledby="model-picker-title"
     >
       <div className="relative w-full max-w-3xl max-h-[80vh] border border-border bg-card shadow-2xl flex flex-col">
-        <button
-          type="button"
+        <Button
+          ghost
+          size="icon"
           onClick={onClose}
-          className="absolute right-3 top-3 text-muted-foreground hover:text-foreground transition-colors cursor-pointer"
+          className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
           aria-label="Close"
         >
-          <X className="h-5 w-5" />
-        </button>
+          <X />
+        </Button>
 
         <header className="p-5 pb-3 border-b border-border">
           <h2

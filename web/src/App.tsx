@@ -42,7 +42,7 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { SelectionSwitcher, Typography } from "@nous-research/ui";
+import { Button, SelectionSwitcher, Typography } from "@nous-research/ui";
 import { cn } from "@/lib/utils";
 import { Backdrop } from "@/components/Backdrop";
 import { SidebarFooter } from "@/components/SidebarFooter";
@@ -370,20 +370,17 @@ export default function App() {
           clipPath: "var(--component-header-clip-path)",
         }}
       >
-        <button
-          type="button"
+        <Button
+          ghost
+          size="icon"
           onClick={() => setMobileOpen(true)}
           aria-label={t.app.openNavigation}
           aria-expanded={mobileOpen}
           aria-controls="app-sidebar"
-          className={cn(
-            "inline-flex h-8 w-8 items-center justify-center",
-            "text-midground/70 hover:text-midground transition-colors cursor-pointer",
-            "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
-          )}
+          className="text-midground/70 hover:text-midground"
         >
-          <Menu className="h-4 w-4" />
-        </button>
+          <Menu />
+        </Button>
 
         <Typography
           className="font-bold text-[0.95rem] leading-[0.95] tracking-[0.05em] text-midground"
@@ -445,18 +442,15 @@ export default function App() {
                 </Typography>
               </div>
 
-              <button
-                type="button"
+              <Button
+                ghost
+                size="icon"
                 onClick={closeMobile}
                 aria-label={t.app.closeNavigation}
-                className={cn(
-                  "lg:hidden inline-flex h-7 w-7 items-center justify-center",
-                  "text-midground/70 hover:text-midground transition-colors cursor-pointer",
-                  "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
-                )}
+                className="lg:hidden text-midground/70 hover:text-midground"
               >
-                <X className="h-4 w-4" />
-              </button>
+                <X />
+              </Button>
             </div>
 
             <nav

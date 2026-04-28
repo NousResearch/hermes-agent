@@ -24,6 +24,7 @@ from agent.anthropic_adapter import (
     run_oauth_setup_token,
 )
 from agent.transports import get_transport
+from agent.transports.anthropic import AnthropicTransport
 
 
 # ---------------------------------------------------------------------------
@@ -1747,3 +1748,19 @@ class TestResolveMessagesMaxTokens:
         result = _resolve_anthropic_messages_max_tokens(0.5, "claude-opus-4-6")
         assert result > 0
         assert result != 0
+
+
+class TestAnthropicTransportToolNormalization:
+    def test_pascalcase_mcp_tool_name_maps_back_to_registered_tool_name(self):
+        """Claude Code-shaped OAuth can return mcp_Terminal; Hermes tool is terminal."""
+        block = SimpleNamespace(
+            type="tool_use",
+            id="toolu_terminal",
+            name="mcp_Terminal",
+            input={"command": "printf OPUS_TOOL_OK"},
+        )
+        response = SimpleNamespace(content=[block], stop_reason="tool_use")
+
+        normalized = AnthropicTransport().normalize_response(response, strip_tool_prefix=True)
+
+        assert normalized.tool_calls[0].name == "terminal"

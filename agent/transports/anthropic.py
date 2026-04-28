@@ -105,6 +105,8 @@ class AnthropicTransport(ProviderTransport):
                 name = block.name
                 if strip_tool_prefix and name.startswith(_MCP_PREFIX):
                     name = name[len(_MCP_PREFIX):]
+                    if name and name[0].isupper():
+                        name = name[0].lower() + name[1:]
                 tool_calls.append(
                     ToolCall(
                         id=block.id,

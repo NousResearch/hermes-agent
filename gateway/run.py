@@ -289,6 +289,7 @@ from gateway.platforms.base import (
     BasePlatformAdapter,
     MessageEvent,
     MessageType,
+    coerce_plaintext_gateway_command,
     merge_pending_message_event,
 )
 from gateway.restart import (
@@ -3394,6 +3395,7 @@ class GatewayRunner:
         7. Return response
         """
         source = event.source
+        coerce_plaintext_gateway_command(event)
 
         # Internal events (e.g. background-process completion notifications)
         # are system-generated and must skip user authorization.
@@ -8469,9 +8471,32 @@ class GatewayRunner:
                 return
 
             metadata = {"thread_id": thread_id} if thread_id else None
+
+            service_state = "active"
+            gateway_state = "running"
+            telegram_state = None
+            try:
+                from gateway.status import read_runtime_status
+                runtime_status = read_runtime_status() or {}
+                gateway_state = str(runtime_status.get("gateway_state") or gateway_state)
+                platforms = runtime_status.get("platforms") or {}
+                telegram_info = platforms.get("telegram") or {}
+                if telegram_info.get("state"):
+                    telegram_state = str(telegram_info.get("state"))
+            except Exception as status_err:
+                logger.debug("Restart notification status read failed: %s", status_err)
+
+            message_parts = [
+                "[Hermes] Gateway recovered:",
+                f"service={service_state}",
+                f"gateway={gateway_state}",
+            ]
+            if telegram_state:
+                message_parts.append(f"telegram={telegram_state}")
+
             await adapter.send(
                 chat_id,
-                "♻ Gateway restarted successfully. Your session continues.",
+                " ".join(message_parts),
                 metadata=metadata,
             )
             logger.info(

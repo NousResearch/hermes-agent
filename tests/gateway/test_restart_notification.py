@@ -135,7 +135,7 @@ async def test_send_restart_notification_delivers_and_cleans_up(tmp_path, monkey
     adapter.send.assert_called_once()
     call_args = adapter.send.call_args
     assert call_args[0][0] == "42"  # chat_id
-    assert "restarted" in call_args[0][1].lower()
+    assert call_args[0][1] == "[Hermes] Gateway recovered: service=active gateway=running"
     assert call_args[1].get("metadata") is None  # no thread
     assert not notify_path.exists()
 
@@ -159,6 +159,36 @@ async def test_send_restart_notification_with_thread(tmp_path, monkeypatch):
 
     call_args = adapter.send.call_args
     assert call_args[1]["metadata"] == {"thread_id": "topic_7"}
+    assert not notify_path.exists()
+
+
+@pytest.mark.asyncio
+async def test_send_restart_notification_includes_telegram_runtime_state(tmp_path, monkeypatch):
+    """When runtime status has Telegram info, it is included in the recovery message."""
+    monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    notify_path = tmp_path / ".restart_notify.json"
+    notify_path.write_text(json.dumps({
+        "platform": "telegram",
+        "chat_id": "42",
+    }))
+    (tmp_path / "gateway_state.json").write_text(json.dumps({
+        "gateway_state": "running",
+        "platforms": {
+            "telegram": {
+                "state": "connected",
+            }
+        },
+    }))
+
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock()
+
+    await runner._send_restart_notification()
+
+    call_args = adapter.send.call_args
+    assert call_args[0][1] == "[Hermes] Gateway recovered: service=active gateway=running telegram=connected"
     assert not notify_path.exists()
 
 

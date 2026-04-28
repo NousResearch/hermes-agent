@@ -316,6 +316,10 @@ class TurnController {
   }
 
   recordTodos(value: unknown) {
+    if (this.interrupted) {
+      return
+    }
+
     const todos = parseTodos(value)
 
     if (todos !== null) {
@@ -397,6 +401,10 @@ class TurnController {
   }
 
   pushTrail(line: string) {
+    if (this.interrupted) {
+      return
+    }
+
     patchTurnState(state => {
       if (state.turnTrail.at(-1) === line) {
         return state
@@ -509,12 +517,12 @@ class TurnController {
   }
 
   recordMessageDelta({ rendered, text }: { rendered?: string; text?: string }) {
-    this.pruneTransient()
-    this.endReasoningPhase()
-
-    if (!text || this.interrupted) {
+    if (this.interrupted || !text) {
       return
     }
+
+    this.pruneTransient()
+    this.endReasoningPhase()
 
     this.bufRef = rendered ?? this.bufRef + text
 
@@ -524,7 +532,7 @@ class TurnController {
   }
 
   recordReasoningAvailable(text: string) {
-    if (!getUiState().showReasoning) {
+    if (this.interrupted || !getUiState().showReasoning) {
       return
     }
 
@@ -542,7 +550,7 @@ class TurnController {
   }
 
   recordReasoningDelta(text: string) {
-    if (!getUiState().showReasoning) {
+    if (this.interrupted || !getUiState().showReasoning) {
       return
     }
 
@@ -570,6 +578,10 @@ class TurnController {
     duration?: number,
     todos?: unknown
   ) {
+    if (this.interrupted) {
+      return
+    }
+
     this.recordTodos(todos)
     const line = this.completeTool(toolId, fallbackName, error, summary, duration)
 
@@ -585,6 +597,10 @@ class TurnController {
     error?: string,
     duration?: number
   ) {
+    if (this.interrupted) {
+      return
+    }
+
     this.flushStreamingSegment()
     this.pushInlineDiffSegment(diffText, [this.completeTool(toolId, fallbackName, error, '', duration)])
     this.publishToolState()
@@ -626,6 +642,10 @@ class TurnController {
   }
 
   recordToolProgress(toolName: string, preview: string) {
+    if (this.interrupted) {
+      return
+    }
+
     const index = this.activeTools.findIndex(tool => tool.name === toolName)
 
     if (index < 0) {
@@ -645,6 +665,10 @@ class TurnController {
   }
 
   recordToolStart(toolId: string, name: string, context: string) {
+    if (this.interrupted) {
+      return
+    }
+
     this.flushStreamingSegment()
     this.closeReasoningSegment()
     this.pruneTransient()
@@ -716,6 +740,7 @@ class TurnController {
     this.reasoningSegmentIndex = null
     this.turnTools = []
     this.toolTokenAcc = 0
+    this.interrupted = false
     this.persistedToolLabels.clear()
     patchUiState({ busy: true })
     patchTurnState({ activity: [], outcome: '', subagents: [], toolTokens: 0, tools: [], turnTrail: [] })

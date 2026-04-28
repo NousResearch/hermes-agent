@@ -4725,6 +4725,7 @@ class GatewayRunner:
             _hyg_model = "anthropic/claude-sonnet-4.6"
             _hyg_threshold_pct = 0.85
             _hyg_compression_enabled = True
+            _hyg_hard_msg_limit = 400
             _hyg_config_context_length = None
             _hyg_provider = None
             _hyg_base_url = None
@@ -4763,6 +4764,14 @@ class GatewayRunner:
                         _hyg_compression_enabled = str(
                             _comp_cfg.get("enabled", True)
                         ).lower() in ("true", "1", "yes")
+                        _raw_hard_limit = _comp_cfg.get("hygiene_hard_message_limit")
+                        if _raw_hard_limit is not None:
+                            try:
+                                _parsed = int(_raw_hard_limit)
+                                if _parsed > 0:
+                                    _hyg_hard_msg_limit = _parsed
+                            except (TypeError, ValueError):
+                                pass
 
                 try:
                     _hyg_model, _hyg_runtime = self._resolve_session_agent_runtime(
@@ -4844,8 +4853,10 @@ class GatewayRunner:
                 # collection, which prevents compression, which causes more
                 # disconnects.  400 messages is well above normal sessions
                 # but catches runaway growth before it becomes unrecoverable.
+                # Threshold is configurable via
+                # compression.hygiene_hard_message_limit.
                 # (#2153)
-                _HARD_MSG_LIMIT = 400
+                _HARD_MSG_LIMIT = _hyg_hard_msg_limit
                 _needs_compress = (
                     _approx_tokens >= _compress_token_threshold
                     or _msg_count >= _HARD_MSG_LIMIT

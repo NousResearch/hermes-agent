@@ -46,7 +46,7 @@ def _date_to_timestamp_range(date: str):
     end_ts = start_ts + 86400.0
     return start_ts, end_ts
 
-SCHEMA_VERSION = 17
+SCHEMA_VERSION = 18
 
 SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -380,6 +380,59 @@ CREATE INDEX IF NOT EXISTS idx_tasks_agent ON tasks(agent_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_session ON tasks(session_id);
 CREATE INDEX IF NOT EXISTS idx_tasks_created ON tasks(created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tasks_run ON tasks(run_id);
+
+CREATE TABLE IF NOT EXISTS ledger_artifacts (
+    id TEXT PRIMARY KEY,
+    category TEXT NOT NULL,
+    title TEXT,
+    content TEXT NOT NULL DEFAULT '',
+    format TEXT NOT NULL DEFAULT 'markdown',
+    workspace_id TEXT,
+    code_session_id TEXT,
+    flow_id TEXT,
+    command_id TEXT,
+    orchestrated_run_id TEXT,
+    metadata_json TEXT DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_ledger_artifacts_code_session_id ON ledger_artifacts(code_session_id);
+CREATE INDEX IF NOT EXISTS idx_ledger_artifacts_workspace_id ON ledger_artifacts(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_ledger_artifacts_category ON ledger_artifacts(category);
+CREATE INDEX IF NOT EXISTS idx_ledger_artifacts_created_at ON ledger_artifacts(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS orchestrated_runs (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT,
+    code_session_id TEXT,
+    title TEXT,
+    task_description TEXT,
+    state TEXT NOT NULL DEFAULT 'intake',
+    branch TEXT,
+    worktree_path TEXT,
+    metadata_json TEXT DEFAULT '{}',
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    completed_at TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_orch_runs_workspace ON orchestrated_runs(workspace_id);
+CREATE INDEX IF NOT EXISTS idx_orch_runs_session ON orchestrated_runs(code_session_id);
+CREATE INDEX IF NOT EXISTS idx_orch_runs_state ON orchestrated_runs(state);
+
+CREATE TABLE IF NOT EXISTS orchestrated_run_events (
+    id TEXT PRIMARY KEY,
+    run_id TEXT NOT NULL,
+    type TEXT NOT NULL,
+    from_state TEXT,
+    to_state TEXT,
+    message TEXT,
+    payload_json TEXT DEFAULT '{}',
+    created_at TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_orch_run_events_run_id ON orchestrated_run_events(run_id);
 """
 
 FTS_SQL = """
@@ -1021,6 +1074,68 @@ class SessionDB:
                     except sqlite3.OperationalError:
                         pass
                 cursor.execute("UPDATE schema_version SET version = 17")
+            if current_version < 18:
+                # v18: P0 Engineering Control Plane — ledger_artifacts, orchestrated_runs/events
+                for ddl in [
+                    """CREATE TABLE IF NOT EXISTS ledger_artifacts (
+                        id TEXT PRIMARY KEY,
+                        category TEXT NOT NULL,
+                        title TEXT,
+                        content TEXT NOT NULL DEFAULT '',
+                        format TEXT NOT NULL DEFAULT 'markdown',
+                        workspace_id TEXT,
+                        code_session_id TEXT,
+                        flow_id TEXT,
+                        command_id TEXT,
+                        orchestrated_run_id TEXT,
+                        metadata_json TEXT DEFAULT '{}',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL
+                    )""",
+                    """CREATE TABLE IF NOT EXISTS orchestrated_runs (
+                        id TEXT PRIMARY KEY,
+                        workspace_id TEXT,
+                        code_session_id TEXT,
+                        title TEXT,
+                        task_description TEXT,
+                        state TEXT NOT NULL DEFAULT 'intake',
+                        branch TEXT,
+                        worktree_path TEXT,
+                        metadata_json TEXT DEFAULT '{}',
+                        created_at TEXT NOT NULL,
+                        updated_at TEXT NOT NULL,
+                        completed_at TEXT
+                    )""",
+                    """CREATE TABLE IF NOT EXISTS orchestrated_run_events (
+                        id TEXT PRIMARY KEY,
+                        run_id TEXT NOT NULL,
+                        type TEXT NOT NULL,
+                        from_state TEXT,
+                        to_state TEXT,
+                        message TEXT,
+                        payload_json TEXT DEFAULT '{}',
+                        created_at TEXT NOT NULL
+                    )""",
+                ]:
+                    try:
+                        cursor.execute(ddl)
+                    except sqlite3.OperationalError:
+                        pass
+                for idx_sql in [
+                    "CREATE INDEX IF NOT EXISTS idx_ledger_artifacts_code_session_id ON ledger_artifacts(code_session_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_ledger_artifacts_workspace_id ON ledger_artifacts(workspace_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_ledger_artifacts_category ON ledger_artifacts(category)",
+                    "CREATE INDEX IF NOT EXISTS idx_ledger_artifacts_created_at ON ledger_artifacts(created_at DESC)",
+                    "CREATE INDEX IF NOT EXISTS idx_orch_runs_workspace ON orchestrated_runs(workspace_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_orch_runs_session ON orchestrated_runs(code_session_id)",
+                    "CREATE INDEX IF NOT EXISTS idx_orch_runs_state ON orchestrated_runs(state)",
+                    "CREATE INDEX IF NOT EXISTS idx_orch_run_events_run_id ON orchestrated_run_events(run_id)",
+                ]:
+                    try:
+                        cursor.execute(idx_sql)
+                    except sqlite3.OperationalError:
+                        pass
+                cursor.execute("UPDATE schema_version SET version = 18")
 
         # Unique title index — always ensure it exists (safe to run after migrations
         # since the title column is guaranteed to exist at this point)
@@ -2420,7 +2535,19 @@ def count_diff_changes(diff_text: str) -> tuple:
 # ---------------------------------------------------------------------------
 
 _CODE_SESSION_VALID_STATUSES = frozenset(
-    {"planning", "coding", "reviewing", "done", "cancelled", "error", "failed"}
+    {
+        "created",
+        "planning",
+        "running",
+        "coding",
+        "reviewing",
+        "waiting_approval",
+        "completed",
+        "done",
+        "cancelled",
+        "error",
+        "failed",
+    }
 )
 
 
@@ -2539,9 +2666,11 @@ class CodeSessionDB:
         provider: Optional[str] = None,
         model: Optional[str] = None,
         task_id: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
         session_id = str(uuid.uuid4())
         now = datetime.now(timezone.utc).isoformat()
+        metadata_json = json.dumps(metadata or {})
 
         def _do(conn):
             conn.execute(
@@ -2549,7 +2678,7 @@ class CodeSessionDB:
                    (id, workspace_id, hermes_session_id, task_id, title,
                     provider, model, branch, status, metadata_json,
                     started_at, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'planning', '{}', ?, ?, ?)""",
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'planning', ?, ?, ?, ?)""",
                 (
                     session_id,
                     workspace_id,
@@ -2559,6 +2688,7 @@ class CodeSessionDB:
                     provider,
                     model,
                     branch,
+                    metadata_json,
                     now,
                     now,
                     now,

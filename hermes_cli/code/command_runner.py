@@ -157,6 +157,21 @@ class CommandRunnerService:
     def classify_command(self, command: str) -> str:
         return classify_command(command)
 
+    def assess_command(self, command: str) -> dict:
+        """Return full policy assessment including risk_class."""
+        try:
+            from hermes_cli.code.execution_policy import policy_engine
+            return policy_engine.assess(command)
+        except Exception:
+            safety = classify_command(command)
+            return {
+                "command": command,
+                "risk_class": safety,
+                "allowed": safety == CommandSafety.SAFE,
+                "requires_approval": safety == CommandSafety.NEEDS_APPROVAL,
+                "blocked": safety == CommandSafety.BLOCKED,
+            }
+
     def list_commands(self, code_session_id: str) -> List[Dict[str, Any]]:
         db = self._command_db()
         try:
@@ -290,6 +305,14 @@ class CommandRunnerService:
                     status = "timeout"
 
                 completed_at = datetime.now(timezone.utc).isoformat()
+
+                # Redact secrets from logged output
+                try:
+                    from hermes_cli.code.execution_policy import redact_secrets
+                    stdout = redact_secrets(stdout)
+                    stderr = redact_secrets(stderr)
+                except Exception:
+                    pass
 
                 updated_cmd = cdb.update_command(
                     command_id,

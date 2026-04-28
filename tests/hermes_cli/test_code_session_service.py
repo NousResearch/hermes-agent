@@ -82,6 +82,18 @@ class TestCodeSessionDB:
         assert session["provider"] == "openai"
         assert session["model"] == "gpt-4o"
 
+    def test_create_session_stores_metadata(self, db_and_wdb, tmp_path):
+        db, wdb = db_and_wdb
+        ws = _make_workspace(wdb, tmp_path)
+        session = db.create_session(
+            workspace_id=ws["id"],
+            metadata={"source": "code_cockpit_chat", "execution_mode": "approval"},
+        )
+        assert session["metadata"] == {
+            "source": "code_cockpit_chat",
+            "execution_mode": "approval",
+        }
+
     def test_list_sessions_returns_created(self, db_and_wdb, tmp_path):
         db, wdb = db_and_wdb
         ws = _make_workspace(wdb, tmp_path)
@@ -118,6 +130,17 @@ class TestCodeSessionDB:
         assert updated["status"] == "coding"
         assert updated["summary"] == "working"
         assert updated["updated_at"] >= s["updated_at"]
+
+    def test_update_session_accepts_web_cockpit_statuses(self, db_and_wdb, tmp_path):
+        db, wdb = db_and_wdb
+        ws = _make_workspace(wdb, tmp_path)
+        s = db.create_session(workspace_id=ws["id"])
+
+        running = db.update_session(s["id"], {"status": "running"})
+        completed = db.update_session(s["id"], {"status": "completed"})
+
+        assert running["status"] == "running"
+        assert completed["status"] == "completed"
 
     def test_update_session_invalid_status_raises(self, db_and_wdb, tmp_path):
         db, wdb = db_and_wdb
@@ -390,13 +413,13 @@ class TestCodeSessionSchema:
         finally:
             db.close()
 
-    def test_schema_version_is_16(self, tmp_path):
+    def test_schema_version_is_18(self, tmp_path):
         from hermes_state import SessionDB
 
         db = SessionDB(db_path=tmp_path / "state.db")
         try:
             cursor = db._conn.execute("SELECT version FROM schema_version")
-            assert cursor.fetchone()[0] == 16
+            assert cursor.fetchone()[0] == 18
         finally:
             db.close()
 

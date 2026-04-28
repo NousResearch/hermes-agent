@@ -704,7 +704,7 @@ class TestSchemaVersion:
     def tmp_db(self, tmp_path):
         return tmp_path / "state.db"
 
-    def test_schema_version_is_16(self, tmp_db):
+    def test_schema_version_is_18(self, tmp_db):
         from hermes_state import SessionDB
 
         db = SessionDB(db_path=tmp_db)
@@ -712,7 +712,7 @@ class TestSchemaVersion:
             cursor = db._conn.execute("SELECT version FROM schema_version")
             row = cursor.fetchone()
             version = row["version"] if hasattr(row, "keys") else row[0]
-            assert version == 16
+            assert version == 18
         finally:
             db.close()
 

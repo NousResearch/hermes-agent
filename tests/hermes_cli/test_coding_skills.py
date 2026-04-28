@@ -853,10 +853,10 @@ class TestFixRuntimeError:
 
 
 class TestSchemaVersion:
-    def test_schema_version_is_16(self):
+    def test_schema_version_is_18(self):
         import hermes_state
 
-        assert hermes_state.SCHEMA_VERSION == 16
+        assert hermes_state.SCHEMA_VERSION == 18
 
     def test_schema_contains_code_skill_runs(self):
         import hermes_state

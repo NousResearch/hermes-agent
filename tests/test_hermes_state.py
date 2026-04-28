@@ -1000,7 +1000,7 @@ class TestSchemaInit:
     def test_schema_version(self, db):
         cursor = db._conn.execute("SELECT version FROM schema_version")
         version = cursor.fetchone()[0]
-        assert version == 17
+        assert version == 18
 
     def test_title_column_exists(self, db):
         """Verify the title column was created in the sessions table."""

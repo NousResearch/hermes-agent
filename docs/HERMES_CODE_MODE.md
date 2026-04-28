@@ -370,3 +370,153 @@ When changing Code Mode, update all of the following together:
 7. Tests in `tests/hermes_cli/test_banner.py` and `tests/hermes_cli/test_code_mode_commands.py`.
 
 Keep the CLI safe under degraded conditions: no backend, no Git repository, missing state DB, narrow terminal, or missing optional packages must not prevent `hermes` from starting.
+
+---
+
+## 10. P0 + P0.1 Engineering Control Plane Foundation
+
+**Schema version:** v18 (bumped from v17 in P0.1)
+
+P0 adds the core infrastructure. P0.1 stabilizes and closes it.
+
+### P0.1 Changes
+
+- `ledger_artifacts`, `orchestrated_runs`, `orchestrated_run_events` migrated into main `SCHEMA_SQL` and `SessionDB._init_schema()` v18 migration block. Fresh and existing DBs get the tables on startup.
+- `ArtifactLedgerDB` and `OrchestratedRunDB` still provide their own `_init_schema()` (safe idempotent no-ops when tables already exist from main schema).
+- All schema version tests updated to expect v18.
+- `CodePreview` component now wires `useCodeWebSocket` — session/command/artifact WS events trigger targeted re-fetches; connection status badge shown inline.
+- TypeScript compiles cleanly (0 errors).
+
+### A. WebSocket-first Code Cockpit event path
+
+- Backend `/ws` emits normalized Code Mode events with this envelope:
+  ```json
+  {
+    "type": "code.session.updated",
+    "version": 1,
+    "timestamp": "...",
+    "workspace_id": "...",
+    "code_session_id": "...",
+    "payload": {}
+  }
+  ```
+- Helper `_broadcast_code_event()` in `web_server.py` wraps all Code Mode broadcasts with this envelope.
+- Frontend hook `web/src/hooks/useCodeWebSocket.ts` subscribes to Code Mode events from `hermesWs`. When `/ws` is unavailable, `status` returns `polling_fallback` and the existing REST polling continues.
+- `CodePreview` component (`web/src/features/code-preview/components/CodePreview.tsx`) integrates the hook. On `code_session.*` events, sessions list is re-fetched. On `code.command.*` / `code.artifact.created` events, the event timeline is refreshed. WS status (`ws` / reconnecting / `poll`) is shown in the Backend stat card.
+
+### B. ArtifactLedger
+
+- Service: `hermes_cli/code/artifact_ledger.py`
+- DB table: `ledger_artifacts` (SQLite, same shared state DB)
+- Typed categories: `task_intake`, `prd_lite`, `acceptance_criteria`, `architecture_note`, `adr`, `implementation_plan`, `command_log`, `diff_summary`, `test_report`, `review_report`, `deploy_plan`, `deploy_report`, `memory_update`, `other`
+- Linked to: workspace_id, code_session_id, flow_id, command_id, orchestrated_run_id
+- API endpoints:
+  - `POST /api/code/ledger/artifacts`
+  - `GET /api/code/ledger/artifacts`
+  - `GET /api/code/ledger/artifacts/{artifact_id}`
+  - `GET /api/code/ledger/categories`
+
+### C. AgentOrchestrator
+
+- Service: `hermes_cli/code/agent_orchestrator.py`
+- DB tables: `orchestrated_runs`, `orchestrated_run_events`
+- Lifecycle states: `intake → discovery → product_framing → architecture → planning → approval → implementation → validation → review → ready_for_pr → completed | cancelled | failed`
+- Validated state transitions — invalid transitions raise `ValueError`
+- Automatically creates a `task_intake` ledger artifact when a task description is provided
+- API endpoints:
+  - `POST /api/code/orchestrator/runs`
+  - `GET /api/code/orchestrator/runs`
+  - `GET /api/code/orchestrator/runs/{run_id}`
+  - `POST /api/code/orchestrator/runs/{run_id}/transition`
+  - `GET /api/code/orchestrator/runs/{run_id}/events`
+  - `GET /api/code/orchestrator/states`
+
+### D. ExecutionPolicyEngine
+
+- Service: `hermes_cli/code/execution_policy.py`
+- Risk classes: `safe_readonly`, `safe_local_write`, `network`, `git_write`, `secret_sensitive`, `remote_mutating`, `destructive`, `production_sensitive`
+- `classify_command(cmd)` returns a risk class — severity ordered (destructive checked first)
+- `redact_secrets(text)` removes API keys, tokens, JWTs, passwords from log output
+- Integrated into `CommandRunnerService.assess_command()` and `run_command_sync()` output redaction
+- API endpoints:
+  - `POST /api/code/policy/assess`
+  - `GET /api/code/policy/risk-classes`
+- Tests: `tests/hermes_cli/test_execution_policy.py`
+
+### E. Worktree/Checkpoint Service
+
+- Service: `hermes_cli/code/worktree_service.py`
+- `detect_git_capabilities(path)` — safe, never raises, degrades on non-Git paths
+- `WorktreeService.detect_capabilities(workspace_id)` — workspace-level capability detection
+- `WorktreeService.prepare_task_branch(workspace_id, branch_name, use_worktree=False)` — branch or worktree prep; no destructive ops
+- `WorktreeService.create_checkpoint(workspace_id)` — pure metadata capture (no commits, no modifications)
+- `WorktreeService.list_worktrees(workspace_id)` — lists git worktrees
+- API endpoints:
+  - `GET /api/code/workspaces/{workspace_id}/git-capabilities`
+  - `GET /api/code/workspaces/{workspace_id}/worktrees`
+- Tests: `tests/hermes_cli/test_worktree_service.py`
+
+### F. Skill Discovery Bridge
+
+- Service: `hermes_cli/code/skill_discovery.py`
+- Discovers skills from:
+  1. Built-in `SKILL_CATALOG` (always present)
+  2. `~/.hermes/skills/<skill-name>/SKILL.md` (global)
+  3. `<workspace>/.hermes/skills/<skill-name>/SKILL.md` (workspace-local)
+- Later sources override built-ins by name
+- `SkillDiscoveryService.list_skills(workspace_path)` — merged list
+- API endpoint: `GET /api/code/skills/catalog`
+- Tests: `tests/hermes_cli/test_skill_discovery.py`
+
+#### Creating a SKILL.md-style skill
+
+Create a folder at `~/.hermes/skills/my_skill_name/` with a `SKILL.md` file:
+
+```markdown
+# My Skill Name
+
+## Description
+What this skill does in one paragraph.
+
+## Parameters
+- input: description of required input
+
+## Steps
+1. First step
+2. Second step
+```
+
+Optionally add `scripts/` and `resources/` subdirectories.
+
+### G. Repo Knowledge / AGENTS.md Support
+
+- Service: `hermes_cli/code/repo_knowledge.py`
+- `detect_guidance_files(repo_root)` — scans for AGENTS.md, CLAUDE.md, GEMINI.md, .codex, and docs in `docs/architecture/`, `docs/engineering/`, `docs/operations/`, `docs/adr/`
+- `read_agents_md(repo_root)` — reads content, respects 64KB limit
+- `bootstrap_agents_md(repo_root, project_summary)` — creates minimal AGENTS.md **only if one does not exist**; never overwrites
+- API endpoint: `GET /api/code/workspaces/{workspace_id}/repo-knowledge`
+- Tests: `tests/hermes_cli/test_repo_knowledge.py`
+
+### P0 Test Commands
+
+```bash
+python3 -m pytest \
+  tests/hermes_cli/test_execution_policy.py \
+  tests/hermes_cli/test_artifact_ledger.py \
+  tests/hermes_cli/test_agent_orchestrator.py \
+  tests/hermes_cli/test_worktree_service.py \
+  tests/hermes_cli/test_skill_discovery.py \
+  tests/hermes_cli/test_repo_knowledge.py \
+  --override-ini="addopts=" --tb=short
+```
+
+### P1 Recommendations
+
+1. **WebSocket sessions filter** — wire `session_id` query param on `/ws` so Code Cockpit pages only receive events for the active session (avoids unnecessary re-fetches).
+2. **AgentOrchestrator autonomous runner** — connect state transitions to actual agent/tool execution; P0/P0.1 only provides the state machine and persistence foundation.
+3. **ArtifactLedger UI panel** — add a collapsible panel in the Code Cockpit to display typed ledger artifacts per session.
+4. **Worktree isolation** — default `use_worktree=True` once validated in production; consider a per-session worktree lifecycle with automatic cleanup.
+5. **SKILL.md runner** — execute folder-based skills using SKILL.md instructions through the agent; discovery is in place, execution is not.
+6. **AGENTS.md context injection** — automatically prepend AGENTS.md content to agent system prompts when detected in workspace.
+7. **GitHub App integration** — P1 scope: webhook listener for PR events, automated code review via `review_diff` skill, PR creation from `ready_for_pr` orchestrator state.
+8. **`on_event` → lifespan migration** — `web_server.py` uses deprecated FastAPI `@app.on_event("startup")`; migrate to lifespan context manager to resolve deprecation warning.

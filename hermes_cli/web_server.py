@@ -183,6 +183,46 @@ class _RealtimeHub:
 _REALTIME_HUB = _RealtimeHub()
 
 
+def _make_code_event(
+    event_type: str,
+    payload: dict,
+    workspace_id: Optional[str] = None,
+    code_session_id: Optional[str] = None,
+    version: int = 1,
+) -> dict:
+    """Build a normalized Code Mode WS event envelope."""
+    return {
+        "type": event_type,
+        "version": version,
+        "timestamp": _utc_now_iso(),
+        "workspace_id": workspace_id,
+        "code_session_id": code_session_id,
+        "payload": payload,
+    }
+
+
+async def _broadcast_code_event(
+    event_type: str,
+    payload: dict,
+    workspace_id: Optional[str] = None,
+    code_session_id: Optional[str] = None,
+) -> None:
+    """Broadcast a normalized Code Mode event to all WS connections."""
+    envelope = _make_code_event(
+        event_type, payload,
+        workspace_id=workspace_id,
+        code_session_id=code_session_id,
+    )
+    try:
+        await _REALTIME_HUB.broadcast(
+            event_type,
+            {k: v for k, v in envelope.items() if k != "type"},
+            session_id=code_session_id,
+        )
+    except Exception:
+        pass
+
+
 class _StepEmitter:
     """Thread-safe bridge: fires run-step WS events from a sync thread executor.
 
@@ -6243,6 +6283,354 @@ def mount_spa(application: FastAPI):
         ):
             return FileResponse(file_path)
         return _serve_index()
+
+
+# ---------------------------------------------------------------------------
+# P0: ArtifactLedger endpoints
+# ---------------------------------------------------------------------------
+
+class _CreateLedgerArtifactBody(BaseModel):
+    category: str
+    content: str
+    title: Optional[str] = None
+    format: str = "markdown"
+    workspace_id: Optional[str] = None
+    code_session_id: Optional[str] = None
+    flow_id: Optional[str] = None
+    command_id: Optional[str] = None
+    orchestrated_run_id: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
+@app.post("/api/code/ledger/artifacts")
+async def create_ledger_artifact(body: _CreateLedgerArtifactBody):
+    from hermes_cli.code.artifact_ledger import ArtifactLedger
+    try:
+        ledger = ArtifactLedger(realtime_hub=_REALTIME_HUB)
+        artifact = ledger.create_artifact(
+            category=body.category,
+            content=body.content,
+            title=body.title,
+            format=body.format,
+            workspace_id=body.workspace_id,
+            code_session_id=body.code_session_id,
+            flow_id=body.flow_id,
+            command_id=body.command_id,
+            orchestrated_run_id=body.orchestrated_run_id,
+            metadata=body.metadata,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        _log.error("create_ledger_artifact failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+    try:
+        await _broadcast_code_event(
+            "code.artifact.created",
+            {"artifact": artifact},
+            workspace_id=body.workspace_id,
+            code_session_id=body.code_session_id,
+        )
+    except Exception:
+        pass
+
+    return {"artifact": artifact}
+
+
+@app.get("/api/code/ledger/artifacts")
+async def list_ledger_artifacts(
+    code_session_id: Optional[str] = None,
+    workspace_id: Optional[str] = None,
+    orchestrated_run_id: Optional[str] = None,
+    category: Optional[str] = None,
+    limit: int = 100,
+    offset: int = 0,
+):
+    from hermes_cli.code.artifact_ledger import ArtifactLedger
+    try:
+        ledger = ArtifactLedger()
+        artifacts = ledger.list_artifacts(
+            code_session_id=code_session_id,
+            workspace_id=workspace_id,
+            orchestrated_run_id=orchestrated_run_id,
+            category=category,
+            limit=limit,
+            offset=offset,
+        )
+        return {"artifacts": artifacts, "total": len(artifacts)}
+    except Exception as exc:
+        _log.error("list_ledger_artifacts failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/code/ledger/artifacts/{artifact_id}")
+async def get_ledger_artifact(artifact_id: str):
+    from hermes_cli.code.artifact_ledger import ArtifactLedger
+    try:
+        ledger = ArtifactLedger()
+        artifact = ledger.get_artifact(artifact_id)
+    except Exception as exc:
+        _log.error("get_ledger_artifact failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+    if not artifact:
+        raise HTTPException(status_code=404, detail="Artifact not found")
+    return {"artifact": artifact}
+
+
+@app.get("/api/code/ledger/categories")
+async def list_ledger_categories():
+    from hermes_cli.code.artifact_ledger import ARTIFACT_CATEGORIES
+    return {"categories": list(ARTIFACT_CATEGORIES)}
+
+
+# ---------------------------------------------------------------------------
+# P0: AgentOrchestrator endpoints
+# ---------------------------------------------------------------------------
+
+class _CreateOrchestratedRunBody(BaseModel):
+    workspace_id: Optional[str] = None
+    code_session_id: Optional[str] = None
+    title: Optional[str] = None
+    task_description: Optional[str] = None
+    branch: Optional[str] = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
+class _TransitionOrchestratedRunBody(BaseModel):
+    to_state: str
+    message: Optional[str] = None
+    payload: Optional[Dict[str, Any]] = None
+
+
+@app.post("/api/code/orchestrator/runs")
+async def create_orchestrated_run(body: _CreateOrchestratedRunBody):
+    from hermes_cli.code.agent_orchestrator import AgentOrchestrator
+    try:
+        orch = AgentOrchestrator(realtime_hub=_REALTIME_HUB)
+        run = orch.create_run(
+            workspace_id=body.workspace_id,
+            code_session_id=body.code_session_id,
+            title=body.title,
+            task_description=body.task_description,
+            branch=body.branch,
+            metadata=body.metadata,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except Exception as exc:
+        _log.error("create_orchestrated_run failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+    try:
+        await _broadcast_code_event(
+            "orchestrator.run.created",
+            {"run": run},
+            workspace_id=body.workspace_id,
+            code_session_id=body.code_session_id,
+        )
+    except Exception:
+        pass
+
+    return {"run": run}
+
+
+@app.get("/api/code/orchestrator/runs")
+async def list_orchestrated_runs(
+    workspace_id: Optional[str] = None,
+    code_session_id: Optional[str] = None,
+    state: Optional[str] = None,
+    limit: int = 50,
+):
+    from hermes_cli.code.agent_orchestrator import AgentOrchestrator
+    try:
+        orch = AgentOrchestrator()
+        runs = orch.list_runs(
+            workspace_id=workspace_id,
+            code_session_id=code_session_id,
+            state=state,
+            limit=limit,
+        )
+        return {"runs": runs, "total": len(runs)}
+    except Exception as exc:
+        _log.error("list_orchestrated_runs failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/code/orchestrator/runs/{run_id}")
+async def get_orchestrated_run(run_id: str):
+    from hermes_cli.code.agent_orchestrator import AgentOrchestrator
+    try:
+        orch = AgentOrchestrator()
+        run = orch.get_run(run_id)
+    except Exception as exc:
+        _log.error("get_orchestrated_run failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+    if not run:
+        raise HTTPException(status_code=404, detail="Orchestrated run not found")
+    return {"run": run}
+
+
+@app.post("/api/code/orchestrator/runs/{run_id}/transition")
+async def transition_orchestrated_run(run_id: str, body: _TransitionOrchestratedRunBody):
+    from hermes_cli.code.agent_orchestrator import AgentOrchestrator
+    try:
+        orch = AgentOrchestrator(realtime_hub=_REALTIME_HUB)
+        run = orch.transition(
+            run_id=run_id,
+            to_state=body.to_state,
+            message=body.message,
+            payload=body.payload,
+        )
+    except ValueError as exc:
+        detail = str(exc)
+        status_code = 404 if "not found" in detail.lower() else 400
+        raise HTTPException(status_code=status_code, detail=detail)
+    except Exception as exc:
+        _log.error("transition_orchestrated_run failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+    try:
+        await _broadcast_code_event(
+            "orchestrator.run.transitioned",
+            {"run": run, "to_state": body.to_state},
+            workspace_id=run.get("workspace_id"),
+            code_session_id=run.get("code_session_id"),
+        )
+    except Exception:
+        pass
+
+    return {"run": run}
+
+
+@app.get("/api/code/orchestrator/runs/{run_id}/events")
+async def list_orchestrated_run_events(run_id: str):
+    from hermes_cli.code.agent_orchestrator import AgentOrchestrator
+    try:
+        orch = AgentOrchestrator()
+        events = orch.list_events(run_id)
+        return {"events": events, "total": len(events)}
+    except Exception as exc:
+        _log.error("list_orchestrated_run_events failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/code/orchestrator/states")
+async def list_orchestrator_states():
+    from hermes_cli.code.agent_orchestrator import AgentOrchestrator, TRANSITIONS
+    states = AgentOrchestrator.valid_states()
+    transitions = {s: sorted(TRANSITIONS.get(s, frozenset())) for s in states}
+    return {"states": states, "transitions": transitions}
+
+
+# ---------------------------------------------------------------------------
+# P0: ExecutionPolicyEngine endpoints
+# ---------------------------------------------------------------------------
+
+class _AssessCommandBody(BaseModel):
+    command: str
+
+
+@app.post("/api/code/policy/assess")
+async def assess_command_policy(body: _AssessCommandBody):
+    from hermes_cli.code.execution_policy import policy_engine
+    assessment = policy_engine.assess(body.command)
+    return {"assessment": assessment}
+
+
+@app.get("/api/code/policy/risk-classes")
+async def list_risk_classes():
+    from hermes_cli.code.execution_policy import RiskClass
+    classes = [
+        v for k, v in vars(RiskClass).items()
+        if not k.startswith("_") and isinstance(v, str)
+    ]
+    return {"risk_classes": sorted(classes)}
+
+
+# ---------------------------------------------------------------------------
+# P0: WorktreeService endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/code/workspaces/{workspace_id}/git-capabilities")
+async def get_git_capabilities(workspace_id: str):
+    from hermes_cli.code.worktree_service import WorktreeService
+    try:
+        svc = WorktreeService()
+        caps = svc.detect_capabilities(workspace_id)
+        return {"capabilities": caps}
+    except Exception as exc:
+        _log.error("get_git_capabilities failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@app.get("/api/code/workspaces/{workspace_id}/worktrees")
+async def list_worktrees(workspace_id: str):
+    from hermes_cli.code.worktree_service import WorktreeService
+    try:
+        svc = WorktreeService()
+        worktrees = svc.list_worktrees(workspace_id)
+        return {"worktrees": worktrees}
+    except Exception as exc:
+        _log.error("list_worktrees failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# ---------------------------------------------------------------------------
+# P0: SkillDiscovery endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/code/skills/catalog")
+async def list_skill_catalog(workspace_id: Optional[str] = None):
+    from hermes_cli.code.skill_discovery import SkillDiscoveryService
+    from pathlib import Path as _Path
+    try:
+        svc = SkillDiscoveryService()
+        workspace_path = None
+        if workspace_id:
+            from hermes_state import WorkspaceDB
+            wdb = WorkspaceDB()
+            try:
+                ws = wdb.get_workspace(workspace_id)
+                if ws:
+                    workspace_path = _Path(ws["path"])
+            finally:
+                wdb.close()
+        skills = svc.list_skills(workspace_path=workspace_path)
+        return {"skills": skills, "total": len(skills)}
+    except Exception as exc:
+        _log.error("list_skill_catalog failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+# ---------------------------------------------------------------------------
+# P0: RepoKnowledge / AGENTS.md endpoints
+# ---------------------------------------------------------------------------
+
+@app.get("/api/code/workspaces/{workspace_id}/repo-knowledge")
+async def get_repo_knowledge(workspace_id: str):
+    from hermes_cli.code.repo_knowledge import RepoKnowledgeService
+    from pathlib import Path as _Path
+    try:
+        from hermes_state import WorkspaceDB
+        wdb = WorkspaceDB()
+        try:
+            ws = wdb.get_workspace(workspace_id)
+        finally:
+            wdb.close()
+
+        if not ws:
+            raise HTTPException(status_code=404, detail="Workspace not found")
+
+        svc = RepoKnowledgeService()
+        workspace_path = _Path(ws["path"])
+        guidance = svc.detect(workspace_path)
+        return {"guidance": guidance}
+    except HTTPException:
+        raise
+    except Exception as exc:
+        _log.error("get_repo_knowledge failed: %s", exc, exc_info=True)
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 mount_spa(app)

@@ -1,0 +1,6 @@
+Author attribution test for revaraver.
+
+This branch verifies that local Git commits use:
+revaraver <29756950+revaraver@users.noreply.github.com>
+
+Safe to delete this branch after checking GitHub UI.

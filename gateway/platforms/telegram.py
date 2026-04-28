@@ -369,6 +369,49 @@ class TelegramAdapter(BasePlatformAdapter):
             return {"link_preview_options": LinkPreviewOptions(is_disabled=True)}
         return {"disable_web_page_preview": True}
 
+    async def _drain_polling_connections(self) -> None:
+        """Reset the httpx connection pool used for getUpdates polling.
+
+        Network errors (especially through proxies like sing-box) can leave
+        httpx connections in a half-closed state that still occupy pool slots.
+        After enough reconnect cycles the pool fills up entirely, causing
+        ``Pool timeout: All connections in the connection pool are occupied.``
+
+        We reset ONLY ``_request[0]`` (the getUpdates request) — the general
+        request (``_request[1]``) is left untouched so concurrent
+        ``send_message`` / ``edit_message`` calls are never interrupted.
+
+        Implementation note: accesses ``Bot._request[0]`` which is the
+        get-updates ``BaseRequest`` in the PTB 22.x internal tuple
+        ``(get_updates_request, general_request)``.  There is no public
+        accessor for the polling request; review if upgrading to PTB 23+.
+        """
+        if not (self._app and self._app.bot):
+            return
+        try:
+            # PTB 22.x: _request is a (get_updates, general) tuple;
+            # no public accessor exists for the polling request.
+            polling_req = self._app.bot._request[0]  # noqa: SLF001
+        except Exception:
+            return
+        try:
+            await polling_req.shutdown()
+        except Exception:
+            logger.debug(
+                "[%s] Polling request shutdown failed (non-fatal)",
+                self.name, exc_info=True,
+            )
+        try:
+            await polling_req.initialize()
+            logger.debug(
+                "[%s] Polling request pool drained before reconnect", self.name
+            )
+        except Exception:
+            logger.debug(
+                "[%s] Polling request re-initialize failed (non-fatal)",
+                self.name, exc_info=True,
+            )
+
     async def _handle_polling_network_error(self, error: Exception) -> None:
         """Reconnect polling after a transient network interruption.
 
@@ -413,6 +456,8 @@ class TelegramAdapter(BasePlatformAdapter):
                 await self._app.updater.stop()
         except Exception:
             pass
+
+        await self._drain_polling_connections()
 
         try:
             await self._app.updater.start_polling(
@@ -461,6 +506,7 @@ class TelegramAdapter(BasePlatformAdapter):
             except Exception:
                 pass
             await asyncio.sleep(RETRY_DELAY)
+            await self._drain_polling_connections()
             try:
                 await self._app.updater.start_polling(
                     allowed_updates=Update.ALL_TYPES,

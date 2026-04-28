@@ -285,6 +285,57 @@ _OFFICIAL_DOCS_PRICING: Dict[tuple[str, str], PricingEntry] = {
         source_url="https://ai.google.dev/pricing",
         pricing_version="google-pricing-2026-03-16",
     ),
+    # MiniMax — pay-as-you-go pricing from platform.minimax.io/docs/guides/pricing-paygo
+    # We always apply these rates regardless of whether the user is on a Token Plan
+    # subscription, so they can see the token-equivalent cost of their usage.
+    (
+        "minimax-cn",
+        "minimax-m2.7",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.30"),
+        output_cost_per_million=Decimal("1.20"),
+        cache_read_cost_per_million=Decimal("0.06"),
+        cache_write_cost_per_million=Decimal("0.375"),
+        source="official_docs_snapshot",
+        source_url="https://platform.minimax.io/docs/guides/pricing-paygo",
+        pricing_version="minimax-pricing-2026-04",
+    ),
+    (
+        "minimax-cn",
+        "minimax-m2.7-highspeed",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.60"),
+        output_cost_per_million=Decimal("2.40"),
+        cache_read_cost_per_million=Decimal("0.06"),
+        cache_write_cost_per_million=Decimal("0.375"),
+        source="official_docs_snapshot",
+        source_url="https://platform.minimax.io/docs/guides/pricing-paygo",
+        pricing_version="minimax-pricing-2026-04",
+    ),
+    (
+        "minimax-cn",
+        "minimax-m2.5",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.30"),
+        output_cost_per_million=Decimal("1.20"),
+        cache_read_cost_per_million=Decimal("0.03"),
+        cache_write_cost_per_million=Decimal("0.375"),
+        source="official_docs_snapshot",
+        source_url="https://platform.minimax.io/docs/guides/pricing-paygo",
+        pricing_version="minimax-pricing-2026-04",
+    ),
+    (
+        "minimax-cn",
+        "minimax-m2.5-highspeed",
+    ): PricingEntry(
+        input_cost_per_million=Decimal("0.60"),
+        output_cost_per_million=Decimal("2.40"),
+        cache_read_cost_per_million=Decimal("0.03"),
+        cache_write_cost_per_million=Decimal("0.375"),
+        source="official_docs_snapshot",
+        source_url="https://platform.minimax.io/docs/guides/pricing-paygo",
+        pricing_version="minimax-pricing-2026-04",
+    ),
     # AWS Bedrock — pricing per the Bedrock pricing page.
     # Bedrock charges the same per-token rates as the model provider but
     # through AWS billing.  These are the on-demand prices (no commitment).
@@ -401,9 +452,11 @@ def resolve_billing_route(
     if provider_name == "openai":
         return BillingRoute(provider="openai", model=model.split("/")[-1], base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name == "minimax-cn" or base_url_host_matches(base_url or "", "minimaxi.com"):
-        # MiniMax's own API (api.minimaxi.com) uses a subscription request-quota plan,
-        # not per-token billing — treat the same as openai-codex (subscription_included).
-        return BillingRoute(provider="minimax-cn", model=model, base_url=base_url or "", billing_mode="subscription_included")
+        # MiniMax's own API (api.minimaxi.com) offers both a subscription Token Plan
+        # and pay-as-you-go per-token pricing. We always use the official pay-as-you-go
+        # rates so users can see the token-equivalent cost regardless of their plan.
+        # Source: https://platform.minimax.io/docs/guides/pricing-paygo
+        return BillingRoute(provider="minimax-cn", model=model, base_url=base_url or "", billing_mode="official_docs_snapshot")
     if provider_name in {"custom", "local"} or (base and "localhost" in base):
         return BillingRoute(provider=provider_name or "custom", model=model, base_url=base_url or "", billing_mode="unknown")
     return BillingRoute(provider=provider_name or "unknown", model=model.split("/")[-1] if model else "", base_url=base_url or "", billing_mode="unknown")

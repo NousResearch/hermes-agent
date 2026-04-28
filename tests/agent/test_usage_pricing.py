@@ -194,10 +194,11 @@ def test_custom_endpoint_models_api_pricing_is_supported(monkeypatch):
     assert float(entry.output_cost_per_million) == 2.0
 
 
-def test_minimax_cn_route_resolves_to_subscription_included():
+def test_minimax_cn_route_resolves_to_official_docs_snapshot():
     """Regression test for issue #16825: minimax-cn was falling through to
-    billing_mode='unknown' instead of 'subscription_included', causing all
-    MiniMax sessions to be stored with cost_status='unknown' and cost=0.
+    billing_mode='unknown', causing all MiniMax sessions to show cost=0.
+    We use official_docs_snapshot so the official pay-as-you-go rates are
+    applied regardless of whether the user is on a Token Plan subscription.
     """
     route = resolve_billing_route(
         "MiniMax-M2.7",
@@ -206,12 +207,15 @@ def test_minimax_cn_route_resolves_to_subscription_included():
     )
 
     assert route.provider == "minimax-cn"
-    assert route.billing_mode == "subscription_included"
+    assert route.billing_mode == "official_docs_snapshot"
 
 
-def test_minimax_cn_cost_result_is_included_not_unknown():
+def test_minimax_cn_cost_result_is_estimated_with_official_rates():
     """Regression test for issue #16825: estimate_usage_cost must return
-    status='included' (not 'unknown') for minimax-cn routes.
+    status='estimated' with a non-zero amount for minimax-cn routes, using
+    the official pay-as-you-go rates from platform.minimax.io/docs/guides/pricing-paygo.
+    10000 input @ $0.30/M + 500 output @ $1.20/M + 5000 cache_read @ $0.06/M
+    = $0.003000 + $0.000600 + $0.000300 = $0.003900
     """
     result = estimate_usage_cost(
         "MiniMax-M2.7",
@@ -220,8 +224,8 @@ def test_minimax_cn_cost_result_is_included_not_unknown():
         base_url="https://api.minimaxi.com/anthropic",
     )
 
-    assert result.status == "included"
-    assert result.amount_usd == Decimal("0")
+    assert result.status == "estimated"
+    assert result.amount_usd == Decimal("0.003900")
 
 
 def test_minimax_cn_detected_by_base_url_host():
@@ -235,4 +239,22 @@ def test_minimax_cn_detected_by_base_url_host():
     )
 
     assert route.provider == "minimax-cn"
-    assert route.billing_mode == "subscription_included"
+    assert route.billing_mode == "official_docs_snapshot"
+
+
+def test_minimax_cn_pricing_entry_uses_official_paygo_rates():
+    """Regression test for issue #16825: get_pricing_entry must return the
+    official MiniMax pay-as-you-go rates from _OFFICIAL_DOCS_PRICING.
+    """
+    entry = get_pricing_entry(
+        "MiniMax-M2.7",
+        provider="minimax-cn",
+        base_url="https://api.minimaxi.com/anthropic",
+    )
+
+    assert entry is not None
+    assert float(entry.input_cost_per_million) == 0.30
+    assert float(entry.output_cost_per_million) == 1.20
+    assert float(entry.cache_read_cost_per_million) == 0.06
+    assert float(entry.cache_write_cost_per_million) == 0.375
+    assert entry.source == "official_docs_snapshot"

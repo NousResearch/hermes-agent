@@ -13,7 +13,7 @@ from unittest.mock import MagicMock, patch
 def _run_setup_weixin(*, group_idx: int):
     """Drive ``_setup_weixin`` to the group-chat prompt and capture I/O.
 
-    Returns ``(saved_env, info_calls, warning_calls)``.
+    Returns ``(saved_env, info_calls, warning_calls, success_calls)``.
     """
     saved_env: dict[str, str] = {}
     existing_env: dict[str, str] = {}
@@ -26,6 +26,7 @@ def _run_setup_weixin(*, group_idx: int):
 
     info_mock = MagicMock()
     warning_mock = MagicMock()
+    success_mock = MagicMock()
 
     qr_credentials = {
         "account_id": "test-account",
@@ -45,7 +46,7 @@ def _run_setup_weixin(*, group_idx: int):
          patch("hermes_cli.gateway.prompt_choice", side_effect=prompt_choice_responses), \
          patch("hermes_cli.gateway.prompt", side_effect=prompt_responses), \
          patch("hermes_cli.gateway.print_info", info_mock), \
-         patch("hermes_cli.gateway.print_success"), \
+         patch("hermes_cli.gateway.print_success", success_mock), \
          patch("hermes_cli.gateway.print_warning", warning_mock), \
          patch("hermes_cli.gateway.print_error"), \
          patch("hermes_cli.gateway.color", side_effect=lambda t, c: t), \
@@ -58,14 +59,15 @@ def _run_setup_weixin(*, group_idx: int):
 
     info_calls = [str(c.args[0]) if c.args else "" for c in info_mock.call_args_list]
     warning_calls = [str(c.args[0]) if c.args else "" for c in warning_mock.call_args_list]
-    return saved_env, info_calls, warning_calls
+    success_calls = [str(c.args[0]) if c.args else "" for c in success_mock.call_args_list]
+    return saved_env, info_calls, warning_calls, success_calls
 
 
 class TestSetupWeixinIlinkBotClarification:
     """#17094: setup must warn that QR-login iLink bots may not deliver group events."""
 
     def test_disabled_path_prints_ilink_bot_dm_only_note(self):
-        _, info_calls, _ = _run_setup_weixin(group_idx=0)
+        _, info_calls, _, _ = _run_setup_weixin(group_idx=0)
         joined = "\n".join(info_calls)
         # Three independent assertions so a future trim that drops one of the
         # three load-bearing facts (bot identity, group delivery, group@bot
@@ -75,7 +77,7 @@ class TestSetupWeixinIlinkBotClarification:
         assert "@im.bot" in joined, info_calls
 
     def test_open_path_still_prints_note_and_qualifies_warning(self):
-        saved_env, info_calls, warning_calls = _run_setup_weixin(group_idx=1)
+        saved_env, info_calls, warning_calls, _ = _run_setup_weixin(group_idx=1)
         joined_info = "\n".join(info_calls)
         joined_warning = "\n".join(warning_calls)
 
@@ -86,7 +88,14 @@ class TestSetupWeixinIlinkBotClarification:
         assert "iLink" in joined_warning, warning_calls
 
     def test_allowlist_path_still_prints_note_and_qualifies_success(self):
-        saved_env, info_calls, _ = _run_setup_weixin(group_idx=2)
+        saved_env, info_calls, _, success_calls = _run_setup_weixin(group_idx=2)
         joined_info = "\n".join(info_calls)
+        joined_success = "\n".join(success_calls)
         assert saved_env["WEIXIN_GROUP_POLICY"] == "allowlist"
         assert "iLink bot" in joined_info, info_calls
+        # The allowlist success line must be qualified with the iLink-delivery
+        # caveat so users don't assume the policy alone guarantees delivery.
+        assert any(
+            "Group allowlist saved" in line and "iLink" in line
+            for line in success_calls
+        ), success_calls

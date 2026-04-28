@@ -151,7 +151,7 @@ The default group policy is `disabled` for Weixin (unlike WeCom where it default
 :::
 
 :::warning Ordinary WeChat groups may not be delivered for QR-login bots
-QR login connects Hermes to an **iLink bot identity** (e.g. `<hex>@im.bot`), not to a fully automated personal WeChat account. The iLink bot identity cannot be invited into ordinary WeChat groups the way a normal contact can, and `getUpdates` typically returns zero messages for ordinary group chats — even when `WEIXIN_GROUP_POLICY` is `open` or `allowlist`.
+QR login connects Hermes to an **iLink bot identity** (e.g. `<hex>@im.bot`), not to a fully automated personal WeChat account. The iLink bot identity cannot be invited into ordinary WeChat groups the way a normal contact can, and `getupdates` typically returns zero messages for ordinary group chats — even when `WEIXIN_GROUP_POLICY` is `open` or `allowlist`.
 
 In practice, this means:
 

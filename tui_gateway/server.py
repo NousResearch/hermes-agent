@@ -1797,15 +1797,22 @@ def _(rid, params: dict) -> dict:
     ``display.tui_auto_resume_recent`` is on; the field is also handy
     for any CLI tooling that wants "latest session" without paginating
     the full list.
+
+    Contract: a ``{"session_id": null}`` result means "no eligible
+    session found right now".  Errors are also folded into that
+    null-result shape (and logged) so callers don't have to special-
+    case JSON-RPC error envelopes for what is a normal "no answer".
     """
     db = _get_db()
     if db is None:
         return _ok(rid, {"session_id": None})
     try:
         deny = frozenset({"tool"})
-        # Over-fetch modestly so per-source filtering doesn't leave us
-        # without a hit; we only need the first non-denied row.
-        rows = db.list_sessions_rich(source=None, limit=20)
+        # Over-fetch by a generous bounded amount so heavy sub-agent
+        # users (lots of recent ``tool`` rows) don't get a false
+        # "no eligible session" answer.  ``session.list`` uses a
+        # similar over-fetch strategy.
+        rows = db.list_sessions_rich(source=None, limit=200)
         for row in rows:
             src = (row.get("source") or "").strip().lower()
             if src in deny:
@@ -1820,8 +1827,9 @@ def _(rid, params: dict) -> dict:
                 },
             )
         return _ok(rid, {"session_id": None})
-    except Exception as e:
-        return _err(rid, 5006, str(e))
+    except Exception:
+        logger.exception("session.most_recent failed")
+        return _ok(rid, {"session_id": None})
 
 
 @method("session.resume")

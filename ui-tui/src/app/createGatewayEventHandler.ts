@@ -1,6 +1,13 @@
 import { STREAM_BATCH_MS } from '../config/timing.js'
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
-import type { CommandsCatalogResponse, DelegationStatusResponse, GatewayEvent, GatewaySkin } from '../gatewayTypes.js'
+import type {
+  CommandsCatalogResponse,
+  ConfigFullResponse,
+  DelegationStatusResponse,
+  GatewayEvent,
+  GatewaySkin,
+  SessionMostRecentResponse
+} from '../gatewayTypes.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { formatToolCall, stripAnsi } from '../lib/text.js'
@@ -184,7 +191,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     // `hermes --tui` muscle memory and addresses the audit's "session
     // unrecoverable after disconnection" gap.  Default off so existing
     // users aren't surprised.
-    rpc<{ config?: { display?: { tui_auto_resume_recent?: boolean } } }>('config.get', { key: 'full' })
+    rpc<ConfigFullResponse>('config.get', { key: 'full' })
       .then(cfg => {
         if (!cfg?.config?.display?.tui_auto_resume_recent) {
           patchUiState({ status: 'forging session…' })
@@ -193,7 +200,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           return
         }
 
-        return rpc<{ session_id?: null | string; title?: string }>('session.most_recent', {}).then(r => {
+        return rpc<SessionMostRecentResponse>('session.most_recent', {}).then(r => {
           const target = r?.session_id
 
           if (target) {

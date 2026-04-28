@@ -456,11 +456,7 @@ describe('createGatewayEventHandler', () => {
 
     createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
 
-    await Promise.resolve()
-    await Promise.resolve()
-    await Promise.resolve()
-
-    expect(newSession).toHaveBeenCalled()
+    await vi.waitFor(() => expect(newSession).toHaveBeenCalled())
     expect(resumeById).not.toHaveBeenCalled()
   })
 
@@ -487,12 +483,7 @@ describe('createGatewayEventHandler', () => {
 
     createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
 
-    // Drain enough microtasks for two chained `.then` handlers.
-    for (let i = 0; i < 5; i += 1) {
-      await Promise.resolve()
-    }
-
-    expect(resumeById).toHaveBeenCalledWith('sess-most-recent')
+    await vi.waitFor(() => expect(resumeById).toHaveBeenCalledWith('sess-most-recent'))
     expect(newSession).not.toHaveBeenCalled()
   })
 
@@ -519,11 +510,7 @@ describe('createGatewayEventHandler', () => {
 
     createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
 
-    for (let i = 0; i < 5; i += 1) {
-      await Promise.resolve()
-    }
-
-    expect(newSession).toHaveBeenCalled()
+    await vi.waitFor(() => expect(newSession).toHaveBeenCalled())
     expect(resumeById).not.toHaveBeenCalled()
   })
 
@@ -542,9 +529,7 @@ describe('createGatewayEventHandler', () => {
 
     createGatewayEventHandler(ctx)({ payload: {}, type: 'gateway.ready' } as any)
 
-    await Promise.resolve()
-
-    expect(resumeById).toHaveBeenCalledWith('env-explicit')
+    await vi.waitFor(() => expect(resumeById).toHaveBeenCalledWith('env-explicit'))
     expect(newSession).not.toHaveBeenCalled()
   })
 

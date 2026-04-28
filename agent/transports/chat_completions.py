@@ -154,7 +154,6 @@ class ChatCompletionsTransport(ProviderTransport):
             is_github_models: bool
             is_nvidia_nim: bool
             is_kimi: bool
-            is_tokenhub: bool
             is_lmstudio: bool
             is_custom_provider: bool
             ollama_num_ctx: int | None

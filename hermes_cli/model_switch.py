@@ -213,10 +213,15 @@ def _load_direct_aliases() -> dict[str, DirectAlias]:
 
 
 def _ensure_direct_aliases() -> None:
-    """Lazy-load direct aliases on first use."""
-    global DIRECT_ALIASES
+    """Lazy-load direct aliases on first use.
+
+    Mutates the existing DIRECT_ALIASES dict in place rather than rebinding
+    the module attribute. This keeps `from hermes_cli.model_switch import
+    DIRECT_ALIASES` references valid in callers — rebinding would leave them
+    pointing at a stale empty dict.
+    """
     if not DIRECT_ALIASES:
-        DIRECT_ALIASES = _load_direct_aliases()
+        DIRECT_ALIASES.update(_load_direct_aliases())
 
 
 # ---------------------------------------------------------------------------

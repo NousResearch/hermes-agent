@@ -27,6 +27,8 @@ export interface StateSetter<T> {
 
 export type StatusBarMode = 'bottom' | 'off' | 'top'
 
+export type BusyInputMode = 'interrupt' | 'queue' | 'steer'
+
 export interface SelectionApi {
   captureScrolledRows: (firstRow: number, lastRow: number, side: 'above' | 'below') => void
   clearSelection: () => void
@@ -85,6 +87,7 @@ export interface TranscriptRow {
 export interface UiState {
   bgTasks: Set<string>
   busy: boolean
+  busyInputMode: BusyInputMode
   compact: boolean
   detailsMode: DetailsMode
   detailsModeCommandOverride: boolean

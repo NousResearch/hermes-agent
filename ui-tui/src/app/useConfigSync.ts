@@ -10,7 +10,7 @@ import type {
 } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
 
-import type { StatusBarMode } from './interfaces.js'
+import type { BusyInputMode, StatusBarMode } from './interfaces.js'
 import { turnController } from './turnController.js'
 import { patchUiState } from './uiStore.js'
 
@@ -23,6 +23,27 @@ const STATUSBAR_ALIAS: Record<string, StatusBarMode> = {
 
 export const normalizeStatusBar = (raw: unknown): StatusBarMode =>
   raw === false ? 'off' : typeof raw === 'string' ? (STATUSBAR_ALIAS[raw.trim().toLowerCase()] ?? 'top') : 'top'
+
+const BUSY_MODES = new Set<BusyInputMode>(['interrupt', 'queue', 'steer'])
+
+// TUI defaults to `queue` even though the framework default
+// (`hermes_cli/config.py`) is `interrupt`.  Rationale: in a full-screen
+// TUI you're typically authoring the next prompt while the agent is
+// still streaming, and an unintended interrupt loses work.  Set
+// `display.busy_input_mode: interrupt` (or `steer`) explicitly to
+// opt out per-config; CLI / messaging adapters keep their `interrupt`
+// default unchanged.
+const TUI_BUSY_DEFAULT: BusyInputMode = 'queue'
+
+export const normalizeBusyInputMode = (raw: unknown): BusyInputMode => {
+  if (typeof raw !== 'string') {
+    return TUI_BUSY_DEFAULT
+  }
+
+  const v = raw.trim().toLowerCase() as BusyInputMode
+
+  return BUSY_MODES.has(v) ? v : TUI_BUSY_DEFAULT
+}
 
 const MTIME_POLL_MS = 5000
 
@@ -43,6 +64,7 @@ export const applyDisplay = (cfg: ConfigFullResponse | null, setBell: (v: boolea
 
   setBell(!!d.bell_on_complete)
   patchUiState({
+    busyInputMode: normalizeBusyInputMode(d.busy_input_mode),
     compact: !!d.tui_compact,
     detailsMode: resolveDetailsMode(d),
     detailsModeCommandOverride: false,

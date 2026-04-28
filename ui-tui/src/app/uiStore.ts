@@ -9,6 +9,7 @@ import type { UiState } from './interfaces.js'
 const buildUiState = (): UiState => ({
   bgTasks: new Set(),
   busy: false,
+  busyInputMode: 'queue',
   compact: false,
   detailsMode: 'collapsed',
   detailsModeCommandOverride: false,

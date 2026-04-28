@@ -14,7 +14,7 @@ from plugins.memory.honcho.client import (
     reset_honcho_client,
     resolve_active_host,
     resolve_config_path,
-    GLOBAL_CONFIG_PATH,
+    resolve_global_config_path,
     HOST,
 )
 
@@ -360,7 +360,7 @@ class TestResolveConfigPath:
         with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}), \
              patch.object(Path, "home", return_value=fake_home):
             result = resolve_config_path()
-        assert result == GLOBAL_CONFIG_PATH
+        assert result == fake_home / ".honcho" / "config.json"
 
     def test_falls_back_to_global_without_hermes_home_env(self, tmp_path):
         fake_home = tmp_path / "fakehome"
@@ -370,7 +370,18 @@ class TestResolveConfigPath:
              patch.object(Path, "home", return_value=fake_home):
             os.environ.pop("HERMES_HOME", None)
             result = resolve_config_path()
-        assert result == GLOBAL_CONFIG_PATH
+        assert result == fake_home / ".honcho" / "config.json"
+
+    def test_global_fallback_uses_home_at_call_time(self, tmp_path):
+        fake_home = tmp_path / "fakehome"
+        fake_home.mkdir()
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(hermes_home)}), \
+             patch.object(Path, "home", return_value=fake_home):
+            assert resolve_global_config_path() == fake_home / ".honcho" / "config.json"
+            assert resolve_config_path() == fake_home / ".honcho" / "config.json"
 
     def test_from_global_config_uses_local_path(self, tmp_path):
         hermes_home = tmp_path / "hermes"
@@ -593,6 +604,28 @@ class TestGetHonchoClient:
         not importlib.util.find_spec("honcho"),
         reason="honcho SDK not installed"
     )
+    def test_defaults_to_30s_when_no_timeout_configured(self):
+        from plugins.memory.honcho.client import _DEFAULT_HTTP_TIMEOUT
+
+        fake_honcho = MagicMock(name="Honcho")
+        cfg = HonchoClientConfig(
+            api_key="test-key",
+            workspace_id="hermes",
+            environment="production",
+        )
+
+        with patch("honcho.Honcho", return_value=fake_honcho) as mock_honcho, \
+             patch("hermes_cli.config.load_config", return_value={}):
+            client = get_honcho_client(cfg)
+
+        assert client is fake_honcho
+        mock_honcho.assert_called_once()
+        assert mock_honcho.call_args.kwargs["timeout"] == _DEFAULT_HTTP_TIMEOUT
+
+    @pytest.mark.skipif(
+        not importlib.util.find_spec("honcho"),
+        reason="honcho SDK not installed"
+    )
     def test_hermes_request_timeout_alias_used(self):
         fake_honcho = MagicMock(name="Honcho")
         cfg = HonchoClientConfig(
@@ -654,6 +687,82 @@ class TestResolveSessionNameGatewayKey:
         )
         assert result == "agent-main-telegram-dm-8439114563"
         assert ":" not in result
+
+
+class TestResolveSessionNameLengthLimit:
+    """Regression tests for Honcho's 100-char session ID limit (issue #13868).
+
+    Long gateway session keys (Matrix room+event IDs, Telegram supergroup
+    reply chains, Slack thread IDs with long workspace prefixes) can overflow
+    Honcho's 100-char session_id limit after sanitization. Before this fix,
+    every Honcho API call for those sessions 400'd with "session_id too long".
+    """
+
+    HONCHO_MAX = 100
+
+    def test_short_gateway_key_unchanged(self):
+        """Short keys must not get a hash suffix appended."""
+        config = HonchoClientConfig()
+        result = config.resolve_session_name(
+            gateway_session_key="agent:main:telegram:dm:8439114563",
+        )
+        # Unchanged fast-path: sanitize only, no truncation, no hash suffix.
+        assert result == "agent-main-telegram-dm-8439114563"
+        assert len(result) <= self.HONCHO_MAX
+
+    def test_key_at_exact_limit_unchanged(self):
+        """A sanitized key that is exactly 100 chars must be returned as-is."""
+        key = "a" * self.HONCHO_MAX
+        config = HonchoClientConfig()
+        result = config.resolve_session_name(gateway_session_key=key)
+        assert result == key
+        assert len(result) == self.HONCHO_MAX
+
+    def test_long_gateway_key_truncated_to_limit(self):
+        """An over-limit sanitized key must truncate to exactly 100 chars."""
+        key = "!roomid:matrix.example.org|" + "$event_" + ("a" * 300)
+        config = HonchoClientConfig()
+        result = config.resolve_session_name(gateway_session_key=key)
+        assert result is not None
+        assert len(result) == self.HONCHO_MAX
+
+    def test_truncation_is_deterministic(self):
+        """Same long key must always produce the same truncated session ID."""
+        key = "matrix-" + ("a" * 300)
+        config = HonchoClientConfig()
+        first = config.resolve_session_name(gateway_session_key=key)
+        second = config.resolve_session_name(gateway_session_key=key)
+        assert first == second
+
+    def test_truncated_result_respects_char_allowlist(self):
+        """Truncated result must still match Honcho's [a-zA-Z0-9_-] allowlist."""
+        import re
+        key = "slack:T12345:thread-reply:" + ("x" * 300) + ":with:colons:and:slashes/here"
+        config = HonchoClientConfig()
+        result = config.resolve_session_name(gateway_session_key=key)
+        assert result is not None
+        assert re.fullmatch(r"[a-zA-Z0-9_-]+", result)
+
+    def test_distinct_long_keys_do_not_collide(self):
+        """Two long keys sharing a prefix must produce different truncated IDs."""
+        prefix = "matrix:!room:example.org|" + "a" * 200
+        key_a = prefix + "-suffix-alpha"
+        key_b = prefix + "-suffix-beta"
+        config = HonchoClientConfig()
+        result_a = config.resolve_session_name(gateway_session_key=key_a)
+        result_b = config.resolve_session_name(gateway_session_key=key_b)
+        assert result_a != result_b
+        assert len(result_a) == self.HONCHO_MAX
+        assert len(result_b) == self.HONCHO_MAX
+
+    def test_truncated_result_has_hash_suffix(self):
+        """Truncated IDs must end with '-<8 hex chars>' for collision resistance."""
+        import re
+        key = "matrix-" + ("a" * 300)
+        config = HonchoClientConfig()
+        result = config.resolve_session_name(gateway_session_key=key)
+        # Last 9 chars: '-' + 8 hex chars.
+        assert re.search(r"-[0-9a-f]{8}$", result)
 
 
 class TestResetHonchoClient:

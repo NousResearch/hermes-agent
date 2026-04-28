@@ -25,6 +25,7 @@ import type { Msg, PanelSection, SlashCatalog } from '../types.js'
 
 import { createGatewayEventHandler } from './createGatewayEventHandler.js'
 import { createSlashHandler } from './createSlashHandler.js'
+import { getInputSelection } from './inputSelectionStore.js'
 import { type GatewayRpc, type TranscriptRow } from './interfaces.js'
 import { $overlayState, patchOverlayState } from './overlayStore.js'
 import { scrollWithSelectionBy } from './scroll.js'
@@ -147,6 +148,11 @@ export function useMainApp(gw: GatewayClient) {
     selection.setSelectionBgColor(ui.theme.color.selectionBg)
   }, [selection, ui.theme.color.selectionBg])
 
+  const clearSelection = useCallback(() => {
+    selection.clearSelection()
+    getInputSelection()?.collapseToEnd()
+  }, [selection])
+
   const composer = useComposerState({
     gw,
     onClipboardPaste: quiet => clipboardPasteRef.current(quiet),
@@ -218,23 +224,15 @@ export function useMainApp(gw: GatewayClient) {
     return cache
   }, [heightCacheKey])
 
-  const initialHeights = useMemo(() => {
-    const out = new Map<string, number>()
-
-    for (const row of virtualRows) {
-      out.set(
-        row.key,
-        heightCache.get(row.key) ??
-          estimatedMsgHeight(row.msg, cols, {
-            compact: ui.compact,
-            details: detailsVisible,
-            limitHistory: row.index < virtualRows.length - FULL_RENDER_TAIL_ITEMS
-          })
-      )
-    }
-
-    return out
-  }, [cols, detailsVisible, heightCache, ui.compact, virtualRows])
+  const estimateRowHeight = useCallback(
+    (index: number) =>
+      estimatedMsgHeight(virtualRows[index]!.msg, cols, {
+        compact: ui.compact,
+        details: detailsVisible,
+        limitHistory: index < virtualRows.length - FULL_RENDER_TAIL_ITEMS
+      }),
+    [cols, detailsVisible, ui.compact, virtualRows]
+  )
 
   const syncHeightCache = useCallback(
     (heights: ReadonlyMap<string, number>) => {
@@ -250,7 +248,8 @@ export function useMainApp(gw: GatewayClient) {
   )
 
   const virtualHistory = useVirtualHistory(scrollRef, virtualRows, cols, {
-    initialHeights,
+    estimateHeight: estimateRowHeight,
+    initialHeights: heightCache,
     liveTailActive: turnLiveTailActive,
     onHeightsChange: syncHeightCache
   })
@@ -526,6 +525,7 @@ export function useMainApp(gw: GatewayClient) {
     [
       appendMessage,
       bellOnComplete,
+      clearSelection,
       composerActions.setInput,
       gateway,
       panel,
@@ -662,7 +662,7 @@ export function useMainApp(gw: GatewayClient) {
 
   const onModelSelect = useCallback((value: string) => {
     patchOverlayState({ modelPicker: false })
-    slashRef.current(`/model ${value} --global`)
+    slashRef.current(`/model ${value}`)
   }, [])
 
   const hasReasoning = useTurnSelector(state => Boolean(state.reasoning.trim()))
@@ -698,11 +698,12 @@ export function useMainApp(gw: GatewayClient) {
       answerClarify,
       answerSecret,
       answerSudo,
+      clearSelection,
       onModelSelect,
       resumeById: session.resumeById,
       setStickyPrompt
     }),
-    [answerApproval, answerClarify, answerSecret, answerSudo, onModelSelect, session.resumeById]
+    [answerApproval, answerClarify, answerSecret, answerSudo, clearSelection, onModelSelect, session.resumeById]
   )
 
   const appComposer = useMemo(

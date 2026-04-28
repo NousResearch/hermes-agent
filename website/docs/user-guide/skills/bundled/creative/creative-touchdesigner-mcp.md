@@ -1,15 +1,32 @@
 ---
-name: touchdesigner-mcp
-description: "Control a running TouchDesigner instance via twozero MCP — create operators, set parameters, wire connections, execute Python, build real-time visuals. 36 native tools."
-version: 1.0.0
-author: kshitijk4poor
-license: MIT
-metadata:
-  hermes:
-    tags: [TouchDesigner, MCP, twozero, creative-coding, real-time-visuals, generative-art, audio-reactive, VJ, installation, GLSL]
-    related_skills: [native-mcp, ascii-video, manim-video, hermes-video]
-
+title: "Touchdesigner Mcp"
+sidebar_label: "Touchdesigner Mcp"
+description: "Control a running TouchDesigner instance via twozero MCP — create operators, set parameters, wire connections, execute Python, build real-time visuals"
 ---
+
+{/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
+
+# Touchdesigner Mcp
+
+Control a running TouchDesigner instance via twozero MCP — create operators, set parameters, wire connections, execute Python, build real-time visuals. 36 native tools.
+
+## Skill metadata
+
+| | |
+|---|---|
+| Source | Bundled (installed by default) |
+| Path | `skills/creative/touchdesigner-mcp` |
+| Version | `1.1.0` |
+| Author | kshitijk4poor |
+| License | MIT |
+| Tags | `TouchDesigner`, `MCP`, `twozero`, `creative-coding`, `real-time-visuals`, `generative-art`, `audio-reactive`, `VJ`, `installation`, `GLSL` |
+| Related skills | [`native-mcp`](/docs/user-guide/skills/bundled/mcp/mcp-native-mcp), [`ascii-video`](/docs/user-guide/skills/bundled/creative/creative-ascii-video), [`manim-video`](/docs/user-guide/skills/bundled/creative/creative-manim-video), `hermes-video` |
+
+## Reference: full SKILL.md
+
+:::info
+The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
+:::
 
 # TouchDesigner Integration (twozero MCP)
 
@@ -332,6 +349,12 @@ See `references/network-patterns.md` for complete build scripts + shader code.
 | `references/mcp-tools.md` | Full twozero MCP tool parameter schemas |
 | `references/python-api.md` | TD Python: op(), scripting, extensions |
 | `references/troubleshooting.md` | Connection diagnostics, debugging |
+| `references/glsl.md` | GLSL uniforms, built-in functions, shader templates |
+| `references/postfx.md` | Post-FX: bloom, CRT, chromatic aberration, feedback glow |
+| `references/layout-compositor.md` | HUD layout patterns, panel grids, BSP-style layouts |
+| `references/operator-tips.md` | Wireframe rendering, feedback TOP setup |
+| `references/geometry-comp.md` | Geometry COMP: instancing, POP vs SOP, morphing |
+| `references/audio-reactive.md` | Audio band extraction, beat detection, envelope following |
 | `scripts/setup.sh` | Automated setup script |
 
 ---

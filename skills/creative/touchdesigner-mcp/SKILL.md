@@ -1,32 +1,15 @@
 ---
-title: "Touchdesigner Mcp"
-sidebar_label: "Touchdesigner Mcp"
-description: "Control a running TouchDesigner instance via twozero MCP — create operators, set parameters, wire connections, execute Python, build real-time visuals"
+name: touchdesigner-mcp
+description: "Control a running TouchDesigner instance via twozero MCP — create operators, set parameters, wire connections, execute Python, build real-time visuals. 36 native tools."
+version: 1.1.0
+author: kshitijk4poor
+license: MIT
+metadata:
+  hermes:
+    tags: [TouchDesigner, MCP, twozero, creative-coding, real-time-visuals, generative-art, audio-reactive, VJ, installation, GLSL]
+    related_skills: [native-mcp, ascii-video, manim-video, hermes-video]
+
 ---
-
-{/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
-
-# Touchdesigner Mcp
-
-Control a running TouchDesigner instance via twozero MCP — create operators, set parameters, wire connections, execute Python, build real-time visuals. 36 native tools.
-
-## Skill metadata
-
-| | |
-|---|---|
-| Source | Optional — install with `hermes skills install official/creative/touchdesigner-mcp` |
-| Path | `optional-skills/creative/touchdesigner-mcp` |
-| Version | `1.0.0` |
-| Author | kshitijk4poor |
-| License | MIT |
-| Tags | `TouchDesigner`, `MCP`, `twozero`, `creative-coding`, `real-time-visuals`, `generative-art`, `audio-reactive`, `VJ`, `installation`, `GLSL` |
-| Related skills | [`native-mcp`](/docs/user-guide/skills/bundled/mcp/mcp-native-mcp), [`ascii-video`](/docs/user-guide/skills/bundled/creative/creative-ascii-video), [`manim-video`](/docs/user-guide/skills/bundled/creative/creative-manim-video), `hermes-video` |
-
-## Reference: full SKILL.md
-
-:::info
-The following is the complete skill definition that Hermes loads when this skill is triggered. This is what the agent sees as instructions when the skill is active.
-:::
 
 # TouchDesigner Integration (twozero MCP)
 
@@ -221,8 +204,9 @@ win.par.winopen.pulse()
 | `td_input_clear` | Stop input automation |
 | `td_op_screen_rect` | Get screen coords of a node |
 | `td_click_screen_point` | Click a point in a screenshot |
+| `td_screen_point_to_global` | Convert screenshot pixel to absolute screen coords |
 
-See `references/mcp-tools.md` for full parameter schemas.
+The table above covers the 32 tools used in typical creative workflows. The remaining 4 tools (`td_project_quit`, `td_test_session`, `td_dev_log`, `td_clear_dev_log`) are admin/dev-mode utilities — see `references/mcp-tools.md` for the full 36-tool reference with complete parameter schemas.
 
 ## Key Implementation Rules
 
@@ -349,6 +333,21 @@ See `references/network-patterns.md` for complete build scripts + shader code.
 | `references/mcp-tools.md` | Full twozero MCP tool parameter schemas |
 | `references/python-api.md` | TD Python: op(), scripting, extensions |
 | `references/troubleshooting.md` | Connection diagnostics, debugging |
+| `references/glsl.md` | GLSL uniforms, built-in functions, shader templates |
+| `references/postfx.md` | Post-FX: bloom, CRT, chromatic aberration, feedback glow |
+| `references/layout-compositor.md` | HUD layout patterns, panel grids, BSP-style layouts |
+| `references/operator-tips.md` | Wireframe rendering, feedback TOP setup |
+| `references/geometry-comp.md` | Geometry COMP: instancing, POP vs SOP, morphing |
+| `references/audio-reactive.md` | Audio band extraction, beat detection, envelope following |
+| `references/animation.md` | LFOs, timers, keyframes, easing, expression-driven motion |
+| `references/midi-osc.md` | MIDI/OSC controllers, TouchOSC, multi-machine sync |
+| `references/particles.md` | POPs and legacy particleSOP — emission, forces, collisions |
+| `references/projection-mapping.md` | Multi-window output, corner pin, mesh warp, edge blending |
+| `references/external-data.md` | HTTP, WebSocket, MQTT, Serial, TCP, webserverDAT |
+| `references/panel-ui.md` | Custom params, panel COMPs, button/slider/field, panelExecuteDAT |
+| `references/replicator.md` | replicatorCOMP — data-driven cloning, layouts, callbacks |
+| `references/dat-scripting.md` | Execute DAT family — chop/dat/parameter/panel/op/executeDAT |
+| `references/3d-scene.md` | Lighting rigs, shadows, IBL/cubemaps, multi-camera, PBR |
 | `scripts/setup.sh` | Automated setup script |
 
 ---

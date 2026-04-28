@@ -586,6 +586,27 @@ async def test_run_agent_surfaces_interim_commentary_by_default(monkeypatch, tmp
 
 
 @pytest.mark.asyncio
+async def test_run_agent_suppresses_line_interim_commentary_even_when_globally_enabled(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        CommentaryAgent,
+        session_id="sess-commentary-line-single-reply",
+        config_data={
+            "display": {"interim_assistant_messages": True},
+            "platform_toolsets": {"line": []},
+        },
+        platform=Platform.LINE,
+        chat_id="Uline123",
+        chat_type="dm",
+        thread_id=None,
+    )
+
+    assert result.get("already_sent") is not True
+    assert not any(call["content"] == "I'll inspect the repo first." for call in adapter.sent)
+
+
+@pytest.mark.asyncio
 async def test_run_agent_suppresses_interim_commentary_when_disabled(monkeypatch, tmp_path):
     adapter, result = await _run_with_agent(
         monkeypatch,

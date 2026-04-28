@@ -9726,8 +9726,14 @@ class GatewayRunner:
         # Natural assistant status messages are intentionally independent from
         # tool progress and token streaming. Users can keep tool_progress quiet
         # in chat platforms while opting into concise mid-turn updates.
+        #
+        # LINE is a special case: reply/push billing is quota-sensitive and
+        # each extra bubble is materially expensive, so prefer exactly one
+        # explicit outbound reply per user turn. Disable interim assistant
+        # commentary there unless the architecture is redesigned to fold it
+        # into the final reply payload.
         interim_assistant_messages_enabled = (
-            source.platform != Platform.WEBHOOK
+            source.platform not in (Platform.WEBHOOK, Platform.LINE)
             and is_truthy_value(
                 display_config.get("interim_assistant_messages"),
                 default=True,

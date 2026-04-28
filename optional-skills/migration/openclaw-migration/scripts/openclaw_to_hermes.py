@@ -1671,6 +1671,29 @@ class Migrator:
 
         model_str = model_str.strip()
 
+        # Resolve a model alias against the OpenClaw model catalog.
+        # OpenClaw stores agents.defaults.model as either a bare string or
+        # {"primary": "<value>"}, and that value can be either:
+        #   - a full provider/model API ID (e.g. "anthropic/claude-opus-4-6"), or
+        #   - a display alias (e.g. "Claude Opus 4.6") that maps to one.
+        # The catalog at agents.defaults.models is keyed by the full
+        # provider/model API ID with an "alias" field on the value, e.g.:
+        #   {"anthropic/claude-opus-4-6": {"alias": "Claude Opus 4.6"}}
+        # If model_str matches an alias in the catalog, rewrite it to the
+        # catalog key (the real API ID).  If it's already an API ID or has
+        # no catalog match, leave it alone and let downstream pass it through.
+        model_catalog = config.get("agents", {}).get("defaults", {}).get("models", {})
+        if isinstance(model_catalog, dict) and model_str not in model_catalog:
+            for api_id, entry in model_catalog.items():
+                if not isinstance(api_id, str):
+                    continue
+                if isinstance(entry, dict) and entry.get("alias") == model_str:
+                    model_str = api_id
+                    break
+                if isinstance(entry, str) and entry == model_str:
+                    model_str = api_id
+                    break
+
         if yaml is None:
             self.record("model-config", source_path, destination, "error", "PyYAML is not available")
             return

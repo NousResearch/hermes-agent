@@ -3560,6 +3560,7 @@ class APIServerAdapter(BasePlatformAdapter):
     _MAX_CONCURRENT_RUNS = 10  # Prevent unbounded resource allocation
     _RUN_STREAM_TTL = 300  # seconds before orphaned runs are swept
     _RUN_STATUS_TTL = 3600  # seconds to retain terminal run status for polling
+    _RUN_STREAM_QUEUE_MAX = 1000  # Bound queued SSE events for slow/non-consuming clients
 
     def _set_run_status(self, run_id: str, status: str, **fields: Any) -> Dict[str, Any]:
         """Update pollable run status without exposing private agent objects."""
@@ -3576,6 +3577,27 @@ class APIServerAdapter(BasePlatformAdapter):
         self._run_statuses[run_id] = current
         return current
 
+    @staticmethod
+    def _put_run_event_nowait(q: "asyncio.Queue[Optional[Dict]]", event: Optional[Dict]) -> None:
+        """Put an event into a bounded run queue, dropping oldest queued events if full."""
+        try:
+            q.put_nowait(event)
+            return
+        except asyncio.QueueFull:
+            pass
+        try:
+            q.get_nowait()
+        except asyncio.QueueEmpty:
+            pass
+        try:
+            q.put_nowait(event)
+        except asyncio.QueueFull:
+            pass
+
+    def _schedule_run_event(self, loop: "asyncio.AbstractEventLoop", q: "asyncio.Queue[Optional[Dict]]", event: Optional[Dict]) -> None:
+        """Thread-safe wrapper around _put_run_event_nowait for run SSE queues."""
+        loop.call_soon_threadsafe(self._put_run_event_nowait, q, event)
+
     def _make_run_event_callback(self, run_id: str, loop: "asyncio.AbstractEventLoop"):
         """Return a tool_progress_callback that pushes structured events to the run's SSE queue."""
         def _push(event: Dict[str, Any]) -> None:
@@ -3588,7 +3610,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if q is None:
                 return
             try:
-                loop.call_soon_threadsafe(q.put_nowait, event)
+                self._schedule_run_event(loop, q, event)
             except Exception:
                 pass
 
@@ -3705,7 +3727,7 @@ class APIServerAdapter(BasePlatformAdapter):
         approval_session_key = gateway_session_key or session_id or run_id
         ephemeral_system_prompt = instructions
         loop = asyncio.get_running_loop()
-        q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue()
+        q: "asyncio.Queue[Optional[Dict]]" = asyncio.Queue(maxsize=self._RUN_STREAM_QUEUE_MAX)
         created_at = time.time()
         self._run_streams[run_id] = q
         self._run_streams_created[run_id] = created_at
@@ -3718,7 +3740,7 @@ class APIServerAdapter(BasePlatformAdapter):
             if delta is None:
                 return
             try:
-                loop.call_soon_threadsafe(q.put_nowait, {
+                self._schedule_run_event(loop, q, {
                     "event": "message.delta",
                     "run_id": run_id,
                     "timestamp": time.time(),
@@ -3816,10 +3838,11 @@ class APIServerAdapter(BasePlatformAdapter):
                 result, usage = await asyncio.get_running_loop().run_in_executor(None, _run_sync)
                 # Check for structured failure (non-retryable client errors like
                 # 401/400 return failed=True instead of raising, so the except
-                # block below never fires — issue #15561).
+                # block below never fires — issue #15561). Preserve Capy's bounded
+                # SSE event enqueue helper for both failure and completion events.
                 if isinstance(result, dict) and result.get("failed"):
                     error_msg = result.get("error") or "agent run failed"
-                    q.put_nowait({
+                    self._put_run_event_nowait(q, {
                         "event": "run.failed",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -3833,7 +3856,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     )
                 else:
                     final_response = result.get("final_response", "") if isinstance(result, dict) else ""
-                    q.put_nowait({
+                    self._put_run_event_nowait(q, {
                         "event": "run.completed",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -3854,7 +3877,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     last_event="run.cancelled",
                 )
                 try:
-                    q.put_nowait({
+                    self._put_run_event_nowait(q, {
                         "event": "run.cancelled",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -3871,7 +3894,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     last_event="run.failed",
                 )
                 try:
-                    q.put_nowait({
+                    self._put_run_event_nowait(q, {
                         "event": "run.failed",
                         "run_id": run_id,
                         "timestamp": time.time(),
@@ -3893,7 +3916,7 @@ class APIServerAdapter(BasePlatformAdapter):
                     pass
                 # Sentinel: signal SSE stream to close
                 try:
-                    q.put_nowait(None)
+                    self._put_run_event_nowait(q, None)
                 except Exception:
                     pass
                 self._active_run_agents.pop(run_id, None)
@@ -3960,6 +3983,9 @@ class APIServerAdapter(BasePlatformAdapter):
             },
         )
         await response.prepare(request)
+        # A connected SSE client is consuming this run, so it is no longer an
+        # orphan candidate.  Keep _run_streams itself until the stream closes.
+        self._run_streams_created.pop(run_id, None)
 
         try:
             while True:
@@ -4131,10 +4157,22 @@ class APIServerAdapter(BasePlatformAdapter):
                         unregister_gateway_notify(approval_session_key)
                 except Exception:
                     pass
-                self._run_streams.pop(run_id, None)
+                agent = self._active_run_agents.pop(run_id, None)
+                if agent is not None:
+                    try:
+                        agent.interrupt("Run event stream was not consumed")
+                    except Exception:
+                        pass
+                task = self._active_run_tasks.pop(run_id, None)
+                if task is not None and not task.done():
+                    task.cancel()
+                q = self._run_streams.pop(run_id, None)
+                if q is not None:
+                    try:
+                        self._put_run_event_nowait(q, None)
+                    except Exception:
+                        pass
                 self._run_streams_created.pop(run_id, None)
-                self._active_run_agents.pop(run_id, None)
-                self._active_run_tasks.pop(run_id, None)
                 self._run_approval_sessions.pop(run_id, None)
 
             stale_statuses = [

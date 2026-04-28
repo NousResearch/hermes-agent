@@ -274,12 +274,13 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
             try:
                 sid = current_session_id
                 visited = set()
+                current_root = current_session_id
                 while sid and sid not in visited:
                     visited.add(sid)
+                    current_root = sid
                     s = db.get_session(sid)
                     parent = s.get("parent_session_id") if s else None
                     sid = parent if parent else None
-                current_root = max(visited, key=len) if visited else current_session_id
             except Exception:
                 current_root = current_session_id
 
@@ -372,16 +373,13 @@ def session_search(
                 "message": "No matching sessions found.",
             }, ensure_ascii=False)
 
-        # Resolve child sessions to their parent — delegation stores detailed
-        # content in child sessions, but the user's conversation is the parent.
         def _resolve_to_parent(session_id: str) -> tuple:
-            """Walk delegation chain to find the root parent session ID.
+            """Walk lineage to find the root parent session ID.
 
-            Returns (root_session_id, has_compression_hop) — the second flag
-            is True when at least one session in the chain was ended by context
-            compression.  Compression parents' content is no longer in the
-            agent's context window, so they should be searchable even if they
-            belong to the current lineage.
+            Returns ``(root_session_id, has_compression_hop)``.  Delegation
+            children can be collapsed to their parent conversation. Compression
+            fragments cannot: each fragment contains a distinct slice of raw
+            messages that may no longer be present in the active context.
             """
             visited = set()
             sid = session_id
@@ -413,25 +411,26 @@ def session_search(
             _resolve_to_parent(current_session_id) if current_session_id else (None, False)
         )
 
-        # Group by resolved (parent) session_id, dedup, skip the current
-        # session lineage — but NOT compression parents whose content is no
-        # longer in the agent's context window.
+        # Group matching sessions, dedup, and skip the current context.  Pure
+        # delegation children still collapse to their parent conversation, but
+        # compression chains keep the matched raw session id so we summarize
+        # the fragment that actually contained the FTS hit.
         seen_sessions = {}
         for result in raw_results:
             raw_sid = result["session_id"]
             resolved_sid, has_compression = _resolve_to_parent(raw_sid)
-            # Skip the current session lineage only when the content is still
-            # in the agent's context.  Compression-ended sessions have been
-            # replaced by a compact summary — their original content is only
-            # reachable via search.
-            if _current_root and resolved_sid == _current_root and not has_compression:
-                continue
             if current_session_id and raw_sid == current_session_id:
                 continue
-            if resolved_sid not in seen_sessions:
+            # Skip current-lineage content only when it is still available to
+            # the agent.  Compression fragments are searchable because their
+            # original messages were replaced by summaries in later children.
+            if _current_root and resolved_sid == _current_root and not has_compression:
+                continue
+            result_sid = raw_sid if has_compression else resolved_sid
+            if result_sid not in seen_sessions:
                 result = dict(result)
-                result["session_id"] = resolved_sid
-                seen_sessions[resolved_sid] = result
+                result["session_id"] = result_sid
+                seen_sessions[result_sid] = result
             if len(seen_sessions) >= limit:
                 break
 

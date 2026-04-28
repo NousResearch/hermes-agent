@@ -1372,83 +1372,93 @@ def run_doctor(args):
         check_warn("No GITHUB_TOKEN", f"(60 req/hr rate limit — set in {_DHH}/.env for better rates)")
 
     # =========================================================================
-    # Memory Provider (only check the active provider, if any)
+    # Memory Provider(s) — iterate all active providers
     # =========================================================================
     print()
-    print(color("◆ Memory Provider", Colors.CYAN, Colors.BOLD))
+    print(color("◆ Memory Providers", Colors.CYAN, Colors.BOLD))
 
-    _active_memory_provider = ""
+    _active_memory_providers: list[str] = []
     try:
         import yaml as _yaml
         _mem_cfg_path = HERMES_HOME / "config.yaml"
         if _mem_cfg_path.exists():
             with open(_mem_cfg_path) as _f:
                 _raw_cfg = _yaml.safe_load(_f) or {}
-            _active_memory_provider = (_raw_cfg.get("memory") or {}).get("provider", "")
+            _mem_cfg = _raw_cfg.get("memory") or {}
+            # New list format takes precedence
+            _providers_list = _mem_cfg.get("providers", [])
+            if _providers_list:
+                _active_memory_providers = [p for p in _providers_list if p]
+            else:
+                _single = _mem_cfg.get("provider", "")
+                if _single:
+                    _active_memory_providers = [_single]
     except Exception:
         pass
 
-    if not _active_memory_provider:
+    if not _active_memory_providers:
         check_ok("Built-in memory active", "(no external provider configured — this is fine)")
-    elif _active_memory_provider == "honcho":
-        try:
-            from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
-            hcfg = HonchoClientConfig.from_global_config()
-            _honcho_cfg_path = resolve_config_path()
-
-            if not _honcho_cfg_path.exists():
-                check_warn("Honcho config not found", "run: hermes memory setup")
-            elif not hcfg.enabled:
-                check_info(f"Honcho disabled (set enabled: true in {_honcho_cfg_path} to activate)")
-            elif not (hcfg.api_key or hcfg.base_url):
-                check_fail("Honcho API key or base URL not set", "run: hermes memory setup")
-                issues.append("No Honcho API key — run 'hermes memory setup'")
-            else:
-                from plugins.memory.honcho.client import get_honcho_client, reset_honcho_client
-                reset_honcho_client()
-                try:
-                    get_honcho_client(hcfg)
-                    check_ok(
-                        "Honcho connected",
-                        f"workspace={hcfg.workspace_id} mode={hcfg.recall_mode} freq={hcfg.write_frequency}",
-                    )
-                except Exception as _e:
-                    check_fail("Honcho connection failed", str(_e))
-                    issues.append(f"Honcho unreachable: {_e}")
-        except ImportError:
-            check_fail("honcho-ai not installed", "pip install honcho-ai")
-            issues.append("Honcho is set as memory provider but honcho-ai is not installed")
-        except Exception as _e:
-            check_warn("Honcho check failed", str(_e))
-    elif _active_memory_provider == "mem0":
-        try:
-            from plugins.memory.mem0 import _load_config as _load_mem0_config
-            mem0_cfg = _load_mem0_config()
-            mem0_key = mem0_cfg.get("api_key", "")
-            if mem0_key:
-                check_ok("Mem0 API key configured")
-                check_info(f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')}")
-            else:
-                check_fail("Mem0 API key not set", "(set MEM0_API_KEY in .env or run hermes memory setup)")
-                issues.append("Mem0 is set as memory provider but API key is missing")
-        except ImportError:
-            check_fail("Mem0 plugin not loadable", "pip install mem0ai")
-            issues.append("Mem0 is set as memory provider but mem0ai is not installed")
-        except Exception as _e:
-            check_warn("Mem0 check failed", str(_e))
     else:
-        # Generic check for other memory providers (openviking, hindsight, etc.)
-        try:
-            from plugins.memory import load_memory_provider
-            _provider = load_memory_provider(_active_memory_provider)
-            if _provider and _provider.is_available():
-                check_ok(f"{_active_memory_provider} provider active")
-            elif _provider:
-                check_warn(f"{_active_memory_provider} configured but not available", "run: hermes memory status")
+        for _active_memory_provider in _active_memory_providers:
+            if _active_memory_provider == "honcho":
+                try:
+                    from plugins.memory.honcho.client import HonchoClientConfig, resolve_config_path
+                    hcfg = HonchoClientConfig.from_global_config()
+                    _honcho_cfg_path = resolve_config_path()
+
+                    if not _honcho_cfg_path.exists():
+                        check_warn("Honcho config not found", "run: hermes memory setup")
+                    elif not hcfg.enabled:
+                        check_info(f"Honcho disabled (set enabled: true in {_honcho_cfg_path} to activate)")
+                    elif not (hcfg.api_key or hcfg.base_url):
+                        check_fail("Honcho API key or base URL not set", "run: hermes memory setup")
+                        issues.append("No Honcho API key — run 'hermes memory setup'")
+                    else:
+                        from plugins.memory.honcho.client import get_honcho_client, reset_honcho_client
+                        reset_honcho_client()
+                        try:
+                            get_honcho_client(hcfg)
+                            check_ok(
+                                "Honcho connected",
+                                f"workspace={hcfg.workspace_id} mode={hcfg.recall_mode} freq={hcfg.write_frequency}",
+                            )
+                        except Exception as _e:
+                            check_fail("Honcho connection failed", str(_e))
+                            issues.append(f"Honcho unreachable: {_e}")
+                except ImportError:
+                    check_fail("honcho-ai not installed", "pip install honcho-ai")
+                    issues.append("Honcho is set as memory provider but honcho-ai is not installed")
+                except Exception as _e:
+                    check_warn("Honcho check failed", str(_e))
+            elif _active_memory_provider == "mem0":
+                try:
+                    from plugins.memory.mem0 import _load_config as _load_mem0_config
+                    mem0_cfg = _load_mem0_config()
+                    mem0_key = mem0_cfg.get("api_key", "")
+                    if mem0_key:
+                        check_ok("Mem0 API key configured")
+                        check_info(f"user_id={mem0_cfg.get('user_id', '?')}  agent_id={mem0_cfg.get('agent_id', '?')}")
+                    else:
+                        check_fail("Mem0 API key not set", "(set MEM0_API_KEY in .env or run hermes memory setup)")
+                        issues.append("Mem0 is set as memory provider but API key is missing")
+                except ImportError:
+                    check_fail("Mem0 plugin not loadable", "pip install mem0ai")
+                    issues.append("Mem0 is set as memory provider but mem0ai is not installed")
+                except Exception as _e:
+                    check_warn("Mem0 check failed", str(_e))
             else:
-                check_warn(f"{_active_memory_provider} plugin not found", "run: hermes memory setup")
-        except Exception as _e:
-            check_warn(f"{_active_memory_provider} check failed", str(_e))
+                # Generic check for other memory providers (openviking, hindsight, etc.)
+                try:
+                    from plugins.memory import load_memory_provider
+                    _provider = load_memory_provider(_active_memory_provider)
+                    if _provider and _provider.is_available():
+                        check_ok(f"{_active_memory_provider} provider active")
+                    elif _provider:
+                        check_warn(f"{_active_memory_provider} configured but not available", "run: hermes memory status")
+                    else:
+                        check_warn(f"{_active_memory_provider} plugin not found", "run: hermes memory setup")
+                except Exception as _e:
+                    check_warn(f"{_active_memory_provider} check failed", str(_e))
 
     # =========================================================================
     # Profiles

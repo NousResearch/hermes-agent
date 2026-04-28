@@ -2199,31 +2199,41 @@ def _is_github_models_base_url(base_url: Optional[str]) -> bool:
     )
 
 
-def probe_lmstudio_models(
-    api_key: Optional[str] = None,
-    base_url: Optional[str] = None,
-    timeout: float = 5.0,
-) -> Optional[list[str]]:
-    """Probe LM Studio's model listing.
+def _lmstudio_server_root(base_url: Optional[str]) -> Optional[str]:
+    """Strip ``/v1`` suffix from an LM Studio base URL to get the native API root.
 
-    Returns chat-capable model keys on success, including the valid empty-list
-    case when the server is reachable but has no non-embedding models.
-    Returns ``None`` on network errors, malformed responses, or empty/invalid
-    base URLs.
-
-    Raises ``AuthError`` on HTTP 401/403 so callers can surface token issues
-    separately from reachability problems.
+    Returns ``None`` when the base URL is empty/invalid.
     """
-    server_root = (base_url or "").strip().rstrip("/")
-    if server_root.endswith("/v1"):
-        server_root = server_root[:-3].rstrip("/")
-    if not server_root:
-        return None
+    root = (base_url or "").strip().rstrip("/")
+    if root.endswith("/v1"):
+        root = root[:-3].rstrip("/")
+    return root or None
 
+
+def _lmstudio_request_headers(api_key: Optional[str] = None) -> dict:
+    """Build HTTP headers for LM Studio native API requests."""
     headers = {"User-Agent": _HERMES_USER_AGENT}
     token = str(api_key or "").strip()
     if token:
         headers["Authorization"] = f"Bearer {token}"
+    return headers
+
+
+def _lmstudio_fetch_raw_models(
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    timeout: float = 5.0,
+) -> Optional[list[dict]]:
+    """Fetch the raw model list from LM Studio's ``/api/v1/models``.
+
+    Returns the ``models`` list of dicts on success, ``None`` on network
+    errors or malformed responses.  Raises ``AuthError`` on HTTP 401/403.
+    """
+    server_root = _lmstudio_server_root(base_url)
+    if not server_root:
+        return None
+
+    headers = _lmstudio_request_headers(api_key)
     request = urllib.request.Request(server_root + "/api/v1/models", headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=timeout) as resp:
@@ -2255,6 +2265,27 @@ def probe_lmstudio_models(
             "LM Studio probe at %s returned malformed payload (no `models` list)",
             server_root,
         )
+        return None
+    return raw_models
+
+
+def probe_lmstudio_models(
+    api_key: Optional[str] = None,
+    base_url: Optional[str] = None,
+    timeout: float = 5.0,
+) -> Optional[list[str]]:
+    """Probe LM Studio's model listing.
+
+    Returns chat-capable model keys on success, including the valid empty-list
+    case when the server is reachable but has no non-embedding models.
+    Returns ``None`` on network errors, malformed responses, or empty/invalid
+    base URLs.
+
+    Raises ``AuthError`` on HTTP 401/403 so callers can surface token issues
+    separately from reachability problems.
+    """
+    raw_models = _lmstudio_fetch_raw_models(api_key=api_key, base_url=base_url, timeout=timeout)
+    if raw_models is None:
         return None
 
     keys: list[str] = []
@@ -2302,28 +2333,17 @@ def ensure_lmstudio_model_loaded(
     at the model's ``max_context_length``. Returns the resolved loaded context
     length, or ``None`` when the probe / load failed.
     """
-    server_root = (base_url or "").strip().rstrip("/")
-    if server_root.endswith("/v1"):
-        server_root = server_root[:-3].rstrip("/")
+    server_root = _lmstudio_server_root(base_url)
     if not server_root:
         return None
 
-    headers = {"User-Agent": _HERMES_USER_AGENT}
-    token = str(api_key or "").strip()
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    headers = _lmstudio_request_headers(api_key)
 
     try:
-        with urllib.request.urlopen(
-            urllib.request.Request(server_root + "/api/v1/models", headers=headers),
-            timeout=10,
-        ) as resp:
-            payload = json.loads(resp.read().decode())
+        raw_models = _lmstudio_fetch_raw_models(api_key=api_key, base_url=base_url, timeout=10)
     except Exception:
-        return None
-
-    raw_models = payload.get("models") if isinstance(payload, dict) else None
-    if not isinstance(raw_models, list):
+        raw_models = None
+    if raw_models is None:
         return None
 
     target_entry = None
@@ -2380,28 +2400,11 @@ def lmstudio_model_reasoning_options(
     Returns ``[]`` when the model is unknown, the endpoint is unreachable,
     or the model does not declare a reasoning capability.
     """
-    server_root = (base_url or "").strip().rstrip("/")
-    if server_root.endswith("/v1"):
-        server_root = server_root[:-3].rstrip("/")
-    if not server_root:
-        return []
-
-    headers = {"User-Agent": _HERMES_USER_AGENT}
-    token = str(api_key or "").strip()
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
-
     try:
-        with urllib.request.urlopen(
-            urllib.request.Request(server_root + "/api/v1/models", headers=headers),
-            timeout=timeout,
-        ) as resp:
-            payload = json.loads(resp.read().decode())
+        raw_models = _lmstudio_fetch_raw_models(api_key=api_key, base_url=base_url, timeout=timeout)
     except Exception:
-        return []
-
-    raw_models = payload.get("models") if isinstance(payload, dict) else None
-    if not isinstance(raw_models, list):
+        raw_models = None
+    if not raw_models:
         return []
 
     for raw in raw_models:

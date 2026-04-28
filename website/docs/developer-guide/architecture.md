@@ -116,7 +116,7 @@ hermes-agent/
 │   ├── hooks.py              # Hook discovery and lifecycle events
 │   ├── mirror.py             # Cross-session message mirroring
 │   ├── status.py             # Token locks, profile-scoped process tracking
-│   ├── builtin_hooks/        # Always-registered hooks
+│   ├── builtin_hooks/        # Extension point for always-registered hooks (none shipped)
 │   └── platforms/            # 18 adapters: telegram, discord, slack, whatsapp,
 │                             #   signal, matrix, mattermost, email, sms,
 │                             #   dingtalk, feishu, wecom, wecom_callback, weixin,

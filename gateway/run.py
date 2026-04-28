@@ -669,6 +669,88 @@ def _last_transcript_timestamp(history: Optional[List[Dict[str, Any]]]) -> Any:
     return None
 
 
+# Tool results can contain literal MEDIA: examples in docs, logs, or other
+# ordinary outputs. Only tools that intentionally create deliverable media
+# artifacts should be eligible for automatic append when the model omits them
+# from the final gateway reply.
+_AUTO_APPEND_MEDIA_TOOL_NAMES = {"text_to_speech", "text_to_speech_tool"}
+
+
+# Extension-anchored MEDIA: matcher for tool results. Mirrors the dispatch-site
+# pattern so a bare ``MEDIA:`` token in prose (no deliverable extension) is never
+# auto-appended. Kept local to the auto-append path; the producer-tool allowlist
+# below is the primary guard, this is the secondary precision guard.
+_TOOL_MEDIA_RE = re.compile(
+    r'MEDIA:((?:[A-Za-z]:[/\\]|/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
+    r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
+    r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
+    r'txt|csv|apk|ipa))',
+    re.IGNORECASE,
+)
+
+
+def _collect_auto_append_media_tags(
+    messages: List[Dict[str, Any]],
+    history_offset: int = 0,
+    history_media_paths: Optional[set] = None,
+) -> tuple[List[str], bool]:
+    """Collect real media tags from current-turn producer-tool results only.
+
+    Two layered guards keep stale/example MEDIA: strings out of the reply:
+
+    1. Producer-tool allowlist: only tools that intentionally emit deliverable
+       artifacts (TTS) are eligible. Documentation, logs, and search results can
+       contain example strings such as MEDIA:/absolute/path/to/file, which must
+       never be delivered as attachments. (Fixes the original report behind #16721.)
+    2. Current-turn isolation: only messages produced this turn are scanned, so a
+       tool result from an earlier turn (still present in the full message list)
+       cannot leak onto a later text-only reply (#34608).
+
+    Mid-run context compression can rewrite/shrink the message list below the
+    original history length. When that happens the slice boundary is no longer
+    trustworthy, so fall back to scanning every message and rely on
+    ``history_media_paths`` for dedup, preserving the compression-safe behaviour
+    of #160. The producer-tool allowlist still applies on the fallback path.
+    """
+    history_media_paths = history_media_paths or set()
+    # Only trust the slice boundary when the message list still contains the
+    # full history prefix. Otherwise scan everything (compression-safe fallback).
+    if history_offset and len(messages) >= history_offset:
+        new_messages = messages[history_offset:]
+    else:
+        new_messages = messages
+
+    tool_name_by_call_id: Dict[str, str] = {}
+    for msg in new_messages:
+        if msg.get("role") != "assistant":
+            continue
+        for call in msg.get("tool_calls") or []:
+            call_id = call.get("id") or call.get("call_id")
+            fn = call.get("function") or {}
+            name = str(fn.get("name") or call.get("name") or "")
+            if call_id and name:
+                tool_name_by_call_id[str(call_id)] = name
+
+    media_tags: List[str] = []
+    has_voice_directive = False
+    for msg in new_messages:
+        if msg.get("role") not in ("tool", "function"):
+            continue
+        call_id = str(msg.get("tool_call_id") or msg.get("call_id") or "")
+        if tool_name_by_call_id.get(call_id) not in _AUTO_APPEND_MEDIA_TOOL_NAMES:
+            continue
+        content = str(msg.get("content") or "")
+        if "MEDIA:" not in content:
+            continue
+        for match in _TOOL_MEDIA_RE.finditer(content):
+            path = match.group(1).strip().rstrip('\",}')
+            if path and path not in history_media_paths:
+                media_tags.append(f"MEDIA:{path}")
+        if "[[audio_as_voice]]" in content:
+            has_voice_directive = True
+
+    return media_tags, has_voice_directive
+
 # ---------------------------------------------------------------------------
 # SSL certificate auto-detection for NixOS and other non-standard systems.
 # Must run BEFORE any HTTP library (discord, aiohttp, etc.) is imported.
@@ -17931,36 +18013,12 @@ class GatewayRunner:
             # context compression shrinks the message list below the original
             # history length, preserving the compression-safe behaviour of #160.
             if "MEDIA:" not in final_response:
-                media_tags = []
-                has_voice_directive = False
-                _all_msgs = result.get("messages", [])
-                _history_len = len(agent_history)
-                # Only trust the slice boundary when the message list still
-                # contains the full history prefix. Mid-run compression can
-                # rewrite/shrink the list; in that case fall back to scanning
-                # everything and rely on _history_media_paths for dedup.
-                if _history_len and len(_all_msgs) >= _history_len:
-                    _scan_msgs = _all_msgs[_history_len:]
-                else:
-                    _scan_msgs = _all_msgs
-                for msg in _scan_msgs:
-                    if msg.get("role") in {"tool", "function"}:
-                        content = msg.get("content", "")
-                        if "MEDIA:" in content:
-                            _TOOL_MEDIA_RE = re.compile(
-                                r'MEDIA:((?:[A-Za-z]:[/\\]|/|~\/)\S+\.(?:png|jpe?g|gif|webp|'
-                                r'mp4|mov|avi|mkv|webm|ogg|opus|mp3|wav|m4a|'
-                                r'flac|epub|pdf|zip|rar|7z|docx?|xlsx?|pptx?|'
-                                r'txt|csv|apk|ipa))',
-                                re.IGNORECASE
-                            )
-                            for match in _TOOL_MEDIA_RE.finditer(content):
-                                path = match.group(1).strip().rstrip('",}')
-                                if path and path not in _history_media_paths:
-                                    media_tags.append(f"MEDIA:{path}")
-                            if "[[audio_as_voice]]" in content:
-                                has_voice_directive = True
-                
+                media_tags, has_voice_directive = _collect_auto_append_media_tags(
+                    result.get("messages", []),
+                    history_offset=len(agent_history),
+                    history_media_paths=_history_media_paths,
+                )
+
                 if media_tags:
                     seen = set()
                     unique_tags = []

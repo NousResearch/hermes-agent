@@ -51,6 +51,12 @@ describe('isCopyShortcut', () => {
 
     expect(isCopyShortcut({ ctrl: false, meta: true, super: false }, 'c', {})).toBe(false)
   })
+
+  it('accepts the VS Code/Cursor forwarded Cmd+C copy sequence on macOS', async () => {
+    const { isCopyShortcut } = await importPlatform('darwin')
+
+    expect(isCopyShortcut({ ctrl: true, meta: false, super: true }, 'c', {})).toBe(true)
+  })
 })
 
 describe('isVoiceToggleKey', () => {

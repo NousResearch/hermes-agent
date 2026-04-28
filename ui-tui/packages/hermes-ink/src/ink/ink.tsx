@@ -63,6 +63,7 @@ import {
   hasSelection,
   moveFocus,
   selectionBounds,
+  selectionSignature,
   type SelectionState,
   selectLineAt,
   selectWordAt,
@@ -213,7 +214,8 @@ export default class Ink {
   // Fired alongside the terminal repaint whenever the selection mutates
   // so UI (e.g. footer hints) can react to selection appearing/clearing.
   private readonly selectionListeners = new Set<() => void>()
-  private selectionWasActive = false
+  private selectionVersion = 0
+  private lastSelectionSignature = ''
   // DOM nodes currently under the pointer (mode-1003 motion). Held here
   // so App.tsx's handleMouseEvent is stateless — dispatchHover diffs
   // against this set and mutates it in place.
@@ -1661,9 +1663,16 @@ export default class Ink {
     return hasSelection(this.selection)
   }
 
+  getSelectionVersion(): number {
+    return this.selectionVersion
+  }
+
   /**
    * Subscribe to selection state changes. Fires whenever the selection
-   * is started, updated, cleared, or copied. Returns an unsubscribe fn.
+   * mutates — anchor/focus moves, drag updates, programmatic clears.
+   * Does NOT fire on `copySelectionNoClear()` (no mutation, no notify),
+   * which is why version-based subscribers don't risk re-entrant copies.
+   * Returns an unsubscribe fn.
    */
   subscribeToSelectionChange(cb: () => void): () => void {
     this.selectionListeners.add(cb)
@@ -1673,14 +1682,18 @@ export default class Ink {
   private notifySelectionChange(): void {
     this.scheduleRender()
 
-    const active = hasSelection(this.selection)
+    // Only bump version when the selection range actually mutated.
+    // Listeners still fire unconditionally — useHasSelection() snapshots
+    // through React, which dedupes via Object.is on the boolean value.
+    const sig = selectionSignature(this.selection)
 
-    if (active !== this.selectionWasActive) {
-      this.selectionWasActive = active
+    if (sig !== this.lastSelectionSignature) {
+      this.lastSelectionSignature = sig
+      this.selectionVersion += 1
+    }
 
-      for (const cb of this.selectionListeners) {
-        cb()
-      }
+    for (const cb of this.selectionListeners) {
+      cb()
     }
   }
 

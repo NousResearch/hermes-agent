@@ -1,7 +1,7 @@
-import { Button, ListItem } from "@nous-research/ui";
+import { Button, ListItem, Spinner } from "@nous-research/ui";
 import { Input } from "@/components/ui/input";
 import type { GatewayClient } from "@/lib/gatewayClient";
-import { Check, Loader2, Search, X } from "lucide-react";
+import { Check, Search, X } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
 /**
@@ -261,7 +261,7 @@ function ProviderColumn({
     <div className="border-r border-border overflow-y-auto">
       {loading && (
         <div className="flex items-center gap-2 p-4 text-xs text-muted-foreground">
-          <Loader2 className="h-3 w-3 animate-spin" /> loading…
+          <Spinner className="text-xs" /> loading…
         </div>
       )}
 

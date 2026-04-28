@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
-import { ExternalLink, X, Check, Loader2 } from "lucide-react";
-import { Button, CopyButton, H2 } from "@nous-research/ui";
+import { ExternalLink, X, Check } from "lucide-react";
+import { Button, CopyButton, H2, Spinner } from "@nous-research/ui";
 import { api, type OAuthProvider, type OAuthStartResponse } from "@/lib/api";
 import { Input } from "@/components/ui/input";
 import { useI18n } from "@/i18n";
@@ -200,7 +200,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
 
           {phase === "starting" && (
             <div className="flex items-center gap-3 py-6 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" />
+              <Spinner />
               {t.oauth.initiatingLogin}
             </div>
           )}
@@ -246,7 +246,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
 
           {phase === "submitting" && (
             <div className="flex items-center gap-3 py-6 text-sm text-muted-foreground">
-              <Loader2 className="h-4 w-4 animate-spin" />
+              <Spinner />
               {t.oauth.exchangingCode}
             </div>
           )}
@@ -295,7 +295,7 @@ export function OAuthLoginModal({ provider, onClose, onSuccess }: Props) {
                 {t.oauth.reOpenVerification}
               </a>
               <div className="flex items-center gap-2 text-xs text-muted-foreground border-t border-border pt-3">
-                <Loader2 className="h-3 w-3 animate-spin" />
+                <Spinner className="text-xs" />
                 {t.oauth.waitingAuth}
               </div>
             </>

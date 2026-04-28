@@ -10,8 +10,7 @@ import random
 
 TIPS = [
     # --- Slash Commands ---
-    "/btw <question> asks a quick side question without tools or history — great for clarifications.",
-    "/background <prompt> runs a task in a separate session while your current one stays free.",
+    "/background <prompt> (alias /bg or /btw) runs a task in a separate session while your current one stays free.",
     "/branch forks the current session so you can explore a different direction without losing progress.",
     "/compress manually compresses conversation context when things get long.",
     "/rollback lists filesystem checkpoints — restore files the agent modified to any prior state.",
@@ -107,7 +106,7 @@ TIPS = [
     "Set display.streaming: true to see tokens appear in real time as the model generates.",
     "Set display.show_reasoning: true to watch the model's chain-of-thought reasoning.",
     "Set display.compact: true to reduce whitespace in output for denser information.",
-    "Set display.busy_input_mode: queue to queue messages instead of interrupting the agent.",
+    "Set display.busy_input_mode: queue to queue messages instead of interrupting the agent, or steer to inject them mid-run via /steer.",
     "Set display.resume_display: minimal to skip the full conversation recap on session resume.",
     "Set compression.threshold: 0.50 to control when auto-compression fires (default: 50% of context).",
     "Set agent.max_turns: 200 to let the agent take more tool-calling steps per turn.",
@@ -127,7 +126,7 @@ TIPS = [
 
     # --- Tools & Capabilities ---
     "execute_code runs Python scripts that call Hermes tools programmatically — results stay out of context.",
-    "delegate_task spawns up to 3 concurrent sub-agents with isolated contexts for parallel work.",
+    "delegate_task spawns up to 3 concurrent sub-agents by default (delegation.max_concurrent_children) with isolated contexts for parallel work.",
     "web_extract works on PDF URLs — pass any PDF link and it converts to markdown.",
     "search_files is ripgrep-backed and faster than grep — use it instead of terminal grep.",
     "patch uses 9 fuzzy matching strategies so minor whitespace differences won't break edits.",
@@ -245,7 +244,7 @@ TIPS = [
     "Three plugin types: general (tools/hooks), memory providers, and context engines.",
     "hermes plugins install owner/repo installs plugins directly from GitHub.",
     "8 external memory providers available: Honcho, OpenViking, Mem0, Hindsight, and more.",
-    "Plugin hooks include pre_tool_call, post_tool_call, pre_llm_call, and post_llm_call.",
+    "Plugin hooks include pre/post_tool_call, pre/post_llm_call, and transform_terminal_output for output canonicalization.",
 
     # --- Miscellaneous ---
     "Prompt caching (Anthropic) reduces costs by reusing cached system prompt prefixes.",
@@ -289,6 +288,7 @@ TIPS = [
     "When a provider returns HTTP 402 (payment required), the auxiliary client auto-falls back to the next one.",
     "agent.tool_use_enforcement steers models that describe actions instead of calling tools — auto for GPT/Codex.",
     "agent.restart_drain_timeout (default 60s) lets running agents finish before a gateway restart takes effect.",
+    "agent.api_max_retries (default 3) controls how many times the agent retries a failed API call before surfacing the error — lower it for fast fallback.",
     "The gateway caches AIAgent instances per session — destroying this cache breaks Anthropic prompt caching.",
     "Any website can expose skills via /.well-known/skills/index.json — the skills hub discovers them automatically.",
     "The skills audit log at ~/.hermes/skills/.hub/audit.log tracks every install and removal operation.",
@@ -323,7 +323,6 @@ TIPS = [
     "GPT-5 and Codex use 'developer' role instead of 'system' in the message format.",
     "Per-task auxiliary overrides: auxiliary.vision.provider, auxiliary.compression.model, etc. in config.yaml.",
     "The auxiliary client treats 'main' as a provider alias — resolves to your actual primary provider + model.",
-    "Smart routing can auto-route simple queries to a cheaper model — set smart_model_routing.enabled: true.",
     "hermes claw migrate --dry-run previews OpenClaw migration without writing anything.",
     "File paths pasted with quotes or escaped spaces are handled automatically — no manual cleanup needed.",
     "Slash commands never trigger the large-paste collapse — /command with big arguments works correctly.",
@@ -344,6 +343,5 @@ def get_random_tip(exclude_recent: int = 0) -> str:
             deduplication across sessions.
     """
     return random.choice(TIPS)
-
 
 

@@ -1,80 +1,81 @@
-import type { DashboardTheme } from "./types";
+import type { DashboardTheme, ThemeTypography, ThemeLayout } from "./types";
 
 /**
  * Built-in dashboard themes.
  *
- * The "default" theme matches the current index.css @theme values exactly,
- * so applying it is a no-op (CSS vars stay at their stylesheet defaults).
- * Other themes override only what they change.
+ * Each theme defines its own palette, typography, and layout so switching
+ * themes produces visible changes beyond just color — fonts, density, and
+ * corner-radius all shift to match the theme's personality.
+ *
+ * Theme names must stay in sync with the backend's
+ * `_BUILTIN_DASHBOARD_THEMES` list in `hermes_cli/web_server.py`.
  */
+
+// ---------------------------------------------------------------------------
+// Shared typography / layout presets
+// ---------------------------------------------------------------------------
+
+/** Default system stack — neutral, safe fallback for every platform. */
+const SYSTEM_SANS =
+  'system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif';
+const SYSTEM_MONO =
+  'ui-monospace, "SF Mono", "Cascadia Mono", Menlo, Consolas, monospace';
+
+const DEFAULT_TYPOGRAPHY: ThemeTypography = {
+  fontSans: SYSTEM_SANS,
+  fontMono: SYSTEM_MONO,
+  baseSize: "15px",
+  lineHeight: "1.55",
+  letterSpacing: "0",
+};
+
+const DEFAULT_LAYOUT: ThemeLayout = {
+  radius: "0.5rem",
+  density: "comfortable",
+};
+
+// ---------------------------------------------------------------------------
+// Themes
+// ---------------------------------------------------------------------------
 
 export const defaultTheme: DashboardTheme = {
   name: "default",
   label: "Hermes Teal",
   description: "Classic dark teal — the canonical Hermes look",
-  colors: {
-    background: "#041C1C",
-    foreground: "#ffe6cb",
-    card: "#062424",
-    "card-foreground": "#ffe6cb",
-    primary: "#ffe6cb",
-    "primary-foreground": "#041C1C",
-    secondary: "#0a2e2e",
-    "secondary-foreground": "#ffe6cb",
-    muted: "#083030",
-    "muted-foreground": "#8aaa9a",
-    accent: "#0c3838",
-    "accent-foreground": "#ffe6cb",
-    destructive: "#fb2c36",
-    "destructive-foreground": "#fff",
-    success: "#4ade80",
-    warning: "#ffbd38",
-    border: "color-mix(in srgb, #ffe6cb 15%, transparent)",
-    input: "color-mix(in srgb, #ffe6cb 15%, transparent)",
-    ring: "#ffe6cb",
-    popover: "#062424",
-    "popover-foreground": "#ffe6cb",
+  palette: {
+    background: { hex: "#041c1c", alpha: 1 },
+    midground: { hex: "#ffe6cb", alpha: 1 },
+    foreground: { hex: "#ffffff", alpha: 0 },
+    warmGlow: "rgba(255, 189, 56, 0.35)",
+    noiseOpacity: 1,
   },
-  overlay: {
-    noiseOpacity: 0.10,
-    noiseBlendMode: "color-dodge",
-    warmGlowOpacity: 0.22,
-    warmGlowColor: "rgba(255,189,56,0.35)",
-  },
+  typography: DEFAULT_TYPOGRAPHY,
+  layout: DEFAULT_LAYOUT,
 };
 
 export const midnightTheme: DashboardTheme = {
   name: "midnight",
   label: "Midnight",
   description: "Deep blue-violet with cool accents",
-  colors: {
-    background: "#0a0a1a",
-    foreground: "#e0e0f0",
-    card: "#10102a",
-    "card-foreground": "#e0e0f0",
-    primary: "#a78bfa",
-    "primary-foreground": "#0a0a1a",
-    secondary: "#151530",
-    "secondary-foreground": "#e0e0f0",
-    muted: "#1a1a3a",
-    "muted-foreground": "#8888bb",
-    accent: "#1e1e44",
-    "accent-foreground": "#e0e0f0",
-    destructive: "#f43f5e",
-    "destructive-foreground": "#fff",
-    success: "#34d399",
-    warning: "#fbbf24",
-    border: "color-mix(in srgb, #a78bfa 15%, transparent)",
-    input: "color-mix(in srgb, #a78bfa 15%, transparent)",
-    ring: "#a78bfa",
-    popover: "#10102a",
-    "popover-foreground": "#e0e0f0",
+  palette: {
+    background: { hex: "#0a0a1f", alpha: 1 },
+    midground: { hex: "#d4c8ff", alpha: 1 },
+    foreground: { hex: "#ffffff", alpha: 0 },
+    warmGlow: "rgba(167, 139, 250, 0.32)",
+    noiseOpacity: 0.8,
   },
-  overlay: {
-    noiseOpacity: 0.08,
-    noiseBlendMode: "color-dodge",
-    warmGlowOpacity: 0.15,
-    warmGlowColor: "rgba(120,80,220,0.3)",
+  typography: {
+    fontSans: `"Inter", ${SYSTEM_SANS}`,
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;700&display=swap",
+    baseSize: "14px",
+    lineHeight: "1.6",
+    letterSpacing: "-0.005em",
+  },
+  layout: {
+    radius: "0.75rem",
+    density: "comfortable",
   },
 };
 
@@ -82,34 +83,29 @@ export const emberTheme: DashboardTheme = {
   name: "ember",
   label: "Ember",
   description: "Warm crimson and bronze — forge vibes",
-  colors: {
-    background: "#1a0a0a",
-    foreground: "#fde8d0",
-    card: "#241010",
-    "card-foreground": "#fde8d0",
-    primary: "#f97316",
-    "primary-foreground": "#1a0a0a",
-    secondary: "#2a1515",
-    "secondary-foreground": "#fde8d0",
-    muted: "#301818",
-    "muted-foreground": "#b08878",
-    accent: "#381e1e",
-    "accent-foreground": "#fde8d0",
-    destructive: "#ef4444",
-    "destructive-foreground": "#fff",
-    success: "#4ade80",
-    warning: "#fbbf24",
-    border: "color-mix(in srgb, #f97316 15%, transparent)",
-    input: "color-mix(in srgb, #f97316 15%, transparent)",
-    ring: "#f97316",
-    popover: "#241010",
-    "popover-foreground": "#fde8d0",
+  palette: {
+    background: { hex: "#1a0a06", alpha: 1 },
+    midground: { hex: "#ffd8b0", alpha: 1 },
+    foreground: { hex: "#ffffff", alpha: 0 },
+    warmGlow: "rgba(249, 115, 22, 0.38)",
+    noiseOpacity: 1,
   },
-  overlay: {
-    noiseOpacity: 0.10,
-    noiseBlendMode: "color-dodge",
-    warmGlowOpacity: 0.25,
-    warmGlowColor: "rgba(249,115,22,0.3)",
+  typography: {
+    fontSans: `"Spectral", Georgia, "Times New Roman", serif`,
+    fontMono: `"IBM Plex Mono", ${SYSTEM_MONO}`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Spectral:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;700&display=swap",
+    baseSize: "15px",
+    lineHeight: "1.6",
+    letterSpacing: "0",
+  },
+  layout: {
+    radius: "0.25rem",
+    density: "comfortable",
+  },
+  colorOverrides: {
+    destructive: "#c92d0f",
+    warning: "#f97316",
   },
 };
 
@@ -117,34 +113,25 @@ export const monoTheme: DashboardTheme = {
   name: "mono",
   label: "Mono",
   description: "Clean grayscale — minimal and focused",
-  colors: {
-    background: "#111111",
-    foreground: "#e0e0e0",
-    card: "#1a1a1a",
-    "card-foreground": "#e0e0e0",
-    primary: "#e0e0e0",
-    "primary-foreground": "#111111",
-    secondary: "#1e1e1e",
-    "secondary-foreground": "#e0e0e0",
-    muted: "#222222",
-    "muted-foreground": "#888888",
-    accent: "#2a2a2a",
-    "accent-foreground": "#e0e0e0",
-    destructive: "#ef4444",
-    "destructive-foreground": "#fff",
-    success: "#4ade80",
-    warning: "#fbbf24",
-    border: "color-mix(in srgb, #e0e0e0 12%, transparent)",
-    input: "color-mix(in srgb, #e0e0e0 12%, transparent)",
-    ring: "#e0e0e0",
-    popover: "#1a1a1a",
-    "popover-foreground": "#e0e0e0",
+  palette: {
+    background: { hex: "#0e0e0e", alpha: 1 },
+    midground: { hex: "#eaeaea", alpha: 1 },
+    foreground: { hex: "#ffffff", alpha: 0 },
+    warmGlow: "rgba(255, 255, 255, 0.1)",
+    noiseOpacity: 0.6,
   },
-  overlay: {
-    noiseOpacity: 0.06,
-    noiseBlendMode: "color-dodge",
-    warmGlowOpacity: 0.0,
-    warmGlowColor: "rgba(255,255,255,0)",
+  typography: {
+    fontSans: `"IBM Plex Sans", ${SYSTEM_SANS}`,
+    fontMono: `"IBM Plex Mono", ${SYSTEM_MONO}`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@400;500&display=swap",
+    baseSize: "13px",
+    lineHeight: "1.5",
+    letterSpacing: "0",
+  },
+  layout: {
+    radius: "0",
+    density: "compact",
   },
 };
 
@@ -152,34 +139,30 @@ export const cyberpunkTheme: DashboardTheme = {
   name: "cyberpunk",
   label: "Cyberpunk",
   description: "Neon green on black — matrix terminal",
-  colors: {
-    background: "#050505",
-    foreground: "#00ff88",
-    card: "#0a0a0a",
-    "card-foreground": "#00ff88",
-    primary: "#00ff88",
-    "primary-foreground": "#050505",
-    secondary: "#0e0e0e",
-    "secondary-foreground": "#00ff88",
-    muted: "#121212",
-    "muted-foreground": "#00aa55",
-    accent: "#161616",
-    "accent-foreground": "#00ff88",
-    destructive: "#ff0055",
-    "destructive-foreground": "#fff",
-    success: "#00ff88",
-    warning: "#ffff00",
-    border: "color-mix(in srgb, #00ff88 12%, transparent)",
-    input: "color-mix(in srgb, #00ff88 12%, transparent)",
-    ring: "#00ff88",
-    popover: "#0a0a0a",
-    "popover-foreground": "#00ff88",
+  palette: {
+    background: { hex: "#040608", alpha: 1 },
+    midground: { hex: "#9bffcf", alpha: 1 },
+    foreground: { hex: "#ffffff", alpha: 0 },
+    warmGlow: "rgba(0, 255, 136, 0.22)",
+    noiseOpacity: 1.2,
   },
-  overlay: {
-    noiseOpacity: 0.12,
-    noiseBlendMode: "color-dodge",
-    warmGlowOpacity: 0.10,
-    warmGlowColor: "rgba(0,255,136,0.15)",
+  typography: {
+    fontSans: `"Share Tech Mono", "JetBrains Mono", ${SYSTEM_MONO}`,
+    fontMono: `"Share Tech Mono", "JetBrains Mono", ${SYSTEM_MONO}`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Share+Tech+Mono&family=JetBrains+Mono:wght@400;700&display=swap",
+    baseSize: "14px",
+    lineHeight: "1.5",
+    letterSpacing: "0.02em",
+  },
+  layout: {
+    radius: "0",
+    density: "compact",
+  },
+  colorOverrides: {
+    success: "#00ff88",
+    warning: "#ffd700",
+    destructive: "#ff0055",
   },
 };
 
@@ -187,38 +170,28 @@ export const roseTheme: DashboardTheme = {
   name: "rose",
   label: "Rosé",
   description: "Soft pink and warm ivory — easy on the eyes",
-  colors: {
-    background: "#1a1015",
-    foreground: "#f5e6e0",
-    card: "#221820",
-    "card-foreground": "#f5e6e0",
-    primary: "#f9a8d4",
-    "primary-foreground": "#1a1015",
-    secondary: "#281e28",
-    "secondary-foreground": "#f5e6e0",
-    muted: "#2e2230",
-    "muted-foreground": "#b08898",
-    accent: "#352838",
-    "accent-foreground": "#f5e6e0",
-    destructive: "#fb2c36",
-    "destructive-foreground": "#fff",
-    success: "#4ade80",
-    warning: "#fbbf24",
-    border: "color-mix(in srgb, #f9a8d4 14%, transparent)",
-    input: "color-mix(in srgb, #f9a8d4 14%, transparent)",
-    ring: "#f9a8d4",
-    popover: "#221820",
-    "popover-foreground": "#f5e6e0",
+  palette: {
+    background: { hex: "#1a0f15", alpha: 1 },
+    midground: { hex: "#ffd4e1", alpha: 1 },
+    foreground: { hex: "#ffffff", alpha: 0 },
+    warmGlow: "rgba(249, 168, 212, 0.3)",
+    noiseOpacity: 0.9,
   },
-  overlay: {
-    noiseOpacity: 0.08,
-    noiseBlendMode: "color-dodge",
-    warmGlowOpacity: 0.18,
-    warmGlowColor: "rgba(249,168,212,0.2)",
+  typography: {
+    fontSans: `"Fraunces", Georgia, serif`,
+    fontMono: `"DM Mono", ${SYSTEM_MONO}`,
+    fontUrl:
+      "https://fonts.googleapis.com/css2?family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,600&family=DM+Mono:wght@400;500&display=swap",
+    baseSize: "16px",
+    lineHeight: "1.7",
+    letterSpacing: "0",
+  },
+  layout: {
+    radius: "1rem",
+    density: "spacious",
   },
 };
 
-/** All built-in themes, keyed by name. */
 export const BUILTIN_THEMES: Record<string, DashboardTheme> = {
   default: defaultTheme,
   midnight: midnightTheme,

@@ -78,6 +78,7 @@ class HonchoSessionManager:
         honcho: Honcho | None = None,
         context_tokens: int | None = None,
         config: Any | None = None,
+        runtime_user_peer_name: str | None = None,
     ):
         """
         Initialize the session manager.
@@ -87,11 +88,14 @@ class HonchoSessionManager:
             context_tokens: Max tokens for context() calls (None = Honcho default).
             config: HonchoClientConfig from global config (provides peer_name, ai_peer,
                     write_frequency, observation, etc.).
+            runtime_user_peer_name: Gateway user identity for per-user memory scoping.
         """
         self._honcho = honcho
         self._context_tokens = context_tokens
         self._config = config
+        self._runtime_user_peer_name = runtime_user_peer_name
         self._cache: dict[str, HonchoSession] = {}
+        self._cache_lock = threading.RLock()
         self._peers_cache: dict[str, Any] = {}
         self._sessions_cache: dict[str, Any] = {}
 
@@ -100,9 +104,11 @@ class HonchoSessionManager:
         self._write_frequency = write_frequency
         self._turn_counter: int = 0
 
-        # Prefetch caches: session_key → last result (consumed once per turn)
+        # Prefetch cache: session_key → last context result (consumed once per turn).
+        # Dialectic results are cached on the plugin side (HonchoMemoryProvider
+        # ._prefetch_result) so session-start prewarm and turn-driven fires share
+        # one source of truth; see __init__.py _do_session_init for the prewarm.
         self._context_cache: dict[str, dict] = {}
-        self._dialectic_cache: dict[str, str] = {}
         self._prefetch_cache_lock = threading.Lock()
         self._dialectic_reasoning_level: str = (
             config.dialectic_reasoning_level if config else "low"
@@ -268,15 +274,35 @@ class HonchoSessionManager:
         Returns:
             The session.
         """
-        if key in self._cache:
-            logger.debug("Local session cache hit: %s", key)
-            return self._cache[key]
+        with self._cache_lock:
+            if key in self._cache:
+                logger.debug("Local session cache hit: %s", key)
+                return self._cache[key]
 
-        # Use peer names from global config when available
-        if self._config and self._config.peer_name:
+        # Determine peer IDs — no lock needed (read-only, no shared state mutation).
+        # Gateway sessions normally use the runtime user identity (the
+        # platform-native ID: Telegram UID, Discord snowflake, Slack user,
+        # etc.) so multi-user bots scope memory per user.  For a single-user
+        # deployment the config-supplied ``peer_name`` is an unambiguous
+        # identity and we should keep it unified across platforms — see
+        # #14984.  Opt into that with ``hosts.<host>.pinPeerName: true`` in
+        # ``honcho.json`` (or root-level ``pinPeerName: true``).
+        # `is True` (not `bool(...)`) is deliberate: several multi-user tests
+        # pass a ``MagicMock`` for ``config`` where ``mock.pin_peer_name``
+        # silently returns another MagicMock — truthy by default.  Requiring
+        # strict ``True`` keeps pinning as opt-in even for callers that
+        # haven't updated their mocks yet; real configs built via
+        # ``from_global_config`` always produce a proper boolean.
+        pin_peer_name = (
+            self._config is not None
+            and bool(getattr(self._config, "peer_name", None))
+            and getattr(self._config, "pin_peer_name", False) is True
+        )
+        if self._runtime_user_peer_name and not pin_peer_name:
+            user_peer_id = self._sanitize_id(self._runtime_user_peer_name)
+        elif self._config and self._config.peer_name:
             user_peer_id = self._sanitize_id(self._config.peer_name)
         else:
-            # Fallback: derive from session key
             parts = key.split(":", 1)
             channel = parts[0] if len(parts) > 1 else "default"
             chat_id = parts[1] if len(parts) > 1 else key
@@ -286,19 +312,14 @@ class HonchoSessionManager:
             self._config.ai_peer if self._config else "hermes-assistant"
         )
 
-        # Sanitize session ID for Honcho
+        # All expensive I/O outside the lock — Honcho's persistence is source of truth
         honcho_session_id = self._sanitize_id(key)
-
-        # Get or create peers
         user_peer = self._get_or_create_peer(user_peer_id)
         assistant_peer = self._get_or_create_peer(assistant_peer_id)
-
-        # Get or create Honcho session
         honcho_session, existing_messages = self._get_or_create_honcho_session(
             honcho_session_id, user_peer, assistant_peer
         )
 
-        # Convert Honcho messages to local format
         local_messages = []
         for msg in existing_messages:
             role = "assistant" if msg.peer_id == assistant_peer_id else "user"
@@ -306,10 +327,9 @@ class HonchoSessionManager:
                 "role": role,
                 "content": msg.content,
                 "timestamp": msg.created_at.isoformat() if msg.created_at else "",
-                "_synced": True,  # Already in Honcho
+                "_synced": True,
             })
 
-        # Create local session wrapper with existing messages
         session = HonchoSession(
             key=key,
             user_peer_id=user_peer_id,
@@ -318,7 +338,9 @@ class HonchoSessionManager:
             messages=local_messages,
         )
 
-        self._cache[key] = session
+        # Write to cache under lock — only one writer wins
+        with self._cache_lock:
+            self._cache[key] = session
         return session
 
     def _flush_session(self, session: HonchoSession) -> bool:
@@ -349,13 +371,15 @@ class HonchoSessionManager:
             for msg in new_messages:
                 msg["_synced"] = True
             logger.debug("Synced %d messages to Honcho for %s", len(honcho_messages), session.key)
-            self._cache[session.key] = session
+            with self._cache_lock:
+                self._cache[session.key] = session
             return True
         except Exception as e:
             for msg in new_messages:
                 msg["_synced"] = False
             logger.error("Failed to sync messages to Honcho: %s", e)
-            self._cache[session.key] = session
+            with self._cache_lock:
+                self._cache[session.key] = session
             return False
 
     def _async_writer_loop(self) -> None:
@@ -427,7 +451,9 @@ class HonchoSessionManager:
         Called at session end for "session" write_frequency, or to force
         a sync before process exit regardless of mode.
         """
-        for session in list(self._cache.values()):
+        with self._cache_lock:
+            sessions = list(self._cache.values())
+        for session in sessions:
             try:
                 self._flush_session(session)
             except Exception as e:
@@ -452,9 +478,10 @@ class HonchoSessionManager:
 
     def delete(self, key: str) -> bool:
         """Delete a session from local cache."""
-        if key in self._cache:
-            del self._cache[key]
-            return True
+        with self._cache_lock:
+            if key in self._cache:
+                del self._cache[key]
+                return True
         return False
 
     def new_session(self, key: str) -> HonchoSession:
@@ -466,20 +493,25 @@ class HonchoSessionManager:
         """
         import time
 
-        # Remove old session from caches (but don't delete from Honcho)
-        old_session = self._cache.pop(key, None)
-        if old_session:
-            self._sessions_cache.pop(old_session.honcho_session_id, None)
+        # Hold the reentrant lock across get_or_create so a concurrent caller
+        # can't observe the (old-popped, new-not-yet-inserted) gap and create
+        # its own session under the raw key.  `_cache_lock` is an RLock so
+        # nested reacquisition inside get_or_create is safe.
+        with self._cache_lock:
+            # Remove old session from caches (but don't delete from Honcho)
+            old_session = self._cache.pop(key, None)
+            if old_session:
+                self._sessions_cache.pop(old_session.honcho_session_id, None)
 
-        # Create new session with timestamp suffix
-        timestamp = int(time.time())
-        new_key = f"{key}:{timestamp}"
+            # Create new session with timestamp suffix
+            timestamp = int(time.time())
+            new_key = f"{key}:{timestamp}"
 
-        # get_or_create will create a fresh session
-        session = self.get_or_create(new_key)
+            # get_or_create will create a fresh session
+            session = self.get_or_create(new_key)
 
-        # Cache under the original key so callers find it by the expected name
-        self._cache[key] = session
+            # Cache under the original key so callers find it by the expected name
+            self._cache[key] = session
 
         logger.info("Created new session for %s (honcho: %s)", key, session.honcho_session_id)
         return session
@@ -499,8 +531,8 @@ class HonchoSessionManager:
         Query Honcho's dialectic endpoint about a peer.
 
         Runs an LLM on Honcho's backend against the target peer's full
-        representation. Higher latency than context() — call async via
-        prefetch_dialectic() to avoid blocking the response.
+        representation. Higher latency than context() — callers run this in
+        a background thread (see HonchoMemoryProvider) to avoid blocking.
 
         Args:
             session_key: The session key to query against.
@@ -554,42 +586,6 @@ class HonchoSessionManager:
         except Exception as e:
             logger.warning("Honcho dialectic query failed: %s", e)
             return ""
-
-    def prefetch_dialectic(self, session_key: str, query: str) -> None:
-        """
-        Fire a dialectic_query in a background thread, caching the result.
-
-        Non-blocking. The result is available via pop_dialectic_result()
-        on the next call (typically the following turn). Reasoning level
-        is selected dynamically based on query complexity.
-
-        Args:
-            session_key: The session key to query against.
-            query: The user's current message, used as the query.
-        """
-        def _run():
-            result = self.dialectic_query(session_key, query)
-            if result:
-                self.set_dialectic_result(session_key, result)
-
-        t = threading.Thread(target=_run, name="honcho-dialectic-prefetch", daemon=True)
-        t.start()
-
-    def set_dialectic_result(self, session_key: str, result: str) -> None:
-        """Store a prefetched dialectic result in a thread-safe way."""
-        if not result:
-            return
-        with self._prefetch_cache_lock:
-            self._dialectic_cache[session_key] = result
-
-    def pop_dialectic_result(self, session_key: str) -> str:
-        """
-        Return and clear the cached dialectic result for this session.
-
-        Returns empty string if no result is ready yet.
-        """
-        with self._prefetch_cache_lock:
-            return self._dialectic_cache.pop(session_key, "")
 
     def prefetch_context(self, session_key: str, user_message: str | None = None) -> None:
         """

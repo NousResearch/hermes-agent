@@ -112,6 +112,38 @@ hermes gateway
 
 The bot should come online within seconds. Send it a message on Telegram to verify.
 
+## Sending Generated Files from Docker-backed Terminals
+
+If your terminal backend is `docker`, keep in mind that Telegram attachments are
+sent by the **gateway process**, not from inside the container. That means the
+final `MEDIA:/...` path must be readable on the host where the gateway is
+running.
+
+Common pitfall:
+
+- the agent writes a file inside Docker to `/workspace/report.txt`
+- the model emits `MEDIA:/workspace/report.txt`
+- Telegram delivery fails because `/workspace/report.txt` only exists inside the
+  container, not on the host
+
+Recommended pattern:
+
+```yaml
+terminal:
+  backend: docker
+  docker_volumes:
+    - "/home/user/.hermes/cache/documents:/output"
+```
+
+Then:
+
+- write files inside Docker to `/output/...`
+- emit the **host-visible** path in `MEDIA:`, for example:
+  `MEDIA:/home/user/.hermes/cache/documents/report.txt`
+
+If you already have a `docker_volumes:` section, add the new mount to the same
+list. YAML duplicate keys silently override earlier ones.
+
 ## Webhook Mode
 
 By default, Hermes connects to Telegram using **long polling** — the gateway makes outbound requests to Telegram's servers to fetch new updates. This works well for local and always-on deployments.
@@ -293,6 +325,16 @@ Each topic gets its own conversation session, history, and context — completel
 
 ### Configuration
 
+:::caution Prerequisites
+Before adding topics to your config, the user must **enable Topics mode** in the DM chat with the bot:
+
+1. Open your private chat with the Hermes bot in Telegram
+2. Tap the bot's name at the top to open chat info
+3. Enable **Topics** (the toggle to turn the chat into a forum)
+
+Without this, Hermes will log `The chat is not a forum` on startup and skip topic creation. This is a Telegram client-side setting — the bot cannot enable it programmatically.
+:::
+
 Add topics under `platforms.telegram.extra.dm_topics` in `~/.hermes/config.yaml`:
 
 ```yaml
@@ -420,40 +462,6 @@ The current model and provider are displayed at the top. All navigation happens 
 
 :::tip
 If you know the exact model name, type `/model <name>` directly to skip the picker. You can also type `/model <name> --global` to persist the change across sessions.
-:::
-
-## Webhook Mode
-
-By default, the Telegram adapter connects via **long polling** — the gateway makes outbound connections to Telegram's servers. This works everywhere but keeps a persistent connection open.
-
-**Webhook mode** is an alternative where Telegram pushes updates to your server over HTTPS. This is ideal for **serverless and cloud deployments** (Fly.io, Railway, etc.) where inbound HTTP can wake a suspended machine.
-
-### Configuration
-
-Set the `TELEGRAM_WEBHOOK_URL` environment variable to enable webhook mode:
-
-```bash
-# Required — your public HTTPS endpoint
-TELEGRAM_WEBHOOK_URL=https://app.fly.dev/telegram
-
-# Optional — local listen port (default: 8443)
-TELEGRAM_WEBHOOK_PORT=8443
-
-# Optional — secret token for update verification (auto-generated if not set)
-TELEGRAM_WEBHOOK_SECRET=my-secret-token
-```
-
-Or in `~/.hermes/config.yaml`:
-
-```yaml
-telegram:
-  webhook_mode: true
-```
-
-When `TELEGRAM_WEBHOOK_URL` is set, the gateway starts an HTTP server listening on `0.0.0.0:<port>` and registers the webhook URL with Telegram. The URL path is extracted from the webhook URL (defaults to `/telegram`).
-
-:::warning
-Telegram requires a **valid TLS certificate** on the webhook endpoint. Self-signed certificates will be rejected. Use a reverse proxy (nginx, Caddy) or a platform that provides TLS termination (Fly.io, Railway, Cloudflare Tunnel).
 :::
 
 ## DNS-over-HTTPS Fallback IPs

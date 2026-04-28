@@ -1,48 +1,28 @@
-"""Shared slash command helpers for skills and built-in prompt-style modes.
+"""Shared slash command helpers for skills.
 
 Shared between CLI (cli.py) and gateway (gateway/run.py) so both surfaces
-can invoke skills via /skill-name commands and prompt-only built-ins like
-/plan.
+can invoke skills via /skill-name commands.
 """
 
 import json
 import logging
 import re
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional
 
 from hermes_constants import display_hermes_home
+from agent.skill_preprocessing import (
+    expand_inline_shell as _expand_inline_shell,
+    load_skills_config as _load_skills_config,
+    substitute_template_vars as _substitute_template_vars,
+)
 
 logger = logging.getLogger(__name__)
 
 _skill_commands: Dict[str, Dict[str, Any]] = {}
-_PLAN_SLUG_RE = re.compile(r"[^a-z0-9]+")
 # Patterns for sanitizing skill names into clean hyphen-separated slugs.
 _SKILL_INVALID_CHARS = re.compile(r"[^a-z0-9-]")
 _SKILL_MULTI_HYPHEN = re.compile(r"-{2,}")
-
-
-def build_plan_path(
-    user_instruction: str = "",
-    *,
-    now: datetime | None = None,
-) -> Path:
-    """Return the default workspace-relative markdown path for a /plan invocation.
-
-    Relative paths are intentional: file tools are task/backend-aware and resolve
-    them against the active working directory for local, docker, ssh, modal,
-    daytona, and similar terminal backends. That keeps the plan with the active
-    workspace instead of the Hermes host's global home directory.
-    """
-    slug_source = (user_instruction or "").strip().splitlines()[0] if user_instruction else ""
-    slug = _PLAN_SLUG_RE.sub("-", slug_source.lower()).strip("-")
-    if slug:
-        slug = "-".join(part for part in slug.split("-")[:8] if part)[:48].strip("-")
-    slug = slug or "conversation-plan"
-    timestamp = (now or datetime.now()).strftime("%Y-%m-%d_%H%M%S")
-    return Path(".hermes") / "plans" / f"{timestamp}-{slug}.md"
-
 
 def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tuple[dict[str, Any], Path | None, str] | None:
     """Load a skill by name/path and return (loaded_payload, skill_dir, display_name)."""
@@ -62,7 +42,9 @@ def _load_skill_payload(skill_identifier: str, task_id: str | None = None) -> tu
         else:
             normalized = raw_identifier.lstrip("/")
 
-        loaded_skill = json.loads(skill_view(normalized, task_id=task_id))
+        loaded_skill = json.loads(
+            skill_view(normalized, task_id=task_id, preprocess=False)
+        )
     except Exception:
         return None
 
@@ -133,13 +115,35 @@ def _build_skill_message(
     activation_note: str,
     user_instruction: str = "",
     runtime_note: str = "",
+    session_id: str | None = None,
 ) -> str:
     """Format a loaded skill into a user/system message payload."""
     from tools.skills_tool import SKILLS_DIR
 
     content = str(loaded_skill.get("content") or "")
 
+    # ── Template substitution and inline-shell expansion ──
+    # Done before anything else so downstream blocks (setup notes,
+    # supporting-file hints) see the expanded content.
+    skills_cfg = _load_skills_config()
+    if skills_cfg.get("template_vars", True):
+        content = _substitute_template_vars(content, skill_dir, session_id)
+    if skills_cfg.get("inline_shell", False):
+        timeout = int(skills_cfg.get("inline_shell_timeout", 10) or 10)
+        content = _expand_inline_shell(content, skill_dir, timeout)
+
     parts = [activation_note, "", content.strip()]
+
+    # ── Inject the absolute skill directory so the agent can reference
+    #    bundled scripts without an extra skill_view() round-trip. ──
+    if skill_dir:
+        parts.append("")
+        parts.append(f"[Skill directory: {skill_dir}]")
+        parts.append(
+            "Resolve any relative paths in this skill (e.g. `scripts/foo.js`, "
+            "`templates/config.yaml`) against that directory, then run them "
+            "with the terminal tool using the absolute path."
+        )
 
     # ── Inject resolved skill config values ──
     _inject_skill_config(loaded_skill, parts)
@@ -188,11 +192,13 @@ def _build_skill_message(
             # Skill is from an external dir — use the skill name instead
             skill_view_target = skill_dir.name
         parts.append("")
-        parts.append("[This skill has supporting files you can load with the skill_view tool:]")
+        parts.append("[This skill has supporting files:]")
         for sf in supporting:
-            parts.append(f"- {sf}")
+            parts.append(f"- {sf}  ->  {skill_dir / sf}")
         parts.append(
-            f'\nTo view any of these, use: skill_view(name="{skill_view_target}", file_path="<path>")'
+            f'\nLoad any of these with skill_view(name="{skill_view_target}", '
+            f'file_path="<path>"), or run scripts directly by absolute path '
+            f"(e.g. `node {skill_dir}/scripts/foo.js`)."
         )
 
     if user_instruction:
@@ -216,7 +222,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
     _skill_commands = {}
     try:
         from tools.skills_tool import SKILLS_DIR, _parse_frontmatter, skill_matches_platform, _get_disabled_skill_names
-        from agent.skill_utils import get_external_skills_dirs
+        from agent.skill_utils import get_external_skills_dirs, iter_skill_index_files
         disabled = _get_disabled_skill_names()
         seen_names: set = set()
 
@@ -227,7 +233,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
         dirs_to_scan.extend(get_external_skills_dirs())
 
         for scan_dir in dirs_to_scan:
-            for skill_md in scan_dir.rglob("SKILL.md"):
+            for skill_md in iter_skill_index_files(scan_dir, "SKILL.md"):
                 if any(part in ('.git', '.github', '.hub') for part in skill_md.parts):
                     continue
                 try:
@@ -323,7 +329,7 @@ def build_skill_invocation_message(
 
     loaded_skill, skill_dir, skill_name = loaded
     activation_note = (
-        f'[SYSTEM: The user has invoked the "{skill_name}" skill, indicating they want '
+        f'[IMPORTANT: The user has invoked the "{skill_name}" skill, indicating they want '
         "you to follow its instructions. The full skill content is loaded below.]"
     )
     return _build_skill_message(
@@ -332,6 +338,7 @@ def build_skill_invocation_message(
         activation_note,
         user_instruction=user_instruction,
         runtime_note=runtime_note,
+        session_id=task_id,
     )
 
 
@@ -361,7 +368,7 @@ def build_preloaded_skills_prompt(
 
         loaded_skill, skill_dir, skill_name = loaded
         activation_note = (
-            f'[SYSTEM: The user launched this CLI session with the "{skill_name}" skill '
+            f'[IMPORTANT: The user launched this CLI session with the "{skill_name}" skill '
             "preloaded. Treat its instructions as active guidance for the duration of this "
             "session unless the user overrides them.]"
         )
@@ -370,6 +377,7 @@ def build_preloaded_skills_prompt(
                 loaded_skill,
                 skill_dir,
                 activation_note,
+                session_id=task_id,
             )
         )
         loaded_names.append(skill_name)

@@ -2,7 +2,8 @@
 
 Surrogates (U+D800..U+DFFF) are invalid in UTF-8 and crash json.dumps()
 inside the OpenAI SDK. They can appear via clipboard paste from rich-text
-editors like Google Docs.
+editors like Google Docs, OR from byte-level reasoning models (xiaomi/mimo,
+kimi, glm) emitting lone halves in reasoning output.
 """
 import json
 import pytest
@@ -11,6 +12,7 @@ from unittest.mock import MagicMock, patch
 from run_agent import (
     _sanitize_surrogates,
     _sanitize_messages_surrogates,
+    _sanitize_structure_surrogates,
     _SURROGATE_RE,
 )
 
@@ -107,6 +109,186 @@ class TestSanitizeMessagesSurrogates:
         ]
         assert _sanitize_messages_surrogates(msgs) is True
         assert "\ufffd" in msgs[0]["content"]
+
+
+class TestReasoningFieldSurrogates:
+    """Surrogates in reasoning fields (byte-level reasoning models).
+
+    xiaomi/mimo, kimi, glm and similar byte-level tokenizers can emit lone
+    surrogates in reasoning output. These fields are carried through to the
+    API as `reasoning_content` on assistant messages, and must be sanitized
+    or json.dumps() crashes with 'utf-8' codec can't encode surrogates.
+    """
+
+    def test_reasoning_field_sanitized(self):
+        msgs = [
+            {"role": "assistant", "content": "ok", "reasoning": "thought \udce2 here"},
+        ]
+        assert _sanitize_messages_surrogates(msgs) is True
+        assert "\udce2" not in msgs[0]["reasoning"]
+        assert "\ufffd" in msgs[0]["reasoning"]
+
+    def test_reasoning_content_field_sanitized(self):
+        """api_messages carry `reasoning_content` built from `reasoning`."""
+        msgs = [
+            {"role": "assistant", "content": "ok", "reasoning_content": "thought \udce2 here"},
+        ]
+        assert _sanitize_messages_surrogates(msgs) is True
+        assert "\udce2" not in msgs[0]["reasoning_content"]
+        assert "\ufffd" in msgs[0]["reasoning_content"]
+
+    def test_reasoning_details_nested_sanitized(self):
+        """reasoning_details is a list of dicts with nested string fields."""
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "ok",
+                "reasoning_details": [
+                    {"type": "reasoning.summary", "summary": "summary \udce2 text"},
+                    {"type": "reasoning.text", "text": "chain \udc00 of thought"},
+                ],
+            },
+        ]
+        assert _sanitize_messages_surrogates(msgs) is True
+        assert "\udce2" not in msgs[0]["reasoning_details"][0]["summary"]
+        assert "\ufffd" in msgs[0]["reasoning_details"][0]["summary"]
+        assert "\udc00" not in msgs[0]["reasoning_details"][1]["text"]
+        assert "\ufffd" in msgs[0]["reasoning_details"][1]["text"]
+
+    def test_deeply_nested_reasoning_sanitized(self):
+        """Nested dicts / lists inside extra fields are recursed into."""
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "ok",
+                "reasoning_details": [
+                    {
+                        "type": "reasoning.encrypted",
+                        "content": {
+                            "encrypted_content": "opaque",
+                            "text_parts": ["part1", "part2 \udce2 part"],
+                        },
+                    },
+                ],
+            },
+        ]
+        assert _sanitize_messages_surrogates(msgs) is True
+        assert (
+            msgs[0]["reasoning_details"][0]["content"]["text_parts"][1]
+            == "part2 \ufffd part"
+        )
+
+    def test_reasoning_end_to_end_json_serialization(self):
+        """After sanitization, the full message dict must serialize clean."""
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "answer",
+                "reasoning_content": "reasoning with \udce2 surrogate",
+                "reasoning_details": [
+                    {"summary": "nested \udcb0 surrogate"},
+                ],
+            },
+        ]
+        _sanitize_messages_surrogates(msgs)
+        # Must round-trip through json + utf-8 encoding without error
+        payload = json.dumps(msgs, ensure_ascii=False).encode("utf-8")
+        assert b"\\" not in payload[:0]  # sanity — just ensure we got bytes
+        assert len(payload) > 0
+
+    def test_no_surrogates_returns_false(self):
+        """Clean reasoning fields don't trigger a modification."""
+        msgs = [
+            {
+                "role": "assistant",
+                "content": "ok",
+                "reasoning": "clean thought",
+                "reasoning_content": "also clean",
+                "reasoning_details": [{"summary": "clean summary"}],
+            },
+        ]
+        assert _sanitize_messages_surrogates(msgs) is False
+
+
+class TestSanitizeStructureSurrogates:
+    """Test the _sanitize_structure_surrogates() helper for nested payloads."""
+
+    def test_empty_payload(self):
+        assert _sanitize_structure_surrogates({}) is False
+        assert _sanitize_structure_surrogates([]) is False
+
+    def test_flat_dict(self):
+        payload = {"a": "clean", "b": "dirty \udce2 text"}
+        assert _sanitize_structure_surrogates(payload) is True
+        assert payload["a"] == "clean"
+        assert "\ufffd" in payload["b"]
+
+    def test_flat_list(self):
+        payload = ["clean", "dirty \udce2"]
+        assert _sanitize_structure_surrogates(payload) is True
+        assert payload[0] == "clean"
+        assert "\ufffd" in payload[1]
+
+    def test_nested_dict_in_list(self):
+        payload = [{"x": "dirty \udce2"}, {"x": "clean"}]
+        assert _sanitize_structure_surrogates(payload) is True
+        assert "\ufffd" in payload[0]["x"]
+        assert payload[1]["x"] == "clean"
+
+    def test_deeply_nested(self):
+        payload = {
+            "level1": {
+                "level2": [
+                    {"level3": "deep \udce2 surrogate"},
+                ],
+            },
+        }
+        assert _sanitize_structure_surrogates(payload) is True
+        assert "\ufffd" in payload["level1"]["level2"][0]["level3"]
+
+    def test_clean_payload_returns_false(self):
+        payload = {"a": "clean", "b": [{"c": "also clean"}]}
+        assert _sanitize_structure_surrogates(payload) is False
+
+    def test_non_string_values_ignored(self):
+        payload = {"int": 42, "list": [1, 2, 3], "dict": {"none": None}, "bool": True}
+        assert _sanitize_structure_surrogates(payload) is False
+        # Non-string values survive unchanged
+        assert payload["int"] == 42
+        assert payload["list"] == [1, 2, 3]
+
+
+class TestApiMessagesSurrogateRecovery:
+    """Integration: verify the recovery block sanitizes api_messages.
+
+    The bug this guards against: a surrogate in `reasoning_content` on
+    api_messages (transformed from `reasoning` during build) crashes the
+    OpenAI SDK's json.dumps(), and the recovery block previously only
+    sanitized the canonical `messages` list — not `api_messages` — so the
+    next retry would send the same broken payload and fail 3 times.
+    """
+
+    def test_api_messages_reasoning_content_sanitized(self):
+        """The extended sanitizer catches reasoning_content in api_messages."""
+        api_messages = [
+            {"role": "system", "content": "sys"},
+            {
+                "role": "assistant",
+                "content": "response",
+                "reasoning_content": "thought \udce2 trail",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "function": {"name": "tool", "arguments": "{}"},
+                    }
+                ],
+            },
+            {"role": "tool", "content": "result", "tool_call_id": "call_1"},
+        ]
+        assert _sanitize_messages_surrogates(api_messages) is True
+        assert "\udce2" not in api_messages[1]["reasoning_content"]
+        # Full payload must now serialize clean
+        json.dumps(api_messages, ensure_ascii=False).encode("utf-8")
 
 
 class TestRunConversationSurrogateSanitization:

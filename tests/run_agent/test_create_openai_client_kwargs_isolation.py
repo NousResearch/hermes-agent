@@ -19,6 +19,8 @@ from run_agent import AIAgent
 def test_create_openai_client_does_not_mutate_input_kwargs(mock_openai):
     mock_openai.return_value = MagicMock()
     agent = AIAgent(
+        api_key="test-key",
+        base_url="https://openrouter.ai/api/v1",
         model="test/model",
         quiet_mode=True,
         skip_context_files=True,

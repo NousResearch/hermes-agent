@@ -31,6 +31,7 @@ from agent.model_metadata import (
     get_model_context_length,
     estimate_messages_tokens_rough,
 )
+from agent.redact import redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 
@@ -60,7 +61,137 @@ _PRUNED_TOOL_PLACEHOLDER = "[Old tool output cleared to save context space]"
 
 # Chars per token rough estimate
 _CHARS_PER_TOKEN = 4
+# Flat token cost per attached image part.  Real cost varies by provider and
+# dimensions (Anthropic ≈ width×height/750, GPT-4o up to ~1700 for
+# high-detail 2048×2048, Gemini 258/tile), but 1600 is a realistic ceiling
+# that keeps compression budgeting honest for multi-image conversations.
+# Matches Claude Code's IMAGE_TOKEN_ESTIMATE constant.
+_IMAGE_TOKEN_ESTIMATE = 1600
+# Same figure expressed in the char-budget currency the rest of the
+# compressor speaks in.  Used when accumulating message "content length"
+# for tail-cut decisions.
+_IMAGE_CHAR_EQUIVALENT = _IMAGE_TOKEN_ESTIMATE * _CHARS_PER_TOKEN
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
+
+
+def _content_length_for_budget(raw_content: Any) -> int:
+    """Return the effective char-length of a message's content for token budgeting.
+
+    Plain strings: ``len(content)``. Multimodal lists: sum of text-part
+    ``len(text)`` plus a flat ``_IMAGE_CHAR_EQUIVALENT`` per image part
+    (``image_url`` / ``input_image`` / Anthropic-style ``image``). This
+    keeps the compressor from treating a turn with 5 attached images as
+    near-zero tokens just because the text part is empty.
+    """
+    if isinstance(raw_content, str):
+        return len(raw_content)
+    if not isinstance(raw_content, list):
+        return len(str(raw_content or ""))
+
+    total = 0
+    for p in raw_content:
+        if isinstance(p, str):
+            total += len(p)
+            continue
+        if not isinstance(p, dict):
+            total += len(str(p))
+            continue
+        ptype = p.get("type")
+        if ptype in {"image_url", "input_image", "image"}:
+            total += _IMAGE_CHAR_EQUIVALENT
+        else:
+            # text / input_text / tool_result-with-text / anything else with
+            # a text field.  Ignore the raw base64 payload inside image_url
+            # dicts — dimensions don't matter, only whether it's an image.
+            total += len(p.get("text", "") or "")
+    return total
+
+
+def _content_text_for_contains(content: Any) -> str:
+    """Return a best-effort text view of message content.
+
+    Used only for substring checks when we need to know whether we've already
+    appended a note to a message. Keeps multimodal lists intact elsewhere.
+    """
+    if content is None:
+        return ""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        parts: list[str] = []
+        for item in content:
+            if isinstance(item, str):
+                parts.append(item)
+            elif isinstance(item, dict):
+                text = item.get("text")
+                if isinstance(text, str):
+                    parts.append(text)
+        return "\n".join(part for part in parts if part)
+    return str(content)
+
+
+def _append_text_to_content(content: Any, text: str, *, prepend: bool = False) -> Any:
+    """Append or prepend plain text to message content safely.
+
+    Compression sometimes needs to add a note or merge a summary into an
+    existing message. Message content may be plain text or a multimodal list of
+    blocks, so direct string concatenation is not always safe.
+    """
+    if content is None:
+        return text
+    if isinstance(content, str):
+        return text + content if prepend else content + text
+    if isinstance(content, list):
+        text_block = {"type": "text", "text": text}
+        return [text_block, *content] if prepend else [*content, text_block]
+    rendered = str(content)
+    return text + rendered if prepend else rendered + text
+
+
+def _truncate_tool_call_args_json(args: str, head_chars: int = 200) -> str:
+    """Shrink long string values inside a tool-call arguments JSON blob while
+    preserving JSON validity.
+
+    The ``function.arguments`` field on a tool call is a JSON-encoded string
+    passed through to the LLM provider; downstream providers strictly
+    validate it and return a non-retryable 400 when it is not well-formed.
+    An earlier implementation sliced the raw JSON at a fixed byte offset and
+    appended ``...[truncated]`` — which routinely produced strings like::
+
+        {"path": "/foo/bar", "content": "# long markdown
+        ...[truncated]
+
+    i.e. an unterminated string and a missing closing brace. MiniMax, for
+    example, rejects this with ``invalid function arguments json string``
+    and the session gets stuck re-sending the same broken history on every
+    turn. See issue #11762 for the observed loop.
+
+    This helper parses the arguments, shrinks long string leaves inside the
+    parsed structure, and re-serialises. Non-string values (paths, ints,
+    booleans) are preserved intact. If the arguments are not valid JSON
+    to begin with — some model backends use non-JSON tool arguments — the
+    original string is returned unchanged rather than replaced with
+    something neither we nor the backend can parse.
+    """
+    try:
+        parsed = json.loads(args)
+    except (ValueError, TypeError):
+        return args
+
+    def _shrink(obj: Any) -> Any:
+        if isinstance(obj, str):
+            if len(obj) > head_chars:
+                return obj[:head_chars] + "...[truncated]"
+            return obj
+        if isinstance(obj, dict):
+            return {k: _shrink(v) for k, v in obj.items()}
+        if isinstance(obj, list):
+            return [_shrink(v) for v in obj]
+        return obj
+
+    shrunken = _shrink(parsed)
+    # ensure_ascii=False preserves CJK/emoji instead of bloating with \uXXXX
+    return json.dumps(shrunken, ensure_ascii=False)
 
 
 def _summarize_tool_result(tool_name: str, tool_args: str, tool_content: str) -> str:
@@ -206,6 +337,11 @@ class ContextCompressor(ContextEngine):
         self._context_probed = False
         self._context_probe_persistable = False
         self._previous_summary = None
+        self._last_summary_error = None
+        self._last_summary_dropped_count = 0
+        self._last_summary_fallback_used = False
+        self._last_aux_model_failure_error = None
+        self._last_aux_model_failure_model = None
         self._last_compression_savings_pct = 100.0
         self._ineffective_compression_count = 0
 
@@ -228,6 +364,13 @@ class ContextCompressor(ContextEngine):
         self.threshold_tokens = max(
             int(context_length * self.threshold_percent),
             MINIMUM_CONTEXT_LENGTH,
+        )
+        # Recalculate token budgets for the new context length so the
+        # compressor stays calibrated after a model switch (e.g. 200K → 32K).
+        target_tokens = int(self.threshold_tokens * self.summary_target_ratio)
+        self.tail_token_budget = target_tokens
+        self.max_summary_tokens = min(
+            int(context_length * 0.05), _SUMMARY_TOKENS_CEILING,
         )
 
     def __init__(
@@ -301,6 +444,18 @@ class ContextCompressor(ContextEngine):
         self._last_compression_savings_pct: float = 100.0
         self._ineffective_compression_count: int = 0
         self._summary_failure_cooldown_until: float = 0.0
+        self._last_summary_error: Optional[str] = None
+        # When summary generation fails and a static fallback is inserted,
+        # record how many turns were unrecoverably dropped so callers
+        # (gateway hygiene, /compress) can surface a visible warning.
+        self._last_summary_dropped_count: int = 0
+        self._last_summary_fallback_used: bool = False
+        # When a user-configured summary model fails and we recover by
+        # retrying on the main model, record the failure so gateway /
+        # CLI callers can still warn the user even though compression
+        # succeeded.  Silent recovery would hide the broken config.
+        self._last_aux_model_failure_error: Optional[str] = None
+        self._last_aux_model_failure_model: Optional[str] = None
 
     def update_from_response(self, usage: Dict[str, Any]):
         """Update tracked token usage from API response."""
@@ -387,7 +542,7 @@ class ContextCompressor(ContextEngine):
             for i in range(len(result) - 1, -1, -1):
                 msg = result[i]
                 raw_content = msg.get("content") or ""
-                content_len = sum(len(p.get("text", "")) for p in raw_content) if isinstance(raw_content, list) else len(raw_content)
+                content_len = _content_length_for_budget(raw_content)
                 msg_tokens = content_len // _CHARS_PER_TOKEN + 10
                 for tc in msg.get("tool_calls") or []:
                     if isinstance(tc, dict):
@@ -449,6 +604,11 @@ class ContextCompressor(ContextEngine):
         # Pass 3: Truncate large tool_call arguments in assistant messages
         # outside the protected tail. write_file with 50KB content, for
         # example, survives pruning entirely without this.
+        #
+        # The shrinking is done inside the parsed JSON structure so the
+        # result remains valid JSON — otherwise downstream providers 400
+        # on every subsequent turn until the broken call falls out of
+        # the window. See ``_truncate_tool_call_args_json`` docstring.
         for i in range(prune_boundary):
             msg = result[i]
             if msg.get("role") != "assistant" or not msg.get("tool_calls"):
@@ -459,8 +619,10 @@ class ContextCompressor(ContextEngine):
                 if isinstance(tc, dict):
                     args = tc.get("function", {}).get("arguments", "")
                     if len(args) > 500:
-                        tc = {**tc, "function": {**tc["function"], "arguments": args[:200] + "...[truncated]"}}
-                        modified = True
+                        new_args = _truncate_tool_call_args_json(args)
+                        if new_args != args:
+                            tc = {**tc, "function": {**tc["function"], "arguments": new_args}}
+                            modified = True
                 new_tcs.append(tc)
             if modified:
                 result[i] = {**msg, "tool_calls": new_tcs}
@@ -497,11 +659,15 @@ class ContextCompressor(ContextEngine):
         Includes tool call arguments and result content (up to
         ``_CONTENT_MAX`` chars per message) so the summarizer can preserve
         specific details like file paths, commands, and outputs.
+
+        All content is redacted before serialization to prevent secrets
+        (API keys, tokens, passwords) from leaking into the summary that
+        gets sent to the auxiliary model and persisted across compactions.
         """
         parts = []
         for msg in turns:
             role = msg.get("role", "unknown")
-            content = msg.get("content") or ""
+            content = redact_sensitive_text(msg.get("content") or "")
 
             # Tool results: keep enough content for the summarizer
             if role == "tool":
@@ -522,7 +688,7 @@ class ContextCompressor(ContextEngine):
                         if isinstance(tc, dict):
                             fn = tc.get("function", {})
                             name = fn.get("name", "?")
-                            args = fn.get("arguments", "")
+                            args = redact_sensitive_text(fn.get("arguments", ""))
                             # Truncate long arguments but keep enough for context
                             if len(args) > self._TOOL_ARGS_MAX:
                                 args = args[:self._TOOL_ARGS_HEAD] + "..."
@@ -580,7 +746,13 @@ class ContextCompressor(ContextEngine):
             "assistant that continues the conversation. "
             "Do NOT respond to any questions or requests in the conversation — "
             "only output the structured summary. "
-            "Do NOT include any preamble, greeting, or prefix."
+            "Do NOT include any preamble, greeting, or prefix. "
+            "Write the summary in the same language the user was using in the "
+            "conversation — do not translate or switch to English. "
+            "NEVER include API keys, tokens, passwords, secrets, credentials, "
+            "or connection strings in the summary — replace any that appear "
+            "with [REDACTED]. Note that the user had credentials present, but "
+            "do not preserve their values."
         )
 
         # Shared structured template (used by both paths).
@@ -637,7 +809,7 @@ Be specific with file paths, commands, line numbers, and results.]
 [What remains to be done — framed as context, not instructions]
 
 ## Critical Context
-[Any specific values, error messages, configuration details, or data that would be lost without explicit preservation]
+[Any specific values, error messages, configuration details, or data that would be lost without explicit preservation. NEVER include API keys, tokens, passwords, or credentials — write [REDACTED] instead.]
 
 Target ~{summary_budget} tokens. Be CONCRETE — include file paths, command outputs, error messages, line numbers, and specific values. Avoid vague descriptions like "made some changes" — say exactly what changed.
 
@@ -677,7 +849,7 @@ Use this exact structure:
             prompt += f"""
 
 FOCUS TOPIC: "{focus_topic}"
-The user has requested that this compaction PRIORITISE preserving all information related to the focus topic above. For content related to "{focus_topic}", include full detail — exact values, file paths, command outputs, error messages, and decisions. For content NOT related to the focus topic, summarise more aggressively (brief one-liners or omit if truly irrelevant). The focus topic sections should receive roughly 60-70% of the summary token budget."""
+The user has requested that this compaction PRIORITISE preserving all information related to the focus topic above. For content related to "{focus_topic}", include full detail — exact values, file paths, command outputs, error messages, and decisions. For content NOT related to the focus topic, summarise more aggressively (brief one-liners or omit if truly irrelevant). The focus topic sections should receive roughly 60-70% of the summary token budget. Even for the focus topic, NEVER preserve API keys, tokens, passwords, or credentials — use [REDACTED]."""
 
         try:
             call_kwargs = {
@@ -700,15 +872,19 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             # Handle cases where content is not a string (e.g., dict from llama.cpp)
             if not isinstance(content, str):
                 content = str(content) if content else ""
-            summary = content.strip()
+            # Redact the summary output as well — the summarizer LLM may
+            # ignore prompt instructions and echo back secrets verbatim.
+            summary = redact_sensitive_text(content.strip())
             # Store for iterative updates on next compaction
             self._previous_summary = summary
             self._summary_failure_cooldown_until = 0.0
             self._summary_model_fallen_back = False
+            self._last_summary_error = None
             return self._with_summary_prefix(summary)
         except RuntimeError:
             # No provider configured — long cooldown, unlikely to self-resolve
             self._summary_failure_cooldown_until = time.monotonic() + _SUMMARY_FAILURE_COOLDOWN_SECONDS
+            self._last_summary_error = "no auxiliary LLM provider configured"
             logging.warning("Context compression: no provider available for "
                             "summary. Middle turns will be dropped without summary "
                             "for %d seconds.",
@@ -739,13 +915,57 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                     "Falling back to main model '%s' for compression.",
                     self.summary_model, e, self.model,
                 )
+                # Record the aux-model failure so callers can warn the user
+                # even if the retry-on-main succeeds — a misconfigured aux
+                # model is something the user needs to fix.
+                _err_text = str(e).strip() or e.__class__.__name__
+                if len(_err_text) > 220:
+                    _err_text = _err_text[:217].rstrip() + "..."
+                self._last_aux_model_failure_error = _err_text
+                self._last_aux_model_failure_model = self.summary_model
                 self.summary_model = ""  # empty = use main model
                 self._summary_failure_cooldown_until = 0.0  # no cooldown
-                return self._generate_summary(messages, summary_budget)  # retry immediately
+                return self._generate_summary(turns_to_summarize, focus_topic=focus_topic)  # retry immediately
+
+            # Unknown-error best-effort retry on main model.  Losing N turns of
+            # context is almost always worse than one extra summary attempt, so
+            # if we haven't already fallen back and the summary model differs
+            # from the main model, try once more on main before entering
+            # cooldown.  Errors that DID match _is_model_not_found above are
+            # already handled by the fast-path retry; this branch catches
+            # everything else (400s, provider-specific "no route" strings,
+            # aggregator rejections, etc.) where auto-retry is still safer
+            # than dropping the turns.
+            if (
+                self.summary_model
+                and self.summary_model != self.model
+                and not getattr(self, "_summary_model_fallen_back", False)
+            ):
+                self._summary_model_fallen_back = True
+                logging.warning(
+                    "Summary model '%s' failed (%s). "
+                    "Retrying on main model '%s' before giving up.",
+                    self.summary_model, e, self.model,
+                )
+                # Record the aux-model failure (see 404 branch above) — user
+                # should know their configured model is broken even if main
+                # recovers the call.
+                _err_text = str(e).strip() or e.__class__.__name__
+                if len(_err_text) > 220:
+                    _err_text = _err_text[:217].rstrip() + "..."
+                self._last_aux_model_failure_error = _err_text
+                self._last_aux_model_failure_model = self.summary_model
+                self.summary_model = ""  # empty = use main model
+                self._summary_failure_cooldown_until = 0.0
+                return self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
 
             # Transient errors (timeout, rate limit, network) — shorter cooldown
             _transient_cooldown = 60
             self._summary_failure_cooldown_until = time.monotonic() + _transient_cooldown
+            err_text = str(e).strip() or e.__class__.__name__
+            if len(err_text) > 220:
+                err_text = err_text[:217].rstrip() + "..."
+            self._last_summary_error = err_text
             logging.warning(
                 "Failed to generate context summary: %s. "
                 "Further summary attempts paused for %d seconds.",
@@ -960,8 +1180,9 @@ The user has requested that this compaction PRIORITISE preserving all informatio
 
         for i in range(n - 1, head_end - 1, -1):
             msg = messages[i]
-            content = msg.get("content") or ""
-            msg_tokens = len(content) // _CHARS_PER_TOKEN + 10  # +10 for role/metadata
+            raw_content = msg.get("content") or ""
+            content_len = _content_length_for_budget(raw_content)
+            msg_tokens = content_len // _CHARS_PER_TOKEN + 10  # +10 for role/metadata
             # Include tool call arguments in estimate
             for tc in msg.get("tool_calls") or []:
                 if isinstance(tc, dict):
@@ -993,6 +1214,21 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         return max(cut_idx, head_end + 1)
 
     # ------------------------------------------------------------------
+    # ContextEngine: manual /compress preflight
+    # ------------------------------------------------------------------
+
+    def has_content_to_compress(self, messages: List[Dict[str, Any]]) -> bool:
+        """Return True if there is a non-empty middle region to compact.
+
+        Overrides the ABC default so the gateway ``/compress`` guard can
+        skip the LLM call when the transcript is still entirely inside
+        the protected head/tail.
+        """
+        compress_start = self._align_boundary_forward(messages, self.protect_first_n)
+        compress_end = self._find_tail_cut_by_tokens(messages, compress_start)
+        return compress_start < compress_end
+
+    # ------------------------------------------------------------------
     # Main compression entry point
     # ------------------------------------------------------------------
 
@@ -1015,6 +1251,13 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 related to this topic and be more aggressive about compressing
                 everything else.  Inspired by Claude Code's ``/compact``.
         """
+        # Reset per-call summary failure state — callers inspect these fields
+        # after compress() returns to decide whether to surface a warning.
+        self._last_summary_dropped_count = 0
+        self._last_summary_fallback_used = False
+        self._last_summary_error = None
+        self._last_aux_model_failure_error = None
+        self._last_aux_model_failure_model = None
         n_messages = len(messages)
         # Only need head + 3 tail messages minimum (token budget decides the real tail size)
         _min_for_compress = self.protect_first_n + 3 + 1
@@ -1078,10 +1321,13 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         for i in range(compress_start):
             msg = messages[i].copy()
             if i == 0 and msg.get("role") == "system":
-                existing = msg.get("content") or ""
+                existing = msg.get("content")
                 _compression_note = "[Note: Some earlier conversation turns have been compacted into a handoff summary to preserve context space. The current session state may still reflect earlier work, so build on that summary and state rather than re-doing work.]"
-                if _compression_note not in existing:
-                    msg["content"] = existing + "\n\n" + _compression_note
+                if _compression_note not in _content_text_for_contains(existing):
+                    msg["content"] = _append_text_to_content(
+                        existing,
+                        "\n\n" + _compression_note if isinstance(existing, str) and existing else _compression_note,
+                    )
             compressed.append(msg)
 
         # If LLM summary failed, insert a static fallback so the model
@@ -1090,11 +1336,13 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             if not self.quiet_mode:
                 logger.warning("Summary generation failed — inserting static fallback context marker")
             n_dropped = compress_end - compress_start
+            self._last_summary_dropped_count = n_dropped
+            self._last_summary_fallback_used = True
             summary = (
                 f"{SUMMARY_PREFIX}\n"
-                f"Summary generation was unavailable. {n_dropped} conversation turns were "
+                f"Summary generation was unavailable. {n_dropped} message(s) were "
                 f"removed to free context space but could not be summarized. The removed "
-                f"turns contained earlier work in this session. Continue based on the "
+                f"messages contained earlier work in this session. Continue based on the "
                 f"recent messages below and the current state of any files or resources."
             )
 
@@ -1125,12 +1373,15 @@ The user has requested that this compaction PRIORITISE preserving all informatio
         for i in range(compress_end, n_messages):
             msg = messages[i].copy()
             if _merge_summary_into_tail and i == compress_end:
-                original = msg.get("content") or ""
-                msg["content"] = (
+                merged_prefix = (
                     summary
                     + "\n\n--- END OF CONTEXT SUMMARY — "
                     "respond to the message below, not the summary above ---\n\n"
-                    + original
+                )
+                msg["content"] = _append_text_to_content(
+                    msg.get("content"),
+                    merged_prefix,
+                    prepend=True,
                 )
                 _merge_summary_into_tail = False
             compressed.append(msg)

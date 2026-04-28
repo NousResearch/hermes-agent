@@ -166,3 +166,80 @@ async def test_hook_error_does_not_break_reset(mock_invoke_hook):
 
     # Should still return a success message despite hook errors
     assert "Session reset" in result or "New session" in result
+
+
+@pytest.mark.asyncio
+@patch("hermes_cli.plugins.invoke_hook")
+async def test_idle_expiry_fires_finalize_hook(mock_invoke_hook):
+    """Regression test for #14981.
+
+    When ``_session_expiry_watcher`` sweeps a session that has aged past
+    its reset policy (idle timeout, scheduled reset), it must fire
+    ``on_session_finalize`` so plugin providers get the same final-pass
+    extraction opportunity they'd get from /new or CLI shutdown.  Before
+    the fix, the expiry path evicted the agent but silently skipped the
+    hook.
+    """
+    from datetime import datetime, timedelta
+
+    from gateway.run import GatewayRunner
+
+    runner = object.__new__(GatewayRunner)
+    runner._running = True
+    runner._running_agents = {}
+    runner._agent_cache = {}
+    runner._agent_cache_lock = None
+    runner._last_session_store_prune_ts = 0.0
+
+    session_key = "agent:main:telegram:dm:42"
+    expired_entry = SessionEntry(
+        session_key=session_key,
+        session_id="sess-expired",
+        created_at=datetime.now() - timedelta(hours=2),
+        updated_at=datetime.now() - timedelta(hours=2),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    expired_entry.expiry_finalized = False
+
+    runner.session_store = MagicMock()
+    runner.session_store._ensure_loaded = MagicMock()
+    runner.session_store._entries = {session_key: expired_entry}
+    runner.session_store._is_session_expired = MagicMock(return_value=True)
+    runner.session_store._lock = MagicMock()
+    runner.session_store._lock.__enter__ = MagicMock(return_value=None)
+    runner.session_store._lock.__exit__ = MagicMock(return_value=None)
+    runner.session_store._save = MagicMock()
+
+    runner._evict_cached_agent = MagicMock()
+    runner._cleanup_agent_resources = MagicMock()
+    runner._sweep_idle_cached_agents = MagicMock(return_value=0)
+
+    # The watcher starts with `await asyncio.sleep(60)` and loops while
+    # `self._running`.  Patch sleep so the 60s initial delay is instant, and
+    # make the expiry hook invocation flip `_running` false so the loop
+    # exits cleanly after one pass.
+    _orig_sleep = __import__("asyncio").sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    def _hook_and_stop(*a, **kw):
+        runner._running = False
+        return None
+
+    mock_invoke_hook.side_effect = _hook_and_stop
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await runner._session_expiry_watcher(interval=0)
+
+    # Look for the finalize call targeting the expired session.
+    finalize_calls = [
+        c for c in mock_invoke_hook.call_args_list
+        if c[0] and c[0][0] == "on_session_finalize"
+    ]
+    session_ids = {c[1].get("session_id") for c in finalize_calls}
+    assert "sess-expired" in session_ids, (
+        f"on_session_finalize was not fired during idle expiry; "
+        f"got session_ids={session_ids} (regression of #14981)"
+    )

@@ -1,5 +1,6 @@
 """Tests for the QQ Bot platform adapter."""
 
+import asyncio
 import json
 import os
 import sys
@@ -148,6 +149,47 @@ class TestIsVoiceContentType:
     def test_audio_extension_amr(self):
         assert self._fn("", "recording.amr") is True
 
+
+# ---------------------------------------------------------------------------
+# Voice attachment SSRF protection
+# ---------------------------------------------------------------------------
+
+class TestVoiceAttachmentSSRFProtection:
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(**extra))
+
+    def test_stt_blocks_unsafe_download_url(self):
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._http_client = mock.AsyncMock()
+
+        with mock.patch("tools.url_safety.is_safe_url", return_value=False):
+            transcript = asyncio.run(
+                adapter._stt_voice_attachment(
+                    "http://127.0.0.1/voice.silk",
+                    "audio/silk",
+                    "voice.silk",
+                )
+            )
+
+        assert transcript is None
+        adapter._http_client.get.assert_not_called()
+
+    def test_connect_uses_redirect_guard_hook(self):
+        from gateway.platforms.qqbot import QQAdapter, _ssrf_redirect_guard
+
+        client = mock.AsyncMock()
+        with mock.patch("gateway.platforms.qqbot.adapter.httpx.AsyncClient", return_value=client) as async_client_cls:
+            adapter = QQAdapter(_make_config(app_id="a", client_secret="b"))
+            adapter._ensure_token = mock.AsyncMock(side_effect=RuntimeError("stop after client creation"))
+
+            connected = asyncio.run(adapter.connect())
+
+        assert connected is False
+        assert async_client_cls.call_count == 1
+        kwargs = async_client_cls.call_args.kwargs
+        assert kwargs.get("follow_redirects") is True
+        assert kwargs.get("event_hooks", {}).get("response") == [_ssrf_redirect_guard]
 
 # ---------------------------------------------------------------------------
 # _strip_at_mention
@@ -458,3 +500,85 @@ class TestBuildTextBody:
         adapter = self._make_adapter(app_id="a", client_secret="b", markdown_support=False)
         body = adapter._build_text_body("reply text", reply_to="msg_123")
         assert body.get("message_reference", {}).get("message_id") == "msg_123"
+
+
+# ---------------------------------------------------------------------------
+# _wait_for_reconnection / send reconnection wait
+# ---------------------------------------------------------------------------
+
+class TestWaitForReconnection:
+    """Test that send() waits for reconnection instead of silently dropping."""
+
+    def _make_adapter(self, **extra):
+        from gateway.platforms.qqbot import QQAdapter
+        return QQAdapter(_make_config(**extra))
+
+    @pytest.mark.asyncio
+    async def test_send_waits_and_succeeds_on_reconnect(self):
+        """send() should wait for reconnection and then deliver the message."""
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        # Initially disconnected
+        adapter._running = False
+        adapter._http_client = mock.MagicMock()
+
+        # Simulate reconnection after 0.3s (faster than real interval)
+        async def fake_api_request(*args, **kwargs):
+            return {"id": "msg_123"}
+
+        adapter._api_request = fake_api_request
+        adapter._ensure_token = mock.AsyncMock()
+        adapter._RECONNECT_POLL_INTERVAL = 0.1
+        adapter._RECONNECT_WAIT_SECONDS = 5.0
+
+        # Schedule reconnection after a short delay
+        async def reconnect_after_delay():
+            await asyncio.sleep(0.3)
+            adapter._running = True
+
+        asyncio.get_event_loop().create_task(reconnect_after_delay())
+
+        result = await adapter.send("test_openid", "Hello, world!")
+        assert result.success
+        assert result.message_id == "msg_123"
+
+    @pytest.mark.asyncio
+    async def test_send_returns_retryable_after_timeout(self):
+        """send() should return retryable=True if reconnection takes too long."""
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._running = False
+        adapter._RECONNECT_POLL_INTERVAL = 0.05
+        adapter._RECONNECT_WAIT_SECONDS = 0.2
+
+        result = await adapter.send("test_openid", "Hello, world!")
+        assert not result.success
+        assert result.retryable is True
+        assert "Not connected" in result.error
+
+    @pytest.mark.asyncio
+    async def test_send_succeeds_immediately_when_connected(self):
+        """send() should not wait when already connected."""
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._running = True
+        adapter._http_client = mock.MagicMock()
+
+        async def fake_api_request(*args, **kwargs):
+            return {"id": "msg_immediate"}
+
+        adapter._api_request = fake_api_request
+
+        result = await adapter.send("test_openid", "Hello!")
+        assert result.success
+        assert result.message_id == "msg_immediate"
+
+    @pytest.mark.asyncio
+    async def test_send_media_waits_for_reconnect(self):
+        """_send_media should also wait for reconnection."""
+        adapter = self._make_adapter(app_id="a", client_secret="b")
+        adapter._running = False
+        adapter._RECONNECT_POLL_INTERVAL = 0.05
+        adapter._RECONNECT_WAIT_SECONDS = 0.2
+
+        result = await adapter._send_media("test_openid", "http://example.com/img.jpg", 1, "image")
+        assert not result.success
+        assert result.retryable is True
+        assert "Not connected" in result.error

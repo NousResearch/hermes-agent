@@ -630,7 +630,7 @@ function Copy-ConfigTemplates {
     New-Item -ItemType Directory -Force -Path "$HermesHome\audio_cache" | Out-Null
     New-Item -ItemType Directory -Force -Path "$HermesHome\memories" | Out-Null
     New-Item -ItemType Directory -Force -Path "$HermesHome\skills" | Out-Null
-    New-Item -ItemType Directory -Force -Path "$HermesHome\whatsapp\session" | Out-Null
+
     
     # Create .env
     $envPath = "$HermesHome\.env"
@@ -721,19 +721,21 @@ function Install-NodeDeps {
         }
     }
     
-    # Install WhatsApp bridge dependencies
-    $bridgeDir = "$InstallDir\scripts\whatsapp-bridge"
-    if (Test-Path "$bridgeDir\package.json") {
-        Write-Info "Installing WhatsApp bridge dependencies..."
-        Push-Location $bridgeDir
+    # Install TUI dependencies
+    $tuiDir = "$InstallDir\ui-tui"
+    if (Test-Path "$tuiDir\package.json") {
+        Write-Info "Installing TUI dependencies..."
+        Push-Location $tuiDir
         try {
             npm install --silent 2>&1 | Out-Null
-            Write-Success "WhatsApp bridge dependencies installed"
+            Write-Success "TUI dependencies installed"
         } catch {
-            Write-Warn "WhatsApp bridge npm install failed (WhatsApp may not work)"
+            Write-Warn "TUI npm install failed (hermes --tui may not work)"
         }
         Pop-Location
     }
+
+
     
     Pop-Location
 }

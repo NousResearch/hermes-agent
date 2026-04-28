@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import logging
+import hashlib
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -27,7 +28,6 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
-GLOBAL_CONFIG_PATH = Path.home() / ".honcho" / "config.json"
 HOST = "hermes"
 
 
@@ -53,6 +53,11 @@ def resolve_active_host() -> str:
     return HOST
 
 
+def resolve_global_config_path() -> Path:
+    """Return the shared Honcho config path for the current HOME."""
+    return Path.home() / ".honcho" / "config.json"
+
+
 def resolve_config_path() -> Path:
     """Return the active Honcho config path.
 
@@ -72,7 +77,7 @@ def resolve_config_path() -> Path:
     if default_path != local_path and default_path.exists():
         return default_path
 
-    return GLOBAL_CONFIG_PATH
+    return resolve_global_config_path()
 
 
 _RECALL_MODE_ALIASES = {"auto": "hybrid"}
@@ -136,6 +141,15 @@ def _parse_dialectic_depth_levels(host_val, root_val, depth: int) -> list[str] |
                 levels.append("low")
             return levels
     return None
+
+
+# Default HTTP timeout (seconds) applied when no explicit timeout is
+# configured via HonchoClientConfig.timeout, honcho.timeout / requestTimeout,
+# or HONCHO_TIMEOUT. Honcho calls happen on the post-response path of
+# run_conversation; without a cap the agent can block indefinitely when
+# the Honcho backend is unreachable, preventing the gateway from
+# delivering the already-generated response.
+_DEFAULT_HTTP_TIMEOUT = 30.0
 
 
 def _resolve_optional_float(*values: Any) -> float | None:
@@ -226,6 +240,13 @@ class HonchoClientConfig:
     # Identity
     peer_name: str | None = None
     ai_peer: str = "hermes"
+    # When True, ``peer_name`` wins over any gateway-supplied runtime
+    # identity (Telegram UID, Discord ID, …) when resolving the user peer.
+    # This keeps memory unified across platforms for single-user deployments
+    # where Honcho's one peer-name is an unambiguous identity — otherwise
+    # each platform would fork memory into its own peer (#14984).  Default
+    # ``False`` preserves existing multi-user behaviour.
+    pin_peer_name: bool = False
     # Toggles
     enabled: bool = False
     save_messages: bool = True
@@ -251,6 +272,11 @@ class HonchoClientConfig:
     # matching dialectic_depth length. When None, uses proportional defaults
     # derived from dialectic_reasoning_level.
     dialectic_depth_levels: list[str] | None = None
+    # When true, the auto-injected dialectic scales reasoning level up on
+    # longer queries. See HonchoMemoryProvider for thresholds.
+    reasoning_heuristic: bool = True
+    # Ceiling for the heuristic-selected reasoning level.
+    reasoning_level_cap: str = "high"
     # Honcho API limits — configurable for self-hosted instances
     # Max chars per message sent via add_messages() (Honcho cloud: 25000)
     message_max_chars: int = 25000
@@ -415,6 +441,11 @@ class HonchoClientConfig:
             timeout=timeout,
             peer_name=host_block.get("peerName") or raw.get("peerName"),
             ai_peer=ai_peer,
+            pin_peer_name=_resolve_bool(
+                host_block.get("pinPeerName"),
+                raw.get("pinPeerName"),
+                default=False,
+            ),
             enabled=enabled,
             save_messages=save_messages,
             write_frequency=write_frequency,
@@ -445,6 +476,16 @@ class HonchoClientConfig:
                 host_block.get("dialecticDepthLevels"),
                 raw.get("dialecticDepthLevels"),
                 depth=_parse_dialectic_depth(host_block.get("dialecticDepth"), raw.get("dialecticDepth")),
+            ),
+            reasoning_heuristic=_resolve_bool(
+                host_block.get("reasoningHeuristic"),
+                raw.get("reasoningHeuristic"),
+                default=True,
+            ),
+            reasoning_level_cap=(
+                host_block.get("reasoningLevelCap")
+                or raw.get("reasoningLevelCap")
+                or "high"
             ),
             message_max_chars=int(
                 host_block.get("messageMaxChars")
@@ -507,6 +548,39 @@ class HonchoClientConfig:
             pass
         return None
 
+    # Honcho enforces a 100-char limit on session IDs. Long gateway session keys
+    # (Matrix "!room:server" + thread event IDs, Telegram supergroup reply
+    # chains, Slack thread IDs with long workspace prefixes) can overflow this
+    # limit after sanitization; the Honcho API then rejects every call for that
+    # session with "session_id too long". See issue #13868.
+    _HONCHO_SESSION_ID_MAX_LEN = 100
+    _HONCHO_SESSION_ID_HASH_LEN = 8
+
+    @classmethod
+    def _enforce_session_id_limit(cls, sanitized: str, original: str) -> str:
+        """Truncate a sanitized session ID to Honcho's 100-char limit.
+
+        The common case (short keys) short-circuits with no modification.
+        For over-limit keys, keep a prefix of the sanitized ID and append a
+        deterministic ``-<sha256 prefix>`` suffix so two distinct long keys
+        that share a leading segment don't collide onto the same truncated ID.
+        The hash is taken over the *original* pre-sanitization key, so two
+        inputs that sanitize to the same string still collide intentionally
+        (same logical session), but two inputs that only share a prefix do not.
+        """
+        max_len = cls._HONCHO_SESSION_ID_MAX_LEN
+        if len(sanitized) <= max_len:
+            return sanitized
+
+        hash_len = cls._HONCHO_SESSION_ID_HASH_LEN
+        digest = hashlib.sha256(original.encode("utf-8")).hexdigest()[:hash_len]
+        # max_len - hash_len - 1 (for the '-' separator) chars of the sanitized
+        # prefix, then '-<hash>'. Strip any trailing hyphen from the prefix so
+        # the result doesn't double up on separators.
+        prefix_len = max_len - hash_len - 1
+        prefix = sanitized[:prefix_len].rstrip("-")
+        return f"{prefix}-{digest}"
+
     def resolve_session_name(
         self,
         cwd: str | None = None,
@@ -551,7 +625,7 @@ class HonchoClientConfig:
         if gateway_session_key:
             sanitized = re.sub(r'[^a-zA-Z0-9_-]+', '-', gateway_session_key).strip('-')
             if sanitized:
-                return sanitized
+                return self._enforce_session_id_limit(sanitized, gateway_session_key)
 
         # per-session: inherit Hermes session_id (new Honcho session each run)
         if self.session_strategy == "per-session" and session_id:
@@ -630,6 +704,11 @@ def get_honcho_client(config: HonchoClientConfig | None = None) -> Honcho:
                     )
         except Exception:
             pass
+
+    # Fall back to the default so an unconfigured install cannot hang
+    # indefinitely on a stalled Honcho request.
+    if resolved_timeout is None:
+        resolved_timeout = _DEFAULT_HTTP_TIMEOUT
 
     if resolved_base_url:
         logger.info("Initializing Honcho client (base_url: %s, workspace: %s)", resolved_base_url, config.workspace_id)

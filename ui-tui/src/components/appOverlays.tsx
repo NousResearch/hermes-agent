@@ -119,7 +119,7 @@ export function FloatingOverlays({
   return (
     <Box alignItems="flex-start" bottom="100%" flexDirection="column" left={0} position="absolute" right={0}>
       {overlay.picker && (
-        <FloatBox color={ui.theme.color.bronze}>
+        <FloatBox color={ui.theme.color.border}>
           <SessionPicker
             gw={gw}
             onCancel={() => patchOverlayState({ picker: false })}
@@ -130,7 +130,7 @@ export function FloatingOverlays({
       )}
 
       {overlay.modelPicker && (
-        <FloatBox color={ui.theme.color.bronze}>
+        <FloatBox color={ui.theme.color.border}>
           <ModelPicker
             gw={gw}
             onCancel={() => patchOverlayState({ modelPicker: false })}
@@ -142,17 +142,17 @@ export function FloatingOverlays({
       )}
 
       {overlay.skillsHub && (
-        <FloatBox color={ui.theme.color.bronze}>
+        <FloatBox color={ui.theme.color.border}>
           <SkillsHub gw={gw} onClose={() => patchOverlayState({ skillsHub: false })} t={ui.theme} />
         </FloatBox>
       )}
 
       {overlay.pager && (
-        <FloatBox color={ui.theme.color.bronze}>
+        <FloatBox color={ui.theme.color.border}>
           <Box flexDirection="column" paddingX={1} paddingY={1}>
             {overlay.pager.title && (
               <Box justifyContent="center" marginBottom={1}>
-                <Text bold color={ui.theme.color.gold}>
+                <Text bold color={ui.theme.color.primary}>
                   {overlay.pager.title}
                 </Text>
               </Box>
@@ -174,7 +174,7 @@ export function FloatingOverlays({
       )}
 
       {!!completions.length && (
-        <FloatBox color={ui.theme.color.gold}>
+        <FloatBox color={ui.theme.color.primary}>
           <Box flexDirection="column" width={Math.max(28, cols - 6)}>
             {completions.slice(start, start + viewportSize).map((item, i) => {
               const active = start + i === compIdx
@@ -190,7 +190,7 @@ export function FloatingOverlays({
                     {' '}
                     {item.display}
                   </Text>
-                  {item.meta ? <Text color={ui.theme.color.dim}> {item.meta}</Text> : null}
+                  {item.meta ? <Text color={ui.theme.color.muted}> {item.meta}</Text> : null}
                 </Box>
               )
             })}

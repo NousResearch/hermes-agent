@@ -74,6 +74,6 @@ describe('streaming theme assumption', () => {
     // Sanity that the theme we pass doesn't change shape. Component import
     // already happens above — this is a smoke test that the module graph
     // for streamingMarkdown wires up without cycles.
-    expect(DEFAULT_THEME.color.amber).toBeTruthy()
+    expect(DEFAULT_THEME.color.accent).toBeTruthy()
   })
 })

@@ -1,9 +1,9 @@
 export interface ThemeColors {
-  gold: string
-  amber: string
-  bronze: string
-  cornsilk: string
-  dim: string
+  primary: string
+  accent: string
+  border: string
+  text: string
+  muted: string
   completionBg: string
   completionCurrentBg: string
 
@@ -88,18 +88,26 @@ const BRAND: ThemeBrand = {
   helpHeader: '(^_^)? Commands'
 }
 
+const cleanPromptSymbol = (s: string | undefined, fallback: string) => {
+  const cleaned = String(s ?? '')
+    .replace(/\s+/g, ' ')
+    .trim()
+
+  return cleaned || fallback
+}
+
 export const DARK_THEME: Theme = {
   color: {
-    gold: '#FFD700',
-    amber: '#FFBF00',
-    bronze: '#CD7F32',
-    cornsilk: '#FFF8DC',
+    primary: '#FFD700',
+    accent: '#FFBF00',
+    border: '#CD7F32',
+    text: '#FFF8DC',
+    muted: '#CC9B1F',
     // Bumped from the old `#B8860B` darkgoldenrod (~53% luminance) which
     // read as barely-visible on dark terminals for long body text.  The
     // new value sits ~60% luminance — readable without losing the "muted /
     // secondary" semantic.  Field labels still use `label` (65%) which
     // stays brighter so hierarchy holds.
-    dim: '#CC9B1F',
     completionBg: '#FFFFFF',
     completionCurrentBg: mix('#FFFFFF', '#FFBF00', 0.25),
 
@@ -141,11 +149,11 @@ export const DARK_THEME: Theme = {
 // cleanly (#11300).
 export const LIGHT_THEME: Theme = {
   color: {
-    gold: '#8B6914',
-    amber: '#A0651C',
-    bronze: '#7A4F1F',
-    cornsilk: '#3D2F13',
-    dim: '#7A5A0F',
+    primary: '#8B6914',
+    accent: '#A0651C',
+    border: '#7A4F1F',
+    text: '#3D2F13',
+    muted: '#7A5A0F',
     completionBg: '#F5F5F5',
     completionCurrentBg: mix('#F5F5F5', '#A0651C', 0.25),
 
@@ -319,19 +327,20 @@ export function fromSkin(
   const d = DEFAULT_THEME
   const c = (k: string) => colors[k]
 
-  const amber = c('ui_accent') ?? c('banner_accent') ?? d.color.amber
-  const accent = c('banner_accent') ?? c('banner_title') ?? d.color.amber
-  const dim = c('banner_dim') ?? d.color.dim
+  const accent = c('ui_accent') ?? c('banner_accent') ?? d.color.accent
+  const bannerAccent = c('banner_accent') ?? c('banner_title') ?? d.color.accent
+  const muted = c('banner_dim') ?? d.color.muted
+  const completionBg = c('completion_menu_bg') ?? d.color.completionBg
 
   return {
     color: {
-      gold: c('banner_title') ?? d.color.gold,
-      amber,
-      bronze: c('banner_border') ?? d.color.bronze,
-      cornsilk: c('banner_text') ?? d.color.cornsilk,
-      dim,
-      completionBg: c('completion_menu_bg') ?? '#FFFFFF',
-      completionCurrentBg: c('completion_menu_current_bg') ?? mix('#FFFFFF', accent, 0.25),
+      primary: c('ui_primary') ?? c('banner_title') ?? d.color.primary,
+      accent,
+      border: c('ui_border') ?? c('banner_border') ?? d.color.border,
+      text: c('ui_text') ?? c('banner_text') ?? d.color.text,
+      muted,
+      completionBg,
+      completionCurrentBg: c('completion_menu_current_bg') ?? mix(completionBg, bannerAccent, 0.25),
 
       label: c('ui_label') ?? d.color.label,
       ok: c('ui_ok') ?? d.color.ok,
@@ -339,8 +348,8 @@ export function fromSkin(
       warn: c('ui_warn') ?? d.color.warn,
 
       prompt: c('prompt') ?? c('banner_text') ?? d.color.prompt,
-      sessionLabel: c('session_label') ?? dim,
-      sessionBorder: c('session_border') ?? dim,
+      sessionLabel: c('session_label') ?? muted,
+      sessionBorder: c('session_border') ?? muted,
 
       statusBg: d.color.statusBg,
       statusFg: d.color.statusFg,
@@ -360,7 +369,7 @@ export function fromSkin(
     brand: {
       name: branding.agent_name ?? d.brand.name,
       icon: d.brand.icon,
-      prompt: branding.prompt_symbol ?? d.brand.prompt,
+      prompt: cleanPromptSymbol(branding.prompt_symbol, d.brand.prompt),
       welcome: branding.welcome ?? d.brand.welcome,
       goodbye: branding.goodbye ?? d.brand.goodbye,
       tool: toolPrefix || d.brand.tool,

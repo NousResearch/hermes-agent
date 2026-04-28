@@ -44,7 +44,7 @@ describe('DEFAULT_THEME', () => {
   it('has color palette', async () => {
     const { DEFAULT_THEME } = await importThemeWithCleanEnv()
 
-    expect(DEFAULT_THEME.color.gold).toBe('#FFD700')
+    expect(DEFAULT_THEME.color.primary).toBe('#FFD700')
     expect(DEFAULT_THEME.color.error).toBe('#ef5350')
   })
 })
@@ -53,9 +53,9 @@ describe('LIGHT_THEME', () => {
   it('avoids bright-yellow accents unreadable on white backgrounds (#11300)', async () => {
     const { LIGHT_THEME } = await importThemeWithCleanEnv()
 
-    expect(LIGHT_THEME.color.gold).not.toBe('#FFD700')
-    expect(LIGHT_THEME.color.amber).not.toBe('#FFBF00')
-    expect(LIGHT_THEME.color.dim).not.toBe('#B8860B')
+    expect(LIGHT_THEME.color.primary).not.toBe('#FFD700')
+    expect(LIGHT_THEME.color.accent).not.toBe('#FFBF00')
+    expect(LIGHT_THEME.color.muted).not.toBe('#B8860B')
     expect(LIGHT_THEME.color.statusWarn).not.toBe('#FFD700')
   })
 
@@ -180,13 +180,22 @@ describe('fromSkin', () => {
   it('overrides banner colors', async () => {
     const { fromSkin } = await importThemeWithCleanEnv()
 
-    expect(fromSkin({ banner_title: '#FF0000' }, {}).color.gold).toBe('#FF0000')
+    expect(fromSkin({ banner_title: '#FF0000' }, {}).color.primary).toBe('#FF0000')
   })
 
   it('preserves unset colors', async () => {
     const { DEFAULT_THEME, fromSkin } = await importThemeWithCleanEnv()
 
-    expect(fromSkin({ banner_title: '#FF0000' }, {}).color.amber).toBe(DEFAULT_THEME.color.amber)
+    expect(fromSkin({ banner_title: '#FF0000' }, {}).color.accent).toBe(DEFAULT_THEME.color.accent)
+  })
+
+  it('derives completion current background from resolved completion background', async () => {
+    const { fromSkin } = await importThemeWithCleanEnv()
+
+    const theme = fromSkin({ banner_accent: '#000000', completion_menu_bg: '#ffffff' }, {})
+
+    expect(theme.color.completionBg).toBe('#ffffff')
+    expect(theme.color.completionCurrentBg).toBe('#bfbfbf')
   })
 
   it('overrides branding', async () => {
@@ -195,6 +204,14 @@ describe('fromSkin', () => {
 
     expect(brand.name).toBe('TestBot')
     expect(brand.prompt).toBe('$')
+  })
+
+  it('normalizes skin prompt symbols to trimmed single-line text', async () => {
+    const { DEFAULT_THEME, fromSkin } = await importThemeWithCleanEnv()
+
+    expect(fromSkin({}, { prompt_symbol: ' ⚔ ❯ \n' }).brand.prompt).toBe('⚔ ❯')
+    expect(fromSkin({}, { prompt_symbol: ' Ψ > \n' }).brand.prompt).toBe('Ψ >')
+    expect(fromSkin({}, { prompt_symbol: '\n\t' }).brand.prompt).toBe(DEFAULT_THEME.brand.prompt)
   })
 
   it('defaults for empty skin', async () => {

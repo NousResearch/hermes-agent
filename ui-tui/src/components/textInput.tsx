@@ -360,6 +360,10 @@ export function TextInput({
 
   const nativeCursor = focus && termFocus && !selected && !!stdout?.isTTY
 
+  // Placeholder text is just a hint, not a selection — render it dim
+  // without inverse styling. In a TTY the hardware cursor parks at column
+  // 0 and visually marks the input start. Non-TTY surfaces still need the
+  // synthetic inverse first-char to draw a cursor at all.
   const rendered = useMemo(() => {
     if (!focus) {
       return display || dim(placeholder)
@@ -711,6 +715,14 @@ export function TextInput({
     if (range && range.start === range.end) {
       selRef.current = null
       setSel(null)
+
+      return
+    }
+
+    const normalized = selRange()
+
+    if (isMac && normalized) {
+      void writeClipboardText(vRef.current.slice(normalized.start, normalized.end))
     }
   }
 

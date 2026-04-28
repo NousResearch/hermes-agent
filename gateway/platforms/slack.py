@@ -2713,8 +2713,15 @@ class SlackAdapter(BasePlatformAdapter):
                 text = "/help"
         else:
             # Native slash — /<slash_name> [args].  Route directly through the
-            # gateway command dispatcher by prepending the slash.
-            text = f"/{slash_name} {text}".strip()
+            # gateway command dispatcher by prepending the slash. Some Slack
+            # native slash names are compatibility aliases for Hermes commands
+            # (e.g. /status is a generic name that may collide in a workspace,
+            # so the manifest exposes /hermes-status and routes it back to
+            # Hermes /status here).
+            from hermes_cli.commands import slack_native_route
+
+            routed_command = slack_native_route(slash_name)
+            text = f"{routed_command} {text}".strip()
 
         # Slack slash commands can originate from DMs or shared channels.
         # Preserve DM semantics only for DM channel IDs; shared channels must

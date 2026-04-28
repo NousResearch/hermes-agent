@@ -931,6 +931,15 @@ _SLACK_RESERVED_COMMANDS = frozenset({
     "topic", "mute", "pro", "shortcuts",
 })
 
+# Some short/generic native Slack slash names are prone to workspace-level
+# collisions with commands from other installed apps or custom integrations.
+# Keep the Hermes command name unchanged everywhere else, but expose a
+# Slack-specific native slash name in the app manifest and route it back to the
+# original Hermes command when Slack sends the event.
+_SLACK_NATIVE_NAME_OVERRIDES: dict[str, str] = {
+    "status": "hermes-status",
+}
+
 
 def _sanitize_slack_name(raw: str) -> str:
     """Convert a command name to a valid Slack slash command name.
@@ -942,6 +951,26 @@ def _sanitize_slack_name(raw: str) -> str:
     name = _SLACK_INVALID_CHARS.sub("", name)
     name = name.strip("-_")
     return name[:_SLACK_NAME_LIMIT]
+
+
+def _slack_native_name(raw: str) -> str:
+    """Return the Slack-exposed slash name for a Hermes command name."""
+    normalized = _sanitize_slack_name(raw)
+    return _SLACK_NATIVE_NAME_OVERRIDES.get(normalized, normalized)
+
+
+def slack_native_route(slash_name: str) -> str:
+    """Map a Slack native slash name back to the Hermes command text.
+
+    Most native names route to themselves (``/btw`` -> ``/btw``), but names
+    rewritten for Slack compatibility route back to the original Hermes command
+    (``/hermes-status`` -> ``/status``).
+    """
+    normalized = _sanitize_slack_name(slash_name)
+    for hermes_name, native_name in _SLACK_NATIVE_NAME_OVERRIDES.items():
+        if normalized == native_name:
+            return f"/{hermes_name}"
+    return f"/{normalized}"
 
 
 def slack_native_slashes() -> list[tuple[str, str, str]]:
@@ -974,7 +1003,7 @@ def slack_native_slashes() -> list[tuple[str, str, str]]:
     seen.add("hermes")
 
     def _add(name: str, desc: str, hint: str) -> None:
-        slack_name = _sanitize_slack_name(name)
+        slack_name = _slack_native_name(name)
         if not slack_name or slack_name in seen:
             return
         if slack_name in _SLACK_RESERVED_COMMANDS:

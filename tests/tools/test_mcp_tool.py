@@ -266,6 +266,56 @@ class TestSchemaConversion:
 
         assert schema["properties"]["items"]["items"]["properties"] == {}
 
+    def test_optional_nullable_field_is_collapsed_to_non_null_schema(self):
+        """Anthropic rejects MCP/Pydantic anyOf-null optional parameter schemas."""
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "command": {"type": "string"},
+                "workdir": {
+                    "anyOf": [{"type": "string"}, {"type": "null"}],
+                    "default": None,
+                    "description": "Optional working directory",
+                },
+            },
+            "required": ["command"],
+        })
+
+        assert schema["properties"]["workdir"] == {
+            "type": "string",
+            "default": None,
+            "description": "Optional working directory",
+        }
+        assert schema["required"] == ["command"]
+
+    def test_nested_nullable_array_items_are_collapsed(self):
+        from tools.mcp_tool import _normalize_mcp_input_schema
+
+        schema = _normalize_mcp_input_schema({
+            "type": "object",
+            "properties": {
+                "filters": {
+                    "type": "array",
+                    "items": {
+                        "oneOf": [
+                            {
+                                "type": "object",
+                                "properties": {"field": {"type": "string"}},
+                            },
+                            {"type": "null"},
+                        ]
+                    },
+                }
+            },
+        })
+
+        assert schema["properties"]["filters"]["items"] == {
+            "type": "object",
+            "properties": {"field": {"type": "string"}},
+        }
+
     def test_convert_mcp_schema_survives_missing_inputschema_attribute(self):
         """A Tool object without .inputSchema must not crash registration."""
         import types
@@ -1910,15 +1960,38 @@ class TestUtilityToolRegistration:
 import math
 import time
 
-from mcp.types import (
-    CreateMessageResult,
-    CreateMessageResultWithTools,
-    ErrorData,
-    SamplingCapability,
-    SamplingToolsCapability,
-    TextContent,
-    ToolUseContent,
-)
+class _CompatType:
+    def __init__(self, **kwargs):
+        self.__dict__.update(kwargs)
+
+
+try:
+    from mcp.types import (
+        CreateMessageResult,
+        ErrorData,
+        SamplingCapability,
+        TextContent,
+    )
+except ImportError:
+    CreateMessageResult = _CompatType
+    ErrorData = _CompatType
+    SamplingCapability = _CompatType
+    TextContent = _CompatType
+
+try:
+    from mcp.types import CreateMessageResultWithTools
+except ImportError:
+    CreateMessageResultWithTools = _CompatType
+
+try:
+    from mcp.types import SamplingToolsCapability
+except ImportError:
+    SamplingToolsCapability = _CompatType
+
+try:
+    from mcp.types import ToolUseContent
+except ImportError:
+    ToolUseContent = _CompatType
 
 from tools.mcp_tool import SamplingHandler, _safe_numeric
 

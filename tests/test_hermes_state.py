@@ -1007,6 +1007,38 @@ class TestCJKSearchFallback:
         session_ids = {r["session_id"] for r in results}
         assert session_ids == {"s1", "s2"}
 
+    def test_cjk_like_fallback_snippet_pulls_from_tool_name_when_content_empty(self, db):
+        """Regression for the #16751 follow-up Copilot finding.
+
+        Tool-result rows commonly have an empty/NULL ``content`` and
+        carry the resolved function name in ``m.tool_name``. The LIKE
+        fallback (which runs for 1–2 character CJK queries that the
+        trigram path can't handle) previously sourced its snippet from
+        ``m.content`` only — yielding an empty string for these rows
+        even though the WHERE clause matched.
+
+        The fix derives the snippet from whichever column actually
+        contains the match. A 1-char CJK ``tool_name`` is the realistic
+        manifestation of this path: ``tool_name`` is a plain TEXT
+        column (no JSON escaping), the query length forces the LIKE
+        fallback, and ``content`` stays empty.
+        """
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1",
+            role="tool",
+            content="",
+            tool_name="搜",
+        )
+        results = db.search_messages("搜")  # 1-char → LIKE fallback path
+        assert len(results) == 1
+        assert results[0]["session_id"] == "s1"
+        # The snippet must be non-empty and must contain the matched
+        # character — i.e. derived from tool_name, not the empty content.
+        snippet = results[0]["snippet"]
+        assert snippet, "snippet must not be empty for tool_name-only matches"
+        assert "搜" in snippet, f"snippet must contain query token, got: {snippet!r}"
+
 
 # =========================================================================
 # Session search and listing

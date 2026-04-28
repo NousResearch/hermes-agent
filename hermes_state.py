@@ -1594,11 +1594,32 @@ class SessionDB:
                 if role_filter:
                     like_where.append(f"m.role IN ({','.join('?' for _ in role_filter)})")
                     like_params.extend(role_filter)
+                # Snippet must mirror the multi-column LIKE WHERE clause:
+                # tool-only assistant rows have NULL/empty ``content`` but a
+                # match in ``tool_calls`` or ``tool_name``, and the prior
+                # ``substr(m.content, instr(m.content, ?), …)`` would yield
+                # an empty string for those rows — leaving session_search
+                # results without any usable preview. Pick the snippet from
+                # whichever column actually contains the match. See #16751.
                 like_sql = f"""
                     SELECT m.id, m.session_id, m.role,
-                           substr(m.content,
-                                  max(1, instr(m.content, ?) - 40),
-                                  120) AS snippet,
+                           CASE
+                               WHEN instr(m.content, ?) > 0
+                                   THEN substr(m.content,
+                                               max(1, instr(m.content, ?) - 40),
+                                               120)
+                               WHEN m.tool_calls IS NOT NULL
+                                    AND instr(m.tool_calls, ?) > 0
+                                   THEN substr(m.tool_calls,
+                                               max(1, instr(m.tool_calls, ?) - 40),
+                                               120)
+                               WHEN m.tool_name IS NOT NULL
+                                    AND instr(m.tool_name, ?) > 0
+                                   THEN substr(m.tool_name,
+                                               max(1, instr(m.tool_name, ?) - 40),
+                                               120)
+                               ELSE ''
+                           END AS snippet,
                            m.content, m.timestamp, m.tool_name,
                            s.source, s.model, s.started_at AS session_started
                     FROM messages m
@@ -1608,8 +1629,10 @@ class SessionDB:
                     LIMIT ? OFFSET ?
                 """
                 like_params.extend([limit, offset])
-                # instr() parameter goes first in the bound list
-                like_params = [raw_query] + like_params
+                # CASE/instr() parameters go first in the bound list — six
+                # copies of ``raw_query`` for the three (instr-condition +
+                # instr-substr) pairs in the snippet expression.
+                like_params = [raw_query] * 6 + like_params
                 with self._lock:
                     like_cursor = self._conn.execute(like_sql, like_params)
                     matches = [dict(row) for row in like_cursor.fetchall()]

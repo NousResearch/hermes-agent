@@ -139,9 +139,39 @@ def _run_async(coro):
 discover_builtin_tools()
 
 # MCP tool discovery (external MCP servers from config)
+#
+# discover_mcp_tools() calls _run_on_mcp_loop() which uses
+# future.result(timeout=120) — a blocking wait.  When model_tools is
+# lazy-imported from inside the asyncio event loop (e.g. the first
+# gateway message triggers `from run_agent import AIAgent` which
+# transitively imports this module), that blocking wait freezes the
+# loop and kills platform heartbeats (Discord shard timeout, Telegram
+# polling gaps, etc.).  See #16856.
+#
+# Fix: if an event loop is already running, schedule discovery in a
+# background thread via run_in_executor so the loop stays responsive.
+# When imported from a synchronous context (CLI, TUI startup), run
+# discovery inline as before.
 try:
     from tools.mcp_tool import discover_mcp_tools
-    discover_mcp_tools()
+
+    def _deferred_mcp_discovery():
+        try:
+            discover_mcp_tools()
+        except Exception as exc:
+            logger.debug("MCP tool discovery failed: %s", exc)
+
+    try:
+        _loop = asyncio.get_running_loop()
+    except RuntimeError:
+        _loop = None
+
+    if _loop is not None and _loop.is_running():
+        # We're inside an async context (gateway message handler).
+        # Offload to the default executor so the event loop stays free.
+        _loop.run_in_executor(None, _deferred_mcp_discovery)
+    else:
+        discover_mcp_tools()
 except Exception as e:
     logger.debug("MCP tool discovery failed: %s", e)
 

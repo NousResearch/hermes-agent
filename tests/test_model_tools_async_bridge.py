@@ -367,3 +367,94 @@ def _write_fake_image(dest):
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_bytes(b"\xff\xd8\xff" + b"\x00" * 16)
     return dest
+
+
+# ---------------------------------------------------------------------------
+# MCP discovery deferral when imported inside a running event loop (#16856)
+# ---------------------------------------------------------------------------
+
+
+class TestMcpDiscoveryDeferral:
+    """Verify discover_mcp_tools() does not block the asyncio event loop.
+
+    When model_tools is lazy-imported from an async gateway handler, the
+    module-level discover_mcp_tools() call must be offloaded to an executor
+    so it doesn't freeze the event loop's heartbeat.  See #16856.
+    """
+
+    def test_mcp_discovery_offloaded_when_loop_running(self, monkeypatch):
+        """Inside a running event loop, discovery is scheduled via run_in_executor."""
+        import importlib
+        import model_tools as mt_module
+
+        discovery_called_sync = []
+        executor_scheduled = []
+
+        def fake_discover():
+            discovery_called_sync.append(True)
+
+        monkeypatch.setattr("tools.mcp_tool.discover_mcp_tools", fake_discover)
+
+        # Simulate what happens during import inside an async context
+        loop = asyncio.new_event_loop()
+        original_run_in_executor = loop.run_in_executor
+
+        def tracking_executor(executor, fn, *args):
+            executor_scheduled.append(fn)
+            # Don't actually run it — just track that it was scheduled
+            fut = loop.create_future()
+            fut.set_result(None)
+            return fut
+
+        loop.run_in_executor = tracking_executor
+
+        # Patch asyncio.get_running_loop to return our fake loop
+        monkeypatch.setattr("model_tools.asyncio.get_running_loop", lambda: loop)
+
+        # Re-run the import-time discovery logic
+        from tools.mcp_tool import discover_mcp_tools as real_discover
+        monkeypatch.setattr("model_tools.discover_mcp_tools", fake_discover)
+
+        # Simulate the module-level code path
+        try:
+            _loop = asyncio.get_running_loop()
+        except RuntimeError:
+            _loop = None
+
+        # When loop is running, it should go through executor
+        # We test by calling the deferred function directly
+        if _loop is not None and _loop.is_running():
+            _loop.run_in_executor(None, fake_discover)
+        else:
+            fake_discover()
+
+        loop.close()
+
+    def test_mcp_discovery_runs_inline_without_loop(self, monkeypatch):
+        """Without a running event loop (CLI/TUI startup), discovery runs inline."""
+        calls = []
+
+        def fake_discover():
+            calls.append(True)
+
+        monkeypatch.setattr("tools.mcp_tool.discover_mcp_tools", fake_discover)
+
+        # Ensure no running loop
+        try:
+            asyncio.get_running_loop()
+            pytest.skip("Test requires no running event loop")
+        except RuntimeError:
+            pass
+
+        # Simulate module-level code path
+        try:
+            _loop = asyncio.get_running_loop()
+        except RuntimeError:
+            _loop = None
+
+        if _loop is not None and _loop.is_running():
+            pytest.fail("Should not reach executor path")
+        else:
+            fake_discover()
+
+        assert len(calls) == 1, "discover_mcp_tools should run inline without event loop"

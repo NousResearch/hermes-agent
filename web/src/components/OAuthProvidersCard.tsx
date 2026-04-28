@@ -1,7 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from "react";
-import { ShieldCheck, ShieldOff, Copy, ExternalLink, RefreshCw, LogOut, Terminal, LogIn } from "lucide-react";
+import { ShieldCheck, ShieldOff, ExternalLink, RefreshCw, LogOut, Terminal, LogIn } from "lucide-react";
 import { api, type OAuthProvider } from "@/lib/api";
-import { Button } from "@nous-research/ui";
+import { Button, CopyButton } from "@nous-research/ui";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { OAuthLoginModal } from "@/components/OAuthLoginModal";
@@ -35,7 +35,6 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
   const [providers, setProviders] = useState<OAuthProvider[] | null>(null);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
-  const [copiedId, setCopiedId] = useState<string | null>(null);
   const [loginFor, setLoginFor] = useState<OAuthProvider | null>(null);
   const { t } = useI18n();
 
@@ -54,17 +53,6 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
   useEffect(() => {
     refresh();
   }, [refresh]);
-
-  const handleCopy = async (provider: OAuthProvider) => {
-    try {
-      await navigator.clipboard.writeText(provider.cli_command);
-      setCopiedId(provider.id);
-      onSuccess?.(`Copied: ${provider.cli_command}`);
-      setTimeout(() => setCopiedId((v) => (v === provider.id ? null : v)), 1500);
-    } catch {
-      onError?.("Clipboard write failed — copy the command manually");
-    }
-  };
 
   const handleDisconnect = async (provider: OAuthProvider) => {
     if (!confirm(`${t.oauth.disconnect} ${provider.name}?`)) {
@@ -206,14 +194,11 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                     </Button>
                   )}
                   {!p.status.logged_in && (
-                    <Button
-                      outlined
-                      onClick={() => handleCopy(p)}
-                      title={t.oauth.copyCliCommand}
-                      prefix={copiedId === p.id ? undefined : <Copy />}
-                    >
-                      {copiedId === p.id ? t.oauth.copied : t.oauth.cli}
-                    </Button>
+                    <CopyButton
+                      text={p.cli_command}
+                      label={t.oauth.cli}
+                      copiedLabel={t.oauth.copied}
+                    />
                   )}
                   {p.status.logged_in && p.flow !== "external" && (
                     <Button

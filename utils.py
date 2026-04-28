@@ -170,7 +170,7 @@ def atomic_yaml_write(
     )
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
-            yaml.dump(data, f, default_flow_style=default_flow_style, sort_keys=sort_keys)
+            yaml.dump(data, f, default_flow_style=default_flow_style, sort_keys=sort_keys, allow_unicode=True)
             if extra_content:
                 f.write(extra_content)
             f.flush()

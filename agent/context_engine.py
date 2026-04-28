@@ -79,6 +79,7 @@ class ContextEngine(ABC):
         messages: List[Dict[str, Any]],
         current_tokens: int = None,
         focus_topic: str = None,
+        memory_context: str = "",
     ) -> List[Dict[str, Any]]:
         """Compact the message list and return the new message list.
 
@@ -93,6 +94,10 @@ class ContextEngine(ABC):
                 Engines that support guided compression should prioritise
                 preserving information related to this topic.  Engines that
                 don't support it may simply ignore this argument.
+            memory_context: Optional context string from the memory provider's
+                ``on_pre_compress`` hook.  Contains insights or notes the
+                provider wants preserved across compaction.  Engines that
+                don't use it may simply ignore this argument.
         """
 
     # -- Optional: pre-flight check ----------------------------------------

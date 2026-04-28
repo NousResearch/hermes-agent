@@ -725,7 +725,7 @@ class ContextCompressor(ContextEngine):
 
         return "\n\n".join(parts)
 
-    def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]], focus_topic: str = None) -> Optional[str]:
+    def _generate_summary(self, turns_to_summarize: List[Dict[str, Any]], focus_topic: str = None, memory_context: str = "") -> Optional[str]:
         """Generate a structured summary of conversation turns.
 
         Uses a structured template (Goal, Progress, Decisions, Resolved/Pending
@@ -867,6 +867,17 @@ Use this exact structure:
 
 FOCUS TOPIC: "{focus_topic}"
 The user has requested that this compaction PRIORITISE preserving all information related to the focus topic above. For content related to "{focus_topic}", include full detail — exact values, file paths, command outputs, error messages, and decisions. For content NOT related to the focus topic, summarise more aggressively (brief one-liners or omit if truly irrelevant). The focus topic sections should receive roughly 60-70% of the summary token budget. Even for the focus topic, NEVER preserve API keys, tokens, passwords, or credentials — use [REDACTED]."""
+
+        # Inject memory provider context extracted before compression.
+        # This contains insights or notes the memory provider wants to
+        # preserve before the conversation context is discarded.
+        if memory_context:
+            prompt += f"""
+
+MEMORY PROVIDER CONTEXT:
+The following context was extracted by the active memory provider before this compaction. Treat it as additional important information that MUST be preserved in the summary:
+
+{memory_context}"""
 
         try:
             call_kwargs = {
@@ -1277,7 +1288,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
     # Main compression entry point
     # ------------------------------------------------------------------
 
-    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None) -> List[Dict[str, Any]]:
+    def compress(self, messages: List[Dict[str, Any]], current_tokens: int = None, focus_topic: str = None, memory_context: str = "") -> List[Dict[str, Any]]:
         """Compress conversation messages by summarizing middle turns.
 
         Algorithm:
@@ -1368,7 +1379,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
             )
 
         # Phase 3: Generate structured summary
-        summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic)
+        summary = self._generate_summary(turns_to_summarize, focus_topic=focus_topic, memory_context=memory_context)
 
         # Phase 4: Assemble compressed message list
         compressed = []

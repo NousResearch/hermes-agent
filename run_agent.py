@@ -9238,14 +9238,15 @@ class AIAgent:
         )
 
         # Notify external memory provider before compression discards context
+        memory_context = ""
         if self._memory_manager:
             try:
-                self._memory_manager.on_pre_compress(messages)
+                memory_context = self._memory_manager.on_pre_compress(messages) or ""
             except Exception:
-                pass
+                memory_context = ""
 
         try:
-            compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic)
+            compressed = self.context_compressor.compress(messages, current_tokens=approx_tokens, focus_topic=focus_topic, memory_context=memory_context)
         except TypeError:
             # Plugin context engine with strict signature that doesn't accept
             # focus_topic — fall back to calling without it.

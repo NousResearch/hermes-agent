@@ -3224,13 +3224,23 @@ def _mount_plugin_api_routes():
             _log.warning("Plugin %s declares api=%s but file not found", plugin["name"], api_file_name)
             continue
         try:
-            spec = importlib.util.spec_from_file_location(
-                f"hermes_dashboard_plugin_{plugin['name']}", api_path,
-            )
+            module_name = f"hermes_dashboard_plugin_{plugin['name']}"
+            spec = importlib.util.spec_from_file_location(module_name, api_path)
             if spec is None or spec.loader is None:
                 continue
             mod = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(mod)
+            # Register in sys.modules BEFORE exec_module so pydantic/FastAPI
+            # can resolve forward references (e.g. models defined in a file
+            # that uses `from __future__ import annotations`). Without this,
+            # TypeAdapter lazy-build fails at first request with
+            # "is not fully defined" because the module namespace isn't
+            # reachable by name for string-annotation resolution.
+            sys.modules[module_name] = mod
+            try:
+                spec.loader.exec_module(mod)
+            except Exception:
+                sys.modules.pop(module_name, None)
+                raise
             router = getattr(mod, "router", None)
             if router is None:
                 _log.warning("Plugin %s api file has no 'router' attribute", plugin["name"])

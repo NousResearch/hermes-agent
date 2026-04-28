@@ -167,10 +167,22 @@ _MCP_HTTP_AVAILABLE = False
 _MCP_SAMPLING_TYPES = False
 _MCP_NOTIFICATION_TYPES = False
 _MCP_MESSAGE_HANDLER_SUPPORTED = False
+_MCP_NEW_HTTP = False
+streamablehttp_client = None
+streamable_http_client = None
 # Conservative fallback for SDK builds that don't export LATEST_PROTOCOL_VERSION.
 # Streamable HTTP was introduced by 2025-03-26, so this remains valid for the
 # HTTP transport path even on older-but-supported SDK versions.
 LATEST_PROTOCOL_VERSION = "2025-03-26"
+
+
+class _CompatType:
+    """Minimal attribute bag for MCP SDK types missing in older/newer builds."""
+
+    def __init__(self, **kwargs):
+        for key, value in kwargs.items():
+            setattr(self, key, value)
+
 try:
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
@@ -191,20 +203,28 @@ try:
         from mcp.types import LATEST_PROTOCOL_VERSION
     except ImportError:
         logger.debug("mcp.types.LATEST_PROTOCOL_VERSION not available -- using fallback protocol version")
-    # Sampling types -- separated so older SDK versions don't break MCP support
+    # Sampling types -- import individually because SDK names changed across releases.
     try:
-        from mcp.types import (
-            CreateMessageResult,
-            CreateMessageResultWithTools,
-            ErrorData,
-            SamplingCapability,
-            SamplingToolsCapability,
-            TextContent,
-            ToolUseContent,
-        )
+        from mcp.types import CreateMessageResult, ErrorData, SamplingCapability, TextContent
+
+        try:
+            from mcp.types import CreateMessageResultWithTools
+        except ImportError:
+            CreateMessageResultWithTools = _CompatType
+
+        try:
+            from mcp.types import SamplingToolsCapability
+        except ImportError:
+            SamplingToolsCapability = _CompatType
+
+        try:
+            from mcp.types import ToolUseContent
+        except ImportError:
+            ToolUseContent = _CompatType
+
         _MCP_SAMPLING_TYPES = True
     except ImportError:
-        logger.debug("MCP sampling types not available -- sampling disabled")
+        logger.debug("MCP sampling base types not available -- sampling disabled")
     # Notification types for dynamic tool discovery (tools/list_changed)
     try:
         from mcp.types import (
@@ -868,7 +888,7 @@ class MCPServerTask:
         "_task", "_ready", "_shutdown_event", "_reconnect_event",
         "_tools", "_error", "_config",
         "_sampling", "_registered_tool_names", "_auth_type", "_refresh_lock",
-        "_rpc_lock",
+        "_rpc_lock", "_pending_refresh_tasks",
     )
 
     def __init__(self, name: str):
@@ -895,14 +915,31 @@ class MCPServerTask:
         # list_changed notifications during startup; if the notification
         # handler calls list_tools while a normal tool call is in flight, the
         # stream can wedge and the user-visible tool call times out. Serialize
-        # client-initiated RPCs per server.
+        # client-initiated RPCs per server. The lock is also applied to HTTP
+        # transports for conservative per-server ordering.
         self._rpc_lock = asyncio.Lock()
+        self._pending_refresh_tasks: set[asyncio.Task] = set()
 
     def _is_http(self) -> bool:
         """Check if this server uses HTTP transport."""
         return "url" in self._config
 
     # ----- Dynamic tool discovery (notifications/tools/list_changed) -----
+
+    async def _refresh_tools_task(self):
+        """Run a dynamic tool refresh and log failures from background tasks."""
+        try:
+            await self._refresh_tools()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.exception("MCP server '%s': dynamic tool refresh failed", self.name)
+
+    def _schedule_tools_refresh(self) -> None:
+        """Schedule a background tool refresh and keep it strongly referenced."""
+        task = asyncio.create_task(self._refresh_tools_task())
+        self._pending_refresh_tasks.add(task)
+        task.add_done_callback(self._pending_refresh_tasks.discard)
 
     def _make_message_handler(self):
         """Build a ``message_handler`` callback for ``ClientSession``.
@@ -932,7 +969,7 @@ class MCPServerTask:
                             # subsequent tool calls time out. Do the refresh in
                             # a separate task and let the handler return
                             # promptly.
-                            asyncio.create_task(self._refresh_tools())
+                            self._schedule_tools_refresh()
                         case PromptListChangedNotification():
                             logger.debug("MCP server '%s': prompts/list_changed (ignored)", self.name)
                         case ResourceListChangedNotification():
@@ -962,11 +999,20 @@ class MCPServerTask:
                 tools_result = await self.session.list_tools()
             new_mcp_tools = tools_result.tools if hasattr(tools_result, "tools") else []
 
-            # 2. Re-register with fresh tool list. Avoid deregistering first:
-            # live agent turns already have tool-call IDs pointing at the
-            # existing handler functions. Replacing entries in-place is enough
-            # for unchanged names and avoids transient "tool not connected" /
-            # stale-handler races during startup notifications.
+            # 2. Re-register with fresh tool list. Avoid nuke-and-repave for
+            # all names: live agent turns may already have tool-call IDs
+            # pointing at existing handler functions. Replacing entries
+            # in-place is enough for unchanged names and avoids transient
+            # "tool not connected" / stale-handler races during startup
+            # notifications. Tools absent from the fresh list are no longer
+            # callable, so remove only those stale registry entries first.
+            stale_tool_names = old_tool_names - {
+                f"mcp_{sanitize_mcp_name_component(self.name)}_"
+                f"{sanitize_mcp_name_component(tool.name)}"
+                for tool in new_mcp_tools
+            }
+            for tool_name in stale_tool_names:
+                registry.deregister(tool_name)
 
             # 3. Re-register with fresh tool list
             self._tools = new_mcp_tools
@@ -1383,6 +1429,11 @@ class MCPServerTask:
                     await self._task
                 except asyncio.CancelledError:
                     pass
+        if self._pending_refresh_tasks:
+            for task in list(self._pending_refresh_tasks):
+                task.cancel()
+            await asyncio.gather(*self._pending_refresh_tasks, return_exceptions=True)
+            self._pending_refresh_tasks.clear()
         for tool_name in list(getattr(self, "_registered_tool_names", [])):
             registry.deregister(tool_name)
         self._registered_tool_names = []

@@ -106,6 +106,51 @@ def _codex_curated_models() -> list[str]:
     return _add_forward_compat_models(list(DEFAULT_CODEX_MODELS))
 
 
+# Static fallback for xAI when the models.dev disk cache is empty (fresh
+# install, offline first run, etc.). Mirrors the xAI-direct model IDs from
+# $HERMES_HOME/models_dev_cache.json as of 2026-04-28. Whenever xAI renames
+# or retires a model, the disk cache picks it up on the next refresh and the
+# fallback here only matters until that refresh lands.
+_XAI_STATIC_FALLBACK: list[str] = [
+    "grok-4.20-0309-reasoning",
+    "grok-4.20-0309-non-reasoning",
+    "grok-4.20-multi-agent-0309",
+    "grok-4-1-fast",
+    "grok-4-1-fast-non-reasoning",
+    "grok-4-fast",
+    "grok-4-fast-non-reasoning",
+    "grok-4",
+    "grok-code-fast-1",
+]
+
+
+def _xai_curated_models() -> list[str]:
+    """Derive the xAI-direct curated list from models.dev disk cache.
+
+    Reads $HERMES_HOME/models_dev_cache.json directly (no network) so this
+    runs at import time without blocking. Falls back to ``_XAI_STATIC_FALLBACK``
+    when the cache is empty or unreadable. Hermes refreshes the cache from
+    https://models.dev/api.json on normal use, so this list self-heals as
+    xAI renames models.
+
+    Mirrors ``_codex_curated_models()``'s role for openai-codex.
+    """
+    try:
+        from agent.models_dev import _load_disk_cache
+        data = _load_disk_cache()
+        xai = data.get("xai") if isinstance(data, dict) else None
+        models = xai.get("models") if isinstance(xai, dict) else None
+        if isinstance(models, dict) and models:
+            ids = [mid for mid in models.keys() if isinstance(mid, str)]
+            if ids:
+                return sorted(ids)
+    except Exception:
+        # Any failure (missing file, malformed JSON, import error)
+        # falls through to the static list.
+        pass
+    return list(_XAI_STATIC_FALLBACK)
+
+
 _PROVIDER_MODELS: dict[str, list[str]] = {
     "nous": [
         "moonshotai/kimi-k2.6",
@@ -193,17 +238,7 @@ _PROVIDER_MODELS: dict[str, list[str]] = {
         "glm-4.5",
         "glm-4.5-flash",
     ],
-    "xai": [
-        "grok-4.20-0309-reasoning",
-        "grok-4.20-0309-non-reasoning",
-        "grok-4.20-multi-agent-0309",
-        "grok-4-1-fast",
-        "grok-4-1-fast-non-reasoning",
-        "grok-4-fast",
-        "grok-4-fast-non-reasoning",
-        "grok-4",
-        "grok-code-fast-1",
-    ],
+    "xai": _xai_curated_models(),
     "nvidia": [
         # NVIDIA flagship reasoning models
         "nvidia/nemotron-3-super-120b-a12b",

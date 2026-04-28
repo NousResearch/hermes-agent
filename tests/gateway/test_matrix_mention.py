@@ -247,10 +247,11 @@ class TestOutboundMentions:
         )
 
     @pytest.mark.asyncio
-    async def test_send_notice_adds_mentions(self):
-        result = await self.adapter.send_notice(
+    async def test_send_simple_notice_adds_mentions(self):
+        result = await self.adapter._send_simple_message(
             "!room1:example.org",
             "Heads up @alice:example.org",
+            msgtype="m.notice",
         )
 
         assert result.success is True

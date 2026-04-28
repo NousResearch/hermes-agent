@@ -171,14 +171,15 @@ export function OAuthLoginModal({
       aria-labelledby="oauth-modal-title"
     >
       <div className="relative w-full max-w-md border border-border bg-card shadow-2xl">
-        <button
-          type="button"
+        <Button
+          ghost
+          size="icon"
           onClick={handleClose}
-          className="absolute right-3 top-3 text-muted-foreground hover:text-foreground transition-colors"
+          className="absolute right-2 top-2 text-muted-foreground hover:text-foreground"
           aria-label={t.common.close}
         >
-          <X className="h-5 w-5" />
-        </button>
+          <X />
+        </Button>
         <div className="p-6 flex flex-col gap-4">
           <div>
             <H2

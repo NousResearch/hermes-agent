@@ -693,14 +693,15 @@ export default function SessionsPage() {
               </Badge>
             </div>
 
-            <button
-              type="button"
+            <Button
+              ghost
+              size="icon"
               onClick={dismissLog}
-              className="shrink-0 opacity-60 hover:opacity-100 cursor-pointer"
+              className="shrink-0 opacity-60 hover:opacity-100"
               aria-label={t.common.close}
             >
-              <X className="h-3.5 w-3.5" />
-            </button>
+              <X />
+            </Button>
           </div>
 
           <pre

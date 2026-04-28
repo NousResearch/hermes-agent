@@ -271,6 +271,15 @@ export default function App() {
     () => buildRoutes(builtinRoutes, manifests),
     [builtinRoutes, manifests],
   );
+  const isPluginRoute = useMemo(
+    () =>
+      routes.some(
+        (r) =>
+          r.path === pathname &&
+          (r.key.startsWith("plugin:") || r.key.startsWith("override:")),
+      ),
+    [routes, pathname],
+  );
   const pluginTabMeta = useMemo(
     () =>
       manifests
@@ -496,18 +505,19 @@ export default function App() {
             <div
               className={cn(
                 "relative z-2 flex min-w-0 min-h-0 flex-1 flex-col",
-                "px-3 sm:px-6",
-                isChatRoute
-                  ? "pb-3 pt-1 sm:pb-4 sm:pt-2 lg:pt-4"
-                  : "pt-2 sm:pt-4 lg:pt-6 pb-4 sm:pb-8",
+                !isPluginRoute && "px-3 sm:px-6",
+                !isPluginRoute && (
+                  isChatRoute
+                    ? "pb-3 pt-1 sm:pb-4 sm:pt-2 lg:pt-4"
+                    : "pt-2 sm:pt-4 lg:pt-6 pb-4 sm:pb-8"
+                ),
                 isDocsRoute && "min-h-0 flex-1",
               )}
             >
               <PluginSlot name="pre-main" />
               <div
                 className={cn(
-                  "w-full min-w-0",
-                  (isDocsRoute || isChatRoute) && "min-h-0 flex flex-1 flex-col",
+                  "w-full min-w-0 min-h-0 flex flex-1 flex-col",
                 )}
               >
                 <Routes>

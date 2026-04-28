@@ -1355,9 +1355,9 @@ class SessionDB:
         # quotes.  FTS5's tokenizer splits on dots and hyphens, turning
         # ``chat-send`` into ``chat AND send`` and ``P2.2`` into ``p2 AND 2``.
         # Quoting preserves phrase semantics.  A single pass avoids the
-        # double-quoting bug that would occur if dotted and hyphenated
+        # double-quoting bug that would occur if dotted, hyphenated and underscored
         # patterns were applied sequentially (e.g. ``my-app.config``).
-        sanitized = re.sub(r"\b(\w+(?:[.-]\w+)+)\b", r'"\1"', sanitized)
+        sanitized = re.sub(r"\b(\w+(?:[._-]\w+)+)\b", r'"\1"', sanitized)
 
         # Step 6: Restore preserved quoted phrases
         for i, quoted in enumerate(_quoted_parts):

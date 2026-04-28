@@ -655,6 +655,30 @@ class TestFTS5Search:
         assert s('my-app.config') == '"my-app.config"'
         assert s('my-app.config.ts') == '"my-app.config.ts"'
 
+    def test_sanitize_fts5_quotes_underscored_terms(self):
+        """Underscored terms should be wrapped in quotes for exact matching.
+
+        FTS5 default tokenizer splits 'sp_new1' into tokens 'sp' and 'new1'.
+        Without quoting, a search for 'sp_new' becomes an AND query
+        ('sp AND new') that fails to match rows indexed as 'sp_new1'.
+        """
+        from hermes_state import SessionDB
+        s = SessionDB._sanitize_fts5_query
+        # Simple underscored term
+        assert s('sp_new') == '"sp_new"'
+        # Multiple underscores
+        assert s('a_b_c') == '"a_b_c"'
+        # Mixed underscores and hyphens/dots — single pass avoids double-quoting
+        assert s('sp_new1') == '"sp_new1"'
+        assert s('docker-compose_up') == '"docker-compose_up"'
+        assert s('my.app_config.ts') == '"my.app_config.ts"'
+        # Already-quoted — no double quoting
+        assert s('"sp_new"') == '"sp_new"'
+        # Mixed with other words
+        result = s('sp_new and 血管瘤')
+        assert '"sp_new"' in result
+        assert '血管瘤' in result
+
 
 # =========================================================================
 # CJK (Chinese/Japanese/Korean) LIKE fallback

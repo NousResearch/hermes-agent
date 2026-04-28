@@ -3354,6 +3354,7 @@ _TUI_HIDDEN: frozenset[str] = frozenset(
 _TUI_EXTRA: list[tuple[str, str, str]] = [
     ("/compact", "Toggle compact display mode", "TUI"),
     ("/logs", "Show recent gateway log lines", "TUI"),
+    ("/mouse", "Toggle mouse/wheel tracking [on|off|toggle]", "TUI"),
 ]
 
 # Commands that queue messages onto _pending_input in the CLI.
@@ -4133,6 +4134,11 @@ def _(rid, params: dict) -> dict:
                 "display": "/logs",
                 "meta": "Show recent gateway log lines",
             },
+            {
+                "text": "/mouse",
+                "display": "/mouse",
+                "meta": "Toggle mouse/wheel tracking [on|off|toggle]",
+            },
         ]
         for extra in extras:
             if extra["text"].startswith(text_lower) and not any(
@@ -4168,6 +4174,7 @@ def _(rid, params: dict) -> dict:
         cfg = _load_cfg()
         current_provider = getattr(agent, "provider", "") or ""
         current_model = getattr(agent, "model", "") or _resolve_model()
+        current_base_url = getattr(agent, "base_url", "") or ""
         # list_authenticated_providers already populates each provider's
         # "models" with the curated list (same source as `hermes model` and
         # classic CLI's /model picker). Do NOT overwrite with live
@@ -4176,6 +4183,8 @@ def _(rid, params: dict) -> dict:
         # TTS, embeddings, rerankers, image/video generators).
         providers = list_authenticated_providers(
             current_provider=current_provider,
+            current_base_url=current_base_url,
+            current_model=current_model,
             user_providers=(
                 cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {}
             ),

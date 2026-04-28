@@ -587,6 +587,10 @@ AUTHOR_MAP = {
     "jas9000@gmail.com": "twozle",
     "r.filgueiras@apheris.com": "rfilgueiras",
     "leihaibo1992@gmail.com": "Leihb",
+    # ACP streaming fix salvage (PR #9428 + #16273)
+    "nfb0408@163.com": "ningfangbin",
+    "164839249+Joseph19820124@users.noreply.github.com": "Joseph19820124",
+    "rugved@lmstudio.ai": "rugvedS07",
 }
 
 

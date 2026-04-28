@@ -2533,10 +2533,32 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                         "Add the API endpoint URL, e.g.: base_url: https://api.example.com/v1",
                     ))
 
-    # ── fallback_model must be a top-level dict with provider + model ────
+    # ── fallback_model: single dict OR list of dicts (chain) ─────────────
     fb = config.get("fallback_model")
     if fb is not None:
-        if not isinstance(fb, dict):
+        if isinstance(fb, list):
+            # Chain fallback — validate each entry
+            for i, entry in enumerate(fb):
+                if not isinstance(entry, dict):
+                    issues.append(ConfigIssue(
+                        "error",
+                        f"fallback_model[{i}] should be a dict, got {type(entry).__name__}",
+                        "Each entry needs provider + model",
+                    ))
+                else:
+                    if not entry.get("provider"):
+                        issues.append(ConfigIssue(
+                            "warning",
+                            f"fallback_model[{i}] is missing 'provider' field",
+                            "Add: provider: openrouter (or another provider)",
+                        ))
+                    if not entry.get("model"):
+                        issues.append(ConfigIssue(
+                            "warning",
+                            f"fallback_model[{i}] is missing 'model' field",
+                            "Add: model: <model-name>",
+                        ))
+        elif not isinstance(fb, dict):
             issues.append(ConfigIssue(
                 "error",
                 f"fallback_model should be a dict with 'provider' and 'model', got {type(fb).__name__}",
@@ -3468,7 +3490,12 @@ def save_config(config: Dict[str, Any]):
     if not sec or sec.get("redact_secrets") is None:
         parts.append(_SECURITY_COMMENT)
     fb = normalized.get("fallback_model", {})
-    if not fb or not isinstance(fb, dict) or not (fb.get("provider") and fb.get("model")):
+    fb_is_valid = False
+    if isinstance(fb, list):
+        fb_is_valid = any(isinstance(e, dict) and e.get("provider") and e.get("model") for e in fb)
+    elif isinstance(fb, dict):
+        fb_is_valid = bool(fb.get("provider") and fb.get("model"))
+    if not fb_is_valid:
         parts.append(_FALLBACK_COMMENT)
 
     atomic_yaml_write(

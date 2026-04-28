@@ -527,6 +527,49 @@ def _resolve_alias_fallback(
     return None
 
 
+def resolve_display_context_length(
+    model: str,
+    provider: str,
+    base_url: str = "",
+    api_key: str = "",
+    model_info: Optional[ModelInfo] = None,
+    custom_providers: list | None = None,
+) -> Optional[int]:
+    """Resolve the context length to show in /model output.
+
+    models.dev reports per-vendor context (e.g. gpt-5.5 = 1.05M on openai)
+    but provider-enforced limits can be lower (e.g. Codex OAuth caps the
+    same slug at 272k). The authoritative source is
+    ``agent.model_metadata.get_model_context_length`` which already knows
+    about Codex OAuth, Copilot, Nous, and falls back to models.dev for the
+    rest.
+
+    When ``custom_providers`` is provided, per-model ``context_length``
+    overrides from ``custom_providers[].models.<id>.context_length`` are
+    honored — this closes #15779 where ``/model`` switch ignored user-set
+    overrides.
+
+    Prefer the provider-aware value; fall back to ``model_info.context_window``
+    only if the resolver returns nothing.
+    """
+    try:
+        from agent.model_metadata import get_model_context_length
+        ctx = get_model_context_length(
+            model,
+            base_url=base_url or "",
+            api_key=api_key or "",
+            provider=provider or None,
+            custom_providers=custom_providers,
+        )
+        if ctx:
+            return int(ctx)
+    except Exception:
+        pass
+    if model_info is not None and model_info.context_window:
+        return int(model_info.context_window)
+    return None
+
+
 # ---------------------------------------------------------------------------
 # Core model-switching pipeline
 # ---------------------------------------------------------------------------
@@ -771,7 +814,10 @@ def switch_model(
 
     if provider_changed or explicit_provider:
         try:
-            runtime = resolve_runtime_provider(requested=target_provider)
+            runtime = resolve_runtime_provider(
+                requested=target_provider,
+                target_model=new_model,
+            )
             api_key = runtime.get("api_key", "")
             base_url = runtime.get("base_url", "")
             api_mode = runtime.get("api_mode", "")
@@ -788,10 +834,18 @@ def switch_model(
             )
     else:
         try:
-            runtime = resolve_runtime_provider(requested=current_provider)
-            api_key = runtime.get("api_key", "")
-            base_url = runtime.get("base_url", "")
-            api_mode = runtime.get("api_mode", "")
+            runtime = resolve_runtime_provider(
+                requested=current_provider,
+                target_model=new_model,
+            )
+            # If resolution fell through to "custom" (e.g. named custom provider like
+            # "ollama-launch" that resolve_runtime_provider doesn't know), keep existing
+            # credentials. Otherwise use the resolved values (picks up credential rotation,
+            # base_url adjustments for OpenCode, etc.).
+            if runtime.get("provider") != "custom":
+                api_key = runtime.get("api_key", "")
+                base_url = runtime.get("base_url", "")
+                api_mode = runtime.get("api_mode", "")
         except Exception:
             pass
 
@@ -815,6 +869,7 @@ def switch_model(
             target_provider,
             api_key=api_key,
             base_url=base_url,
+            api_mode=api_mode or None,
         )
     except Exception as e:
         validation = {
@@ -824,16 +879,31 @@ def switch_model(
             "message": f"Could not validate `{new_model}`: {e}",
         }
 
+    # Override rejection if model is in the user's saved provider config.
+    # API /v1/models may not list cloud/aliased models even though the server supports them.
     if not validation.get("accepted"):
-        msg = validation.get("message", "Invalid model")
-        return ModelSwitchResult(
-            success=False,
-            new_model=new_model,
-            target_provider=target_provider,
-            provider_label=provider_label,
-            is_global=is_global,
-            error_message=msg,
-        )
+        override = False
+        if user_providers:
+            for up in user_providers:
+                if isinstance(up, dict) and up.get("provider") == target_provider:
+                    cfg_models = up.get("models", [])
+                    if new_model in cfg_models or any(
+                        m.get("name") == new_model for m in cfg_models if isinstance(m, dict)
+                    ):
+                        override = True
+                        break
+        if override:
+            validation = {"accepted": True, "persist": True, "recognized": False, "message": validation.get("message", "")}
+        else:
+            msg = validation.get("message", "Invalid model")
+            return ModelSwitchResult(
+                success=False,
+                new_model=new_model,
+                target_provider=target_provider,
+                provider_label=provider_label,
+                is_global=is_global,
+                error_message=msg,
+            )
 
     # Apply auto-correction if validation found a closer match
     if validation.get("corrected_model"):
@@ -936,7 +1006,7 @@ def list_authenticated_providers(
     from hermes_cli.auth import PROVIDER_REGISTRY
     from hermes_cli.models import (
         OPENROUTER_MODELS, _PROVIDER_MODELS,
-        _MODELS_DEV_PREFERRED, _merge_with_models_dev,
+        _MODELS_DEV_PREFERRED, _merge_with_models_dev, provider_model_ids,
     )
 
     results: List[dict] = []
@@ -984,6 +1054,14 @@ def list_authenticated_providers(
 
         # Check if any env var is set
         has_creds = any(os.environ.get(ev) for ev in env_vars)
+        if not has_creds:
+            try:
+                from hermes_cli.auth import _load_auth_store
+                store = _load_auth_store()
+                if store and hermes_id in store.get("credential_pool", {}):
+                    has_creds = True
+            except Exception:
+                pass
         if not has_creds:
             continue
 
@@ -1095,11 +1173,14 @@ def list_authenticated_providers(
         if not has_creds:
             continue
 
-        # Use curated list — look up by Hermes slug, fall back to overlay key
-        model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
-        # Merge with models.dev for preferred providers (same rationale as above).
-        if hermes_slug in _MODELS_DEV_PREFERRED:
-            model_ids = _merge_with_models_dev(hermes_slug, model_ids)
+        if hermes_slug in {"copilot", "copilot-acp"}:
+            model_ids = provider_model_ids(hermes_slug)
+        else:
+            # Use curated list — look up by Hermes slug, fall back to overlay key
+            model_ids = curated.get(hermes_slug, []) or curated.get(pid, [])
+            # Merge with models.dev for preferred providers (same rationale as above).
+            if hermes_slug in _MODELS_DEV_PREFERRED:
+                model_ids = _merge_with_models_dev(hermes_slug, model_ids)
         total = len(model_ids)
         top = model_ids[:max_models]
 
@@ -1221,6 +1302,15 @@ def list_authenticated_providers(
                 for m in cfg_models:
                     if m and m not in models_list:
                         models_list.append(m)
+
+            # Official OpenAI API rows in providers: often have base_url but no
+            # explicit models: dict — avoid a misleading zero count in /model.
+            if not models_list:
+                url_lower = str(api_url).strip().lower()
+                if "api.openai.com" in url_lower:
+                    fb = curated.get("openai") or []
+                    if fb:
+                        models_list = list(fb)
 
             # Try to probe /v1/models if URL is set (but don't block on it)
             # For now just show what we know from config

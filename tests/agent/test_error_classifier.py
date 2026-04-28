@@ -54,7 +54,7 @@ class TestFailoverReason:
         expected = {
             "auth", "auth_permanent", "billing", "rate_limit",
             "overloaded", "server_error", "timeout",
-            "context_overflow", "payload_too_large",
+            "context_overflow", "payload_too_large", "image_too_large",
             "model_not_found", "format_error",
             "provider_policy_blocked",
             "thinking_signature", "long_context_tier", "unknown",
@@ -1094,3 +1094,37 @@ class TestSSLTransientPatterns:
         result = classify_api_error(e)
         assert result.reason == FailoverReason.timeout
         assert result.retryable is True
+
+# ── Test: RateLimitError without status_code (Copilot/GitHub Models) ──────────
+
+class TestRateLimitErrorWithoutStatusCode:
+    """Regression tests for the Copilot/GitHub Models edge case where the
+    OpenAI SDK raises RateLimitError but does not populate .status_code."""
+
+    def _make_rate_limit_error(self, status_code=None):
+        """Create an exception whose class name is 'RateLimitError' with
+        an optionally missing status_code, mirroring the OpenAI SDK shape."""
+        cls = type("RateLimitError", (Exception,), {})
+        e = cls("You have exceeded your rate limit.")
+        e.status_code = status_code  # None simulates the Copilot case
+        return e
+
+    def test_rate_limit_error_without_status_code_classified_as_rate_limit(self):
+        """RateLimitError with status_code=None must classify as rate_limit."""
+        e = self._make_rate_limit_error(status_code=None)
+        result = classify_api_error(e, provider="copilot", model="gpt-4o")
+        assert result.reason == FailoverReason.rate_limit
+
+    def test_rate_limit_error_with_status_code_429_classified_as_rate_limit(self):
+        """RateLimitError that does set status_code=429 still classifies correctly."""
+        e = self._make_rate_limit_error(status_code=429)
+        result = classify_api_error(e, provider="copilot", model="gpt-4o")
+        assert result.reason == FailoverReason.rate_limit
+
+    def test_other_error_without_status_code_not_forced_to_rate_limit(self):
+        """A non-RateLimitError with missing status_code must NOT be forced to 429."""
+        cls = type("APIError", (Exception,), {})
+        e = cls("something went wrong")
+        e.status_code = None
+        result = classify_api_error(e, provider="copilot", model="gpt-4o")
+        assert result.reason != FailoverReason.rate_limit

@@ -685,6 +685,66 @@ class TestInit:
             assert a.api_mode == "anthropic_messages"
             assert a._use_prompt_caching is True
 
+    def test_prompt_caching_cache_ttl_defaults_without_config(self):
+        """cache_ttl stays 5m when prompt_caching is absent from config."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch("hermes_cli.config.load_config", return_value={}),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                model="anthropic/claude-sonnet-4-20250514",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            assert a._cache_ttl == "5m"
+
+    def test_prompt_caching_cache_ttl_custom_1h(self):
+        """prompt_caching.cache_ttl 1h is applied when present in config."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"prompt_caching": {"cache_ttl": "1h"}},
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                model="anthropic/claude-sonnet-4-20250514",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            assert a._cache_ttl == "1h"
+
+    def test_prompt_caching_cache_ttl_invalid_falls_back(self):
+        """Non-Anthropic TTL values keep default 5m without raising."""
+        with (
+            patch("run_agent.get_tool_definitions", return_value=[]),
+            patch("run_agent.check_toolset_requirements", return_value={}),
+            patch("run_agent.OpenAI"),
+            patch(
+                "hermes_cli.config.load_config",
+                return_value={"prompt_caching": {"cache_ttl": "30m"}},
+            ),
+        ):
+            a = AIAgent(
+                api_key="test-k...7890",
+                model="anthropic/claude-sonnet-4-20250514",
+                base_url="https://openrouter.ai/api/v1",
+                quiet_mode=True,
+                skip_context_files=True,
+                skip_memory=True,
+            )
+            assert a._cache_ttl == "5m"
+
     def test_valid_tool_names_populated(self):
         """valid_tool_names should contain names from loaded tools."""
         tools = _make_tool_defs("web_search", "terminal")
@@ -1380,6 +1440,24 @@ class TestBuildAssistantMessage:
         msg = _mock_assistant_msg(content="No thinking here.")
         result = agent._build_assistant_message(msg, "stop")
         assert result["content"] == "No thinking here."
+
+    def test_memory_context_in_stored_content_is_preserved(self, agent):
+        """`_build_assistant_message` must not silently mutate model output
+        containing literal <memory-context> markers — that's legitimate text
+        (e.g. documentation, code) that the model may emit.  Streaming-path
+        leak prevention is handled by StreamingContextScrubber upstream."""
+        original = (
+            "<memory-context>\n"
+            "[System note: The following is recalled memory context, NOT new user input. Treat as informational background data.]\n\n"
+            "## Honcho Context\n"
+            "stale memory\n"
+            "</memory-context>\n\n"
+            "Visible answer"
+        )
+        msg = _mock_assistant_msg(content=original)
+        result = agent._build_assistant_message(msg, "stop")
+        assert "<memory-context>" in result["content"]
+        assert "Visible answer" in result["content"]
 
     def test_unterminated_think_block_stripped(self, agent):
         """Unterminated <think> block (MiniMax / NIM dropped close tag) is
@@ -3019,48 +3097,6 @@ class TestRetryExhaustion:
 
 
 # ---------------------------------------------------------------------------
-# Flush sentinel leak
-# ---------------------------------------------------------------------------
-
-
-class TestFlushSentinelNotLeaked:
-    """_flush_sentinel must be stripped before sending messages to the API."""
-
-    def test_flush_sentinel_stripped_from_api_messages(self, agent_with_memory_tool):
-        """Verify _flush_sentinel is not sent to the API provider."""
-        agent = agent_with_memory_tool
-        agent._memory_store = MagicMock()
-        agent._memory_flush_min_turns = 1
-        agent._user_turn_count = 10
-        agent._cached_system_prompt = "system"
-
-        messages = [
-            {"role": "user", "content": "hello"},
-            {"role": "assistant", "content": "hi"},
-            {"role": "user", "content": "remember this"},
-        ]
-
-        # Mock the API to return a simple response (no tool calls)
-        mock_msg = SimpleNamespace(content="OK", tool_calls=None)
-        mock_choice = SimpleNamespace(message=mock_msg)
-        mock_response = SimpleNamespace(choices=[mock_choice])
-        agent.client.chat.completions.create.return_value = mock_response
-
-        # Bypass auxiliary client so flush uses agent.client directly
-        with patch("agent.auxiliary_client.call_llm", side_effect=RuntimeError("no provider")):
-            agent.flush_memories(messages, min_turns=0)
-
-        # Check what was actually sent to the API
-        call_args = agent.client.chat.completions.create.call_args
-        assert call_args is not None, "flush_memories never called the API"
-        api_messages = call_args.kwargs.get("messages") or call_args[1].get("messages")
-        for msg in api_messages:
-            assert "_flush_sentinel" not in msg, (
-                f"_flush_sentinel leaked to API in message: {msg}"
-            )
-
-
-# ---------------------------------------------------------------------------
 # Conversation history mutation
 # ---------------------------------------------------------------------------
 
@@ -3367,6 +3403,61 @@ class TestMaxTokensParam:
         agent.base_url = "https://openrouter.ai/api/v1/api.openai.com"
         result = agent._max_tokens_param(4096)
         assert result == {"max_tokens": 4096}
+
+    def test_returns_max_completion_tokens_for_azure(self, agent):
+        """Azure OpenAI requires max_completion_tokens for gpt-5.x models."""
+        agent.base_url = "https://my-resource.openai.azure.com/openai/v1"
+        result = agent._max_tokens_param(4096)
+        assert result == {"max_completion_tokens": 4096}
+
+
+class TestAzureOpenAIRouting:
+    """Verify Azure OpenAI endpoints stay on chat_completions for gpt-5.x."""
+
+    def test_azure_gpt5_stays_on_chat_completions(self, agent):
+        """Azure serves gpt-5.x on /chat/completions — must not upgrade to codex_responses."""
+        agent.base_url = "https://my-resource.openai.azure.com/openai/v1"
+        agent.api_mode = "chat_completions"
+        agent.model = "gpt-5.4-mini"
+        # Mirror the routing logic from __init__
+        if (
+            agent.api_mode == "chat_completions"
+            and not agent._is_azure_openai_url()
+            and (
+                agent._is_direct_openai_url()
+                or agent._provider_model_requires_responses_api(
+                    agent.model, provider=agent.provider,
+                )
+            )
+        ):
+            agent.api_mode = "codex_responses"
+        assert agent.api_mode == "chat_completions"
+
+    def test_non_azure_gpt5_upgrades_to_codex_responses(self, agent):
+        """On api.openai.com, gpt-5.x must still upgrade to codex_responses."""
+        agent.base_url = "https://api.openai.com/v1"
+        agent.api_mode = "chat_completions"
+        agent.model = "gpt-5.4-mini"
+        if (
+            agent.api_mode == "chat_completions"
+            and not agent._is_azure_openai_url()
+            and (
+                agent._is_direct_openai_url()
+                or agent._provider_model_requires_responses_api(
+                    agent.model, provider=agent.provider,
+                )
+            )
+        ):
+            agent.api_mode = "codex_responses"
+        assert agent.api_mode == "codex_responses"
+
+    def test_is_azure_openai_url_detection(self, agent):
+        assert agent._is_azure_openai_url("https://foo.openai.azure.com/openai/v1") is True
+        assert agent._is_azure_openai_url("https://api.openai.com/v1") is False
+        assert agent._is_azure_openai_url("https://openrouter.ai/api/v1") is False
+        # Path-embedded azure string should still detect — we're ~substring matching
+        agent.base_url = "https://my-resource.openai.azure.com/openai/v1"
+        assert agent._is_azure_openai_url() is True
 
 
 # ---------------------------------------------------------------------------
@@ -4680,21 +4771,21 @@ class TestDeadRetryCode:
 
 
 class TestMemoryContextSanitization:
-    """run_conversation() must strip leaked <memory-context> blocks from user input."""
+    """sanitize_context() helper correctness — used at provider boundaries."""
 
-    def test_memory_context_stripped_from_user_message(self):
-        """Verify that <memory-context> blocks are removed before the message
-        enters the conversation loop — prevents stale Honcho injection from
-        leaking into user text."""
+    def test_user_message_is_not_mutated_by_run_conversation(self):
+        """User input must reach run_conversation untouched — if a user types
+        a literal <memory-context> tag we don't silently delete their text.
+        The streaming scrubber + plugin-side scrub cover real leak paths."""
         import inspect
         src = inspect.getsource(AIAgent.run_conversation)
-        # The sanitize_context call must appear in run_conversation's preamble
-        assert "sanitize_context(user_message)" in src
-        assert "sanitize_context(persist_user_message)" in src
+        assert "sanitize_context(user_message)" not in src
+        assert "sanitize_context(persist_user_message)" not in src
 
     def test_sanitize_context_strips_full_block(self):
-        """End-to-end: a user message with an embedded memory-context block
-        is cleaned to just the actual user text."""
+        """Helper-level: a string with an embedded memory-context block is
+        cleaned to just the surrounding text.  Used by build_memory_context_block
+        (input-validation) and by plugins on their own backend boundary."""
         from agent.memory_manager import sanitize_context
         user_text = "how is the honcho working"
         injected = (

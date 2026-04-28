@@ -414,7 +414,7 @@ Each hook is documented in full on the **[Event Hooks reference](/docs/user-guid
 | Hook | Fires when | Callback signature | Returns |
 |------|-----------|-------------------|---------|
 | [`pre_tool_call`](/docs/user-guide/features/hooks#pre_tool_call) | Before any tool executes | `tool_name: str, args: dict, task_id: str` | ignored |
-| [`post_tool_call`](/docs/user-guide/features/hooks#post_tool_call) | After any tool returns | `tool_name: str, args: dict, result: str, task_id: str` | ignored |
+| [`post_tool_call`](/docs/user-guide/features/hooks#post_tool_call) | After any tool returns | `tool_name: str, args: dict, result: str, task_id: str, duration_ms: int` | ignored |
 | [`pre_llm_call`](/docs/user-guide/features/hooks#pre_llm_call) | Once per turn, before the tool-calling loop | `session_id: str, user_message: str, conversation_history: list, is_first_turn: bool, model: str, platform: str` | [context injection](#pre_llm_call-context-injection) |
 | [`post_llm_call`](/docs/user-guide/features/hooks#post_llm_call) | Once per turn, after the tool-calling loop (successful turns only) | `session_id: str, user_message: str, assistant_response: str, conversation_history: list, model: str, platform: str` | ignored |
 | [`on_session_start`](/docs/user-guide/features/hooks#on_session_start) | New session created (first turn only) | `session_id: str, model: str, platform: str` | ignored |
@@ -632,6 +632,43 @@ my-plugin = "my_plugin_package"
 pip install hermes-plugin-calculator
 # Plugin auto-discovered on next hermes startup
 ```
+
+### Distribute for NixOS
+
+NixOS users can install your plugin declaratively if you provide a `pyproject.toml` with entry points:
+
+**Entry-point plugins** (recommended for distribution):
+```nix
+# User's configuration.nix
+services.hermes-agent.extraPythonPackages = [
+  (pkgs.python312Packages.buildPythonPackage {
+    pname = "my-plugin";
+    version = "1.0.0";
+    src = pkgs.fetchFromGitHub {
+      owner = "you";
+      repo = "hermes-my-plugin";
+      rev = "v1.0.0";
+      hash = "sha256-...";  # nix-prefetch-url --unpack
+    };
+    format = "pyproject";
+    build-system = [ pkgs.python312Packages.setuptools ];
+  })
+];
+```
+
+**Directory plugins** (no `pyproject.toml` needed):
+```nix
+services.hermes-agent.extraPlugins = [
+  (pkgs.fetchFromGitHub {
+    owner = "you";
+    repo = "hermes-my-plugin";
+    rev = "v1.0.0";
+    hash = "sha256-...";
+  })
+];
+```
+
+See the [Nix Setup guide](/docs/getting-started/nix-setup#plugins) for complete documentation including overlay usage and collision checking.
 
 ## Common mistakes
 

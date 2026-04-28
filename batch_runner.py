@@ -951,13 +951,9 @@ class BatchRunner:
                     root_logger.setLevel(original_level)
         
         # Aggregate all batch statistics and update checkpoint
-        all_completed_prompts = list(completed_prompts_set)
         total_reasoning_stats = {"total_assistant_turns": 0, "turns_with_reasoning": 0, "turns_without_reasoning": 0}
-        
+
         for batch_result in results:
-            # Add newly completed prompts
-            all_completed_prompts.extend(batch_result.get("completed_prompts", []))
-            
             # Aggregate tool stats
             for tool_name, stats in batch_result.get("tool_stats", {}).items():
                 if tool_name not in total_tool_stats:
@@ -977,7 +973,7 @@ class BatchRunner:
         
         # Save final checkpoint (best-effort; incremental writes already happened)
         try:
-            checkpoint_data["completed_prompts"] = all_completed_prompts
+            checkpoint_data["completed_prompts"] = sorted(completed_prompts_set)
             self._save_checkpoint(checkpoint_data, lock=checkpoint_lock)
         except Exception as ckpt_err:
             print(f"âš ï¸  Warning: Failed to save final checkpoint: {ckpt_err}")

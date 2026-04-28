@@ -280,6 +280,102 @@ def test_migrator_records_preset_in_report(tmp_path: Path):
     assert report["selection"]["skill_conflict_mode"] == "skip"
 
 
+def test_source_candidate_finds_files_in_custom_workspace(tmp_path: Path):
+    """When agents.defaults.workspace points outside ~/.openclaw, files should
+    be discovered there as a fallback."""
+    mod = load_module()
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    custom_ws = tmp_path / "my-custom-workspace"
+
+    target.mkdir()
+    source.mkdir()
+    custom_ws.mkdir()
+
+    # No workspace/ directory inside .openclaw — files live in custom workspace
+    (custom_ws / "MEMORY.md").write_text("# Memory\n\n- custom workspace entry\n", encoding="utf-8")
+    (custom_ws / "SOUL.md").write_text("# Soul\n\nI am me.\n", encoding="utf-8")
+    (custom_ws / "skills" / "my-skill").mkdir(parents=True)
+    (custom_ws / "skills" / "my-skill" / "SKILL.md").write_text(
+        "---\nname: my-skill\ndescription: test\n---\n\nbody\n",
+        encoding="utf-8",
+    )
+    (custom_ws / "memory").mkdir()
+    (custom_ws / "memory" / "2026-01-01.md").write_text("- daily note\n", encoding="utf-8")
+
+    (source / "openclaw.json").write_text(
+        json.dumps({"agents": {"defaults": {"workspace": str(custom_ws)}}}),
+        encoding="utf-8",
+    )
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=True,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=target / "migration-report",
+        selected_options={"soul", "memory", "skills", "daily-memory"},
+    )
+    report = migrator.migrate()
+
+    # SOUL.md should have been found and migrated
+    assert (target / "SOUL.md").exists()
+
+    # MEMORY.md should have been found and migrated
+    assert (target / "memories" / "MEMORY.md").exists()
+    mem_content = (target / "memories" / "MEMORY.md").read_text(encoding="utf-8")
+    assert "custom workspace entry" in mem_content
+
+    # Skills should have been found and migrated
+    imported_skill = target / "skills" / mod.SKILL_CATEGORY_DIRNAME / "my-skill" / "SKILL.md"
+    assert imported_skill.exists()
+
+    migrated_kinds = {item["kind"] for item in report["items"] if item["status"] == "migrated"}
+    assert "soul" in migrated_kinds
+    assert "memory" in migrated_kinds
+    assert "skill" in migrated_kinds
+
+
+def test_source_candidate_prefers_standard_workspace_over_custom(tmp_path: Path):
+    """When files exist in both ~/.openclaw/workspace/ and the custom workspace,
+    the standard location should win (custom is a fallback only)."""
+    mod = load_module()
+    source = tmp_path / ".openclaw"
+    target = tmp_path / ".hermes"
+    custom_ws = tmp_path / "my-custom-workspace"
+
+    target.mkdir()
+    custom_ws.mkdir()
+    (source / "workspace").mkdir(parents=True)
+
+    # File in both locations
+    (source / "workspace" / "SOUL.md").write_text("# Standard soul\n", encoding="utf-8")
+    (custom_ws / "SOUL.md").write_text("# Custom soul\n", encoding="utf-8")
+
+    (source / "openclaw.json").write_text(
+        json.dumps({"agents": {"defaults": {"workspace": str(custom_ws)}}}),
+        encoding="utf-8",
+    )
+
+    migrator = mod.Migrator(
+        source_root=source,
+        target_root=target,
+        execute=True,
+        workspace_target=None,
+        overwrite=False,
+        migrate_secrets=False,
+        output_dir=target / "migration-report",
+        selected_options={"soul"},
+    )
+    migrator.migrate()
+
+    # Standard workspace location should have been preferred
+    content = (target / "SOUL.md").read_text(encoding="utf-8")
+    assert "Standard soul" in content
+
+
 def test_migrator_exports_full_overflow_entries(tmp_path: Path):
     mod = load_module()
     source = tmp_path / ".openclaw"
@@ -761,19 +857,24 @@ def test_skill_installs_cleanly_under_skills_guard():
 
 def test_rebrand_text_replaces_openclaw_variants():
     mod = load_module()
+    # Mixed-case / capitalized matches → capital-H ``Hermes``.
     assert mod.rebrand_text("OpenClaw prefers Python 3.11") == "Hermes prefers Python 3.11"
     assert mod.rebrand_text("I told Open Claw to use dark mode") == "I told Hermes to use dark mode"
     assert mod.rebrand_text("Open-Claw config is great") == "Hermes config is great"
-    assert mod.rebrand_text("openclaw should always respond concisely") == "Hermes should always respond concisely"
     assert mod.rebrand_text("OPENCLAW uses tools well") == "Hermes uses tools well"
+    # All-lowercase matches → lowercase ``hermes``; this preserves the
+    # real filesystem path ``~/.hermes`` (Hermes home) when rebranding
+    # memory entries that reference ``~/.openclaw`` or ``openclaw`` prose.
+    assert mod.rebrand_text("openclaw should always respond concisely") == "hermes should always respond concisely"
 
 
 def test_rebrand_text_replaces_legacy_bot_names():
     mod = load_module()
+    # Same case-preservation rule as above.
     assert mod.rebrand_text("ClawdBot remembers my timezone") == "Hermes remembers my timezone"
-    assert mod.rebrand_text("clawdbot prefers tabs") == "Hermes prefers tabs"
+    assert mod.rebrand_text("clawdbot prefers tabs") == "hermes prefers tabs"
     assert mod.rebrand_text("MoltBot was configured for Spanish") == "Hermes was configured for Spanish"
-    assert mod.rebrand_text("moltbot uses Python") == "Hermes uses Python"
+    assert mod.rebrand_text("moltbot uses Python") == "hermes uses Python"
 
 
 def test_rebrand_text_preserves_unrelated_content():
@@ -786,6 +887,26 @@ def test_rebrand_text_handles_multiple_replacements():
     mod = load_module()
     text = "OpenClaw said to ask ClawdBot about MoltBot settings"
     assert mod.rebrand_text(text) == "Hermes said to ask Hermes about Hermes settings"
+
+
+def test_rebrand_text_preserves_filesystem_path_casing():
+    """Lowercase matches — especially ``.openclaw`` filesystem paths — must
+    rewrite to lowercase ``.hermes`` (the real Hermes home), not the broken
+    ``.Hermes``.
+
+    Regression test for @versun's OpenClaw-residue feedback: after migration,
+    memory entries that referenced ``~/.openclaw/config.yaml`` were being
+    rewritten to ``~/.Hermes/config.yaml`` — a path that doesn't exist —
+    and the agent kept trying to read it.
+    """
+    mod = load_module()
+    assert mod.rebrand_text("config is at ~/.openclaw/config.yaml") == \
+        "config is at ~/.hermes/config.yaml"
+    assert mod.rebrand_text("use .openclaw directory") == "use .hermes directory"
+    assert mod.rebrand_text("Path.home() / '.openclaw'") == "Path.home() / '.hermes'"
+    # Sentence with both lowercase path and capitalized prose.
+    assert mod.rebrand_text("openclaw config path: ~/.openclaw/") == \
+        "hermes config path: ~/.hermes/"
 
 
 def test_migrate_memory_rebrands_entries(tmp_path):

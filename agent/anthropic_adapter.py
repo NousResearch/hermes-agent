@@ -14,6 +14,8 @@ import copy
 import json
 import logging
 import os
+import platform
+import subprocess
 from pathlib import Path
 
 from hermes_constants import get_hermes_home
@@ -200,19 +202,33 @@ def _forbids_sampling_params(model: str) -> bool:
 
 
 # Beta headers for enhanced features (sent with ALL auth types).
-# As of Opus 4.7 (2026-04-16), both of these are GA on Claude 4.6+ — the
+# As of Opus 4.7 (2026-04-16), the first two are GA on Claude 4.6+ — the
 # beta headers are still accepted (harmless no-op) but not required. Kept
 # here so older Claude (4.5, 4.1) + third-party Anthropic-compat endpoints
 # that still gate on the headers continue to get the enhanced features.
-# Migration guide: remove these if you no longer support ≤4.5 models.
+#
+# ``context-1m-2025-08-07`` unlocks the 1M context window on Claude Opus 4.6/4.7
+# and Sonnet 4.6 when served via AWS Bedrock or Azure AI Foundry. 1M is GA on
+# native Anthropic (api.anthropic.com) for Opus 4.6+, but Bedrock/Azure still
+# gate it behind this beta header as of 2026-04 — without it Bedrock caps Opus
+# at 200K even though model_metadata.py advertises 1M. The header is a harmless
+# no-op on endpoints where 1M is GA.
+#
+# Migration guide: remove these if you no longer support ≤4.5 models or once
+# Bedrock/Azure promote 1M to GA.
 _COMMON_BETAS = [
     "interleaved-thinking-2025-05-14",
     "fine-grained-tool-streaming-2025-05-14",
+    "context-1m-2025-08-07",
 ]
 # MiniMax's Anthropic-compatible endpoints fail tool-use requests when
 # the fine-grained tool streaming beta is present.  Omit it so tool calls
 # fall back to the provider's default response path.
 _TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14"
+# 1M context beta — see comment on _COMMON_BETAS above. Stripped for
+# Bearer-auth (MiniMax) endpoints since they host their own models and
+# unknown Anthropic beta headers risk request rejection.
+_CONTEXT_1M_BETA = "context-1m-2025-08-07"
 
 # Fast mode beta — enables the ``speed: "fast"`` request parameter for
 # significantly higher output token throughput on Opus 4.6 (~2.5x).
@@ -277,8 +293,9 @@ def _is_oauth_token(key: str) -> bool:
     Positively identifies Anthropic OAuth tokens by their key format:
     - ``sk-ant-`` prefix (but NOT ``sk-ant-api``) → setup tokens, managed keys
     - ``eyJ`` prefix → JWTs from the Anthropic OAuth flow
+    - ``cc-`` prefix → Claude Code OAuth access tokens (from CLAUDE_CODE_OAUTH_TOKEN)
 
-    Non-Anthropic keys (MiniMax, Alibaba, etc.) don't match either pattern
+    Non-Anthropic keys (MiniMax, Alibaba, etc.) don't match any pattern
     and correctly return False.
     """
     if not key:
@@ -291,6 +308,9 @@ def _is_oauth_token(key: str) -> bool:
         return True
     # JWTs from Anthropic OAuth flow
     if key.startswith("eyJ"):
+        return True
+    # Claude Code OAuth access tokens (opaque, from CLAUDE_CODE_OAUTH_TOKEN)
+    if key.startswith("cc-"):
         return True
     return False
 
@@ -351,9 +371,14 @@ def _common_betas_for_base_url(base_url: str | None) -> list[str]:
     that include Anthropic's ``fine-grained-tool-streaming`` beta — every
     tool-use message triggers a connection error.  Strip that beta for
     Bearer-auth endpoints while keeping all other betas intact.
+
+    The ``context-1m-2025-08-07`` beta is also stripped for Bearer-auth
+    endpoints — MiniMax hosts its own models, not Claude, so the header is
+    irrelevant at best and risks request rejection at worst.
     """
     if _requires_bearer_auth(base_url):
-        return [b for b in _COMMON_BETAS if b != _TOOL_STREAMING_BETA]
+        _stripped = {_TOOL_STREAMING_BETA, _CONTEXT_1M_BETA}
+        return [b for b in _COMMON_BETAS if b not in _stripped]
     return _COMMON_BETAS
 
 
@@ -384,7 +409,16 @@ def build_anthropic_client(api_key: str, base_url: str = None, timeout: float = 
         "timeout": Timeout(timeout=float(_read_timeout), connect=10.0),
     }
     if normalized_base_url:
-        kwargs["base_url"] = normalized_base_url
+        # Azure Anthropic endpoints require an ``api-version`` query parameter.
+        # Pass it via default_query so the SDK appends it to every request URL
+        # without corrupting the base_url (appending it directly produces
+        # malformed paths like /anthropic?api-version=.../v1/messages).
+        _is_azure_endpoint = "azure.com" in normalized_base_url.lower()
+        if _is_azure_endpoint and "api-version" not in normalized_base_url:
+            kwargs["base_url"] = normalized_base_url.rstrip("/")
+            kwargs["default_query"] = {"api-version": "2025-04-15"}
+        else:
+            kwargs["base_url"] = normalized_base_url
     common_betas = _common_betas_for_base_url(normalized_base_url)
 
     if _is_kimi_coding_endpoint(base_url):
@@ -441,6 +475,13 @@ def build_anthropic_bedrock_client(region: str):
     Claude feature parity: prompt caching, thinking budgets, adaptive
     thinking, fast mode — features not available via the Converse API.
 
+    Attaches the common Anthropic beta headers as client-level defaults so
+    that Bedrock-hosted Claude models get the same enhanced features as
+    native Anthropic. The ``context-1m-2025-08-07`` beta in particular
+    unlocks the 1M context window for Opus 4.6/4.7 on Bedrock — without
+    it, Bedrock caps these models at 200K even though the Anthropic API
+    serves them with 1M natively.
+
     Auth uses the boto3 default credential chain (IAM roles, SSO, env vars).
     """
     if _anthropic_sdk is None:
@@ -458,11 +499,76 @@ def build_anthropic_bedrock_client(region: str):
     return _anthropic_sdk.AnthropicBedrock(
         aws_region=region,
         timeout=Timeout(timeout=900.0, connect=10.0),
+        default_headers={"anthropic-beta": ",".join(_COMMON_BETAS)},
     )
 
 
+def _read_claude_code_credentials_from_keychain() -> Optional[Dict[str, Any]]:
+    """Read Claude Code OAuth credentials from the macOS Keychain.
+
+    Claude Code >=2.1.114 stores credentials in the macOS Keychain under the
+    service name "Claude Code-credentials" rather than (or in addition to)
+    the JSON file at ~/.claude/.credentials.json.
+
+    The password field contains a JSON string with the same claudeAiOauth
+    structure as the JSON file.
+
+    Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
+    """
+    import platform
+    import subprocess
+
+    if platform.system() != "Darwin":
+        return None
+
+    try:
+        # Read the "Claude Code-credentials" generic password entry
+        result = subprocess.run(
+            ["security", "find-generic-password",
+             "-s", "Claude Code-credentials",
+             "-w"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        logger.debug("Keychain: security command not available or timed out")
+        return None
+
+    if result.returncode != 0:
+        logger.debug("Keychain: no entry found for 'Claude Code-credentials'")
+        return None
+
+    raw = result.stdout.strip()
+    if not raw:
+        return None
+
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        logger.debug("Keychain: credentials payload is not valid JSON")
+        return None
+
+    oauth_data = data.get("claudeAiOauth")
+    if oauth_data and isinstance(oauth_data, dict):
+        access_token = oauth_data.get("accessToken", "")
+        if access_token:
+            return {
+                "accessToken": access_token,
+                "refreshToken": oauth_data.get("refreshToken", ""),
+                "expiresAt": oauth_data.get("expiresAt", 0),
+                "source": "macos_keychain",
+            }
+
+    return None
+
+
 def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
-    """Read refreshable Claude Code OAuth credentials from ~/.claude/.credentials.json.
+    """Read refreshable Claude Code OAuth credentials.
+
+    Checks two sources in order:
+      1. macOS Keychain (Darwin only) — "Claude Code-credentials" entry
+      2. ~/.claude/.credentials.json file
 
     This intentionally excludes ~/.claude.json primaryApiKey. Opencode's
     subscription flow is OAuth/setup-token based with refreshable credentials,
@@ -471,6 +577,12 @@ def read_claude_code_credentials() -> Optional[Dict[str, Any]]:
 
     Returns dict with {accessToken, refreshToken?, expiresAt?} or None.
     """
+    # Try macOS Keychain first (covers Claude Code >=2.1.114)
+    kc_creds = _read_claude_code_credentials_from_keychain()
+    if kc_creds:
+        return kc_creds
+
+    # Fall back to JSON file
     cred_path = Path.home() / ".claude" / ".credentials.json"
     if cred_path.exists():
         try:
@@ -641,7 +753,9 @@ def _write_claude_code_credentials(
         existing["claudeAiOauth"] = oauth_data
 
         cred_path.parent.mkdir(parents=True, exist_ok=True)
-        cred_path.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        _tmp_cred = cred_path.with_suffix(".tmp")
+        _tmp_cred.write_text(json.dumps(existing, indent=2), encoding="utf-8")
+        _tmp_cred.replace(cred_path)
         # Restrict permissions (credentials file)
         cred_path.chmod(0o600)
     except (OSError, IOError) as e:
@@ -908,6 +1022,26 @@ def read_hermes_oauth_credentials() -> Optional[Dict[str, Any]]:
 # ---------------------------------------------------------------------------
 
 
+def _is_bedrock_model_id(model: str) -> bool:
+    """Detect AWS Bedrock model IDs that use dots as namespace separators.
+
+    Bedrock model IDs come in two forms:
+    - Bare:    ``anthropic.claude-opus-4-7``
+    - Regional (inference profiles): ``us.anthropic.claude-sonnet-4-5-v1:0``
+
+    In both cases the dots separate namespace components, not version
+    numbers, and must be preserved verbatim for the Bedrock API.
+    """
+    lower = model.lower()
+    # Regional inference-profile prefixes
+    if any(lower.startswith(p) for p in ("global.", "us.", "eu.", "ap.", "jp.")):
+        return True
+    # Bare Bedrock model IDs: provider.model-family
+    if lower.startswith("anthropic."):
+        return True
+    return False
+
+
 def normalize_model_name(model: str, preserve_dots: bool = False) -> str:
     """Normalize a model name for the Anthropic API.
 
@@ -915,11 +1049,19 @@ def normalize_model_name(model: str, preserve_dots: bool = False) -> str:
     - Converts dots to hyphens in version numbers (OpenRouter uses dots,
       Anthropic uses hyphens: claude-opus-4.6 → claude-opus-4-6), unless
       preserve_dots is True (e.g. for Alibaba/DashScope: qwen3.5-plus).
+    - Preserves Bedrock model IDs (``anthropic.claude-opus-4-7``) and
+      regional inference profiles (``us.anthropic.claude-*``) whose dots
+      are namespace separators, not version separators.
     """
     lower = model.lower()
     if lower.startswith("anthropic/"):
         model = model[len("anthropic/"):]
     if not preserve_dots:
+        # Bedrock model IDs use dots as namespace separators
+        # (e.g. "anthropic.claude-opus-4-7", "us.anthropic.claude-*").
+        # These must not be converted to hyphens.  See issue #12295.
+        if _is_bedrock_model_id(model):
+            return model
         # OpenRouter uses dots for version separators (claude-opus-4.6),
         # Anthropic uses hyphens (claude-opus-4-6). Convert dots to hyphens.
         model = model.replace(".", "-")
@@ -1574,9 +1716,9 @@ def build_anthropic_kwargs(
 
     # ── Strip sampling params on 4.7+ ─────────────────────────────────
     # Opus 4.7 rejects any non-default temperature/top_p/top_k with a 400.
-    # Callers (auxiliary_client, flush_memories, etc.) may set these for
-    # older models; drop them here as a safety net so upstream 4.6 → 4.7
-    # migrations don't require coordinated edits everywhere.
+    # Callers (auxiliary_client, etc.) may set these for older models;
+    # drop them here as a safety net so upstream 4.6 → 4.7 migrations
+    # don't require coordinated edits everywhere.
     if _forbids_sampling_params(model):
         for _sampling_key in ("temperature", "top_p", "top_k"):
             kwargs.pop(_sampling_key, None)
@@ -1596,6 +1738,5 @@ def build_anthropic_kwargs(
         kwargs["extra_headers"] = {"anthropic-beta": ",".join(betas)}
 
     return kwargs
-
 
 

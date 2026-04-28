@@ -2246,10 +2246,6 @@ class DiscordAdapter(BasePlatformAdapter):
         async def slash_usage(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/usage")
 
-        @tree.command(name="provider", description="Show available providers")
-        async def slash_provider(interaction: discord.Interaction):
-            await self._run_simple_slash(interaction, "/provider")
-
         @tree.command(name="help", description="Show available commands")
         async def slash_help(interaction: discord.Interaction):
             await self._run_simple_slash(interaction, "/help")
@@ -2318,11 +2314,6 @@ class DiscordAdapter(BasePlatformAdapter):
         @discord.app_commands.describe(prompt="The prompt to run in the background")
         async def slash_background(interaction: discord.Interaction, prompt: str):
             await self._run_simple_slash(interaction, f"/background {prompt}", "Background task started~")
-
-        @tree.command(name="btw", description="Ephemeral side question using session context")
-        @discord.app_commands.describe(question="Your side question (no tools, not persisted)")
-        async def slash_btw(interaction: discord.Interaction, question: str):
-            await self._run_simple_slash(interaction, f"/btw {question}")
 
         # ── Auto-register any gateway-available commands not yet on the tree ──
         # This ensures new commands added to COMMAND_REGISTRY in
@@ -2688,21 +2679,8 @@ class DiscordAdapter(BasePlatformAdapter):
                 skills: ["skill-a", "skill-b"]
         Also checks parent_id so forum threads inherit the forum's bindings.
         """
-        bindings = self.config.extra.get("channel_skill_bindings", [])
-        if not bindings:
-            return None
-        ids_to_check = {channel_id}
-        if parent_id:
-            ids_to_check.add(parent_id)
-        for entry in bindings:
-            entry_id = str(entry.get("id", ""))
-            if entry_id in ids_to_check:
-                skills = entry.get("skills") or entry.get("skill")
-                if isinstance(skills, str):
-                    return [skills]
-                if isinstance(skills, list) and skills:
-                    return list(dict.fromkeys(skills))  # dedup, preserve order
-        return None
+        from gateway.platforms.base import resolve_channel_skills
+        return resolve_channel_skills(self.config.extra, channel_id, parent_id)
 
     def _resolve_channel_prompt(self, channel_id: str, parent_id: str | None = None) -> str | None:
         """Resolve a Discord per-channel prompt, preferring the exact channel over its parent."""
@@ -2719,7 +2697,12 @@ class DiscordAdapter(BasePlatformAdapter):
         return os.getenv("DISCORD_REQUIRE_MENTION", "true").lower() not in ("false", "0", "no", "off")
 
     def _discord_free_response_channels(self) -> set:
-        """Return Discord channel IDs where no bot mention is required."""
+        """Return Discord channel IDs where no bot mention is required.
+
+        A single ``"*"`` entry (either from a list or a comma-separated
+        string) is preserved in the returned set so callers can short-circuit
+        on wildcard membership, consistent with ``allowed_channels``.
+        """
         raw = self.config.extra.get("free_response_channels")
         if raw is None:
             raw = os.getenv("DISCORD_FREE_RESPONSE_CHANNELS", "")
@@ -3212,14 +3195,14 @@ class DiscordAdapter(BasePlatformAdapter):
             allowed_channels_raw = os.getenv("DISCORD_ALLOWED_CHANNELS", "")
             if allowed_channels_raw:
                 allowed_channels = {ch.strip() for ch in allowed_channels_raw.split(",") if ch.strip()}
-                if not (channel_ids & allowed_channels):
+                if "*" not in allowed_channels and not (channel_ids & allowed_channels):
                     logger.debug("[%s] Ignoring message in non-allowed channel: %s", self.name, channel_ids)
                     return
 
             # Check ignored channels - never respond even when mentioned
             ignored_channels_raw = os.getenv("DISCORD_IGNORED_CHANNELS", "")
             ignored_channels = {ch.strip() for ch in ignored_channels_raw.split(",") if ch.strip()}
-            if channel_ids & ignored_channels:
+            if "*" in ignored_channels or (channel_ids & ignored_channels):
                 logger.debug("[%s] Ignoring message in ignored channel: %s", self.name, channel_ids)
                 return
 
@@ -3233,7 +3216,11 @@ class DiscordAdapter(BasePlatformAdapter):
             voice_linked_ids = {str(ch_id) for ch_id in self._voice_text_channels.values()}
             current_channel_id = str(message.channel.id)
             is_voice_linked_channel = current_channel_id in voice_linked_ids
-            is_free_channel = bool(channel_ids & free_channels) or is_voice_linked_channel
+            is_free_channel = (
+                "*" in free_channels
+                or bool(channel_ids & free_channels)
+                or is_voice_linked_channel
+            )
 
             # Skip the mention check if the message is in a thread where
             # the bot has previously participated (auto-created or replied in).
@@ -3256,6 +3243,7 @@ class DiscordAdapter(BasePlatformAdapter):
             if auto_thread and not skip_thread and not is_voice_linked_channel and not is_reply_message:
                 thread = await self._auto_create_thread(message)
                 if thread:
+                    parent_channel_id = str(message.channel.id)
                     is_thread = True
                     thread_id = str(thread.id)
                     auto_threaded_channel = thread
@@ -3306,6 +3294,7 @@ class DiscordAdapter(BasePlatformAdapter):
         chat_topic = self._get_effective_topic(message.channel, is_thread=is_thread)
 
         # Build source
+        guild = getattr(message, "guild", None)
         source = self.build_source(
             chat_id=str(effective_channel.id),
             chat_name=chat_name,
@@ -3315,6 +3304,9 @@ class DiscordAdapter(BasePlatformAdapter):
             thread_id=thread_id,
             chat_topic=chat_topic,
             is_bot=getattr(message.author, "bot", False),
+            guild_id=str(guild.id) if guild else None,
+            parent_chat_id=parent_channel_id,
+            message_id=str(message.id),
         )
 
         # Build media URLs -- download image attachments to local cache so the
@@ -3866,6 +3858,15 @@ if DISCORD_AVAILABLE:
 
             self.resolved = True
             model_id = interaction.data["values"][0]
+            self.clear_items()
+            await interaction.response.edit_message(
+                embed=discord.Embed(
+                    title="⚙ Switching Model",
+                    description=f"Switching to `{model_id}`...",
+                    color=discord.Color.blue(),
+                ),
+                view=None,
+            )
 
             try:
                 result_text = await self.on_model_selected(
@@ -3876,14 +3877,13 @@ if DISCORD_AVAILABLE:
             except Exception as exc:
                 result_text = f"Error switching model: {exc}"
 
-            self.clear_items()
-            await interaction.response.edit_message(
+            await interaction.edit_original_response(
                 embed=discord.Embed(
                     title="⚙ Model Switched",
                     description=result_text,
                     color=discord.Color.green(),
                 ),
-                view=self,
+                view=None,
             )
 
         async def _on_back(self, interaction: discord.Interaction):

@@ -71,6 +71,28 @@ VALID_HOOKS: Set[str] = {
     "on_session_finalize",
     "on_session_reset",
     "subagent_stop",
+    # Gateway pre-dispatch hook. Fired once per incoming MessageEvent
+    # after the internal-event guard but BEFORE auth/pairing and agent
+    # dispatch. Plugins may return a dict to influence flow:
+    #   {"action": "skip",    "reason": "..."}  -> drop message (no reply)
+    #   {"action": "rewrite", "text": "..."}    -> replace event.text, continue
+    #   {"action": "allow"}  /  None             -> normal dispatch
+    # Kwargs: event: MessageEvent, gateway: GatewayRunner, session_store.
+    "pre_gateway_dispatch",
+    # Approval lifecycle hooks. Fired by tools/approval.py when a dangerous
+    # command needs user approval -- fires BOTH for CLI-interactive prompts
+    # and for gateway/ACP approvals (Telegram, Discord, Slack, TUI, etc.).
+    # Observers only: return values are ignored. Plugins cannot veto or
+    # pre-answer an approval from these hooks (use pre_tool_call to block
+    # a tool before it reaches approval).
+    #
+    # Kwargs for pre_approval_request:
+    #   command: str, description: str, pattern_key: str, pattern_keys: list[str],
+    #   session_key: str, surface: "cli" | "gateway"
+    # Kwargs for post_approval_response: same as above plus
+    #   choice: "once" | "session" | "always" | "deny" | "timeout"
+    "pre_approval_request",
+    "post_approval_response",
 }
 
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"

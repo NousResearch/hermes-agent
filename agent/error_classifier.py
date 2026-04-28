@@ -42,6 +42,7 @@ class FailoverReason(enum.Enum):
     # Context / payload
     context_overflow = "context_overflow"  # Context too large — compress, not failover
     payload_too_large = "payload_too_large"  # 413 — compress payload
+    image_too_large = "image_too_large"   # Native image part exceeds provider's per-image limit — shrink and retry
 
     # Model
     model_not_found = "model_not_found"  # 404 or invalid model — fallback to different model
@@ -145,6 +146,20 @@ _PAYLOAD_TOO_LARGE_PATTERNS = [
     "request entity too large",
     "payload too large",
     "error code: 413",
+]
+
+# Image-size patterns.  Matched against 400 bodies (not 413) because most
+# providers return a 400 with a specific image-too-big message before the
+# whole request hits the 413 size limit.  Anthropic's wording is the most
+# important here (hard 5 MB per image, returned as
+# "messages.N.content.K.image.source.base64: image exceeds 5 MB maximum").
+_IMAGE_TOO_LARGE_PATTERNS = [
+    "image exceeds",        # Anthropic: "image exceeds 5 MB maximum"
+    "image too large",      # generic
+    "image_too_large",      # error_code variant
+    "image size exceeds",   # variant
+    # "request_too_large" on a request known to contain an image → image is
+    # the likely culprit; we still try the shrink path before giving up.
 ]
 
 # Context overflow patterns
@@ -343,6 +358,11 @@ def classify_api_error(
     """
     status_code = _extract_status_code(error)
     error_type = type(error).__name__
+    # Copilot/GitHub Models RateLimitError may not set .status_code; force 429
+    # so downstream rate-limit handling (classifier reason, pool rotation,
+    # fallback gating) fires correctly instead of misclassifying as generic.
+    if status_code is None and error_type == "RateLimitError":
+        status_code = 429
     body = _extract_error_body(error)
     error_code = _extract_error_code(body)
 
@@ -666,6 +686,15 @@ def _classify_400(
 ) -> ClassifiedError:
     """Classify 400 Bad Request — context overflow, format error, or generic."""
 
+    # Image-too-large from 400 (Anthropic's 5 MB per-image check fires this way).
+    # Must be checked BEFORE context_overflow because messages can trip both
+    # patterns ("exceeds" + "image") and image-shrink is a cheaper recovery.
+    if any(p in error_msg for p in _IMAGE_TOO_LARGE_PATTERNS):
+        return result_fn(
+            FailoverReason.image_too_large,
+            retryable=True,
+        )
+
     # Context overflow from 400
     if any(p in error_msg for p in _CONTEXT_OVERFLOW_PATTERNS):
         return result_fn(
@@ -791,6 +820,13 @@ def _classify_by_message(
             FailoverReason.payload_too_large,
             retryable=True,
             should_compress=True,
+        )
+
+    # Image-too-large patterns (from message text when no status_code)
+    if any(p in error_msg for p in _IMAGE_TOO_LARGE_PATTERNS):
+        return result_fn(
+            FailoverReason.image_too_large,
+            retryable=True,
         )
 
     # Usage-limit patterns need the same disambiguation as 402: some providers

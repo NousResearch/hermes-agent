@@ -38,6 +38,31 @@ HAND_WRITTEN = {"godmode.md", "google-workspace.md"}
 
 _FENCE_RE = re.compile(r"^(?P<indent>\s*)(?P<fence>```+|~~~+)", re.MULTILINE)
 
+# Unicode box-drawing characters. If a generated fenced code block contains any
+# of these, wrap it in `<!-- ascii-guard-ignore -->` so the docs-site-checks
+# lint (which scans inside code fences) can't reject the page for a skill's
+# own ASCII diagram. Skill authors shouldn't need to remember to add the
+# ignore markers in every SKILL.md — the generator handles it defensively.
+_BOX_DRAWING_CHARS = frozenset("┌┐└┘─│═║╔╗╚╝╠╣╦╩╬├┤┬┴┼╭╮╯╰▶◀▲▼")
+
+
+def _wrap_ascii_art_code_blocks(code_segment: str) -> str:
+    """Wrap a fenced code segment in ascii-guard-ignore markers if it contains
+    box-drawing characters. No-op otherwise, so plain bash/python code blocks
+    stay uncluttered.
+
+    Already-wrapped segments (the SKILL.md source added its own markers) are
+    left alone — double-wrapping is harmless but we'd rather keep the output
+    clean.
+    """
+    if not any(ch in _BOX_DRAWING_CHARS for ch in code_segment):
+        return code_segment
+    return (
+        "<!-- ascii-guard-ignore -->\n"
+        f"{code_segment}\n"
+        "<!-- ascii-guard-ignore-end -->"
+    )
+
 
 def mdx_escape_body(body: str) -> str:
     """Escape MDX-dangerous characters in markdown body, leaving fenced code blocks alone.
@@ -120,6 +145,14 @@ def mdx_escape_body(body: str) -> str:
                 elif ch == "}":
                     out.append("&#125;")
                 elif ch == "<":
+                    # Preserve full HTML comments (e.g. ascii-guard ignore markers) — they
+                    # are not HTML tags, so the tag regex below would escape the leading <.
+                    if text[i:].startswith("<!--"):
+                        end = text.find("-->", i)
+                        if end != -1:
+                            out.append(text[i : end + 3])
+                            i = end + 3
+                            continue
                     # Look ahead to see if this is a valid HTML-ish tag.
                     # If it looks like a tag name then alnum/-/_ chars, leave it.
                     # Otherwise escape.
@@ -186,7 +219,7 @@ def mdx_escape_body(body: str) -> str:
     processed: list[str] = []
     for kind, content in segments:
         if kind == "code":
-            processed.append(content)
+            processed.append(_wrap_ascii_art_code_blocks(content))
         else:
             processed.append(escape_text(content))
     return "\n".join(processed)

@@ -803,6 +803,31 @@ def clear_task_env_overrides(task_id: str):
     """
     _task_env_overrides.pop(task_id, None)
 
+
+def _resolve_container_task_id(task_id: Optional[str]) -> str:
+    """
+    Map a tool-call ``task_id`` to the container/sandbox key used by
+    ``_active_environments``.
+
+    The top-level agent passes ``task_id=None`` and lands on ``"default"``.
+    ``delegate_task`` children pass their own subagent ID so that
+    file-state tracking, the active-subagents registry, and TUI events stay
+    distinct per child -- but we deliberately collapse that ID back to
+    ``"default"`` here so subagents share the parent's long-lived container
+    (one bash, one /workspace, one set of installed packages).
+
+    Exception: RL / benchmark environments (TerminalBench2, HermesSweEnv, ...)
+    call ``register_task_env_overrides(task_id, {...})`` to request a
+    per-task Docker/Modal image. When an override is registered for a
+    task_id, we honour it by returning the task_id unchanged -- those
+    rollouts need their own isolated sandbox, which is the whole point of
+    the override.
+    """
+    if task_id and task_id in _task_env_overrides:
+        return task_id
+    return "default"
+
+
 # Configuration from environment variables
 
 def _parse_env_var(name: str, default: str, converter=int, type_label: str = "integer"):
@@ -1139,8 +1164,9 @@ def _stop_cleanup_thread():
 
 def get_active_env(task_id: str):
     """Return the active BaseEnvironment for *task_id*, or None."""
+    lookup = _resolve_container_task_id(task_id)
     with _env_lock:
-        return _active_environments.get(task_id)
+        return _active_environments.get(lookup) or _active_environments.get(task_id)
 
 
 def is_persistent_env(task_id: str) -> bool:
@@ -1388,6 +1414,33 @@ def _foreground_background_guidance(command: str) -> str | None:
     return None
 
 
+def _resolve_notification_flag_conflict(
+    *,
+    notify_on_complete: bool,
+    watch_patterns,
+    background: bool,
+) -> tuple:
+    """Decide what to do when both notify_on_complete and watch_patterns are set.
+
+    These flags produce duplicate, delayed notifications when combined — one
+    notification per watch-pattern match AND one on process exit, with async
+    delivery that can spam the user long after the process ends. When both are
+    set, we drop watch_patterns in favor of notify_on_complete (the more useful
+    "let me know when it's done" signal) and return a human-readable note.
+
+    Returns:
+        (watch_patterns_to_use, conflict_note). conflict_note is "" when there
+        is no conflict.
+    """
+    if background and notify_on_complete and watch_patterns:
+        note = (
+            "watch_patterns ignored because notify_on_complete=True; "
+            "these two flags produce duplicate notifications when combined"
+        )
+        return None, note
+    return watch_patterns, ""
+
+
 def terminal_tool(
     command: str,
     background: bool = False,
@@ -1410,8 +1463,8 @@ def terminal_tool(
         force: If True, skip dangerous command check (use after user confirms)
         workdir: Working directory for this command (optional, uses session cwd if not set)
         pty: If True, use pseudo-terminal for interactive CLI tools (local backend only)
-        notify_on_complete: If True and background=True, auto-notify the agent when the process exits
-        watch_patterns: List of strings to watch for in background output; fires a notification on first match per pattern. Use ONLY for mid-process signals (errors, readiness markers) that appear before exit. For end-of-run markers use notify_on_complete instead — stacking both produces duplicate, delayed notifications.
+        notify_on_complete: If True and background=True, you'll be notified exactly once when the process exits. The right choice for almost every long task. MUTUALLY EXCLUSIVE with watch_patterns.
+        watch_patterns: List of strings to watch for in background output. HARD rate limit: 1 notification per 15s per process. After 3 strike windows in a row, watch_patterns is disabled and the session is auto-promoted to notify_on_complete. Use ONLY for rare, one-shot mid-process signals on long-lived processes (server readiness, migration-done markers). NEVER use in loops/batch jobs — error patterns there will hit the strike limit and get disabled. MUTUALLY EXCLUSIVE with notify_on_complete — set one, not both.
 
     Returns:
         str: JSON string with output, exit_code, and error fields
@@ -1446,8 +1499,11 @@ def terminal_tool(
         config = _get_env_config()
         env_type = config["env_type"]
 
-        # Use task_id for environment isolation
-        effective_task_id = task_id or "default"
+        # Use task_id for environment isolation. By default all subagent
+        # task_ids collapse back to "default" so the top-level agent and
+        # every delegate_task child share one container; only task_ids with
+        # a registered env override (RL benchmarks) get isolated sandboxes.
+        effective_task_id = _resolve_container_task_id(task_id)
 
         # Check per-task overrides (set by environments like TerminalBench2Env)
         # before falling back to global env var config
@@ -1701,6 +1757,22 @@ def terminal_tool(
                         proc_session.watcher_user_name = _gw_user_name
                         proc_session.watcher_thread_id = _gw_thread_id
 
+                # Mutual exclusion: if both notify_on_complete and watch_patterns
+                # are set, drop watch_patterns. The combination produces duplicate
+                # notifications (one per match + one on exit) that deliver
+                # asynchronously and can spam the user long after the process ends.
+                # notify_on_complete is the more useful signal for "let me know
+                # when the task finishes"; watch_patterns should be reserved for
+                # standalone mid-process signals on long-lived processes.
+                watch_patterns, conflict_note = _resolve_notification_flag_conflict(
+                    notify_on_complete=bool(notify_on_complete),
+                    watch_patterns=watch_patterns,
+                    background=bool(background),
+                )
+                if conflict_note:
+                    logger.warning("background proc %s: %s", proc_session.id, conflict_note)
+                    result_data["watch_patterns_ignored"] = conflict_note
+
                 # Mark for agent notification on completion
                 if notify_on_complete and background:
                     proc_session.notify_on_complete = True
@@ -1779,7 +1851,7 @@ def terminal_tool(
             # Extract output
             output = result.get("output", "")
             returncode = result.get("returncode", 0)
-            
+
             # Add helpful message for sudo failures in messaging context
             output = _handle_sudo_failure(output, env_type)
 
@@ -2039,13 +2111,13 @@ TERMINAL_SCHEMA = {
             },
             "notify_on_complete": {
                 "type": "boolean",
-                "description": "When true (and background=true), you'll be automatically notified when the process finishes — no polling needed. Use this for tasks that take a while (tests, builds, deployments) so you can keep working on other things in the meantime.",
+                "description": "When true (and background=true), you'll be automatically notified exactly once when the process finishes. **This is the right choice for almost every long-running task** — tests, builds, deployments, multi-item batch jobs, anything that takes over a minute and has a defined end. Use this and keep working on other things; the system notifies you on exit. MUTUALLY EXCLUSIVE with watch_patterns — when both are set, watch_patterns is dropped.",
                 "default": False
             },
             "watch_patterns": {
                 "type": "array",
                 "items": {"type": "string"},
-                "description": "Strings to watch for in background process output. Fires a notification the first time each pattern matches a line of output. **Use ONLY for mid-process signals** you want to react to before the process exits — errors, readiness markers, intermediate step markers (e.g. [\"ERROR\", \"Traceback\", \"listening on port\"]). Do NOT use for end-of-run markers (summary headers, 'DONE', 'PASS' printed right before exit) — use `notify_on_complete` for that instead. Stacking end-of-run patterns on top of `notify_on_complete` produces duplicate, delayed notifications that arrive after you've already moved on, since delivery is asynchronous and continues after the process exits."
+                "description": "Strings to watch for in background process output. HARD RATE LIMIT: at most 1 notification per 15 seconds per process — matches arriving inside the cooldown are dropped. After 3 consecutive 15-second windows with dropped matches, watch_patterns is automatically disabled for that process and promoted to notify_on_complete behavior (one notification on exit, no more mid-process spam). USE ONLY for truly rare, one-shot mid-process signals on LONG-LIVED processes that will never exit on their own — e.g. ['Application startup complete'] on a server so you know when to hit its endpoint, or ['migration done'] on a daemon. DO NOT use for: (1) end-of-run markers like 'DONE'/'PASS' — use notify_on_complete instead; (2) error patterns like 'ERROR'/'Traceback' in loops or multi-item batch jobs — they fire on every iteration and you'll hit the strike limit fast; (3) anything you'd ever combine with notify_on_complete. When in doubt, choose notify_on_complete. MUTUALLY EXCLUSIVE with notify_on_complete — set one, not both."
             }
         },
         "required": ["command"]

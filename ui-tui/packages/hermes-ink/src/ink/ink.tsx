@@ -19,6 +19,7 @@ import App from './components/App.js'
 import type { CursorDeclaration, CursorDeclarationSetter } from './components/CursorDeclarationContext.js'
 import { FRAME_INTERVAL_MS } from './constants.js'
 import * as dom from './dom.js'
+import { markDirty } from './dom.js'
 import { KeyboardEvent } from './events/keyboard-event.js'
 import { FocusManager } from './focus.js'
 import { emptyFrame, type Frame, type FrameEvent } from './frame.js'
@@ -61,6 +62,7 @@ import {
   getSelectedText,
   hasSelection,
   moveFocus,
+  selectionBounds,
   type SelectionState,
   selectLineAt,
   selectWordAt,
@@ -163,6 +165,15 @@ export default class Ink {
   private backFrame: Frame
   private lastPoolResetTime = performance.now()
   private drainTimer: ReturnType<typeof setTimeout> | null = null
+  // Write-drain telemetry: pendingWriteStart is the performance.now() of
+  // the most recent stdout.write waiting for its drain callback.  Set to
+  // null when the callback fires (drained).  Read on the NEXT frame and
+  // reported as prevFrameDrainMs so the FrameEvent records how long the
+  // previous write took to actually hit the terminal — distinguishes
+  // "queued in Node" (write returned true) from "terminal accepted bytes"
+  // (callback fired).
+  private pendingWriteStart: number | null = null
+  private lastDrainMs = 0
   private lastYogaCounters: {
     ms: number
     visited: number
@@ -251,6 +262,9 @@ export default class Ink {
   // into one follow-up microtask instead of stacking renders.
   private isRendering = false
   private immediateRerenderRequested = false
+  private selectionDragCell: { col: number; row: number } | null = null
+  private selectionAutoScrollTimer: ReturnType<typeof setInterval> | null = null
+  private selectionAutoScrollDir: -1 | 0 | 1 = 0
   constructor(private readonly options: Options) {
     autoBind(this)
 
@@ -965,7 +979,42 @@ export default class Ink {
     }
 
     const tWrite = performance.now()
-    writeDiffToTerminal(this.terminal, optimized, this.altScreenActive && !SYNC_OUTPUT_SUPPORTED)
+
+    // Capture any stale pending write BEFORE starting this frame's write —
+    // if the callback already fired, pendingWriteStart is null and lastDrainMs
+    // already reflects the previous frame's drain.  If it hasn't fired, we
+    // report "still pending" via a non-zero duration based on now-then so
+    // backpressure shows up even if Node never flushes this session.
+    const staleDrain = this.pendingWriteStart !== null ? performance.now() - this.pendingWriteStart : this.lastDrainMs
+
+    const prevFrameDrainMs = Math.round(staleDrain * 100) / 100
+    this.lastDrainMs = 0
+
+    // Only track drain on TTY. Piped/non-TTY stdout bypasses flow control.
+    const trackDrain = this.options.stdout.isTTY && hasDiff
+    const drainStart = trackDrain ? tWrite : 0
+
+    if (trackDrain) {
+      this.pendingWriteStart = drainStart
+    }
+
+    const { bytes: writeBytes, backpressure } = writeDiffToTerminal(
+      this.terminal,
+      optimized,
+      this.altScreenActive && !SYNC_OUTPUT_SUPPORTED,
+      trackDrain
+        ? () => {
+            // Callback fires once Node has flushed the chunk to the OS.
+            // Capture the drain time and clear pending so the NEXT frame's
+            // staleDrain = the real end-to-end flush time.
+            if (this.pendingWriteStart === drainStart) {
+              this.lastDrainMs = performance.now() - drainStart
+              this.pendingWriteStart = null
+            }
+          }
+        : undefined
+    )
+
     const writeMs = performance.now() - tWrite
 
     // Update blit safety for the NEXT frame. The frame just rendered
@@ -1003,6 +1052,10 @@ export default class Ink {
         optimize: optimizeMs,
         write: writeMs,
         patches: diff.length,
+        optimizedPatches: optimized.length,
+        writeBytes,
+        backpressure,
+        prevFrameDrainMs,
         yoga: yogaMs,
         commit: commitMs,
         yogaVisited: yc.visited,
@@ -1119,6 +1172,23 @@ export default class Ink {
       this.resetFramesForAltScreen()
     } else {
       this.repaint()
+    }
+  }
+
+  /**
+   * Toggle mouse tracking at runtime while the alt screen is active.
+   * Writes the appropriate DEC reset/set sequences so the terminal
+   * (and ConPTY on Windows WSL2) reflects the change immediately.
+   */
+  setAltScreenMouseTracking(enabled: boolean): void {
+    if (this.altScreenMouseTracking === enabled) {
+      return
+    }
+
+    this.altScreenMouseTracking = enabled
+
+    if (this.altScreenActive) {
+      this.options.stdout.write(enabled ? ENABLE_MOUSE_TRACKING : DISABLE_MOUSE_TRACKING)
     }
   }
   get isAltScreenActive(): boolean {
@@ -1280,11 +1350,13 @@ export default class Ink {
   }
 
   /**
-   * Copy the current selection to the clipboard without clearing the
-   * highlight. Matches iTerm2's copy-on-select behavior where the selected
-   * region stays visible after the automatic copy.
+   * Copy the current text selection to the system clipboard without clearing the
+   * selection. Returns the copied text when a clipboard path succeeded (native
+   * tool fired, tmux buffer loaded, or OSC 52 emitted), or '' when no path was
+   * taken (e.g. headless Linux without tmux). Matches iTerm2's copy-on-select
+   * behavior where the selected region stays visible after the automatic copy.
    */
-  copySelectionNoClear(): string {
+  async copySelectionNoClear(): Promise<string> {
     if (!hasSelection(this.selection)) {
       return ''
     }
@@ -1292,28 +1364,43 @@ export default class Ink {
     const text = getSelectedText(this.selection, this.frontFrame.screen)
 
     if (text) {
-      // Raw OSC 52, or DCS-passthrough-wrapped OSC 52 inside tmux (tmux
-      // drops it silently unless allow-passthrough is on — no regression).
-      void setClipboard(text).then(raw => {
-        if (raw) {
-          this.options.stdout.write(raw)
+      try {
+        const { sequence, success } = await setClipboard(text)
+
+        if (sequence) {
+          this.options.stdout.write(sequence)
         }
-      })
+
+        if (success) {
+          return text
+        }
+
+        if (process.env.HERMES_TUI_DEBUG_CLIPBOARD) {
+          console.error(
+            '[clipboard] no path reached the clipboard (headless + no tmux?) — set HERMES_TUI_FORCE_OSC52=1 to force the escape sequence'
+          )
+        }
+      } catch (err) {
+        if (process.env.HERMES_TUI_DEBUG_CLIPBOARD) {
+          console.error('[clipboard] error:', err)
+        }
+      }
     }
 
-    return text
+    return ''
   }
 
   /**
    * Copy the current text selection to the system clipboard via OSC 52
-   * and clear the selection. Returns the copied text (empty if no selection).
+   * and clear the selection. Returns the copied text (empty if no selection
+   * or clipboard operation failed).
    */
-  copySelection(): string {
+  async copySelection(): Promise<string> {
     if (!hasSelection(this.selection)) {
       return ''
     }
 
-    const text = this.copySelectionNoClear()
+    const text = await this.copySelectionNoClear()
     clearSelection(this.selection)
     this.notifySelectionChange()
 
@@ -1618,6 +1705,8 @@ export default class Ink {
       return undefined
     }
 
+    this.stopSelectionAutoScroll()
+
     return dispatchMouse(
       this.rootNode,
       col,
@@ -1632,6 +1721,7 @@ export default class Ink {
       return
     }
 
+    this.stopSelectionAutoScroll()
     dispatchMouse(this.rootNode, col, row, 'onMouseUp', button, isEmptyCellAt(this.frontFrame.screen, col, row), target)
   }
   dispatchMouseDrag(target: dom.DOMElement, col: number, row: number, button: number): void {
@@ -1757,6 +1847,18 @@ export default class Ink {
       return
     }
 
+    if (this.selectionDragCell?.col === col && this.selectionDragCell.row === row) {
+      this.updateSelectionAutoScroll(row)
+
+      return
+    }
+
+    this.selectionDragCell = { col, row }
+    this.applySelectionDrag(col, row)
+    this.updateSelectionAutoScroll(row)
+  }
+
+  private applySelectionDrag(col: number, row: number): void {
     const sel = this.selection
 
     if (sel.anchorSpan) {
@@ -1766,6 +1868,118 @@ export default class Ink {
     }
 
     this.notifySelectionChange()
+  }
+
+  private updateSelectionAutoScroll(row: number): void {
+    if (!this.selection.isDragging || !this.altScreenActive) {
+      this.stopSelectionAutoScroll()
+
+      return
+    }
+
+    const dir: -1 | 0 | 1 = row <= 0 ? -1 : row >= this.terminalRows - 1 ? 1 : 0
+
+    if (dir === 0) {
+      this.stopSelectionAutoScroll()
+
+      return
+    }
+
+    if (this.selectionAutoScrollDir === dir && this.selectionAutoScrollTimer) {
+      return
+    }
+
+    this.stopSelectionAutoScroll()
+    this.selectionAutoScrollDir = dir
+    this.selectionAutoScrollTimer = setInterval(() => this.stepSelectionAutoScroll(), 50)
+  }
+
+  private stepSelectionAutoScroll(): void {
+    if (!this.selection.isDragging || !this.altScreenActive || this.selectionAutoScrollDir === 0) {
+      this.stopSelectionAutoScroll()
+
+      return
+    }
+
+    const box = this.findPrimaryScrollBox()
+
+    if (!box) {
+      this.stopSelectionAutoScroll()
+
+      return
+    }
+
+    const viewport = Math.max(0, box.scrollViewportHeight ?? 0)
+    const max = Math.max(0, (box.scrollHeight ?? 0) - viewport)
+    const current = box.scrollTop ?? 0
+    const next = Math.max(0, Math.min(max, current + this.selectionAutoScrollDir))
+
+    if (next === current) {
+      return
+    }
+
+    const top = box.scrollViewportTop ?? 0
+    const bottom = top + viewport - 1
+    const before = selectionBounds(this.selection)
+
+    if (before) {
+      if (this.selectionAutoScrollDir > 0) {
+        captureScrolledRows(this.selection, this.frontFrame.screen, top, top, 'above')
+      } else {
+        captureScrolledRows(this.selection, this.frontFrame.screen, bottom, bottom, 'below')
+      }
+    }
+
+    box.stickyScroll = false
+    box.pendingScrollDelta = undefined
+    box.scrollAnchor = undefined
+    box.scrollTop = next
+    markDirty(box)
+    shiftAnchor(this.selection, -this.selectionAutoScrollDir, top, bottom)
+
+    if (this.selectionDragCell) {
+      this.selectionDragCell = {
+        col: this.selectionDragCell.col,
+        row: this.selectionAutoScrollDir > 0 ? bottom : top
+      }
+    }
+
+    this.applySelectionDrag(
+      this.selectionDragCell?.col ?? 0,
+      this.selectionDragCell?.row ?? (this.selectionAutoScrollDir > 0 ? bottom : top)
+    )
+  }
+
+  private stopSelectionAutoScroll(): void {
+    if (this.selectionAutoScrollTimer) {
+      clearInterval(this.selectionAutoScrollTimer)
+      this.selectionAutoScrollTimer = null
+    }
+
+    this.selectionAutoScrollDir = 0
+    this.selectionDragCell = null
+  }
+
+  private findPrimaryScrollBox(): dom.DOMElement | undefined {
+    const stack = [this.rootNode]
+
+    while (stack.length) {
+      const node = stack.shift()!
+
+      if (
+        node.style.overflowY === 'scroll' &&
+        node.scrollHeight !== undefined &&
+        node.scrollViewportHeight !== undefined
+      ) {
+        return node
+      }
+
+      for (const child of node.childNodes) {
+        if (child.nodeName !== '#text') {
+          stack.push(child)
+        }
+      }
+    }
   }
 
   // Methods to properly suspend stdin for external editor usage

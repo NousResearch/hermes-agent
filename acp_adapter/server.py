@@ -60,7 +60,7 @@ from acp_adapter.events import (
     make_tool_progress_cb,
 )
 from acp_adapter.permissions import make_approval_callback
-from acp_adapter.session import SessionManager, SessionState
+from acp_adapter.session import SessionManager, SessionState, _expand_acp_enabled_toolsets
 
 logger = logging.getLogger(__name__)
 
@@ -287,7 +287,11 @@ class HermesACPAgent(acp.Agent):
         try:
             from model_tools import get_tool_definitions
 
-            enabled_toolsets = getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"]
+            enabled_toolsets = _expand_acp_enabled_toolsets(
+                getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"],
+                mcp_server_names=[server.name for server in mcp_servers],
+            )
+            state.agent.enabled_toolsets = enabled_toolsets
             disabled_toolsets = getattr(state.agent, "disabled_toolsets", None)
             state.agent.tools = get_tool_definitions(
                 enabled_toolsets=enabled_toolsets,
@@ -754,7 +758,9 @@ class HermesACPAgent(acp.Agent):
     def _cmd_tools(self, args: str, state: SessionState) -> str:
         try:
             from model_tools import get_tool_definitions
-            toolsets = getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"]
+            toolsets = _expand_acp_enabled_toolsets(
+                getattr(state.agent, "enabled_toolsets", None) or ["hermes-acp"]
+            )
             tools = get_tool_definitions(enabled_toolsets=toolsets, quiet_mode=True)
             if not tools:
                 return "No tools available."

@@ -66,13 +66,30 @@ hermes model
 
 Good defaults:
 
-| Situation | Recommended path |
-|---|---|
-| Least friction | Nous Portal or OpenRouter |
-| You already have Claude or Codex auth | Anthropic or OpenAI Codex |
-| You want local/private inference | Ollama or any custom OpenAI-compatible endpoint |
-| You want multi-provider routing | OpenRouter |
-| You have a custom GPU server | vLLM, SGLang, LiteLLM, or any OpenAI-compatible endpoint |
+| Provider | What it is | How to set up |
+|----------|-----------|---------------|
+| **Nous Portal** | Subscription-based, zero-config | OAuth login via `hermes model` |
+| **OpenAI Codex** | ChatGPT OAuth, uses Codex models | Device code auth via `hermes model` |
+| **Anthropic** | Claude models directly (Pro/Max or API key) | `hermes model` with Claude Code auth, or an Anthropic API key |
+| **OpenRouter** | Multi-provider routing across many models | Enter your API key |
+| **Z.AI** | GLM / Zhipu-hosted models | Set `GLM_API_KEY` / `ZAI_API_KEY` |
+| **Kimi / Moonshot** | Moonshot-hosted coding and chat models | Set `KIMI_API_KEY` |
+| **Kimi / Moonshot China** | China-region Moonshot endpoint | Set `KIMI_CN_API_KEY` |
+| **Arcee AI** | Trinity models | Set `ARCEEAI_API_KEY` |
+| **GMI Cloud** | Multi-model direct API | Set `GMI_API_KEY` |
+| **MiniMax** | International MiniMax endpoint | Set `MINIMAX_API_KEY` |
+| **MiniMax China** | China-region MiniMax endpoint | Set `MINIMAX_CN_API_KEY` |
+| **Alibaba Cloud** | Qwen models via DashScope | Set `DASHSCOPE_API_KEY` |
+| **Hugging Face** | 20+ open models via unified router (Qwen, DeepSeek, Kimi, etc.) | Set `HF_TOKEN` |
+| **Kilo Code** | KiloCode-hosted models | Set `KILOCODE_API_KEY` |
+| **OpenCode Zen** | Pay-as-you-go access to curated models | Set `OPENCODE_ZEN_API_KEY` |
+| **OpenCode Go** | $10/month subscription for open models | Set `OPENCODE_GO_API_KEY` |
+| **DeepSeek** | Direct DeepSeek API access | Set `DEEPSEEK_API_KEY` |
+| **NVIDIA NIM** | Nemotron models via build.nvidia.com or local NIM | Set `NVIDIA_API_KEY` (optional: `NVIDIA_BASE_URL`) |
+| **GitHub Copilot** | GitHub Copilot subscription (GPT-5.x, Claude, Gemini, etc.) | OAuth via `hermes model`, or `COPILOT_GITHUB_TOKEN` / `GH_TOKEN` |
+| **GitHub Copilot ACP** | Copilot ACP agent backend (spawns local `copilot` CLI) | `hermes model` (requires `copilot` CLI + `copilot login`) |
+| **Vercel AI Gateway** | Vercel AI Gateway routing | Set `AI_GATEWAY_API_KEY` |
+| **Custom Endpoint** | VLLM, SGLang, Ollama, or any OpenAI-compatible API | Set base URL + API key |
 
 For most first-time users: choose a provider, accept the defaults unless you know why you're changing them. The full provider catalog with env vars and setup steps lives on the [Providers](../integrations/providers.md) page.
 

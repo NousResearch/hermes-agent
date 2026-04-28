@@ -125,6 +125,7 @@ _DEFAULT_PAYLOADS = {
         "task_id": "test-task",
         "tool_call_id": "test-call",
         "result": '{"output": "hello"}',
+        "duration_ms": 42,
     },
     "pre_llm_call": {
         "session_id": "test-session",

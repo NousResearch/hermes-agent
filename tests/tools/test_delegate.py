@@ -568,6 +568,163 @@ class TestDelegateObservability(unittest.TestCase):
             self.assertEqual(result["results"][0]["exit_reason"], "max_iterations")
 
 
+class TestSubagentCostRollup(unittest.TestCase):
+    """Port of Kilo-Org/kilocode#9448 — parent's session_estimated_cost_usd
+    must include subagent spend, not just the parent's own API calls."""
+
+    def _make_parent_with_cost_counters(self, depth=0, starting_cost=0.0):
+        parent = _make_mock_parent(depth=depth)
+        # The fields AIAgent exposes and the footer reads from.  Set real
+        # floats/strings so the rollup can add to them rather than tripping
+        # on MagicMock auto-attrs.
+        parent.session_estimated_cost_usd = starting_cost
+        parent.session_cost_status = "unknown"
+        parent.session_cost_source = "none"
+        return parent
+
+    def test_single_child_cost_folded_into_parent(self):
+        parent = self._make_parent_with_cost_counters(starting_cost=0.10)
+
+        with patch("run_agent.AIAgent") as MockAgent:
+            mock_child = MagicMock()
+            mock_child.model = "claude-sonnet-4-6"
+            mock_child.session_prompt_tokens = 1000
+            mock_child.session_completion_tokens = 200
+            mock_child.session_estimated_cost_usd = 0.42
+            mock_child.run_conversation.return_value = {
+                "final_response": "done",
+                "completed": True,
+                "interrupted": False,
+                "api_calls": 2,
+                "messages": [],
+            }
+            MockAgent.return_value = mock_child
+
+            result = json.loads(delegate_task(goal="do stuff", parent_agent=parent))
+
+        # Parent footer must reflect parent_cost + child_cost.
+        self.assertAlmostEqual(parent.session_estimated_cost_usd, 0.52, places=6)
+        # Rollup must strip the internal field before serialising to the model.
+        self.assertNotIn("_child_cost_usd", result["results"][0])
+        self.assertNotIn("_child_role", result["results"][0])
+
+    def test_batch_children_costs_sum_into_parent(self):
+        parent = self._make_parent_with_cost_counters(starting_cost=0.00)
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.side_effect = [
+                {
+                    "task_index": 0,
+                    "status": "completed",
+                    "summary": "A",
+                    "api_calls": 2,
+                    "duration_seconds": 1.0,
+                    "_child_role": "leaf",
+                    "_child_cost_usd": 0.15,
+                },
+                {
+                    "task_index": 1,
+                    "status": "completed",
+                    "summary": "B",
+                    "api_calls": 2,
+                    "duration_seconds": 1.0,
+                    "_child_role": "leaf",
+                    "_child_cost_usd": 0.27,
+                },
+                {
+                    "task_index": 2,
+                    "status": "failed",
+                    "summary": "",
+                    "error": "boom",
+                    "api_calls": 0,
+                    "duration_seconds": 0.1,
+                    "_child_role": "leaf",
+                    "_child_cost_usd": 0.03,
+                },
+            ]
+            result = json.loads(
+                delegate_task(
+                    tasks=[{"goal": "A"}, {"goal": "B"}, {"goal": "C"}],
+                    parent_agent=parent,
+                )
+            )
+
+        # 0.15 + 0.27 + 0.03 even though one child failed — the API calls it
+        # made before failing still cost money.
+        self.assertAlmostEqual(parent.session_estimated_cost_usd, 0.45, places=6)
+        # cost_source promoted from "none" since the parent had no direct spend.
+        self.assertEqual(parent.session_cost_source, "subagent")
+        self.assertEqual(parent.session_cost_status, "estimated")
+        # All internal fields stripped from results.
+        for entry in result["results"]:
+            self.assertNotIn("_child_cost_usd", entry)
+            self.assertNotIn("_child_role", entry)
+
+    def test_zero_cost_children_leave_parent_source_untouched(self):
+        """If every child reports 0 cost (e.g. free local model), we should
+        not invent a fake 'subagent' source — the parent's 'none' stays."""
+        parent = self._make_parent_with_cost_counters(starting_cost=0.00)
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.return_value = {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "done",
+                "api_calls": 1,
+                "duration_seconds": 0.5,
+                "_child_role": "leaf",
+                "_child_cost_usd": 0.0,
+            }
+            delegate_task(goal="free local run", parent_agent=parent)
+
+        self.assertEqual(parent.session_estimated_cost_usd, 0.0)
+        self.assertEqual(parent.session_cost_source, "none")
+
+    def test_parent_with_real_source_not_overwritten(self):
+        """If the parent already has its own cost billed (cost_source != 'none'),
+        adding subagent cost must not clobber the existing source label."""
+        parent = self._make_parent_with_cost_counters(starting_cost=0.20)
+        parent.session_cost_status = "exact"
+        parent.session_cost_source = "openrouter"
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.return_value = {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "done",
+                "api_calls": 1,
+                "duration_seconds": 0.5,
+                "_child_role": "leaf",
+                "_child_cost_usd": 0.30,
+            }
+            delegate_task(goal="billed run", parent_agent=parent)
+
+        self.assertAlmostEqual(parent.session_estimated_cost_usd, 0.50, places=6)
+        # Real source label preserved.
+        self.assertEqual(parent.session_cost_source, "openrouter")
+        self.assertEqual(parent.session_cost_status, "exact")
+
+    def test_rollup_tolerates_missing_cost_fields(self):
+        """Older fixtures / fabricated error entries may not carry
+        _child_cost_usd.  Rollup must degrade to zero-add silently."""
+        parent = self._make_parent_with_cost_counters(starting_cost=0.10)
+
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.return_value = {
+                "task_index": 0,
+                "status": "completed",
+                "summary": "done",
+                "api_calls": 1,
+                "duration_seconds": 0.5,
+                # no _child_role, no _child_cost_usd
+            }
+            result = json.loads(delegate_task(goal="legacy", parent_agent=parent))
+
+        # Parent cost unchanged.
+        self.assertEqual(parent.session_estimated_cost_usd, 0.10)
+        self.assertEqual(len(result["results"]), 1)
+
+
 class TestBlockedTools(unittest.TestCase):
     def test_blocked_tools_constant(self):
         for tool in ["delegate_task", "clarify", "memory", "send_message", "execute_code"]:
@@ -1319,6 +1476,112 @@ class TestDelegateHeartbeat(unittest.TestCase):
             any("API call #5 completed" in desc for desc in touch_calls),
             f"Heartbeat should include last_activity_desc: {touch_calls}")
 
+    def test_heartbeat_does_not_trip_idle_stale_while_inside_tool(self):
+        """A long-running tool (no iteration advance, but current_tool set)
+        must not be flagged stale at the idle threshold.
+
+        Bug #13041: when a child is legitimately busy inside a slow tool
+        (terminal command, browser fetch), api_call_count does not advance.
+        The previous stale check treated this as idle and stopped the
+        heartbeat after 5 cycles (~150s), letting the gateway kill the
+        session. The fix uses a much higher in-tool threshold and only
+        applies the tight idle threshold when current_tool is None.
+        """
+        from tools.delegate_tool import _run_single_child
+
+        parent = _make_mock_parent()
+        touch_calls = []
+        parent._touch_activity = lambda desc: touch_calls.append(desc)
+
+        child = MagicMock()
+        # Child is stuck inside a single terminal call for the whole run.
+        # api_call_count never advances, current_tool is always set.
+        child.get_activity_summary.return_value = {
+            "current_tool": "terminal",
+            "api_call_count": 1,
+            "max_iterations": 50,
+            "last_activity_desc": "executing tool: terminal",
+        }
+
+        def slow_run(**kwargs):
+            # Long enough to exceed the OLD idle threshold (5 cycles) at
+            # the patched interval, but shorter than the new in-tool
+            # threshold.
+            time.sleep(0.4)
+            return {"final_response": "done", "completed": True, "api_calls": 1}
+
+        child.run_conversation.side_effect = slow_run
+
+        # Patch both the interval AND the idle ceiling so the test proves
+        # the in-tool branch takes effect: with a 0.05s interval and the
+        # default _HEARTBEAT_STALE_CYCLES_IDLE=5, the old behavior would
+        # trip after 0.25s and stop firing. We should see heartbeats
+        # continuing through the full 0.4s run.
+        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
+            _run_single_child(
+                task_index=0,
+                goal="Test long-running tool",
+                child=child,
+                parent_agent=parent,
+            )
+
+        # With the old idle threshold (5 cycles = 0.25s), touch_calls
+        # would cap at ~5. With the in-tool threshold (20 cycles = 1.0s),
+        # we should see substantially more heartbeats over 0.4s.
+        self.assertGreater(
+            len(touch_calls), 6,
+            f"Heartbeat stopped too early while child was inside a tool; "
+            f"got {len(touch_calls)} touches over 0.4s at 0.05s interval",
+        )
+
+    def test_heartbeat_still_trips_idle_stale_when_no_tool(self):
+        """A wedged child with no current_tool still trips the idle threshold.
+
+        Regression guard: the fix for #13041 must not disable stale
+        detection entirely. A child that's hung between turns (no tool
+        running, no iteration progress) must still stop touching the
+        parent so the gateway timeout can fire.
+        """
+        from tools.delegate_tool import _run_single_child
+
+        parent = _make_mock_parent()
+        touch_calls = []
+        parent._touch_activity = lambda desc: touch_calls.append(desc)
+
+        child = MagicMock()
+        # Wedged child: no tool running, iteration frozen.
+        child.get_activity_summary.return_value = {
+            "current_tool": None,
+            "api_call_count": 3,
+            "max_iterations": 50,
+            "last_activity_desc": "waiting for API response",
+        }
+
+        def slow_run(**kwargs):
+            time.sleep(0.6)
+            return {"final_response": "done", "completed": True, "api_calls": 3}
+
+        child.run_conversation.side_effect = slow_run
+
+        # At interval 0.05s, idle threshold (5 cycles) trips at ~0.25s.
+        # We should see the heartbeat stop firing well before 0.6s.
+        with patch("tools.delegate_tool._HEARTBEAT_INTERVAL", 0.05):
+            _run_single_child(
+                task_index=0,
+                goal="Test wedged child",
+                child=child,
+                parent_agent=parent,
+            )
+
+        # With idle threshold=5 + interval=0.05s, touches should cap
+        # around 5. Bound loosely to avoid timing flakes.
+        self.assertLess(
+            len(touch_calls), 9,
+            f"Idle stale detection did not fire: got {len(touch_calls)} "
+            f"touches over 0.6s — expected heartbeat to stop after "
+            f"~5 stale cycles",
+        )
+
 
 class TestDelegationReasoningEffort(unittest.TestCase):
     """Tests for delegation.reasoning_effort config override."""
@@ -2020,6 +2283,104 @@ class TestOrchestratorEndToEnd(unittest.TestCase):
         self.assertFalse(built_agents[1]["is_orchestrator_prompt"])
         self.assertNotIn("delegation", built_agents[2]["enabled_toolsets"])
         self.assertFalse(built_agents[2]["is_orchestrator_prompt"])
+
+
+class TestSubagentApprovalCallback(unittest.TestCase):
+    """Subagent worker threads must have a non-interactive approval callback
+    installed so dangerous-command prompts don't fall back to input() and
+    deadlock the parent's prompt_toolkit TUI.
+
+    Governed by delegation.subagent_auto_approve:
+      false (default) → _subagent_auto_deny
+      true            → _subagent_auto_approve
+    """
+
+    def test_auto_deny_returns_deny(self):
+        from tools.delegate_tool import _subagent_auto_deny
+        self.assertEqual(
+            _subagent_auto_deny("rm -rf /tmp/x", "dangerous"),
+            "deny",
+        )
+
+    def test_auto_approve_returns_once(self):
+        from tools.delegate_tool import _subagent_auto_approve
+        self.assertEqual(
+            _subagent_auto_approve("rm -rf /tmp/x", "dangerous"),
+            "once",
+        )
+
+    @patch("tools.delegate_tool._load_config", return_value={})
+    def test_getter_defaults_to_deny(self, _mock_cfg):
+        from tools.delegate_tool import (
+            _get_subagent_approval_callback,
+            _subagent_auto_deny,
+        )
+        self.assertIs(_get_subagent_approval_callback(), _subagent_auto_deny)
+
+    @patch(
+        "tools.delegate_tool._load_config",
+        return_value={"subagent_auto_approve": False},
+    )
+    def test_getter_explicit_false_is_deny(self, _mock_cfg):
+        from tools.delegate_tool import (
+            _get_subagent_approval_callback,
+            _subagent_auto_deny,
+        )
+        self.assertIs(_get_subagent_approval_callback(), _subagent_auto_deny)
+
+    @patch(
+        "tools.delegate_tool._load_config",
+        return_value={"subagent_auto_approve": True},
+    )
+    def test_getter_true_is_approve(self, _mock_cfg):
+        from tools.delegate_tool import (
+            _get_subagent_approval_callback,
+            _subagent_auto_approve,
+        )
+        self.assertIs(_get_subagent_approval_callback(), _subagent_auto_approve)
+
+    @patch(
+        "tools.delegate_tool._load_config",
+        return_value={"subagent_auto_approve": "yes"},
+    )
+    def test_getter_truthy_string_is_approve(self, _mock_cfg):
+        """is_truthy_value accepts 'yes'/'1'/'true' as truthy."""
+        from tools.delegate_tool import (
+            _get_subagent_approval_callback,
+            _subagent_auto_approve,
+        )
+        self.assertIs(_get_subagent_approval_callback(), _subagent_auto_approve)
+
+    def test_executor_initializer_installs_callback_in_worker(self):
+        """The initializer sets the callback on the worker thread's TLS,
+        not the parent's — verifies the fix actually scopes to workers.
+        """
+        from concurrent.futures import ThreadPoolExecutor
+        from tools.terminal_tool import (
+            set_approval_callback as _set_cb,
+            _get_approval_callback,
+        )
+        from tools.delegate_tool import _subagent_auto_deny
+
+        # Parent thread has no callback.
+        _set_cb(None)
+        self.assertIsNone(_get_approval_callback())
+
+        seen = []
+
+        def worker():
+            seen.append(_get_approval_callback())
+
+        with ThreadPoolExecutor(
+            max_workers=1,
+            initializer=_set_cb,
+            initargs=(_subagent_auto_deny,),
+        ) as executor:
+            executor.submit(worker).result()
+
+        self.assertEqual(seen, [_subagent_auto_deny])
+        # Parent's callback slot is still empty (TLS isolates threads).
+        self.assertIsNone(_get_approval_callback())
 
 
 if __name__ == "__main__":

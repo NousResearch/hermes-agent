@@ -504,6 +504,91 @@ def test_clear_provider_auth_removes_provider_pool_entries(tmp_path, monkeypatch
     assert "openrouter" in payload.get("credential_pool", {})
 
 
+def test_logout_resets_codex_config_when_auth_state_already_cleared(tmp_path, monkeypatch, capsys):
+    """`hermes logout --provider openai-codex` must still clear model.provider.
+
+    Users can end up with auth.json already cleared but config.yaml still set to
+    openai-codex.  Previously logout reported no auth state and left the agent
+    pinned to the Codex provider.
+    """
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}, "credential_pool": {}})
+    (hermes_home / "config.yaml").write_text(
+        "model:\n"
+        "  default: gpt-5.3-codex\n"
+        "  provider: openai-codex\n"
+        "  base_url: https://chatgpt.com/backend-api/codex\n"
+    )
+
+    from types import SimpleNamespace
+    from hermes_cli.auth import logout_command
+
+    logout_command(SimpleNamespace(provider="openai-codex"))
+
+    out = capsys.readouterr().out
+    assert "Logged out of OpenAI Codex." in out
+    config_text = (hermes_home / "config.yaml").read_text()
+    assert "provider: auto" in config_text
+    assert "base_url: https://openrouter.ai/api/v1" in config_text
+
+
+def test_logout_defaults_to_configured_codex_when_no_active_provider(tmp_path, monkeypatch, capsys):
+    """Bare `hermes logout` should target configured Codex if auth has no active provider."""
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}, "credential_pool": {}})
+    (hermes_home / "config.yaml").write_text(
+        "model:\n"
+        "  default: gpt-5.3-codex\n"
+        "  provider: openai-codex\n"
+        "  base_url: https://chatgpt.com/backend-api/codex\n"
+    )
+
+    from types import SimpleNamespace
+    from hermes_cli.auth import logout_command
+
+    logout_command(SimpleNamespace(provider=None))
+
+    out = capsys.readouterr().out
+    assert "Logged out of OpenAI Codex." in out
+    config_text = (hermes_home / "config.yaml").read_text()
+    assert "provider: auto" in config_text
+
+
+def test_logout_clears_stale_active_codex_without_provider_credentials(tmp_path, monkeypatch, capsys):
+    """Logout must clear active_provider even when provider credential payloads are gone."""
+    hermes_home = tmp_path / "hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    _write_auth_store(
+        tmp_path,
+        {
+            "version": 1,
+            "active_provider": "openai-codex",
+            "providers": {},
+            "credential_pool": {},
+        },
+    )
+    (hermes_home / "config.yaml").write_text(
+        "model:\n"
+        "  default: gpt-5.3-codex\n"
+        "  provider: openai-codex\n"
+        "  base_url: https://chatgpt.com/backend-api/codex\n"
+    )
+
+    from types import SimpleNamespace
+    from hermes_cli.auth import logout_command
+
+    logout_command(SimpleNamespace(provider=None))
+
+    out = capsys.readouterr().out
+    assert "Logged out of OpenAI Codex." in out
+    auth_payload = json.loads((hermes_home / "auth.json").read_text())
+    assert auth_payload.get("active_provider") is None
+    config_text = (hermes_home / "config.yaml").read_text()
+    assert "provider: auto" in config_text
+
+
 def test_auth_list_does_not_call_mutating_select(monkeypatch, capsys):
     from hermes_cli.auth_commands import auth_list_command
 
@@ -569,8 +654,43 @@ def test_auth_list_shows_exhausted_cooldown(monkeypatch, capsys):
     auth_list_command(_Args())
 
     out = capsys.readouterr().out
-    assert "exhausted (429)" in out
+    assert "rate-limited (429)" in out
     assert "59m 30s left" in out
+
+
+def test_auth_list_shows_auth_failure_when_exhausted_entry_is_unauthorized(monkeypatch, capsys):
+    from hermes_cli.auth_commands import auth_list_command
+
+    class _Entry:
+        id = "cred-1"
+        label = "primary"
+        auth_type = "oauth"
+        source = "manual:device_code"
+        last_status = "exhausted"
+        last_error_code = 401
+        last_error_reason = "invalid_token"
+        last_error_message = "Access token expired or revoked."
+        last_status_at = 1000.0
+
+    class _Pool:
+        def entries(self):
+            return [_Entry()]
+
+        def peek(self):
+            return None
+
+    monkeypatch.setattr("hermes_cli.auth_commands.load_pool", lambda provider: _Pool())
+    monkeypatch.setattr("hermes_cli.auth_commands.time.time", lambda: 1030.0)
+
+    class _Args:
+        provider = "openai-codex"
+
+    auth_list_command(_Args())
+
+    out = capsys.readouterr().out
+    assert "auth failed invalid_token (401)" in out
+    assert "re-auth may be required" in out
+    assert "left" not in out
 
 
 def test_auth_list_prefers_explicit_reset_time(monkeypatch, capsys):

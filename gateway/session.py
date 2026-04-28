@@ -60,6 +60,10 @@ from .config import (
     SessionResetPolicy,  # noqa: F401 — re-exported via gateway/__init__.py
     HomeChannel,
 )
+from .whatsapp_identity import (
+    canonical_whatsapp_identifier,
+    normalize_whatsapp_identifier,
+)
 
 
 @dataclass
@@ -83,6 +87,9 @@ class SessionSource:
     user_id_alt: Optional[str] = None  # Platform-specific stable alt ID (Signal UUID, Feishu union_id)
     chat_id_alt: Optional[str] = None  # Signal group internal ID
     is_bot: bool = False  # True when the message author is a bot/webhook (Discord)
+    guild_id: Optional[str] = None  # Discord guild / Slack workspace / Matrix server scope
+    parent_chat_id: Optional[str] = None  # Parent channel when chat_id refers to a thread
+    message_id: Optional[str] = None  # ID of the triggering message (for pin/reply/react)
     
     @property
     def description(self) -> str:
@@ -120,8 +127,14 @@ class SessionSource:
             d["user_id_alt"] = self.user_id_alt
         if self.chat_id_alt:
             d["chat_id_alt"] = self.chat_id_alt
+        if self.guild_id:
+            d["guild_id"] = self.guild_id
+        if self.parent_chat_id:
+            d["parent_chat_id"] = self.parent_chat_id
+        if self.message_id:
+            d["message_id"] = self.message_id
         return d
-    
+
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> "SessionSource":
         return cls(
@@ -135,6 +148,9 @@ class SessionSource:
             chat_topic=data.get("chat_topic"),
             user_id_alt=data.get("user_id_alt"),
             chat_id_alt=data.get("chat_id_alt"),
+            guild_id=data.get("guild_id"),
+            parent_chat_id=data.get("parent_chat_id"),
+            message_id=data.get("message_id"),
         )
     
 
@@ -184,6 +200,31 @@ _PII_SAFE_PLATFORMS = frozenset({
 """Platforms where user IDs can be safely redacted (no in-message mention system
 that requires raw IDs).  Discord is excluded because mentions use ``<@user_id>``
 and the LLM needs the real ID to tag users."""
+
+
+def _discord_tools_loaded() -> bool:
+    """True iff the agent will actually have Discord tools this session.
+
+    Two conditions must hold:
+      1. The `discord` or `discord_admin` toolset is enabled for the
+         Discord platform via `hermes tools` (opt-in, default OFF).
+      2. `DISCORD_BOT_TOKEN` is set — the tool's `check_fn` gates on it
+         at registry time, so the toolset being enabled in config is not
+         enough if the token isn't configured.
+
+    Returns False (safe default — keeps the stale-API disclaimer) on any
+    error so a bad config can't silently promise tools the agent lacks.
+    """
+    if not (os.environ.get("DISCORD_BOT_TOKEN") or "").strip():
+        return False
+    try:
+        from hermes_cli.config import load_config
+        from hermes_cli.tools_config import _get_platform_tools
+        cfg = load_config()
+        enabled = _get_platform_tools(cfg, "discord", include_default_mcp_servers=False)
+        return "discord" in enabled or "discord_admin" in enabled
+    except Exception:
+        return False
 
 
 def build_session_context_prompt(
@@ -269,17 +310,57 @@ def build_session_context_prompt(
             "**Platform notes:** You are running inside Slack. "
             "You do NOT have access to Slack-specific APIs — you cannot search "
             "channel history, pin/unpin messages, manage channels, or list users. "
-            "Do not promise to perform these actions. If the user asks, explain "
-            "that you can only read messages sent directly to you and respond."
+            "Do not promise to perform these actions. The gateway may inline the "
+            "current message's Slack block/attachment payload when available, but "
+            "you still cannot call Slack APIs yourself."
         )
     elif context.source.platform == Platform.DISCORD:
+        # Inject the Discord IDs block only when the agent actually has
+        # Discord tools loaded this session — i.e. the user opted into
+        # `discord` / `discord_admin` via `hermes tools` AND the bot
+        # token is configured.  Otherwise keep the stale-API disclaimer
+        # honest so we never promise tools the agent lacks.
+        if _discord_tools_loaded():
+            src = context.source
+            id_lines = ["", "**Discord IDs (for the `discord` / `discord_admin` tools):**"]
+            if src.guild_id:
+                id_lines.append(f"  - Guild: `{src.guild_id}`")
+            if src.thread_id and src.parent_chat_id:
+                id_lines.append(f"  - Parent channel: `{src.parent_chat_id}`")
+                id_lines.append(f"  - Thread: `{src.thread_id}` (use as `channel_id` for fetch_messages etc.)")
+            else:
+                id_lines.append(f"  - Channel: `{src.chat_id}`")
+            if src.message_id:
+                id_lines.append(f"  - Triggering message: `{src.message_id}`")
+            lines.extend(id_lines)
+        else:
+            lines.append("")
+            lines.append(
+                "**Platform notes:** You are running inside Discord. "
+                "You do NOT have access to Discord-specific APIs — you cannot search "
+                "channel history, pin messages, manage roles, or list server members. "
+                "Do not promise to perform these actions. If the user asks, explain "
+                "that you can only read messages sent directly to you and respond."
+            )
+    elif context.source.platform == Platform.BLUEBUBBLES:
         lines.append("")
         lines.append(
-            "**Platform notes:** You are running inside Discord. "
-            "You do NOT have access to Discord-specific APIs — you cannot search "
-            "channel history, pin messages, manage roles, or list server members. "
-            "Do not promise to perform these actions. If the user asks, explain "
-            "that you can only read messages sent directly to you and respond."
+            "**Platform notes:** You are responding via iMessage. "
+            "Keep responses short and conversational — think texts, not essays. "
+            "Structure longer replies as separate short thoughts, each separated "
+            "by a blank line (double newline). Each block between blank lines "
+            "will be delivered as its own iMessage bubble, so write accordingly: "
+            "one idea per bubble, 1–3 sentences each. "
+            "If the user needs a detailed answer, give the short version first "
+            "and offer to elaborate."
+        )
+    elif context.source.platform == Platform.YUANBAO:
+        lines.append("")
+        lines.append(
+            "**Platform notes:** You are running inside Yuanbao. "
+            "You CAN send private (DM) messages via the send_message tool. "
+            "Use target='yuanbao:direct:<account_id>' for DM "
+            "and target='yuanbao:group:<group_code>' for group chat."
         )
 
     # Connected platforms
@@ -367,11 +448,11 @@ class SessionEntry:
     auto_reset_reason: Optional[str] = None  # "idle" or "daily"
     reset_had_activity: bool = False  # whether the expired session had any messages
     
-    # Set by the background expiry watcher after it successfully flushes
-    # memories for this session.  Persisted to sessions.json so the flag
-    # survives gateway restarts (the old in-memory _pre_flushed_sessions
-    # set was lost on restart, causing redundant re-flushes).
-    memory_flushed: bool = False
+    # Set by the background expiry watcher after it finalizes an expired
+    # session (invoking on_session_finalize hooks and evicting the cached
+    # agent).  Persisted to sessions.json so the flag survives gateway
+    # restarts — prevents redundant finalization runs.
+    expiry_finalized: bool = False
 
     # When True the next call to get_or_create_session() will auto-reset
     # this session (create a new session_id) so the user starts fresh.
@@ -407,7 +488,7 @@ class SessionEntry:
             "last_prompt_tokens": self.last_prompt_tokens,
             "estimated_cost_usd": self.estimated_cost_usd,
             "cost_status": self.cost_status,
-            "memory_flushed": self.memory_flushed,
+            "expiry_finalized": self.expiry_finalized,
             "suspended": self.suspended,
             "resume_pending": self.resume_pending,
             "resume_reason": self.resume_reason,
@@ -459,7 +540,7 @@ class SessionEntry:
             last_prompt_tokens=data.get("last_prompt_tokens", 0),
             estimated_cost_usd=data.get("estimated_cost_usd", 0.0),
             cost_status=data.get("cost_status", "unknown"),
-            memory_flushed=data.get("memory_flushed", False),
+            expiry_finalized=data.get("expiry_finalized", data.get("memory_flushed", False)),
             suspended=data.get("suspended", False),
             resume_pending=data.get("resume_pending", False),
             resume_reason=data.get("resume_reason"),
@@ -518,15 +599,24 @@ def build_session_key(
     """
     platform = source.platform.value
     if source.chat_type == "dm":
-        if source.chat_id:
+        dm_chat_id = source.chat_id
+        if source.platform == Platform.WHATSAPP:
+            dm_chat_id = canonical_whatsapp_identifier(source.chat_id)
+
+        if dm_chat_id:
             if source.thread_id:
-                return f"agent:main:{platform}:dm:{source.chat_id}:{source.thread_id}"
-            return f"agent:main:{platform}:dm:{source.chat_id}"
+                return f"agent:main:{platform}:dm:{dm_chat_id}:{source.thread_id}"
+            return f"agent:main:{platform}:dm:{dm_chat_id}"
         if source.thread_id:
             return f"agent:main:{platform}:dm:{source.thread_id}"
         return f"agent:main:{platform}:dm"
 
     participant_id = source.user_id_alt or source.user_id
+    if participant_id and source.platform == Platform.WHATSAPP:
+        # Same JID/LID-flip bug as the DM case: without canonicalisation, a
+        # single group member gets two isolated per-user sessions when the
+        # bridge reshuffles alias forms.
+        participant_id = canonical_whatsapp_identifier(str(participant_id)) or participant_id
     key_parts = ["agent:main", platform, source.chat_type]
 
     if source.chat_id:
@@ -1151,6 +1241,7 @@ class SessionStore:
                     reasoning_content=message.get("reasoning_content") if message.get("role") == "assistant" else None,
                     reasoning_details=message.get("reasoning_details") if message.get("role") == "assistant" else None,
                     codex_reasoning_items=message.get("codex_reasoning_items") if message.get("role") == "assistant" else None,
+                    codex_message_items=message.get("codex_message_items") if message.get("role") == "assistant" else None,
                 )
             except Exception as e:
                 logger.debug("Session DB operation failed: %s", e)
@@ -1183,6 +1274,7 @@ class SessionStore:
                         reasoning_content=msg.get("reasoning_content") if role == "assistant" else None,
                         reasoning_details=msg.get("reasoning_details") if role == "assistant" else None,
                         codex_reasoning_items=msg.get("codex_reasoning_items") if role == "assistant" else None,
+                        codex_message_items=msg.get("codex_message_items") if role == "assistant" else None,
                     )
             except Exception as e:
                 logger.debug("Failed to rewrite transcript in DB: %s", e)

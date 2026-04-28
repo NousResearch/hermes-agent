@@ -10,7 +10,7 @@ import {
 } from '../app/delegationStore.js'
 import { patchOverlayState } from '../app/overlayStore.js'
 import { $spawnDiff, $spawnHistory, clearDiffPair, type SpawnSnapshot } from '../app/spawnHistoryStore.js'
-import { $turnState } from '../app/turnStore.js'
+import { useTurnSelector } from '../app/turnStore.js'
 import type { GatewayClient } from '../gatewayClient.js'
 import type { DelegationPauseResponse, DelegationStatusResponse, SubagentInterruptResponse } from '../gatewayTypes.js'
 import { asRpcResult } from '../lib/rpc.js'
@@ -683,7 +683,7 @@ function DiffView({
 // ── Main overlay ─────────────────────────────────────────────────────
 
 export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: AgentsOverlayProps) {
-  const turn = useStore($turnState)
+  const liveSubagents = useTurnSelector(state => state.subagents)
   const delegation = useStore($delegationState)
   const history = useStore($spawnHistory)
   const diffPair = useStore($spawnDiff)
@@ -705,17 +705,17 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
   const [mode, setMode] = useState<'detail' | 'list'>('list')
 
   const detailScrollRef = useRef<null | ScrollBoxHandle>(null)
-  const prevLiveCountRef = useRef(turn.subagents.length)
+  const prevLiveCountRef = useRef(liveSubagents.length)
 
   // ── Derived state ──────────────────────────────────────────────────
 
   const activeSnapshot = historyIndex > 0 ? history[historyIndex - 1] : null
   // Instant fallback to history[0] the moment the live list clears — avoids
   // a one-frame "no subagents" flash while the auto-follow effect fires.
-  const justFinishedSnapshot = historyIndex === 0 && turn.subagents.length === 0 ? (history[0] ?? null) : null
+  const justFinishedSnapshot = historyIndex === 0 && liveSubagents.length === 0 ? (history[0] ?? null) : null
   const effectiveSnapshot = activeSnapshot ?? justFinishedSnapshot
   const replayMode = effectiveSnapshot != null
-  const subagents = replayMode ? effectiveSnapshot.subagents : turn.subagents
+  const subagents = replayMode ? effectiveSnapshot.subagents : liveSubagents
 
   const tree = useMemo(() => buildSubagentTree(subagents), [subagents])
   const totals = useMemo(() => treeTotals(tree), [tree])
@@ -753,14 +753,14 @@ export function AgentsOverlay({ gw, initialHistoryIndex = 0, onClose, t }: Agent
     // dropped into an empty live view.  Fires only when transitioning from
     // "had live subagents" → "live empty" while in live mode.
     const prev = prevLiveCountRef.current
-    prevLiveCountRef.current = turn.subagents.length
+    prevLiveCountRef.current = liveSubagents.length
 
-    if (historyIndex === 0 && prev > 0 && turn.subagents.length === 0 && history.length > 0) {
+    if (historyIndex === 0 && prev > 0 && liveSubagents.length === 0 && history.length > 0) {
       setHistoryIndex(1)
       setCursor(0)
       setFlash('turn finished · inspect freely · q to close')
     }
-  }, [history.length, historyIndex, turn.subagents.length])
+  }, [history.length, historyIndex, liveSubagents.length])
 
   useEffect(() => {
     // Reset detail scroll on navigation so the top of the new node shows.

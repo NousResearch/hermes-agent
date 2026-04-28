@@ -2724,6 +2724,24 @@ _PLATFORMS = [
              "help": "OpenID to deliver cron results and notifications to."},
         ],
     },
+    {
+        "key": "yuanbao",
+        "label": "Yuanbao",
+        "emoji": "💎",
+        "token_var": "YUANBAO_APP_ID",
+        "setup_instructions": [
+            "1. Download the Yuanbao app from https://yuanbao.tencent.com/",
+            "2. In the app, go to PAI → My Bot and create a new bot",
+            "3. After the bot is created, copy the App ID and App Secret",
+            "4. Enter them below and Hermes will connect automatically over WebSocket",
+        ],
+        "vars": [
+            {"name": "YUANBAO_APP_ID", "prompt": "App ID", "password": False,
+             "help": "The App ID from your Yuanbao IM Bot credentials."},
+            {"name": "YUANBAO_APP_SECRET", "prompt": "App Secret", "password": True,
+             "help": "The App Secret (used for HMAC signing) from your Yuanbao IM Bot."},
+        ],
+    },
 ]
 
 
@@ -3106,6 +3124,12 @@ def _setup_wecom():
 
     print()
     print_success("💬 WeCom configured!")
+
+
+def _setup_yuanbao():
+    """Configure Yuanbao via the standard platform setup."""
+    yuanbao_platform = next(p for p in _PLATFORMS if p["key"] == "yuanbao")
+    _setup_standard_platform(yuanbao_platform)
 
 
 def _is_service_installed() -> bool:

@@ -67,6 +67,7 @@ class Platform(Enum):
     WEIXIN = "weixin"
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
+    YUANBAO = "yuanbao"
 
 
 @dataclass
@@ -135,7 +136,7 @@ class SessionResetPolicy:
             mode=mode if mode is not None else "both",
             at_hour=at_hour if at_hour is not None else 4,
             idle_minutes=idle_minutes if idle_minutes is not None else 1440,
-            notify=notify if notify is not None else True,
+            notify=_coerce_bool(notify, True),
             notify_exclude_platforms=tuple(exclude) if exclude is not None else ("api_server", "webhook"),
         )
 
@@ -178,7 +179,7 @@ class PlatformConfig:
             home_channel = HomeChannel.from_dict(data["home_channel"])
         
         return cls(
-            enabled=data.get("enabled", False),
+            enabled=_coerce_bool(data.get("enabled"), False),
             token=data.get("token"),
             api_key=data.get("api_key"),
             home_channel=home_channel,
@@ -195,6 +196,14 @@ class StreamingConfig:
     edit_interval: float = 1.0    # Seconds between message edits (Telegram rate-limits at ~1/s)
     buffer_threshold: int = 40    # Chars before forcing an edit
     cursor: str = " ▉"           # Cursor shown during streaming
+    # Ported from openclaw/openclaw#72038.  When >0, the final edit for
+    # a long-running streamed response is delivered as a fresh message
+    # if the original preview has been visible for at least this many
+    # seconds, so the platform's visible timestamp reflects completion
+    # time instead of the preview creation time.  Currently applied to
+    # Telegram only (other platforms ignore the setting).  Default 60s
+    # matches the OpenClaw rollout.  Set to 0 to disable.
+    fresh_final_after_seconds: float = 60.0
 
     def to_dict(self) -> Dict[str, Any]:
         return {
@@ -203,6 +212,7 @@ class StreamingConfig:
             "edit_interval": self.edit_interval,
             "buffer_threshold": self.buffer_threshold,
             "cursor": self.cursor,
+            "fresh_final_after_seconds": self.fresh_final_after_seconds,
         }
 
     @classmethod
@@ -215,6 +225,9 @@ class StreamingConfig:
             edit_interval=float(data.get("edit_interval", 1.0)),
             buffer_threshold=int(data.get("buffer_threshold", 40)),
             cursor=data.get("cursor", " ▉"),
+            fresh_final_after_seconds=float(
+                data.get("fresh_final_after_seconds", 60.0)
+            ),
         )
 
 
@@ -313,6 +326,9 @@ class GatewayConfig:
                 connected.append(platform)
             # QQBot uses extra dict for app credentials
             elif platform == Platform.QQBOT and config.extra.get("app_id") and config.extra.get("client_secret"):
+                connected.append(platform)
+            # Yuanbao uses extra dict for app credentials
+            elif platform == Platform.YUANBAO and config.extra.get("app_id") and config.extra.get("app_secret"):
                 connected.append(platform)
             # DingTalk uses client_id/client_secret from config.extra or env vars
             elif platform == Platform.DINGTALK and (
@@ -435,7 +451,7 @@ class GatewayConfig:
             reset_triggers=data.get("reset_triggers", ["/new", "/reset"]),
             quick_commands=quick_commands,
             sessions_dir=sessions_dir,
-            always_log_local=data.get("always_log_local", True),
+            always_log_local=_coerce_bool(data.get("always_log_local"), True),
             stt_enabled=_coerce_bool(stt_enabled, True),
             group_sessions_per_user=_coerce_bool(group_sessions_per_user, True),
             thread_sessions_per_user=_coerce_bool(thread_sessions_per_user, False),
@@ -550,6 +566,8 @@ def load_gateway_config() -> GatewayConfig:
                         existing = {}
                     # Deep-merge extra dicts so gateway.json defaults survive
                     merged_extra = {**existing.get("extra", {}), **plat_block.get("extra", {})}
+                    if plat_name == Platform.SLACK.value and "enabled" in plat_block:
+                        merged_extra["_enabled_explicit"] = True
                     merged = {**existing, **plat_block}
                     if merged_extra:
                         merged["extra"] = merged_extra
@@ -570,6 +588,8 @@ def load_gateway_config() -> GatewayConfig:
                     )
                 if "reply_prefix" in platform_cfg:
                     bridged["reply_prefix"] = platform_cfg["reply_prefix"]
+                if "reply_in_thread" in platform_cfg:
+                    bridged["reply_in_thread"] = platform_cfg["reply_in_thread"]
                 if "require_mention" in platform_cfg:
                     bridged["require_mention"] = platform_cfg["require_mention"]
                 if "free_response_channels" in platform_cfg:
@@ -584,7 +604,7 @@ def load_gateway_config() -> GatewayConfig:
                     bridged["group_policy"] = platform_cfg["group_policy"]
                 if "group_allow_from" in platform_cfg:
                     bridged["group_allow_from"] = platform_cfg["group_allow_from"]
-                if plat == Platform.DISCORD and "channel_skill_bindings" in platform_cfg:
+                if plat in (Platform.DISCORD, Platform.SLACK) and "channel_skill_bindings" in platform_cfg:
                     bridged["channel_skill_bindings"] = platform_cfg["channel_skill_bindings"]
                 if "channel_prompts" in platform_cfg:
                     channel_prompts = platform_cfg["channel_prompts"]
@@ -592,16 +612,21 @@ def load_gateway_config() -> GatewayConfig:
                         bridged["channel_prompts"] = {str(k): v for k, v in channel_prompts.items()}
                     else:
                         bridged["channel_prompts"] = channel_prompts
-                if not bridged:
+                enabled_was_explicit = "enabled" in platform_cfg
+                if not bridged and not enabled_was_explicit:
                     continue
                 plat_data = platforms_data.setdefault(plat.value, {})
                 if not isinstance(plat_data, dict):
                     plat_data = {}
                     platforms_data[plat.value] = plat_data
+                if enabled_was_explicit:
+                    plat_data["enabled"] = platform_cfg["enabled"]
                 extra = plat_data.setdefault("extra", {})
                 if not isinstance(extra, dict):
                     extra = {}
                     plat_data["extra"] = extra
+                if plat == Platform.SLACK and enabled_was_explicit:
+                    extra["_enabled_explicit"] = True
                 extra.update(bridged)
 
             # Slack settings → env vars (env vars take precedence)
@@ -609,6 +634,8 @@ def load_gateway_config() -> GatewayConfig:
             if isinstance(slack_cfg, dict):
                 if "require_mention" in slack_cfg and not os.getenv("SLACK_REQUIRE_MENTION"):
                     os.environ["SLACK_REQUIRE_MENTION"] = str(slack_cfg["require_mention"]).lower()
+                if "strict_mention" in slack_cfg and not os.getenv("SLACK_STRICT_MENTION"):
+                    os.environ["SLACK_STRICT_MENTION"] = str(slack_cfg["strict_mention"]).lower()
                 if "allow_bots" in slack_cfg and not os.getenv("SLACK_ALLOW_BOTS"):
                     os.environ["SLACK_ALLOW_BOTS"] = str(slack_cfg["allow_bots"]).lower()
                 frc = slack_cfg.get("free_response_channels")
@@ -687,6 +714,11 @@ def load_gateway_config() -> GatewayConfig:
                     os.environ["TELEGRAM_REACTIONS"] = str(telegram_cfg["reactions"]).lower()
                 if "proxy_url" in telegram_cfg and not os.getenv("TELEGRAM_PROXY"):
                     os.environ["TELEGRAM_PROXY"] = str(telegram_cfg["proxy_url"]).strip()
+                if "group_allowed_chats" in telegram_cfg and not os.getenv("TELEGRAM_GROUP_ALLOWED_USERS"):
+                    gac = telegram_cfg["group_allowed_chats"]
+                    if isinstance(gac, list):
+                        gac = ",".join(str(v) for v in gac)
+                    os.environ["TELEGRAM_GROUP_ALLOWED_USERS"] = str(gac)
                 if "disable_link_previews" in telegram_cfg:
                     plat_data = platforms_data.setdefault(Platform.TELEGRAM.value, {})
                     if not isinstance(plat_data, dict):
@@ -913,8 +945,20 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
     slack_token = os.getenv("SLACK_BOT_TOKEN")
     if slack_token:
         if Platform.SLACK not in config.platforms:
+            # No yaml config for Slack — env-only setup, enable it
             config.platforms[Platform.SLACK] = PlatformConfig()
-        config.platforms[Platform.SLACK].enabled = True
+            config.platforms[Platform.SLACK].enabled = True
+        else:
+            slack_config = config.platforms[Platform.SLACK]
+            enabled_was_explicit = bool(slack_config.extra.pop("_enabled_explicit", False))
+            if not slack_config.enabled and not enabled_was_explicit:
+                # Top-level Slack settings such as channel prompts should not
+                # turn an env-token setup into a disabled platform. Only an
+                # explicit slack.enabled/platforms.slack.enabled false should.
+                slack_config.enabled = True
+        # If yaml config exists, respect its enabled flag (don't override
+        # explicit enabled: false). Token is still stored so skills that
+        # send Slack messages can use it without activating the gateway adapter.
         config.platforms[Platform.SLACK].token = slack_token
     slack_home = os.getenv("SLACK_HOME_CHANNEL")
     if slack_home and Platform.SLACK in config.platforms:
@@ -1270,6 +1314,48 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
                 chat_id=qq_home,
                 name=os.getenv("QQBOT_HOME_CHANNEL_NAME") or os.getenv(qq_home_name_env, "Home"),
             )
+
+    # Yuanbao — YUANBAO_APP_ID preferred
+    yuanbao_app_id = os.getenv("YUANBAO_APP_ID") or os.getenv("YUANBAO_APP_KEY")
+    yuanbao_app_secret = os.getenv("YUANBAO_APP_SECRET")
+    if yuanbao_app_id and yuanbao_app_secret:
+        if Platform.YUANBAO not in config.platforms:
+            config.platforms[Platform.YUANBAO] = PlatformConfig()
+        config.platforms[Platform.YUANBAO].enabled = True
+        extra = config.platforms[Platform.YUANBAO].extra
+        extra["app_id"] = yuanbao_app_id
+        extra["app_secret"] = yuanbao_app_secret
+        yuanbao_bot_id = os.getenv("YUANBAO_BOT_ID")
+        if yuanbao_bot_id:
+            extra["bot_id"] = yuanbao_bot_id
+        yuanbao_ws_url = os.getenv("YUANBAO_WS_URL")
+        if yuanbao_ws_url:
+            extra["ws_url"] = yuanbao_ws_url
+        yuanbao_api_domain = os.getenv("YUANBAO_API_DOMAIN")
+        if yuanbao_api_domain:
+            extra["api_domain"] = yuanbao_api_domain
+        yuanbao_route_env = os.getenv("YUANBAO_ROUTE_ENV")
+        if yuanbao_route_env:
+            extra["route_env"] = yuanbao_route_env
+        yuanbao_home = os.getenv("YUANBAO_HOME_CHANNEL")
+        if yuanbao_home:
+            config.platforms[Platform.YUANBAO].home_channel = HomeChannel(
+                platform=Platform.YUANBAO,
+                chat_id=yuanbao_home,
+                name=os.getenv("YUANBAO_HOME_CHANNEL_NAME", "Home"),
+            )
+        yuanbao_dm_policy = os.getenv("YUANBAO_DM_POLICY")
+        if yuanbao_dm_policy:
+            extra["dm_policy"] = yuanbao_dm_policy.strip().lower()
+        yuanbao_dm_allow_from = os.getenv("YUANBAO_DM_ALLOW_FROM")
+        if yuanbao_dm_allow_from:
+            extra["dm_allow_from"] = yuanbao_dm_allow_from
+        yuanbao_group_policy = os.getenv("YUANBAO_GROUP_POLICY")
+        if yuanbao_group_policy:
+            extra["group_policy"] = yuanbao_group_policy.strip().lower()
+        yuanbao_group_allow_from = os.getenv("YUANBAO_GROUP_ALLOW_FROM")
+        if yuanbao_group_allow_from:
+            extra["group_allow_from"] = yuanbao_group_allow_from
 
     # Session settings
     idle_minutes = os.getenv("SESSION_IDLE_MINUTES")

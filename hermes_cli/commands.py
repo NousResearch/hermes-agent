@@ -62,6 +62,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
                aliases=("reset",)),
     CommandDef("clear", "Clear screen and start a new session", "Session",
                cli_only=True),
+    CommandDef("redraw", "Force a full UI repaint (recovers from terminal drift)", "Session",
+               cli_only=True),
     CommandDef("history", "Show conversation history", "Session",
                cli_only=True),
     CommandDef("save", "Save the current conversation", "Session",
@@ -77,16 +79,14 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("rollback", "List or restore filesystem checkpoints", "Session",
                args_hint="[number]"),
     CommandDef("snapshot", "Create or restore state snapshots of Hermes config/state", "Session",
-               aliases=("snap",), args_hint="[create|restore <id>|prune]"),
+               cli_only=True, aliases=("snap",), args_hint="[create|restore <id>|prune]"),
     CommandDef("stop", "Kill all running background processes", "Session"),
     CommandDef("approve", "Approve a pending dangerous command", "Session",
                gateway_only=True, args_hint="[session|always]"),
     CommandDef("deny", "Deny a pending dangerous command", "Session",
                gateway_only=True),
     CommandDef("background", "Run a prompt in the background", "Session",
-               aliases=("bg",), args_hint="<prompt>"),
-    CommandDef("btw", "Ephemeral side question using session context (no tools, not persisted)", "Session",
-               args_hint="<question>"),
+               aliases=("bg", "btw"), args_hint="<prompt>"),
     CommandDef("agents", "Show active agents and running tasks", "Session",
                aliases=("tasks",)),
     CommandDef("queue", "Queue a prompt for the next turn (doesn't interrupt)", "Session",
@@ -103,10 +103,10 @@ COMMAND_REGISTRY: list[CommandDef] = [
     # Configuration
     CommandDef("config", "Show current configuration", "Configuration",
                cli_only=True),
-    CommandDef("model", "Switch model for this session", "Configuration", args_hint="[model] [--provider name] [--global]"),
-    CommandDef("provider", "Show available providers and current provider",
-               "Configuration"),
-    CommandDef("gquota", "Show Google Gemini Code Assist quota usage", "Info"),
+    CommandDef("model", "Switch model for this session", "Configuration",
+               aliases=("provider",), args_hint="[model] [--provider name] [--global]"),
+    CommandDef("gquota", "Show Google Gemini Code Assist quota usage", "Info",
+               cli_only=True),
 
     CommandDef("personality", "Set a predefined personality", "Configuration",
                args_hint="[name]"),
@@ -124,9 +124,12 @@ COMMAND_REGISTRY: list[CommandDef] = [
                args_hint="[normal|fast|status]",
                subcommands=("normal", "fast", "status", "on", "off")),
     CommandDef("skin", "Show or change the display skin/theme", "Configuration",
-               args_hint="[name]"),
+               cli_only=True, args_hint="[name]"),
     CommandDef("voice", "Toggle voice mode", "Configuration",
                args_hint="[on|off|tts|status]", subcommands=("on", "off", "tts", "status")),
+    CommandDef("busy", "Control what Enter does while Hermes is working", "Configuration",
+               cli_only=True, args_hint="[queue|steer|interrupt|status]",
+               subcommands=("queue", "steer", "interrupt", "status")),
 
     # Tools & Skills
     CommandDef("tools", "Manage tools: /tools [list|disable|enable] [name...]", "Tools & Skills",
@@ -139,7 +142,8 @@ COMMAND_REGISTRY: list[CommandDef] = [
     CommandDef("cron", "Manage scheduled tasks", "Tools & Skills",
                cli_only=True, args_hint="[subcommand]",
                subcommands=("list", "add", "create", "edit", "pause", "resume", "run", "remove")),
-    CommandDef("reload", "Reload .env variables into the running session", "Tools & Skills"),
+    CommandDef("reload", "Reload .env variables into the running session", "Tools & Skills",
+               cli_only=True),
     CommandDef("reload-mcp", "Reload MCP servers from config", "Tools & Skills",
                aliases=("reload_mcp",)),
     CommandDef("browser", "Connect browser tools to your live Chrome via CDP", "Tools & Skills",
@@ -317,7 +321,7 @@ def should_bypass_active_session(command_name: str | None) -> bool:
     safety net in gateway.run discards any command text that reaches
     the pending queue — which meant a mid-run /model (or /reasoning,
     /voice, /insights, /title, /resume, /retry, /undo, /compress,
-    /usage, /provider, /reload-mcp, /sethome, /reset) would silently
+    /usage, /reload-mcp, /sethome, /reset) would silently
     interrupt the agent AND get discarded, producing a zero-char
     response. See issue #5057 / PRs #6252, #10370, #4665.
 
@@ -802,6 +806,114 @@ def discord_skill_commands_by_category(
         uncategorized = uncategorized[:remaining_slots]
 
     return trimmed_categories, uncategorized, hidden
+
+
+# ---------------------------------------------------------------------------
+# Slack native slash commands
+# ---------------------------------------------------------------------------
+
+# Slack slash command name constraints: lowercase a-z, 0-9, hyphens,
+# underscores. Max 32 chars. Slack app manifest accepts up to 50 slash
+# commands per app.
+_SLACK_MAX_SLASH_COMMANDS = 50
+_SLACK_NAME_LIMIT = 32
+_SLACK_INVALID_CHARS = re.compile(r"[^a-z0-9_\-]")
+
+
+def _sanitize_slack_name(raw: str) -> str:
+    """Convert a command name to a valid Slack slash command name.
+
+    Slack allows lowercase a-z, digits, hyphens, and underscores. Max 32
+    chars. Uppercase is lowercased; invalid chars are stripped.
+    """
+    name = raw.lower()
+    name = _SLACK_INVALID_CHARS.sub("", name)
+    name = name.strip("-_")
+    return name[:_SLACK_NAME_LIMIT]
+
+
+def slack_native_slashes() -> list[tuple[str, str, str]]:
+    """Return (slash_name, description, usage_hint) triples for Slack.
+
+    Every gateway-available command in ``COMMAND_REGISTRY`` is surfaced as
+    a standalone Slack slash command (e.g. ``/btw``, ``/stop``, ``/model``),
+    matching Discord's and Telegram's model where every command is a
+    first-class slash and not a ``/hermes <verb>`` subcommand.
+
+    Both canonical names and aliases are included so users can type any
+    documented form (e.g. ``/background``, ``/bg``, and ``/btw`` all work).
+    Plugin-registered slash commands are included too.
+
+    Results are clamped to Slack's 50-command limit with duplicate-name
+    avoidance. ``/hermes`` is always reserved as the first entry so the
+    legacy ``/hermes <subcommand>`` form keeps working for anything that
+    gets dropped by the clamp or for free-form questions.
+    """
+    overrides = _resolve_config_gates()
+    entries: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
+
+    # Reserve /hermes as the catch-all top-level command.
+    entries.append(("hermes", "Talk to Hermes or run a subcommand", "[subcommand] [args]"))
+    seen.add("hermes")
+
+    def _add(name: str, desc: str, hint: str) -> None:
+        slack_name = _sanitize_slack_name(name)
+        if not slack_name or slack_name in seen:
+            return
+        if len(entries) >= _SLACK_MAX_SLASH_COMMANDS:
+            return
+        # Slack description cap is 2000 chars; keep it short.
+        entries.append((slack_name, desc[:140], hint[:100]))
+        seen.add(slack_name)
+
+    # First pass: canonical names (so they win slots if we hit the cap).
+    for cmd in COMMAND_REGISTRY:
+        if not _is_gateway_available(cmd, overrides):
+            continue
+        _add(cmd.name, cmd.description, cmd.args_hint or "")
+
+    # Second pass: aliases.
+    for cmd in COMMAND_REGISTRY:
+        if not _is_gateway_available(cmd, overrides):
+            continue
+        for alias in cmd.aliases:
+            # Skip aliases that only differ from canonical by case/punctuation
+            # normalization (already covered by _add dedup).
+            _add(alias, f"Alias for /{cmd.name} — {cmd.description}", cmd.args_hint or "")
+
+    # Third pass: plugin commands.
+    for name, description, args_hint in _iter_plugin_command_entries():
+        _add(name, description, args_hint or "")
+
+    return entries
+
+
+def slack_app_manifest(request_url: str = "https://hermes-agent.local/slack/commands") -> dict[str, Any]:
+    """Generate a Slack app manifest with all gateway commands as slashes.
+
+    ``request_url`` is required by Slack's manifest schema for every slash
+    command, but in Socket Mode (which we use) Slack ignores it and routes
+    the command event through the WebSocket. A placeholder URL is fine.
+
+    The returned dict is the ``features.slash_commands`` portion only —
+    callers compose it into a full manifest (or merge into an existing
+    one). Keeping it narrow avoids coupling us to the rest of the manifest
+    schema (display_information, oauth_config, settings, etc.) which users
+    set up once in the Slack UI and rarely change.
+    """
+    slashes = []
+    for name, desc, usage in slack_native_slashes():
+        entry = {
+            "command": f"/{name}",
+            "description": desc or f"Run /{name}",
+            "should_escape": False,
+            "url": request_url,
+        }
+        if usage:
+            entry["usage_hint"] = usage
+        slashes.append(entry)
+    return {"features": {"slash_commands": slashes}}
 
 
 def slack_subcommand_map() -> dict[str, str]:

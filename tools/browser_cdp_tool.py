@@ -477,6 +477,7 @@ BROWSER_CDP_SCHEMA: Dict[str, Any] = {
                     "Method-specific parameters as a JSON object. Omit or "
                     "pass {} for methods that take no parameters."
                 ),
+                "properties": {},
                 "additionalProperties": True,
             },
             "target_id": {

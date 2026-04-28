@@ -108,10 +108,13 @@ _ENV_ASSIGN_RE = re.compile(
     rf"([A-Z0-9_]{{0,50}}{_SECRET_ENV_NAMES}[A-Z0-9_]{{0,50}})\s*=\s*(['\"]?)(\S+)\2",
 )
 
-# JSON field patterns: "apiKey": "value", "token": "value", etc.
-_JSON_KEY_NAMES = r"(?:api_?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material)"
+# JSON field patterns: "apiKey": "***", "token": "***", etc.
+# Uses EXACT key name match (not substring) to avoid false positives like
+# "htpasswd_password" or "database_password" being treated as credential fields.
+# Only truly dangerous fields (api_key, token, password in auth contexts)
+# are blocked to avoid breaking functional command output.
 _JSON_FIELD_RE = re.compile(
-    rf'("{_JSON_KEY_NAMES}")\s*:\s*"([^"]+)"',
+    r'("(?:api_key|apikey|token|secret|password|client_secret|private_key|authorization|bearer|auth_token|refresh_token|access_token)")\s*:\s*"([^"]+)"',
     re.IGNORECASE,
 )
 

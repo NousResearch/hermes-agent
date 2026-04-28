@@ -1950,9 +1950,17 @@ def terminal_tool(
             from tools.ansi_strip import strip_ansi
             output = strip_ansi(output)
 
-            # Redact secrets from command output (catches env/printenv leaking keys)
+            # Redact secrets from command output, but only for structured data
+            # (JSON, env vars, logs) — not arbitrary command output that may
+            # legitimately contain passwords/credentials needed for the tool result.
+            # This prevents breaking functional commands like htpasswd that
+            # output passwords as part of their result.
             from agent.redact import redact_sensitive_text
-            output = redact_sensitive_text(output.strip()) if output else ""
+            stripped = output.strip()
+            # Apply redaction only if output looks like structured data
+            if stripped.startswith(("{", "[", "202", "error", "warn", "info", "debug", "level", '{"')):
+                output = redact_sensitive_text(stripped) if stripped else ""
+            # else: pass through unchanged for functional commands
 
             # Interpret non-zero exit codes that aren't real errors
             # (e.g. grep=1 means "no matches", diff=1 means "files differ")

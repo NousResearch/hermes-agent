@@ -208,6 +208,45 @@ async def test_send_uses_reply_then_push_batches(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_send_voice_caches_served_audio_before_building_public_url(monkeypatch, tmp_path):
+    adapter = LineAdapter(
+        PlatformConfig(
+            enabled=True,
+            token="token",
+            extra={"channel_secret": "secret", "public_base_url": "https://example.test"},
+        )
+    )
+
+    class DummyMessagingApi:
+        def push_message(self, request, **kwargs):
+            return {"request": request, "kwargs": kwargs}
+
+    adapter._messaging_api = DummyMessagingApi()
+
+    source_audio = tmp_path / "reply.mp3"
+    source_audio.write_bytes(b"ID3" + b"\x00" * 32)
+    served_audio = tmp_path / "served.m4a"
+    served_audio.write_bytes(b"M4A" + b"\x00" * 32)
+
+    calls = []
+
+    async def fake_call(func, *args, **kwargs):
+        calls.append((func.__name__, args[0], kwargs))
+        return {"ok": True}
+
+    monkeypatch.setattr(adapter, "_call_sync_api", fake_call)
+    monkeypatch.setattr(adapter, "_prepare_outbound_audio", lambda path: (str(source_audio), 1234))
+    monkeypatch.setattr(adapter, "_cache_served_audio", lambda path: str(served_audio))
+
+    result = await adapter.send_voice(chat_id="U123", audio_path=str(source_audio))
+
+    assert result.success is True
+    assert [call[0] for call in calls] == ["push_message"]
+    req = calls[0][1]
+    assert req.messages[0].original_content_url == "https://example.test/media/line/served.m4a"
+
+
+@pytest.mark.asyncio
 async def test_send_schedules_quota_snapshots_in_background(monkeypatch):
     adapter = LineAdapter(PlatformConfig(enabled=True, token="token", extra={"channel_secret": "secret"}))
 

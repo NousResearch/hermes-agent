@@ -574,7 +574,8 @@ class LineAdapter(BasePlatformAdapter):
             return SendResult(success=False, error="LINE public base URL is unknown; cannot serve audio to LINE")
 
         prepared_path, duration_ms = await asyncio.to_thread(self._prepare_outbound_audio, audio_path)
-        public_url = f"{self._public_base_url}{self.media_path}/{quote(Path(prepared_path).name)}"
+        served_path = await asyncio.to_thread(self._cache_served_audio, prepared_path)
+        public_url = f"{self._public_base_url}{self.media_path}/{quote(Path(served_path).name)}"
         messages: List[Any] = [AudioMessage(originalContentUrl=public_url, duration=duration_ms)]
         if caption:
             messages.append(TextMessage(text=caption[: self.MAX_MESSAGE_LENGTH]))
@@ -614,6 +615,13 @@ class LineAdapter(BasePlatformAdapter):
 
     async def play_tts(self, chat_id: str, audio_path: str, **kwargs) -> SendResult:
         return await self.send_voice(chat_id=chat_id, audio_path=audio_path, **kwargs)
+
+    def _cache_served_audio(self, audio_path: str) -> str:
+        source = Path(audio_path)
+        if not source.exists():
+            raise FileNotFoundError(audio_path)
+        ext = source.suffix or ".m4a"
+        return cache_audio_from_bytes(source.read_bytes(), ext=ext)
 
     def _prepare_outbound_audio(self, audio_path: str) -> tuple[str, int]:
         source = Path(audio_path)

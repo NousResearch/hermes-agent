@@ -727,19 +727,23 @@ Then configure Hermes:
 ```bash
 hermes model
 # Select "LM Studio"
-# Press Enter to use http://127.0.0.1:1234/v1
+# Press Enter to use http://localhost:1234/v1
 # Pick one of the discovered models
 # If LM Studio server auth is enabled, enter LM_API_KEY when prompted
 ```
 
-:::caution Context length often defaults to 2048
-LM Studio reads context length from the model's metadata, but many GGUF models report low defaults (2048 or 4096). **Always set context length explicitly** in the LM Studio model settings:
+Hermes will automatically load a LM Studio model with 64K context length
+
+To change context length in LM Studio:
 
 1. Click the gear icon next to the model picker
-2. Set "Context Length" to at least 16384 (preferably 32768)
+2. Set "Context Length" to at least 64000 for a smooth experience
 3. Reload the model for the change to take effect
+4. If your machine cannot fit 64000, consider using a smaller model with larger context lengths.
 
-Alternatively, use the CLI: `lms load model-name --context-length 32768`
+Alternatively, use the CLI: `lms load model-name --context-length 64000`
+
+You can use the CLI to estimate if the model will fit: `lms load model-name --context-length 64000 --estimate-only`
 
 To set persistent per-model defaults: My Models tab → gear icon on the model → set context size.
 :::

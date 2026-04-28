@@ -497,7 +497,10 @@ export default function SessionsPage() {
 
   useEffect(() => {
     const loadOverview = () => {
-      api.getStatus().then(setStatus).catch(() => {});
+      api
+        .getStatus()
+        .then(setStatus)
+        .catch(() => {});
       api
         .getSessions(50)
         .then((r) => setOverviewSessions(r.sessions))
@@ -551,7 +554,12 @@ export default function SessionsPage() {
           throw new Error("delete failed");
         }
       },
-      [expandedId, showToast, t.sessions.sessionDeleted, t.sessions.failedToDelete],
+      [
+        expandedId,
+        showToast,
+        t.sessions.sessionDeleted,
+        t.sessions.failedToDelete,
+      ],
     ),
   });
 
@@ -800,7 +808,6 @@ export default function SessionsPage() {
             ))}
           </div>
 
-          {/* Pagination — hidden during search */}
           {!searchResults && total > PAGE_SIZE && (
             <div className="flex items-center justify-between pt-2">
               <span className="text-xs text-muted-foreground">

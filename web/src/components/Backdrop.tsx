@@ -44,18 +44,16 @@ export function Backdrop() {
             // `assets.bg` — the <img> hides itself when a CSS bg is set
             // so the two don't double-darken. CSS var fallbacks keep the
             // default behaviour unchanged when no theme customises these.
-            mixBlendMode: "var(--component-backdrop-filler-blend-mode, difference)",
+            mixBlendMode:
+              "var(--component-backdrop-filler-blend-mode, difference)",
             opacity: "var(--component-backdrop-filler-opacity, 0.033)",
             backgroundImage: "var(--theme-asset-bg)",
             backgroundSize: "var(--component-backdrop-background-size, cover)",
-            backgroundPosition: "var(--component-backdrop-background-position, center)",
+            backgroundPosition:
+              "var(--component-backdrop-background-position, center)",
           } as unknown as React.CSSProperties
         }
       >
-        {/* Default filler image only renders when no theme-asset-bg is
-            set. Themes that provide their own `assets.bg` override the
-            <div>'s backgroundImage above, so hiding the <img> in that
-            case prevents the two from compositing incorrectly. */}
         <img
           alt=""
           className="h-[150dvh] w-auto min-w-[100dvw] object-cover object-top-left invert theme-default-filler"

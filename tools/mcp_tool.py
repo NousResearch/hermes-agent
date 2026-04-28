@@ -2441,6 +2441,7 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
             ]
             if len(non_null) == 1 and len(non_null) != len(variants):
                 replacement = dict(non_null[0]) if isinstance(non_null[0], dict) else {}
+                replacement.setdefault("nullable", True)
                 for meta_key in ("title", "description", "default", "examples"):
                     if meta_key in stripped and meta_key not in replacement:
                         replacement[meta_key] = stripped[meta_key]

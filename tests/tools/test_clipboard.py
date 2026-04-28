@@ -273,7 +273,7 @@ class TestIsWsl:
         with self._mock_proc_version(read_data=content) as m:
             assert _is_wsl() is True
             assert _is_wsl() is True
-            m.assert_called_once()  # only read once
+            m.assert_called_once()
 
 
 # ── WSL (powershell.exe) ────────────────────────────────────────────────

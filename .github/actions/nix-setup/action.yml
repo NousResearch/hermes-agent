@@ -1,11 +1,11 @@
 name: 'Setup Nix'
-description: 'Install Nix with DeterminateSystems and enable magic-nix-cache'
+description: 'Install Nix with DeterminateSystems (optional flake cache bootstrap)'
 
 runs:
   using: composite
   steps:
     - uses: DeterminateSystems/nix-installer-action@ef8a148080ab6020fd15196c2084a2eea5ff2d25 # v22
-    # Fork PRs cannot use repository-scoped OIDC/FlakeHub registration. Keep
-    # Nix checks running by treating cache bootstrap as best-effort.
+    # Fork PRs / no FlakeHub OIDC: auth to magic-nix-cache can fail. Treat as
+    # best-effort so Nix flake checks still run (slower builds, same correctness).
     - uses: DeterminateSystems/magic-nix-cache-action@565684385bcd71bad329742eefe8d12f2e765b39 # v13
       continue-on-error: true

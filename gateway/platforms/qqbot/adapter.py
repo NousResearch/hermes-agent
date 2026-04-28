@@ -1190,11 +1190,14 @@ class QQAdapter(BasePlatformAdapter):
             else:
                 # Other attachments (video, file, etc.): record as text.
                 try:
-                    cached_path = await self._download_and_cache(url, ct)
+                    cached_path = await self._download_and_cache(url, ct, original_filename=filename)
                     if cached_path:
                         other_attachments.append(f"[Attachment: {filename or ct}]")
+                    else:
+                        other_attachments.append(f"[Attachment download failed: {filename or ct}]")
                 except Exception as exc:
-                    logger.debug("[%s] Failed to cache attachment: %s", self._log_tag, exc)
+                    logger.warning("[%s] Failed to cache attachment: %s", self._log_tag, exc)
+                    other_attachments.append(f"[Attachment download failed: {filename or ct}]")
 
         attachment_info = "\n".join(other_attachments) if other_attachments else ""
         return {
@@ -1204,7 +1207,7 @@ class QQAdapter(BasePlatformAdapter):
             "attachment_info": attachment_info,
         }
 
-    async def _download_and_cache(self, url: str, content_type: str) -> Optional[str]:
+    async def _download_and_cache(self, url: str, content_type: str, original_filename: str = "") -> Optional[str]:
         """Download a URL and cache it locally."""
         from tools.url_safety import is_safe_url
 
@@ -1218,12 +1221,12 @@ class QQAdapter(BasePlatformAdapter):
             resp = await self._http_client.get(
                 url,
                 timeout=30.0,
-                headers=self._qq_media_headers(),
+                headers=self._qq_media_headers(url),
             )
             resp.raise_for_status()
             data = resp.content
         except Exception as exc:
-            logger.debug(
+            logger.warning(
                 "[%s] Download failed for %s: %s", self._log_tag, url[:80], exc
             )
             return None
@@ -1236,7 +1239,7 @@ class QQAdapter(BasePlatformAdapter):
             # Convert to .wav using ffmpeg so STT engines can process it.
             return await self._convert_audio_to_wav(data, url)
         else:
-            filename = Path(urlparse(url).path).name or "qq_attachment"
+            filename = original_filename or Path(urlparse(url).path).name or "qq_attachment"
             return cache_document_from_bytes(data, filename)
 
     @staticmethod
@@ -1261,13 +1264,15 @@ class QQAdapter(BasePlatformAdapter):
             return True
         return False
 
-    def _qq_media_headers(self) -> Dict[str, str]:
+    def _qq_media_headers(self, url: str = "") -> Dict[str, str]:
         """Return Authorization headers for QQ multimedia CDN downloads.
 
         QQ's multimedia URLs (multimedia.nt.qq.com.cn) require the bot's
         access token in an Authorization header, otherwise the download
         returns a non-200 status.
         """
+        if url and "grouptalk.c2c.qq.com" in url:
+            logger.info("[%s] File CDN download request: host=%s", self._log_tag, urlparse(url).hostname)
         if self._access_token:
             return {"Authorization": f"QQBot {self._access_token}"}
         return {}

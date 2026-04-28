@@ -7871,6 +7871,7 @@ class AIAgent:
             or base_url_host_matches(self.base_url, "moonshot.ai")
             or base_url_host_matches(self.base_url, "moonshot.cn")
         )
+        _is_tokenhub = base_url_host_matches(self._base_url_lower, "tokenhub.tencentmaas.com")
 
         # Temperature: _fixed_temperature_for_model may return OMIT_TEMPERATURE
         # sentinel (temperature omitted entirely), a numeric override, or None.
@@ -7942,6 +7943,7 @@ class AIAgent:
             is_github_models=_is_gh,
             is_nvidia_nim=_is_nvidia,
             is_kimi=_is_kimi,
+            is_tokenhub=_is_tokenhub,
             is_custom_provider=self.provider == "custom",
             ollama_num_ctx=self._ollama_num_ctx,
             provider_preferences=_prefs or None,
@@ -7989,6 +7991,7 @@ class AIAgent:
             "x-ai/",
             "google/gemini-2",
             "qwen/qwen3",
+            "tencent/hy3-preview",
         )
         return any(model.startswith(prefix) for prefix in reasoning_model_prefixes)
 

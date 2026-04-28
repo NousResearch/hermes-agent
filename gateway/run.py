@@ -859,6 +859,7 @@ class GatewayRunner:
         self._queued_events: Dict[str, List[MessageEvent]] = {}
         self._busy_ack_ts: Dict[str, float] = {}  # last busy-ack timestamp per session (debounce)
         self._session_run_generation: Dict[str, int] = {}
+        self._restart_caller_key: str = None  # session_key of the agent that triggered /restart
 
         # Cache AIAgent instances per session to preserve prompt caching.
         # Without this, a new AIAgent is created per message, rebuilding the
@@ -1999,7 +2000,7 @@ class GatewayRunner:
 
         return True
 
-    async def _drain_active_agents(self, timeout: float) -> tuple[Dict[str, Any], bool]:
+    async def _drain_active_agents(self, timeout: float, exclude_key: str = None) -> tuple[Dict[str, Any], bool]:
         snapshot = self._snapshot_running_agents()
         last_active_count = self._running_agent_count()
         last_status_at = 0.0
@@ -2007,13 +2008,22 @@ class GatewayRunner:
         def _maybe_update_status(force: bool = False) -> None:
             nonlocal last_active_count, last_status_at
             now = asyncio.get_running_loop().time()
-            active_count = self._running_agent_count()
+            # Count agents, excluding the restart caller so it can't block drain.
+            active_count = sum(
+                1 for k in self._running_agents
+                if k != exclude_key and self._running_agents.get(k) is not _AGENT_PENDING_SENTINEL
+            )
             if force or active_count != last_active_count or (now - last_status_at) >= 1.0:
                 self._update_runtime_status("draining")
                 last_active_count = active_count
                 last_status_at = now
 
-        if not self._running_agents:
+        # Build a filtered view that excludes the restart caller.
+        filtered_agents = {
+            k: v for k, v in self._running_agents.items() if k != exclude_key
+        } if exclude_key else dict(self._running_agents)
+
+        if not filtered_agents:
             _maybe_update_status(force=True)
             return snapshot, False
 
@@ -2022,15 +2032,21 @@ class GatewayRunner:
             return snapshot, True
 
         deadline = asyncio.get_running_loop().time() + timeout
-        while self._running_agents and asyncio.get_running_loop().time() < deadline:
+        while filtered_agents and asyncio.get_running_loop().time() < deadline:
+            # Re-filter each iteration in case agents drop out.
+            filtered_agents = {
+                k: v for k, v in self._running_agents.items() if k != exclude_key
+            }
             _maybe_update_status()
             await asyncio.sleep(0.1)
-        timed_out = bool(self._running_agents)
+        timed_out = bool(filtered_agents)
         _maybe_update_status(force=True)
         return snapshot, timed_out
 
-    def _interrupt_running_agents(self, reason: str) -> None:
+    def _interrupt_running_agents(self, reason: str, exclude_key: str = None) -> None:
         for session_key, agent in list(self._running_agents.items()):
+            if session_key == exclude_key:
+                continue
             if agent is _AGENT_PENDING_SENTINEL:
                 continue
             try:
@@ -3014,7 +3030,9 @@ class GatewayRunner:
             await self._notify_active_sessions_of_shutdown()
 
             timeout = self._restart_drain_timeout
-            active_agents, timed_out = await self._drain_active_agents(timeout)
+            active_agents, timed_out = await self._drain_active_agents(
+                timeout, exclude_key=self._restart_caller_key
+            )
             if timed_out:
                 logger.warning(
                     "Gateway drain timed out after %.1fs with %d active agent(s); interrupting remaining work.",
@@ -3056,7 +3074,8 @@ class GatewayRunner:
                             _sk, _e,
                         )
                 self._interrupt_running_agents(
-                    _INTERRUPT_REASON_GATEWAY_RESTART if self._restart_requested else _INTERRUPT_REASON_GATEWAY_SHUTDOWN
+                    _INTERRUPT_REASON_GATEWAY_RESTART if self._restart_requested else _INTERRUPT_REASON_GATEWAY_SHUTDOWN,
+                    exclude_key=self._restart_caller_key,
                 )
                 interrupt_deadline = asyncio.get_running_loop().time() + 5.0
                 while self._running_agents and asyncio.get_running_loop().time() < interrupt_deadline:
@@ -6002,6 +6021,10 @@ class GatewayRunner:
         # doesn't work under systemd because KillMode=mixed kills all
         # processes in the cgroup, including the detached helper.
         _under_service = bool(os.environ.get("INVOCATION_ID"))  # systemd sets this
+        # Record the caller's session_key so drain can exclude it — the restart
+        # triggerer's agent cannot exit until it receives the HTTP response, so
+        # excluding it prevents the drain-from-itself deadlock.
+        self._restart_caller_key = self._session_key_for_source(event.source)
         if _under_service:
             self.request_restart(detached=False, via_service=True)
         else:

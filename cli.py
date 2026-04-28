@@ -351,6 +351,7 @@ def load_cli_config() -> Dict[str, Any]:
         "browser": {
             "inactivity_timeout": 120,  # Auto-cleanup inactive browser sessions after 2 min
             "record_sessions": False,  # Auto-record browser sessions as WebM videos
+            "chrome_args": "",  # Extra Chrome launch args (e.g. "--no-sandbox" for containers)
         },
         "compression": {
             "enabled": True,      # Auto-compress when approaching context limit

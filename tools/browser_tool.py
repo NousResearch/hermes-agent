@@ -175,6 +175,9 @@ _EMPTY_OK_COMMANDS: frozenset = frozenset({"close", "record"})
 _cached_command_timeout: Optional[int] = None
 _command_timeout_resolved = False
 
+_cached_chrome_args: Optional[str] = None
+_chrome_args_resolved = False
+
 
 def _get_command_timeout() -> int:
     """Return the configured browser command timeout from config.yaml.
@@ -198,6 +201,48 @@ def _get_command_timeout() -> int:
     except Exception as e:
         logger.debug("Could not read command_timeout from config: %s", e)
     _cached_command_timeout = result
+    return result
+
+
+def _get_chrome_args() -> str:
+    """Return configured Chrome launch args from config.yaml.
+
+    Reads ``config["browser"]["chrome_args"]`` and falls back to an
+    empty string if unset or unreadable.  Result is cached after the
+    first call and cleared by ``cleanup_all_browsers()``.
+
+    When the ``AGENT_BROWSER_ARGS`` environment variable is already set,
+    the config value is appended (comma-separated) so both sources are
+    respected.
+    """
+    global _cached_chrome_args, _chrome_args_resolved
+    if _chrome_args_resolved:
+        return _cached_chrome_args  # type: ignore[return-value]
+
+    _chrome_args_resolved = True
+    result = ""
+    try:
+        from hermes_cli.config import read_raw_config
+        cfg = read_raw_config()
+        val = cfg.get("browser", {}).get("chrome_args")
+        if val is not None:
+            result = str(val).strip()
+    except Exception as e:
+        logger.debug("Could not read chrome_args from config: %s", e)
+
+    env_args = os.environ.get("AGENT_BROWSER_ARGS", "").strip()
+    if env_args:
+        if result:
+            result = f"{env_args},{result}"
+        else:
+            result = env_args
+
+    # agent-browser splits AGENT_BROWSER_ARGS on comma or newline, not spaces.
+    # Normalize spaces to commas so shell-style multi-flag strings work.
+    if result and " " in result and "," not in result:
+        result = result.replace(" ", ",")
+
+    _cached_chrome_args = result
     return result
 
 
@@ -1464,6 +1509,14 @@ def _run_browser_command(
         if "AGENT_BROWSER_IDLE_TIMEOUT_MS" not in browser_env:
             idle_ms = str(BROWSER_SESSION_INACTIVITY_TIMEOUT * 1000)
             browser_env["AGENT_BROWSER_IDLE_TIMEOUT_MS"] = idle_ms
+
+        # Pass through any configured custom Chrome launch arguments
+        # (e.g. --no-sandbox for container/VM environments).  Merges
+        # config.yaml browser.chrome_args with the AGENT_BROWSER_ARGS
+        # env var so both sources are respected.
+        chrome_args = _get_chrome_args()
+        if chrome_args:
+            browser_env["AGENT_BROWSER_ARGS"] = chrome_args
         
         # Use temp files for stdout/stderr instead of pipes.
         # agent-browser starts a background daemon that inherits file
@@ -2691,11 +2744,14 @@ def cleanup_all_browsers() -> None:
     # Reset cached lookups so they are re-evaluated on next use.
     global _cached_agent_browser, _agent_browser_resolved
     global _cached_command_timeout, _command_timeout_resolved
+    global _cached_chrome_args, _chrome_args_resolved
     _cached_agent_browser = None
     _agent_browser_resolved = False
     _discover_homebrew_node_dirs.cache_clear()
     _cached_command_timeout = None
     _command_timeout_resolved = False
+    _cached_chrome_args = None
+    _chrome_args_resolved = False
 
 
 # ============================================================================

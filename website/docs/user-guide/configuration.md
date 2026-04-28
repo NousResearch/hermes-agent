@@ -1280,6 +1280,11 @@ browser:
   inactivity_timeout: 120        # Seconds before auto-closing idle sessions
   command_timeout: 30             # Timeout in seconds for browser commands (screenshot, navigate, etc.)
   record_sessions: false         # Auto-record browser sessions as WebM videos to ~/.hermes/browser_recordings/
+  # Extra Chrome launch arguments for local browser mode.
+  # Common use case: "--no-sandbox" when running in Docker/VMs without proper
+  # sandbox permissions. Multiple flags are comma-separated.
+  # Also respects the AGENT_BROWSER_ARGS env var.
+  chrome_args: ""
   # Optional CDP override — when set, Hermes attaches directly to your own
   # Chrome (via /browser connect) rather than starting a headless browser.
   cdp_url: ""

@@ -188,16 +188,16 @@ def build_memory_context_block(raw_context: str) -> str:
 
 
 class MemoryManager:
-    """Orchestrates the built-in provider plus at most one external provider.
+    """Orchestrates the built-in provider plus any external providers.
 
-    The builtin provider is always first. Only one non-builtin (external)
-    provider is allowed.  Failures in one provider never block the other.
+    The builtin provider is always first. Multiple non-builtin (external)
+    providers are allowed, but duplicate names are rejected.
+    Failures in one provider never block the others.
     """
 
     def __init__(self) -> None:
         self._providers: List[MemoryProvider] = []
         self._tool_to_provider: Dict[str, MemoryProvider] = {}
-        self._has_external: bool = False  # True once a non-builtin provider is added
 
     # -- Registration --------------------------------------------------------
 
@@ -205,30 +205,27 @@ class MemoryManager:
         """Register a memory provider.
 
         Built-in provider (name ``"builtin"``) is always accepted.
-        Only **one** external (non-builtin) provider is allowed — a second
-        attempt is rejected with a warning.
+        Multiple external providers are allowed, but duplicate names are
+        rejected with a warning.
         """
         is_builtin = provider.name == "builtin"
 
         if not is_builtin:
-            if self._has_external:
-                existing = next(
-                    (p.name for p in self._providers if p.name != "builtin"), "unknown"
-                )
+            # Check for duplicate provider name
+            if any(p.name == provider.name for p in self._providers if p.name != "builtin"):
                 logger.warning(
-                    "Rejected memory provider '%s' — external provider '%s' is "
-                    "already registered. Only one external memory provider is "
-                    "allowed at a time. Configure which one via memory.provider "
-                    "in config.yaml.",
-                    provider.name, existing,
+                    "Memory provider '%s' is already registered; skipping duplicate.",
+                    provider.name,
                 )
                 return
-            self._has_external = True
+
+        # Collect tool schemas BEFORE mutating state
+        schemas = provider.get_tool_schemas()
 
         self._providers.append(provider)
 
         # Index tool names → provider for routing
-        for schema in provider.get_tool_schemas():
+        for schema in schemas:
             tool_name = schema.get("name", "")
             if tool_name and tool_name not in self._tool_to_provider:
                 self._tool_to_provider[tool_name] = provider
@@ -241,10 +238,11 @@ class MemoryManager:
                     provider.name,
                 )
 
+        ext_count = sum(1 for p in self._providers if p.name != "builtin")
+        total_tools = len(self._tool_to_provider)
         logger.info(
-            "Memory provider '%s' registered (%d tools)",
-            provider.name,
-            len(provider.get_tool_schemas()),
+            "Memory provider '%s' registered (%d tools). Active: %d external, %d total tools.",
+            provider.name, len(schemas), ext_count, total_tools,
         )
 
     @property

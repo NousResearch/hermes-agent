@@ -10700,6 +10700,13 @@ class GatewayRunner:
                         final_response,
                         all_msgs,
                         failure_callback=_title_failure_cb,
+                        main_runtime={
+                            "model": getattr(agent, "model", None),
+                            "provider": getattr(agent, "provider", None),
+                            "base_url": getattr(agent, "base_url", None),
+                            "api_key": getattr(agent, "api_key", None),
+                            "api_mode": getattr(agent, "api_mode", None),
+                        } if agent else None,
                     )
                 except Exception:
                     pass

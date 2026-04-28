@@ -1834,7 +1834,7 @@ def resolve_provider_client(
     # ── Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY) ───────────
     if provider == "custom":
         if explicit_base_url:
-            custom_base = explicit_base_url.strip()
+            custom_base = _to_openai_base_url(explicit_base_url).strip()
             custom_key = (
                 (explicit_api_key or "").strip()
                 or os.getenv("OPENAI_API_KEY", "").strip()
@@ -1847,7 +1847,7 @@ def resolve_provider_client(
                 )
                 return None, None
             final_model = _normalize_resolved_model(
-                model or _read_main_model() or "gpt-4o-mini",
+                model or (main_runtime.get("model") if main_runtime else None) or "gpt-4o-mini",
                 provider,
             )
             extra = {}

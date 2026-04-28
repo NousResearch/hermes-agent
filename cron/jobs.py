@@ -21,6 +21,7 @@ from typing import Optional, Dict, List, Any, Union
 logger = logging.getLogger(__name__)
 
 from hermes_time import now as _hermes_now
+from utils import atomic_replace
 
 try:
     from croniter import croniter
@@ -367,9 +368,7 @@ def save_jobs(jobs: List[Dict[str, Any]]):
             json.dump({"jobs": jobs, "updated_at": _hermes_now().isoformat()}, f, indent=2)
             f.flush()
             os.fsync(f.fileno())
-        # Resolve symlinks so os.replace writes to the real file (GitHub #16743).
-        real_path = os.path.realpath(JOBS_FILE) if os.path.islink(JOBS_FILE) else JOBS_FILE
-        os.replace(tmp_path, real_path)
+        atomic_replace(tmp_path, JOBS_FILE)
         _secure_file(JOBS_FILE)
     except BaseException:
         try:
@@ -865,9 +864,7 @@ def save_job_output(job_id: str, output: str):
             f.write(output)
             f.flush()
             os.fsync(f.fileno())
-        # Resolve symlinks so os.replace writes to the real file (GitHub #16743).
-        real_path = os.path.realpath(output_file) if os.path.islink(output_file) else output_file
-        os.replace(tmp_path, real_path)
+        atomic_replace(tmp_path, output_file)
         _secure_file(output_file)
     except BaseException:
         try:

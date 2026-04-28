@@ -27,55 +27,76 @@ import pytest
 # ---------------------------------------------------------------------------
 
 def _ensure_discord_mock() -> None:
-    if "discord" in sys.modules and hasattr(sys.modules["discord"], "__file__"):
-        return
+    """Ensure sys.modules['discord'] has real Exception classes for NotFound/Forbidden/HTTPException.
 
-    discord_mod = MagicMock()
-    discord_mod.Intents.default.return_value = MagicMock()
-    discord_mod.DMChannel = type("DMChannel", (), {})
-    discord_mod.Thread = type("Thread", (), {})
-    discord_mod.ForumChannel = type("ForumChannel", (), {})
-    discord_mod.Interaction = object
-    discord_mod.Forbidden = type("Forbidden", (Exception,), {})
-    discord_mod.HTTPException = type("HTTPException", (Exception,), {})
+    Idempotent and resilient to other test files setting up bare-MagicMock discord modules
+    earlier in collection (xdist test order is non-deterministic). Real discord.py is left
+    alone if it's importable.
+    """
+    real_discord = sys.modules.get("discord")
+    if real_discord is not None and hasattr(real_discord, "__file__"):
+        return  # real discord.py installed — leave it alone
 
-    # ButtonStyle enum stub
-    button_style_mod = SimpleNamespace(
-        primary="primary",
-        secondary="secondary",
-        success="success",
-        danger="danger",
-    )
-    discord_mod.ButtonStyle = button_style_mod
+    discord_mod = real_discord if real_discord is not None else MagicMock()
 
-    # ui.View stub — tracks added children, supports timeout kwarg
-    class _FakeView:
-        def __init__(self, *, timeout: float = 180.0) -> None:
-            self.timeout = timeout
-            self.children: List[Any] = []
+    def _is_real_exception(obj: Any) -> bool:
+        return isinstance(obj, type) and issubclass(obj, BaseException)
 
-        def add_item(self, item: Any) -> None:
-            self.children.append(item)
+    if not _is_real_exception(getattr(discord_mod, "Forbidden", None)):
+        discord_mod.Forbidden = type("Forbidden", (Exception,), {})
+    if not _is_real_exception(getattr(discord_mod, "HTTPException", None)):
+        discord_mod.HTTPException = type("HTTPException", (Exception,), {})
+    if not _is_real_exception(getattr(discord_mod, "NotFound", None)):
+        discord_mod.NotFound = type("NotFound", (Exception,), {})
 
-    # ui.Button stub
-    class _FakeButton:
-        def __init__(self, *, label: str, custom_id: str, style: Any = "primary") -> None:
-            self.label = label
-            self.custom_id = custom_id
-            self.style = style
-            self.callback: Any = None
+    # NOTE: bare `MagicMock()` returns truthy auto-attrs for any name, so
+    # `hasattr(mm, "ui")` is always True. Use stricter type checks to detect
+    # whether a previous test (or the real discord.py) actually set the field.
+    if not isinstance(getattr(discord_mod, "DMChannel", None), type):
+        discord_mod.DMChannel = type("DMChannel", (), {})
+    if not isinstance(getattr(discord_mod, "Thread", None), type):
+        discord_mod.Thread = type("Thread", (), {})
+    if not isinstance(getattr(discord_mod, "ForumChannel", None), type):
+        discord_mod.ForumChannel = type("ForumChannel", (), {})
+    if getattr(discord_mod, "Interaction", None) is not object:
+        discord_mod.Interaction = object
+    if not isinstance(getattr(discord_mod, "ButtonStyle", None), SimpleNamespace):
+        discord_mod.ButtonStyle = SimpleNamespace(
+            primary="primary",
+            secondary="secondary",
+            success="success",
+            danger="danger",
+        )
+    # Intents.default() must return something; MagicMock auto-attrs do this
+    # implicitly so a bare-MagicMock discord_mod is fine without explicit setup.
 
-    ui_mod = SimpleNamespace(View=_FakeView, Button=_FakeButton)
-    discord_mod.ui = ui_mod
+    ui_mod = getattr(discord_mod, "ui", None)
+    if not (isinstance(ui_mod, SimpleNamespace) and isinstance(getattr(ui_mod, "View", None), type)):
+        class _FakeView:
+            def __init__(self, *, timeout: float = 180.0) -> None:
+                self.timeout = timeout
+                self.children: List[Any] = []
 
-    ext_mod = MagicMock()
-    commands_mod = MagicMock()
-    commands_mod.Bot = MagicMock
-    ext_mod.commands = commands_mod
+            def add_item(self, item: Any) -> None:
+                self.children.append(item)
 
-    sys.modules.setdefault("discord", discord_mod)
-    sys.modules.setdefault("discord.ext", ext_mod)
-    sys.modules.setdefault("discord.ext.commands", commands_mod)
+        class _FakeButton:
+            def __init__(self, *, label: str, custom_id: str, style: Any = "primary") -> None:
+                self.label = label
+                self.custom_id = custom_id
+                self.style = style
+                self.callback: Any = None
+
+        discord_mod.ui = SimpleNamespace(View=_FakeView, Button=_FakeButton)
+
+    sys.modules["discord"] = discord_mod
+    if "discord.ext" not in sys.modules:
+        ext_mod = MagicMock()
+        commands_mod = MagicMock()
+        commands_mod.Bot = MagicMock
+        ext_mod.commands = commands_mod
+        sys.modules["discord.ext"] = ext_mod
+        sys.modules["discord.ext.commands"] = commands_mod
 
 
 _ensure_discord_mock()
@@ -269,6 +290,29 @@ async def test_adapter_not_initialized_returns_error() -> None:
 # ---------------------------------------------------------------------------
 # Test 6: Channel not found — returns error JSON
 # ---------------------------------------------------------------------------
+
+@pytest.mark.asyncio
+async def test_channel_forbidden_returns_perm_error() -> None:
+    """fetch_channel raising discord.Forbidden surfaces a permission error,
+    distinguishing 'bot lacks VIEW_CHANNEL' from 'channel does not exist'.
+    Addresses architect's commit-9 next-pass note #1.
+    """
+    import discord as _discord_mod
+    adapter = _make_adapter(fetch_raises=True)
+    adapter._client.get_channel.return_value = None
+    adapter._client.fetch_channel = AsyncMock(side_effect=_discord_mod.Forbidden("no view"))
+
+    with _patch_adapter(adapter):
+        result_str = await _handler_async({
+            "channel_id": "1",
+            "content": "x",
+            "skill_name": "sk",
+            "buttons": [{"label": "A", "action": "a"}],
+        })
+    result = json.loads(result_str)
+    assert "error" in result
+    assert "permission" in result["error"].lower() or "VIEW_CHANNEL" in result["error"]
+
 
 @pytest.mark.asyncio
 async def test_channel_not_found_returns_error() -> None:

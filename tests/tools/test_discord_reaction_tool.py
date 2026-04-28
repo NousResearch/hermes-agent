@@ -53,18 +53,18 @@ def _ensure_discord_mock() -> None:
     if not _is_real_exception(getattr(discord_mod, "NotFound", None)):
         discord_mod.NotFound = type("NotFound", (Exception,), {})
 
-    if not hasattr(discord_mod, "Intents"):
-        discord_mod.Intents = MagicMock()
-        discord_mod.Intents.default.return_value = MagicMock()
-    if not hasattr(discord_mod, "DMChannel"):
+    # NOTE: bare `MagicMock()` returns truthy auto-attrs for any name, so
+    # `hasattr(mm, "ui")` is always True. Use stricter type checks to detect
+    # whether a previous test (or the real discord.py) actually set the field.
+    if not isinstance(getattr(discord_mod, "DMChannel", None), type):
         discord_mod.DMChannel = type("DMChannel", (), {})
-    if not hasattr(discord_mod, "Thread"):
+    if not isinstance(getattr(discord_mod, "Thread", None), type):
         discord_mod.Thread = type("Thread", (), {})
-    if not hasattr(discord_mod, "ForumChannel"):
+    if not isinstance(getattr(discord_mod, "ForumChannel", None), type):
         discord_mod.ForumChannel = type("ForumChannel", (), {})
-    if not hasattr(discord_mod, "Interaction"):
+    if getattr(discord_mod, "Interaction", None) is not object:
         discord_mod.Interaction = object
-    if not hasattr(discord_mod, "ButtonStyle"):
+    if not isinstance(getattr(discord_mod, "ButtonStyle", None), SimpleNamespace):
         discord_mod.ButtonStyle = SimpleNamespace(
             primary="primary",
             secondary="secondary",
@@ -72,7 +72,8 @@ def _ensure_discord_mock() -> None:
             danger="danger",
         )
 
-    if not hasattr(discord_mod, "ui"):
+    ui_mod = getattr(discord_mod, "ui", None)
+    if not (isinstance(ui_mod, SimpleNamespace) and isinstance(getattr(ui_mod, "View", None), type)):
         class _FakeView:
             def __init__(self, *, timeout: float = 180.0) -> None:
                 self.timeout = timeout
@@ -237,6 +238,27 @@ async def test_add_reaction_channel_not_found() -> None:
         }))
     assert "error" in result
     assert "not found" in result["error"].lower() or "channel" in result["error"].lower()
+
+
+@pytest.mark.asyncio
+async def test_add_reaction_channel_forbidden() -> None:
+    """fetch_channel raising discord.Forbidden surfaces a permission error,
+    not the generic 'channel not found' message — addresses architect's
+    commit-9 next-pass note #1.
+    """
+    import discord as _discord_mod
+    adapter = _make_adapter(fetch_channel_raises=True)
+    adapter._client.get_channel.return_value = None
+    adapter._client.fetch_channel = AsyncMock(side_effect=_discord_mod.Forbidden("no view"))
+
+    with _patch_adapter(adapter):
+        result = json.loads(await _handler_add_async({
+            "channel_id": "1",
+            "message_id": "2",
+            "emoji": "✅",
+        }))
+    assert "error" in result
+    assert "permission" in result["error"].lower() or "VIEW_CHANNEL" in result["error"]
 
 
 @pytest.mark.asyncio

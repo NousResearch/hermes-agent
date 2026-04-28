@@ -98,6 +98,18 @@ async def _resolve_message(channel_id: str, message_id: str):
         try:
             channel = await client.fetch_channel(channel_id_int)
         except Exception as exc:
+            try:
+                import discord as _discord  # type: ignore
+                if isinstance(exc, _discord.Forbidden):
+                    return None, None, tool_error(
+                        f"Bot lacks VIEW_CHANNEL permission for channel {channel_id}."
+                    )
+                if isinstance(exc, _discord.NotFound):
+                    return None, None, tool_error(
+                        f"Channel {channel_id} does not exist or bot is not in its guild."
+                    )
+            except ImportError:
+                pass
             return None, None, tool_error(
                 f"Channel {channel_id} not found or bot cannot access it: {exc}"
             )

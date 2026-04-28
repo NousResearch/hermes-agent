@@ -251,6 +251,14 @@ class TestBuildApiKwargsChatCompletionsServiceTier:
         kwargs = agent._build_api_kwargs(messages)
         assert "service_tier" not in kwargs
 
+    def test_no_crash_when_request_overrides_is_none(self, monkeypatch):
+        agent = _make_agent(monkeypatch, "openrouter")
+        agent.model = "gpt-4.1"
+        agent.request_overrides = None
+        messages = [{"role": "user", "content": "hi"}]
+        kwargs = agent._build_api_kwargs(messages)
+        assert "service_tier" not in kwargs
+
 
 class TestBuildApiKwargsKimiNoTemperatureOverride:
     def test_kimi_for_coding_omits_temperature(self, monkeypatch):

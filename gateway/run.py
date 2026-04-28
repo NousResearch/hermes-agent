@@ -924,6 +924,38 @@ class GatewayRunner:
             stream_delta_cb = stream_consumer.on_delta
         return stream_consumer, stream_delta_cb
 
+    def _resolve_reasoning_stream_callback(
+        self,
+        *,
+        source: SessionSource,
+        stream_consumer: Any,
+    ) -> Optional[Any]:
+        """Return the per-turn reasoning stream callback, if any.
+
+        Important for cached agents: callers should assign this result every
+        turn, including ``None``, so stale callbacks from prior turns do not
+        leak across show_reasoning toggles or platform changes.
+        """
+        _want_show_reasoning = False
+        try:
+            from gateway.display_config import resolve_display_setting as _rds
+            _want_show_reasoning = bool(_rds(
+                _load_gateway_config(),
+                _platform_config_key(source.platform),
+                "show_reasoning",
+                False,
+            ))
+        except Exception:
+            pass
+
+        try:
+            from gateway.wecom_stream_consumer import WeComStreamConsumer as _WCS
+            if isinstance(stream_consumer, _WCS) and _want_show_reasoning:
+                return stream_consumer.on_reasoning
+        except ImportError:
+            pass
+        return None
+
 
 
     def _has_setup_skill(self) -> bool:
@@ -10232,28 +10264,13 @@ class GatewayRunner:
             agent.stream_delta_callback = _stream_delta_cb
             agent.interim_assistant_callback = _interim_assistant_cb if _want_interim_messages else None
             agent.status_callback = _status_callback_sync
-            # Wire up reasoning callback for WeCom stream consumer.
-            # WeComStreamConsumer.on_reasoning receives reasoning token deltas
-            # and forwards them via WeCom stream API with think tags.
-            # Only wire up when show_reasoning is enabled — otherwise the
-            # think block shows only the waiting model text timer.
-            _want_show_reasoning = False
-            try:
-                from gateway.display_config import resolve_display_setting as _rds
-                _want_show_reasoning = bool(_rds(
-                    _load_gateway_config(),
-                    _platform_config_key(source.platform),
-                    "show_reasoning",
-                    False,
-                ))
-            except Exception:
-                pass
-            try:
-                from gateway.wecom_stream_consumer import WeComStreamConsumer as _WCS
-                if isinstance(_stream_consumer, _WCS) and _want_show_reasoning:
-                    agent.reasoning_callback = _stream_consumer.on_reasoning
-            except ImportError:
-                pass
+            # Always reset the per-turn reasoning callback, including to None,
+            # so cached agents do not leak a stale WeCom reasoning stream
+            # callback across show_reasoning toggles or platform changes.
+            agent.reasoning_callback = self._resolve_reasoning_stream_callback(
+                source=source,
+                stream_consumer=_stream_consumer,
+            )
             agent.reasoning_config = reasoning_config
             agent.service_tier = self._service_tier
             agent.request_overrides = turn_route.get("request_overrides")

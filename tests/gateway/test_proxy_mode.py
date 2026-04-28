@@ -202,6 +202,90 @@ class TestBuildPlatformStreamConsumer:
         assert consumer is mock_consumer
         assert delta_cb == mock_consumer.on_delta
 
+    def test_resolve_reasoning_stream_callback_returns_wecom_callback_when_enabled(self):
+        from gateway.wecom_stream_consumer import WeComStreamConsumer
+
+        runner = _make_runner()
+        source = _make_source(platform=Platform.WECOM)
+        consumer = WeComStreamConsumer(
+            adapter=MagicMock(),
+            chat_id="wecom-chat",
+            reply_req_id="req-123",
+            stream_id="stream-123",
+        )
+
+        with patch("gateway.run._load_gateway_config", return_value={
+            "display": {"platforms": {"wecom": {"show_reasoning": True}}}
+        }):
+            callback = runner._resolve_reasoning_stream_callback(
+                source=source,
+                stream_consumer=consumer,
+            )
+
+        assert callback == consumer.on_reasoning
+
+    def test_resolve_reasoning_stream_callback_returns_none_when_disabled(self):
+        from gateway.wecom_stream_consumer import WeComStreamConsumer
+
+        runner = _make_runner()
+        source = _make_source(platform=Platform.WECOM)
+        consumer = WeComStreamConsumer(
+            adapter=MagicMock(),
+            chat_id="wecom-chat",
+            reply_req_id="req-123",
+            stream_id="stream-123",
+        )
+
+        with patch("gateway.run._load_gateway_config", return_value={
+            "display": {"platforms": {"wecom": {"show_reasoning": False}}}
+        }):
+            callback = runner._resolve_reasoning_stream_callback(
+                source=source,
+                stream_consumer=consumer,
+            )
+
+        assert callback is None
+
+    def test_resolve_reasoning_stream_callback_clears_stale_cached_agent_callback(self):
+        from gateway.wecom_stream_consumer import WeComStreamConsumer
+
+        runner = _make_runner()
+        source = _make_source(platform=Platform.WECOM)
+        first_consumer = WeComStreamConsumer(
+            adapter=MagicMock(),
+            chat_id="wecom-chat",
+            reply_req_id="req-123",
+            stream_id="stream-123",
+        )
+
+        with patch("gateway.run._load_gateway_config", return_value={
+            "display": {"platforms": {"wecom": {"show_reasoning": True}}}
+        }):
+            callback = runner._resolve_reasoning_stream_callback(
+                source=source,
+                stream_consumer=first_consumer,
+            )
+
+        cached_agent = MagicMock()
+        cached_agent.reasoning_callback = callback
+        assert cached_agent.reasoning_callback == first_consumer.on_reasoning
+
+        second_consumer = WeComStreamConsumer(
+            adapter=MagicMock(),
+            chat_id="wecom-chat",
+            reply_req_id="req-456",
+            stream_id="stream-456",
+        )
+        with patch("gateway.run._load_gateway_config", return_value={
+            "display": {"platforms": {"wecom": {"show_reasoning": False}}}
+        }):
+            cached_agent.reasoning_callback = runner._resolve_reasoning_stream_callback(
+                source=source,
+                stream_consumer=second_consumer,
+            )
+
+        assert cached_agent.reasoning_callback is None
+
     def test_non_editable_non_wecom_platform_skips_generic_streaming(self):
         runner = _make_runner()
         source = _make_source(platform=Platform.QQBOT)

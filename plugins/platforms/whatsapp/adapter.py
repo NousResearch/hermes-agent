@@ -35,6 +35,10 @@ from hermes_constants import (
 
 logger = logging.getLogger(__name__)
 
+# Inbound owner-typed WhatsApp text is prefixed at MessageEvent construction so
+# transcripts stay disambiguated even if downstream plugins fail before silent_ingest.
+_OWNER_REPLY_PREFIX = "[owner reply] "
+
 
 def _listener_pids_on_port(port: int) -> list:
     """PIDs of processes *listening* on ``port`` (POSIX) — never clients.
@@ -1314,12 +1318,16 @@ class WhatsAppAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             # that look owner-typed (linked-device send, not echoed from our
             # own /send).  Surfaced under a platform-prefixed key so plugins
             # can detect "owner just replied in this customer chat" without
-            # having to peek at raw_message.  Gated by
-            # ``WHATSAPP_FORWARD_OWNER_MESSAGES`` at the bridge layer; the
-            # propagation here is unconditional so a future producer can set
-            # the flag without us having to touch this code path again.
+            # having to peek at raw_message.  We also prefix ``MessageEvent.text``
+            # with ``[owner reply] `` here so the marker survives any downstream
+            # failure (e.g. handover-rule errors that bypass silent_ingest).
+            # Gated by ``WHATSAPP_FORWARD_OWNER_MESSAGES`` at the bridge layer;
+            # metadata + text tagging are unconditional when the flag is present
+            # so a future producer can set it without adapter changes.
             if data.get("fromOwner"):
                 metadata["whatsapp_from_owner"] = True
+                if not body.startswith(_OWNER_REPLY_PREFIX):
+                    body = f"{_OWNER_REPLY_PREFIX}{body}"
 
             return MessageEvent(
                 text=body,

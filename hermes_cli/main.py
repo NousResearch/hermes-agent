@@ -183,6 +183,9 @@ try:
                 _early_redact = _early_sec_cfg.get("redact_secrets")
                 if _early_redact is not None:
                     os.environ["HERMES_REDACT_SECRETS"] = str(_early_redact).lower()
+                _early_display_only = _early_sec_cfg.get("display_redaction_only")
+                if _early_display_only is not None:
+                    os.environ["HERMES_REDACT_DISPLAY_ONLY"] = str(_early_display_only).lower()
             del _early_sec_cfg
         del _cfg_path
 except Exception:

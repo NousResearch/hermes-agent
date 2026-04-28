@@ -646,6 +646,9 @@ def load_cli_config() -> Dict[str, Any]:
         redact = security_config.get("redact_secrets")
         if redact is not None:
             os.environ["HERMES_REDACT_SECRETS"] = str(redact).lower()
+        display_only = security_config.get("display_redaction_only")
+        if display_only is not None:
+            os.environ["HERMES_REDACT_DISPLAY_ONLY"] = str(display_only).lower()
 
     return defaults
 

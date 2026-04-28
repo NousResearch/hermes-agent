@@ -368,6 +368,9 @@ if _config_path.exists():
             _redact = _security_cfg.get("redact_secrets")
             if _redact is not None:
                 os.environ["HERMES_REDACT_SECRETS"] = str(_redact).lower()
+            _display_only = _security_cfg.get("display_redaction_only")
+            if _display_only is not None:
+                os.environ["HERMES_REDACT_DISPLAY_ONLY"] = str(_display_only).lower()
     except Exception:
         pass  # Non-fatal; gateway can still run with .env values
 

@@ -14,7 +14,7 @@ from typing import Dict, Optional
 import ssl
 import time
 
-from agent.redact import redact_sensitive_text
+from agent.redact import redact_for_display as redact_sensitive_text
 
 logger = logging.getLogger(__name__)
 

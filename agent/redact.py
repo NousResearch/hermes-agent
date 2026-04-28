@@ -63,6 +63,15 @@ _SENSITIVE_BODY_KEYS = frozenset({
 # in ~/.hermes/.env.
 _REDACT_ENABLED = os.getenv("HERMES_REDACT_SECRETS", "").lower() in ("1", "true", "yes", "on")
 
+# Display-only mode: when enabled (via security.display_redaction_only in
+# config.yaml), redact_sensitive_text() becomes a no-op for tool result
+# content — the LLM receives real credential values and can use them in
+# subsequent commands.  Redaction still applies to user-facing display
+# via redact_for_display() (chat output, logs, context summaries).
+# This addresses both #16843 (secrets break terminal commands) and
+# #16700 (secrets break Bitwarden CLI workflows).
+_DISPLAY_REDACTION_ONLY = os.getenv("HERMES_REDACT_DISPLAY_ONLY", "").lower() in ("1", "true", "yes", "on")
+
 # Known API key prefixes -- match the prefix + contiguous token chars
 _PREFIX_PATTERNS = [
     r"sk-[A-Za-z0-9_-]{10,}",           # OpenAI / OpenRouter / Anthropic (sk-ant-*)
@@ -257,21 +266,8 @@ def _redact_form_body(text: str) -> str:
     return _redact_query_string(text.strip())
 
 
-def redact_sensitive_text(text: str) -> str:
-    """Apply all redaction patterns to a block of text.
-
-    Safe to call on any string -- non-matching text passes through unchanged.
-    Disabled by default — enable via security.redact_secrets: true in config.yaml.
-    """
-    if text is None:
-        return None
-    if not isinstance(text, str):
-        text = str(text)
-    if not text:
-        return text
-    if not _REDACT_ENABLED:
-        return text
-
+def _apply_redact_patterns(text: str) -> str:
+    """Core redaction logic — shared by redact_sensitive_text and redact_for_display."""
     # Known prefixes (sk-, ghp_, etc.)
     text = _PREFIX_RE.sub(lambda m: _mask_token(m.group(1)), text)
 
@@ -333,6 +329,49 @@ def redact_sensitive_text(text: str) -> str:
     return text
 
 
+def redact_sensitive_text(text: str) -> str:
+    """Apply all redaction patterns to a block of text.
+
+    Safe to call on any string -- non-matching text passes through unchanged.
+    Disabled by default — enable via security.redact_secrets: true in config.yaml.
+
+    When ``security.display_redaction_only`` is enabled in config.yaml, this
+    function is a no-op (returns the text unchanged).  User-facing display
+    contexts (chat messages, logs, context summaries) should use
+    ``redact_for_display()`` instead, which always applies patterns.
+    """
+    if text is None:
+        return None
+    if not isinstance(text, str):
+        text = str(text)
+    if not text:
+        return text
+    if not _REDACT_ENABLED or _DISPLAY_REDACTION_ONLY:
+        return text
+    return _apply_redact_patterns(text)
+
+
+def redact_for_display(text: str) -> str:
+    """Redact secrets for user-facing display (chat messages, logs, summaries).
+
+    Unlike ``redact_sensitive_text``, this function always redacts regardless
+    of the ``security.display_redaction_only`` setting.  Use this in display/
+    logging paths where secrets must never leak to the user.
+
+    Does NOT redact when ``security.redact_secrets`` is disabled (logical —
+    the user opted out of all redaction).
+    """
+    if text is None:
+        return None
+    if not isinstance(text, str):
+        text = str(text)
+    if not text:
+        return text
+    if not _REDACT_ENABLED:
+        return text
+    return _apply_redact_patterns(text)
+
+
 class RedactingFormatter(logging.Formatter):
     """Log formatter that redacts secrets from all log messages."""
 
@@ -341,4 +380,4 @@ class RedactingFormatter(logging.Formatter):
 
     def format(self, record: logging.LogRecord) -> str:
         original = super().format(record)
-        return redact_sensitive_text(original)
+        return redact_for_display(original)

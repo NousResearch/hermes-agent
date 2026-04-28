@@ -31,7 +31,7 @@ from agent.model_metadata import (
     get_model_context_length,
     estimate_messages_tokens_rough,
 )
-from agent.redact import redact_sensitive_text
+from agent.redact import redact_for_display
 
 logger = logging.getLogger(__name__)
 
@@ -667,7 +667,7 @@ class ContextCompressor(ContextEngine):
         parts = []
         for msg in turns:
             role = msg.get("role", "unknown")
-            content = redact_sensitive_text(msg.get("content") or "")
+            content = redact_for_display(msg.get("content") or "")
 
             # Tool results: keep enough content for the summarizer
             if role == "tool":
@@ -688,7 +688,7 @@ class ContextCompressor(ContextEngine):
                         if isinstance(tc, dict):
                             fn = tc.get("function", {})
                             name = fn.get("name", "?")
-                            args = redact_sensitive_text(fn.get("arguments", ""))
+                            args = redact_for_display(fn.get("arguments", ""))
                             # Truncate long arguments but keep enough for context
                             if len(args) > self._TOOL_ARGS_MAX:
                                 args = args[:self._TOOL_ARGS_HEAD] + "..."
@@ -874,7 +874,7 @@ The user has requested that this compaction PRIORITISE preserving all informatio
                 content = str(content) if content else ""
             # Redact the summary output as well — the summarizer LLM may
             # ignore prompt instructions and echo back secrets verbatim.
-            summary = redact_sensitive_text(content.strip())
+            summary = redact_for_display(content.strip())
             # Store for iterative updates on next compaction
             self._previous_summary = summary
             self._summary_failure_cooldown_until = 0.0

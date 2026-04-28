@@ -1122,37 +1122,21 @@ def _normalize_tool_input_schema(schema: Any) -> Dict[str, Any]:
 
     Anthropic's tool schema validator rejects nullable unions such as
     ``anyOf: [{"type": "string"}, {"type": "null"}]`` that Pydantic/MCP
-    commonly emits for optional fields.  Tool optionality is represented by
-    the parent ``required`` array, so collapse nullable unions to the non-null
-    branch while preserving metadata like description/default.
+    commonly emits for optional fields. Tool optionality is represented by
+    the parent ``required`` array, so we delegate to the shared
+    ``strip_nullable_unions`` helper to collapse nullable unions to the
+    non-null branch while preserving metadata like description/default.
+
+    ``keep_nullable_hint=False`` because the Anthropic validator does not
+    recognize the OpenAPI-style ``nullable: true`` extension and strict
+    schema-to-grammar converters may reject unknown keywords.
     """
     if not schema:
         return {"type": "object", "properties": {}}
 
-    def _strip_nullable_union(node: Any) -> Any:
-        if isinstance(node, list):
-            return [_strip_nullable_union(item) for item in node]
-        if not isinstance(node, dict):
-            return node
+    from tools.schema_sanitizer import strip_nullable_unions
 
-        stripped = {k: _strip_nullable_union(v) for k, v in node.items()}
-        for key in ("anyOf", "oneOf"):
-            variants = stripped.get(key)
-            if not isinstance(variants, list):
-                continue
-            non_null = [
-                item for item in variants
-                if not (isinstance(item, dict) and item.get("type") == "null")
-            ]
-            if len(non_null) == 1 and len(non_null) != len(variants):
-                replacement = dict(non_null[0]) if isinstance(non_null[0], dict) else {}
-                for meta_key in ("title", "description", "default", "examples"):
-                    if meta_key in stripped and meta_key not in replacement:
-                        replacement[meta_key] = stripped[meta_key]
-                return _strip_nullable_union(replacement)
-        return stripped
-
-    normalized = _strip_nullable_union(schema)
+    normalized = strip_nullable_unions(schema, keep_nullable_hint=False)
     if not isinstance(normalized, dict):
         return {"type": "object", "properties": {}}
     if normalized.get("type") == "object" and not isinstance(normalized.get("properties"), dict):

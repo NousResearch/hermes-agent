@@ -167,22 +167,10 @@ _MCP_HTTP_AVAILABLE = False
 _MCP_SAMPLING_TYPES = False
 _MCP_NOTIFICATION_TYPES = False
 _MCP_MESSAGE_HANDLER_SUPPORTED = False
-_MCP_NEW_HTTP = False
-streamablehttp_client = None
-streamable_http_client = None
 # Conservative fallback for SDK builds that don't export LATEST_PROTOCOL_VERSION.
 # Streamable HTTP was introduced by 2025-03-26, so this remains valid for the
 # HTTP transport path even on older-but-supported SDK versions.
 LATEST_PROTOCOL_VERSION = "2025-03-26"
-
-
-class _CompatType:
-    """Minimal attribute bag for MCP SDK types missing in older/newer builds."""
-
-    def __init__(self, **kwargs):
-        for key, value in kwargs.items():
-            setattr(self, key, value)
-
 try:
     from mcp import ClientSession, StdioServerParameters
     from mcp.client.stdio import stdio_client
@@ -203,28 +191,20 @@ try:
         from mcp.types import LATEST_PROTOCOL_VERSION
     except ImportError:
         logger.debug("mcp.types.LATEST_PROTOCOL_VERSION not available -- using fallback protocol version")
-    # Sampling types -- import individually because SDK names changed across releases.
+    # Sampling types -- separated so older SDK versions don't break MCP support
     try:
-        from mcp.types import CreateMessageResult, ErrorData, SamplingCapability, TextContent
-
-        try:
-            from mcp.types import CreateMessageResultWithTools
-        except ImportError:
-            CreateMessageResultWithTools = _CompatType
-
-        try:
-            from mcp.types import SamplingToolsCapability
-        except ImportError:
-            SamplingToolsCapability = _CompatType
-
-        try:
-            from mcp.types import ToolUseContent
-        except ImportError:
-            ToolUseContent = _CompatType
-
+        from mcp.types import (
+            CreateMessageResult,
+            CreateMessageResultWithTools,
+            ErrorData,
+            SamplingCapability,
+            SamplingToolsCapability,
+            TextContent,
+            ToolUseContent,
+        )
         _MCP_SAMPLING_TYPES = True
     except ImportError:
-        logger.debug("MCP sampling base types not available -- sampling disabled")
+        logger.debug("MCP sampling types not available -- sampling disabled")
     # Notification types for dynamic tool discovery (tools/list_changed)
     try:
         from mcp.types import (
@@ -2424,29 +2404,17 @@ def _normalize_mcp_input_schema(schema: dict | None) -> dict:
         return node
 
     def _strip_nullable_union(node):
-        """Collapse JSON Schema nullable unions to provider-safe non-null schemas."""
-        if isinstance(node, list):
-            return [_strip_nullable_union(item) for item in node]
-        if not isinstance(node, dict):
-            return node
+        """Collapse JSON Schema nullable unions to provider-safe non-null schemas.
 
-        stripped = {k: _strip_nullable_union(v) for k, v in node.items()}
-        for key in ("anyOf", "oneOf"):
-            variants = stripped.get(key)
-            if not isinstance(variants, list):
-                continue
-            non_null = [
-                item for item in variants
-                if not (isinstance(item, dict) and item.get("type") == "null")
-            ]
-            if len(non_null) == 1 and len(non_null) != len(variants):
-                replacement = dict(non_null[0]) if isinstance(non_null[0], dict) else {}
-                replacement.setdefault("nullable", True)
-                for meta_key in ("title", "description", "default", "examples"):
-                    if meta_key in stripped and meta_key not in replacement:
-                        replacement[meta_key] = stripped[meta_key]
-                return _strip_nullable_union(replacement)
-        return stripped
+        Delegates to ``tools.schema_sanitizer.strip_nullable_unions`` so MCP
+        ingestion, the Anthropic guard, and the global sanitizer all share one
+        implementation. Keeps the ``nullable: true`` hint so runtime argument
+        coercion can still map a model-emitted ``"null"`` string to Python
+        ``None`` for this optional field.
+        """
+        from tools.schema_sanitizer import strip_nullable_unions
+
+        return strip_nullable_unions(node, keep_nullable_hint=True)
 
     def _repair_object_shape(node):
         """Recursively repair object-shaped nodes: fill type, prune required."""

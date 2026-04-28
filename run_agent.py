@@ -1916,7 +1916,20 @@ class AIAgent:
 
         self._ensure_lmstudio_runtime_loaded(_config_context_length)
 
-
+        # Read max_tokens override from config (mirrors context_length above).
+        # Custom providers without a server-side max_tokens default truncate
+        # long responses with finish_reason='length'; this lets the user pin
+        # an explicit cap via model.max_tokens (top-level) or
+        # custom_providers.<>.models.<>.max_tokens (per-model).
+        # Applied only when the constructor did not pass an explicit value.
+        try:
+            from hermes_cli.config import get_max_tokens_from_config as _gmtfc
+            _config_max_tokens = _gmtfc(self.model, self.base_url, _agent_cfg)
+        except Exception:
+            _config_max_tokens = None
+        self._config_max_tokens = _config_max_tokens
+        if _config_max_tokens is not None and self.max_tokens is None:
+            self.max_tokens = _config_max_tokens
 
         # Select context engine: config-driven (like memory providers).
         # 1. Check config.yaml context.engine setting

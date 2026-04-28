@@ -2748,10 +2748,95 @@ def get_custom_provider_context_length(
     return None
 
 
+def get_max_tokens_from_config(
+    model: str,
+    base_url: str,
+    config: Optional[Dict[str, Any]] = None,
+) -> Optional[int]:
+    """Resolve a ``max_tokens`` override from ``config.yaml``.
+
+    Custom OpenAI-compatible providers (vLLM, llama.cpp, ollama, ...) that
+    do not advertise a max_tokens default via /models cause responses to
+    truncate with ``finish_reason='length'`` because the agent never sends
+    a max_tokens hint.  This helper resolves an override the user can set
+    in config.yaml, mirroring the existing ``context_length`` lookup.
+
+    Lookup order (first valid positive int wins):
+      1. Top-level ``model.max_tokens`` (applies to whichever model is active)
+      2. ``custom_providers.<>.models.<model>.max_tokens`` (per-model, scoped
+         to the entry whose ``base_url`` matches ``base_url``)
+
+    Returns ``None`` when neither location holds a valid value.  Trailing
+    slashes on URLs are normalised before comparison.
+    """
+    if config is None:
+        try:
+            config = load_config()
+        except Exception:
+            return None
+    if not isinstance(config, dict):
+        return None
+
+    # 1. Top-level model.max_tokens
+    model_cfg = config.get("model")
+    if isinstance(model_cfg, dict):
+        raw = model_cfg.get("max_tokens")
+        if raw is not None:
+            try:
+                v = int(raw)
+                if v > 0:
+                    return v
+            except (TypeError, ValueError):
+                logger.warning(
+                    "Invalid model.max_tokens in config.yaml: %r — "
+                    "must be a positive integer (e.g. 32768, not '32K'). "
+                    "Falling back to per-model / provider defaults.",
+                    raw,
+                )
+
+    # 2. custom_providers.<>.models.<model>.max_tokens
+    if not model or not base_url:
+        return None
+    try:
+        custom_providers = get_compatible_custom_providers(config)
+    except Exception:
+        raw_cps = config.get("custom_providers")
+        custom_providers = raw_cps if isinstance(raw_cps, list) else []
+    if not isinstance(custom_providers, list):
+        return None
+
+    target_url = (base_url or "").rstrip("/")
+    if not target_url:
+        return None
+
+    for entry in custom_providers:
+        if not isinstance(entry, dict):
+            continue
+        entry_url = (entry.get("base_url") or "").rstrip("/")
+        if not entry_url or entry_url != target_url:
+            continue
+        models = entry.get("models")
+        if not isinstance(models, dict):
+            continue
+        model_cfg = models.get(model)
+        if not isinstance(model_cfg, dict):
+            continue
+        raw_mt = model_cfg.get("max_tokens")
+        if raw_mt is None:
+            continue
+        try:
+            v = int(raw_mt)
+        except (TypeError, ValueError):
+            continue
+        if v > 0:
+            return v
+    return None
+
+
 def check_config_version() -> Tuple[int, int]:
     """
     Check config version.
-    
+
     Returns (current_version, latest_version).
     """
     config = load_config()

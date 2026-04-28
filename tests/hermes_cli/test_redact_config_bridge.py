@@ -72,8 +72,12 @@ def test_redact_secrets_false_in_config_yaml_is_honored(tmp_path):
     assert "ENV_VAR=false" in result.stdout
 
 
-def test_redact_secrets_default_true_when_unset(tmp_path):
-    """Without the config key, redaction stays on by default."""
+def test_redact_secrets_default_false_when_unset(tmp_path):
+    """Without the config key, redaction stays OFF by default.
+
+    Secret redaction is opt-in — users who want it must set
+    `security.redact_secrets: true` explicitly (or HERMES_REDACT_SECRETS=true).
+    """
     hermes_home = tmp_path / ".hermes"
     hermes_home.mkdir()
     (hermes_home / "config.yaml").write_text("{}\n")  # empty config
@@ -103,7 +107,53 @@ def test_redact_secrets_default_true_when_unset(tmp_path):
         timeout=30,
     )
     assert result.returncode == 0, f"probe failed: {result.stderr}"
-    assert "REDACT_ENABLED=True" in result.stdout
+    assert "REDACT_ENABLED=False" in result.stdout
+
+
+def test_redact_secrets_true_in_config_yaml_is_honored(tmp_path):
+    """Setting `security.redact_secrets: true` in config.yaml must enable
+    redaction — even though it's set in YAML, not as an env var."""
+    hermes_home = tmp_path / ".hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(
+        textwrap.dedent(
+            """\
+            security:
+              redact_secrets: true
+            """
+        )
+    )
+    (hermes_home / ".env").write_text("")
+
+    probe = textwrap.dedent(
+        """\
+        import sys, os
+        os.environ.pop("HERMES_REDACT_SECRETS", None)
+        sys.path.insert(0, %r)
+        import hermes_cli.main
+        import agent.redact
+        print(f"REDACT_ENABLED={agent.redact._REDACT_ENABLED}")
+        print(f"ENV_VAR={os.environ.get('HERMES_REDACT_SECRETS', '<unset>')}")
+        """
+    ) % str(REPO_ROOT)
+
+    env = dict(os.environ)
+    env["HERMES_HOME"] = str(hermes_home)
+    env.pop("HERMES_REDACT_SECRETS", None)
+
+    result = subprocess.run(
+        [sys.executable, "-c", probe],
+        env=env,
+        capture_output=True,
+        text=True,
+        cwd=str(REPO_ROOT),
+        timeout=30,
+    )
+    assert result.returncode == 0, f"probe failed: {result.stderr}"
+    assert "REDACT_ENABLED=True" in result.stdout, (
+        f"Config toggle not honored.\nstdout: {result.stdout}\nstderr: {result.stderr}"
+    )
+    assert "ENV_VAR=true" in result.stdout
 
 
 def test_dotenv_redact_secrets_beats_config_yaml(tmp_path):

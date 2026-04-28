@@ -1313,7 +1313,7 @@ Pre-execution security scanning and secret redaction:
 
 ```yaml
 security:
-  redact_secrets: true           # Redact API key patterns in tool output and logs
+  redact_secrets: false          # Redact API key patterns in tool output and logs (off by default)
   tirith_enabled: true           # Enable Tirith security scanning for terminal commands
   tirith_path: "tirith"          # Path to tirith binary (default: "tirith" in $PATH)
   tirith_timeout: 5              # Seconds to wait for tirith scan before timing out
@@ -1324,7 +1324,7 @@ security:
     shared_files: []
 ```
 
-- `redact_secrets` — automatically detects and redacts patterns that look like API keys, tokens, and passwords in tool output before it enters the conversation context and logs.
+- `redact_secrets` — when `true`, automatically detects and redacts patterns that look like API keys, tokens, and passwords in tool output before it enters the conversation context and logs. **Off by default** — enable if you commonly work with real credentials in tool output and want a safety net. Set to `true` explicitly to turn on.
 - `tirith_enabled` — when `true`, terminal commands are scanned by [Tirith](https://github.com/StackGuardian/tirith) before execution to detect potentially dangerous operations.
 - `tirith_path` — path to the tirith binary. Set this if tirith is installed in a non-standard location.
 - `tirith_timeout` — maximum seconds to wait for a tirith scan. Commands proceed if the scan times out.

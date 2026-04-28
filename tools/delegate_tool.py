@@ -1505,13 +1505,74 @@ def _run_single_child(
                     if diagnostic_path:
                         _err += f" Diagnostic: {diagnostic_path}"
                 else:
-                    _err = (
-                        f"Subagent timed out after {child_timeout}s with "
-                        f"{child_api_calls} API call(s) completed — likely "
-                        f"stuck on a slow API call or unresponsive network request."
-                    )
+                    _last_tool = None
+                    try:
+                        _last_tool = _summary.get("current_tool") if _summary else None
+                    except Exception:
+                        pass
+                    if _last_tool:
+                        _err = (
+                            f"Subagent timed out after {child_timeout}s with "
+                            f"{child_api_calls} API call(s) completed — "
+                            f"last tool was '{_last_tool}' (likely slow response). "
+                            f"The tool may have completed; check tool_trace for result_bytes."
+                        )
+                    else:
+                        _err = (
+                            f"Subagent timed out after {child_timeout}s with "
+                            f"{child_api_calls} API call(s) completed — likely "
+                            f"stuck on a slow API call or unresponsive network request."
+                        )
             else:
                 _err = str(_timeout_exc)
+
+            # Build tool_trace from the child's messages even on timeout
+            # (the non-timeout path does this at ~line 1556; replicate here so the
+            # lead agent gets useful diagnostics without a second round-trip).
+            # Note: #1175 added tool_trace to the normal-completion path, and
+            # #15105 added diagnostic_path for 0-API-call timeouts — this patch
+            # fills the gap for N-API-call timeouts (api_calls > 0, no summary).
+            tool_trace: list[Dict[str, Any]] = []
+            last_tool: Optional[str] = None
+            last_tool_status: Optional[str] = None
+            try:
+                _msgs = result.get("messages") or []
+                if isinstance(_msgs, list):
+                    _tb: Dict[str, Dict[str, Any]] = {}
+                    for _msg in _msgs:
+                        if not isinstance(_msg, dict):
+                            continue
+                        if _msg.get("role") == "assistant":
+                            for _tc in _msg.get("tool_calls") or []:
+                                _fn = _tc.get("function", {})
+                                _e = {
+                                    "tool": _fn.get("name", "unknown"),
+                                    "args_bytes": len(_fn.get("arguments", "")),
+                                }
+                                tool_trace.append(_e)
+                                _tc_id = _tc.get("id")
+                                if _tc_id:
+                                    _tb[_tc_id] = _e
+                        elif _msg.get("role") == "tool":
+                            _content = _msg.get("content", "") or ""
+                            _is_err = bool(_content and "error" in _content[:80].lower())
+                            _tc_id = _msg.get("tool_call_id")
+                            _tgt = _tb.get(_tc_id) if _tc_id else None
+                            if _tgt is not None:
+                                _tgt.update({
+                                    "result_bytes": len(_content),
+                                    "status": "error" if _is_err else "ok",
+                                })
+                                if tool_trace and _tgt is tool_trace[-1]:
+                                    last_tool = _tgt.get("tool")
+                                    last_tool_status = _tgt.get("status")
+                            elif tool_trace:
+                                tool_trace[-1].update({
+                                    "result_bytes": len(_content),
+                                    "status": "error" if _is_err else "ok",
+                                })
+            except Exception:
+                tool_trace = []
 
             return {
                 "task_index": task_index,
@@ -1523,6 +1584,9 @@ def _run_single_child(
                 "duration_seconds": duration,
                 "_child_role": getattr(child, "_delegate_role", None),
                 "diagnostic_path": diagnostic_path,
+                "tool_trace": tool_trace,
+                "last_tool": last_tool,
+                "last_tool_status": last_tool_status,
             }
         finally:
             # Shut down executor without waiting — if the child thread

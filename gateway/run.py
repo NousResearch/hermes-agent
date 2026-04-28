@@ -3905,6 +3905,8 @@ class GatewayRunner:
                     return await self._handle_yolo_command(event)
                 if _cmd_def_inner.name == "verbose":
                     return await self._handle_verbose_command(event)
+                if _cmd_def_inner.name == "footer":
+                    return await self._handle_footer_command(event)
 
             # Gateway-handled info/control commands with dedicated
             # running-agent handlers.
@@ -4124,6 +4126,9 @@ class GatewayRunner:
 
         if canonical == "verbose":
             return await self._handle_verbose_command(event)
+
+        if canonical == "footer":
+            return await self._handle_footer_command(event)
 
         if canonical == "yolo":
             return await self._handle_yolo_command(event)
@@ -5224,6 +5229,27 @@ class GatewayRunner:
                         display_reasoning = last_reasoning.strip()
                     response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
 
+            # Runtime-metadata footer — only on the FINAL message of the turn.
+            # Off by default (display.runtime_footer.enabled=false).  When
+            # streaming already delivered the body, we can't mutate the sent
+            # text, so we fire a separate trailing send below.
+            _footer_line = ""
+            try:
+                from gateway.runtime_footer import build_footer_line as _bfl
+                _footer_line = _bfl(
+                    user_config=_load_gateway_config(),
+                    platform_key=_platform_config_key(source.platform),
+                    model=agent_result.get("model"),
+                    context_tokens=agent_result.get("last_prompt_tokens", 0) or 0,
+                    context_length=agent_result.get("context_length") or None,
+                    cwd=os.environ.get("TERMINAL_CWD", ""),
+                )
+            except Exception as _footer_err:
+                logger.debug("runtime_footer build failed: %s", _footer_err)
+                _footer_line = ""
+            if _footer_line and response and not agent_result.get("already_sent"):
+                response = f"{response}\n\n{_footer_line}"
+
             # Emit agent:end hook
             await self.hooks.emit("agent:end", {
                 **hook_ctx,
@@ -5394,6 +5420,17 @@ class GatewayRunner:
                         await self._deliver_media_from_response(
                             response, event, _media_adapter,
                         )
+                # Streaming already delivered the body text, but the footer was
+                # intentionally held back (see the `not already_sent` gate above).
+                # Send it now as a small trailing message so Telegram/Discord/etc.
+                # still surface the runtime metadata on the final reply.
+                if _footer_line:
+                    try:
+                        _foot_adapter = self.adapters.get(source.platform)
+                        if _foot_adapter:
+                            await _foot_adapter.send(source.chat_id, _footer_line)
+                    except Exception as _e:
+                        logger.debug("trailing footer send failed: %s", _e)
                 return None
 
             return response
@@ -7450,6 +7487,98 @@ class GatewayRunner:
         except Exception as e:
             logger.warning("Failed to save tool_progress mode: %s", e)
             return f"{descriptions[new_mode]}\n_(could not save to config: {e})_"
+
+    async def _handle_footer_command(self, event: MessageEvent) -> str:
+        """Handle /footer command — toggle the runtime-metadata footer.
+
+        Usage:
+            /footer           → toggle on/off
+            /footer on        → enable globally
+            /footer off       → disable globally
+            /footer status    → show current state + fields
+
+        The footer is saved to ``display.runtime_footer.enabled`` (global).
+        Per-platform overrides under ``display.platforms.<platform>.runtime_footer``
+        are respected but not modified here — edit config.yaml directly for
+        per-platform control.
+        """
+        import yaml
+        from gateway.runtime_footer import resolve_footer_config
+
+        config_path = _hermes_home / "config.yaml"
+        platform_key = _platform_config_key(event.source.platform)
+
+        # --- parse argument -------------------------------------------------
+        arg = ""
+        try:
+            text = (getattr(event, "message", None) or "").strip()
+            if text.startswith("/"):
+                parts = text.split(None, 1)
+                if len(parts) > 1:
+                    arg = parts[1].strip().lower()
+        except Exception:
+            arg = ""
+
+        # --- load config ----------------------------------------------------
+        user_config: dict = {}
+        try:
+            if config_path.exists():
+                with open(config_path, encoding="utf-8") as f:
+                    user_config = yaml.safe_load(f) or {}
+        except Exception as e:
+            return f"⚠️ Could not read config.yaml: {e}"
+
+        effective = resolve_footer_config(user_config, platform_key)
+
+        if arg in ("status", "?"):
+            state = "ON" if effective["enabled"] else "OFF"
+            fields = ", ".join(effective.get("fields") or [])
+            return (
+                f"📎 Runtime footer: **{state}**\n"
+                f"Fields: `{fields}`\n"
+                f"Platform: `{platform_key}`"
+            )
+
+        if arg in ("on", "enable", "true", "1"):
+            new_state = True
+        elif arg in ("off", "disable", "false", "0"):
+            new_state = False
+        elif arg == "":
+            new_state = not effective["enabled"]
+        else:
+            return "Usage: `/footer [on|off|status]`"
+
+        # --- write global flag ---------------------------------------------
+        try:
+            if not isinstance(user_config.get("display"), dict):
+                user_config["display"] = {}
+            display = user_config["display"]
+            if not isinstance(display.get("runtime_footer"), dict):
+                display["runtime_footer"] = {}
+            display["runtime_footer"]["enabled"] = new_state
+            atomic_yaml_write(config_path, user_config)
+        except Exception as e:
+            logger.warning("Failed to save runtime_footer.enabled: %s", e)
+            return f"⚠️ Could not save config: {e}"
+
+        state = "ON" if new_state else "OFF"
+        example = ""
+        if new_state:
+            # Show a preview using current agent state if available.
+            from gateway.runtime_footer import format_runtime_footer
+            preview = format_runtime_footer(
+                model=_resolve_gateway_model(user_config) or None,
+                context_tokens=0,
+                context_length=None,
+                fields=effective.get("fields") or ["model", "context_pct", "cwd"],
+            )
+            if preview:
+                example = f"\nExample: `{preview}`"
+        return (
+            f"📎 Runtime footer: **{state}**"
+            f"{example}\n"
+            f"_(saved globally — takes effect on next message)_"
+        )
 
     async def _handle_compress_command(self, event: MessageEvent) -> str:
         """Handle /compress command -- manually compress conversation context.
@@ -10810,11 +10939,13 @@ class GatewayRunner:
             _last_prompt_toks = 0
             _input_toks = 0
             _output_toks = 0
+            _context_length = 0
             _agent = agent_holder[0]
             if _agent and hasattr(_agent, "context_compressor"):
                 _last_prompt_toks = getattr(_agent.context_compressor, "last_prompt_tokens", 0)
                 _input_toks = getattr(_agent, "session_prompt_tokens", 0)
                 _output_toks = getattr(_agent, "session_completion_tokens", 0)
+                _context_length = getattr(_agent.context_compressor, "context_length", 0) or 0
             _resolved_model = getattr(_agent, "model", None) if _agent else None
 
             if not final_response:
@@ -10831,6 +10962,7 @@ class GatewayRunner:
                     "input_tokens": _input_toks,
                     "output_tokens": _output_toks,
                     "model": _resolved_model,
+                    "context_length": _context_length,
                 }
             
             # Scan tool results for MEDIA:<path> tags that need to be delivered
@@ -10935,6 +11067,7 @@ class GatewayRunner:
                 "input_tokens": _input_toks,
                 "output_tokens": _output_toks,
                 "model": _resolved_model,
+                "context_length": _context_length,
                 "session_id": effective_session_id,
                 "response_previewed": result.get("response_previewed", False),
             }

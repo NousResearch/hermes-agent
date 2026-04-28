@@ -871,6 +871,15 @@ def _strip_images_from_messages(messages: list) -> bool:
     "Only 'text' content type is supported.").  Mutates messages so the
     next API call sends text only.
 
+    Preserves message alternation invariants:
+      * ``tool``-role messages whose content was entirely images are replaced
+        with a plaintext placeholder, NOT deleted — deleting them would leave
+        the paired ``tool_call_id`` on the prior assistant message unmatched,
+        which providers reject with HTTP 400.
+      * Non-tool messages whose content becomes empty are dropped.  In
+        practice this only hits synthetic image-only user messages appended
+        for attachment delivery; real user turns always include text.
+
     Returns True if any image parts were removed.
     """
     found = False
@@ -890,9 +899,13 @@ def _strip_images_from_messages(messages: list) -> bool:
         if len(new_parts) < len(content):
             if new_parts:
                 msg["content"] = new_parts
+            elif msg.get("role") == "tool":
+                # Preserve tool_call_id linkage — providers require every
+                # assistant tool_call to have a matching tool response.
+                msg["content"] = "[image content removed — server does not support images]"
             else:
-                # Entire message was images — drop it (user messages added for
-                # image delivery only, e.g. the deferred injection messages).
+                # Synthetic image-only user/assistant message with no text;
+                # safe to drop.
                 to_delete.append(i)
     for i in reversed(to_delete):
         del messages[i]
@@ -12581,11 +12594,18 @@ class AIAgent:
                             continue
 
                     # ── Image-rejection recovery ──────────────────────────────
-                    # Some providers (mlx-lm, text-only endpoints) reject any
-                    # message that contains image_url content with an error like
+                    # Some providers (mlx-lm, text-only endpoints, text-only
+                    # fallbacks on multimodal models) reject any message that
+                    # contains image_url content with a 4xx error like
                     # "Only 'text' content type is supported."  On first hit,
                     # strip all images from the message list, mark the session
                     # as vision-unsupported, and retry with text only.
+                    #
+                    # Detection is best-effort English phrase matching — a
+                    # locale-translated or heavily-reworded upstream error
+                    # will bypass this guard and fall through to the normal
+                    # error handler.  Expand the phrase list when new
+                    # provider wordings are observed in the wild.
                     _err_body = ""
                     try:
                         _err_body = str(getattr(api_error, "body", None) or
@@ -12593,17 +12613,35 @@ class AIAgent:
                                         str(api_error))
                     except Exception:
                         pass
+                    _err_status = getattr(api_error, "status_code", None)
                     _IMAGE_REJECTION_PHRASES = (
                         "only 'text' content type is supported",
                         "only text content type is supported",
                         "image_url is not supported",
+                        "image content is not supported",
                         "multimodal is not supported",
+                        "multimodal content is not supported",
+                        "multimodal input is not supported",
                         "vision is not supported",
+                        "vision input is not supported",
                         "does not support images",
+                        "does not support image input",
+                        "does not support multimodal",
+                        "does not support vision",
+                        "model does not support image",
                     )
+                    _err_lower = _err_body.lower()
+                    _looks_like_image_rejection = any(
+                        p in _err_lower for p in _IMAGE_REJECTION_PHRASES
+                    )
+                    # 4xx-only gate: never interpret 5xx/timeout as "server
+                    # said no to images" — those are transient and must
+                    # route to the normal retry path.
+                    _status_ok = _err_status is None or (400 <= int(_err_status) < 500)
                     if (
                         getattr(self, "_vision_supported", True)
-                        and any(p in _err_body.lower() for p in _IMAGE_REJECTION_PHRASES)
+                        and _looks_like_image_rejection
+                        and _status_ok
                     ):
                         self._vision_supported = False
                         _imgs_removed = _strip_images_from_messages(messages)

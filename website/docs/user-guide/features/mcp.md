@@ -374,6 +374,37 @@ Use it like:
 Inspect the project root and explain the directory layout.
 ```
 
+### Mistral AI server for OCR, audio, and Codestral FIM
+
+```yaml
+mcp_servers:
+  mistral:
+    command: "npx"
+    args: ["-y", "mistral-mcp"]
+    env:
+      MISTRAL_API_KEY: "***"
+    tools:
+      include:
+        - mistral_ocr
+        - voxtral_transcribe
+        - voxtral_speak
+        - codestral_fim
+        - mistral_moderate
+```
+
+Use it like:
+
+```text
+Extract the text from /tmp/contract-scan.pdf with mistral_ocr,
+then summarize the key terms.
+```
+
+This pattern is useful when you want Hermes to keep a primary reasoning model
+(via the regular provider config) but route document OCR, audio transcription,
+or fill-in-the-middle code completion to Mistral's specialized endpoints. The
+`tools.include` filter narrows the surface so Hermes does not see the full
+22-tool list of the upstream server.
+
 ## Troubleshooting
 
 ### MCP server not connecting

@@ -3073,6 +3073,7 @@ class HermesCLI:
             if not text:
                 return
             self._stream_box_opened = True
+            self._stream_box_start = time.time()
             try:
                 from hermes_cli.skin_engine import get_active_skin
                 _skin = get_active_skin()
@@ -3127,10 +3128,10 @@ class HermesCLI:
         # Close the response box
         if self._stream_box_opened:
             w = shutil.get_terminal_size().columns
+            _bstart = getattr(self, "_stream_box_start", None)
             _end = time.strftime("%H:%M:%S")
-            _pstart = getattr(self, "_prompt_start_time", None)
-            if _pstart:
-                _secs = time.time() - _pstart
+            if _bstart:
+                _secs = time.time() - _bstart
                 _elapsed = f"{int(_secs // 60)}m{_secs % 60:.0f}s" if _secs >= 60 else f"{_secs:.1f}s"
             else:
                 _elapsed = ""

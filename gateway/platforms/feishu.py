@@ -149,9 +149,10 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 _MARKDOWN_HINT_RE = re.compile(
-    r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^*\n].+?\*\*)|(~~[^~\n].+?~~)|(<u>.+?</u>)|(\*[^*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)",
+    r"(^#{1,6}\s)|(^\s*[-*]\s)|(^\s*\d+\.\s)|(^\s*---+\s*$)|(```)|(`[^`\n]+`)|(\*\*[^\*\n].+?\*\*)|(~~[^\n].+?~~)|(<u>.+?</u>)|(\*[^\*\n]+\*)|(\[[^\]]+\]\([^)]+\))|(^>\s)|(^\s*\|)",
     re.MULTILINE,
 )
+_MARKDOWN_TABLE_RE = re.compile(r"^\s*\|.*\|\s*$", re.MULTILINE)
 _MARKDOWN_LINK_RE = re.compile(r"\[([^\]]+)\]\(([^)]+)\)")
 _MARKDOWN_FENCE_OPEN_RE = re.compile(r"^```([^\n`]*)\s*$")
 _MARKDOWN_FENCE_CLOSE_RE = re.compile(r"^```\s*$")
@@ -564,6 +565,158 @@ def _build_markdown_post_rows(content: str) -> List[List[Dict[str, str]]]:
 
     _flush_current()
     return rows or [[{"tag": "md", "text": content}]]
+
+
+# ---------------------------------------------------------------------------
+# Markdown table parsing and Feishu table card generation
+# ---------------------------------------------------------------------------
+
+def _parse_table_row(line: str) -> List[str]:
+    """Parse a single Markdown table row into cell values."""
+    stripped = line.strip()
+    if stripped.startswith("|"):
+        stripped = stripped[1:]
+    if stripped.endswith("|"):
+        stripped = stripped[:-1]
+    return [cell.strip() for cell in stripped.split("|")]
+
+
+def _parse_markdown_table(content: str) -> Optional[Dict[str, Any]]:
+    """Parse a Markdown table from content.
+    
+    Returns a dict with:
+    - before_table: text before the table
+    - headers: list of column headers
+    - rows: list of row data (each row is a list of cell values)
+    - after_table: text after the table
+    - has_table: True if a table was found
+    
+    Returns None if no valid table is found.
+    """
+    lines = content.split("\n")
+    table_start = -1
+    table_end = -1
+    headers = []
+    rows_data = []
+    
+    # Find table boundaries: look for header + separator pattern
+    for i, line in enumerate(lines):
+        stripped = line.strip()
+        if stripped.startswith("|") or (stripped.count("|") >= 2 and not stripped.startswith("#")):
+            if table_start == -1 and i + 1 < len(lines):
+                next_line = lines[i + 1].strip()
+                # Separator line pattern: |---|---| or |:---:|
+                if next_line.startswith("|") and re.match(r"^\|[\s\-:]+\|[\s\-:]+\|", next_line):
+                    table_start = i
+                    table_end = i + 1
+                    headers = _parse_table_row(line)
+                    # Find data rows after separator
+                    for j in range(i + 2, len(lines)):
+                        data_line = lines[j].strip()
+                        if data_line.startswith("|") or (data_line.count("|") >= 2):
+                            if not re.match(r"^\|[\s\-:]+\|", data_line):
+                                table_end = j
+                                rows_data.append(_parse_table_row(data_line))
+                        elif data_line == "":
+                            if j + 1 < len(lines) and not lines[j + 1].strip().startswith("|"):
+                                break
+                        else:
+                            break
+                    break
+    
+    if table_start == -1 or not headers:
+        return None
+    
+    before_table = "\n".join(lines[:table_start]).strip()
+    after_table = "\n".join(lines[table_end + 1:]).strip()
+    
+    return {
+        "before_table": before_table,
+        "headers": headers,
+        "rows": rows_data,
+        "after_table": after_table,
+        "has_table": True,
+    }
+
+
+def _build_table_elements(content: str) -> List[Dict[str, Any]]:
+    """Build a list of card elements from content, handling multiple tables.
+    
+    This function recursively processes content, extracting all Markdown tables
+    and converting them to Feishu table components, while preserving text between
+    tables as lark_md div elements.
+    """
+    elements = []
+    remaining_content = content
+    
+    while True:
+        table_data = _parse_markdown_table(remaining_content)
+        if not table_data or not table_data.get("has_table"):
+            # No more tables, add remaining content as markdown
+            if remaining_content.strip():
+                elements.append({
+                    "tag": "div",
+                    "text": {"tag": "lark_md", "content": remaining_content.strip()}
+                })
+            break
+        
+        # Add content before table
+        before_table = table_data.get("before_table", "")
+        if before_table.strip():
+            elements.append({
+                "tag": "div",
+                "text": {"tag": "lark_md", "content": before_table.strip()}
+            })
+        
+        # Build table element
+        headers = table_data["headers"]
+        rows = table_data["rows"]
+        column_keys = ["col_" + str(i) for i in range(len(headers))]
+        
+        table_columns = [
+            {"name": column_keys[i], "display_name": h, "data_type": "text", "width": "auto"}
+            for i, h in enumerate(headers)
+        ]
+        
+        table_rows = []
+        for row in rows:
+            row_obj = {}
+            for i, cell in enumerate(row):
+                if i < len(column_keys):
+                    row_obj[column_keys[i]] = cell
+            table_rows.append(row_obj)
+        
+        elements.append({
+            "tag": "table",
+            "columns": table_columns,
+            "rows": table_rows,
+            "page_size": 20,
+            "row_height": "low"
+        })
+        
+        # Continue with after_table for potential more tables
+        remaining_content = table_data.get("after_table", "")
+    
+    return elements
+
+
+def _build_table_card_payload(content: str) -> str:
+    """Build a Feishu interactive card with table component(s).
+    
+    Handles multiple Markdown tables by using _build_table_elements.
+    
+    Feishu table format:
+    - columns: [{name, display_name, data_type, width}]
+    - rows: [{col_0: "value", col_1: "value", ...}]  # object format!
+    """
+    elements = _build_table_elements(content)
+    
+    card = {
+        "config": {"wide_screen_mode": True},
+        "elements": elements
+    }
+    
+    return json.dumps(card, ensure_ascii=False)
 
 
 def parse_feishu_post_payload(
@@ -997,6 +1150,41 @@ def _collect_text_segments(value: Any, *, in_rich_block: bool) -> List[str]:
         return []
 
     tag = str(value.get("tag", "") or value.get("type", "")).strip().lower()
+
+    # Handle table tag specially - extract column headers and row cell values
+    if tag == "table":
+        table_segments: List[str] = []
+        columns = value.get("columns", [])
+        rows = value.get("rows", [])
+
+        # Extract column display names as headers
+        if isinstance(columns, list):
+            header_parts = []
+            for col in columns:
+                if isinstance(col, dict):
+                    display_name = col.get("display_name", "") or col.get("name", "")
+                    if display_name:
+                        header_parts.append(str(display_name))
+            if header_parts:
+                table_segments.append("| " + " | ".join(header_parts) + " |")
+                table_segments.append("|" + "|".join(["---" for _ in header_parts]) + "|")
+
+        # Extract row cell values
+        if isinstance(rows, list):
+            for row in rows:
+                if isinstance(row, dict):
+                    # Get column order from columns if available
+                    if isinstance(columns, list) and columns:
+                        col_names = [col.get("name", "") for col in columns if isinstance(col, dict)]
+                        row_parts = [str(row.get(name, "")) for name in col_names if name]
+                    else:
+                        # Fallback: use all values in row dict
+                        row_parts = [str(v) for v in row.values() if v]
+                    if row_parts:
+                        table_segments.append("| " + " | ".join(row_parts) + " |")
+
+        return table_segments
+
     next_in_rich_block = in_rich_block or tag in {
         "plain_text",
         "lark_md",
@@ -1647,8 +1835,14 @@ class FeishuAdapter(BasePlatformAdapter):
         last_response = None
 
         try:
-            for chunk in chunks:
+            for i, chunk in enumerate(chunks):
                 msg_type, payload = self._build_outbound_payload(chunk)
+                logger.info(
+                    "[Feishu] send_message: chat=%s reply_to=%s chunk=%d/%d "
+                    "msg_type=%s payload_len=%d content_len=%d",
+                    chat_id, reply_to, i + 1, len(chunks),
+                    msg_type, len(payload), len(chunk),
+                )
                 try:
                     response = await self._feishu_send_with_retry(
                         chat_id=chat_id,
@@ -2715,6 +2909,9 @@ class FeishuAdapter(BasePlatformAdapter):
         )
 
         chat_id = getattr(message, "chat_id", "") or ""
+        _raw_root = getattr(message, "root_id", None)
+        _raw_thread = getattr(message, "thread_id", None)
+        _raw_parent = getattr(message, "parent_id", None)
         chat_info = await self.get_chat_info(chat_id)
         sender_profile = await self._resolve_sender_profile(sender_id)
         source = self.build_source(
@@ -2723,8 +2920,14 @@ class FeishuAdapter(BasePlatformAdapter):
             chat_type=self._resolve_source_chat_type(chat_info=chat_info, event_chat_type=chat_type),
             user_id=sender_profile["user_id"],
             user_name=sender_profile["user_name"],
-            thread_id=getattr(message, "thread_id", None) or None,
+            thread_id=getattr(message, "thread_id", None) or getattr(message, "root_id", None) or None,
             user_id_alt=sender_profile["user_id_alt"],
+        )
+        # DEBUG: Log topic-related fields for reply_in_thread verification
+        _resolved_tid = source.thread_id or "(none)"
+        logger.info(
+            "[Feishu] TOPIC_DEBUG chat_type=%s msg_id=%s parent=%s root=%s thread=%s chat_id=%s → resolved_thread=%s",
+            chat_type or "?", message_id, _raw_parent, _raw_root, _raw_thread, chat_id, _resolved_tid,
         )
         normalized = MessageEvent(
             text=text,
@@ -3830,6 +4033,12 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def _build_outbound_payload(self, content: str) -> tuple[str, str]:
         if _MARKDOWN_HINT_RE.search(content):
+            # Check if content contains a Markdown table
+            table_data = _parse_markdown_table(content)
+            if table_data and table_data.get("has_table"):
+                # Use interactive card with table component for proper rendering
+                # _build_table_card_payload now handles multiple tables internally
+                return "interactive", _build_table_card_payload(content)
             return "post", _build_markdown_post_payload(content)
         text_payload = {"text": content}
         return "text", json.dumps(text_payload, ensure_ascii=False)
@@ -3907,7 +4116,33 @@ class FeishuAdapter(BasePlatformAdapter):
         reply_to: Optional[str],
         metadata: Optional[Dict[str, Any]],
     ) -> Any:
-        reply_in_thread = bool((metadata or {}).get("thread_id"))
+        thread_id = (metadata or {}).get("thread_id")
+        reply_in_thread = bool(thread_id)
+        # DEBUG: Log outbound message threading params
+        logger.info(
+            "[Feishu] SEND_DEBUG chat_id=%s reply_to=%s thread_id=%s reply_in_thread=%s",
+            chat_id, reply_to, thread_id, reply_in_thread,
+        )
+        # In Feishu group topics, if there's no reply_to but we have a
+        # thread_id (from root_id), we MUST keep the response inside the
+        # topic.  Feishu IDs use two prefixes:
+        #   om_  → message ID    (valid for im.v1.message.reply)
+        #   omt_ → topic/thread ID (NOT valid as reply message_id)
+        # Using an omt_ ID as reply message_id triggers error 99992354.
+        if not reply_to and thread_id and thread_id.startswith("om_") and not thread_id.startswith("omt_"):
+            reply_to = thread_id
+        # If we still have no reply_to but the caller provided a
+        # reply_to_message_id in metadata (e.g. the original user
+        # message that started the session), use that as a reply target
+        # so the message stays inside the topic thread via
+        # im.v1.message.reply with reply_in_thread=True.
+        # This covers intermediate / progress messages that originate
+        # from the stream consumer or tool-progress sender, which don't
+        # carry an explicit reply_to but DO carry the topic thread_id.
+        if not reply_to and thread_id and thread_id.startswith("omt_"):
+            _meta_reply_to = (metadata or {}).get("reply_to_message_id")
+            if _meta_reply_to:
+                reply_to = _meta_reply_to
         if reply_to:
             body = self._build_reply_message_body(
                 content=payload,
@@ -3918,11 +4153,15 @@ class FeishuAdapter(BasePlatformAdapter):
             request = self._build_reply_message_request(reply_to, body)
             return await asyncio.to_thread(self._client.im.v1.message.reply, request)
 
+        # No valid reply_to — create a new message.  Pass root_id when
+        # we have a topic/thread ID so the message lands inside the topic.
+        _root_id = thread_id if (not reply_to and thread_id) else None
         body = self._build_create_message_body(
             receive_id=chat_id,
             msg_type=msg_type,
             content=payload,
             uuid_value=str(uuid.uuid4()),
+            root_id=_root_id,
         )
         request = self._build_create_message_request("chat_id", body)
         return await asyncio.to_thread(self._client.im.v1.message.create, request)
@@ -3953,10 +4192,18 @@ class FeishuAdapter(BasePlatformAdapter):
 
     def _finalize_send_result(self, response: Any, default_message: str) -> SendResult:
         if not self._response_succeeded(response):
-            return self._response_error_result(response, default_message=default_message)
+            result = self._response_error_result(response, default_message=default_message)
+            logger.warning(
+                "[Feishu] send failed: code=%s msg=%s",
+                getattr(response, "code", "unknown"),
+                getattr(response, "msg", default_message),
+            )
+            return result
+        msg_id = self._extract_response_field(response, "message_id")
+        logger.info("[Feishu] send succeeded: msg_id=%s", msg_id)
         return SendResult(
             success=True,
-            message_id=self._extract_response_field(response, "message_id"),
+            message_id=msg_id,
             raw_response=response,
         )
 
@@ -4201,22 +4448,28 @@ class FeishuAdapter(BasePlatformAdapter):
         return SimpleNamespace(message_id=message_id, request_body=request_body)
 
     @staticmethod
-    def _build_create_message_body(*, receive_id: str, msg_type: str, content: str, uuid_value: str) -> Any:
+    def _build_create_message_body(*, receive_id: str, msg_type: str, content: str, uuid_value: str, root_id: Optional[str] = None) -> Any:
         if "CreateMessageRequestBody" in globals():
-            return (
+            builder = (
                 CreateMessageRequestBody.builder()
                 .receive_id(receive_id)
                 .msg_type(msg_type)
                 .content(content)
                 .uuid(uuid_value)
-                .build()
             )
-        return SimpleNamespace(
+            body = builder.build()
+            if root_id:
+                body.root_id = root_id
+            return body
+        ns = SimpleNamespace(
             receive_id=receive_id,
             msg_type=msg_type,
             content=content,
             uuid=uuid_value,
         )
+        if root_id:
+            ns.root_id = root_id
+        return ns
 
     @staticmethod
     def _build_create_message_request(receive_id_type: str, request_body: Any) -> Any:

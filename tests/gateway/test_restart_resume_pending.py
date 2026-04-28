@@ -26,12 +26,14 @@ PRs #9850, #9934, #7536):
 """
 
 import asyncio
+import time
 from datetime import datetime, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
+from gateway.run import _is_fresh_gateway_interruption
 from gateway.session import SessionEntry, SessionSource, SessionStore
 from tests.gateway.restart_test_helpers import (
     make_restart_runner,
@@ -64,7 +66,16 @@ def _simulate_note_injection(
     """
     message = user_message
     is_resume_pending = bool(
-        resume_entry is not None and getattr(resume_entry, "resume_pending", False)
+        resume_entry is not None
+        and getattr(resume_entry, "resume_pending", False)
+        and _is_fresh_gateway_interruption(
+            getattr(resume_entry, "last_resume_marked_at", None)
+        )
+    )
+    has_fresh_tool_tail = bool(
+        agent_history
+        and agent_history[-1].get("role") == "tool"
+        and _is_fresh_gateway_interruption(agent_history[-1].get("timestamp"))
     )
 
     if is_resume_pending:
@@ -84,7 +95,7 @@ def _simulate_note_injection(
             f"message below.]\n\n"
             + message
         )
-    elif agent_history and agent_history[-1].get("role") == "tool":
+    elif has_fresh_tool_tail:
         message = (
             "[System note: Your previous turn was interrupted before you could "
             "process the last tool result(s). The conversation history contains "
@@ -411,6 +422,50 @@ class TestResumePendingSystemNote:
         result = _simulate_note_injection(history, "ping", resume_entry=None)
         assert "[System note:" in result
         assert "tool result" in result
+
+    def test_stale_resume_pending_does_not_inject_restart_note(self):
+        """Old restart markers must not revive an unrelated stale task."""
+        entry = self._pending_entry()
+        entry.last_resume_marked_at = datetime.now() - timedelta(hours=1)
+
+        result = _simulate_note_injection(
+            agent_history=[{"role": "assistant", "content": "old in progress"}],
+            user_message="start a new task",
+            resume_entry=entry,
+        )
+
+        assert result == "start a new task"
+
+    def test_fresh_tool_tail_preserves_auto_continue_note(self):
+        history = [
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "function": {"name": "x", "arguments": "{}"}},
+            ]},
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "content": "result",
+                "timestamp": time.time(),
+            },
+        ]
+        result = _simulate_note_injection(history, "ping", resume_entry=None)
+        assert "[System note:" in result
+        assert "tool result" in result
+
+    def test_stale_tool_tail_does_not_inject_auto_continue_note(self):
+        history = [
+            {"role": "assistant", "content": None, "tool_calls": [
+                {"id": "c1", "function": {"name": "x", "arguments": "{}"}},
+            ]},
+            {
+                "role": "tool",
+                "tool_call_id": "c1",
+                "content": "stale result",
+                "timestamp": time.time() - 3600,
+            },
+        ]
+        result = _simulate_note_injection(history, "start a new task", resume_entry=None)
+        assert result == "start a new task"
 
     def test_no_note_when_nothing_to_resume(self):
         history = [

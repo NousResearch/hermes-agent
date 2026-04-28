@@ -17,6 +17,12 @@ Events:
   - command:*           -- Any slash command executed (wildcard match)
 
 Errors in hooks are caught and logged but never block the main pipeline.
+
+The ``context`` object passed to handlers is mutable. Event emitters may choose
+to re-read specific fields after ``emit()`` returns. Gateway currently supports
+this for:
+  - ``agent:start`` → ``context_prompt``
+  - ``agent:end``   → ``response``
 """
 
 import asyncio

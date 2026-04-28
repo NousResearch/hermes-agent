@@ -69,6 +69,9 @@ async def handle(event_type: str, context: dict):
 - Receives `event_type` (string) and `context` (dict)
 - Can be `async def` or regular `def` — both work
 - Errors are caught and logged, never crashing the agent
+- `context` is mutable. For most events this is only useful for sharing state
+  between hooks, but `agent:start` and `agent:end` support specific in-place
+  mutations described below.
 
 ### Available Events
 
@@ -78,10 +81,36 @@ async def handle(event_type: str, context: dict):
 | `session:start` | New messaging session created | `platform`, `user_id`, `session_id`, `session_key` |
 | `session:end` | Session ended (before reset) | `platform`, `user_id`, `session_key` |
 | `session:reset` | User ran `/new` or `/reset` | `platform`, `user_id`, `session_key` |
-| `agent:start` | Agent begins processing a message | `platform`, `user_id`, `session_id`, `message` |
+| `agent:start` | Agent begins processing a message | `platform`, `user_id`, `session_id`, `session_key`, `message`, `message_full`, `context_prompt` |
 | `agent:step` | Each iteration of the tool-calling loop | `platform`, `user_id`, `session_id`, `iteration`, `tool_names` |
-| `agent:end` | Agent finishes processing | `platform`, `user_id`, `session_id`, `message`, `response` |
+| `agent:end` | Agent finishes processing | `platform`, `user_id`, `session_id`, `session_key`, `message`, `message_full`, `context_prompt`, `response`, `response_preview`, `messages`, `history_offset`, `api_calls`, `max_iterations` |
 | `command:*` | Any slash command executed | `platform`, `user_id`, `command`, `args` |
+
+### Mutable Context Fields
+
+Gateway hooks are still primarily observer hooks, but two lifecycle points
+support targeted in-place mutation:
+
+- `agent:start`: if your handler updates `context["context_prompt"]`, Hermes
+  uses the modified prompt for the upcoming agent run.
+- `agent:end`: if your handler updates `context["response"]`, Hermes sends the
+  modified reply to the user and persists the same final text to the session
+  transcript.
+
+All other context keys should be treated as read-only snapshots unless a
+specific event documents otherwise.
+
+Example — append a postscript before the reply is sent:
+
+```python
+def handle(event_type: str, context: dict):
+    if event_type != "agent:end":
+        return
+    response = str(context.get("response") or "").strip()
+    if not response:
+        return
+    context["response"] = f"{response}\n\nP.S. Generated via hook."
+```
 
 #### Wildcard Matching
 

@@ -4917,9 +4917,14 @@ class GatewayRunner:
                 "platform": source.platform.value if source.platform else "",
                 "user_id": source.user_id,
                 "session_id": session_entry.session_id,
+                "session_key": session_key,
                 "message": message_text[:500],
+                "message_full": message_text,
+                "context_prompt": context_prompt,
             }
             await self.hooks.emit("agent:start", hook_ctx)
+            if "context_prompt" in hook_ctx:
+                context_prompt = str(hook_ctx["context_prompt"] or "")
 
             # Run the agent
             agent_result = await self._run_agent(
@@ -5055,11 +5060,26 @@ class GatewayRunner:
                         display_reasoning = last_reasoning.strip()
                     response = f"💭 **Reasoning:**\n```\n{display_reasoning}\n```\n\n{response}"
 
-            # Emit agent:end hook
-            await self.hooks.emit("agent:end", {
+            # Emit agent:end hook. Hooks may mutate context["response"] in place.
+            hook_end_ctx = {
                 **hook_ctx,
-                "response": (response or "")[:500],
-            })
+                "response": response or "",
+                "response_preview": (response or "")[:500],
+                "messages": agent_messages,
+                "history_offset": agent_result.get("history_offset", len(history)),
+                "api_calls": agent_result.get("api_calls", 0),
+                "max_iterations": int(os.getenv("HERMES_MAX_ITERATIONS", "90")),
+            }
+            await self.hooks.emit("agent:end", hook_end_ctx)
+            if "response" in hook_end_ctx:
+                response = str(hook_end_ctx["response"] or "")
+            if agent_messages:
+                for msg in reversed(agent_messages):
+                    if msg.get("role") != "assistant":
+                        continue
+                    if isinstance(msg.get("content"), str):
+                        msg["content"] = response
+                        break
             
             # Check for pending process watchers (check_interval on background processes)
             try:

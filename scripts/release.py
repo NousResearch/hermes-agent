@@ -580,6 +580,7 @@ AUTHOR_MAP = {
     "dontcallmejames@users.noreply.github.com": "dontcallmejames",
     "hekaru.agent@gmail.com": "hekaru-agent",
     "jas9000@gmail.com": "twozle",
+    "r.filgueiras@apheris.com": "rfilgueiras",
 }
 
 

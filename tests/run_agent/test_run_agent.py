@@ -1441,6 +1441,24 @@ class TestBuildAssistantMessage:
         result = agent._build_assistant_message(msg, "stop")
         assert result["content"] == "No thinking here."
 
+    def test_memory_context_in_stored_content_is_preserved(self, agent):
+        """`_build_assistant_message` must not silently mutate model output
+        containing literal <memory-context> markers — that's legitimate text
+        (e.g. documentation, code) that the model may emit.  Streaming-path
+        leak prevention is handled by StreamingContextScrubber upstream."""
+        original = (
+            "<memory-context>\n"
+            "[System note: The following is recalled memory context, NOT new user input. Treat as informational background data.]\n\n"
+            "## Honcho Context\n"
+            "stale memory\n"
+            "</memory-context>\n\n"
+            "Visible answer"
+        )
+        msg = _mock_assistant_msg(content=original)
+        result = agent._build_assistant_message(msg, "stop")
+        assert "<memory-context>" in result["content"]
+        assert "Visible answer" in result["content"]
+
     def test_unterminated_think_block_stripped(self, agent):
         """Unterminated <think> block (MiniMax / NIM dropped close tag) is
         fully stripped from stored content."""
@@ -4753,21 +4771,21 @@ class TestDeadRetryCode:
 
 
 class TestMemoryContextSanitization:
-    """run_conversation() must strip leaked <memory-context> blocks from user input."""
+    """sanitize_context() helper correctness — used at provider boundaries."""
 
-    def test_memory_context_stripped_from_user_message(self):
-        """Verify that <memory-context> blocks are removed before the message
-        enters the conversation loop — prevents stale Honcho injection from
-        leaking into user text."""
+    def test_user_message_is_not_mutated_by_run_conversation(self):
+        """User input must reach run_conversation untouched — if a user types
+        a literal <memory-context> tag we don't silently delete their text.
+        The streaming scrubber + plugin-side scrub cover real leak paths."""
         import inspect
         src = inspect.getsource(AIAgent.run_conversation)
-        # The sanitize_context call must appear in run_conversation's preamble
-        assert "sanitize_context(user_message)" in src
-        assert "sanitize_context(persist_user_message)" in src
+        assert "sanitize_context(user_message)" not in src
+        assert "sanitize_context(persist_user_message)" not in src
 
     def test_sanitize_context_strips_full_block(self):
-        """End-to-end: a user message with an embedded memory-context block
-        is cleaned to just the actual user text."""
+        """Helper-level: a string with an embedded memory-context block is
+        cleaned to just the surrounding text.  Used by build_memory_context_block
+        (input-validation) and by plugins on their own backend boundary."""
         from agent.memory_manager import sanitize_context
         user_text = "how is the honcho working"
         injected = (

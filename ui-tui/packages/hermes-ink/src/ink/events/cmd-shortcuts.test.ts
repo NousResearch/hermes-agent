@@ -11,7 +11,25 @@ function parseOne(sequence: string) {
   return keys[0]!
 }
 
-describe('InputEvent macOS command modifiers', () => {
+describe('enhanced keyboard modifier parsing', () => {
+  it('detects modified Enter sequences for multiline composer shortcuts', () => {
+    const shiftEnter = new InputEvent(parseOne('\u001b[13;2u'))
+    const ctrlEnter = new InputEvent(parseOne('\u001b[13;5u'))
+    const modifyOtherShiftEnter = new InputEvent(parseOne('\u001b[27;2;13~'))
+
+    expect(shiftEnter.key.return).toBe(true)
+    expect(shiftEnter.key.shift).toBe(true)
+    expect(shiftEnter.input).toBe('')
+
+    expect(ctrlEnter.key.return).toBe(true)
+    expect(ctrlEnter.key.ctrl).toBe(true)
+    expect(ctrlEnter.input).toBe('')
+
+    expect(modifyOtherShiftEnter.key.return).toBe(true)
+    expect(modifyOtherShiftEnter.key.shift).toBe(true)
+    expect(modifyOtherShiftEnter.input).toBe('')
+  })
+
   it('preserves Cmd as super for kitty keyboard CSI-u sequences', () => {
     const parsed = parseOne('\u001b[99;9u')
     const event = new InputEvent(parsed)

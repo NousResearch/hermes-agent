@@ -13,7 +13,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_cli.env_loader import load_hermes_dotenv
@@ -124,6 +124,7 @@ _stdout_lock = threading.Lock()
 _cfg_lock = threading.Lock()
 _cfg_cache: dict | None = None
 _cfg_mtime: float | None = None
+_cfg_path = None
 _SLASH_WORKER_TIMEOUT_S = max(
     5.0, float(os.environ.get("HERMES_TUI_SLASH_TIMEOUT_S", "45") or 45)
 )
@@ -250,11 +251,59 @@ class _SlashWorker:
                 pass
 
 
-atexit.register(
-    lambda: [
-        s.get("slash_worker") and s["slash_worker"].close() for s in _sessions.values()
-    ]
-)
+def _load_busy_input_mode() -> str:
+    display = _load_cfg().get("display")
+    if not isinstance(display, dict):
+        display = {}
+    raw = str(display.get("busy_input_mode", "") or "").strip().lower()
+    return raw if raw in {"queue", "steer", "interrupt"} else "interrupt"
+
+
+def _notify_session_boundary(event_type: str, session_id: str | None) -> None:
+    """Fire session lifecycle hooks with CLI parity."""
+    try:
+        from hermes_cli.plugins import invoke_hook as _invoke_hook
+
+        _invoke_hook(event_type, session_id=session_id, platform="tui")
+    except Exception:
+        pass
+
+
+def _finalize_session(session: dict | None) -> None:
+    """Best-effort finalize hook + memory commit for a session."""
+    if not session or session.get("_finalized"):
+        return
+    session["_finalized"] = True
+
+    agent = session.get("agent")
+    lock = session.get("history_lock")
+    if lock is not None:
+        with lock:
+            history = list(session.get("history", []))
+    else:
+        history = list(session.get("history", []))
+    if agent is not None and history and hasattr(agent, "commit_memory_session"):
+        try:
+            agent.commit_memory_session(history)
+        except Exception:
+            pass
+
+    session_id = getattr(agent, "session_id", None) or session.get("session_key")
+    _notify_session_boundary("on_session_finalize", session_id)
+
+
+def _shutdown_sessions() -> None:
+    for session in list(_sessions.values()):
+        _finalize_session(session)
+        try:
+            worker = session.get("slash_worker")
+            if worker:
+                worker.close()
+        except Exception:
+            pass
+
+
+atexit.register(_shutdown_sessions)
 
 
 # ── Plumbing ──────────────────────────────────────────────────────────
@@ -443,14 +492,14 @@ def _normalize_completion_path(path_part: str) -> str:
 
 
 def _load_cfg() -> dict:
-    global _cfg_cache, _cfg_mtime
+    global _cfg_cache, _cfg_mtime, _cfg_path
     try:
         import yaml
 
         p = _hermes_home / "config.yaml"
         mtime = p.stat().st_mtime if p.exists() else None
         with _cfg_lock:
-            if _cfg_cache is not None and _cfg_mtime == mtime:
+            if _cfg_cache is not None and _cfg_mtime == mtime and _cfg_path == p:
                 return copy.deepcopy(_cfg_cache)
         if p.exists():
             with open(p) as f:
@@ -460,6 +509,7 @@ def _load_cfg() -> dict:
         with _cfg_lock:
             _cfg_cache = copy.deepcopy(data)
             _cfg_mtime = mtime
+            _cfg_path = p
         return data
     except Exception:
         pass
@@ -467,7 +517,7 @@ def _load_cfg() -> dict:
 
 
 def _save_cfg(cfg: dict):
-    global _cfg_cache, _cfg_mtime
+    global _cfg_cache, _cfg_mtime, _cfg_path
     import yaml
 
     path = _hermes_home / "config.yaml"
@@ -475,6 +525,7 @@ def _save_cfg(cfg: dict):
         yaml.safe_dump(cfg, f)
     with _cfg_lock:
         _cfg_cache = copy.deepcopy(cfg)
+        _cfg_path = path
         try:
             _cfg_mtime = path.stat().st_mtime
         except Exception:
@@ -756,8 +807,11 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
     custom_provs = None
     try:
         from hermes_cli.config import get_compatible_custom_providers, load_config
+
         cfg = load_config()
-        user_provs = [{"provider": k, **v} for k, v in (cfg.get("providers") or {}).items()]
+        user_provs = [
+            {"provider": k, **v} for k, v in (cfg.get("providers") or {}).items()
+        ]
         custom_provs = get_compatible_custom_providers(cfg)
     except Exception:
         pass
@@ -913,8 +967,19 @@ def _probe_config_health(cfg: dict) -> str:
 
 
 def _session_info(agent) -> dict:
+    reasoning_config = getattr(agent, "reasoning_config", None)
+    reasoning_effort = ""
+    if (
+        isinstance(reasoning_config, dict)
+        and reasoning_config.get("enabled") is not False
+    ):
+        reasoning_effort = str(reasoning_config.get("effort", "") or "")
+    service_tier = getattr(agent, "service_tier", None) or ""
     info: dict = {
         "model": getattr(agent, "model", ""),
+        "reasoning_effort": reasoning_effort,
+        "service_tier": service_tier,
+        "fast": service_tier == "priority",
         "tools": {},
         "skills": {},
         "cwd": os.getcwd(),
@@ -1013,7 +1078,7 @@ def _tool_summary(name: str, result: str, duration_s: float | None) -> str | Non
         if n is not None:
             text = f"Extracted {n} {'page' if n == 1 else 'pages'}"
 
-    return f"{text or 'Completed'}{suffix}" if (text or dur) else None
+    return f"{text}{suffix}" if text else None
 
 
 def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
@@ -1029,6 +1094,8 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
             pass
         session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
     if _tool_progress_enabled(sid):
+        # tool.complete is the source of truth for todos (full list from the
+        # tool result). args.todos here may be a partial merge update.
         _emit(
             "tool.start",
             sid,
@@ -1050,6 +1117,13 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     summary = _tool_summary(name, result, duration_s)
     if summary:
         payload["summary"] = summary
+    if name == "todo":
+        try:
+            data = json.loads(result)
+            if isinstance(data, dict) and isinstance(data.get("todos"), list):
+                payload["todos"] = data.get("todos")
+        except Exception:
+            pass
     try:
         from agent.display import render_edit_diff_with_delta
 
@@ -1394,6 +1468,7 @@ def _init_session(sid: str, key: str, agent, history: list, cols: int = 80):
     except Exception:
         pass
     _wire_callbacks(sid)
+    _notify_session_boundary("on_session_reset", key)
     _emit("session.info", sid, _session_info(agent))
 
 
@@ -1514,6 +1589,7 @@ def _(rid, params: dict) -> dict:
         "history_lock": threading.Lock(),
         "history_version": 0,
         "image_counter": 0,
+        "pending_title": None,
         "running": False,
         "session_key": key,
         "show_reasoning": _load_show_reasoning(),
@@ -1551,6 +1627,42 @@ def _(rid, params: dict) -> dict:
             db = _get_db()
             if db is not None:
                 db.create_session(key, source="tui", model=_resolve_model())
+                pending_title = (session.get("pending_title") or "").strip()
+                if pending_title:
+                    try:
+                        title_applied = db.set_session_title(key, pending_title)
+                        if title_applied:
+                            session["pending_title"] = None
+                        else:
+                            existing_row = db.get_session(key)
+                            existing_title = (
+                                (existing_row or {}).get("title") or ""
+                            ).strip()
+                            if existing_title == pending_title:
+                                session["pending_title"] = None
+                            else:
+                                logger.info(
+                                    "Pending title still queued for session %s (wanted=%r, current=%r)",
+                                    sid,
+                                    pending_title,
+                                    existing_title,
+                                )
+                    except ValueError as e:
+                        # Queued title can become invalid/duplicate between queue time
+                        # and DB row creation. Drop the queue and log the reason so
+                        # future /title reads don't surface a stuck pending value.
+                        session["pending_title"] = None
+                        logger.info(
+                            "Dropping pending title for session %s: %s",
+                            sid,
+                            e,
+                        )
+                    except Exception:
+                        logger.warning(
+                            "Failed to apply pending title for session %s",
+                            sid,
+                            exc_info=True,
+                        )
             session["agent"] = agent
 
             try:
@@ -1574,6 +1686,7 @@ def _(rid, params: dict) -> dict:
                 pass
 
             _wire_callbacks(sid)
+            _notify_session_boundary("on_session_reset", key)
 
             info = _session_info(agent)
             warn = _probe_credentials(agent)
@@ -1690,7 +1803,10 @@ def _(rid, params: dict) -> dict:
     try:
         db.reopen_session(target)
         history = db.get_messages_as_conversation(target)
-        messages = _history_to_messages(history)
+        display_history = db.get_messages_as_conversation(
+            target, include_ancestors=True
+        )
+        messages = _history_to_messages(display_history)
         tokens = _set_session_context(target)
         try:
             agent = _make_agent(sid, target, session_id=target)
@@ -1719,12 +1835,57 @@ def _(rid, params: dict) -> dict:
     db = _get_db()
     if db is None:
         return _db_unavailable_error(rid, code=5007)
-    title, key = params.get("title", ""), session["session_key"]
+    key = session["session_key"]
+    if "title" not in params:
+        fallback = session.get("pending_title") or ""
+        try:
+            resolved_title = db.get_session_title(key) or ""
+            if fallback:
+                if db.set_session_title(key, fallback):
+                    session["pending_title"] = None
+                    resolved_title = fallback
+                else:
+                    existing_row = db.get_session(key)
+                    existing_title = ((existing_row or {}).get("title") or "").strip()
+                    if existing_title == fallback:
+                        session["pending_title"] = None
+                        resolved_title = fallback
+                    elif not resolved_title:
+                        resolved_title = fallback
+            elif resolved_title:
+                session["pending_title"] = None
+        except Exception:
+            resolved_title = fallback
+        return _ok(
+            rid,
+            {
+                "title": resolved_title,
+                "session_key": key,
+            },
+        )
+    title = (params.get("title", "") or "").strip()
     if not title:
-        return _ok(rid, {"title": db.get_session_title(key) or "", "session_key": key})
+        return _err(rid, 4021, "title required")
     try:
-        db.set_session_title(key, title)
-        return _ok(rid, {"title": title})
+        if db.set_session_title(key, title):
+            session["pending_title"] = None
+            return _ok(rid, {"pending": False, "title": title})
+        # rowcount == 0 can mean "same value" as well as "missing row".
+        # Queue only when the session row truly does not exist yet.
+        existing_row = db.get_session(key)
+        if existing_row:
+            session["pending_title"] = None
+            return _ok(
+                rid,
+                {
+                    "pending": False,
+                    "title": (existing_row.get("title") or title),
+                },
+            )
+        session["pending_title"] = title
+        return _ok(rid, {"pending": True, "title": title})
+    except ValueError as e:
+        return _err(rid, 4022, str(e))
     except Exception as e:
         return _err(rid, 5007, str(e))
 
@@ -1738,11 +1899,22 @@ def _(rid, params: dict) -> dict:
 @method("session.history")
 def _(rid, params: dict) -> dict:
     session, err = _sess(params, rid)
-    return err or _ok(
+    if err:
+        return err
+    history = list(session.get("history", []))
+    db = _get_db()
+    if db is not None and session.get("session_key"):
+        try:
+            history = db.get_messages_as_conversation(
+                session["session_key"], include_ancestors=True
+            )
+        except Exception:
+            pass
+    return _ok(
         rid,
         {
-            "count": len(session.get("history", [])),
-            "messages": _history_to_messages(list(session.get("history", []))),
+            "count": len(history),
+            "messages": _history_to_messages(history),
         },
     )
 
@@ -1838,6 +2010,7 @@ def _(rid, params: dict) -> dict:
     session = _sessions.pop(sid, None)
     if not session:
         return _ok(rid, {"closed": False})
+    _finalize_session(session)
     try:
         from tools.approval import unregister_gateway_notify
 
@@ -2248,7 +2421,60 @@ def _(rid, params: dict) -> dict:
                     return
                 prompt = ctx.message
 
-            prompt = _enrich_with_attached_images(prompt, images) if images else prompt
+            # Decide image routing per-turn based on active provider/model.
+            # "native" → pass pixels to the main model as OpenAI-style content
+            # parts (adapters translate for Anthropic/Gemini/Bedrock/etc.).
+            # "text"   → pre-analyze with vision_analyze and prepend the text.
+            # See agent/image_routing.py for the full decision table.
+            run_message: Any = prompt
+            if images:
+                try:
+                    from agent.image_routing import (
+                        decide_image_input_mode,
+                        build_native_content_parts,
+                    )
+                    from agent.auxiliary_client import (
+                        _read_main_model,
+                        _read_main_provider,
+                    )
+                    from hermes_cli.config import load_config as _tui_load_config
+
+                    _cfg = _tui_load_config()
+                    _mode = decide_image_input_mode(
+                        _read_main_provider(),
+                        _read_main_model(),
+                        _cfg,
+                    )
+                except Exception as _img_exc:
+                    print(
+                        f"[tui_gateway] image_routing decision failed, defaulting to text: {_img_exc}",
+                        file=sys.stderr,
+                    )
+                    _mode = "text"
+
+                if _mode == "native":
+                    try:
+                        _parts, _skipped = build_native_content_parts(
+                            prompt,
+                            images,
+                        )
+                        if _skipped:
+                            print(
+                                f"[tui_gateway] native image attachment skipped {len(_skipped)} unreadable path(s)",
+                                file=sys.stderr,
+                            )
+                        if any(p.get("type") == "image_url" for p in _parts):
+                            run_message = _parts
+                        else:
+                            run_message = _enrich_with_attached_images(prompt, images)
+                    except Exception as _img_exc:
+                        print(
+                            f"[tui_gateway] native attach failed, falling back to text: {_img_exc}",
+                            file=sys.stderr,
+                        )
+                        run_message = _enrich_with_attached_images(prompt, images)
+                else:
+                    run_message = _enrich_with_attached_images(prompt, images)
 
             def _stream(delta):
                 payload = {"text": delta}
@@ -2257,7 +2483,7 @@ def _(rid, params: dict) -> dict:
                 _emit("message.delta", sid, payload)
 
             result = agent.run_conversation(
-                prompt,
+                run_message,
                 conversation_history=list(history),
                 stream_callback=_stream,
             )
@@ -2652,6 +2878,75 @@ def _(rid, params: dict) -> dict:
         except Exception as e:
             return _err(rid, 5001, str(e))
 
+    if key == "fast":
+        raw = str(value or "").strip().lower()
+        agent = session.get("agent") if session else None
+        if agent is not None:
+            current_fast = getattr(agent, "service_tier", None) == "priority"
+        else:
+            current_fast = _load_service_tier() == "priority"
+
+        if raw in {"status"}:
+            return _ok(
+                rid,
+                {"key": key, "value": "fast" if current_fast else "normal"},
+            )
+
+        if raw in ("", "toggle"):
+            nv = "normal" if current_fast else "fast"
+        elif raw in {"fast", "on"}:
+            nv = "fast"
+        elif raw in {"normal", "off"}:
+            nv = "normal"
+        else:
+            return _err(rid, 4002, f"unknown fast mode: {value}")
+
+        overrides = None
+        if nv == "fast":
+            from hermes_cli.models import resolve_fast_mode_overrides
+
+            target_model = (
+                getattr(agent, "model", None) if agent is not None else _resolve_model()
+            )
+            if not target_model:
+                return _err(
+                    rid,
+                    4002,
+                    "fast mode is not available without a selected model",
+                )
+            overrides = resolve_fast_mode_overrides(target_model)
+            if overrides is None:
+                return _err(
+                    rid,
+                    4002,
+                    "fast mode is not available for this model",
+                )
+
+        _write_config_key("agent.service_tier", nv)
+        if agent is not None:
+            agent.service_tier = "priority" if nv == "fast" else None
+            current_overrides = dict(getattr(agent, "request_overrides", {}) or {})
+            current_overrides.pop("service_tier", None)
+            current_overrides.pop("speed", None)
+            if nv == "fast":
+                current_overrides.update(overrides)
+            agent.request_overrides = current_overrides
+            _emit(
+                "session.info",
+                params.get("session_id", ""),
+                _session_info(agent),
+            )
+        return _ok(rid, {"key": key, "value": nv})
+
+    if key == "busy":
+        raw = str(value or "").strip().lower()
+        if raw in ("", "status"):
+            return _ok(rid, {"key": key, "value": _load_busy_input_mode()})
+        if raw not in {"queue", "steer", "interrupt"}:
+            return _err(rid, 4002, f"unknown busy mode: {value}")
+        _write_config_key("display.busy_input_mode", raw)
+        return _ok(rid, {"key": key, "value": raw})
+
     if key == "verbose":
         cycle = ["off", "new", "all", "verbose"]
         cur = (
@@ -2820,7 +3115,11 @@ def _(rid, params: dict) -> dict:
 
     if key == "mouse":
         raw = str(value or "").strip().lower()
-        display = _load_cfg().get("display") if isinstance(_load_cfg().get("display"), dict) else {}
+        display = (
+            _load_cfg().get("display")
+            if isinstance(_load_cfg().get("display"), dict)
+            else {}
+        )
         current = bool(display.get("tui_mouse", True))
 
         if raw in ("", "toggle"):
@@ -2921,6 +3220,21 @@ def _(rid, params: dict) -> dict:
             else "hide"
         )
         return _ok(rid, {"value": effort, "display": display})
+    if key == "fast":
+        return _ok(
+            rid,
+            {
+                "value": (
+                    "fast"
+                    if (session := _sessions.get(params.get("session_id", "")))
+                    and getattr(session.get("agent"), "service_tier", None)
+                    == "priority"
+                    else ("fast" if _load_service_tier() == "priority" else "normal")
+                ),
+            },
+        )
+    if key == "busy":
+        return _ok(rid, {"value": _load_busy_input_mode()})
     if key == "details_mode":
         allowed_dm = frozenset({"hidden", "collapsed", "expanded"})
         raw = (
@@ -3680,6 +3994,97 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"items": items})
 
 
+def _details_completion_item(value: str, meta: str = "") -> dict:
+    return {"text": value, "display": value, "meta": meta}
+
+
+def _details_root_completion_item(
+    value: str, meta: str, needs_leading_space: bool
+) -> dict:
+    return _details_completion_item(
+        f" {value}" if needs_leading_space else value,
+        meta,
+    )
+
+
+def _details_completions(text: str) -> list[dict] | None:
+    if not text.lower().startswith("/details"):
+        return None
+
+    stripped = text.strip()
+    if stripped and not "/details".startswith(stripped.lower().split()[0]):
+        return None
+
+    body = text[len("/details") :]
+    if body.startswith(" "):
+        body = body[1:]
+    parts = body.split()
+    has_trailing_space = text.endswith(" ")
+    sections = ("thinking", "tools", "subagents", "activity")
+    modes = ("hidden", "collapsed", "expanded")
+
+    if not body or (len(parts) == 0 and has_trailing_space):
+        return [
+            *[
+                _details_root_completion_item(
+                    mode, "global mode", not has_trailing_space
+                )
+                for mode in modes
+            ],
+            _details_root_completion_item(
+                "cycle", "cycle global mode", not has_trailing_space
+            ),
+            *[
+                _details_root_completion_item(
+                    section, "section override", not has_trailing_space
+                )
+                for section in sections
+            ],
+        ]
+
+    if len(parts) == 1 and not has_trailing_space:
+        prefix = parts[0].lower()
+        candidates = [*modes, "cycle", *sections]
+        return [
+            _details_completion_item(
+                candidate,
+                (
+                    "section override"
+                    if candidate in sections
+                    else "cycle global mode" if candidate == "cycle" else "global mode"
+                ),
+            )
+            for candidate in candidates
+            if candidate.startswith(prefix) and candidate != prefix
+        ]
+
+    if len(parts) == 1 and has_trailing_space and parts[0].lower() in sections:
+        return [
+            *[
+                _details_completion_item(mode, f"set {parts[0].lower()}")
+                for mode in modes
+            ],
+            _details_completion_item("reset", f"clear {parts[0].lower()} override"),
+        ]
+
+    if len(parts) == 2 and not has_trailing_space and parts[0].lower() in sections:
+        prefix = parts[1].lower()
+        return [
+            _details_completion_item(
+                candidate,
+                (
+                    f"clear {parts[0].lower()} override"
+                    if candidate == "reset"
+                    else f"set {parts[0].lower()}"
+                ),
+            )
+            for candidate in (*modes, "reset")
+            if candidate.startswith(prefix) and candidate != prefix
+        ]
+
+    return []
+
+
 @method("complete.slash")
 def _(rid, params: dict) -> dict:
     text = params.get("text", "")
@@ -3713,6 +4118,11 @@ def _(rid, params: dict) -> dict:
                 "meta": "Toggle compact display mode",
             },
             {
+                "text": "/details",
+                "display": "/details",
+                "meta": "Control agent detail visibility",
+            },
+            {
                 "text": "/logs",
                 "display": "/logs",
                 "meta": "Show recent gateway log lines",
@@ -3723,6 +4133,17 @@ def _(rid, params: dict) -> dict:
                 item["text"] == extra["text"] for item in items
             ):
                 items.append(extra)
+
+        details_items = _details_completions(text)
+        if details_items is not None:
+            return _ok(
+                rid,
+                {
+                    "items": details_items,
+                    "replace_from": text.rfind(" ") + 1 if " " in text else len(text),
+                },
+            )
+
         return _ok(
             rid,
             {"items": items, "replace_from": text.rfind(" ") + 1 if " " in text else 1},
@@ -3840,10 +4261,6 @@ def _(rid, params: dict) -> dict:
 
     # Skill slash commands and _pending_input commands must NOT go through the
     # slash worker — see _PENDING_INPUT_COMMANDS definition above.
-    # (/browser connect/disconnect also uses _pending_input for context
-    # notes, but the actual browser operations need the slash worker's
-    # env-var side effects, so they stay in slash.exec — only the context
-    # note to the model is lost, which is low-severity.)
     _cmd_parts = cmd.split() if not cmd.startswith("/") else cmd.lstrip("/").split()
     _cmd_base = _cmd_parts[0] if _cmd_parts else ""
 
@@ -4539,7 +4956,11 @@ def _(rid, params: dict) -> dict:
 
             return _ok(rid, {"skills": get_available_skills()})
         if action == "search":
-            from tools.skills_hub import GitHubAuth, create_source_router, unified_search
+            from tools.skills_hub import (
+                GitHubAuth,
+                create_source_router,
+                unified_search,
+            )
 
             raw = (
                 unified_search(

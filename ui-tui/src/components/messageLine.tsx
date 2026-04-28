@@ -5,21 +5,33 @@ import { LONG_MSG } from '../config/limits.js'
 import { sectionMode } from '../domain/details.js'
 import { userDisplay } from '../domain/messages.js'
 import { ROLE } from '../domain/roles.js'
-import { compactPreview, hasAnsi, isPasteBackedText, stripAnsi } from '../lib/text.js'
+import {
+  boundedHistoryRenderText,
+  boundedLiveRenderText,
+  compactPreview,
+  hasAnsi,
+  isPasteBackedText,
+  stripAnsi
+} from '../lib/text.js'
 import type { Theme } from '../theme.js'
-import type { DetailsMode, Msg, SectionVisibility } from '../types.js'
+import type { ActiveTool, DetailsMode, Msg, SectionVisibility } from '../types.js'
 
 import { Md } from './markdown.js'
+import { StreamingMd } from './streamingMarkdown.js'
 import { ToolTrail } from './thinking.js'
+import { TodoPanel } from './todoPanel.js'
 
 export const MessageLine = memo(function MessageLine({
   cols,
   compact,
   detailsMode = 'collapsed',
+  detailsModeCommandOverride = false,
   isStreaming = false,
+  limitHistoryRender = false,
   msg,
   sections,
-  t
+  t,
+  tools = []
 }: MessageLineProps) {
   // Per-section overrides win over the global mode, so resolve each section
   // we might consume here once and gate visibility on the *content-bearing*
@@ -28,20 +40,33 @@ export const MessageLine = memo(function MessageLine({
   // feeds Thinking + Tool calls.  Gating on every section would let
   // `thinking` (expanded by default) keep an empty wrapper alive when only
   // `tools` is hidden — exactly the empty-Box bug Copilot caught.
-  const thinkingMode = sectionMode('thinking', detailsMode, sections)
-  const toolsMode = sectionMode('tools', detailsMode, sections)
-  const activityMode = sectionMode('activity', detailsMode, sections)
+  const thinkingMode = sectionMode('thinking', detailsMode, sections, detailsModeCommandOverride)
+  const toolsMode = sectionMode('tools', detailsMode, sections, detailsModeCommandOverride)
+  const activityMode = sectionMode('activity', detailsMode, sections, detailsModeCommandOverride)
   const thinking = msg.thinking?.trim() ?? ''
 
-  if (msg.kind === 'trail' && (msg.tools?.length || thinking)) {
+  if (msg.kind === 'trail' && msg.todos?.length) {
+    return (
+      <TodoPanel
+        defaultCollapsed={msg.todoCollapsedByDefault}
+        incomplete={msg.todoIncomplete}
+        t={t}
+        todos={msg.todos}
+      />
+    )
+  }
+
+  if (msg.kind === 'trail' && (msg.tools?.length || tools.length || thinking)) {
     return thinkingMode !== 'hidden' || toolsMode !== 'hidden' || activityMode !== 'hidden' ? (
-      <Box flexDirection="column" marginTop={1}>
+      <Box flexDirection="column">
         <ToolTrail
+          commandOverride={detailsModeCommandOverride}
           detailsMode={detailsMode}
           reasoning={thinking}
           reasoningTokens={msg.thinkingTokens}
           sections={sections}
           t={t}
+          tools={tools}
           toolTokens={msg.toolTokens}
           trail={msg.tools ?? []}
         />
@@ -84,7 +109,14 @@ export const MessageLine = memo(function MessageLine({
     }
 
     if (msg.role === 'assistant') {
-      return isStreaming ? <Text color={body}>{msg.text}</Text> : <Md compact={compact} t={t} text={msg.text} />
+      return isStreaming ? (
+        // Incremental markdown: split at the last stable block boundary so
+        // only the in-flight tail re-tokenizes per delta. See
+        // streamingMarkdown.tsx for the cost model.
+        <StreamingMd compact={compact} t={t} text={boundedLiveRenderText(msg.text)} />
+      ) : (
+        <Md compact={compact} t={t} text={limitHistoryRender ? boundedHistoryRenderText(msg.text) : msg.text} />
+      )
     }
 
     if (msg.role === 'user' && msg.text.length > LONG_MSG && isPasteBackedText(msg.text)) {
@@ -118,6 +150,7 @@ export const MessageLine = memo(function MessageLine({
       {showDetails && (
         <Box flexDirection="column" marginBottom={1}>
           <ToolTrail
+            commandOverride={detailsModeCommandOverride}
             detailsMode={detailsMode}
             reasoning={thinking}
             reasoningTokens={msg.thinkingTokens}
@@ -146,8 +179,11 @@ interface MessageLineProps {
   cols: number
   compact?: boolean
   detailsMode?: DetailsMode
+  detailsModeCommandOverride?: boolean
   isStreaming?: boolean
+  limitHistoryRender?: boolean
   msg: Msg
   sections?: SectionVisibility
   t: Theme
+  tools?: ActiveTool[]
 }

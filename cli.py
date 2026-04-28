@@ -15,6 +15,7 @@ Usage:
 
 import logging
 import os
+import re
 import shutil
 import sys
 import json
@@ -758,9 +759,17 @@ def _run_cleanup():
         pass
     try:
         if _active_agent_ref and hasattr(_active_agent_ref, 'shutdown_memory_provider'):
-            _active_agent_ref.shutdown_memory_provider(
-                getattr(_active_agent_ref, 'conversation_history', None) or []
-            )
+            # Forward the agent's own transcript so memory providers'
+            # ``on_session_end`` hooks see the real conversation instead of
+            # an empty list (#15165). ``_session_messages`` is set on
+            # ``AIAgent.__init__`` and refreshed every turn via
+            # ``_persist_session``. Fall back to no-arg on test stubs /
+            # partially-initialised agents where the attribute is missing.
+            _session_msgs = getattr(_active_agent_ref, '_session_messages', None)
+            if isinstance(_session_msgs, list):
+                _active_agent_ref.shutdown_memory_provider(_session_msgs)
+            else:
+                _active_agent_ref.shutdown_memory_provider()
     except Exception:
         pass
 
@@ -1547,6 +1556,60 @@ def _should_auto_attach_clipboard_image_on_paste(pasted_text: str) -> bool:
     return not pasted_text.strip()
 
 
+def _strip_leaked_bracketed_paste_wrappers(text: str) -> str:
+    """Strip leaked bracketed-paste wrapper markers from user-visible text.
+
+    Defensive normalization for cases where terminal/prompt_toolkit parsing
+    fails and bracketed-paste markers end up in the buffer as literal text.
+
+    We strip canonical wrappers unconditionally and also handle degraded
+    visible forms like ``[200~`` / ``[201~`` and ``00~`` / ``01~`` when they
+    look like wrapper boundaries, not arbitrary user content.
+    """
+    if not text:
+        return text
+
+    text = (
+        text.replace("\x1b[200~", "")
+        .replace("\x1b[201~", "")
+        .replace("^[[200~", "")
+        .replace("^[[201~", "")
+    )
+    text = re.sub(r"(^|[\s\n>:\]\)])\[200~", r"\1", text)
+    text = re.sub(r"\[201~(?=$|[\s\n<\[\(\):;.,!?])", "", text)
+    text = re.sub(r"(^|[\s\n>:\]\)])00~", r"\1", text)
+    text = re.sub(r"01~(?=$|[\s\n<\[\(\):;.,!?])", "", text)
+    return text
+
+
+# Cursor Position Report (CPR / DSR) response, format ``ESC[<row>;<col>R``.
+# prompt_toolkit's _on_resize() + renderer send ``ESC[6n`` queries to the
+# terminal; under resize storms or tab switches the terminal's reply can
+# race past the input parser and end up in the input buffer as literal
+# text (see issue #14692). Also matches the visible-form ``^[[<row>;<col>R``
+# that appears when the ESC byte was stripped by a prior filter.
+_DSR_CPR_ESC_RE = re.compile(r"\x1b\[\d+;\d+R")
+_DSR_CPR_VISIBLE_RE = re.compile(r"\^\[\[\d+;\d+R")
+
+
+def _strip_leaked_terminal_responses(text: str) -> str:
+    """Strip leaked terminal control-response sequences from user input.
+
+    Covers Cursor Position Report (CPR / DSR) responses — ``ESC[<row>;<col>R``
+    and the visible ``^[[<row>;<col>R`` form. These are replies the terminal
+    sends back to queries prompt_toolkit makes during ``_on_resize`` /
+    ``_request_absolute_cursor_position``. When the input parser drops one
+    (resize storms, multiplexer focus changes, slow PTYs) the response
+    lands in the input buffer as literal text and corrupts what the user
+    typed.
+    """
+    if not text:
+        return text
+    text = _DSR_CPR_ESC_RE.sub("", text)
+    text = _DSR_CPR_VISIBLE_RE.sub("", text)
+    return text
+
+
 def _collect_query_images(query: str | None, image_arg: str | None = None) -> tuple[str, list[Path]]:
     """Collect local image attachments for single-query CLI flows."""
     message = query or ""
@@ -2154,6 +2217,42 @@ class HermesCLI:
         if hasattr(self, "_app") and self._app and (now - self._last_invalidate) >= min_interval:
             self._last_invalidate = now
             self._app.invalidate()
+
+    def _force_full_redraw(self) -> None:
+        """Force a clean full-screen repaint of the prompt_toolkit UI.
+
+        Used to recover from terminal buffer drift caused by external
+        redraws we can't detect — e.g. macOS cmux / tmux tab switches,
+        ``clear`` issued from a subshell, or SSH window restores. These
+        wipe or repaint the terminal without firing SIGWINCH, so
+        prompt_toolkit's tracked ``_cursor_pos`` no longer matches reality
+        and the next incremental redraw stacks on top of stale content
+        (ghost status bars, duplicated prompts).
+
+        Bound to Ctrl+L and exposed as the ``/redraw`` slash command,
+        matching the standard terminal-UX convention (bash, zsh, fish,
+        vim, htop).
+        """
+        app = getattr(self, "_app", None)
+        if not app:
+            return
+        try:
+            renderer = app.renderer
+            out = renderer.output
+            out.reset_attributes()
+            out.erase_screen()
+            out.cursor_goto(0, 0)
+            out.flush()
+            # Drop prompt_toolkit's cached screen + cursor state so the
+            # next _redraw() starts from a known (0, 0) origin and
+            # re-renders every cell rather than diffing against stale.
+            renderer.reset(leave_alternate_screen=False)
+        except Exception:
+            pass
+        try:
+            app.invalidate()
+        except Exception:
+            pass
 
     def _status_bar_context_style(self, percent_used: Optional[int]) -> str:
         if percent_used is None:
@@ -5901,6 +6000,7 @@ class HermesCLI:
             platform_status = {
                 Platform.TELEGRAM: ("Telegram", "TELEGRAM_BOT_TOKEN"),
                 Platform.DISCORD: ("Discord", "DISCORD_BOT_TOKEN"),
+                Platform.SLACK: ("Slack", "SLACK_BOT_TOKEN"),
                 Platform.WHATSAPP: ("WhatsApp", "WHATSAPP_ENABLED"),
             }
             
@@ -5971,6 +6071,12 @@ class HermesCLI:
             self.show_toolsets()
         elif canonical == "config":
             self.show_config()
+        elif canonical == "redraw":
+            # Manual recovery for terminal buffer drift from multiplexer
+            # tab switches, subshell ``clear``, SSH window restores, etc.
+            # See issue #8688 (cmux). Ctrl+L is bound to the same helper.
+            self._force_full_redraw()
+            _cprint(f"  {_DIM}✓ UI redrawn{_RST}")
         elif canonical == "clear":
             self.new_session(silent=True)
             # Clear terminal screen.  Inside the TUI, Rich's console.clear()
@@ -8336,13 +8442,62 @@ class HermesCLI:
         ):
             return None
         
-        # Pre-process images through the vision tool (Gemini Flash) so the
-        # main model receives text descriptions instead of raw base64 image
-        # content — works with any model, not just vision-capable ones.
+        # Route image attachments based on the active model's vision capability.
+        # "native" → pass pixels as OpenAI-style content parts (adapters
+        #            translate for Anthropic/Gemini/Bedrock).
+        # "text"   → pre-analyze each image with vision_analyze and prepend the
+        #            description as text — works with non-vision models.
+        # See agent/image_routing.py for the decision table.
         if images:
-            message = self._preprocess_images_with_vision(
-                message if isinstance(message, str) else "", images
-            )
+            try:
+                from agent.image_routing import (
+                    build_native_content_parts,
+                    decide_image_input_mode,
+                )
+                from hermes_cli.config import load_config
+
+                _img_mode = decide_image_input_mode(
+                    (self.provider or "").strip(),
+                    (self.model or "").strip(),
+                    load_config(),
+                )
+            except Exception as _img_exc:
+                logging.debug("image_routing decision failed, defaulting to text: %s", _img_exc)
+                _img_mode = "text"
+
+            if _img_mode == "native":
+                try:
+                    _text_for_parts = message if isinstance(message, str) else ""
+                    _img_str_paths = [str(p) for p in images]
+                    _parts, _skipped = build_native_content_parts(
+                        _text_for_parts,
+                        _img_str_paths,
+                    )
+                    if _skipped:
+                        _cprint(
+                            f"  {_DIM}⚠ skipped {len(_skipped)} unreadable image path(s){_RST}"
+                        )
+                    if any(p.get("type") == "image_url" for p in _parts):
+                        _img_names = ", ".join(Path(p).name for p in _img_str_paths)
+                        _cprint(
+                            f"  {_DIM}📎 attaching {len(images)} image(s) natively "
+                            f"(model supports vision): {_img_names}{_RST}"
+                        )
+                        message = _parts
+                    else:
+                        # All images unreadable — fall back to text enrichment.
+                        message = self._preprocess_images_with_vision(
+                            message if isinstance(message, str) else "", images
+                        )
+                except Exception as _img_exc:
+                    logging.warning("native image attach failed, falling back to text: %s", _img_exc)
+                    message = self._preprocess_images_with_vision(
+                        message if isinstance(message, str) else "", images
+                    )
+            else:
+                message = self._preprocess_images_with_vision(
+                    message if isinstance(message, str) else "", images
+                )
 
         # Expand @ context references (e.g. @file:main.py, @diff, @folder:src/)
         if isinstance(message, str) and "@" in message:
@@ -8645,12 +8800,20 @@ class HermesCLI:
             if response and result and not result.get("failed") and not result.get("partial"):
                 try:
                     from agent.title_generator import maybe_auto_title
+                    # Route title-generation failures through the agent's
+                    # user-visible warning channel so a depleted auxiliary
+                    # provider doesn't silently leave sessions untitled
+                    # (issue #15775).
+                    _title_failure_cb = getattr(
+                        self.agent, "_emit_auxiliary_failure", None
+                    ) if self.agent else None
                     maybe_auto_title(
                         self._session_db,
                         self.session_id,
                         message,
                         response,
                         self.conversation_history,
+                        failure_callback=_title_failure_cb,
                     )
                 except Exception:
                     pass
@@ -9073,6 +9236,30 @@ class HermesCLI:
             _welcome_text = "Welcome to Hermes Agent! Type your message or /help for commands."
             _welcome_color = "#FFF8DC"
         self._console_print(f"[{_welcome_color}]{_welcome_text}[/]")
+        # First-time OpenClaw-residue banner — fires once if ~/.openclaw/ exists
+        # after an OpenClaw→Hermes migration (especially migrations done by
+        # OpenClaw's own tool, which doesn't archive the source directory).
+        try:
+            from agent.onboarding import (
+                OPENCLAW_RESIDUE_FLAG,
+                detect_openclaw_residue,
+                is_seen,
+                mark_seen,
+                openclaw_residue_hint_cli,
+            )
+            if not is_seen(self.config, OPENCLAW_RESIDUE_FLAG) and detect_openclaw_residue():
+                try:
+                    _resid_color = _welcome_skin.get_color("banner_dim", "#B8860B")
+                except Exception:
+                    _resid_color = "#B8860B"
+                self._console_print(f"[{_resid_color}]{openclaw_residue_hint_cli()}[/]")
+                try:
+                    from hermes_cli.config import get_config_path as _get_cfg_path_resid
+                    mark_seen(_get_cfg_path_resid(), OPENCLAW_RESIDUE_FLAG)
+                except Exception:
+                    pass  # best-effort — banner will fire again next session
+        except Exception:
+            pass  # banner is non-critical — never break startup
         # Show a random tip to help users discover features
         try:
             from hermes_cli.tips import get_random_tip
@@ -9504,6 +9691,17 @@ class HermesCLI:
             """Down arrow: browse history when on last line, else move cursor down."""
             event.app.current_buffer.auto_down(count=event.arg)
 
+        @kb.add('c-l')
+        def handle_ctrl_l(event):
+            """Ctrl+L: force a clean full-screen repaint.
+
+            Recovers the UI after external terminal buffer drift — tmux /
+            cmux tab switches, ``clear`` from a subshell, SSH window
+            restores, etc. — that prompt_toolkit can't detect on its own.
+            Matches the universal bash/zsh/fish/vim/htop convention.
+            """
+            self._force_full_redraw()
+
         @kb.add('c-c')
         def handle_ctrl_c(event):
             """Handle Ctrl+C - cancel interactive prompts, interrupt agent, or exit.
@@ -9731,10 +9929,18 @@ class HermesCLI:
             placeholder while preserving any existing user text in the
             buffer.
             """
+            # Diagnostic canary: measure how long the paste handler blocks
+            # the prompt_toolkit event loop. If this exceeds ~500ms we log
+            # it so recurring "CLI freezes on paste" reports (issue #16263,
+            # macOS Tahoe 26 + iTerm2/Ghostty) arrive with data attached.
+            _paste_handler_start = time.perf_counter()
+            _paste_raw_size = len(event.data or "")
             pasted_text = event.data or ""
             # Normalise line endings — Windows \r\n and old Mac \r both become \n
             # so the 5-line collapse threshold and display are consistent.
             pasted_text = pasted_text.replace('\r\n', '\n').replace('\r', '\n')
+            pasted_text = _strip_leaked_bracketed_paste_wrappers(pasted_text)
+            pasted_text = _strip_leaked_terminal_responses(pasted_text)
             if _should_auto_attach_clipboard_image_on_paste(pasted_text) and self._try_attach_clipboard_image():
                 event.app.invalidate()
             if pasted_text:
@@ -9757,6 +9963,17 @@ class HermesCLI:
                     buf.insert_text(prefix + placeholder)
                 else:
                     buf.insert_text(pasted_text)
+            _paste_handler_elapsed_ms = (time.perf_counter() - _paste_handler_start) * 1000.0
+            if _paste_handler_elapsed_ms > 500.0:
+                logger.warning(
+                    "Slow bracketed-paste handler: %.1fms to process %d bytes "
+                    "(%d lines) on %s. If the input becomes unresponsive after "
+                    "this, attach this log line to the bug report.",
+                    _paste_handler_elapsed_ms,
+                    _paste_raw_size,
+                    pasted_text.count('\n') + 1 if pasted_text else 0,
+                    sys.platform,
+                )
 
         @kb.add('c-v')
         def handle_ctrl_v(event):
@@ -9876,7 +10093,16 @@ class HermesCLI:
                still batch newlines.  Alt+Enter only adds 1 newline per
                event so it never triggers this.
             """
-            text = buf.text
+            text = _strip_leaked_bracketed_paste_wrappers(buf.text)
+            text = _strip_leaked_terminal_responses(text)
+            if text != buf.text:
+                cursor = min(buf.cursor_position, len(text))
+                _paste_just_collapsed[0] = True
+                buf.text = text
+                buf.cursor_position = cursor
+                _prev_text_len[0] = len(text)
+                _prev_newline_count[0] = text.count('\n')
+                return
             chars_added = len(text) - _prev_text_len[0]
             _prev_text_len[0] = len(text)
             if _paste_just_collapsed[0] or self._skip_paste_collapse:
@@ -10533,36 +10759,30 @@ class HermesCLI:
         # only cursor_up()s by the stored layout height, missing the extra
         # rows created by reflow — leaving ghost duplicates visible.
         #
-        # Fix: before the standard erase, inflate _cursor_pos.y so the
-        # cursor moves up far enough to cover the reflowed ghost content.
+        # It's not just column-shrink: widening, row-shrinking, and
+        # multiplexer-driven SIGWINCH-less redraws (cmux / tmux tab switch)
+        # all produce the same class of drift, where the renderer's tracked
+        # _cursor_pos.y no longer matches terminal reality. The only reliable
+        # recovery is a full screen-clear (\x1b[2J\x1b[H) before the next
+        # redraw, so we force one on every resize rather than trying to
+        # compute the exact drift.
         _original_on_resize = app._on_resize
 
         def _resize_clear_ghosts():
-            from prompt_toolkit.data_structures import Point as _Pt
             renderer = app.renderer
             try:
-                old_size = renderer._last_size
-                new_size = renderer.output.get_size()
-                if (
-                    old_size
-                    and new_size.columns < old_size.columns
-                    and new_size.columns > 0
-                ):
-                    reflow_factor = (
-                        (old_size.columns + new_size.columns - 1)
-                        // new_size.columns
-                    )
-                    last_h = (
-                        renderer._last_screen.height
-                        if renderer._last_screen
-                        else 0
-                    )
-                    extra = last_h * (reflow_factor - 1)
-                    if extra > 0:
-                        renderer._cursor_pos = _Pt(
-                            x=renderer._cursor_pos.x,
-                            y=renderer._cursor_pos.y + extra,
-                        )
+                out = renderer.output
+                # Reset attributes, erase the entire screen, and home the
+                # cursor. This overwrites any reflowed status-bar rows or
+                # stale content the terminal kept from the prior layout.
+                out.reset_attributes()
+                out.erase_screen()
+                out.cursor_goto(0, 0)
+                out.flush()
+                # Tell the renderer its tracked position is fresh so its
+                # own erase() inside _on_resize doesn't cursor_up() past
+                # the top of the screen.
+                renderer.reset(leave_alternate_screen=False)
             except Exception:
                 pass  # never break resize handling
             _original_on_resize()
@@ -10570,7 +10790,6 @@ class HermesCLI:
         app._on_resize = _resize_clear_ghosts
 
         def spinner_loop():
-            last_idle_refresh = 0.0
             while not self._should_exit:
                 if not self._app:
                     time.sleep(0.1)
@@ -10579,10 +10798,11 @@ class HermesCLI:
                     self._invalidate(min_interval=0.1)
                     time.sleep(0.1)
                 else:
-                    now = time.monotonic()
-                    if now - last_idle_refresh >= 1.0:
-                        last_idle_refresh = now
-                        self._invalidate(min_interval=1.0)
+                    # Do not repaint the idle prompt every second. In non-full-screen
+                    # prompt_toolkit mode, background redraws can fight tmux/Ghostty/cmux
+                    # viewport restoration after focus changes and visually move the
+                    # command input area. Keep idle stable; input/agent events still
+                    # invalidate explicitly when the UI actually changes.
                     time.sleep(0.2)
 
         spinner_thread = threading.Thread(target=spinner_loop, daemon=True)
@@ -10624,6 +10844,10 @@ class HermesCLI:
                     submit_images = []
                     if isinstance(user_input, tuple):
                         user_input, submit_images = user_input
+
+                    if isinstance(user_input, str):
+                        user_input = _strip_leaked_bracketed_paste_wrappers(user_input)
+                        user_input = _strip_leaked_terminal_responses(user_input)
                     
                     # Check for commands — but detect dragged/pasted file paths first.
                     # See _detect_file_drop() for details.

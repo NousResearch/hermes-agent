@@ -389,6 +389,20 @@ DEFAULT_CONFIG = {
         # (60+ tool iterations with tiny output) before users assume the
         # bot is dead and /restart.
         "gateway_notify_interval": 180,
+        # How user-attached images are presented to the main model on each turn.
+        #   "auto"   — attach natively when the active model reports
+        #              supports_vision=True AND the user hasn't explicitly
+        #              configured auxiliary.vision.provider.  Otherwise fall
+        #              back to text (vision_analyze pre-analysis).
+        #   "native" — always attach natively; non-vision models will either
+        #              error at the provider or get a last-chance text fallback
+        #              (see run_agent._prepare_messages_for_api).
+        #   "text"   — always pre-analyze with vision_analyze and prepend the
+        #              description as text; the main model never sees pixels.
+        # Affects gateway platforms, the TUI, and CLI /attach.  vision_analyze
+        # remains available as a tool regardless of this setting — the routing
+        # only controls how inbound user images are presented.
+        "image_input_mode": "auto",
     },
     
     "terminal": {
@@ -1037,6 +1051,20 @@ DEFAULT_CONFIG = {
         "seen": {},
     },
 
+    # ``hermes update`` behaviour.
+    "updates": {
+        # Run a full ``hermes backup``-style zip of HERMES_HOME before every
+        # ``hermes update``.  Backups land in ``<HERMES_HOME>/backups/`` and
+        # can be restored with ``hermes import <path>``.  Off by default —
+        # on large HERMES_HOME directories the zip can add minutes to every
+        # update.  Set to true to re-enable, or pass ``--backup`` to opt in
+        # for a single update run.
+        "pre_update_backup": False,
+        # How many pre-update backup zips to retain.  Older ones are pruned
+        # automatically after each successful backup.
+        "backup_keep": 5,
+    },
+
     # Config schema version - bump this when adding new required fields
     "_config_version": 22,
 }
@@ -1221,6 +1249,22 @@ OPTIONAL_ENV_VARS = {
     "ARCEE_BASE_URL": {
         "description": "Arcee AI base URL override",
         "prompt": "Arcee base URL (leave empty for default)",
+        "url": None,
+        "password": False,
+        "category": "provider",
+        "advanced": True,
+    },
+    "GMI_API_KEY": {
+        "description": "GMI Cloud API key",
+        "prompt": "GMI Cloud API key",
+        "url": "https://www.gmicloud.ai/",
+        "password": True,
+        "category": "provider",
+        "advanced": True,
+    },
+    "GMI_BASE_URL": {
+        "description": "GMI Cloud base URL override",
+        "prompt": "GMI Cloud base URL (leave empty for default)",
         "url": None,
         "password": False,
         "category": "provider",

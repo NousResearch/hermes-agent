@@ -526,16 +526,24 @@ class HindsightMemoryProvider(MemoryProvider):
 
         print("\n  Configuring Hindsight memory:\n")
 
+        existing_config = self._config if isinstance(self._config, dict) else _load_config()
+        if not isinstance(existing_config, dict):
+            existing_config = {}
+
         # Step 1: Mode selection
+        mode_values = ["cloud", "local_embedded", "local_external"]
         mode_items = [
             ("Cloud", "Hindsight Cloud API (lightweight, just needs an API key)"),
             ("Local Embedded", "Run Hindsight locally (downloads ~200MB, needs LLM key)"),
             ("Local External", "Connect to an existing Hindsight instance"),
         ]
-        mode_idx = _curses_select("  Select mode", mode_items, default=0)
-        mode = ["cloud", "local_embedded", "local_external"][mode_idx]
+        existing_mode = existing_config.get("mode")
+        mode_default_idx = mode_values.index(existing_mode) if existing_mode in mode_values else 0
+        mode_idx = _curses_select("  Select mode", mode_items, default=mode_default_idx)
+        mode = mode_values[mode_idx]
 
-        provider_config: dict = {"mode": mode}
+        provider_config: dict = dict(existing_config)
+        provider_config["mode"] = mode
         env_writes: dict = {}
 
         # Step 2: Install/upgrade deps for selected mode
@@ -601,21 +609,29 @@ class HindsightMemoryProvider(MemoryProvider):
                 (p, f"default model: {_PROVIDER_DEFAULT_MODELS[p]}")
                 for p in providers_list
             ]
-            llm_idx = _curses_select("  Select LLM provider", llm_items, default=0)
+            existing_llm_provider = provider_config.get("llm_provider")
+            llm_default_idx = providers_list.index(existing_llm_provider) if existing_llm_provider in providers_list else 0
+            llm_idx = _curses_select("  Select LLM provider", llm_items, default=llm_default_idx)
             llm_provider = providers_list[llm_idx]
 
             provider_config["llm_provider"] = llm_provider
 
             if llm_provider == "openai_compatible":
-                val = input("  LLM endpoint URL (e.g. http://192.168.1.10:8080/v1): ").strip()
+                existing_base_url = provider_config.get("llm_base_url", "")
+                prompt = "  LLM endpoint URL (e.g. http://192.168.1.10:8080/v1)"
+                if existing_base_url:
+                    prompt += f" [{existing_base_url}]"
+                prompt += ": "
+                val = input(prompt).strip()
                 if val:
                     provider_config["llm_base_url"] = val
             elif llm_provider == "openrouter":
                 provider_config["llm_base_url"] = "https://openrouter.ai/api/v1"
 
-            default_model = _PROVIDER_DEFAULT_MODELS.get(llm_provider, "gpt-4o-mini")
-            val = input(f"  LLM model [{default_model}]: ").strip()
-            provider_config["llm_model"] = val or default_model
+            provider_default_model = _PROVIDER_DEFAULT_MODELS.get(llm_provider, "gpt-4o-mini")
+            current_model = provider_config.get("llm_model") or provider_default_model
+            val = input(f"  LLM model [{current_model}]: ").strip()
+            provider_config["llm_model"] = val or current_model
 
             sys.stdout.write("  LLM API key: ")
             sys.stdout.flush()
@@ -633,15 +649,16 @@ class HindsightMemoryProvider(MemoryProvider):
                 env_writes["HINDSIGHT_LLM_API_KEY"] = existing_llm_key
 
         # Step 4: Save everything
-        provider_config["bank_id"] = "hermes"
-        provider_config["recall_budget"] = "mid"
-        # Read existing timeout from config if present, otherwise use default
-        existing_timeout = self._config.get("timeout") if self._config else None
-        timeout_val = existing_timeout if existing_timeout else _DEFAULT_TIMEOUT
+        provider_config.setdefault("bank_id", "hermes")
+        provider_config.setdefault("recall_budget", "mid")
+        # Read existing timeout from config if present, otherwise use default.
+        # Preserve explicit 0 values instead of treating them as blank.
+        existing_timeout = provider_config.get("timeout")
+        timeout_val = existing_timeout if existing_timeout is not None else _DEFAULT_TIMEOUT
         provider_config["timeout"] = timeout_val
         env_writes["HINDSIGHT_TIMEOUT"] = str(timeout_val)
         if mode == "local_embedded":
-            existing_idle_timeout = self._config.get("idle_timeout") if self._config else None
+            existing_idle_timeout = provider_config.get("idle_timeout")
             idle_timeout_val = existing_idle_timeout if existing_idle_timeout is not None else _DEFAULT_IDLE_TIMEOUT
             provider_config["idle_timeout"] = idle_timeout_val
             env_writes["HINDSIGHT_IDLE_TIMEOUT"] = str(idle_timeout_val)
@@ -1204,7 +1221,6 @@ class HindsightMemoryProvider(MemoryProvider):
 
         def _sync():
             try:
-                client = self._get_client()
                 item = self._build_retain_kwargs(
                     content,
                     context=self._retain_context,

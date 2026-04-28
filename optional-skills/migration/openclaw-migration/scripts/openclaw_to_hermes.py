@@ -625,7 +625,7 @@ class Migrator:
         # default ~/.openclaw/workspace/.  Reading agents.defaults.workspace
         # lets source_candidate() find files in the actual workspace.
         self._custom_workspace: Optional[Path] = None
-        oc_config = self._load_openclaw_config_early()
+        oc_config = self.load_openclaw_config()
         ws = (oc_config.get("agents", {}).get("defaults", {}).get("workspace") or "").strip()
         if ws:
             ws_path = Path(ws).expanduser().resolve()
@@ -650,18 +650,6 @@ class Migrator:
                 + ". Valid modes: "
                 + ", ".join(sorted(SKILL_CONFLICT_MODES))
             )
-
-    def _load_openclaw_config_early(self) -> Dict[str, Any]:
-        """Load openclaw.json during __init__ (before migrate() is called)."""
-        for name in ("openclaw.json", "clawdbot.json", "moltbot.json"):
-            config_path = self.source_root / name
-            if config_path.exists():
-                try:
-                    data = json.loads(config_path.read_text(encoding="utf-8"))
-                    return data if isinstance(data, dict) else {}
-                except json.JSONDecodeError:
-                    continue
-        return {}
 
     def is_selected(self, option_id: str) -> bool:
         return option_id in self.selected_options

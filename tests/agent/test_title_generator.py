@@ -182,7 +182,7 @@ class TestMaybeAutoTitle:
             import time
             time.sleep(0.3)
             mock_auto.assert_called_once_with(
-                db, "sess-1", "hello", "hi there", failure_callback=None
+                db, "sess-1", "hello", "hi there", failure_callback=None, main_runtime=None
             )
 
     def test_forwards_failure_callback_to_worker(self):
@@ -202,7 +202,7 @@ class TestMaybeAutoTitle:
             import time
             time.sleep(0.3)
             mock_auto.assert_called_once_with(
-                db, "sess-1", "hello", "hi there", failure_callback=_cb
+                db, "sess-1", "hello", "hi there", failure_callback=_cb, main_runtime=None
             )
 
     def test_skips_if_no_response(self):

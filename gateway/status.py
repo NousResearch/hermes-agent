@@ -14,6 +14,7 @@ concurrently under distinct configurations).
 import hashlib
 import json
 import os
+import tempfile
 import signal
 import subprocess
 import sys
@@ -59,7 +60,13 @@ def _get_lock_dir() -> Path:
     """Return the machine-local directory for token-scoped gateway locks."""
     override = os.getenv("HERMES_GATEWAY_LOCK_DIR")
     if override:
-        return Path(override)
+        state_home = Path(os.getenv("XDG_STATE_HOME", Path.home() / ".local" / "state"))
+        try:
+            state_home.mkdir(parents=True, exist_ok=True)
+        except PermissionError:
+                # Fall back to a temporary directory if we cannot write to the default location
+                state_home = Path(tempfile.gettempdir()) / "hermes_state"
+                state_home.mkdir(parents=True, exist_ok=True)
     state_home = Path(os.getenv("XDG_STATE_HOME", Path.home() / ".local" / "state"))
     return state_home / "hermes" / _LOCKS_DIRNAME
 

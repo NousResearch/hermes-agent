@@ -30,7 +30,7 @@ from typing import Optional
 logger = logging.getLogger(__name__)
 
 # OAuth device code flow constants (same client ID as opencode/Copilot CLI)
-COPILOT_OAUTH_CLIENT_ID = "Ov23li8tweQw6odWQebz"
+COPILOT_OAUTH_CLIENT_ID="Iv1.b507a08c87ecfe98"
 # Token type prefixes
 _CLASSIC_PAT_PREFIX = "ghp_"
 _SUPPORTED_PREFIXES = ("gho_", "github_pat_", "ghu_")

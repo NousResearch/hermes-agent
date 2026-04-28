@@ -1,11 +1,10 @@
-"""
-Loader for G0DM0D3 scripts. Handles the exec-scoping issues.
+"""Loader for G0DM0D3 scripts. Handles the exec-scoping issues.
 
 Usage in execute_code:
     exec(open(os.path.expanduser(
         os.path.join(os.environ.get("HERMES_HOME", os.path.expanduser("~/.hermes")), "skills/red-teaming/godmode/scripts/load_godmode.py")
     )).read())
-    
+
     # Now all functions are available:
     # - auto_jailbreak(), undo_jailbreak()
     # - race_models(), race_godmode_classic()
@@ -15,6 +14,7 @@ Usage in execute_code:
 """
 
 import os, sys
+import importlib.util
 from pathlib import Path
 
 _gm_scripts_dir = Path(os.getenv("HERMES_HOME", Path.home() / ".hermes")) / "skills" / "red-teaming" / "godmode" / "scripts"
@@ -23,11 +23,12 @@ _gm_old_argv = sys.argv
 sys.argv = ["_godmode_loader"]
 
 def _gm_load(path):
-    ns = dict(globals())
-    ns["__name__"] = "_godmode_module"
-    ns["__file__"] = str(path)
-    exec(compile(open(path).read(), str(path), 'exec'), ns)
-    return ns
+    spec = importlib.util.spec_from_file_location("_godmode_module", path)
+    module = importlib.util.module_from_spec(spec)
+    module.__name__ = "_godmode_module"
+    module.__file__ = str(path)
+    spec.loader.exec_module(module)
+    return module.__dict__
 
 for _gm_script in ["parseltongue.py", "godmode_race.py", "auto_jailbreak.py"]:
     _gm_path = _gm_scripts_dir / _gm_script

@@ -1,3 +1,4 @@
+import shlex
 import atexit
 import concurrent.futures
 import contextvars
@@ -3551,8 +3552,8 @@ def _(rid, params: dict) -> dict:
         qc = qcmds[name]
         if qc.get("type") == "exec":
             r = subprocess.run(
-                qc.get("command", ""),
-                shell=True,
+                shlex.split(qc.get("command", "")),
+                shell=False,
                 capture_output=True,
                 text=True,
                 timeout=30,
@@ -5026,7 +5027,7 @@ def _(rid, params: dict) -> dict:
         pass
     try:
         r = subprocess.run(
-            cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=os.getcwd()
+            shlex.split(cmd), shell=False, capture_output=True, text=True, timeout=30, cwd=os.getcwd()
         )
         return _ok(
             rid,

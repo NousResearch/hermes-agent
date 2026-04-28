@@ -57,7 +57,8 @@ RUN chmod -R a+rX /opt/hermes
 
 # ---------- Python virtualenv ----------
 RUN uv venv && \
-    uv pip install --no-cache-dir -e ".[all]"
+    uv pip install --no-cache-dir -e ".[all]" && \
+    chown -R hermes:hermes /opt/hermes/.venv
 
 # ---------- Runtime ----------
 ENV HERMES_WEB_DIST=/opt/hermes/hermes_cli/web_dist

@@ -209,7 +209,7 @@ async def _summarize_session(
         "that would be useful to recall. Write in past tense as a factual recap."
     )
 
-    source = session_meta.get("source", "unknown")
+    source = session_meta.get("platform") or session_meta.get("source", "unknown")
     started = _format_timestamp(session_meta.get("started_at"))
 
     user_prompt = (
@@ -295,7 +295,7 @@ def _list_recent_sessions(db, limit: int, current_session_id: str = None) -> str
             results.append({
                 "session_id": sid,
                 "title": s.get("title") or None,
-                "source": s.get("source", ""),
+                "source": s.get("platform") or s.get("source", ""),
                 "started_at": s.get("started_at", ""),
                 "last_active": s.get("last_active", ""),
                 "message_count": s.get("message_count", 0),

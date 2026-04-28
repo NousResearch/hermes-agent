@@ -1,3 +1,4 @@
+import subprocess
 """
 Feishu/Lark platform adapter.
 
@@ -3886,13 +3887,18 @@ class FeishuAdapter(BasePlatformAdapter):
                     metadata=metadata,
                 )
             else:
-                message_response = await self._feishu_send_with_retry(
-                    chat_id=chat_id,
-                    msg_type=resolved_message_type,
-                    payload=json.dumps({"file_key": file_key}, ensure_ascii=False),
-                    reply_to=reply_to,
-                    metadata=metadata,
-                )
+    if resolved_message_type == "audio":
+        duration_ms = _get_audio_duration_ms(file_path)
+        payload = json.dumps({"file_key": file_key, "duration": duration_ms}, ensure_ascii=False)
+    else:
+        payload = json.dumps({"file_key": file_key}, ensure_ascii=False)
+    message_response = await self._feishu_send_with_retry(
+        chat_id=chat_id,
+        msg_type=resolved_message_type,
+        payload=payload,
+        reply_to=reply_to,
+        metadata=metadata,
+    )
             return self._finalize_send_result(message_response, "file send failed")
         except Exception as exc:
             logger.error("[Feishu] Failed to send file %s: %s", file_path, exc, exc_info=True)
@@ -4450,6 +4456,19 @@ def _poll_registration(
 
 try:
     import qrcode as _qrcode_mod
+
+def _get_audio_duration_ms(file_path: str) -> int:
+    """Extract audio duration in milliseconds using ffprobe."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "error", "-show_entries", "format=duration",
+             "-of", "default=noprint_wrappers=1:nokey=1", file_path],
+            capture_output=True, text=True, timeout=10
+        )
+        return int(float(result.stdout.strip()) * 1000)
+    except Exception:
+        return 0
+
 except (ImportError, TypeError):
     _qrcode_mod = None  # type: ignore[assignment]
 

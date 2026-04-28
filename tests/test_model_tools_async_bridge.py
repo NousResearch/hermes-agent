@@ -197,6 +197,68 @@ class TestRunAsyncWithRunningLoop:
         )
         assert result == 42
 
+    @pytest.mark.asyncio
+    async def test_timeout_uses_nonblocking_executor_shutdown(self, monkeypatch):
+        """A timeout in the running-loop branch must not wait for the worker.
+
+        ThreadPoolExecutor's context manager performs shutdown(wait=True).
+        If _run_async relies on that path after future.result(timeout=...)
+        times out, the timeout does not bound wall-clock time because the
+        caller still waits for the stuck coroutine's thread to finish.
+        """
+        import concurrent.futures
+        from model_tools import _run_async
+
+        events = {
+            "cancelled": False,
+            "result_timeout": None,
+            "shutdown_calls": [],
+        }
+
+        class TimeoutFuture:
+            def result(self, timeout=None):
+                events["result_timeout"] = timeout
+                raise concurrent.futures.TimeoutError()
+
+            def cancel(self):
+                events["cancelled"] = True
+                return True
+
+        class FakeExecutor:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                self.shutdown(wait=True)
+                return False
+
+            def submit(self, fn, *args, **kwargs):
+                if args and hasattr(args[0], "close"):
+                    args[0].close()
+                return TimeoutFuture()
+
+            def shutdown(self, wait=True, cancel_futures=False):
+                events["shutdown_calls"].append((wait, cancel_futures))
+
+        async def _never_finishes():
+            await asyncio.sleep(999)
+
+        monkeypatch.setattr(
+            concurrent.futures,
+            "ThreadPoolExecutor",
+            FakeExecutor,
+        )
+
+        with pytest.raises(concurrent.futures.TimeoutError):
+            _run_async(_never_finishes())
+
+        assert events["result_timeout"] == 300
+        assert events["cancelled"] is True
+        assert events["shutdown_calls"] == [(False, True)]
+
 
 # ---------------------------------------------------------------------------
 # Integration: full vision_analyze dispatch chain

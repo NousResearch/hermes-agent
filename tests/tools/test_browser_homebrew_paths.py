@@ -31,18 +31,25 @@ def _clear_browser_caches():
 
 
 class TestSanePath:
-    """Verify _SANE_PATH includes Homebrew directories."""
+    """Verify _SANE_PATH includes fallback directories used by browser_tool."""
+
+    def test_includes_termux_bin(self):
+        assert "/data/data/com.termux/files/usr/bin" in _SANE_PATH.split(os.pathsep)
+
+    def test_includes_termux_sbin(self):
+        assert "/data/data/com.termux/files/usr/sbin" in _SANE_PATH.split(os.pathsep)
 
     def test_includes_homebrew_bin(self):
-        assert "/opt/homebrew/bin" in _SANE_PATH
+        assert "/opt/homebrew/bin" in _SANE_PATH.split(os.pathsep)
 
     def test_includes_homebrew_sbin(self):
-        assert "/opt/homebrew/sbin" in _SANE_PATH
+        assert "/opt/homebrew/sbin" in _SANE_PATH.split(os.pathsep)
 
     def test_includes_standard_dirs(self):
-        assert "/usr/local/bin" in _SANE_PATH
-        assert "/usr/bin" in _SANE_PATH
-        assert "/bin" in _SANE_PATH
+        path_parts = _SANE_PATH.split(os.pathsep)
+        assert "/usr/local/bin" in path_parts
+        assert "/usr/bin" in path_parts
+        assert "/bin" in path_parts
 
 
 class TestDiscoverHomebrewNodeDirs:
@@ -143,6 +150,44 @@ class TestFindAgentBrowser:
             result = _find_agent_browser()
             assert result == "npx agent-browser"
 
+    def test_finds_npx_in_termux_fallback_path(self):
+        """Should find npx when only Termux fallback dirs are available."""
+        def mock_which(cmd, path=None):
+            if cmd == "agent-browser":
+                return None
+            if cmd == "npx":
+                if path and "/data/data/com.termux/files/usr/bin" in path:
+                    return "/data/data/com.termux/files/usr/bin/npx"
+                return None
+            return None
+
+        original_path_exists = Path.exists
+
+        def mock_path_exists(self):
+            if "node_modules" in str(self) and "agent-browser" in str(self):
+                return False
+            return original_path_exists(self)
+
+        real_isdir = os.path.isdir
+
+        def selective_isdir(path):
+            if path in (
+                "/data/data/com.termux/files/usr/bin",
+                "/data/data/com.termux/files/usr/sbin",
+            ):
+                return True
+            return real_isdir(path)
+
+        with patch("shutil.which", side_effect=mock_which), \
+             patch("os.path.isdir", side_effect=selective_isdir), \
+             patch.object(Path, "exists", mock_path_exists), \
+             patch(
+                 "tools.browser_tool._discover_homebrew_node_dirs",
+                 return_value=[],
+             ):
+            result = _find_agent_browser()
+            assert result == "npx agent-browser"
+
     def test_raises_when_not_found(self):
         """Should raise FileNotFoundError when nothing works."""
         original_path_exists = Path.exists
@@ -214,6 +259,7 @@ class TestRunBrowserCommandPathConstruction:
         hermes_home = str(tmp_path / "hermes-home")
 
         with patch("tools.browser_tool._find_agent_browser", return_value=browser_path), \
+ patch("tools.browser_tool._chromium_installed", return_value=True), \
              patch("tools.browser_tool._get_session_info", return_value=fake_session), \
              patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
              patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
@@ -265,6 +311,7 @@ class TestRunBrowserCommandPathConstruction:
         hermes_home = str(tmp_path / "hermes-home")
 
         with patch("tools.browser_tool._find_agent_browser", return_value="npx agent-browser"), \
+ patch("tools.browser_tool._chromium_installed", return_value=True), \
              patch("tools.browser_tool._get_session_info", return_value=fake_session), \
              patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
              patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
@@ -336,6 +383,7 @@ class TestRunBrowserCommandPathConstruction:
             return real_isdir(p)
 
         with patch("tools.browser_tool._find_agent_browser", return_value="/usr/local/bin/agent-browser"), \
+ patch("tools.browser_tool._chromium_installed", return_value=True), \
              patch("tools.browser_tool._get_session_info", return_value=fake_session), \
              patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
              patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=fake_homebrew_dirs), \
@@ -384,6 +432,7 @@ class TestRunBrowserCommandPathConstruction:
             return real_isdir(p)
 
         with patch("tools.browser_tool._find_agent_browser", return_value="/usr/local/bin/agent-browser"), \
+ patch("tools.browser_tool._chromium_installed", return_value=True), \
              patch("tools.browser_tool._get_session_info", return_value=fake_session), \
              patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
              patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
@@ -399,3 +448,52 @@ class TestRunBrowserCommandPathConstruction:
         result_path = captured_env.get("PATH", "")
         assert "/opt/homebrew/bin" in result_path
         assert "/opt/homebrew/sbin" in result_path
+
+    def test_subprocess_path_includes_termux_fallback_dirs(self, tmp_path):
+        """Termux fallback dirs should survive browser PATH rebuilding."""
+        captured_env = {}
+
+        mock_proc = MagicMock()
+        mock_proc.returncode = 0
+        mock_proc.wait.return_value = 0
+
+        def capture_popen(cmd, **kwargs):
+            captured_env.update(kwargs.get("env", {}))
+            return mock_proc
+
+        fake_session = {
+            "session_name": "test-session",
+            "session_id": "test-id",
+            "cdp_url": None,
+        }
+
+        fake_json = json.dumps({"success": True})
+        real_isdir = os.path.isdir
+
+        def selective_isdir(path):
+            if path in (
+                "/data/data/com.termux/files/usr/bin",
+                "/data/data/com.termux/files/usr/sbin",
+            ):
+                return True
+            if path.startswith(str(tmp_path)):
+                return True
+            return real_isdir(path)
+
+        with patch("tools.browser_tool._find_agent_browser", return_value="/usr/local/bin/agent-browser"), \
+ patch("tools.browser_tool._chromium_installed", return_value=True), \
+             patch("tools.browser_tool._get_session_info", return_value=fake_session), \
+             patch("tools.browser_tool._socket_safe_tmpdir", return_value=str(tmp_path)), \
+             patch("tools.browser_tool._discover_homebrew_node_dirs", return_value=[]), \
+             patch("os.path.isdir", side_effect=selective_isdir), \
+             patch("subprocess.Popen", side_effect=capture_popen), \
+             patch("os.open", return_value=99), \
+             patch("os.close"), \
+             patch("tools.interrupt.is_interrupted", return_value=False), \
+             patch.dict(os.environ, {"PATH": "/usr/bin:/bin", "HOME": "/home/test"}, clear=True):
+            with patch("builtins.open", mock_open(read_data=fake_json)):
+                _run_browser_command("test-task", "navigate", ["https://example.com"])
+
+        result_path = captured_env.get("PATH", "")
+        assert "/data/data/com.termux/files/usr/bin" in result_path
+        assert "/data/data/com.termux/files/usr/sbin" in result_path

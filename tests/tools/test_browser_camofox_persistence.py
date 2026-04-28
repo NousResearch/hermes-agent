@@ -1,8 +1,8 @@
 """Persistence tests for the Camofox browser backend.
 
 Tests that managed persistence uses stable identity while default mode
-uses random identity. The actual browser profile persistence is handled
-by the Camofox server (when CAMOFOX_PROFILE_DIR is set).
+uses random identity. Camofox automatically maps each userId to a
+dedicated persistent Firefox profile on the server side.
 """
 
 import json

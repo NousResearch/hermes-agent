@@ -505,6 +505,101 @@ class TestTranscribeLocalExtended:
         assert result["success"] is True
         assert result["transcript"] == "Hello world"
 
+    def test_load_time_cuda_lib_failure_falls_back_to_cpu(self, tmp_path):
+        """Missing libcublas at load time → reload on CPU, succeed."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        seg = MagicMock()
+        seg.text = "hi"
+        info = MagicMock()
+        info.language = "en"
+        info.duration = 1.0
+
+        cpu_model = MagicMock()
+        cpu_model.transcribe.return_value = ([seg], info)
+
+        call_args = []
+
+        def fake_whisper(model_name, device, compute_type):
+            call_args.append((device, compute_type))
+            if device == "auto":
+                raise RuntimeError("Library libcublas.so.12 is not found or cannot be loaded")
+            return cpu_model
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", side_effect=fake_whisper), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True
+        assert result["transcript"] == "hi"
+        assert call_args == [("auto", "auto"), ("cpu", "int8")]
+
+    def test_runtime_cuda_lib_failure_evicts_cache_and_retries_on_cpu(self, tmp_path):
+        """libcublas dlopen fails at transcribe() → evict cache, reload CPU, retry."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        seg = MagicMock()
+        seg.text = "recovered"
+        info = MagicMock()
+        info.language = "en"
+        info.duration = 1.0
+
+        # First model loads fine (auto), but transcribe() blows up on dlopen
+        gpu_model = MagicMock()
+        gpu_model.transcribe.side_effect = RuntimeError(
+            "Library libcublas.so.12 is not found or cannot be loaded"
+        )
+        # Second model (forced CPU) works
+        cpu_model = MagicMock()
+        cpu_model.transcribe.return_value = ([seg], info)
+
+        models = [gpu_model, cpu_model]
+        call_args = []
+
+        def fake_whisper(model_name, device, compute_type):
+            call_args.append((device, compute_type))
+            return models.pop(0)
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", side_effect=fake_whisper), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True
+        assert result["transcript"] == "recovered"
+        # First load is auto, retry forces CPU.
+        assert call_args == [("auto", "auto"), ("cpu", "int8")]
+        # Cached-bad-model eviction: the broken GPU model was called once,
+        # then discarded; the CPU model served the retry.
+        assert gpu_model.transcribe.call_count == 1
+        assert cpu_model.transcribe.call_count == 1
+
+    def test_cuda_out_of_memory_does_not_trigger_cpu_fallback(self, tmp_path):
+        """'CUDA out of memory' is a real error, not a missing lib — surface it."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        mock_whisper_cls = MagicMock(side_effect=RuntimeError("CUDA out of memory"))
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        # Single call — no CPU retry, because OOM isn't a missing-lib symptom.
+        assert mock_whisper_cls.call_count == 1
+        assert result["success"] is False
+        assert "CUDA out of memory" in result["error"]
+
 
 # ============================================================================
 # Model auto-correction
@@ -818,74 +913,6 @@ class TestTranscribeAudioDispatch:
 
 
 # ============================================================================
-# get_stt_model_from_config
-# ============================================================================
-
-class TestGetSttModelFromConfig:
-    """get_stt_model_from_config is provider-aware: it reads the model from the
-    correct provider-specific section (stt.local.model, stt.openai.model, etc.)
-    and only honours the legacy flat stt.model key for cloud providers."""
-
-    def test_returns_local_model_from_nested_config(self, tmp_path, monkeypatch):
-        cfg = tmp_path / "config.yaml"
-        cfg.write_text("stt:\n  provider: local\n  local:\n    model: large-v3\n")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-        from tools.transcription_tools import get_stt_model_from_config
-        assert get_stt_model_from_config() == "large-v3"
-
-    def test_returns_openai_model_from_nested_config(self, tmp_path, monkeypatch):
-        cfg = tmp_path / "config.yaml"
-        cfg.write_text("stt:\n  provider: openai\n  openai:\n    model: gpt-4o-transcribe\n")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-        from tools.transcription_tools import get_stt_model_from_config
-        assert get_stt_model_from_config() == "gpt-4o-transcribe"
-
-    def test_legacy_flat_key_ignored_for_local_provider(self, tmp_path, monkeypatch):
-        """Legacy stt.model should NOT be used when provider is local, to prevent
-        OpenAI model names (whisper-1) from being fed to faster-whisper."""
-        cfg = tmp_path / "config.yaml"
-        cfg.write_text("stt:\n  provider: local\n  model: whisper-1\n")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-        from tools.transcription_tools import get_stt_model_from_config
-        result = get_stt_model_from_config()
-        assert result != "whisper-1", "Legacy stt.model should be ignored for local provider"
-
-    def test_legacy_flat_key_honoured_for_cloud_provider(self, tmp_path, monkeypatch):
-        """Legacy stt.model should still work for cloud providers that don't
-        have a section in DEFAULT_CONFIG (e.g. groq)."""
-        cfg = tmp_path / "config.yaml"
-        cfg.write_text("stt:\n  provider: groq\n  model: whisper-large-v3\n")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-        from tools.transcription_tools import get_stt_model_from_config
-        assert get_stt_model_from_config() == "whisper-large-v3"
-
-    def test_defaults_to_local_model_when_no_config_file(self, tmp_path, monkeypatch):
-        """With no config file, load_config() returns DEFAULT_CONFIG which has
-        stt.provider=local and stt.local.model=base."""
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-        from tools.transcription_tools import get_stt_model_from_config
-        assert get_stt_model_from_config() == "base"
-
-    def test_returns_none_on_invalid_yaml(self, tmp_path, monkeypatch):
-        cfg = tmp_path / "config.yaml"
-        cfg.write_text(": : :\n  bad yaml [[[")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-
-        from tools.transcription_tools import get_stt_model_from_config
-        # _load_stt_config catches exceptions and returns {}, so the function
-        # falls through to return None (no provider section in empty dict)
-        result = get_stt_model_from_config()
-        # With empty config, load_config may still merge defaults; either
-        # None or a default is acceptable — just not an OpenAI model name
-        assert result is None or result in ("base", "small", "medium", "large-v3")
-
-
-# ============================================================================
 # _transcribe_mistral
 # ============================================================================
 
@@ -1063,3 +1090,262 @@ class TestTranscribeAudioMistralDispatch:
             transcribe_audio(sample_ogg, model="voxtral-mini-2602")
 
         assert mock_mistral.call_args[0][1] == "voxtral-mini-2602"
+
+
+# ============================================================================
+# _transcribe_xai
+# ============================================================================
+
+
+@pytest.fixture
+def mock_xai_http_module():
+    """Inject a fake tools.xai_http module for testing."""
+    fake_module = MagicMock()
+    fake_module.hermes_xai_user_agent = MagicMock(return_value="hermes-xai/test")
+    with patch.dict("sys.modules", {"tools.xai_http": fake_module}):
+        yield fake_module
+
+
+class TestTranscribeXAI:
+    def test_no_key(self, monkeypatch):
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+        from tools.transcription_tools import _transcribe_xai
+        result = _transcribe_xai("/tmp/test.ogg", "grok-stt")
+        assert result["success"] is False
+        assert "XAI_API_KEY" in result["error"]
+
+    def test_successful_transcription(self, monkeypatch, sample_ogg, mock_xai_http_module):
+        monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "text": "bonjour le monde",
+            "language": "fr",
+            "duration": 3.2,
+        }
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=mock_response):
+            from tools.transcription_tools import _transcribe_xai
+            result = _transcribe_xai(sample_ogg, "grok-stt")
+
+        assert result["success"] is True
+        assert result["transcript"] == "bonjour le monde"
+        assert result["provider"] == "xai"
+
+    def test_whitespace_stripped(self, monkeypatch, sample_ogg, mock_xai_http_module):
+        monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"text": "  hello world  \n"}
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=mock_response):
+            from tools.transcription_tools import _transcribe_xai
+            result = _transcribe_xai(sample_ogg, "grok-stt")
+
+        assert result["transcript"] == "hello world"
+
+    def test_api_error_returns_failure(self, monkeypatch, sample_ogg, mock_xai_http_module):
+        monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 400
+        mock_response.json.return_value = {"error": {"message": "Invalid audio format"}}
+        mock_response.text = '{"error": {"message": "Invalid audio format"}}'
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=mock_response):
+            from tools.transcription_tools import _transcribe_xai
+            result = _transcribe_xai(sample_ogg, "grok-stt")
+
+        assert result["success"] is False
+        assert "HTTP 400" in result["error"]
+        assert "Invalid audio format" in result["error"]
+
+    def test_empty_transcript_returns_failure(self, monkeypatch, sample_ogg, mock_xai_http_module):
+        monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"text": "   "}
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=mock_response):
+            from tools.transcription_tools import _transcribe_xai
+            result = _transcribe_xai(sample_ogg, "grok-stt")
+
+        assert result["success"] is False
+        assert "empty transcript" in result["error"]
+
+    def test_permission_error(self, monkeypatch, sample_ogg, mock_xai_http_module):
+        monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("builtins.open", side_effect=PermissionError("denied")):
+            from tools.transcription_tools import _transcribe_xai
+            result = _transcribe_xai(sample_ogg, "grok-stt")
+
+        assert result["success"] is False
+        assert "Permission denied" in result["error"]
+
+    def test_network_error_returns_failure(self, monkeypatch, sample_ogg, mock_xai_http_module):
+        monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", side_effect=ConnectionError("timeout")):
+            from tools.transcription_tools import _transcribe_xai
+            result = _transcribe_xai(sample_ogg, "grok-stt")
+
+        assert result["success"] is False
+        assert "timeout" in result["error"]
+
+    def test_sends_language_and_format(self, monkeypatch, sample_ogg, mock_xai_http_module):
+        monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+        # Explicitly set language via env to exercise the override chain
+        # (config > env > DEFAULT_LOCAL_STT_LANGUAGE)
+        monkeypatch.setenv("HERMES_LOCAL_STT_LANGUAGE", "fr")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"text": "test", "language": "fr", "duration": 1.0}
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=mock_response) as mock_post:
+            from tools.transcription_tools import _transcribe_xai
+            _transcribe_xai(sample_ogg, "grok-stt")
+
+        call_kwargs = mock_post.call_args
+        data = call_kwargs.kwargs.get("data", call_kwargs[1].get("data", {}))
+        assert data.get("language") == "fr"
+        assert data.get("format") == "true"
+
+    def test_custom_base_url(self, monkeypatch, sample_ogg, mock_xai_http_module):
+        monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+        monkeypatch.setenv("XAI_STT_BASE_URL", "https://custom.x.ai/v1")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"text": "test", "language": "en", "duration": 1.0}
+
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("requests.post", return_value=mock_response) as mock_post:
+            from tools.transcription_tools import _transcribe_xai
+            _transcribe_xai(sample_ogg, "grok-stt")
+
+        call_args = mock_post.call_args
+        url = call_args[0][0] if call_args[0] else call_args.kwargs.get("url", "")
+        assert "custom.x.ai" in url
+
+    def test_diarize_sent_when_configured(self, monkeypatch, sample_ogg, mock_xai_http_module):
+        monkeypatch.setenv("XAI_API_KEY", "xai-test-key")
+
+        mock_response = MagicMock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"text": "test", "language": "fr", "duration": 1.0}
+
+        config = {"xai": {"diarize": True}}
+        with patch("tools.transcription_tools._load_stt_config", return_value=config), \
+             patch("requests.post", return_value=mock_response) as mock_post:
+            from tools.transcription_tools import _transcribe_xai
+            _transcribe_xai(sample_ogg, "grok-stt")
+
+        data = mock_post.call_args.kwargs.get("data", mock_post.call_args[1].get("data", {}))
+        assert data.get("diarize") == "true"
+
+
+# ============================================================================
+# _get_provider — xAI
+# ============================================================================
+
+class TestGetProviderXAI:
+    """xAI-specific provider selection tests."""
+
+    def test_xai_when_key_set(self, monkeypatch):
+        monkeypatch.setenv("XAI_API_KEY", "xai-test")
+        from tools.transcription_tools import _get_provider
+        assert _get_provider({"provider": "xai"}) == "xai"
+
+    def test_xai_explicit_no_key_returns_none(self, monkeypatch):
+        """Explicit xai with no key returns none — no cross-provider fallback."""
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+        from tools.transcription_tools import _get_provider
+        assert _get_provider({"provider": "xai"}) == "none"
+
+    def test_auto_detect_xai_after_mistral(self, monkeypatch):
+        """Auto-detect: xai is tried after mistral when all above are unavailable."""
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        monkeypatch.delenv("MISTRAL_API_KEY", raising=False)
+        monkeypatch.setenv("XAI_API_KEY", "xai-test")
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._has_local_command", return_value=False), \
+             patch("tools.transcription_tools._HAS_OPENAI", False), \
+             patch("tools.transcription_tools._HAS_MISTRAL", False):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({}) == "xai"
+
+    def test_auto_detect_mistral_preferred_over_xai(self, monkeypatch):
+        """Auto-detect: mistral is preferred over xai."""
+        monkeypatch.setenv("MISTRAL_API_KEY", "test-key")
+        monkeypatch.setenv("XAI_API_KEY", "xai-test")
+        monkeypatch.delenv("GROQ_API_KEY", raising=False)
+        monkeypatch.delenv("VOICE_TOOLS_OPENAI_KEY", raising=False)
+        monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._has_local_command", return_value=False), \
+             patch("tools.transcription_tools._HAS_OPENAI", False), \
+             patch("tools.transcription_tools._HAS_MISTRAL", True):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({}) == "mistral"
+
+    def test_auto_detect_no_key_returns_none(self, monkeypatch):
+        """Auto-detect: xai skipped when no key is set."""
+        monkeypatch.delenv("XAI_API_KEY", raising=False)
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", False), \
+             patch("tools.transcription_tools._has_local_command", return_value=False), \
+             patch("tools.transcription_tools._HAS_OPENAI", False), \
+             patch("tools.transcription_tools._HAS_MISTRAL", False):
+            from tools.transcription_tools import _get_provider
+            assert _get_provider({}) == "none"
+
+
+# ============================================================================
+# transcribe_audio — xAI dispatch
+# ============================================================================
+
+class TestTranscribeAudioXAIDispatch:
+    def test_dispatches_to_xai(self, sample_ogg):
+        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "xai"}), \
+             patch("tools.transcription_tools._get_provider", return_value="xai"), \
+             patch("tools.transcription_tools._transcribe_xai",
+                   return_value={"success": True, "transcript": "hi", "provider": "xai"}) as mock_xai:
+            from tools.transcription_tools import transcribe_audio
+            result = transcribe_audio(sample_ogg)
+
+        assert result["success"] is True
+        assert result["provider"] == "xai"
+        mock_xai.assert_called_once()
+
+    def test_model_default_is_grok_stt(self, sample_ogg):
+        with patch("tools.transcription_tools._load_stt_config", return_value={"provider": "xai"}), \
+             patch("tools.transcription_tools._get_provider", return_value="xai"), \
+             patch("tools.transcription_tools._transcribe_xai",
+                   return_value={"success": True, "transcript": "hi"}) as mock_xai:
+            from tools.transcription_tools import transcribe_audio
+            transcribe_audio(sample_ogg, model=None)
+
+        assert mock_xai.call_args[0][1] == "grok-stt"
+
+    def test_model_override_passed_to_xai(self, sample_ogg):
+        with patch("tools.transcription_tools._load_stt_config", return_value={}), \
+             patch("tools.transcription_tools._get_provider", return_value="xai"), \
+             patch("tools.transcription_tools._transcribe_xai",
+                   return_value={"success": True, "transcript": "hi"}) as mock_xai:
+            from tools.transcription_tools import transcribe_audio
+            transcribe_audio(sample_ogg, model="custom-stt")
+
+        assert mock_xai.call_args[0][1] == "custom-stt"

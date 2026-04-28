@@ -40,7 +40,7 @@ class _FakeOpenAIClient:
 def _make_agent(monkeypatch, api_mode, provider, response_fn):
     _patch_bootstrap(monkeypatch)
     if api_mode == "anthropic_messages":
-        monkeypatch.setattr("agent.anthropic_adapter.build_anthropic_client", lambda k, b=None: _FakeAnthropicClient())
+        monkeypatch.setattr("agent.anthropic_adapter.build_anthropic_client", lambda k, b=None, **kwargs: _FakeAnthropicClient())
     if provider == "openai-codex":
         monkeypatch.setattr(
             "agent.auxiliary_client.resolve_provider_client",
@@ -56,9 +56,10 @@ def _make_agent(monkeypatch, api_mode, provider, response_fn):
 
         def run_conversation(self, msg, conversation_history=None, task_id=None):
             self._interruptible_api_call = lambda kw: response_fn()
+            self._disable_streaming = True
             return super().run_conversation(msg, conversation_history=conversation_history, task_id=task_id)
 
-    return _A(model="test-model", api_key="test-key", provider=provider, api_mode=api_mode)
+    return _A(model="test-model", api_key="test-key", base_url="http://localhost:1234/v1", provider=provider, api_mode=api_mode)
 
 
 def _anthropic_resp(input_tok, output_tok, cache_read=0, cache_creation=0):

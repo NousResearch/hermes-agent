@@ -84,38 +84,6 @@ class TestMinimaxAuxModel:
         assert "highspeed" not in _API_KEY_PROVIDER_AUX_MODELS["minimax-cn"]
 
 
-class TestMinimaxModelCatalog:
-    """Verify the model catalog matches official Anthropic-compat endpoint models.
-
-    Source: https://platform.minimax.io/docs/api-reference/text-anthropic-api
-    """
-
-    def test_catalog_includes_current_models(self):
-        from hermes_cli.models import _PROVIDER_MODELS
-        for provider in ("minimax", "minimax-cn"):
-            models = _PROVIDER_MODELS[provider]
-            assert "MiniMax-M2.7" in models
-            assert "MiniMax-M2.5" in models
-            assert "MiniMax-M2.1" in models
-            assert "MiniMax-M2" in models
-
-    def test_catalog_excludes_m1_family(self):
-        """M1 models are not available on the /anthropic endpoint."""
-        from hermes_cli.models import _PROVIDER_MODELS
-        for provider in ("minimax", "minimax-cn"):
-            models = _PROVIDER_MODELS[provider]
-            assert "MiniMax-M1" not in models
-
-    def test_catalog_excludes_highspeed(self):
-        """Highspeed variants are available but not shown in default catalog
-        (users can still specify them manually)."""
-        from hermes_cli.models import _PROVIDER_MODELS
-        for provider in ("minimax", "minimax-cn"):
-            models = _PROVIDER_MODELS[provider]
-            assert "MiniMax-M2.7-highspeed" not in models
-            assert "MiniMax-M2.5-highspeed" not in models
-
-
 class TestMinimaxBetaHeaders:
     """MiniMax Anthropic-compat endpoints reject fine-grained-tool-streaming beta.
 
@@ -308,6 +276,34 @@ class TestMinimaxPreserveDots:
         from run_agent import AIAgent
         assert AIAgent._anthropic_preserve_dots(agent) is False
 
+    def test_opencode_zen_provider_preserves_dots(self):
+        from types import SimpleNamespace
+        agent = SimpleNamespace(provider="opencode-zen", base_url="")
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is True
+
+    def test_opencode_zen_url_preserves_dots(self):
+        from types import SimpleNamespace
+        agent = SimpleNamespace(provider="custom", base_url="https://opencode.ai/zen/v1")
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is True
+
+    def test_zai_provider_preserves_dots(self):
+        from types import SimpleNamespace
+        agent = SimpleNamespace(provider="zai", base_url="")
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is True
+
+    def test_bigmodel_cn_url_preserves_dots(self):
+        from types import SimpleNamespace
+        agent = SimpleNamespace(provider="custom", base_url="https://open.bigmodel.cn/api/paas/v4")
+        from run_agent import AIAgent
+        assert AIAgent._anthropic_preserve_dots(agent) is True
+
+    def test_normalize_preserves_m25_free_dot(self):
+        from agent.anthropic_adapter import normalize_model_name
+        assert normalize_model_name("minimax-m2.5-free", preserve_dots=True) == "minimax-m2.5-free"
+
     def test_normalize_preserves_m27_dot(self):
         from agent.anthropic_adapter import normalize_model_name
         assert normalize_model_name("MiniMax-M2.7", preserve_dots=True) == "MiniMax-M2.7"
@@ -345,6 +341,7 @@ class TestMinimaxSwitchModelCredentialGuard:
             agent._client_kwargs = {}
             agent.client = None
             agent._anthropic_client = MagicMock()
+            agent._fallback_chain = []
 
         with patch("agent.anthropic_adapter.build_anthropic_client") as mock_build, \
              patch("agent.anthropic_adapter.resolve_anthropic_token", return_value="sk-ant-leaked") as mock_resolve, \

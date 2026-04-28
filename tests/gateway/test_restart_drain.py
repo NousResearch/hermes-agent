@@ -1,6 +1,7 @@
 import asyncio
 import shutil
 import subprocess
+from datetime import datetime
 from unittest.mock import AsyncMock, MagicMock
 
 import pytest
@@ -8,12 +9,15 @@ import pytest
 import gateway.run as gateway_run
 from gateway.platforms.base import MessageEvent, MessageType
 from gateway.restart import DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT
-from gateway.session import build_session_key
+from gateway.session import SessionEntry, build_session_key
 from tests.gateway.restart_test_helpers import make_restart_runner, make_restart_source
 
 
 @pytest.mark.asyncio
-async def test_restart_command_while_busy_requests_drain_without_interrupt():
+async def test_restart_command_while_busy_requests_drain_without_interrupt(monkeypatch):
+    # Ensure INVOCATION_ID is NOT set — systemd sets this in service mode,
+    # which changes the restart call signature.
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
     runner, _adapter = make_restart_runner()
     runner.request_restart = MagicMock(return_value=True)
     event = MessageEvent(
@@ -86,7 +90,19 @@ def test_load_busy_input_mode_prefers_env_then_config_then_default(tmp_path, mon
     )
     assert gateway_run.GatewayRunner._load_busy_input_mode() == "queue"
 
+    (tmp_path / "config.yaml").write_text(
+        "display:\n  busy_input_mode: steer\n", encoding="utf-8"
+    )
+    assert gateway_run.GatewayRunner._load_busy_input_mode() == "steer"
+
     monkeypatch.setenv("HERMES_GATEWAY_BUSY_INPUT_MODE", "interrupt")
+    assert gateway_run.GatewayRunner._load_busy_input_mode() == "interrupt"
+
+    monkeypatch.setenv("HERMES_GATEWAY_BUSY_INPUT_MODE", "steer")
+    assert gateway_run.GatewayRunner._load_busy_input_mode() == "steer"
+
+    # Unknown values fall through to the safe default
+    monkeypatch.setenv("HERMES_GATEWAY_BUSY_INPUT_MODE", "bogus")
     assert gateway_run.GatewayRunner._load_busy_input_mode() == "interrupt"
 
 
@@ -158,3 +174,112 @@ async def test_launch_detached_restart_command_uses_setsid(monkeypatch):
     assert kwargs["start_new_session"] is True
     assert kwargs["stdout"] is subprocess.DEVNULL
     assert kwargs["stderr"] is subprocess.DEVNULL
+
+
+# ── Shutdown notification tests ──────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_sent_to_active_sessions():
+    """Active sessions receive a notification when the gateway starts shutting down."""
+    runner, adapter = make_restart_runner()
+    source = make_restart_source(chat_id="999", chat_type="dm")
+    session_key = f"agent:main:telegram:dm:999"
+    runner._running_agents[session_key] = MagicMock()
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert len(adapter.sent) == 1
+    assert "shutting down" in adapter.sent[0]
+    assert "interrupted" in adapter.sent[0]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_says_restarting_when_restart_requested():
+    """When _restart_requested is True, the message says 'restarting' and mentions /retry."""
+    runner, adapter = make_restart_runner()
+    runner._restart_requested = True
+    session_key = "agent:main:telegram:dm:999"
+    runner._running_agents[session_key] = MagicMock()
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert len(adapter.sent) == 1
+    assert "restarting" in adapter.sent[0]
+    assert "resume" in adapter.sent[0]
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_deduplicates_per_chat():
+    """Multiple sessions in the same chat only get one notification."""
+    runner, adapter = make_restart_runner()
+    # Two sessions (different users) in the same chat
+    runner._running_agents["agent:main:telegram:group:chat1:u1"] = MagicMock()
+    runner._running_agents["agent:main:telegram:group:chat1:u2"] = MagicMock()
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert len(adapter.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_skipped_when_no_active_agents():
+    """No notification is sent when there are no active agents."""
+    runner, adapter = make_restart_runner()
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert len(adapter.sent) == 0
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_ignores_pending_sentinels():
+    """Pending sentinels (not-yet-started agents) don't trigger notifications."""
+    from gateway.run import _AGENT_PENDING_SENTINEL
+
+    runner, adapter = make_restart_runner()
+    runner._running_agents["agent:main:telegram:dm:999"] = _AGENT_PENDING_SENTINEL
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert len(adapter.sent) == 0
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_send_failure_does_not_block():
+    """If sending a notification fails, the method still completes."""
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock(side_effect=Exception("network error"))
+    session_key = "agent:main:telegram:dm:999"
+    runner._running_agents[session_key] = MagicMock()
+
+    # Should not raise
+    await runner._notify_active_sessions_of_shutdown()
+
+
+@pytest.mark.asyncio
+async def test_shutdown_notification_uses_persisted_origin_for_colon_ids():
+    """Shutdown notifications should route from persisted origin, not reparsed keys."""
+    runner, adapter = make_restart_runner()
+    adapter.send = AsyncMock()
+    source = make_restart_source(chat_id="!room123:example.org", chat_type="group")
+    source.platform = gateway_run.Platform.MATRIX
+    session_key = build_session_key(source)
+    runner._running_agents[session_key] = MagicMock()
+    runner.session_store._entries = {
+        session_key: SessionEntry(
+            session_key=session_key,
+            session_id="sess-1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            origin=source,
+            platform=source.platform,
+            chat_type=source.chat_type,
+        )
+    }
+    runner.adapters = {gateway_run.Platform.MATRIX: adapter}
+
+    await runner._notify_active_sessions_of_shutdown()
+
+    assert adapter.send.await_count == 1
+    assert adapter.send.await_args.args[0] == "!room123:example.org"

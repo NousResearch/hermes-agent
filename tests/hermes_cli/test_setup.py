@@ -1,5 +1,4 @@
-"""Tests for setup_model_provider — verifies the delegation to
-select_provider_and_model() and config dict sync."""
+"""Tests for setup.py configuration flows."""
 import json
 import sys
 import types
@@ -8,6 +7,7 @@ import pytest
 
 from hermes_cli.auth import get_active_provider
 from hermes_cli.config import load_config, save_config
+from hermes_cli import setup as setup_mod
 from hermes_cli.setup import setup_model_provider
 
 
@@ -144,6 +144,85 @@ def test_setup_custom_providers_synced(tmp_path, monkeypatch):
     assert reloaded.get("custom_providers") == [{"name": "Local", "base_url": "http://localhost:8080/v1"}]
 
 
+def test_setup_gateway_skips_service_install_when_systemctl_missing(monkeypatch, capsys):
+    env = {
+        "TELEGRAM_BOT_TOKEN": "",
+        "TELEGRAM_HOME_CHANNEL": "",
+        "DISCORD_BOT_TOKEN": "",
+        "DISCORD_HOME_CHANNEL": "",
+        "SLACK_BOT_TOKEN": "",
+        "SLACK_HOME_CHANNEL": "",
+        "MATRIX_HOMESERVER": "https://matrix.example.com",
+        "MATRIX_USER_ID": "@alice:example.com",
+        "MATRIX_PASSWORD": "",
+        "MATRIX_ACCESS_TOKEN": "token",
+        "BLUEBUBBLES_SERVER_URL": "",
+        "BLUEBUBBLES_HOME_CHANNEL": "",
+        "WHATSAPP_ENABLED": "",
+        "WEBHOOK_ENABLED": "",
+    }
+
+    monkeypatch.setattr(setup_mod, "get_env_value", lambda key: env.get(key, ""))
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *args, **kwargs: False)
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+
+    import hermes_cli.gateway as gateway_mod
+
+    monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway_mod, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway_mod, "_is_service_installed", lambda: False)
+    monkeypatch.setattr(gateway_mod, "_is_service_running", lambda: False)
+
+    setup_mod.setup_gateway({})
+
+    out = capsys.readouterr().out
+    assert "Messaging platforms configured!" in out
+    assert "Start the gateway to bring your bots online:" in out
+    assert "hermes gateway" in out
+
+
+def test_setup_gateway_in_container_shows_docker_guidance(monkeypatch, capsys):
+    """setup_gateway() in a Docker container shows Docker-specific restart instructions."""
+    env = {
+        "TELEGRAM_BOT_TOKEN": "",
+        "TELEGRAM_HOME_CHANNEL": "",
+        "DISCORD_BOT_TOKEN": "",
+        "DISCORD_HOME_CHANNEL": "",
+        "SLACK_BOT_TOKEN": "",
+        "SLACK_HOME_CHANNEL": "",
+        "MATRIX_HOMESERVER": "https://matrix.example.com",
+        "MATRIX_USER_ID": "@alice:example.com",
+        "MATRIX_PASSWORD": "",
+        "MATRIX_ACCESS_TOKEN": "token",
+        "BLUEBUBBLES_SERVER_URL": "",
+        "BLUEBUBBLES_HOME_CHANNEL": "",
+        "WHATSAPP_ENABLED": "",
+        "WEBHOOK_ENABLED": "",
+    }
+
+    monkeypatch.setattr(setup_mod, "get_env_value", lambda key: env.get(key, ""))
+    monkeypatch.setattr(setup_mod, "prompt_yes_no", lambda *args, **kwargs: False)
+    monkeypatch.setattr("platform.system", lambda: "Linux")
+
+    import hermes_cli.gateway as gateway_mod
+
+    monkeypatch.setattr(gateway_mod, "supports_systemd_services", lambda: False)
+    monkeypatch.setattr(gateway_mod, "is_macos", lambda: False)
+    monkeypatch.setattr(gateway_mod, "_is_service_installed", lambda: False)
+    monkeypatch.setattr(gateway_mod, "_is_service_running", lambda: False)
+
+    # Patch is_container at the import location in setup.py
+    import hermes_constants
+    monkeypatch.setattr(hermes_constants, "is_container", lambda: True)
+
+    setup_mod.setup_gateway({})
+
+    out = capsys.readouterr().out
+    assert "Messaging platforms configured!" in out
+    assert "docker" in out.lower() or "Docker" in out
+    assert "restart" in out.lower()
+
+
 def test_setup_syncs_custom_provider_removal_from_disk(tmp_path, monkeypatch):
     """Removing the last custom provider in model setup should persist."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -260,6 +339,41 @@ def test_select_provider_and_model_warns_if_named_custom_provider_disappears(
     assert "selected saved custom provider is no longer available" in out
 
 
+def test_select_provider_and_model_accepts_named_provider_from_providers_section(
+    tmp_path, monkeypatch, capsys
+):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    _clear_provider_env(monkeypatch)
+
+    cfg = load_config()
+    cfg["model"] = {
+        "provider": "volcengine-plan",
+        "default": "doubao-seed-2.0-code",
+    }
+    cfg["providers"] = {
+        "volcengine-plan": {
+            "name": "volcengine-plan",
+            "base_url": "https://ark.cn-beijing.volces.com/api/coding/v3",
+            "default_model": "doubao-seed-2.0-code",
+            "models": {"doubao-seed-2.0-code": {}},
+        }
+    }
+    save_config(cfg)
+
+    monkeypatch.setattr(
+        "hermes_cli.main._prompt_provider_choice",
+        lambda choices, default=0: len(choices) - 1,
+    )
+
+    from hermes_cli.main import select_provider_and_model
+
+    select_provider_and_model()
+
+    out = capsys.readouterr().out
+    assert "Warning: Unknown provider 'volcengine-plan'" not in out
+    assert "Active provider:  volcengine-plan" in out
+
+
 def test_codex_setup_uses_runtime_access_token_for_live_model_list(tmp_path, monkeypatch):
     """Codex model list fetching uses the runtime access token."""
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -284,7 +398,7 @@ def test_codex_setup_uses_runtime_access_token_for_live_model_list(tmp_path, mon
 
 
 def test_modal_setup_can_use_nous_subscription_without_modal_creds(tmp_path, monkeypatch, capsys):
-    monkeypatch.setenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", "1")
+    monkeypatch.setattr("hermes_cli.setup.managed_nous_tools_enabled", lambda: True)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     config = load_config()
 
@@ -326,7 +440,7 @@ def test_modal_setup_can_use_nous_subscription_without_modal_creds(tmp_path, mon
 
 
 def test_modal_setup_persists_direct_mode_when_user_chooses_their_own_account(tmp_path, monkeypatch):
-    monkeypatch.setenv("HERMES_ENABLE_NOUS_MANAGED_TOOLS", "1")
+    monkeypatch.setattr("hermes_cli.setup.managed_nous_tools_enabled", lambda: True)
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
     monkeypatch.delenv("MODAL_TOKEN_ID", raising=False)
     monkeypatch.delenv("MODAL_TOKEN_SECRET", raising=False)

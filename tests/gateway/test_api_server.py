@@ -12,6 +12,7 @@ Tests cover:
 - Error handling (invalid JSON, missing fields)
 """
 
+import asyncio
 import json
 import time
 import uuid
@@ -25,6 +26,7 @@ from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.api_server import (
     APIServerAdapter,
     ResponseStore,
+    _IdempotencyCache,
     _CORS_HEADERS,
     _derive_chat_session_id,
     check_api_server_requirements,
@@ -102,6 +104,95 @@ class TestResponseStore:
     def test_delete_missing(self):
         store = ResponseStore(max_size=10)
         assert store.delete("resp_missing") is False
+
+
+# ---------------------------------------------------------------------------
+# _IdempotencyCache
+# ---------------------------------------------------------------------------
+
+
+class TestIdempotencyCache:
+    @pytest.mark.asyncio
+    async def test_concurrent_same_key_and_fingerprint_runs_once(self):
+        cache = _IdempotencyCache()
+        gate = asyncio.Event()
+        started = asyncio.Event()
+        calls = 0
+
+        async def compute():
+            nonlocal calls
+            calls += 1
+            started.set()
+            await gate.wait()
+            return ("response", {"total_tokens": 1})
+
+        first = asyncio.create_task(cache.get_or_set("idem-key", "fp-1", compute))
+        second = asyncio.create_task(cache.get_or_set("idem-key", "fp-1", compute))
+
+        await started.wait()
+        assert calls == 1
+
+        gate.set()
+        first_result, second_result = await asyncio.gather(first, second)
+
+        assert first_result == second_result == ("response", {"total_tokens": 1})
+
+    @pytest.mark.asyncio
+    async def test_different_fingerprint_does_not_reuse_inflight_task(self):
+        cache = _IdempotencyCache()
+        gate = asyncio.Event()
+        started = asyncio.Event()
+        calls = 0
+
+        async def compute():
+            nonlocal calls
+            calls += 1
+            result = calls
+            if calls == 2:
+                started.set()
+            await gate.wait()
+            return result
+
+        first = asyncio.create_task(cache.get_or_set("idem-key", "fp-1", compute))
+        second = asyncio.create_task(cache.get_or_set("idem-key", "fp-2", compute))
+
+        await started.wait()
+        assert calls == 2
+
+        gate.set()
+        results = await asyncio.gather(first, second)
+
+        assert sorted(results) == [1, 2]
+
+    @pytest.mark.asyncio
+    async def test_cancelled_waiter_does_not_drop_shared_inflight_task(self):
+        cache = _IdempotencyCache()
+        gate = asyncio.Event()
+        started = asyncio.Event()
+        calls = 0
+
+        async def compute():
+            nonlocal calls
+            calls += 1
+            started.set()
+            await gate.wait()
+            return "response"
+
+        first = asyncio.create_task(cache.get_or_set("idem-key", "fp-1", compute))
+
+        await started.wait()
+        assert calls == 1
+
+        first.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await first
+
+        second = asyncio.create_task(cache.get_or_set("idem-key", "fp-1", compute))
+        await asyncio.sleep(0)
+        assert calls == 1
+
+        gate.set()
+        assert await second == "response"
 
 
 # ---------------------------------------------------------------------------
@@ -220,6 +311,7 @@ def _create_app(adapter: APIServerAdapter) -> web.Application:
     app = web.Application(middlewares=mws)
     app["api_server_adapter"] = adapter
     app.router.add_get("/health", adapter._handle_health)
+    app.router.add_get("/health/detailed", adapter._handle_health_detailed)
     app.router.add_get("/v1/health", adapter._handle_health)
     app.router.add_get("/v1/models", adapter._handle_models)
     app.router.add_post("/v1/chat/completions", adapter._handle_chat_completions)
@@ -275,6 +367,58 @@ class TestHealthEndpoint:
             data = await resp.json()
             assert data["status"] == "ok"
             assert data["platform"] == "hermes-agent"
+
+
+# ---------------------------------------------------------------------------
+# /health/detailed endpoint
+# ---------------------------------------------------------------------------
+
+
+class TestHealthDetailedEndpoint:
+    @pytest.mark.asyncio
+    async def test_health_detailed_returns_ok(self, adapter):
+        """GET /health/detailed returns status, platform, and runtime fields."""
+        app = _create_app(adapter)
+        with patch("gateway.status.read_runtime_status", return_value={
+            "gateway_state": "running",
+            "platforms": {"telegram": {"state": "connected"}},
+            "active_agents": 2,
+            "exit_reason": None,
+            "updated_at": "2026-04-14T00:00:00Z",
+        }):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/health/detailed")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["status"] == "ok"
+                assert data["platform"] == "hermes-agent"
+                assert data["gateway_state"] == "running"
+                assert data["platforms"] == {"telegram": {"state": "connected"}}
+                assert data["active_agents"] == 2
+                assert isinstance(data["pid"], int)
+                assert "updated_at" in data
+
+    @pytest.mark.asyncio
+    async def test_health_detailed_no_runtime_status(self, adapter):
+        """When gateway_state.json is missing, fields are None."""
+        app = _create_app(adapter)
+        with patch("gateway.status.read_runtime_status", return_value=None):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/health/detailed")
+                assert resp.status == 200
+                data = await resp.json()
+                assert data["status"] == "ok"
+                assert data["gateway_state"] is None
+                assert data["platforms"] == {}
+
+    @pytest.mark.asyncio
+    async def test_health_detailed_does_not_require_auth(self, auth_adapter):
+        """Health detailed endpoint should be accessible without auth, like /health."""
+        app = _create_app(auth_adapter)
+        with patch("gateway.status.read_runtime_status", return_value=None):
+            async with TestClient(TestServer(app)) as cli:
+                resp = await cli.get("/health/detailed")
+                assert resp.status == 200
 
 
 # ---------------------------------------------------------------------------
@@ -964,6 +1108,47 @@ class TestResponsesEndpoint:
             assert call_kwargs["user_message"] == "Now add 1 more"
 
     @pytest.mark.asyncio
+    async def test_previous_response_id_preserves_session(self, adapter):
+        """Chained responses via previous_response_id reuse the same session_id."""
+        mock_result = {
+            "final_response": "ok",
+            "messages": [{"role": "assistant", "content": "ok"}],
+            "api_calls": 1,
+        }
+        usage = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
+
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            # First request — establishes a session
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, usage)
+                resp1 = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "Hello"},
+                )
+            assert resp1.status == 200
+            first_session_id = mock_run.call_args.kwargs["session_id"]
+            data1 = await resp1.json()
+            response_id = data1["id"]
+
+            # Second request — chains from the first
+            with patch.object(adapter, "_run_agent", new_callable=AsyncMock) as mock_run:
+                mock_run.return_value = (mock_result, usage)
+                resp2 = await cli.post(
+                    "/v1/responses",
+                    json={
+                        "model": "hermes-agent",
+                        "input": "Follow up",
+                        "previous_response_id": response_id,
+                    },
+                )
+            assert resp2.status == 200
+            second_session_id = mock_run.call_args.kwargs["session_id"]
+
+            # Session must be the same across the chain
+            assert first_session_id == second_session_id
+
+    @pytest.mark.asyncio
     async def test_invalid_previous_response_id_returns_404(self, adapter):
         app = _create_app(adapter)
         async with TestClient(TestServer(app)) as cli:
@@ -1060,6 +1245,267 @@ class TestResponsesEndpoint:
                 json={"model": "hermes-agent", "input": 42},
             )
             assert resp.status == 400
+
+
+class TestResponsesStreaming:
+    @pytest.mark.asyncio
+    async def test_stream_true_returns_responses_sse(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                if cb:
+                    cb("Hello")
+                    cb(" world")
+                return (
+                    {"final_response": "Hello world", "messages": [], "api_calls": 1},
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "hi", "stream": True},
+                )
+                assert resp.status == 200
+                assert "text/event-stream" in resp.headers.get("Content-Type", "")
+                body = await resp.text()
+                assert "event: response.created" in body
+                assert "event: response.output_text.delta" in body
+                assert "event: response.output_text.done" in body
+                assert "event: response.completed" in body
+                assert '"sequence_number":' in body
+                assert '"logprobs": []' in body
+                assert "Hello" in body
+                assert " world" in body
+
+    @pytest.mark.asyncio
+    async def test_stream_emits_function_call_and_output_items(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                start_cb = kwargs.get("tool_start_callback")
+                complete_cb = kwargs.get("tool_complete_callback")
+                text_cb = kwargs.get("stream_delta_callback")
+                if start_cb:
+                    start_cb("call_123", "read_file", {"path": "/tmp/test.txt"})
+                if complete_cb:
+                    complete_cb("call_123", "read_file", {"path": "/tmp/test.txt"}, '{"content":"hello"}')
+                if text_cb:
+                    text_cb("Done.")
+                return (
+                    {
+                        "final_response": "Done.",
+                        "messages": [
+                            {
+                                "role": "assistant",
+                                "tool_calls": [
+                                    {
+                                        "id": "call_123",
+                                        "function": {
+                                            "name": "read_file",
+                                            "arguments": '{"path":"/tmp/test.txt"}',
+                                        },
+                                    }
+                                ],
+                            },
+                            {
+                                "role": "tool",
+                                "tool_call_id": "call_123",
+                                "content": '{"content":"hello"}',
+                            },
+                        ],
+                        "api_calls": 1,
+                    },
+                    {"input_tokens": 10, "output_tokens": 5, "total_tokens": 15},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "read the file", "stream": True},
+                )
+                assert resp.status == 200
+                body = await resp.text()
+                assert "event: response.output_item.added" in body
+                assert "event: response.output_item.done" in body
+                assert body.count("event: response.output_item.done") >= 2
+                assert '"type": "function_call"' in body
+                assert '"type": "function_call_output"' in body
+                assert '"call_id": "call_123"' in body
+                assert '"name": "read_file"' in body
+                assert '"output": [{"type": "input_text", "text": "{\\"content\\":\\"hello\\"}"}]' in body
+
+    @pytest.mark.asyncio
+    async def test_streamed_response_is_stored_for_get(self, adapter):
+        app = _create_app(adapter)
+        async with TestClient(TestServer(app)) as cli:
+            async def _mock_run_agent(**kwargs):
+                cb = kwargs.get("stream_delta_callback")
+                if cb:
+                    cb("Stored response")
+                return (
+                    {"final_response": "Stored response", "messages": [], "api_calls": 1},
+                    {"input_tokens": 1, "output_tokens": 2, "total_tokens": 3},
+                )
+
+            with patch.object(adapter, "_run_agent", side_effect=_mock_run_agent):
+                resp = await cli.post(
+                    "/v1/responses",
+                    json={"model": "hermes-agent", "input": "store this", "stream": True},
+                )
+                body = await resp.text()
+                response_id = None
+                for line in body.splitlines():
+                    if line.startswith("data: "):
+                        try:
+                            payload = json.loads(line[len("data: "):])
+                        except json.JSONDecodeError:
+                            continue
+                        if payload.get("type") == "response.completed":
+                            response_id = payload["response"]["id"]
+                            break
+                assert response_id
+
+                get_resp = await cli.get(f"/v1/responses/{response_id}")
+                assert get_resp.status == 200
+                data = await get_resp.json()
+                assert data["id"] == response_id
+                assert data["status"] == "completed"
+                assert data["output"][-1]["content"][0]["text"] == "Stored response"
+
+    @pytest.mark.asyncio
+    async def test_stream_cancelled_persists_incomplete_snapshot(self, adapter):
+        """Server-side asyncio.CancelledError (shutdown, request timeout) must
+        still leave an ``incomplete`` snapshot in ResponseStore so
+        GET /v1/responses/{id} and previous_response_id chaining keep
+        working.  Regression for PR #15171 follow-up.
+
+        Calls _write_sse_responses directly so the test can await the
+        handler to completion (TestClient disconnection races the server
+        handler, which makes end-to-end assertion on the final stored
+        snapshot flaky).
+        """
+        # Build a minimal fake request + stream queue the writer understands.
+        fake_request = MagicMock()
+        fake_request.headers = {}
+
+        written_payloads: list = []
+
+        class _FakeStreamResponse:
+            async def prepare(self, req):
+                pass
+
+            async def write(self, payload):
+                written_payloads.append(payload)
+
+        # Patch web.StreamResponse for the duration of the writer call.
+        import gateway.platforms.api_server as api_mod
+        import queue as _q
+
+        stream_q: _q.Queue = _q.Queue()
+
+        async def _agent_coro():
+            # Feed one partial delta into the stream queue...
+            stream_q.put("partial output")
+            # ...then give the drain loop a moment to pick it up before
+            # raising CancelledError to simulate a server-side cancel.
+            await asyncio.sleep(0.01)
+            raise asyncio.CancelledError()
+
+        agent_task = asyncio.ensure_future(_agent_coro())
+        response_id = f"resp_{uuid.uuid4().hex[:28]}"
+
+        with patch.object(api_mod.web, "StreamResponse", return_value=_FakeStreamResponse()):
+            with pytest.raises(asyncio.CancelledError):
+                await adapter._write_sse_responses(
+                    request=fake_request,
+                    response_id=response_id,
+                    model="hermes-agent",
+                    created_at=int(time.time()),
+                    stream_q=stream_q,
+                    agent_task=agent_task,
+                    agent_ref=[None],
+                    conversation_history=[],
+                    user_message="will be cancelled",
+                    instructions=None,
+                    conversation=None,
+                    store=True,
+                    session_id=None,
+                )
+
+        # The in_progress snapshot was persisted on response.created,
+        # and the CancelledError handler must have updated it to
+        # ``incomplete`` with the partial text it saw.
+        stored = adapter._response_store.get(response_id)
+        assert stored is not None, "snapshot must be retrievable after cancellation"
+        assert stored["response"]["status"] == "incomplete"
+        # Partial text captured before cancel should be preserved.
+        output_text = "".join(
+            part.get("text", "")
+            for item in stored["response"].get("output", [])
+            if item.get("type") == "message"
+            for part in item.get("content", [])
+        )
+        assert "partial output" in output_text
+
+    @pytest.mark.asyncio
+    async def test_stream_client_disconnect_persists_incomplete_snapshot(self, adapter):
+        """Client disconnect (ConnectionResetError) during streaming must
+        persist an ``incomplete`` snapshot in ResponseStore.  Regression
+        for PR #15171."""
+        fake_request = MagicMock()
+        fake_request.headers = {}
+
+        write_call_count = {"n": 0}
+
+        class _DisconnectingStreamResponse:
+            async def prepare(self, req):
+                pass
+
+            async def write(self, payload):
+                # First two writes succeed (prepare + response.created).
+                # On the third write (a text delta), the "client"
+                # disconnects — simulate with ConnectionResetError.
+                write_call_count["n"] += 1
+                if write_call_count["n"] >= 3:
+                    raise ConnectionResetError("simulated client disconnect")
+
+        import gateway.platforms.api_server as api_mod
+        import queue as _q
+
+        stream_q: _q.Queue = _q.Queue()
+        stream_q.put("some streamed text")
+        stream_q.put(None)  # EOS sentinel
+
+        async def _agent_coro():
+            await asyncio.sleep(0.01)
+            return ({"final_response": "", "messages": [], "api_calls": 0},
+                    {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0})
+
+        agent_task = asyncio.ensure_future(_agent_coro())
+        response_id = f"resp_{uuid.uuid4().hex[:28]}"
+
+        with patch.object(api_mod.web, "StreamResponse", return_value=_DisconnectingStreamResponse()):
+            await adapter._write_sse_responses(
+                request=fake_request,
+                response_id=response_id,
+                model="hermes-agent",
+                created_at=int(time.time()),
+                stream_q=stream_q,
+                agent_task=agent_task,
+                agent_ref=[None],
+                conversation_history=[],
+                user_message="will disconnect",
+                instructions=None,
+                conversation=None,
+                store=True,
+                session_id=None,
+            )
+
+        stored = adapter._response_store.get(response_id)
+        assert stored is not None, "snapshot must survive client disconnect"
+        assert stored["response"]["status"] == "incomplete"
 
 
 # ---------------------------------------------------------------------------

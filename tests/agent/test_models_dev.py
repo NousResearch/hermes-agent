@@ -82,12 +82,16 @@ class TestProviderMapping:
     def test_known_providers_mapped(self):
         assert PROVIDER_TO_MODELS_DEV["anthropic"] == "anthropic"
         assert PROVIDER_TO_MODELS_DEV["copilot"] == "github-copilot"
+        assert PROVIDER_TO_MODELS_DEV["stepfun"] == "stepfun"
         assert PROVIDER_TO_MODELS_DEV["kilocode"] == "kilo"
         assert PROVIDER_TO_MODELS_DEV["ai-gateway"] == "vercel"
 
     def test_unmapped_provider_not_in_dict(self):
         assert "nous" not in PROVIDER_TO_MODELS_DEV
-        assert "openai-codex" not in PROVIDER_TO_MODELS_DEV
+
+    def test_openai_codex_mapped_to_openai(self):
+        assert PROVIDER_TO_MODELS_DEV["openai"] == "openai"
+        assert PROVIDER_TO_MODELS_DEV["openai-codex"] == "openai"
 
 
 class TestExtractContext:

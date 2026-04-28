@@ -18,10 +18,8 @@ Other modules should import the dataclasses and query functions from here
 rather than parsing the raw JSON themselves.
 """
 
-import difflib
 import json
 import logging
-import os
 import time
 from dataclasses import dataclass
 from pathlib import Path
@@ -144,8 +142,12 @@ class ProviderInfo:
 PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "openrouter": "openrouter",
     "anthropic": "anthropic",
+    "openai": "openai",
+    "openai-codex": "openai",
     "zai": "zai",
     "kimi-coding": "kimi-for-coding",
+    "stepfun": "stepfun",
+    "kimi-coding-cn": "kimi-for-coding",
     "minimax": "minimax",
     "minimax-cn": "minimax-cn",
     "deepseek": "deepseek",
@@ -168,18 +170,12 @@ PROVIDER_TO_MODELS_DEV: Dict[str, str] = {
     "togetherai": "togetherai",
     "perplexity": "perplexity",
     "cohere": "cohere",
+    "ollama-cloud": "ollama-cloud",
 }
 
 # Reverse mapping: models.dev → Hermes (built lazily)
 _MODELS_DEV_TO_PROVIDER: Optional[Dict[str, str]] = None
 
-
-def _get_reverse_mapping() -> Dict[str, str]:
-    """Return models.dev ID → Hermes provider ID mapping."""
-    global _MODELS_DEV_TO_PROVIDER
-    if _MODELS_DEV_TO_PROVIDER is None:
-        _MODELS_DEV_TO_PROVIDER = {v: k for k, v in PROVIDER_TO_MODELS_DEV.items()}
-    return _MODELS_DEV_TO_PROVIDER
 
 
 def _get_cache_path() -> Path:
@@ -422,10 +418,16 @@ def list_provider_models(provider: str) -> List[str]:
 
     Returns an empty list if the provider is unknown or has no data.
     """
+    from hermes_cli.models import normalize_provider
+    provider = normalize_provider(provider) or provider
+    
     models = _get_provider_models(provider)
     if models is None:
         return []
-    return list(models.keys())
+    return [
+        mid for mid in models.keys()
+        if not _should_hide_from_provider_catalog(provider, mid)
+    ]
 
 
 # Patterns that indicate non-agentic or noise models (TTS, embedding,
@@ -436,6 +438,43 @@ _NOISE_PATTERNS: re.Pattern = re.compile(
     r"-image\b|-image-preview\b|-customtools\b",
     re.IGNORECASE,
 )
+
+# Google's live Gemini catalogs currently include a mix of stale slugs and
+# Gemma models whose TPM quotas are too small for normal Hermes agent traffic.
+# Keep capability metadata available for direct/manual use, but hide these from
+# the Gemini model catalogs we surface in setup and model selection.
+_GOOGLE_HIDDEN_MODELS = frozenset({
+    # Low-TPM Gemma models that trip Google input-token quota walls under
+    # agent-style traffic despite advertising large context windows.
+    "gemma-4-31b-it",
+    "gemma-4-26b-it",
+    "gemma-4-26b-a4b-it",
+    "gemma-3-1b",
+    "gemma-3-1b-it",
+    "gemma-3-2b",
+    "gemma-3-2b-it",
+    "gemma-3-4b",
+    "gemma-3-4b-it",
+    "gemma-3-12b",
+    "gemma-3-12b-it",
+    "gemma-3-27b",
+    "gemma-3-27b-it",
+    # Stale/retired Google slugs that still surface through models.dev-backed
+    # Gemini selection but 404 on the current Google endpoints.
+    "gemini-1.5-flash",
+    "gemini-1.5-pro",
+    "gemini-1.5-flash-8b",
+    "gemini-2.0-flash",
+    "gemini-2.0-flash-lite",
+})
+
+
+def _should_hide_from_provider_catalog(provider: str, model_id: str) -> bool:
+    provider_lower = (provider or "").strip().lower()
+    model_lower = (model_id or "").strip().lower()
+    if provider_lower in {"gemini", "google"} and model_lower in _GOOGLE_HIDDEN_MODELS:
+        return True
+    return False
 
 
 def list_agentic_models(provider: str) -> List[str]:
@@ -453,6 +492,8 @@ def list_agentic_models(provider: str) -> List[str]:
     for mid, entry in models.items():
         if not isinstance(entry, dict):
             continue
+        if _should_hide_from_provider_catalog(provider, mid):
+            continue
         if not entry.get("tool_call", False):
             continue
         if _NOISE_PATTERNS.search(mid):
@@ -460,93 +501,6 @@ def list_agentic_models(provider: str) -> List[str]:
         result.append(mid)
     return result
 
-
-def search_models_dev(
-    query: str, provider: str = None, limit: int = 5
-) -> List[Dict[str, Any]]:
-    """Fuzzy search across models.dev catalog. Returns matching model entries.
-
-    Args:
-        query: Search string to match against model IDs.
-        provider: Optional Hermes provider ID to restrict search scope.
-                  If None, searches across all providers in PROVIDER_TO_MODELS_DEV.
-        limit: Maximum number of results to return.
-
-    Returns:
-        List of dicts, each containing 'provider', 'model_id', and the full
-        model 'entry' from models.dev.
-    """
-    data = fetch_models_dev()
-    if not data:
-        return []
-
-    # Build list of (provider_id, model_id, entry) candidates
-    candidates: List[tuple] = []
-
-    if provider is not None:
-        # Search only the specified provider
-        mdev_provider_id = PROVIDER_TO_MODELS_DEV.get(provider)
-        if not mdev_provider_id:
-            return []
-        provider_data = data.get(mdev_provider_id, {})
-        if isinstance(provider_data, dict):
-            models = provider_data.get("models", {})
-            if isinstance(models, dict):
-                for mid, mdata in models.items():
-                    candidates.append((provider, mid, mdata))
-    else:
-        # Search across all mapped providers
-        for hermes_prov, mdev_prov in PROVIDER_TO_MODELS_DEV.items():
-            provider_data = data.get(mdev_prov, {})
-            if isinstance(provider_data, dict):
-                models = provider_data.get("models", {})
-                if isinstance(models, dict):
-                    for mid, mdata in models.items():
-                        candidates.append((hermes_prov, mid, mdata))
-
-    if not candidates:
-        return []
-
-    # Use difflib for fuzzy matching — case-insensitive comparison
-    model_ids_lower = [c[1].lower() for c in candidates]
-    query_lower = query.lower()
-
-    # First try exact substring matches (more intuitive than pure edit-distance)
-    substring_matches = []
-    for prov, mid, mdata in candidates:
-        if query_lower in mid.lower():
-            substring_matches.append({"provider": prov, "model_id": mid, "entry": mdata})
-
-    # Then add difflib fuzzy matches for any remaining slots
-    fuzzy_ids = difflib.get_close_matches(
-        query_lower, model_ids_lower, n=limit * 2, cutoff=0.4
-    )
-
-    seen_ids: set = set()
-    results: List[Dict[str, Any]] = []
-
-    # Prioritize substring matches
-    for match in substring_matches:
-        key = (match["provider"], match["model_id"])
-        if key not in seen_ids:
-            seen_ids.add(key)
-            results.append(match)
-            if len(results) >= limit:
-                return results
-
-    # Add fuzzy matches
-    for fid in fuzzy_ids:
-        # Find original-case candidates matching this lowered ID
-        for prov, mid, mdata in candidates:
-            if mid.lower() == fid:
-                key = (prov, mid)
-                if key not in seen_ids:
-                    seen_ids.add(key)
-                    results.append({"provider": prov, "model_id": mid, "entry": mdata})
-                    if len(results) >= limit:
-                        return results
-
-    return results
 
 
 # ---------------------------------------------------------------------------
@@ -674,5 +628,3 @@ def get_model_info(
             return _parse_model_info(mid, mdata, mdev_id)
 
     return None
-
-

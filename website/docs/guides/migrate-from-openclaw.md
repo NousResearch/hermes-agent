@@ -18,21 +18,22 @@ hermes claw migrate
 hermes claw migrate --dry-run
 
 # Full migration including API keys, skip confirmation
-hermes claw migrate --preset full --yes
+hermes claw migrate --preset full --migrate-secrets --yes
 ```
 
 The migration always shows a full preview of what will be imported before making any changes. Review the list, then confirm to proceed.
 
-Reads from `~/.openclaw/` by default. Legacy `~/.clawdbot/` or `~/.moldbot/` directories are detected automatically. Same for legacy config filenames (`clawdbot.json`, `moldbot.json`).
+Reads from `~/.openclaw/` by default. Legacy `~/.clawdbot/` or `~/.moltbot/` directories are detected automatically. Same for legacy config filenames (`clawdbot.json`, `moltbot.json`).
 
 ## Options
 
 | Option | Description |
 |--------|-------------|
 | `--dry-run` | Preview only — stop after showing what would be migrated. |
-| `--preset <name>` | `full` (default, includes secrets) or `user-data` (excludes API keys). |
-| `--overwrite` | Overwrite existing Hermes files on conflicts (default: skip). |
-| `--migrate-secrets` | Include API keys (on by default with `--preset full`). |
+| `--preset <name>` | `full` (all compatible settings) or `user-data` (excludes infrastructure config). Neither preset imports secrets by default — pass `--migrate-secrets` explicitly. |
+| `--overwrite` | Overwrite existing Hermes files on conflicts (default: refuse to apply when the plan has conflicts). |
+| `--migrate-secrets` | Include API keys. Required even under `--preset full` — no preset imports secrets silently. |
+| `--no-backup` | Skip the pre-migration zip snapshot of `~/.hermes/` (by default a single restore-point archive is written before apply, under `~/.hermes/backups/pre-migration-*.zip`; restorable with `hermes import`). |
 | `--source <path>` | Custom OpenClaw directory. |
 | `--workspace-target <path>` | Where to place `AGENTS.md`. |
 | `--skill-conflict <mode>` | `skip` (default), `overwrite`, or `rename`. |
@@ -234,7 +235,7 @@ The migration resolves all three formats. For env templates and SecretRef object
 
 ### "OpenClaw directory not found"
 
-The migration checks `~/.openclaw/`, then `~/.clawdbot/`, then `~/.moldbot/`. If your installation is elsewhere, use `--source /path/to/your/openclaw`.
+The migration checks `~/.openclaw/`, then `~/.clawdbot/`, then `~/.moltbot/`. If your installation is elsewhere, use `--source /path/to/your/openclaw`.
 
 ### "No provider API keys found"
 

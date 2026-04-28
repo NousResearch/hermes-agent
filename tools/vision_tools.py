@@ -553,18 +553,23 @@ async def vision_analyze_tool(
         # Read timeout from config.yaml (auxiliary.vision.timeout), default 120s.
         # Local vision models (llama.cpp, ollama) can take well over 30s.
         vision_timeout = 120.0
+        vision_temperature = 0.1
         try:
             from hermes_cli.config import load_config
             _cfg = load_config()
-            _vt = _cfg.get("auxiliary", {}).get("vision", {}).get("timeout")
+            _vision_cfg = _cfg.get("auxiliary", {}).get("vision", {})
+            _vt = _vision_cfg.get("timeout")
             if _vt is not None:
                 vision_timeout = float(_vt)
+            _vtemp = _vision_cfg.get("temperature")
+            if _vtemp is not None:
+                vision_temperature = float(_vtemp)
         except Exception:
             pass
         call_kwargs = {
             "task": "vision",
             "messages": messages,
-            "temperature": 0.1,
+            "temperature": vision_temperature,
             "max_tokens": 2000,
             "timeout": vision_timeout,
         }
@@ -689,15 +694,6 @@ def check_vision_requirements() -> bool:
         return False
 
 
-def get_debug_session_info() -> Dict[str, Any]:
-    """
-    Get information about the current debug session.
-    
-    Returns:
-        Dict[str, Any]: Dictionary containing debug session information
-    """
-    return _debug.get_session_info()
-
 
 if __name__ == "__main__":
     """
@@ -758,7 +754,15 @@ from tools.registry import registry, tool_error
 
 VISION_ANALYZE_SCHEMA = {
     "name": "vision_analyze",
-    "description": "Analyze images using AI vision. Provides a comprehensive description and answers a specific question about the image content.",
+    "description": (
+        "Inspect an image from a URL, file path, or tool output when you need "
+        "closer detail than what's visible in the conversation. If the user's "
+        "image is already attached to the conversation and you can see it, "
+        "just answer directly — only call this tool for images referenced by "
+        "URL/path, images returned inside other tool results (browser "
+        "screenshots, search thumbnails), or when you need a deeper look at "
+        "a specific region the main model's vision may have missed."
+    ),
     "parameters": {
         "type": "object",
         "properties": {

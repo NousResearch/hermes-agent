@@ -28,11 +28,15 @@ class _FakeRegistry:
 
     def __init__(self, sessions):
         self._sessions = list(sessions)
+        self._completion_consumed: set = set()
 
     def get(self, session_id):
         if self._sessions:
             return self._sessions.pop(0)
         return None
+
+    def is_completion_consumed(self, session_id):
+        return session_id in self._completion_consumed
 
 
 def _build_runner(monkeypatch, tmp_path) -> GatewayRunner:
@@ -227,6 +231,59 @@ async def test_notify_on_complete_preserves_user_identity(monkeypatch, tmp_path)
 
 
 @pytest.mark.asyncio
+async def test_notify_on_complete_uses_session_store_origin_for_group_topic(monkeypatch, tmp_path):
+    import tools.process_registry as pr_module
+    from gateway.session import SessionSource
+
+    sessions = [
+        SimpleNamespace(
+            output_buffer="done\n", exited=True, exit_code=0, command="echo test"
+        ),
+    ]
+    monkeypatch.setattr(pr_module, "process_registry", _FakeRegistry(sessions))
+
+    async def _instant_sleep(*_a, **_kw):
+        pass
+    monkeypatch.setattr(asyncio, "sleep", _instant_sleep)
+
+    runner = GatewayRunner(GatewayConfig())
+    adapter = SimpleNamespace(send=AsyncMock(), handle_message=AsyncMock())
+    runner.adapters[Platform.TELEGRAM] = adapter
+    runner.session_store._entries["agent:main:telegram:group:-100:42"] = SimpleNamespace(
+        origin=SessionSource(
+            platform=Platform.TELEGRAM,
+            chat_id="-100",
+            chat_type="group",
+            thread_id="42",
+            user_id="user-42",
+            user_name="alice",
+        )
+    )
+
+    watcher = {
+        "session_id": "proc_test_internal",
+        "check_interval": 0,
+        "session_key": "agent:main:telegram:group:-100:42",
+        "platform": "telegram",
+        "chat_id": "-100",
+        "thread_id": "42",
+        "notify_on_complete": True,
+    }
+
+    await runner._run_process_watcher(watcher)
+
+    assert adapter.handle_message.await_count == 1
+    event = adapter.handle_message.await_args.args[0]
+    assert event.internal is True
+    assert event.source.platform == Platform.TELEGRAM
+    assert event.source.chat_id == "-100"
+    assert event.source.chat_type == "group"
+    assert event.source.thread_id == "42"
+    assert event.source.user_id == "user-42"
+    assert event.source.user_name == "alice"
+
+
+@pytest.mark.asyncio
 async def test_none_user_id_skips_pairing(monkeypatch, tmp_path):
     """A non-internal event with user_id=None should be silently dropped."""
     import gateway.run as gateway_run
@@ -298,8 +355,17 @@ async def test_none_user_id_does_not_generate_pairing_code(monkeypatch, tmp_path
 async def test_non_internal_event_without_user_triggers_pairing(monkeypatch, tmp_path):
     """Verify the normal (non-internal) path still triggers pairing for unknown users."""
     import gateway.run as gateway_run
+    import gateway.pairing as pairing_mod
 
     monkeypatch.setattr(gateway_run, "_hermes_home", tmp_path)
+    # gateway.pairing.PAIRING_DIR is a module-level constant captured at
+    # import time from whichever HERMES_HOME was set then. Per-test
+    # HERMES_HOME redirection in conftest doesn't retroactively move it.
+    # Override directly so pairing rate-limit state lives in this test's
+    # tmp_path (and so stale state from prior xdist workers can't leak in).
+    pairing_dir = tmp_path / "pairing"
+    pairing_dir.mkdir()
+    monkeypatch.setattr(pairing_mod, "PAIRING_DIR", pairing_dir)
     (tmp_path / "config.yaml").write_text("", encoding="utf-8")
 
     # Clear env vars that could let all users through (loaded by

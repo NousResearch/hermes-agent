@@ -1,12 +1,12 @@
 ---
 sidebar_position: 1
 title: "Messaging Gateway"
-description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Webhooks, or any OpenAI-compatible frontend via the API server — architecture and setup overview"
+description: "Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Yuanbao, Webhooks, or any OpenAI-compatible frontend via the API server — architecture and setup overview"
 ---
 
 # Messaging Gateway
 
-Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Feishu/Lark, WeCom, Weixin, BlueBubbles (iMessage), or your browser. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
+Chat with Hermes from Telegram, Discord, Slack, WhatsApp, Signal, SMS, Email, Home Assistant, Mattermost, Matrix, DingTalk, Feishu/Lark, WeCom, Weixin, BlueBubbles (iMessage), QQ, Yuanbao, or your browser. The gateway is a single background process that connects to all your configured platforms, handles sessions, runs cron jobs, and delivers voice messages.
 
 For the full voice feature set — including CLI microphone mode, spoken replies in messaging, and Discord voice-channel conversations — see [Voice Mode](/docs/user-guide/features/voice-mode) and [Use Voice Mode with Hermes](/docs/guides/use-voice-mode-with-hermes).
 
@@ -24,12 +24,14 @@ For the full voice feature set — including CLI microphone mode, spoken replies
 | Home Assistant | — | — | — | — | — | — | — |
 | Mattermost | ✅ | ✅ | ✅ | ✅ | — | ✅ | ✅ |
 | Matrix | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
-| DingTalk | — | — | — | — | — | ✅ | ✅ |
+| DingTalk | — | ✅ | ✅ | — | ✅ | — | ✅ |
 | Feishu/Lark | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ |
 | WeCom | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | WeCom Callback | — | — | — | — | — | — | — |
 | Weixin | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 | BlueBubbles | — | ✅ | ✅ | — | ✅ | ✅ | — |
+| QQ | ✅ | ✅ | ✅ | — | — | ✅ | — |
+| Yuanbao | ✅ | ✅ | ✅ | — | — | ✅ | ✅ |
 
 **Voice** = TTS audio replies and/or voice message transcription. **Images** = send/receive images. **Files** = send/receive file attachments. **Threads** = threaded conversations. **Reactions** = emoji reactions on messages. **Typing** = typing indicator while processing. **Streaming** = progressive message updates via editing.
 
@@ -55,6 +57,8 @@ flowchart TB
     wcb[WeCom Callback]
     wx[Weixin]
     bb[BlueBubbles]
+    qq[QQ]
+    yb[Yuanbao]
             api["API Server<br/>(OpenAI-compatible)"]
             wh[Webhooks]
         end
@@ -80,6 +84,8 @@ flowchart TB
     wcb --> store
     wx --> store
     bb --> store
+    qq --> store
+    yb --> store
     api --> store
     wh --> store
     store --> agent
@@ -117,7 +123,6 @@ hermes gateway status --system         # Linux only: inspect the system service 
 |---------|-------------|
 | `/new` or `/reset` | Start a fresh conversation |
 | `/model [provider:model]` | Show or change the model (supports `provider:model` syntax) |
-| `/provider` | Show available providers with auth status |
 | `/personality [name]` | Set a personality |
 | `/retry` | Retry the last message |
 | `/undo` | Remove the last exchange |
@@ -216,6 +221,20 @@ Send any message while the agent is working to interrupt it. Key behaviors:
 - **Tool calls are cancelled** — only the currently-executing one runs, the rest are skipped
 - **Multiple messages are combined** — messages sent during interruption are joined into one prompt
 - **`/stop` command** — interrupts without queuing a follow-up message
+
+### Queue vs interrupt vs steer (busy-input mode)
+
+By default, messaging a busy agent interrupts it. Two other modes are available:
+
+- `queue` — follow-up messages wait and run as the next turn after the current task finishes.
+- `steer` — follow-up messages are injected into the current run via `/steer`, arriving at the agent after the next tool call. No interrupt, no new turn. Falls back to `queue` behavior if the agent hasn't started yet.
+
+```yaml
+display:
+  busy_input_mode: steer   # or queue, or interrupt (default)
+```
+
+The first time you message a busy agent on any platform, Hermes appends a one-line reminder to the busy-ack explaining the knob (`"💡 First-time tip — …"`). The reminder fires once per install — a flag under `onboarding.seen.busy_input_prompt` latches it. Delete that key to see the tip again.
 
 ## Tool Progress Notifications
 
@@ -369,6 +388,8 @@ Each platform has its own toolset:
 | WeCom Callback | `hermes-wecom-callback` | Full tools including terminal |
 | Weixin | `hermes-weixin` | Full tools including terminal |
 | BlueBubbles | `hermes-bluebubbles` | Full tools including terminal |
+| QQBot | `hermes-qqbot` | Full tools including terminal |
+| Yuanbao | `hermes-yuanbao` | Full tools including terminal |
 | API Server | `hermes` (default) | Full tools including terminal |
 | Webhooks | `hermes-webhook` | Full tools including terminal |
 
@@ -390,5 +411,7 @@ Each platform has its own toolset:
 - [WeCom Callback Setup](wecom-callback.md)
 - [Weixin Setup (WeChat)](weixin.md)
 - [BlueBubbles Setup (iMessage)](bluebubbles.md)
+- [QQBot Setup](qqbot.md)
+- [Yuanbao Setup](yuanbao.md)
 - [Open WebUI + API Server](open-webui.md)
 - [Webhooks](webhooks.md)

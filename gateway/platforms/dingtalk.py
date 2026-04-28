@@ -1327,6 +1327,28 @@ class _IncomingHandler(
                 if raw_flag:
                     chatbot_msg.is_in_at_list = True
 
+            # Workaround for msgtype="file": the SDK's from_dict() does not
+            # populate rich_text_content / text_content for file messages,
+            # leaving the message with no content for the inbound dispatcher.
+            # Synthesize a rich_text_content bridge so the existing
+            # _resolve_media_codes() and _extract_media() pipelines pick it up
+            # as MessageType.DOCUMENT without further changes.
+            msgtype = data.get("msgtype", "") if isinstance(data, dict) else ""
+            if msgtype == "file":
+                content = data.get("content", {}) if isinstance(data, dict) else {}
+                if isinstance(content, dict) and content.get("downloadCode"):
+                    from types import SimpleNamespace
+                    bridge = SimpleNamespace()
+                    bridge.rich_text_list = [
+                        {
+                            "type": "file",
+                            "fileName": content.get("fileName", "attachment"),
+                            "downloadCode": content["downloadCode"],
+                        }
+                    ]
+                    if not getattr(chatbot_msg, "rich_text_content", None):
+                        chatbot_msg.rich_text_content = bridge
+
             msg_id = getattr(chatbot_msg, "message_id", None) or ""
             conversation_id = getattr(chatbot_msg, "conversation_id", None) or ""
 

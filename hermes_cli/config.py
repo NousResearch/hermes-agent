@@ -3710,18 +3710,27 @@ def _sanitize_env_lines(lines: list) -> list:
 
         # Detect concatenated KEY=VALUE pairs on one line.
         # Search for known KEY= patterns at any position in the line.
-        split_positions = []
+        # We collect full needle ranges so we can drop matches that are
+        # fully contained within a longer overlapping needle. Without this,
+        # suffix collisions corrupt the file: e.g. LM_API_KEY= inside
+        # GLM_API_KEY= would otherwise split the line into "G\nLM_API_KEY=...".
+        match_ranges: list[tuple[int, int]] = []
         for key_name in known_keys:
             needle = key_name + "="
             idx = stripped.find(needle)
             while idx >= 0:
-                split_positions.append(idx)
+                match_ranges.append((idx, idx + len(needle)))
                 idx = stripped.find(needle, idx + len(needle))
 
+        split_positions = sorted({
+            s for s, e in match_ranges
+            if not any(
+                s2 <= s and e2 >= e and (s2, e2) != (s, e)
+                for s2, e2 in match_ranges
+            )
+        })
+
         if len(split_positions) > 1:
-            split_positions.sort()
-            # Deduplicate (shouldn't happen, but be safe)
-            split_positions = sorted(set(split_positions))
             for i, pos in enumerate(split_positions):
                 end = split_positions[i + 1] if i + 1 < len(split_positions) else len(stripped)
                 part = stripped[pos:end].strip()

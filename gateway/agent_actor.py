@@ -317,14 +317,37 @@ def _format_runtime_event_line(event: Dict[str, Any]) -> str:
     )
 
 
-def _visible_recent_events(db, *, authority: str, session_key: str, person_id: str) -> list[Dict[str, Any]]:
+def _visible_recent_events(
+    db,
+    *,
+    authority: str,
+    session_key: str,
+    person_id: str,
+    platform: str = "",
+    platform_chat_id: str = "",
+) -> list[Dict[str, Any]]:
     if authority in {"owner", "trusted"}:
         return db.list_recent_agent_events(limit=8)
     events = db.list_recent_agent_events(session_key=session_key, limit=5)
     if person_id:
         by_person = db.list_recent_agent_events(person_id=person_id, limit=5)
         events = list({event["event_id"]: event for event in events + by_person}.values())
-    return events[:8]
+    # Cross-session outbound activity targeting the current audience. Without
+    # this, the agent cannot see its own attempts (delivered or blocked) to
+    # send to this same chat from autonomous/cron sessions, and confabulates
+    # "must be a different session" when challenged. Blocked events are
+    # explicitly included — they are the strongest signal of "I have been
+    # trying to push content into this audience."
+    if platform and platform_chat_id:
+        by_audience = db.list_recent_agent_events(
+            event_type="outbound",
+            platform=platform,
+            platform_chat_id=platform_chat_id,
+            limit=5,
+        )
+        events = list({event["event_id"]: event for event in events + by_audience}.values())
+    events.sort(key=lambda e: e.get("seq") or 0, reverse=True)
+    return events[:10]
 
 
 def build_state_packet(
@@ -356,6 +379,8 @@ def build_state_packet(
             authority=authority,
             session_key=session_key,
             person_id=person_id,
+            platform=platform,
+            platform_chat_id=chat_id,
         )
     except Exception:
         recent_events = []

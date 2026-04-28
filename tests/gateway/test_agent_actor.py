@@ -132,6 +132,68 @@ def test_owner_state_packet_includes_recent_cross_session_events(tmp_path):
     db.close()
 
 
+def test_user_state_packet_surfaces_cross_session_outbounds_to_same_audience(tmp_path):
+    """A non-trusted sender's state packet must reveal the agent's own
+    cross-session attempts (delivered or blocked) targeting the current
+    audience. Without this, the agent confabulates "must be a different
+    session" when challenged about messages it actually authored from
+    autonomous/cron sessions to the same chat.
+    """
+    db = SessionDB(db_path=tmp_path / "state.db")
+
+    # A blocked rebroadcast attempt to discord:general from a hub-DM session,
+    # before the user's inbound. Different session_key, different person_id —
+    # the existing per-session and per-person filters would both miss it.
+    db.append_agent_event(
+        event_type="outbound",
+        event_subtype="send_message",
+        status="blocked",
+        session_key="agent:main:hub:dm:hub:sal",
+        actor_id="main",
+        actor_kind="tool",
+        source="hub",
+        platform="discord",
+        platform_chat_id="general",
+        tool_name="send_message",
+        content="autonomous hub rebroadcast attempt",
+        payload={"decision": "deny"},
+    )
+
+    user_source = SessionSource(
+        platform=Platform.DISCORD,
+        chat_id="general",
+        chat_type="group",
+        user_id="999",
+        user_name="adam",
+    )
+    inbound_event_id, person_id = record_inbound_event(
+        db,
+        source=user_source,
+        session_id="group-sid",
+        session_key="agent:main:discord:group:general:999",
+        text="why am I getting pinged about this stuff?",
+        authority="user",
+    )
+
+    packet = build_state_packet(
+        db,
+        source=user_source,
+        session_id="group-sid",
+        session_key="agent:main:discord:group:general:999",
+        inbound_event_id=inbound_event_id,
+        person_id=person_id,
+        authority="user",
+    )
+
+    assert "authority: user" in packet
+    assert "autonomous hub rebroadcast attempt" in packet, (
+        "user-authority state packet must include outbound activity targeting "
+        "the same platform_chat_id, even from other sessions"
+    )
+    assert "blocked" in packet
+    db.close()
+
+
 def test_directive_blocks_public_cross_session_send(tmp_path):
     db = SessionDB(db_path=tmp_path / "state.db")
     source = SessionSource(

@@ -1453,6 +1453,8 @@ class SessionDB:
         event_type: str = "",
         session_key: str = "",
         person_id: str = "",
+        platform: str = "",
+        platform_chat_id: str = "",
         limit: int = 20,
     ) -> List[Dict[str, Any]]:
         """Return recent agent events ordered newest-first."""
@@ -1467,6 +1469,12 @@ class SessionDB:
         if person_id:
             clauses.append("person_id = ?")
             params.append(person_id)
+        if platform:
+            clauses.append("platform = ?")
+            params.append(platform)
+        if platform_chat_id:
+            clauses.append("platform_chat_id = ?")
+            params.append(platform_chat_id)
         where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
         params.append(int(limit))
         with self._lock:

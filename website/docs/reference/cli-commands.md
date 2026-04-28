@@ -69,7 +69,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes profile` | Manage profiles — multiple isolated Hermes instances. |
 | `hermes completion` | Print shell completion scripts (bash/zsh). |
 | `hermes version` | Show version information. |
-| `hermes update` | Pull latest code and reinstall dependencies. |
+| `hermes update [--tag <tag-or-ref>]` | Pull latest code, or checkout a specific tag/ref, and reinstall dependencies. |
 | `hermes uninstall` | Remove Hermes from the system. |
 
 ## `hermes chat`
@@ -911,7 +911,7 @@ hermes completion zsh >> ~/.zshrc
 | Command | Description |
 |---------|-------------|
 | `hermes version` | Print version information. |
-| `hermes update` | Pull latest changes and reinstall dependencies. |
+| `hermes update [--tag <tag-or-ref>]` | Pull latest changes, or checkout a specific tag/ref, and reinstall dependencies. |
 | `hermes uninstall [--full] [--yes]` | Remove Hermes, optionally deleting all config/data. |
 
 ## See also

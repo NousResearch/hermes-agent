@@ -8078,6 +8078,28 @@ class GatewayRunner:
         if is_managed():
             return f"✗ {format_managed_message('update Hermes Agent')}"
 
+        update_tag: Optional[str] = None
+        try:
+            parts = shlex.split(event.text or "")
+        except ValueError as exc:
+            return f"✗ Invalid /update arguments: {exc}"
+        i = 1
+        while i < len(parts):
+            part = parts[i]
+            if part == "--tag":
+                if i + 1 >= len(parts) or not parts[i + 1].strip():
+                    return "✗ Usage: /update [--tag <tag-or-ref>]"
+                update_tag = parts[i + 1].strip()
+                i += 2
+                continue
+            if part.startswith("--tag="):
+                update_tag = part.split("=", 1)[1].strip()
+                if not update_tag:
+                    return "✗ Usage: /update [--tag <tag-or-ref>]"
+                i += 1
+                continue
+            return f"✗ Unknown /update option: {part}\nUsage: /update [--tag <tag-or-ref>]"
+
         project_root = Path(__file__).parent.parent.resolve()
         git_dir = project_root / '.git'
 
@@ -8118,8 +8140,9 @@ class GatewayRunner:
         # PYTHONUNBUFFERED ensures output is flushed line-by-line so the
         # gateway can stream it to the messenger in near-real-time.
         hermes_cmd_str = " ".join(shlex.quote(part) for part in hermes_cmd)
+        tag_arg = f" --tag {shlex.quote(update_tag)}" if update_tag else ""
         update_cmd = (
-            f"PYTHONUNBUFFERED=1 {hermes_cmd_str} update --gateway"
+            f"PYTHONUNBUFFERED=1 {hermes_cmd_str} update --gateway{tag_arg}"
             f" > {shlex.quote(str(output_path))} 2>&1; "
             f"status=$?; printf '%s' \"$status\" > {shlex.quote(str(exit_code_path))}"
         )

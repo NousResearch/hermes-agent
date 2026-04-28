@@ -612,7 +612,7 @@ No. Each profile has its own memory store, session database, and skills director
 
 ### What happens when I run `hermes update`?
 
-`hermes update` pulls the latest code and reinstalls dependencies **once** (not per-profile). It then syncs updated skills to all profiles automatically. You only need to run `hermes update` once — it covers every profile on the machine.
+`hermes update` pulls the latest code and reinstalls dependencies **once** (not per-profile). `hermes update --tag <tag-or-ref>` does the same work after checking out that git tag/ref for this run. It then syncs updated skills to all profiles automatically. You only need to run `hermes update` once — it covers every profile on the machine.
 
 
 ### How many profiles can I run?

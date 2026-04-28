@@ -130,7 +130,7 @@ class TestCmdUpdateBranchFallback:
         #   3. web/       — install + "npm run build" for the web frontend
         full_flags = [
             "/usr/bin/npm",
-            "install",
+            "ci",
             "--silent",
             "--no-fund",
             "--no-audit",
@@ -139,9 +139,44 @@ class TestCmdUpdateBranchFallback:
         assert npm_calls == [
             (full_flags, PROJECT_ROOT),
             (full_flags, PROJECT_ROOT / "ui-tui"),
-            (["/usr/bin/npm", "install", "--silent"], PROJECT_ROOT / "web"),
+            (["/usr/bin/npm", "ci", "--silent"], PROJECT_ROOT / "web"),
             (["/usr/bin/npm", "run", "build"], PROJECT_ROOT / "web"),
         ]
+
+    @patch("shutil.which", return_value=None)
+    @patch("subprocess.run")
+    def test_update_tag_fetches_tags_and_checks_out_target(
+        self, mock_run, _mock_which, capsys
+    ):
+        target_sha = "1234567890abcdef1234567890abcdef12345678"
+        current_sha = "abcdef1234567890abcdef1234567890abcdef12"
+
+        def side_effect(cmd, **kwargs):
+            joined = " ".join(str(c) for c in cmd)
+            if "remote get-url origin" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if "fetch origin --tags" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+            if "rev-parse --abbrev-ref HEAD" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout="main\n", stderr="")
+            if "rev-parse --verify refs/tags/v2026.4.23^{}" in joined:
+                return subprocess.CompletedProcess(cmd, 0, stdout=f"{target_sha}\n", stderr="")
+            if joined.endswith("rev-parse HEAD"):
+                return subprocess.CompletedProcess(cmd, 0, stdout=f"{current_sha}\n", stderr="")
+            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
+
+        mock_run.side_effect = side_effect
+
+        cmd_update(SimpleNamespace(tag="v2026.4.23"))
+
+        commands = [" ".join(str(a) for a in c.args[0]) for c in mock_run.call_args_list]
+        assert any("fetch origin --tags" in c for c in commands)
+        assert any("checkout --detach refs/tags/v2026.4.23^{}" in c for c in commands)
+        assert not any("pull" in c for c in commands)
+        assert not any("rev-list HEAD..origin/main --count" in c for c in commands)
+
+        captured = capsys.readouterr()
+        assert "Targeting v2026.4.23" in captured.out
 
     def test_update_non_interactive_skips_migration_prompt(self, mock_args, capsys):
         """When stdin/stdout aren't TTYs, config migration prompt is skipped."""

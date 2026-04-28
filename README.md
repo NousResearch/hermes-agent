@@ -59,6 +59,7 @@ hermes gateway      # Start the messaging gateway (Telegram, Discord, etc.)
 hermes setup        # Run the full setup wizard (configures everything at once)
 hermes claw migrate # Migrate from OpenClaw (if coming from OpenClaw)
 hermes update       # Update to the latest version
+hermes update --tag v2026.4.23  # Update to a specific git tag/ref
 hermes doctor       # Diagnose any issues
 ```
 

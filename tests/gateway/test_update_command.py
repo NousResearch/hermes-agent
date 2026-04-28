@@ -244,6 +244,42 @@ class TestHandleUpdateCommand:
         assert "Starting Hermes update" in result
 
     @pytest.mark.asyncio
+    async def test_update_tag_is_forwarded_to_cli(self, tmp_path):
+        """Forwards /update --tag to the detached hermes update process."""
+        runner = _make_runner()
+        event = _make_event(text="/update --tag v2026.4.23")
+
+        fake_root = tmp_path / "project"
+        fake_root.mkdir()
+        (fake_root / ".git").mkdir()
+        (fake_root / "gateway").mkdir()
+        (fake_root / "gateway" / "run.py").touch()
+        fake_file = str(fake_root / "gateway" / "run.py")
+        hermes_home = tmp_path / "hermes"
+        hermes_home.mkdir()
+
+        mock_popen = MagicMock()
+        with patch("gateway.run._hermes_home", hermes_home), \
+             patch("gateway.run.__file__", fake_file), \
+             patch("shutil.which", side_effect=lambda x: f"/usr/bin/{x}"), \
+             patch("subprocess.Popen", mock_popen):
+            result = await runner._handle_update_command(event)
+
+        call_args = mock_popen.call_args[0][0]
+        assert "--tag v2026.4.23" in call_args[-1]
+        assert "Starting Hermes update" in result
+
+    @pytest.mark.asyncio
+    async def test_update_unknown_option_is_rejected(self):
+        """Rejects unsupported /update options instead of silently updating."""
+        runner = _make_runner()
+        event = _make_event(text="/update --unknown")
+
+        result = await runner._handle_update_command(event)
+
+        assert "Unknown /update option" in result
+
+    @pytest.mark.asyncio
     async def test_fallback_when_no_setsid(self, tmp_path):
         """Falls back to start_new_session=True when setsid is not available."""
         runner = _make_runner()

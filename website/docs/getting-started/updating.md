@@ -16,6 +16,15 @@ hermes update
 
 This pulls the latest code, updates dependencies, and prompts you to configure any new options that were added since your last update.
 
+To target a specific git tag or ref for one update:
+
+```bash
+hermes update --tag v2026.4.23
+hermes update --tag main
+```
+
+`--tag` is not persisted. A later `hermes update` without `--tag` goes back to the normal `main` update flow.
+
 :::tip
 `hermes update` automatically detects new configuration options and prompts you to add them. If you skipped that prompt, you can manually run `hermes config check` to see missing options, then `hermes config migrate` to interactively add them.
 :::
@@ -24,7 +33,7 @@ This pulls the latest code, updates dependencies, and prompts you to configure a
 
 When you run `hermes update`, the following steps occur:
 
-1. **Git pull** — pulls the latest code from the `main` branch and updates submodules
+1. **Git update** — pulls the latest code from `main`, or checks out the tag/ref passed with `--tag`
 2. **Dependency install** — runs `uv pip install -e ".[all]"` to pick up new or changed dependencies
 3. **Config migration** — detects new config options added since your version and prompts you to set them
 4. **Gateway auto-restart** — if the gateway service is running (systemd on Linux, launchd on macOS), it is **automatically restarted** after the update completes so the new code takes effect immediately

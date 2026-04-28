@@ -6141,6 +6141,53 @@ def _cmd_update_check():
         print(f"  Run '{recommended_update_command()}' to install.")
 
 
+def _normalize_update_tag(value) -> Optional[str]:
+    """Normalize the optional update target passed via ``hermes update --tag``."""
+    if value is None:
+        return None
+    tag = str(value).strip()
+    if not tag:
+        print("✗ --tag requires a non-empty tag or ref.")
+        sys.exit(1)
+    return tag
+
+
+def _resolve_update_tag_ref(
+    git_cmd: list[str], cwd: Path, tag: str
+) -> tuple[Optional[str], Optional[str]]:
+    """Resolve a user-provided update tag/ref to a checkout target and SHA."""
+    candidates: list[str] = []
+
+    def add(candidate: str) -> None:
+        if candidate and candidate not in candidates:
+            candidates.append(candidate)
+
+    if tag == "main":
+        add("origin/main")
+        add("main")
+    elif tag.startswith("refs/"):
+        if tag.startswith("refs/tags/"):
+            add(f"{tag}^{{}}")
+        add(tag)
+    else:
+        add(f"refs/tags/{tag}^{{}}")
+        add(f"refs/tags/{tag}")
+        add(f"origin/{tag}")
+        add(tag)
+
+    for candidate in candidates:
+        result = subprocess.run(
+            git_cmd + ["rev-parse", "--verify", candidate],
+            cwd=cwd,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            return candidate, result.stdout.strip()
+
+    return None, None
+
+
 def _ensure_fhs_path_guard() -> None:
     """Ensure /usr/local/bin is on PATH for RHEL-family root non-login shells.
 
@@ -6345,6 +6392,8 @@ def cmd_update(args):
 def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always
     restore stdio even on ``sys.exit``."""
+    update_tag = _normalize_update_tag(getattr(args, "tag", None))
+
     # In gateway mode, use file-based IPC for prompts instead of stdin
     gw_input_fn = (
         (lambda prompt, default="": _gateway_prompt(prompt, default))
@@ -6414,8 +6463,11 @@ def _cmd_update_impl(args, gateway_mode: bool):
     try:
 
         print("→ Fetching updates...")
+        fetch_args = git_cmd + ["fetch", "origin"]
+        if update_tag:
+            fetch_args.append("--tags")
         fetch_result = subprocess.run(
-            git_cmd + ["fetch", "origin"],
+            fetch_args,
             cwd=PROJECT_ROOT,
             capture_output=True,
             text=True,
@@ -6447,42 +6499,67 @@ def _cmd_update_impl(args, gateway_mode: bool):
         )
         current_branch = result.stdout.strip()
 
-        # Always update against main
-        branch = "main"
+        tag_checkout_target = None
+        tag_target_sha = None
+        if update_tag:
+            tag_checkout_target, tag_target_sha = _resolve_update_tag_ref(
+                git_cmd, PROJECT_ROOT, update_tag
+            )
+            if not tag_checkout_target or not tag_target_sha:
+                print(f"✗ No git tag or ref found for --tag {update_tag!r}.")
+                print("  Try a release tag like v2026.4.23, or use --tag main for origin/main.")
+                sys.exit(1)
 
-        # If user is on a non-main branch or detached HEAD, switch to main
-        if current_branch != "main":
-            label = (
-                "detached HEAD"
-                if current_branch == "HEAD"
-                else f"branch '{current_branch}'"
-            )
-            print(f"  ⚠ Currently on {label} — switching to main for update...")
-            # Stash before checkout so uncommitted work isn't lost
+            print(f"→ Targeting {update_tag} ({tag_target_sha[:8]})")
             auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
-            subprocess.run(
-                git_cmd + ["checkout", "main"],
-                cwd=PROJECT_ROOT,
-                capture_output=True,
-                text=True,
-                check=True,
-            )
         else:
-            auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+            # Always update against main
+            branch = "main"
+
+            # If user is on a non-main branch or detached HEAD, switch to main
+            if current_branch != "main":
+                label = (
+                    "detached HEAD"
+                    if current_branch == "HEAD"
+                    else f"branch '{current_branch}'"
+                )
+                print(f"  ⚠ Currently on {label} — switching to main for update...")
+                # Stash before checkout so uncommitted work isn't lost
+                auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
+                subprocess.run(
+                    git_cmd + ["checkout", "main"],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                    check=True,
+                )
+            else:
+                auto_stash_ref = _stash_local_changes_if_needed(git_cmd, PROJECT_ROOT)
 
         prompt_for_restore = auto_stash_ref is not None and (
             gateway_mode or (sys.stdin.isatty() and sys.stdout.isatty())
         )
 
-        # Check if there are updates
-        result = subprocess.run(
-            git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
-            cwd=PROJECT_ROOT,
-            capture_output=True,
-            text=True,
-            check=True,
-        )
-        commit_count = int(result.stdout.strip())
+        if update_tag:
+            result = subprocess.run(
+                git_cmd + ["rev-parse", "HEAD"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            current_sha = result.stdout.strip()
+            commit_count = 0 if current_sha == tag_target_sha else 1
+        else:
+            # Check if there are updates
+            result = subprocess.run(
+                git_cmd + ["rev-list", f"HEAD..origin/{branch}", "--count"],
+                cwd=PROJECT_ROOT,
+                capture_output=True,
+                text=True,
+                check=True,
+            )
+            commit_count = int(result.stdout.strip())
 
         if commit_count == 0:
             _invalidate_update_cache()
@@ -6495,7 +6572,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     prompt_user=prompt_for_restore,
                     input_fn=gw_input_fn,
                 )
-            if current_branch not in ("main", "HEAD"):
+            if not update_tag and current_branch not in ("main", "HEAD"):
                 subprocess.run(
                     git_cmd + ["checkout", current_branch],
                     cwd=PROJECT_ROOT,
@@ -6503,10 +6580,16 @@ def _cmd_update_impl(args, gateway_mode: bool):
                     text=True,
                     check=False,
                 )
-            print("✓ Already up to date!")
+            if update_tag:
+                print(f"✓ Already at {update_tag}.")
+            else:
+                print("✓ Already up to date!")
             return
 
-        print(f"→ Found {commit_count} new commit(s)")
+        if update_tag:
+            print(f"→ Checking out {update_tag}")
+        else:
+            print(f"→ Found {commit_count} new commit(s)")
 
         # Snapshot critical state (state.db, config, pairing JSONs, etc.)
         # before pulling so a user can recover if something goes wrong.
@@ -6524,36 +6607,50 @@ def _cmd_update_impl(args, gateway_mode: bool):
             # Never let a snapshot failure block an update.
             logger.debug("Pre-update snapshot failed: %s", exc)
 
-        print("→ Pulling updates...")
+        print("→ Applying update...")
         update_succeeded = False
         try:
-            pull_result = subprocess.run(
-                git_cmd + ["pull", "--ff-only", "origin", branch],
-                cwd=PROJECT_ROOT,
-                capture_output=True,
-                text=True,
-            )
-            if pull_result.returncode != 0:
-                # ff-only failed — local and remote have diverged (e.g. upstream
-                # force-pushed or rebase).  Since local changes are already
-                # stashed, reset to match the remote exactly.
-                print(
-                    "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
-                )
-                reset_result = subprocess.run(
-                    git_cmd + ["reset", "--hard", f"origin/{branch}"],
+            if update_tag:
+                checkout_result = subprocess.run(
+                    git_cmd + ["checkout", "--detach", tag_checkout_target],
                     cwd=PROJECT_ROOT,
                     capture_output=True,
                     text=True,
                 )
-                if reset_result.returncode != 0:
-                    print(f"✗ Failed to reset to origin/{branch}.")
-                    if reset_result.stderr.strip():
-                        print(f"  {reset_result.stderr.strip()}")
-                    print(
-                        "  Try manually: git fetch origin && git reset --hard origin/main"
-                    )
+                if checkout_result.returncode != 0:
+                    print(f"✗ Failed to checkout {update_tag}.")
+                    stderr = checkout_result.stderr.strip()
+                    if stderr:
+                        print(f"  {stderr.splitlines()[0]}")
                     sys.exit(1)
+            else:
+                pull_result = subprocess.run(
+                    git_cmd + ["pull", "--ff-only", "origin", branch],
+                    cwd=PROJECT_ROOT,
+                    capture_output=True,
+                    text=True,
+                )
+                if pull_result.returncode != 0:
+                    # ff-only failed — local and remote have diverged (e.g. upstream
+                    # force-pushed or rebase).  Since local changes are already
+                    # stashed, reset to match the remote exactly.
+                    print(
+                        "  ⚠ Fast-forward not possible (history diverged), resetting to match remote..."
+                    )
+                    reset_result = subprocess.run(
+                        git_cmd + ["reset", "--hard", f"origin/{branch}"],
+                        cwd=PROJECT_ROOT,
+                        capture_output=True,
+                        text=True,
+                    )
+                    if reset_result.returncode != 0:
+                        print(f"✗ Failed to reset to origin/{branch}.")
+                        if reset_result.stderr.strip():
+                            print(f"  {reset_result.stderr.strip()}")
+                        print(
+                            "  Try manually: git fetch origin && git reset --hard origin/main"
+                        )
+                        sys.exit(1)
             update_succeeded = True
         finally:
             if auto_stash_ref is not None:
@@ -6585,7 +6682,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
             )
 
         # Fork upstream sync logic (only for main branch on forks)
-        if is_fork and branch == "main":
+        if is_fork and not update_tag:
             _sync_with_upstream_if_needed(git_cmd, PROJECT_ROOT)
 
         # Reinstall Python dependencies. Prefer .[all], but if one optional extra
@@ -9752,6 +9849,11 @@ Examples:
         action="store_true",
         default=False,
         help="Check whether an update is available without installing anything",
+    )
+    update_parser.add_argument(
+        "--tag",
+        metavar="<tag-or-ref>",
+        help="Update to a specific git tag or ref for this run (for example: v2026.4.23 or main)",
     )
     update_parser.add_argument(
         "--no-backup",

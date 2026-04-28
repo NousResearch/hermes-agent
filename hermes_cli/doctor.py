@@ -971,11 +971,28 @@ def run_doctor(args):
                 if should_fix:
                     import sqlite3
                     conn = sqlite3.connect(str(state_db_path))
-                    conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
-                    conn.close()
-                    new_size = wal_path.stat().st_size if wal_path.exists() else 0
-                    check_ok(f"WAL checkpoint performed ({wal_size // 1024}K → {new_size // 1024}K)")
-                    fixed_count += 1
+                    try:
+                        # PASSIVE copies checkpointable frames without blocking
+                        # active readers/writers, but it does not guarantee the
+                        # WAL file is truncated.  If the file remains above the
+                        # warning threshold, fall back to TRUNCATE so --fix does
+                        # what it says for long-lived gateway processes.
+                        conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+                        new_size = wal_path.stat().st_size if wal_path.exists() else 0
+                        if new_size > 50 * 1024 * 1024:
+                            conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+                            new_size = wal_path.stat().st_size if wal_path.exists() else 0
+                    finally:
+                        conn.close()
+                    if new_size <= 50 * 1024 * 1024:
+                        check_ok(f"WAL checkpoint performed ({wal_size // 1024}K → {new_size // 1024}K)")
+                        fixed_count += 1
+                    else:
+                        check_warn(
+                            f"WAL checkpoint attempted but file remains large ({new_size // (1024*1024)} MB)",
+                            "(active database readers may be preventing truncation)"
+                        )
+                        issues.append("Large WAL file remains after checkpoint attempt")
                 else:
                     issues.append("Large WAL file — run 'hermes doctor --fix' to checkpoint")
             elif wal_size > 10 * 1024 * 1024:  # 10 MB

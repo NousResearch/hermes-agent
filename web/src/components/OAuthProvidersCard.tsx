@@ -180,8 +180,8 @@ export function OAuthProvidersCard({ onError, onSuccess }: Props) {
                       className="inline-flex"
                       title={`Open ${p.name} docs`}
                     >
-                      <Button outlined className="!p-1.5 aspect-square">
-                        <ExternalLink className="h-3.5 w-3.5" />
+                      <Button ghost size="icon">
+                        <ExternalLink />
                       </Button>
                     </a>
                   )}

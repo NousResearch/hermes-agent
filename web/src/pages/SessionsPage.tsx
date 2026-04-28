@@ -356,8 +356,9 @@ function SessionRow({
           </Badge>
           {resumeInChatEnabled && (
             <Button
-              outlined
-              className="!p-1.5 aspect-square text-muted-foreground hover:text-success"
+              ghost
+              size="icon"
+              className="text-muted-foreground hover:text-success"
               aria-label={t.sessions.resumeInChat}
               title={t.sessions.resumeInChat}
               onClick={(e) => {
@@ -365,19 +366,20 @@ function SessionRow({
                 navigate(`/chat?resume=${encodeURIComponent(session.id)}`);
               }}
             >
-              <Play className="h-3.5 w-3.5" />
+              <Play />
             </Button>
           )}
           <Button
-            outlined
-            className="!p-1.5 aspect-square text-muted-foreground hover:text-destructive"
+            ghost
+            destructive
+            size="icon"
             aria-label={t.sessions.deleteSession}
             onClick={(e) => {
               e.stopPropagation();
               onDelete();
             }}
           >
-            <Trash2 className="h-3.5 w-3.5" />
+            <Trash2 />
           </Button>
         </div>
       </div>
@@ -807,12 +809,12 @@ export default function SessionsPage() {
               <div className="flex items-center gap-1">
                 <Button
                   outlined
-                  className="!p-1.5 aspect-square"
+                  size="icon"
                   disabled={page === 0}
                   onClick={() => setPage((p) => p - 1)}
                   aria-label={t.sessions.previousPage}
                 >
-                  <ChevronLeft className="h-4 w-4" />
+                  <ChevronLeft />
                 </Button>
                 <span className="text-xs text-muted-foreground px-2">
                   {t.common.page} {page + 1} {t.common.of}{" "}
@@ -820,12 +822,12 @@ export default function SessionsPage() {
                 </span>
                 <Button
                   outlined
-                  className="!p-1.5 aspect-square"
+                  size="icon"
                   disabled={(page + 1) * PAGE_SIZE >= total}
                   onClick={() => setPage((p) => p + 1)}
                   aria-label={t.sessions.nextPage}
                 >
-                  <ChevronRight className="h-4 w-4" />
+                  <ChevronRight />
                 </Button>
               </div>
             </div>

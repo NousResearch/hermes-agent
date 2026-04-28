@@ -182,13 +182,12 @@ class TestWindowsWmicEncoding:
     `hermes update` on non-UTF-8 system locales (e.g. cp936 on zh-CN).
     """
 
-    def test_wmic_invoked_with_utf8_ignore_errors(self):
+    def test_wmic_invoked_with_utf8_ignore_errors(self, monkeypatch):
         """The wmic subprocess.run call must pass encoding='utf-8' and
         errors='ignore' so the subprocess reader thread cannot raise
         UnicodeDecodeError on non-UTF-8 wmic output."""
-        with patch("hermes_cli.main.sys") as mock_sys, \
-                patch("subprocess.run") as mock_run:
-            mock_sys.platform = "win32"
+        monkeypatch.setattr(sys, "platform", "win32")
+        with patch("subprocess.run") as mock_run:
             # Provide a minimal valid wmic /FORMAT:LIST response.
             mock_run.return_value = MagicMock(
                 returncode=0,
@@ -212,15 +211,14 @@ class TestWindowsWmicEncoding:
             "down the reader thread (#17049)."
         )
 
-    def test_wmic_returns_none_stdout_does_not_crash(self, capsys):
+    def test_wmic_returns_none_stdout_does_not_crash(self, monkeypatch, capsys):
         """If subprocess.run returns successfully but stdout is None — which
         is what Python 3.11 leaves behind when the reader thread silently
         crashed on UnicodeDecodeError before this fix landed — the warning
         must short-circuit instead of raising AttributeError on
         ``None.split('\\n')`` and aborting `hermes update` (#17049)."""
-        with patch("hermes_cli.main.sys") as mock_sys, \
-                patch("subprocess.run") as mock_run:
-            mock_sys.platform = "win32"
+        monkeypatch.setattr(sys, "platform", "win32")
+        with patch("subprocess.run") as mock_run:
             mock_run.return_value = MagicMock(
                 returncode=0, stdout=None, stderr=""
             )

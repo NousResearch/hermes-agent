@@ -3354,6 +3354,7 @@ _TUI_HIDDEN: frozenset[str] = frozenset(
 _TUI_EXTRA: list[tuple[str, str, str]] = [
     ("/compact", "Toggle compact display mode", "TUI"),
     ("/logs", "Show recent gateway log lines", "TUI"),
+    ("/mouse", "Toggle mouse/wheel tracking [on|off|toggle]", "TUI"),
 ]
 
 # Commands that queue messages onto _pending_input in the CLI.
@@ -4132,6 +4133,11 @@ def _(rid, params: dict) -> dict:
                 "text": "/logs",
                 "display": "/logs",
                 "meta": "Show recent gateway log lines",
+            },
+            {
+                "text": "/mouse",
+                "display": "/mouse",
+                "meta": "Toggle mouse/wheel tracking [on|off|toggle]",
             },
         ]
         for extra in extras:

@@ -118,6 +118,29 @@ class TestThreadLocalApprovalCallback:
         assert worker_saw == [None]
         assert _get_sudo_password_callback() is cb_main
 
+    def test_sudo_password_cache_does_not_leak_across_threads(self):
+        """Interactive sudo cache must not bleed into another executor thread."""
+        from tools.terminal_tool import (
+            _get_cached_sudo_password,
+            _reset_cached_sudo_passwords,
+            _set_cached_sudo_password,
+        )
+
+        _reset_cached_sudo_passwords()
+        _set_cached_sudo_password("main-thread-password")
+
+        worker_saw = []
+
+        def worker():
+            worker_saw.append(_get_cached_sudo_password())
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join()
+
+        assert worker_saw == [""]
+        assert _get_cached_sudo_password() == "main-thread-password"
+
 
 class TestAcpExecAskGate:
     """GHSA-96vc-wcxf-jjff: ACP's _run_agent must set HERMES_INTERACTIVE so

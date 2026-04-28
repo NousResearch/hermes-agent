@@ -843,14 +843,19 @@ def _apply_model_switch(sid: str, session: dict, raw_input: str) -> dict:
 
     os.environ["HERMES_MODEL"] = result.new_model
     os.environ["HERMES_INFERENCE_MODEL"] = result.new_model
-    # Keep the process-level provider env var in sync with the user's explicit
-    # choice so any ambient re-resolution (credential pool refresh, compressor
-    # rebuild, aux clients) resolves to the new provider instead of the
-    # original one persisted in config or env.
+    # Keep the process-level provider env vars in sync with the user's
+    # explicit choice so any ambient re-resolution (credential pool refresh,
+    # compressor rebuild, aux clients) and startup re-resolution on /new
+    # both pick up the new provider instead of the original one persisted
+    # in config or env.
+    #
+    # HERMES_TUI_PROVIDER is the canonical "explicit-this-process" carrier
+    # consumed by _resolve_startup_runtime() — set it unconditionally on
+    # /model so /new can't fall through to static-catalog detection and
+    # pick a coincidentally-matching native provider (fixes #16857).
     if result.target_provider:
         os.environ["HERMES_INFERENCE_PROVIDER"] = result.target_provider
-        if os.environ.get("HERMES_TUI_PROVIDER"):
-            os.environ["HERMES_TUI_PROVIDER"] = result.target_provider
+        os.environ["HERMES_TUI_PROVIDER"] = result.target_provider
     if persist_global:
         _persist_model_switch(result)
     return {"value": result.new_model, "warning": result.warning_message or ""}

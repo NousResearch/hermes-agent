@@ -448,7 +448,10 @@ class MemoryStore:
                     f.write(content)
                     f.flush()
                     os.fsync(f.fileno())
-                os.replace(tmp_path, str(path))  # Atomic on same filesystem
+                # Resolve symlinks so os.replace writes to the real file (GitHub #16743).
+                path_str = str(path)
+                real_path = os.path.realpath(path_str) if os.path.islink(path_str) else path_str
+                os.replace(tmp_path, real_path)
             except BaseException:
                 # Clean up temp file on any failure
                 try:

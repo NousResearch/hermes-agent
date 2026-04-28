@@ -309,7 +309,9 @@ def _atomic_write_text(file_path: Path, content: str, encoding: str = "utf-8") -
     try:
         with os.fdopen(fd, "w", encoding=encoding) as f:
             f.write(content)
-        os.replace(temp_path, file_path)
+        # Resolve symlinks so os.replace writes to the real file (GitHub #16743).
+        real_path = os.path.realpath(file_path) if os.path.islink(file_path) else file_path
+        os.replace(temp_path, real_path)
     except Exception:
         # Clean up temp file on error
         try:

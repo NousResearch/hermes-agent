@@ -10,10 +10,8 @@ describe('DEFAULT_THEME', () => {
   })
 
   it('has color palette', () => {
-    expect(DEFAULT_THEME.color.gold).toBe('#f0d98a')
+    expect(DEFAULT_THEME.color.gold).toBe('#FFD700')
     expect(DEFAULT_THEME.color.error).toBe('#ef5350')
-    expect(DEFAULT_THEME.color.surfaceBg).toBe('#0b0d14')
-    expect(DEFAULT_THEME.color.panelBg).toBe('#11141d')
   })
 })
 
@@ -92,20 +90,5 @@ describe('fromSkin', () => {
     const { color } = fromSkin({ ui_ok: '#008000' }, {})
     expect(color.ok).toBe('#008000')
     expect(color.statusGood).toBe('#008000')
-  })
-
-  it('maps extended surface styling keys', () => {
-    const { color } = fromSkin(
-      {
-        ui_surface_bg: '#111111',
-        ui_panel_bg: '#222222',
-        ui_status_bg: '#333333'
-      },
-      {}
-    )
-
-    expect(color.surfaceBg).toBe('#111111')
-    expect(color.panelBg).toBe('#222222')
-    expect(color.statusBg).toBe('#333333')
   })
 })

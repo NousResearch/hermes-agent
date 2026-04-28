@@ -1,104 +1,64 @@
 import { AlternateScreen, Box, NoSelect, ScrollBox, Text } from '@hermes/ink'
 import { useStore } from '@nanostores/react'
-import { memo } from 'react'
+import { Fragment, memo, useMemo, useRef } from 'react'
 
-import type { AppLayoutProgressProps, AppLayoutProps } from '../app/interfaces.js'
-import { $isBlocked } from '../app/overlayStore.js'
+import { useGateway } from '../app/gatewayContext.js'
+import type { AppLayoutProps } from '../app/interfaces.js'
+import { $isBlocked, $overlayState, patchOverlayState } from '../app/overlayStore.js'
 import { $uiState } from '../app/uiStore.js'
+import { INLINE_MODE, SHOW_FPS } from '../config/env.js'
+import { FULL_RENDER_TAIL_ITEMS } from '../config/limits.js'
 import { PLACEHOLDER } from '../content/placeholders.js'
-import type { Theme } from '../theme.js'
-import type { DetailsMode } from '../types.js'
+import { inputVisualHeight, stableComposerColumns } from '../lib/inputMetrics.js'
+import { PerfPane } from '../lib/perfPane.js'
 
+import { AgentsOverlay } from './agentsOverlay.js'
 import { GoodVibesHeart, StatusRule, StickyPromptTracker, TranscriptScrollbar } from './appChrome.js'
 import { FloatingOverlays, PromptZone } from './appOverlays.js'
 import { Banner, Panel, SessionPanel } from './branding.js'
+import { FpsOverlay } from './fpsOverlay.js'
 import { MessageLine } from './messageLine.js'
 import { QueuedMessages } from './queuedMessages.js'
-import { TextInput } from './textInput.js'
-import { ToolTrail } from './thinking.js'
-
-const StreamingAssistant = memo(function StreamingAssistant({
-  busy,
-  cols,
-  compact,
-  detailsMode,
-  progress,
-  t
-}: StreamingAssistantProps) {
-  if (!progress.showProgressArea && !progress.showStreamingArea) {
-    return null
-  }
-
-  return (
-    <>
-      {progress.streamSegments.map((msg, i) => (
-        <MessageLine cols={cols} compact={compact} detailsMode={detailsMode} key={`seg:${i}`} msg={msg} t={t} />
-      ))}
-
-      {progress.showProgressArea && (
-        <Box flexDirection="column" marginBottom={progress.showStreamingArea ? 1 : 0}>
-          <ToolTrail
-            activity={progress.activity}
-            busy={busy}
-            detailsMode={detailsMode}
-            outcome={progress.outcome}
-            reasoning={progress.reasoning}
-            reasoningActive={progress.reasoningActive}
-            reasoningStreaming={progress.reasoningStreaming}
-            reasoningTokens={progress.reasoningTokens}
-            subagents={progress.subagents}
-            t={t}
-            tools={progress.tools}
-            toolTokens={progress.toolTokens}
-            trail={progress.turnTrail}
-          />
-        </Box>
-      )}
-
-      {progress.showStreamingArea && (
-        <MessageLine
-          cols={cols}
-          compact={compact}
-          detailsMode={detailsMode}
-          isStreaming
-          msg={{
-            role: 'assistant',
-            text: progress.streaming,
-            ...(progress.streamPendingTools.length && { tools: progress.streamPendingTools })
-          }}
-          t={t}
-        />
-      )}
-
-      {!progress.showStreamingArea && !!progress.streamPendingTools.length && (
-        <MessageLine
-          cols={cols}
-          compact={compact}
-          detailsMode={detailsMode}
-          msg={{ kind: 'trail', role: 'system', text: '', tools: progress.streamPendingTools }}
-          t={t}
-        />
-      )}
-    </>
-  )
-})
+import { LiveTodoPanel, StreamingAssistant } from './streamingAssistant.js'
+import { TextInput, type TextInputMouseApi } from './textInput.js'
 
 const TranscriptPane = memo(function TranscriptPane({
-  cols,
+  actions,
+  composer,
   progress,
-  setStickyPrompt,
   transcript
-}: {
-  cols: number
-  progress: AppLayoutProps['progress']
-  setStickyPrompt: (value: string) => void
-  transcript: AppLayoutProps['transcript']
-}) {
+}: Pick<AppLayoutProps, 'actions' | 'composer' | 'progress' | 'transcript'>) {
   const ui = useStore($uiState)
+
+  // LiveTodoPanel rides as a child of the latest user-message row so it
+  // visually belongs to the prompt and follows it during scroll. -1 when
+  // empty → row.index === -1 is always false → no render.
+  const lastUserIdx = useMemo(() => {
+    const items = transcript.historyItems
+
+    for (let i = items.length - 1; i >= 0; i--) {
+      if (items[i].role === 'user') {
+        return i
+      }
+    }
+
+    return -1
+  }, [transcript.historyItems])
 
   return (
     <>
-      <ScrollBox flexDirection="column" flexGrow={1} flexShrink={1} ref={transcript.scrollRef} stickyScroll>
+      <ScrollBox
+        flexDirection="column"
+        flexGrow={1}
+        flexShrink={1}
+        onClick={(e: { cellIsBlank?: boolean }) => {
+          if (e.cellIsBlank) {
+            actions.clearSelection()
+          }
+        }}
+        ref={transcript.scrollRef}
+        stickyScroll
+      >
         <Box flexDirection="column" paddingX={1}>
           {transcript.virtualHistory.topSpacer > 0 ? <Box height={transcript.virtualHistory.topSpacer} /> : null}
 
@@ -114,25 +74,30 @@ const TranscriptPane = memo(function TranscriptPane({
                 <Panel sections={row.msg.panelData.sections} t={ui.theme} title={row.msg.panelData.title} />
               ) : (
                 <MessageLine
-                  cols={cols}
+                  cols={composer.cols}
                   compact={ui.compact}
                   detailsMode={ui.detailsMode}
+                  detailsModeCommandOverride={ui.detailsModeCommandOverride}
+                  limitHistoryRender={row.index < transcript.historyItems.length - FULL_RENDER_TAIL_ITEMS}
                   msg={row.msg}
+                  sections={ui.sections}
                   t={ui.theme}
                 />
               )}
+
+              {row.index === lastUserIdx && <LiveTodoPanel />}
             </Box>
           ))}
 
           {transcript.virtualHistory.bottomSpacer > 0 ? <Box height={transcript.virtualHistory.bottomSpacer} /> : null}
 
           <StreamingAssistant
-            busy={ui.busy}
-            cols={cols}
+            cols={composer.cols}
             compact={ui.compact}
             detailsMode={ui.detailsMode}
+            detailsModeCommandOverride={ui.detailsModeCommandOverride}
             progress={progress}
-            t={ui.theme}
+            sections={ui.sections}
           />
         </Box>
       </ScrollBox>
@@ -144,7 +109,7 @@ const TranscriptPane = memo(function TranscriptPane({
       <StickyPromptTracker
         messages={transcript.historyItems}
         offsets={transcript.virtualHistory.offsets}
-        onChange={setStickyPrompt}
+        onChange={actions.setStickyPrompt}
         scrollRef={transcript.scrollRef}
       />
     </>
@@ -159,11 +124,57 @@ const ComposerPane = memo(function ComposerPane({
   const ui = useStore($uiState)
   const isBlocked = useStore($isBlocked)
   const sh = (composer.inputBuf[0] ?? composer.input).startsWith('!')
-  const promptWidth = sh ? 4 : 5
-  const inputCols = Math.max(20, composer.cols - 18)
+  const pw = 2
+  const inputColumns = stableComposerColumns(composer.cols, pw)
+  const inputHeight = inputVisualHeight(composer.input, inputColumns)
+  const inputMouseRef = useRef<null | TextInputMouseApi>(null)
+
+  const captureInputDrag = (e: GutterMouseEvent) => {
+    if (e.button !== 0) {
+      return
+    }
+
+    e.stopImmediatePropagation?.()
+    inputMouseRef.current?.startAtBeginning()
+  }
+
+  // Drag origin matches the input box's top-left, so localRow / localCol
+  // map directly into TextInput coords (after backing out the prompt cell).
+  const dragFromPromptRow = (e: GutterMouseEvent) => {
+    if (e.button !== 0) {
+      return
+    }
+
+    e.stopImmediatePropagation?.()
+    inputMouseRef.current?.dragAt(e.localRow ?? 0, (e.localCol ?? 0) - pw)
+  }
+
+  // Spacer rows live on a different vertical origin; only the column is
+  // parent-aligned with the input. Force row=0 so vertical drags can't
+  // jump the cursor to the wrong wrapped line.
+  const dragFromSpacer = (e: GutterMouseEvent) => {
+    if (e.button !== 0) {
+      return
+    }
+
+    e.stopImmediatePropagation?.()
+    inputMouseRef.current?.dragAt(0, (e.localCol ?? 0) - pw)
+  }
+
+  const endInputDrag = () => inputMouseRef.current?.end()
 
   return (
-    <NoSelect flexDirection="column" flexShrink={0} fromLeftEdge paddingBottom={1} paddingX={1}>
+    <NoSelect
+      flexDirection="column"
+      flexShrink={0}
+      fromLeftEdge
+      onClick={(e: { cellIsBlank?: boolean }) => {
+        if (e.cellIsBlank) {
+          actions.clearSelection()
+        }
+      }}
+      paddingX={1}
+    >
       <QueuedMessages
         cols={composer.cols}
         queued={composer.queuedDisplay}
@@ -171,23 +182,25 @@ const ComposerPane = memo(function ComposerPane({
         t={ui.theme}
       />
 
-      <Box flexDirection="column" position="relative">
-        {ui.statusBar && (
-          <StatusRule
-            bgCount={ui.bgTasks.size}
-            busy={ui.busy}
-            cols={composer.cols}
-            cwdLabel={status.cwdLabel}
-            model={ui.info?.model?.split('/').pop() ?? ''}
-            sessionStartedAt={status.sessionStartedAt}
-            status={ui.status}
-            statusColor={status.statusColor}
-            t={ui.theme}
-            usage={ui.usage}
-            voiceLabel={status.voiceLabel}
-          />
-        )}
+      {ui.bgTasks.size > 0 && (
+        <Text color={ui.theme.color.dim}>
+          {ui.bgTasks.size} background {ui.bgTasks.size === 1 ? 'task' : 'tasks'} running
+        </Text>
+      )}
 
+      {status.showStickyPrompt ? (
+        <Text color={ui.theme.color.dim} wrap="truncate-end">
+          <Text color={ui.theme.color.label}>↳ </Text>
+
+          {status.stickyPrompt}
+        </Text>
+      ) : (
+        <Box height={1} onMouseDown={captureInputDrag} onMouseDrag={dragFromSpacer} onMouseUp={endInputDrag} />
+      )}
+
+      <StatusRulePane at="top" composer={composer} status={status} />
+
+      <Box flexDirection="column" marginTop={ui.statusBar === 'top' ? 0 : 1} position="relative">
         <FloatingOverlays
           cols={composer.cols}
           compIdx={composer.compIdx}
@@ -196,87 +209,35 @@ const ComposerPane = memo(function ComposerPane({
           onPickerSelect={actions.resumeById}
           pagerPageSize={composer.pagerPageSize}
         />
-      </Box>
 
-      {!isBlocked && (
-        <Box
-          backgroundColor={ui.theme.color.panelBg}
-          borderColor={ui.theme.color.panelBorder}
-          borderStyle="single"
-          flexDirection="column"
-          marginBottom={1}
-          opaque
-          paddingX={1}
-          paddingY={0}
-        >
-          <Box flexWrap="wrap" marginBottom={1}>
-            <Text backgroundColor={ui.theme.color.chipAccentBg} color={ui.theme.color.chipAccentText}>
-              {' '}
-              compose
-              {' '}
-            </Text>
-            <Text color={ui.theme.color.panelMuted}> Enter send · Shift+Enter newline · / for commands</Text>
-            {ui.bgTasks.size > 0 ? (
-              <Text color={ui.theme.color.panelMuted}>
-                {' '}
-                · {ui.bgTasks.size} background {ui.bgTasks.size === 1 ? 'task' : 'tasks'}
-              </Text>
-            ) : null}
-          </Box>
-
-          {status.showStickyPrompt && (
-            <Box
-              backgroundColor={ui.theme.color.panelAltBg}
-              borderColor={ui.theme.color.statusBorder}
-              borderStyle="single"
-              flexDirection="column"
-              marginBottom={1}
-              opaque
-              paddingX={1}
-              paddingY={0}
-            >
-              <Text color={ui.theme.color.panelMuted} wrap="truncate-end">
-                <Text color={ui.theme.color.label}>context </Text>
-                {status.stickyPrompt}
-              </Text>
-            </Box>
-          )}
-
-          <Box
-            backgroundColor={ui.theme.color.panelAltBg}
-            borderColor={sh ? ui.theme.color.shellDollar : ui.theme.color.statusBorder}
-            borderStyle="single"
-            flexDirection="column"
-            opaque
-            paddingX={1}
-            paddingY={0}
-          >
+        {!isBlocked && (
+          <>
             {composer.inputBuf.map((line, i) => (
               <Box key={i}>
-                <Box width={promptWidth}>
-                  <Text color={ui.theme.color.dim}>{i === 0 ? ' │ ' : ' · '}</Text>
+                <Box width={2}>
+                  <Text color={ui.theme.color.dim}>{i === 0 ? `${ui.theme.brand.prompt} ` : '  '}</Text>
                 </Box>
 
-                <Text color={ui.theme.color.panelMuted}>{line || ' '}</Text>
+                <Text color={ui.theme.color.cornsilk}>{line || ' '}</Text>
               </Box>
             ))}
 
-            <Box position="relative">
-              <Box width={promptWidth}>
+            <Box onMouseDown={captureInputDrag} onMouseDrag={dragFromPromptRow} onMouseUp={endInputDrag} position="relative">
+              <Box width={pw}>
                 {sh ? (
-                  <Text color={ui.theme.color.shellDollar}> $ </Text>
+                  <Text color={ui.theme.color.shellDollar}>$ </Text>
                 ) : (
-                  <Text backgroundColor={ui.theme.color.chipAccentBg} color={ui.theme.color.chipAccentText}>
-                    {' '}
-                    {ui.theme.brand.prompt}
-                    {' '}
+                  <Text bold color={ui.theme.color.prompt}>
+                    {composer.inputBuf.length ? '  ' : `${ui.theme.brand.prompt} `}
                   </Text>
                 )}
               </Box>
 
-              <Box flexGrow={1} position="relative">
+              <Box flexGrow={0} flexShrink={0} height={inputHeight} position="relative" width={inputColumns}>
+                {/* Reserve the transcript scrollbar gutter too so typing never rewraps when the scrollbar column repaints. */}
                 <TextInput
-                  columns={inputCols}
+                  columns={inputColumns}
+                  mouseApiRef={inputMouseRef}
                   onChange={composer.updateInput}
                   onPaste={composer.handleTextPaste}
                   onSubmit={composer.submit}
@@ -289,18 +250,63 @@ const ComposerPane = memo(function ComposerPane({
                 </Box>
               </Box>
             </Box>
-
-            <Box marginTop={1}>
-              <Text color={ui.theme.color.dim}>
-                {ui.busy ? 'assistant is working · Ctrl+C interrupts the current run' : 'ready for the next prompt'}
-              </Text>
-            </Box>
-          </Box>
-        </Box>
-      )}
+          </>
+        )}
+      </Box>
 
       {!composer.empty && !ui.sid && <Text color={ui.theme.color.dim}>⚕ {ui.status}</Text>}
+
+      <StatusRulePane at="bottom" composer={composer} status={status} />
     </NoSelect>
+  )
+})
+
+const AgentsOverlayPane = memo(function AgentsOverlayPane() {
+  const { gw } = useGateway()
+  const ui = useStore($uiState)
+  const overlay = useStore($overlayState)
+
+  return (
+    <AgentsOverlay
+      gw={gw}
+      initialHistoryIndex={overlay.agentsInitialHistoryIndex}
+      onClose={() => patchOverlayState({ agents: false, agentsInitialHistoryIndex: 0 })}
+      t={ui.theme}
+    />
+  )
+})
+
+const StatusRulePane = memo(function StatusRulePane({
+  at,
+  composer,
+  status
+}: Pick<AppLayoutProps, 'composer' | 'status'> & { at: 'bottom' | 'top' }) {
+  const ui = useStore($uiState)
+
+  if (ui.statusBar !== at) {
+    return null
+  }
+
+  return (
+    <Box marginTop={at === 'top' ? 1 : 0}>
+      <StatusRule
+        bgCount={ui.bgTasks.size}
+        busy={ui.busy}
+        cols={composer.cols}
+        cwdLabel={status.cwdLabel}
+        model={ui.info?.model ?? ''}
+        modelFast={ui.info?.fast || ui.info?.service_tier === 'priority'}
+        modelReasoningEffort={ui.info?.reasoning_effort}
+        sessionStartedAt={status.sessionStartedAt}
+        showCost={ui.showCost}
+        status={ui.status}
+        statusColor={status.statusColor}
+        t={ui.theme}
+        turnStartedAt={status.turnStartedAt}
+        usage={ui.usage}
+        voiceLabel={status.voiceLabel}
+      />
+    </Box>
   )
 })
 
@@ -312,34 +318,60 @@ export const AppLayout = memo(function AppLayout({
   status,
   transcript
 }: AppLayoutProps) {
-  const ui = useStore($uiState)
+  const overlay = useStore($overlayState)
+
+  // Inline mode skips AlternateScreen so the host terminal's native
+  // scrollback captures rows scrolled off the top; composer + progress
+  // stay anchored via normal flex-column flow.
+  const Shell = INLINE_MODE ? Fragment : AlternateScreen
+  const shellProps = INLINE_MODE ? {} : { mouseTracking }
 
   return (
-    <AlternateScreen mouseTracking={mouseTracking}>
-      <Box backgroundColor={ui.theme.color.surfaceBg} flexDirection="column" flexGrow={1} opaque>
+    <Shell {...shellProps}>
+      <Box flexDirection="column" flexGrow={1}>
         <Box flexDirection="row" flexGrow={1}>
-          <TranscriptPane cols={composer.cols} progress={progress} setStickyPrompt={actions.setStickyPrompt} transcript={transcript} />
+          {overlay.agents ? (
+            <PerfPane id="agents">
+              <AgentsOverlayPane />
+            </PerfPane>
+          ) : (
+            <PerfPane id="transcript">
+              <TranscriptPane actions={actions} composer={composer} progress={progress} transcript={transcript} />
+            </PerfPane>
+          )}
         </Box>
 
-        <PromptZone
-          cols={composer.cols}
-          onApprovalChoice={actions.answerApproval}
-          onClarifyAnswer={actions.answerClarify}
-          onSecretSubmit={actions.answerSecret}
-          onSudoSubmit={actions.answerSudo}
-        />
+        {!overlay.agents && (
+          <>
+            <PerfPane id="prompt">
+              <PromptZone
+                cols={composer.cols}
+                onApprovalChoice={actions.answerApproval}
+                onClarifyAnswer={actions.answerClarify}
+                onSecretSubmit={actions.answerSecret}
+                onSudoSubmit={actions.answerSudo}
+              />
+            </PerfPane>
 
-        <ComposerPane actions={actions} composer={composer} status={status} />
+            <PerfPane id="composer">
+              <ComposerPane actions={actions} composer={composer} status={status} />
+            </PerfPane>
+
+            {SHOW_FPS && (
+              <Box flexShrink={0} justifyContent="flex-end" paddingRight={1}>
+                <FpsOverlay />
+              </Box>
+            )}
+          </>
+        )}
       </Box>
-    </AlternateScreen>
+    </Shell>
   )
 })
 
-interface StreamingAssistantProps {
-  busy: boolean
-  cols: number
-  compact?: boolean
-  detailsMode: DetailsMode
-  progress: AppLayoutProgressProps
-  t: Theme
+type GutterMouseEvent = {
+  button: number
+  localCol?: number
+  localRow?: number
+  stopImmediatePropagation?: () => void
 }

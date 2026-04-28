@@ -1,16 +1,4 @@
 export interface ThemeColors {
-  surfaceBg: string
-  panelBg: string
-  panelAltBg: string
-  panelBorder: string
-  panelMuted: string
-  chipBg: string
-  chipBorder: string
-  chipText: string
-  chipAccentBg: string
-  chipAccentBorder: string
-  chipAccentText: string
-
   gold: string
   amber: string
   bronze: string
@@ -30,7 +18,6 @@ export interface ThemeColors {
 
   statusBg: string
   statusFg: string
-  statusBorder: string
   statusGood: string
   statusWarn: string
   statusBad: string
@@ -91,81 +78,69 @@ function mix(a: string, b: string, t: number) {
 
 // ── Defaults ─────────────────────────────────────────────────────────
 
+const BRAND: ThemeBrand = {
+  name: 'Hermes Agent',
+  icon: '⚕',
+  prompt: '❯',
+  welcome: 'Type your message or /help for commands.',
+  goodbye: 'Goodbye! ⚕',
+  tool: '┊',
+  helpHeader: '(^_^)? Commands'
+}
+
 export const DARK_THEME: Theme = {
   color: {
-    surfaceBg: '#0b0d14',
-    panelBg: '#11141d',
-    panelAltBg: '#171b25',
-    panelBorder: '#4a3418',
-    panelMuted: '#9b8b74',
-    chipBg: '#171b25',
-    chipBorder: '#3f4a64',
-    chipText: '#ddd5c7',
-    chipAccentBg: '#3a2b13',
-    chipAccentBorder: '#73521b',
-    chipAccentText: '#f2de9a',
+    gold: '#FFD700',
+    amber: '#FFBF00',
+    bronze: '#CD7F32',
+    cornsilk: '#FFF8DC',
+    // Bumped from the old `#B8860B` darkgoldenrod (~53% luminance) which
+    // read as barely-visible on dark terminals for long body text.  The
+    // new value sits ~60% luminance — readable without losing the "muted /
+    // secondary" semantic.  Field labels still use `label` (65%) which
+    // stays brighter so hierarchy holds.
+    dim: '#CC9B1F',
+    completionBg: '#FFFFFF',
+    completionCurrentBg: mix('#FFFFFF', '#FFBF00', 0.25),
 
-    gold: '#f0d98a',
-    amber: '#d4af37',
-    bronze: '#c68a43',
-    cornsilk: '#eee5d6',
-    dim: '#9b8b74',
-    completionBg: '#0f1118',
-    completionCurrentBg: '#1b2434',
-
-    label: '#d4af37',
+    label: '#DAA520',
     ok: '#4caf50',
     error: '#ef5350',
     warn: '#ffa726',
 
-    prompt: '#eee5d6',
-    sessionLabel: '#c68a43',
-    sessionBorder: '#d4af37',
+    prompt: '#FFF8DC',
+    // sessionLabel/sessionBorder intentionally track the `dim` value — they
+    // are "same role, same colour" by design.  fromSkin's banner_dim fallback
+    // relies on this pairing (#11300).
+    sessionLabel: '#CC9B1F',
+    sessionBorder: '#CC9B1F',
 
-    statusBg: '#0f1118',
-    statusFg: '#eee5d6',
-    statusBorder: '#263047',
-    statusGood: '#6ec7b0',
-    statusWarn: '#f2de9a',
-    statusBad: '#f59e0b',
+    statusBg: '#1a1a2e',
+    statusFg: '#C0C0C0',
+    statusGood: '#8FBC8F',
+    statusWarn: '#FFD700',
+    statusBad: '#FF8C00',
     statusCritical: '#FF6B6B',
-    selectionBg: '#2b3348',
+    selectionBg: '#3a3a55',
 
     diffAdded: 'rgb(220,255,220)',
     diffRemoved: 'rgb(255,220,220)',
     diffAddedWord: 'rgb(36,138,61)',
     diffRemovedWord: 'rgb(207,34,46)',
-    shellDollar: '#7dd3fc'
+    shellDollar: '#4dabf7'
   },
 
-  brand: {
-    name: 'Hermes Agent',
-    icon: '⚕',
-    prompt: '❯',
-    welcome: 'Type your message or /help for commands.',
-    goodbye: 'Goodbye! ⚕',
-    tool: '┊',
-    helpHeader: '(^_^)? Commands'
-  },
+  brand: BRAND,
 
   bannerLogo: '',
   bannerHero: ''
 }
 
+// Light-terminal palette: darker golds/ambers that stay legible on white
+// backgrounds. Same shape as DARK_THEME so `fromSkin` still layers on top
+// cleanly (#11300).
 export const LIGHT_THEME: Theme = {
   color: {
-    ...DARK_THEME.color,
-    surfaceBg: '#f7f4ec',
-    panelBg: '#fffaf0',
-    panelAltBg: '#f0eadc',
-    panelBorder: '#b2873d',
-    panelMuted: '#6f624d',
-    chipBg: '#efe8d8',
-    chipBorder: '#b8a37d',
-    chipText: '#2f2a22',
-    chipAccentBg: '#fff0bd',
-    chipAccentBorder: '#b2873d',
-    chipAccentText: '#4f3510',
     gold: '#8B6914',
     amber: '#A0651C',
     bronze: '#7A4F1F',
@@ -173,42 +148,54 @@ export const LIGHT_THEME: Theme = {
     dim: '#7A5A0F',
     completionBg: '#F5F5F5',
     completionCurrentBg: mix('#F5F5F5', '#A0651C', 0.25),
+
     label: '#7A5A0F',
     ok: '#2E7D32',
     error: '#C62828',
     warn: '#E65100',
+
     prompt: '#2B2014',
     sessionLabel: '#7A5A0F',
     sessionBorder: '#7A5A0F',
+
     statusBg: '#F5F5F5',
     statusFg: '#333333',
-    statusBorder: '#d7c7a8',
     statusGood: '#2E7D32',
     statusWarn: '#8B6914',
     statusBad: '#D84315',
     statusCritical: '#B71C1C',
     selectionBg: '#D4E4F7',
+
     diffAdded: 'rgb(200,240,200)',
     diffRemoved: 'rgb(240,200,200)',
     diffAddedWord: 'rgb(27,94,32)',
     diffRemovedWord: 'rgb(183,28,28)',
     shellDollar: '#1565C0'
   },
-  brand: DARK_THEME.brand,
+
+  brand: BRAND,
+
   bannerLogo: '',
   bannerHero: ''
 }
 
-export function detectLightMode(env: Partial<NodeJS.ProcessEnv> = process.env): boolean {
-  const explicit = env.HERMES_TUI_LIGHT?.trim().toLowerCase()
+// Pick light vs dark. Explicit `HERMES_TUI_LIGHT` wins; otherwise sniff
+// `COLORFGBG` (set by XFCE Terminal, rxvt, Terminal.app, etc.) — last field is the
+// background ANSI index; 7/15 are the "white" slots most light themes emit (#11300).
+export function detectLightMode(env: NodeJS.ProcessEnv = process.env): boolean {
+  const explicit = (env.HERMES_TUI_LIGHT ?? '').trim().toLowerCase()
 
-  if (explicit) {
-    return ['1', 'true', 'yes', 'on'].includes(explicit)
+  if (/^(?:1|true|yes|on)$/.test(explicit)) {
+    return true
   }
 
-  const bg = env.COLORFGBG?.split(';').at(-1)
+  if (/^(?:0|false|no|off)$/.test(explicit)) {
+    return false
+  }
 
-  return bg === '7' || bg === '15'
+  const bg = Number((env.COLORFGBG ?? '').trim().split(';').at(-1))
+
+  return bg === 7 || bg === 15
 }
 
 export const DEFAULT_THEME: Theme = detectLightMode() ? LIGHT_THEME : DARK_THEME
@@ -229,37 +216,16 @@ export function fromSkin(
   const amber = c('ui_accent') ?? c('banner_accent') ?? d.color.amber
   const accent = c('banner_accent') ?? c('banner_title') ?? d.color.amber
   const dim = c('banner_dim') ?? d.color.dim
-  const panelBg = c('ui_panel_bg') ?? d.color.panelBg
-  const panelAltBg = c('ui_panel_alt_bg') ?? d.color.panelAltBg
-  const hasAccentOverride = Boolean(c('ui_accent') ?? c('banner_accent'))
-  const hasBannerDimOverride = Boolean(c('banner_dim'))
-  const hasPanelBgOverride = Boolean(c('ui_panel_bg'))
-  const hasPanelAltBgOverride = Boolean(c('ui_panel_alt_bg'))
-  const hasCompletionAccentOverride = Boolean(c('ui_panel_bg') ?? c('banner_accent') ?? c('banner_title'))
 
   return {
     color: {
-      surfaceBg: c('ui_surface_bg') ?? d.color.surfaceBg,
-      panelBg,
-      panelAltBg,
-      panelBorder: c('ui_panel_border') ?? c('banner_border') ?? d.color.panelBorder,
-      panelMuted: c('ui_panel_muted') ?? d.color.panelMuted,
-      chipBg: c('ui_chip_bg') ?? (hasPanelAltBgOverride ? mix(panelAltBg, '#ffffff', 0.08) : d.color.chipBg),
-      chipBorder: c('ui_chip_border') ?? (hasPanelAltBgOverride ? mix(panelAltBg, '#8aa0c8', 0.28) : d.color.chipBorder),
-      chipText: c('ui_chip_fg') ?? c('banner_text') ?? d.color.chipText,
-      chipAccentBg: c('ui_chip_accent_bg') ?? (hasAccentOverride ? mix(amber, '#000000', 0.7) : d.color.chipAccentBg),
-      chipAccentBorder:
-        c('ui_chip_accent_border') ?? (hasAccentOverride ? mix(amber, '#000000', 0.45) : d.color.chipAccentBorder),
-      chipAccentText: c('ui_chip_accent_fg') ?? d.color.chipAccentText,
-
       gold: c('banner_title') ?? d.color.gold,
       amber,
       bronze: c('banner_border') ?? d.color.bronze,
       cornsilk: c('banner_text') ?? d.color.cornsilk,
       dim,
-      completionBg: c('completion_menu_bg') ?? d.color.completionBg,
-      completionCurrentBg:
-        c('completion_menu_current_bg') ?? (hasCompletionAccentOverride ? mix(panelBg, accent, 0.25) : d.color.completionCurrentBg),
+      completionBg: c('completion_menu_bg') ?? '#FFFFFF',
+      completionCurrentBg: c('completion_menu_current_bg') ?? mix('#FFFFFF', accent, 0.25),
 
       label: c('ui_label') ?? d.color.label,
       ok: c('ui_ok') ?? d.color.ok,
@@ -267,12 +233,11 @@ export function fromSkin(
       warn: c('ui_warn') ?? d.color.warn,
 
       prompt: c('prompt') ?? c('banner_text') ?? d.color.prompt,
-      sessionLabel: c('session_label') ?? (hasBannerDimOverride ? dim : d.color.sessionLabel),
-      sessionBorder: c('session_border') ?? (hasBannerDimOverride ? dim : d.color.sessionBorder),
+      sessionLabel: c('session_label') ?? dim,
+      sessionBorder: c('session_border') ?? dim,
 
-      statusBg: c('ui_status_bg') ?? d.color.statusBg,
-      statusFg: c('ui_status_fg') ?? d.color.statusFg,
-      statusBorder: c('ui_status_border') ?? d.color.statusBorder,
+      statusBg: d.color.statusBg,
+      statusFg: d.color.statusFg,
       statusGood: c('ui_ok') ?? d.color.statusGood,
       statusWarn: c('ui_warn') ?? d.color.statusWarn,
       statusBad: d.color.statusBad,

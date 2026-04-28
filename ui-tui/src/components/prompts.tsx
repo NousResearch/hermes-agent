@@ -1,6 +1,7 @@
 import { Box, Text, useInput } from '@hermes/ink'
-import { type ReactNode, useState } from 'react'
+import { useState } from 'react'
 
+import { isMac } from '../lib/platform.js'
 import type { Theme } from '../theme.js'
 import type { ApprovalReq, ClarifyReq, ConfirmReq } from '../types.js'
 
@@ -8,76 +9,7 @@ import { TextInput } from './textInput.js'
 
 const OPTS = ['once', 'session', 'always', 'deny'] as const
 const LABELS = { always: 'Always allow', deny: 'Deny', once: 'Allow once', session: 'Allow this session' } as const
-
-function PromptShell({
-  children,
-  footer,
-  subtitle,
-  t,
-  title,
-  tone = 'accent'
-}: {
-  children: ReactNode
-  footer?: string
-  subtitle?: string
-  t: Theme
-  title: string
-  tone?: 'accent' | 'warn'
-}) {
-  const borderColor = tone === 'warn' ? t.color.warn : t.color.panelBorder
-  const chipBg = tone === 'warn' ? t.color.chipAccentBg : t.color.chipBg
-  const chipText = tone === 'warn' ? t.color.chipAccentText : t.color.chipText
-
-  return (
-    <Box
-      backgroundColor={t.color.panelBg}
-      borderColor={borderColor}
-      borderStyle="single"
-      flexDirection="column"
-      opaque
-      paddingX={1}
-      paddingY={0}
-    >
-      <Box flexWrap="wrap" marginBottom={1}>
-        <Text backgroundColor={chipBg} color={chipText}>
-          {' '}
-          {title}
-          {' '}
-        </Text>
-        {subtitle ? <Text color={t.color.cornsilk}> {subtitle}</Text> : null}
-      </Box>
-
-      {children}
-
-      {footer ? (
-        <Box marginTop={1}>
-          <Text color={t.color.dim}>{footer}</Text>
-        </Box>
-      ) : null}
-    </Box>
-  )
-}
-
-function PromptOption({
-  active,
-  index,
-  label,
-  t
-}: {
-  active: boolean
-  index: number
-  label: string
-  t: Theme
-}) {
-  return (
-    <Box backgroundColor={active ? t.color.completionCurrentBg : undefined} flexDirection="row">
-      <Text color={active ? t.color.amber : t.color.dim}>{active ? '▸ ' : '· '}</Text>
-      <Text color={active ? t.color.cornsilk : t.color.panelMuted}>
-        {index}. {label}
-      </Text>
-    </Box>
-  )
-}
+const CMD_PREVIEW_LINES = 10
 
 export function ApprovalPrompt({ onChoice, req, t }: ApprovalPromptProps) {
   const [sel, setSel] = useState(0)
@@ -104,33 +36,43 @@ export function ApprovalPrompt({ onChoice, req, t }: ApprovalPromptProps) {
     }
   })
 
+  const rawLines = req.command.split('\n')
+  const shown = rawLines.slice(0, CMD_PREVIEW_LINES)
+  const overflow = rawLines.length - shown.length
+
   return (
-    <PromptShell
-      footer="↑/↓ select · Enter confirm · 1-4 quick pick · Ctrl+C deny"
-      subtitle={req.description}
-      t={t}
-      title="approval"
-      tone="warn"
-    >
-      <Box
-        backgroundColor={t.color.panelAltBg}
-        borderColor={t.color.statusBorder}
-        borderStyle="single"
-        flexDirection="column"
-        marginBottom={1}
-        opaque
-        paddingX={1}
-        paddingY={0}
-      >
-        <Text color={t.color.cornsilk} wrap="wrap-trim">
-          {req.command}
-        </Text>
+    <Box borderColor={t.color.warn} borderStyle="double" flexDirection="column" paddingX={1}>
+      <Text bold color={t.color.warn}>
+        ⚠ approval required · {req.description}
+      </Text>
+
+      <Box flexDirection="column" paddingLeft={1}>
+        {shown.map((line, i) => (
+          <Text color={t.color.cornsilk} key={i} wrap="truncate-end">
+            {line || ' '}
+          </Text>
+        ))}
+
+        {overflow > 0 ? (
+          <Text color={t.color.dim}>
+            … +{overflow} more line{overflow === 1 ? '' : 's'} (full text above)
+          </Text>
+        ) : null}
       </Box>
 
+      <Text />
+
       {OPTS.map((o, i) => (
-        <PromptOption active={sel === i} index={i + 1} key={o} label={LABELS[o]} t={t} />
+        <Text key={o}>
+          <Text bold={sel === i} color={sel === i ? t.color.warn : t.color.dim} inverse={sel === i}>
+            {sel === i ? '▸ ' : '  '}
+            {i + 1}. {LABELS[o]}
+          </Text>
+        </Text>
       ))}
-    </PromptShell>
+
+      <Text color={t.color.dim}>↑/↓ select · Enter confirm · 1-4 quick pick · Ctrl+C deny</Text>
+    </Box>
   )
 }
 
@@ -139,6 +81,13 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, req, t }: Clarify
   const [custom, setCustom] = useState('')
   const [typing, setTyping] = useState(false)
   const choices = req.choices ?? []
+
+  const heading = (
+    <Text bold>
+      <Text color={t.color.amber}>ask</Text>
+      <Text color={t.color.cornsilk}> {req.question}</Text>
+    </Text>
+  )
 
   useInput((ch, key) => {
     if (key.escape) {
@@ -172,41 +121,37 @@ export function ClarifyPrompt({ cols = 80, onAnswer, onCancel, req, t }: Clarify
 
   if (typing || !choices.length) {
     return (
-      <PromptShell
-        footer={`Enter send · Esc ${choices.length ? 'back' : 'cancel'} · Ctrl+C cancel`}
-        subtitle={req.question}
-        t={t}
-        title="question"
-      >
-        <Box
-          backgroundColor={t.color.panelAltBg}
-          borderColor={t.color.statusBorder}
-          borderStyle="single"
-          flexDirection="column"
-          opaque
-          paddingX={1}
-          paddingY={0}
-        >
-          <Box>
-            <Text color={t.color.label}>{'> '}</Text>
-            <TextInput columns={Math.max(20, cols - 12)} onChange={setCustom} onSubmit={onAnswer} value={custom} />
-          </Box>
+      <Box flexDirection="column">
+        {heading}
+
+        <Box>
+          <Text color={t.color.label}>{'> '}</Text>
+          <TextInput columns={Math.max(20, cols - 6)} onChange={setCustom} onSubmit={onAnswer} value={custom} />
         </Box>
-      </PromptShell>
+
+        <Text color={t.color.dim}>
+          Enter send · Esc {choices.length ? 'back' : 'cancel'} ·{' '}
+          {isMac ? 'Cmd+C copy · Cmd+V paste · Ctrl+C cancel' : 'Ctrl+C cancel'}
+        </Text>
+      </Box>
     )
   }
 
   return (
-    <PromptShell
-      footer={`↑/↓ select · Enter confirm · 1-${choices.length} quick pick · Esc/Ctrl+C cancel`}
-      subtitle={req.question}
-      t={t}
-      title="question"
-    >
+    <Box flexDirection="column">
+      {heading}
+
       {[...choices, 'Other (type your answer)'].map((c, i) => (
-        <PromptOption active={sel === i} index={i + 1} key={i} label={c} t={t} />
+        <Text key={i}>
+          <Text bold={sel === i} color={sel === i ? t.color.label : t.color.dim} inverse={sel === i}>
+            {sel === i ? '▸ ' : '  '}
+            {i + 1}. {c}
+          </Text>
+        </Text>
       ))}
-    </PromptShell>
+
+      <Text color={t.color.dim}>↑/↓ select · Enter confirm · 1-{choices.length} quick pick · Esc/Ctrl+C cancel</Text>
+    </Box>
   )
 }
 
@@ -237,29 +182,38 @@ export function ConfirmPrompt({ onCancel, onConfirm, req, t }: ConfirmPromptProp
     }
   })
 
+  const accent = req.danger ? t.color.error : t.color.warn
+
   const rows = [
     { color: t.color.cornsilk, label: req.cancelLabel ?? 'No' },
     { color: req.danger ? t.color.error : t.color.cornsilk, label: req.confirmLabel ?? 'Yes' }
   ]
 
   return (
-    <PromptShell
-      footer="↑/↓ select · Enter confirm · Y/N quick · Esc cancel"
-      subtitle={req.detail}
-      t={t}
-      title={req.danger ? 'danger' : 'confirm'}
-      tone={req.danger ? 'warn' : 'accent'}
-    >
-      <Text bold color={req.danger ? t.color.error : t.color.cornsilk}>
-        {req.title}
+    <Box borderColor={accent} borderStyle="double" flexDirection="column" paddingX={1}>
+      <Text bold color={accent}>
+        {req.danger ? '⚠' : '?'} {req.title}
       </Text>
 
-      <Box marginTop={1}>
-        {rows.map((row, i) => (
-          <PromptOption active={sel === i} index={i + 1} key={row.label} label={row.label} t={t} />
-        ))}
-      </Box>
-    </PromptShell>
+      {req.detail ? (
+        <Box paddingLeft={1}>
+          <Text color={t.color.cornsilk} wrap="truncate-end">
+            {req.detail}
+          </Text>
+        </Box>
+      ) : null}
+
+      <Text />
+
+      {rows.map((row, i) => (
+        <Text key={row.label}>
+          <Text color={sel === i ? accent : t.color.dim}>{sel === i ? '▸ ' : '  '}</Text>
+          <Text color={sel === i ? row.color : t.color.dim}>{row.label}</Text>
+        </Text>
+      ))}
+
+      <Text color={t.color.dim}>↑/↓ select · Enter confirm · Y/N quick · Esc cancel</Text>
+    </Box>
   )
 }
 

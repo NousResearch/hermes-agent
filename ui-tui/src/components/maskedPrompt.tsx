@@ -9,51 +9,16 @@ export function MaskedPrompt({ cols = 80, icon, label, onSubmit, sub, t }: Maske
   const [value, setValue] = useState('')
 
   return (
-    <Box
-      backgroundColor={t.color.panelBg}
-      borderColor={t.color.panelBorder}
-      borderStyle="single"
-      flexDirection="column"
-      opaque
-      paddingX={1}
-      paddingY={0}
-    >
-      <Box flexWrap="wrap" marginBottom={1}>
-        <Text backgroundColor={t.color.chipAccentBg} color={t.color.chipAccentText}>
-          {' '}
-          secure input
-          {' '}
-        </Text>
-        <Text color={t.color.cornsilk}>
-          {' '}
-          {icon} {label}
-        </Text>
-      </Box>
+    <Box flexDirection="column">
+      <Text bold color={t.color.warn}>
+        {icon} {label}
+      </Text>
 
-      {sub ? (
-        <Text color={t.color.panelMuted} wrap="wrap-trim">
-          {sub}
-        </Text>
-      ) : null}
+      {sub && <Text color={t.color.dim}> {sub}</Text>}
 
-      <Box
-        backgroundColor={t.color.panelAltBg}
-        borderColor={t.color.statusBorder}
-        borderStyle="single"
-        flexDirection="column"
-        marginTop={1}
-        opaque
-        paddingX={1}
-        paddingY={0}
-      >
-        <Box>
-          <Text color={t.color.label}>{'> '}</Text>
-          <TextInput columns={Math.max(20, cols - 12)} mask="*" onChange={setValue} onSubmit={onSubmit} value={value} />
-        </Box>
-      </Box>
-
-      <Box marginTop={1}>
-        <Text color={t.color.dim}>Enter submit · Ctrl+C cancel</Text>
+      <Box>
+        <Text color={t.color.label}>{'> '}</Text>
+        <TextInput columns={Math.max(20, cols - 6)} mask="*" onChange={setValue} onSubmit={onSubmit} value={value} />
       </Box>
     </Box>
   )

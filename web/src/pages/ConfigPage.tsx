@@ -33,7 +33,7 @@ import { getNestedValue, setNestedValue } from "@/lib/nested";
 import { useToast } from "@/hooks/useToast";
 import { Toast } from "@/components/Toast";
 import { AutoField } from "@/components/AutoField";
-import { Button } from "@nous-research/ui";
+import { Button, ListItem } from "@nous-research/ui";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
 import { Badge } from "@nous-research/ui";
@@ -118,18 +118,20 @@ export default function ConfigPage() {
           onChange={(e) => setSearchQuery(e.target.value)}
         />
         {searchQuery && (
-          <button
-            type="button"
-            className="absolute right-2.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
+          <Button
+            ghost
+            size="xs"
+            className="absolute right-1.5 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground"
             onClick={() => setSearchQuery("")}
+            aria-label={t.common.clear}
           >
-            <X className="h-3 w-3" />
-          </button>
+            <X />
+          </Button>
         )}
       </div>,
     );
     return () => setEnd(null);
-  }, [config, schema, searchQuery, setEnd, t.common.search]);
+  }, [config, schema, searchQuery, setEnd, t.common.clear, t.common.search]);
 
   function prettyCategoryName(cat: string): string {
     const key = cat as keyof typeof t.config.categories;
@@ -507,23 +509,14 @@ export default function ConfigPage() {
                     const isActive = !isSearching && activeCategory === cat;
 
                     return (
-                      <button
+                      <ListItem
                         key={cat}
-                        type="button"
+                        active={isActive}
                         onClick={() => {
                           setSearchQuery("");
                           setActiveCategory(cat);
                         }}
-                        className={`
-                          group flex items-center gap-2 px-2 py-1
-                          rounded-sm text-left text-[11px] cursor-pointer whitespace-nowrap
-                          transition-colors
-                          ${
-                            isActive
-                              ? "bg-foreground/10 text-foreground"
-                              : "text-muted-foreground hover:text-foreground hover:bg-foreground/5"
-                          }
-                        `}
+                        className="rounded-sm whitespace-nowrap px-2 py-1 text-[11px]"
                       >
                         <CategoryIcon
                           category={cat}
@@ -541,7 +534,7 @@ export default function ConfigPage() {
                         >
                           {categoryCounts[cat] || 0}
                         </span>
-                      </button>
+                      </ListItem>
                     );
                   })}
                 </div>

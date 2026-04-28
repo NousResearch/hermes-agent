@@ -1,7 +1,6 @@
-import { Select, SelectOption } from "@nous-research/ui";
+import { Select, SelectOption, Switch } from "@nous-research/ui";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Switch } from "@/components/ui/switch";
 
 function FieldHint({ schema, schemaKey }: { schema: Record<string, unknown>; schemaKey: string }) {
   const keyPath = schemaKey.includes(".") ? schemaKey : "";

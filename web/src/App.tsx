@@ -42,7 +42,12 @@ import {
   X,
   Zap,
 } from "lucide-react";
-import { Button, SelectionSwitcher, Typography } from "@nous-research/ui";
+import {
+  Button,
+  ListItem,
+  SelectionSwitcher,
+  Typography,
+} from "@nous-research/ui";
 import { cn } from "@/lib/utils";
 import { Backdrop } from "@/components/Backdrop";
 import { SidebarFooter } from "@/components/SidebarFooter";
@@ -391,13 +396,13 @@ export default function App() {
       </header>
 
       {mobileOpen && (
-        <button
-          type="button"
+        <Button
+          ghost
           aria-label={t.app.closeNavigation}
           onClick={closeMobile}
           className={cn(
-            "lg:hidden fixed inset-0 z-40",
-            "bg-black/60 backdrop-blur-sm cursor-pointer",
+            "lg:hidden fixed inset-0 z-40 p-0 block",
+            "bg-black/60 backdrop-blur-sm",
           )}
         />
       )}
@@ -660,21 +665,19 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
 
           return (
             <li key={action}>
-              <button
-                type="button"
+              <ListItem
                 onClick={() => handleClick(action)}
                 disabled={disabled}
                 aria-busy={busy}
+                active={busy}
                 className={cn(
-                  "group relative flex w-full items-center gap-3",
-                  "px-5 py-1.5",
+                  "gap-3 px-5 py-1.5 whitespace-nowrap",
                   "font-mondwest text-[0.75rem] tracking-[0.1em]",
-                  "text-left whitespace-nowrap transition-opacity cursor-pointer",
-                  "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-midground",
+                  "transition-opacity",
                   busy
                     ? "text-midground opacity-100"
                     : "opacity-60 hover:opacity-100",
-                  "disabled:cursor-not-allowed disabled:opacity-30",
+                  "disabled:opacity-30",
                 )}
               >
                 {isPending ? (
@@ -703,7 +706,7 @@ function SidebarSystemActions({ onNavigate }: { onNavigate: () => void }) {
                     style={{ mixBlendMode: "plus-lighter" }}
                   />
                 )}
-              </button>
+              </ListItem>
             </li>
           );
         })}

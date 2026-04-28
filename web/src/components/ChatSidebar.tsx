@@ -313,19 +313,21 @@ export function ChatSidebar({ channel, className }: ChatSidebarProps) {
             model
           </div>
 
-          <button
-            type="button"
+          <Button
+            ghost
+            size="sm"
             disabled={!canPickModel}
             onClick={() => setModelOpen(true)}
-            className="flex items-center gap-1 truncate text-sm font-medium hover:underline disabled:cursor-not-allowed disabled:opacity-60 disabled:no-underline"
+            suffix={
+              canPickModel ? (
+                <ChevronDown className="opacity-60" />
+              ) : undefined
+            }
+            className="self-start min-w-0 px-0 py-0 normal-case tracking-normal text-sm font-medium hover:underline disabled:no-underline"
             title={info.model ?? "switch model"}
           >
             <span className="truncate">{modelLabel}</span>
-
-            {canPickModel && (
-              <ChevronDown className="h-3 w-3 shrink-0 opacity-60" />
-            )}
-          </button>
+          </Button>
         </div>
 
         <Badge tone={STATE_TONE[state]}>{STATE_LABEL[state]}</Badge>

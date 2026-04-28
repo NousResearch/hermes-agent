@@ -56,7 +56,7 @@ _EXTRA_ENV_KEYS = frozenset({
     "WHATSAPP_MODE", "WHATSAPP_ENABLED",
     "MATTERMOST_HOME_CHANNEL", "MATTERMOST_REPLY_MODE",
     "MATRIX_PASSWORD", "MATRIX_ENCRYPTION", "MATRIX_DEVICE_ID", "MATRIX_HOME_ROOM",
-    "MATRIX_REQUIRE_MENTION", "MATRIX_FREE_RESPONSE_ROOMS", "MATRIX_AUTO_THREAD",
+    "MATRIX_REQUIRE_MENTION", "MATRIX_FREE_RESPONSE_ROOMS", "MATRIX_AUTO_THREAD", "MATRIX_DM_AUTO_THREAD",
     "MATRIX_RECOVERY_KEY",
 })
 import yaml
@@ -942,7 +942,7 @@ DEFAULT_CONFIG = {
     # Pre-exec security scanning via tirith
     "security": {
         "allow_private_urls": False,  # Allow requests to private/internal IPs (for OpenWrt, proxies, VPNs)
-        "redact_secrets": True,
+        "redact_secrets": False,
         "tirith_enabled": True,
         "tirith_path": "tirith",
         "tirith_timeout": 5,
@@ -1834,6 +1834,14 @@ OPTIONAL_ENV_VARS = {
     "MATRIX_AUTO_THREAD": {
         "description": "Auto-create threads for messages in Matrix rooms (default: true)",
         "prompt": "Auto-create threads in rooms (true/false)",
+        "url": None,
+        "password": False,
+        "category": "messaging",
+        "advanced": True,
+    },
+    "MATRIX_DM_AUTO_THREAD": {
+        "description": "Auto-create threads for DM messages in Matrix (default: false)",
+        "prompt": "Auto-create threads in DMs (true/false)",
         "url": None,
         "password": False,
         "category": "messaging",
@@ -3353,14 +3361,16 @@ def load_config() -> Dict[str, Any]:
 
 _SECURITY_COMMENT = """
 # ── Security ──────────────────────────────────────────────────────────
-# API keys, tokens, and passwords are redacted from tool output by default.
-# Set to false to see full values (useful for debugging auth issues).
+# Secret redaction is OFF by default — tool output (terminal stdout,
+# read_file results, web content) passes through unmodified. Set
+# redact_secrets to true to mask strings that look like API keys, tokens,
+# and passwords before they enter the model context and logs.
 # tirith pre-exec scanning is enabled by default when the tirith binary
 # is available. Configure via security.tirith_* keys or env vars
 # (TIRITH_ENABLED, TIRITH_BIN, TIRITH_TIMEOUT, TIRITH_FAIL_OPEN).
 #
 # security:
-#   redact_secrets: false
+#   redact_secrets: true
 #   tirith_enabled: true
 #   tirith_path: "tirith"
 #   tirith_timeout: 5
@@ -3393,11 +3403,11 @@ _FALLBACK_COMMENT = """
 
 _COMMENTED_SECTIONS = """
 # ── Security ──────────────────────────────────────────────────────────
-# API keys, tokens, and passwords are redacted from tool output by default.
-# Set to false to see full values (useful for debugging auth issues).
+# Secret redaction is OFF by default. Set to true to mask strings that
+# look like API keys, tokens, and passwords in tool output and logs.
 #
 # security:
-#   redact_secrets: false
+#   redact_secrets: true
 
 # ── Fallback Model ────────────────────────────────────────────────────
 # Automatic provider failover when primary is unavailable.

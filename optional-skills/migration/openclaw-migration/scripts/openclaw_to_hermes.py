@@ -619,6 +619,25 @@ class Migrator:
         self.overflow_dir = self.output_dir / "overflow" if self.output_dir else None
         self.items: List[ItemResult] = []
 
+        # Resolve the configured workspace directory from openclaw.json.
+        # Many users (especially those who started before the OpenClaw rebrand)
+        # have a custom workspace path (e.g. ~/clawd/) that differs from the
+        # default ~/.openclaw/workspace/.  Reading agents.defaults.workspace
+        # lets source_candidate() find files in the actual workspace.
+        self._custom_workspace: Optional[Path] = None
+        oc_config = self.load_openclaw_config()
+        ws = (oc_config.get("agents", {}).get("defaults", {}).get("workspace") or "").strip()
+        if ws:
+            ws_path = Path(ws).expanduser().resolve()
+            # Only use it if it exists and is outside the source_root tree
+            # (otherwise the standard relative-path logic already covers it).
+            if ws_path.is_dir():
+                try:
+                    ws_path.relative_to(self.source_root)
+                except ValueError:
+                    # ws_path is outside source_root — use it as custom workspace
+                    self._custom_workspace = ws_path
+
         config = load_yaml_file(self.target_root / "config.yaml")
         mem_cfg = config.get("memory", {}) if isinstance(config.get("memory"), dict) else {}
         self.memory_limit = int(mem_cfg.get("memory_char_limit", DEFAULT_MEMORY_CHAR_LIMIT))
@@ -673,6 +692,23 @@ class Migrator:
                 alt = self.source_root / "workspace-main" / suffix
                 if alt.exists():
                     return alt
+
+        # Final fallback: check the configured workspace directory from
+        # agents.defaults.workspace in openclaw.json.  Users who started
+        # before the OpenClaw rebrand (when the project was named clawd /
+        # clawdbot) often have a custom workspace path outside ~/.openclaw/.
+        if self._custom_workspace:
+            for rel in relative_paths:
+                # Strip the leading "workspace/" or "workspace.default/"
+                # prefix to get the bare filename/subpath.
+                for prefix in ("workspace/", "workspace.default/"):
+                    if rel.startswith(prefix):
+                        suffix = rel[len(prefix):]
+                        alt = self._custom_workspace / suffix
+                        if alt.exists():
+                            return alt
+                        break
+
         return None
 
     def resolve_skill_destination(self, destination: Path) -> Path:

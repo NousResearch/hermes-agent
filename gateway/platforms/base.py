@@ -307,9 +307,14 @@ def proxy_kwargs_for_aiohttp(proxy_url: str | None) -> tuple[dict, dict]:
     """Build kwargs for standalone ``aiohttp.ClientSession`` with proxy.
 
     Returns ``(session_kwargs, request_kwargs)`` where:
-      - SOCKS → ``({"connector": ProxyConnector(...)}, {})``
-      - HTTP  → ``({}, {"proxy": url})``
-      - None  → ``({}, {})``
+      - With aiohttp-socks → ``({"connector": ProxyConnector(...)}, {})``
+        for *all* proxy schemes (SOCKS **and** HTTP/HTTPS).
+      - HTTP without aiohttp-socks → ``({}, {"proxy": url})``.
+      - None → ``({}, {})``.
+
+    Prefer the connector path: it works transparently with libraries
+    (like mautrix) that call ``session.request()`` without forwarding
+    per-request ``proxy=`` kwargs.
 
     Usage::
 
@@ -320,20 +325,20 @@ def proxy_kwargs_for_aiohttp(proxy_url: str | None) -> tuple[dict, dict]:
     """
     if not proxy_url:
         return {}, {}
-    if proxy_url.lower().startswith("socks"):
-        try:
-            from aiohttp_socks import ProxyConnector
+    try:
+        from aiohttp_socks import ProxyConnector
 
-            connector = ProxyConnector.from_url(proxy_url, rdns=True)
-            return {"connector": connector}, {}
-        except ImportError:
+        connector = ProxyConnector.from_url(proxy_url, rdns=True)
+        return {"connector": connector}, {}
+    except ImportError:
+        if proxy_url.lower().startswith("socks"):
             logger.warning(
                 "aiohttp_socks not installed — SOCKS proxy %s ignored. "
                 "Run: pip install aiohttp-socks",
                 proxy_url,
             )
             return {}, {}
-    return {}, {"proxy": proxy_url}
+        return {}, {"proxy": proxy_url}
 
 
 def is_host_excluded_by_no_proxy(hostname: str, no_proxy_value: str | None = None) -> bool:
@@ -1702,13 +1707,41 @@ class BasePlatformAdapter(ABC):
         the agent is waiting for dangerous-command approval).  This is critical
         for Slack's Assistant API where ``assistant_threads_setStatus`` disables
         the compose box — pausing lets the user type ``/approve`` or ``/deny``.
+
+        Each ``send_typing`` call is bounded by a ~1.5s timeout so a slow
+        network round-trip can't stall the refresh cadence.  Telegram- and
+        Discord-side typing expire after ~5s; if any individual send_typing
+        takes longer than the refresh interval, the bubble would die and
+        stay dead until that call returns.  Abandoning the slow call lets
+        the next tick fire a fresh send_typing on schedule — as long as
+        one of them succeeds within the 5s platform-side window, the bubble
+        stays visible across provider stalls / upstream API timeouts.
         """
+        # Bound each send_typing round-trip so the refresh cadence isn't
+        # gated on network health.  Must stay below ``interval`` so a slow
+        # call gets abandoned before the next scheduled tick.
+        _send_typing_timeout = max(0.25, min(1.5, interval - 0.25))
         try:
             while True:
                 if stop_event is not None and stop_event.is_set():
                     return
                 if chat_id not in self._typing_paused:
-                    await self.send_typing(chat_id, metadata=metadata)
+                    try:
+                        await asyncio.wait_for(
+                            self.send_typing(chat_id, metadata=metadata),
+                            timeout=_send_typing_timeout,
+                        )
+                    except asyncio.TimeoutError:
+                        # Slow network — abandon this tick, keep the loop
+                        # on schedule so the next send_typing fires fresh.
+                        pass
+                    except asyncio.CancelledError:
+                        raise
+                    except Exception as typing_err:
+                        logger.debug(
+                            "[%s] send_typing error (non-fatal): %s",
+                            self.name, typing_err,
+                        )
                 if stop_event is None:
                     await asyncio.sleep(interval)
                     continue
@@ -2399,11 +2432,15 @@ class BasePlatformAdapter(ABC):
                 # Send the text portion
                 if text_content:
                     logger.info("[%s] Sending response (%d chars) to %s", self.name, len(text_content), event.source.chat_id)
+                    # Build send metadata: thread_id + mention target for platforms that need it
+                    send_metadata = dict(_thread_metadata) if _thread_metadata else {}
+                    if event.source.user_id:
+                        send_metadata["mention_user_id"] = event.source.user_id
                     result = await self._send_with_retry(
                         chat_id=event.source.chat_id,
                         content=text_content,
                         reply_to=event.message_id,
-                        metadata=_thread_metadata,
+                        metadata=send_metadata,
                     )
                     _record_delivery(result)
 

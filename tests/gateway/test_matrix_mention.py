@@ -159,7 +159,7 @@ class TestStripMention:
         assert result == "help me"
 
     def test_localpart_preserved(self):
-        """Localpart-only text is no longer stripped — avoids false positives in paths."""
+        """Bare localpart (no @) is preserved — avoids false positives in paths."""
         result = self.adapter._strip_mention("hermes help me")
         assert result == "hermes help me"
 
@@ -168,9 +168,96 @@ class TestStripMention:
         result = self.adapter._strip_mention("read /home/hermes/config.yaml")
         assert result == "read /home/hermes/config.yaml"
 
+    def test_strip_localpart_when_explicit_at_mention(self):
+        result = self.adapter._strip_mention("@hermes help me")
+        assert result == "help me"
+
+    def test_does_not_strip_bare_localpart_word(self):
+        # Regression: plain words like "Hermes Agent" should not be mutated.
+        result = self.adapter._strip_mention("Hermes Agent")
+        assert result == "Hermes Agent"
+
     def test_strip_returns_empty_for_mention_only(self):
         result = self.adapter._strip_mention("@hermes:example.org")
         assert result == ""
+
+
+# ---------------------------------------------------------------------------
+# Outbound mention payloads
+# ---------------------------------------------------------------------------
+
+
+class TestOutboundMentions:
+    def setup_method(self):
+        self.adapter = _make_adapter()
+        self.mock_client = MagicMock()
+        self.mock_client.send_message_event = AsyncMock(return_value="$evt1")
+        self.adapter._client = self.mock_client
+
+    @staticmethod
+    def _sent_content(mock_client):
+        call_args = mock_client.send_message_event.call_args
+        return call_args.args[2] if len(call_args.args) > 2 else call_args.kwargs["content"]
+
+    @pytest.mark.asyncio
+    async def test_send_adds_matrix_mentions_and_formatted_body(self):
+        result = await self.adapter.send(
+            "!room1:example.org",
+            "Hello @alice:example.org, please check this.",
+        )
+
+        assert result.success is True
+        content = self._sent_content(self.mock_client)
+        assert content["m.mentions"] == {"user_ids": ["@alice:example.org"]}
+        assert content["formatted_body"] == (
+            'Hello <a href="https://matrix.to/#/@alice:example.org">'
+            "@alice:example.org</a>, please check this."
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_dedupes_mentions_and_ignores_code_spans(self):
+        await self.adapter.send(
+            "!room1:example.org",
+            "Ping @alice:example.org and @alice:example.org, not `@code:example.org`.",
+        )
+
+        content = self._sent_content(self.mock_client)
+        assert content["m.mentions"] == {"user_ids": ["@alice:example.org"]}
+        assert "@code:example.org</a>" not in content["formatted_body"]
+
+    @pytest.mark.asyncio
+    async def test_edit_message_preserves_mentions(self):
+        result = await self.adapter.edit_message(
+            "!room1:example.org",
+            "$original",
+            "Updated for @alice:example.org",
+        )
+
+        assert result.success is True
+        content = self._sent_content(self.mock_client)
+        assert content["m.mentions"] == {"user_ids": ["@alice:example.org"]}
+        assert content["m.new_content"]["m.mentions"] == {"user_ids": ["@alice:example.org"]}
+        assert content["m.new_content"]["formatted_body"] == (
+            'Updated for <a href="https://matrix.to/#/@alice:example.org">'
+            "@alice:example.org</a>"
+        )
+        assert content["formatted_body"] == (
+            '* Updated for <a href="https://matrix.to/#/@alice:example.org">'
+            "@alice:example.org</a>"
+        )
+
+    @pytest.mark.asyncio
+    async def test_send_simple_notice_adds_mentions(self):
+        result = await self.adapter._send_simple_message(
+            "!room1:example.org",
+            "Heads up @alice:example.org",
+            msgtype="m.notice",
+        )
+
+        assert result.success is True
+        content = self._sent_content(self.mock_client)
+        assert content["msgtype"] == "m.notice"
+        assert content["m.mentions"] == {"user_ids": ["@alice:example.org"]}
 
 
 # ---------------------------------------------------------------------------

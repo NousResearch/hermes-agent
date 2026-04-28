@@ -4800,6 +4800,58 @@ class GatewayRunner:
                                             "compression",
                                             f"{_new_tokens:,}",
                                         )
+
+                                    # If summary generation failed, the
+                                    # compressor inserted a static fallback
+                                    # placeholder and the dropped turns are
+                                    # gone for good.  Surface a visible
+                                    # warning to the gateway user — agent.log
+                                    # alone is invisible on TG/Discord/etc.
+                                    _comp = getattr(_hyg_agent, "context_compressor", None)
+                                    if _comp is not None and getattr(_comp, "_last_summary_fallback_used", False):
+                                        _dropped = getattr(_comp, "_last_summary_dropped_count", 0)
+                                        _err = getattr(_comp, "_last_summary_error", None) or "unknown error"
+                                        _warn_msg = (
+                                            "⚠️ Context compression summary failed "
+                                            f"({_err}). {_dropped} historical message(s) "
+                                            "were removed and replaced with a placeholder. "
+                                            "Earlier context is no longer recoverable. "
+                                            "Consider /reset for a clean session, or check "
+                                            "your auxiliary.compression model configuration."
+                                        )
+                                        try:
+                                            _adapter = self.adapters.get(source.platform)
+                                            if _adapter and source.chat_id:
+                                                await _adapter.send(source.chat_id, _warn_msg, metadata=_hyg_meta)
+                                        except Exception as _werr:
+                                            logger.warning(
+                                                "Failed to deliver compression-failure warning to user: %s",
+                                                _werr,
+                                            )
+                                    # Separately: if the user's CONFIGURED aux
+                                    # model failed and we recovered by falling
+                                    # back to the main model, tell them — a
+                                    # misconfigured auxiliary.compression.model
+                                    # is something only they can fix, and
+                                    # silent recovery would hide it.
+                                    elif _comp is not None and getattr(_comp, "_last_aux_model_failure_model", None):
+                                        _aux_model = getattr(_comp, "_last_aux_model_failure_model", "")
+                                        _aux_err = getattr(_comp, "_last_aux_model_failure_error", None) or "unknown error"
+                                        _aux_msg = (
+                                            f"ℹ️ Configured compression model `{_aux_model}` "
+                                            f"failed ({_aux_err}). Recovered using your main "
+                                            "model — context is intact — but you may want to "
+                                            "check `auxiliary.compression.model` in config.yaml."
+                                        )
+                                        try:
+                                            _adapter = self.adapters.get(source.platform)
+                                            if _adapter and source.chat_id:
+                                                await _adapter.send(source.chat_id, _aux_msg, metadata=_hyg_meta)
+                                        except Exception as _werr:
+                                            logger.warning(
+                                                "Failed to deliver aux-model-fallback notice to user: %s",
+                                                _werr,
+                                            )
                                 finally:
                                     self._cleanup_agent_resources(_hyg_agent)
 
@@ -7343,6 +7395,17 @@ class GatewayRunner:
                     approx_tokens,
                     new_tokens,
                 )
+                # Detect summary-generation failure so we can surface a
+                # visible warning to the user even on the manual /compress
+                # path (otherwise the failure is silently logged).
+                _summary_failed = bool(getattr(compressor, "_last_summary_fallback_used", False))
+                _dropped_count = int(getattr(compressor, "_last_summary_dropped_count", 0) or 0)
+                _summary_err = getattr(compressor, "_last_summary_error", None)
+                # Separately: did the user's CONFIGURED aux model fail
+                # and we recovered via main?  Surface that as an info
+                # note so they can fix their config.
+                _aux_fail_model = getattr(compressor, "_last_aux_model_failure_model", None)
+                _aux_fail_err = getattr(compressor, "_last_aux_model_failure_error", None)
             finally:
                 self._cleanup_agent_resources(tmp_agent)
             lines = [f"🗜️ {summary['headline']}"]
@@ -7351,6 +7414,20 @@ class GatewayRunner:
             lines.append(summary["token_line"])
             if summary["note"]:
                 lines.append(summary["note"])
+            if _summary_failed:
+                lines.append(
+                    f"⚠️ Summary generation failed ({_summary_err or 'unknown error'}). "
+                    f"{_dropped_count} historical message(s) were removed and replaced "
+                    "with a placeholder; earlier context is no longer recoverable. "
+                    "Consider checking your auxiliary.compression model configuration."
+                )
+            elif _aux_fail_model:
+                lines.append(
+                    f"ℹ️ Configured compression model `{_aux_fail_model}` failed "
+                    f"({_aux_fail_err or 'unknown error'}). Recovered using your main "
+                    "model — context is intact — but you may want to check "
+                    "`auxiliary.compression.model` in config.yaml."
+                )
             return "\n".join(lines)
         except Exception as e:
             logger.warning("Manual compress failed: %s", e)
@@ -9964,7 +10041,7 @@ class GatewayRunner:
         # Bridge sync status_callback → async adapter.send for context pressure
         _status_adapter = self.adapters.get(source.platform)
         _status_chat_id = source.chat_id
-        _status_thread_metadata = {"thread_id": _progress_thread_id} if _progress_thread_id else None
+        _status_thread_metadata = {"thread_id": _progress_thread_id, "mention_user_id": source.user_id} if _progress_thread_id else {"mention_user_id": source.user_id}
 
         def _status_callback_sync(event_type: str, message: str) -> None:
             if not _status_adapter or not _run_still_current():

@@ -5213,6 +5213,93 @@ def _build_web_ui(web_dir: Path, *, fatal: bool = False) -> bool:
     return True
 
 
+def _warn_stale_dashboard_processes() -> None:
+    """Warn about running dashboard processes that still hold pre-update code.
+
+    ``hermes dashboard`` is a long-lived server process commonly started and
+    forgotten.  When ``hermes update`` replaces files on disk, the running
+    process keeps the old Python backend in memory while the JS bundle on
+    disk is updated, causing a silent frontend/backend mismatch (e.g. new
+    auth headers the old backend doesn't recognise → every API call 401s).
+
+    Unlike the gateway, the dashboard has no service manager (systemd /
+    launchd), so we can only warn — we don't auto-kill user-managed
+    background processes.
+    """
+    patterns = [
+        "hermes dashboard",
+        "hermes_cli.main dashboard",
+        "hermes_cli/main.py dashboard",
+    ]
+    self_pid = os.getpid()
+    dashboard_pids: list[int] = []
+
+    try:
+        if sys.platform == "win32":
+            result = subprocess.run(
+                ["wmic", "process", "get", "ProcessId,CommandLine",
+                 "/FORMAT:LIST"],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode != 0:
+                return
+            current_cmd = ""
+            for line in result.stdout.split("\n"):
+                line = line.strip()
+                if line.startswith("CommandLine="):
+                    current_cmd = line[len("CommandLine="):]
+                elif line.startswith("ProcessId="):
+                    pid_str = line[len("ProcessId="):]
+                    if (any(p in current_cmd for p in patterns)
+                            and int(pid_str) != self_pid):
+                        try:
+                            dashboard_pids.append(int(pid_str))
+                        except ValueError:
+                            pass
+        else:
+            # Linux / macOS: scan the process table via ps and match against
+            # the same explicit patterns list used on Windows.  Using ps
+            # (rather than `pgrep -f "hermes.*dashboard"`) keeps us consistent
+            # with `hermes_cli.gateway._scan_gateway_pids` and avoids the
+            # greedy regex matching unrelated cmdlines that merely contain
+            # both words (e.g. a chat session discussing "dashboard").
+            result = subprocess.run(
+                ["ps", "-A", "-o", "pid=,command="],
+                capture_output=True, text=True, timeout=10,
+            )
+            if result.returncode == 0:
+                for line in result.stdout.split("\n"):
+                    stripped = line.strip()
+                    if not stripped or "grep" in stripped:
+                        continue
+                    parts = stripped.split(None, 1)
+                    if len(parts) != 2:
+                        continue
+                    try:
+                        pid = int(parts[0])
+                    except ValueError:
+                        continue
+                    command = parts[1]
+                    if (any(p in command for p in patterns)
+                            and pid != self_pid):
+                        dashboard_pids.append(pid)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return
+
+    if not dashboard_pids:
+        return
+
+    print()
+    print(f"⚠ {len(dashboard_pids)} dashboard process(es) still running "
+          f"with the previous version:")
+    for pid in dashboard_pids:
+        print(f"    PID {pid}")
+    print("  The running backend may not match the updated frontend,")
+    print("  causing silent auth failures or empty data.")
+    print("  Restart them to pick up the changes:")
+    print("    kill <pid> && hermes dashboard --port <port> ...")
+
+
 def _update_via_zip(args):
     """Update Hermes Agent by downloading a ZIP archive.
 
@@ -5347,6 +5434,7 @@ def _update_via_zip(args):
 
     print()
     print("✓ Update complete!")
+    _warn_stale_dashboard_processes()
 
 
 def _stash_local_changes_if_needed(git_cmd: list[str], cwd: Path) -> Optional[str]:
@@ -7162,6 +7250,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
                 print("  (add `sudo` if any are in system scope)")
         except Exception as e:
             logger.debug("Legacy unit check during update failed: %s", e)
+
+        # Warn about stale dashboard processes — the dashboard has no
+        # service manager, so we can only tell the user to restart them.
+        _warn_stale_dashboard_processes()
 
         print()
         print("Tip: You can now select a provider and model:")

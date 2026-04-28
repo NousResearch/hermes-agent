@@ -2817,20 +2817,32 @@ class TestHydrateBotIdentity(unittest.TestCase):
         },
         clear=True,
     )
-    def test_hydration_skipped_when_env_vars_supply_both_fields(self):
+    def test_hydration_refreshes_env_values_when_bot_info_available(self):
         adapter = self._make_adapter()
         adapter._client = Mock()
-        adapter._client.request = Mock()
+        payload = json.dumps(
+            {
+                "code": 0,
+                "bot": {
+                    "bot_name": "Hydrated Hermes",
+                    "open_id": "ou_hydrated",
+                },
+            }
+        ).encode("utf-8")
+        adapter._client.request = Mock(return_value=SimpleNamespace(raw=SimpleNamespace(content=payload)))
 
         asyncio.run(adapter._hydrate_bot_identity())
 
-        adapter._client.request.assert_not_called()
-        self.assertEqual(adapter._bot_open_id, "ou_env")
-        self.assertEqual(adapter._bot_name, "Env Hermes")
+        # PR #16993 semantics: /bot/v3/info probe runs unconditionally
+        # and hydrated values win over env vars so a stale FEISHU_BOT_*
+        # from an old app registration doesn't break @mention gating.
+        adapter._client.request.assert_called_once()
+        self.assertEqual(adapter._bot_open_id, "ou_hydrated")
+        self.assertEqual(adapter._bot_name, "Hydrated Hermes")
 
     @patch.dict(os.environ, {"FEISHU_BOT_OPEN_ID": "ou_env"}, clear=True)
-    def test_hydration_fills_only_missing_fields(self):
-        """Env-var open_id must NOT be overwritten by a different probe value."""
+    def test_hydration_overwrites_stale_env_open_id(self):
+        """A stale env open_id should not break group mention gating after app migration."""
         adapter = self._make_adapter()
         adapter._client = Mock()
         payload = json.dumps(
@@ -2846,8 +2858,26 @@ class TestHydrateBotIdentity(unittest.TestCase):
 
         asyncio.run(adapter._hydrate_bot_identity())
 
-        self.assertEqual(adapter._bot_open_id, "ou_env")  # preserved
+        self.assertEqual(adapter._bot_open_id, "ou_probe_DIFFERENT")
         self.assertEqual(adapter._bot_name, "Hermes Bot")  # filled in
+
+    @patch.dict(
+        os.environ,
+        {
+            "FEISHU_BOT_OPEN_ID": "ou_env",
+            "FEISHU_BOT_NAME": "Env Hermes",
+        },
+        clear=True,
+    )
+    def test_hydration_preserves_env_values_when_bot_info_probe_fails(self):
+        adapter = self._make_adapter()
+        adapter._client = Mock()
+        adapter._client.request = Mock(side_effect=RuntimeError("network down"))
+
+        asyncio.run(adapter._hydrate_bot_identity())
+
+        self.assertEqual(adapter._bot_open_id, "ou_env")
+        self.assertEqual(adapter._bot_name, "Env Hermes")
 
     @patch.dict(os.environ, {}, clear=True)
     def test_hydration_tolerates_probe_failure_and_falls_back_to_app_info(self):

@@ -492,6 +492,16 @@ class TestGetHumanDelay:
             delay = BasePlatformAdapter._get_human_delay()
             assert 0.8 <= delay <= 2.5
 
+    def test_natural_mode_ignores_malformed_custom_env_vars(self):
+        env = {
+            "HERMES_HUMAN_DELAY_MODE": "natural",
+            "HERMES_HUMAN_DELAY_MIN_MS": "oops",
+            "HERMES_HUMAN_DELAY_MAX_MS": "still-bad",
+        }
+        with patch.dict(os.environ, env):
+            delay = BasePlatformAdapter._get_human_delay()
+            assert 0.8 <= delay <= 2.5
+
     def test_custom_mode_uses_env_vars(self):
         env = {
             "HERMES_HUMAN_DELAY_MODE": "custom",

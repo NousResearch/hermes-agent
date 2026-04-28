@@ -5,6 +5,9 @@ shared slash-command pipeline (`/model` in CLI/gateway/Telegram) historically
 only looked at `providers:`.
 """
 
+from types import SimpleNamespace
+
+import hermes_cli.model_catalog as model_catalog
 import hermes_cli.providers as providers_mod
 from hermes_cli.model_switch import list_authenticated_providers, switch_model
 from hermes_cli.providers import resolve_provider_full
@@ -43,6 +46,45 @@ def test_list_authenticated_providers_includes_custom_providers(monkeypatch):
         and p["api_url"] == "http://127.0.0.1:4141/v1"
         for p in providers
     )
+
+
+def test_list_authenticated_providers_skips_builtins_when_model_catalog_disabled(monkeypatch):
+    """model_catalog.enabled=false should hide built-in providers from /model.
+
+    Regression: list_authenticated_providers historically ignored the
+    model_catalog block entirely, so built-in providers authenticated via env
+    vars still appeared alongside custom_providers.
+    """
+    monkeypatch.setenv("DASHSCOPE_API_KEY", "test-key")
+    monkeypatch.setattr(
+        "agent.models_dev.fetch_models_dev",
+        lambda: {"alibaba": {"env": ["DASHSCOPE_API_KEY"]}},
+    )
+    monkeypatch.setattr(
+        "agent.models_dev.get_provider_info",
+        lambda _provider_id: SimpleNamespace(name="Alibaba/DashScope"),
+    )
+    monkeypatch.setattr(providers_mod, "HERMES_OVERLAYS", {})
+    monkeypatch.setattr(
+        model_catalog,
+        "_load_catalog_config",
+        lambda: {"enabled": False, "providers": {}, "url": "", "ttl_hours": 24},
+    )
+
+    providers = list_authenticated_providers(
+        current_provider="",
+        user_providers={},
+        custom_providers=[
+            {
+                "name": "my-dashscope",
+                "base_url": "https://coding-intl.dashscope.aliyuncs.com/v1",
+                "model": "qwen3.6-plus",
+            }
+        ],
+        max_models=50,
+    )
+
+    assert [p["slug"] for p in providers] == ["custom:my-dashscope"]
 
 
 def test_resolve_provider_full_finds_named_custom_provider():

@@ -1009,10 +1009,22 @@ def list_authenticated_providers(
         get_provider_info as _mdev_pinfo,
     )
     from hermes_cli.auth import PROVIDER_REGISTRY
+    from hermes_cli.model_catalog import _load_catalog_config
     from hermes_cli.models import (
         OPENROUTER_MODELS, _PROVIDER_MODELS,
         _MODELS_DEV_PREFERRED, _merge_with_models_dev, provider_model_ids,
     )
+
+    catalog_cfg = _load_catalog_config()
+    catalog_providers_cfg = catalog_cfg.get("providers") or {}
+
+    def _catalog_allows_builtin(provider_slug: str, mdev_id: str | None = None) -> bool:
+        if not catalog_cfg.get("enabled", True):
+            return False
+        for key in (provider_slug, mdev_id):
+            if key and catalog_providers_cfg.get(key) is False:
+                return False
+        return True
 
     results: List[dict] = []
     seen_slugs: set = set()  # lowercase-normalized to catch case variants (#9545)
@@ -1037,6 +1049,8 @@ def list_authenticated_providers(
         # kimi-coding and kimi-coding-cn both → kimi-for-coding).
         # The first one with valid credentials wins (#10526).
         if mdev_id in seen_mdev_ids:
+            continue
+        if not _catalog_allows_builtin(hermes_id, mdev_id):
             continue
         pdata = data.get(mdev_id)
         if not isinstance(pdata, dict):
@@ -1112,6 +1126,8 @@ def list_authenticated_providers(
         # Resolve Hermes slug — e.g. "github-copilot" → "copilot"
         hermes_slug = _mdev_to_hermes.get(pid, pid)
         if hermes_slug.lower() in seen_slugs:
+            continue
+        if not _catalog_allows_builtin(hermes_slug, pid):
             continue
 
         # Check if credentials exist
@@ -1221,6 +1237,8 @@ def list_authenticated_providers(
 
     for _cp in _canon_provs:
         if _cp.slug.lower() in seen_slugs:
+            continue
+        if not _catalog_allows_builtin(_cp.slug):
             continue
 
         # Check credentials via PROVIDER_REGISTRY (auth.py)

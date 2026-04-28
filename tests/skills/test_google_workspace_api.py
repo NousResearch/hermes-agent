@@ -54,7 +54,6 @@ def api_module(monkeypatch, tmp_path):
     module._ensure_authenticated = lambda: None
     return module
 
-
 def _write_token(path: Path, *, token="ya29.test", expiry=None, **extra):
     data = {
         "token": token,
@@ -68,7 +67,6 @@ def _write_token(path: Path, *, token="ya29.test", expiry=None, **extra):
         data["expiry"] = expiry
     path.write_text(json.dumps(data))
 
-
 def test_bridge_returns_valid_token(bridge_module, tmp_path):
     """Non-expired token is returned without refresh."""
     future = (datetime.now(timezone.utc) + timedelta(hours=1)).isoformat()
@@ -77,7 +75,6 @@ def test_bridge_returns_valid_token(bridge_module, tmp_path):
 
     result = bridge_module.get_valid_token()
     assert result == "ya29.valid"
-
 
 def test_bridge_refreshes_expired_token(bridge_module, tmp_path):
     """Expired token triggers a refresh via token_uri."""
@@ -102,12 +99,10 @@ def test_bridge_refreshes_expired_token(bridge_module, tmp_path):
     assert saved["token"] == "ya29.refreshed"
     assert saved["type"] == "authorized_user"
 
-
 def test_bridge_exits_on_missing_token(bridge_module):
     """Missing token file causes exit with code 1."""
     with pytest.raises(SystemExit):
         bridge_module.get_valid_token()
-
 
 def test_bridge_main_injects_token_env(bridge_module, tmp_path):
     """main() sets GOOGLE_WORKSPACE_CLI_TOKEN in subprocess env."""
@@ -129,7 +124,6 @@ def test_bridge_main_injects_token_env(bridge_module, tmp_path):
 
     assert captured["env"]["GOOGLE_WORKSPACE_CLI_TOKEN"] == "ya29.injected"
     assert captured["cmd"] == ["gws", "gmail", "+triage"]
-
 
 def test_api_calendar_list_uses_events_list(api_module):
     """calendar_list calls _run_gws with events list + params."""
@@ -158,7 +152,6 @@ def test_api_calendar_list_uses_events_list(api_module):
     assert "timeMax" in params
     assert params["calendarId"] == "primary"
 
-
 def test_api_calendar_list_respects_date_range(api_module):
     """calendar list with --start/--end passes correct time bounds."""
     captured = {}
@@ -184,6 +177,90 @@ def test_api_calendar_list_respects_date_range(api_module):
     assert params["timeMin"] == "2026-04-01T00:00:00Z"
     assert params["timeMax"] == "2026-04-07T23:59:59Z"
 
+def test_api_calendar_list_calendars_uses_calendar_list(api_module, capsys):
+    """calendar list-calendars calls calendarList.list and normalizes output."""
+    captured = {}
+
+    def capture_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return MagicMock(
+            returncode=0,
+            stdout=json.dumps({
+                "items": [
+                    {
+                        "id": "primary",
+                        "summary": "Personal",
+                        "primary": True,
+                        "accessRole": "owner",
+                        "timeZone": "America/Toronto",
+                    }
+                ]
+            }),
+            stderr="",
+        )
+
+    args = api_module.argparse.Namespace(func=api_module.calendar_list_calendars)
+
+    with patch.object(api_module.subprocess, "run", side_effect=capture_run):
+        api_module.calendar_list_calendars(args)
+
+    assert captured["cmd"][:4] == ["/usr/bin/gws", "calendar", "calendarList", "list"]
+    out = json.loads(capsys.readouterr().out)
+    assert out == [
+        {
+            "id": "primary",
+            "summary": "Personal",
+            "primary": True,
+            "accessRole": "owner",
+            "timeZone": "America/Toronto",
+            "backgroundColor": "",
+            "selected": False,
+        }
+    ]
+
+def test_api_calendar_create_calendar_uses_calendars_insert(api_module, capsys):
+    """calendar create-calendar calls calendars.insert with optional fields."""
+    captured = {}
+
+    def capture_run(cmd, **kwargs):
+        captured["cmd"] = cmd
+        return MagicMock(
+            returncode=0,
+            stdout=json.dumps({
+                "id": "concerts@example.com",
+                "summary": "Concerts",
+                "timeZone": "America/Toronto",
+            }),
+            stderr="",
+        )
+
+    args = api_module.argparse.Namespace(
+        summary="Concerts",
+        description="Shows",
+        location="Toronto",
+        timezone="America/Toronto",
+        func=api_module.calendar_create_calendar,
+    )
+
+    with patch.object(api_module.subprocess, "run", side_effect=capture_run):
+        api_module.calendar_create_calendar(args)
+
+    cmd = captured["cmd"]
+    assert cmd[:4] == ["/usr/bin/gws", "calendar", "calendars", "insert"]
+    body = json.loads(cmd[cmd.index("--json") + 1])
+    assert body == {
+        "summary": "Concerts",
+        "description": "Shows",
+        "location": "Toronto",
+        "timeZone": "America/Toronto",
+    }
+    out = json.loads(capsys.readouterr().out)
+    assert out == {
+        "status": "created",
+        "id": "concerts@example.com",
+        "summary": "Concerts",
+        "timeZone": "America/Toronto",
+    }
 
 def test_api_get_credentials_refresh_persists_authorized_user_type(api_module, monkeypatch):
     token_path = api_module.TOKEN_PATH

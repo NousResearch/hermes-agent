@@ -37,7 +37,8 @@ on CLI, Telegram, Discord, or any platform.
 Define a shorthand first:
 
 ```bash
-GSETUP="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/setup.py"
+PYTHON="${PYTHON:-python3}"
+GSETUP="$PYTHON ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/setup.py"
 ```
 
 ### Step 0: Check if already set up
@@ -46,7 +47,9 @@ GSETUP="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspac
 $GSETUP --check
 ```
 
-If it prints `AUTHENTICATED`, skip to Usage — setup is already done.
+If it prints `AUTHENTICATED`, skip to Usage — setup is already done. If you
+know the needed service set, pass it explicitly, for example
+`$GSETUP --check --services calendar`.
 
 ### Step 1: Triage — ask the user what they need
 
@@ -88,8 +91,10 @@ Tell the user:
 >    https://console.cloud.google.com/projectselector2/home/dashboard
 > 2. Enable the required APIs from the API Library:
 >    https://console.cloud.google.com/apis/library
->    Enable: Gmail API, Google Calendar API, Google Drive API,
->    Google Sheets API, Google Docs API, People API
+>    Enable only the APIs for the services chosen in Step 1. For example,
+>    Calendar-only setup requires only Google Calendar API; full Workspace
+>    setup uses Gmail API, Google Calendar API, Google Drive API, Google
+>    Sheets API, Google Docs API, and People API.
 > 3. Create the OAuth client here:
 >    https://console.cloud.google.com/apis/credentials
 >    Credentials → Create Credentials → OAuth 2.0 Client ID
@@ -140,21 +145,21 @@ pending OAuth session locally so `--auth-code` can complete the PKCE exchange
 later, even on headless systems:
 
 ```bash
-$GSETUP --auth-code "THE_URL_OR_CODE_THE_USER_PASTED" --format json
+$GSETUP --auth-code "THE_URL_OR_CODE_THE_USER_PASTED"
 ```
 
 If `--auth-code` fails because the code expired, was already used, or came from
-an older browser tab, it now returns a fresh `fresh_auth_url`. In that case,
-immediately send the new URL to the user and have them retry with the newest
-browser redirect only.
+an older browser tab, run `$GSETUP --auth-url --services <same-service-set> --format json`
+again and have the user retry with the newest browser redirect only.
 
 ### Step 5: Verify
 
 ```bash
-$GSETUP --check
+$GSETUP --check --services <same-service-set>
 ```
 
-Should print `AUTHENTICATED`. Setup is complete — token refreshes automatically from now on.
+For Calendar-only setup, use `$GSETUP --check --services calendar`. Should print
+`AUTHENTICATED`. Setup is complete — token refreshes automatically from now on.
 
 ### Notes
 
@@ -168,7 +173,8 @@ Should print `AUTHENTICATED`. Setup is complete — token refreshes automaticall
 All commands go through the API script. Set `GAPI` as a shorthand:
 
 ```bash
-GAPI="python ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/google_api.py"
+PYTHON="${PYTHON:-python3}"
+GAPI="$PYTHON ${HERMES_HOME:-$HOME/.hermes}/skills/productivity/google-workspace/scripts/google_api.py"
 ```
 
 ### Gmail
@@ -200,6 +206,12 @@ $GAPI gmail modify MESSAGE_ID --remove-labels UNREAD
 ### Calendar
 
 ```bash
+# List calendars
+$GAPI calendar list-calendars
+
+# Create a calendar
+$GAPI calendar create-calendar --summary "Concerts" --timezone America/Toronto
+
 # List events (defaults to next 7 days)
 $GAPI calendar list
 $GAPI calendar list --start 2026-03-01T00:00:00Z --end 2026-03-07T23:59:59Z

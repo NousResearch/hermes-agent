@@ -1451,6 +1451,11 @@ def _run_browser_command(
         
         browser_env = {**os.environ}
 
+        # Disable ANSI color codes in agent-browser CLI output to prevent
+        # JSON parsing failures from escape sequences like \x1b[A (cursor up).
+        # agent-browser uses chalk/ansi-colors which respects NO_COLOR.
+        browser_env["NO_COLOR"] = "1"
+
         # Ensure subprocesses inherit the same browser-specific PATH fallbacks
         # used during CLI discovery.
         browser_env["PATH"] = _merge_browser_path(browser_env.get("PATH", ""))
@@ -1514,6 +1519,12 @@ def _run_browser_command(
             logger.log(level, "browser '%s' stderr: %s", command, stderr.strip()[:500])
         
         stdout_text = stdout.strip()
+
+        # Fallback: strip any remaining ANSI escape sequences if NO_COLOR
+        # didn't fully suppress them (belt-and-suspenders approach).
+        # Handles sequences like \x1b[A, \x1b[0m, \x1b[32m, etc.
+        import re as _re_ansi
+        stdout_text = _re_ansi.sub(r'\x1b\[[0-9;]*[a-zA-Z]|\x1b\].*?\x07', '', stdout_text)
 
         # Empty output with rc=0 is a broken state — treat as failure rather
         # than silently returning {"success": True, "data": {}}.

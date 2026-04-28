@@ -421,7 +421,7 @@ def test_subprocess_env_filters_secret_parent_values(monkeypatch):
     monkeypatch.setenv("PATH", "/usr/bin")
     monkeypatch.setenv("OPENAI_API_KEY", "sk-test-secret")
     monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "aws-secret")
-    monkeypatch.setenv("PROJECT_NAME", "prv")
+    monkeypatch.setenv("PROJECT_NAME", "sample-project")
     monkeypatch.setenv("PROJECT_SECRET", "do-not-pass")
     monkeypatch.setenv("HERMES_ACP_ENV_ALLOWLIST", "PROJECT_NAME,PROJECT_SECRET")
 
@@ -429,7 +429,7 @@ def test_subprocess_env_filters_secret_parent_values(monkeypatch):
 
     assert env["HOME"] == "/tmp/home"
     assert env["PATH"] == "/usr/bin"
-    assert env["PROJECT_NAME"] == "prv"
+    assert env["PROJECT_NAME"] == "sample-project"
     assert "OPENAI_API_KEY" not in env
     assert "AWS_SECRET_ACCESS_KEY" not in env
     assert "PROJECT_SECRET" not in env

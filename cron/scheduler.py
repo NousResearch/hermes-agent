@@ -89,6 +89,7 @@ _HOME_TARGET_ENV_VARS = {
     "slack": "SLACK_HOME_CHANNEL",
     "signal": "SIGNAL_HOME_CHANNEL",
     "mattermost": "MATTERMOST_HOME_CHANNEL",
+    "zulip": "ZULIP_HOME_STREAM",
     "sms": "SMS_HOME_CHANNEL",
     "email": "EMAIL_HOME_ADDRESS",
     "dingtalk": "DINGTALK_HOME_CHANNEL",
@@ -144,6 +145,12 @@ def _get_home_target_chat_id(platform_name: str) -> str:
         legacy = _LEGACY_HOME_TARGET_ENV_VARS.get(env_var)
         if legacy:
             value = os.getenv(legacy, "")
+    # Zulip's home target is a stream_id:topic composite — merge with the
+    # topic env var to form a valid Zulip chat_id.
+    if platform_name.lower() == "zulip" and value:
+        topic = os.getenv("ZULIP_HOME_TOPIC", "notifications")
+        if ":" not in value:
+            value = f"{value}:{topic}"
     return value
 
 
@@ -327,6 +334,7 @@ def _deliver_result(job: dict, content: str, adapters=None, loop=None) -> Option
         "signal": Platform.SIGNAL,
         "matrix": Platform.MATRIX,
         "mattermost": Platform.MATTERMOST,
+        "zulip": Platform.ZULIP,
         "homeassistant": Platform.HOMEASSISTANT,
         "dingtalk": Platform.DINGTALK,
         "feishu": Platform.FEISHU,

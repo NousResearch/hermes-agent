@@ -215,6 +215,7 @@ def _handle_send(args):
         "qqbot": Platform.QQBOT,
         "matrix": Platform.MATRIX,
         "mattermost": Platform.MATTERMOST,
+        "zulip": Platform.ZULIP,
         "homeassistant": Platform.HOMEASSISTANT,
         "dingtalk": Platform.DINGTALK,
         "feishu": Platform.FEISHU,
@@ -585,6 +586,8 @@ async def _send_to_platform(platform, pconfig, chat_id, message, thread_id=None,
             result = await _send_sms(pconfig.api_key, chat_id, chunk)
         elif platform == Platform.MATTERMOST:
             result = await _send_mattermost(pconfig.token, pconfig.extra, chat_id, chunk)
+        elif platform == Platform.ZULIP:
+            result = await _send_zulip(pconfig.token, pconfig.extra, chat_id, chunk)
         elif platform == Platform.MATRIX:
             result = await _send_matrix(pconfig.token, pconfig.extra, chat_id, chunk)
         elif platform == Platform.HOMEASSISTANT:
@@ -1183,6 +1186,70 @@ async def _send_mattermost(token, extra, chat_id, message):
         return {"success": True, "platform": "mattermost", "chat_id": chat_id, "message_id": data.get("id")}
     except Exception as e:
         return _error(f"Mattermost send failed: {e}")
+
+
+async def _send_zulip(api_key, extra, chat_id, message):
+    """Send via Zulip REST API.
+
+    ``chat_id`` is either ``"<stream_id>:<topic>"`` for stream messages or a
+    comma-separated list of user IDs for DMs (mirrors ZulipAdapter.send).
+    """
+    try:
+        import aiohttp
+    except ImportError:
+        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+    try:
+        import json as _json
+        site = (extra.get("site") or os.getenv("ZULIP_SITE", "")).rstrip("/")
+        email = extra.get("email") or os.getenv("ZULIP_EMAIL", "")
+        api_key = api_key or os.getenv("ZULIP_API_KEY", "")
+        if not site or not email or not api_key:
+            return {"error": "Zulip not configured (ZULIP_SITE, ZULIP_EMAIL, ZULIP_API_KEY required)"}
+
+        if ":" in chat_id:
+            stream_part, _, topic = chat_id.partition(":")
+            try:
+                stream_id = int(stream_part)
+            except ValueError:
+                return _error(f"Invalid Zulip stream id: {stream_part!r}")
+            data = {
+                "type": "stream",
+                "to": str(stream_id),
+                "topic": topic,
+                "content": message,
+            }
+        else:
+            try:
+                user_ids = [int(u.strip()) for u in chat_id.split(",") if u.strip()]
+            except ValueError:
+                return _error(f"Invalid Zulip DM chat_id: {chat_id!r}")
+            if not user_ids:
+                return _error("Zulip DM chat_id is empty")
+            data = {
+                "type": "direct",
+                "to": _json.dumps(user_ids),
+                "content": message,
+            }
+
+        url = f"{site}/api/v1/messages"
+        auth = aiohttp.BasicAuth(email, api_key)
+        async with aiohttp.ClientSession(
+            auth=auth, timeout=aiohttp.ClientTimeout(total=30)
+        ) as session:
+            async with session.post(url, data=data) as resp:
+                body = await resp.json(content_type=None)
+                if resp.status >= 400 or body.get("result") != "success":
+                    return _error(
+                        f"Zulip API error ({resp.status}): {body.get('msg', body)}"
+                    )
+        return {
+            "success": True,
+            "platform": "zulip",
+            "chat_id": chat_id,
+            "message_id": str(body.get("id", "")),
+        }
+    except Exception as e:
+        return _error(f"Zulip send failed: {e}")
 
 
 async def _send_matrix(token, extra, chat_id, message):

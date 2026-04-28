@@ -2079,6 +2079,57 @@ def _setup_mattermost():
         save_env_value("MATTERMOST_HOME_CHANNEL", home_channel)
 
 
+def _setup_zulip():
+    """Configure Zulip bot credentials."""
+    print_header("Zulip")
+    existing = get_env_value("ZULIP_API_KEY")
+    if existing:
+        print_info("Zulip: already configured")
+        if not prompt_yes_no("Reconfigure Zulip?", False):
+            return
+
+    print_info("Works with any self-hosted or cloud Zulip instance.")
+    print_info("   1. In Zulip: Settings → Personal → Bots → Add a new bot")
+    print_info("   2. Choose 'Generic bot', copy the bot email + API key")
+    print()
+    site = prompt("Zulip server URL (e.g. https://zulip.example.com)")
+    if site:
+        save_env_value("ZULIP_SITE", site.rstrip("/"))
+    email = prompt("Bot email (e.g. hermes-bot@zulip.example.com)")
+    if not email:
+        return
+    save_env_value("ZULIP_EMAIL", email)
+    api_key = prompt("Bot API key", password=True)
+    if not api_key:
+        return
+    save_env_value("ZULIP_API_KEY", api_key)
+    print_success("Zulip credentials saved")
+
+    print()
+    print_info("🔒 Security: Restrict who can use your bot")
+    print_info("   To find your user ID: Settings → Account & Privacy → User ID")
+    print_info("   or use the API: GET /api/v1/users/me")
+    print()
+    allowed_users = prompt("Allowed user IDs (comma-separated, leave empty for open access)")
+    if allowed_users:
+        save_env_value("ZULIP_ALLOWED_USERS", allowed_users.replace(" ", ""))
+        print_success("Zulip allowlist configured")
+    else:
+        print_info("⚠️  No allowlist set - anyone who can message the bot can use it!")
+
+    print()
+    print_info("📬 Home Channel: where Hermes delivers cron job results and notifications.")
+    print_info("   Zulip home channels are stream_id + topic pairs (e.g. stream 42, topic 'notifications').")
+    print_info("   To find a stream ID: click the stream → settings → ID is shown in the URL.")
+    print_info("   You can also set this later by typing /sethome in a Zulip topic.")
+    home_stream = prompt("Home stream ID (leave empty to set later with /sethome)")
+    if home_stream:
+        save_env_value("ZULIP_HOME_STREAM", home_stream)
+        home_topic = prompt("Home topic name", default="notifications")
+        if home_topic:
+            save_env_value("ZULIP_HOME_TOPIC", home_topic)
+
+
 def _setup_whatsapp():
     """Configure WhatsApp bridge."""
     print_header("WhatsApp")
@@ -2280,6 +2331,7 @@ _GATEWAY_PLATFORMS = [
     ("SMS (Twilio)", "TWILIO_ACCOUNT_SID", _setup_sms),
     ("Matrix", "MATRIX_ACCESS_TOKEN", _setup_matrix),
     ("Mattermost", "MATTERMOST_TOKEN", _setup_mattermost),
+    ("Zulip", "ZULIP_API_KEY", _setup_zulip),
     ("WhatsApp", "WHATSAPP_ENABLED", _setup_whatsapp),
     ("DingTalk", "DINGTALK_CLIENT_ID", _setup_dingtalk),
     ("Feishu / Lark", "FEISHU_APP_ID", _setup_feishu),
@@ -2332,6 +2384,7 @@ def setup_gateway(config: dict):
         or get_env_value("EMAIL_ADDRESS")
         or get_env_value("TWILIO_ACCOUNT_SID")
         or get_env_value("MATTERMOST_TOKEN")
+        or get_env_value("ZULIP_API_KEY")
         or get_env_value("MATRIX_ACCESS_TOKEN")
         or get_env_value("MATRIX_PASSWORD")
         or get_env_value("WHATSAPP_ENABLED")

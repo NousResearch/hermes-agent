@@ -68,6 +68,7 @@ class Platform(Enum):
     BLUEBUBBLES = "bluebubbles"
     QQBOT = "qqbot"
     YUANBAO = "yuanbao"
+    ZULIP = "zulip"
 
 
 @dataclass
@@ -838,6 +839,7 @@ def _validate_gateway_config(config: "GatewayConfig") -> None:
         Platform.MATTERMOST: "MATTERMOST_TOKEN",
         Platform.MATRIX: "MATRIX_ACCESS_TOKEN",
         Platform.WEIXIN: "WEIXIN_TOKEN",
+        Platform.ZULIP: "ZULIP_API_KEY",
     }
     for platform, pconfig in config.platforms.items():
         if not pconfig.enabled:
@@ -1005,6 +1007,46 @@ def _apply_env_overrides(config: GatewayConfig) -> None:
             platform=Platform.MATTERMOST,
             chat_id=mattermost_home,
             name=os.getenv("MATTERMOST_HOME_CHANNEL_NAME", "Home"),
+        )
+
+    # Zulip
+    zulip_api_key = os.getenv("ZULIP_API_KEY")
+    zulip_site = os.getenv("ZULIP_SITE", "")
+    zulip_email = os.getenv("ZULIP_EMAIL", "")
+    if zulip_api_key:
+        if not zulip_site:
+            logger.warning("ZULIP_API_KEY set but ZULIP_SITE is missing")
+        if not zulip_email:
+            logger.warning("ZULIP_API_KEY set but ZULIP_EMAIL is missing")
+        if Platform.ZULIP not in config.platforms:
+            config.platforms[Platform.ZULIP] = PlatformConfig()
+        config.platforms[Platform.ZULIP].enabled = True
+        config.platforms[Platform.ZULIP].token = zulip_api_key
+        config.platforms[Platform.ZULIP].extra["site"] = zulip_site
+        config.platforms[Platform.ZULIP].extra["email"] = zulip_email
+    zulip_home_stream = os.getenv("ZULIP_HOME_STREAM")
+    if zulip_home_stream and Platform.ZULIP in config.platforms:
+        # Accept either a numeric stream ID ("42") or a pre-built
+        # "stream_id:topic" composite. Anything else probably means the user
+        # entered a stream *name* — warn so they can fix it before the first
+        # cron delivery fails.
+        zulip_home_topic = os.getenv("ZULIP_HOME_TOPIC", "notifications")
+        if ":" in zulip_home_stream:
+            composite = zulip_home_stream
+        elif zulip_home_stream.isdigit():
+            composite = f"{zulip_home_stream}:{zulip_home_topic}"
+        else:
+            logger.warning(
+                "ZULIP_HOME_STREAM=%r does not look like a numeric stream ID — "
+                "Zulip API requires integer stream IDs, not names. Find the ID "
+                "via the stream settings page or GET /api/v1/streams.",
+                zulip_home_stream,
+            )
+            composite = f"{zulip_home_stream}:{zulip_home_topic}"
+        config.platforms[Platform.ZULIP].home_channel = HomeChannel(
+            platform=Platform.ZULIP,
+            chat_id=composite,
+            name=os.getenv("ZULIP_HOME_CHANNEL_NAME", "Home"),
         )
 
     # Matrix

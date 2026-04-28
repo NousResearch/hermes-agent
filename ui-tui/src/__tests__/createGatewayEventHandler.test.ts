@@ -314,6 +314,48 @@ describe('createGatewayEventHandler', () => {
     expect(messages.some(m => m.includes('FileNotFoundError'))).toBe(true)
   })
 
+  it('prefers raw text over Rich-rendered ANSI on message.complete (#16391)', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+    const raw = 'Hermes here.\n\nLine two.'
+    // Rich-rendered ANSI (`final_response_markdown: render`) used to win,
+    // which left visible escape codes in Ink output. Raw text must win.
+    const rendered = '\u001b[33mHermes here.\u001b[0m\n\n\u001b[2mLine two.\u001b[0m'
+
+    onEvent({ payload: { rendered, text: raw }, type: 'message.complete' } as any)
+
+    const assistant = appended.find(msg => msg.role === 'assistant')
+    expect(assistant?.text).toBe(raw)
+    expect(assistant?.text).not.toContain('\u001b[')
+  })
+
+  it('falls back to payload.rendered when text is missing on message.complete', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+    const rendered = 'fallback when gateway omitted text'
+
+    onEvent({ payload: { rendered }, type: 'message.complete' } as any)
+
+    const assistant = appended.find(msg => msg.role === 'assistant')
+    expect(assistant?.text).toBe(rendered)
+  })
+
+  it('always accumulates raw text in message.delta and ignores `rendered` (#16391)', () => {
+    const appended: Msg[] = []
+    const onEvent = createGatewayEventHandler(buildCtx(appended))
+
+    // Stream of partial text deltas; each delta carries an incremental
+    // Rich-ANSI fragment.  Pre-fix code would replace the whole bufRef
+    // with the latest fragment, dropping prior text.
+    onEvent({ payload: { rendered: '\u001b[33mFi\u001b[0m', text: 'Fi' }, type: 'message.delta' } as any)
+    onEvent({ payload: { rendered: '\u001b[33mrst.\u001b[0m', text: 'rst.' }, type: 'message.delta' } as any)
+    onEvent({ payload: { text: ' second.' }, type: 'message.delta' } as any)
+    onEvent({ payload: {}, type: 'message.complete' } as any)
+
+    const assistant = appended.find(msg => msg.role === 'assistant')
+    expect(assistant?.text).toBe('First. second.')
+  })
+
   it('anchors inline_diff as its own segment where the edit happened', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))

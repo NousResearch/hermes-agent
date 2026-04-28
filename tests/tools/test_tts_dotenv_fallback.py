@@ -34,9 +34,12 @@ def isolate_env(monkeypatch):
 
 class TestDotenvFallbackPerProvider:
     """For each affected provider, when only ``~/.hermes/.env`` carries the
-    key (mocked via ``hermes_cli.config.load_env``), the provider must find
-    it. Before the fix, ``os.getenv`` returned ``None`` and the provider
-    raised ``ValueError("X_API_KEY not set")``.
+    key, the provider must find it. These per-provider tests model that
+    dotenv-backed lookup by mocking ``tools.tts_tool.get_env_value`` directly;
+    the separate regression-guard tests cover the lower-level
+    ``hermes_cli.config.load_env`` integration. Before the fix, ``os.getenv``
+    returned ``None`` and the provider raised
+    ``ValueError("X_API_KEY not set")``.
     """
 
     def test_elevenlabs_reads_dotenv_key(self, tmp_path):

@@ -44,7 +44,11 @@ from urllib.parse import urljoin
 from hermes_constants import display_hermes_home
 
 logger = logging.getLogger(__name__)
-from hermes_cli.config import get_env_value
+try:
+    from hermes_cli.config import get_env_value
+except ImportError:
+    def get_env_value(name, default=None):
+        return os.getenv(name, default)
 from tools.managed_tool_gateway import resolve_managed_tool_gateway
 from tools.tool_backend_helpers import managed_nous_tools_enabled, prefers_gateway, resolve_openai_audio_api_key
 from tools.xai_http import hermes_xai_user_agent

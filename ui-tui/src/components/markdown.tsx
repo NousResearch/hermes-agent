@@ -102,8 +102,9 @@ const renderTable = (k: number, rows: string[][], t: Theme) => {
   // (#15534).  We avoid full borders on purpose — column widths come
   // from `stripInlineMarkup(...).length` (UTF-16 code units, not
   // display width), so a real outline often misaligns on emoji and
-  // East-Asian wide characters; one dim dashed rule under row 0 plus
-  // tab-style column gaps reads cleanly on every terminal we tested.
+  // East-Asian wide characters; one dim solid rule (`─`) under row 0
+  // plus tab-style column gaps reads cleanly on every terminal we
+  // tested.
   const sep = widths.map(w => '─'.repeat(Math.max(1, w))).join('  ')
 
   return (
